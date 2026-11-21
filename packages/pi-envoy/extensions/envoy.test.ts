@@ -14901,6 +14901,34 @@ console.log(JSON.stringify(args));
         }
       });
 
+      /** The timeout bun holds each row that waits on its command to, and how long before it the
+       *  row's wait gives up (`rowWait`). */
+      const SHELL_ROW_TIMEOUT_MS = 20_000;
+      const SHELL_ROW_MARGIN_MS = 1_000;
+      /**
+       * Starts the waits of a row on its command, measured from this call, which is the row's
+       * first line. The row's one clock is its own timeout: a wait gives up `SHELL_ROW_MARGIN_MS`
+       * before `SHELL_ROW_TIMEOUT_MS`, so a command that never does what the row waits for fails by
+       * the wait's own name rather than by bun's timeout line. A wait held past both (a turn of
+       * the event loop that came back late) is still parked when bun fails the row and runs the
+       * teardown, which aborts the row's end (`rowEnds`): the wait then returns without reading
+       * and answers false, and the row returns, so nothing of it polls or throws after it ended.
+       */
+      const rowWait = () => {
+        const started = performance.now();
+        const ended = new AbortController();
+        rowEnds.push(ended);
+        return async (condition: () => boolean, what: string): Promise<boolean> => {
+          await until(
+            condition,
+            what,
+            SHELL_ROW_TIMEOUT_MS - SHELL_ROW_MARGIN_MS - (performance.now() - started),
+            ended.signal
+          );
+          return !ended.signal.aborted;
+        };
+      };
+
       /** The user messages this session's live stream carried. */
       const streamFrames = () =>
         natsState.published
@@ -15203,6 +15231,7 @@ console.log(JSON.stringify(args));
       // session the host moved to must not be handed it as its own, while the person is answered
       // and the live view of the session that ran it still shows the report.
       test("hands the agent no copy when the session moved on while the command ran", async () => {
+        const wait = rowWait();
         const { agent, fixture, replied, replies, work } = await bootShellSession(
           "shell-command-switched",
           {
@@ -15214,7 +15243,9 @@ console.log(JSON.stringify(args));
         );
 
         agent.push(directDispatchEnvelope("steer", "shell-command-switched"));
-        await until(() => existsSync(join(work, "running")), "the command to be running", 10_000);
+        if (!(await wait(() => existsSync(join(work, "running")), "the command to be running"))) {
+          return;
+        }
 
         // A `/new` while the command runs. The viewer follows the session the host moved to, as
         // the relay's watch does, so the publisher is armed again and the frame this command
@@ -15248,7 +15279,7 @@ console.log(JSON.stringify(args));
             delivery.content.includes("A person ran this shell command")
           )
         ).toEqual([]);
-      }, 20_000);
+      }, SHELL_ROW_TIMEOUT_MS);
 
       // The same move, with no session event for it: the host moves its session manager first
       // and emits `session_switch` after its resets, and a move the host makes without an event
@@ -15257,6 +15288,7 @@ console.log(JSON.stringify(args));
       // is already on another conversation. The agent's copy follows the host's live id, so the
       // conversation the host is on is handed nothing here either.
       test("hands the agent no copy when the host moved on with no session event", async () => {
+        const wait = rowWait();
         let live = "ses_delivery";
         const { agent, fixture, replied, replies, work } = await bootShellSession(
           "shell-command-host-moved",
@@ -15270,7 +15302,9 @@ console.log(JSON.stringify(args));
         );
 
         agent.push(directDispatchEnvelope("steer", "shell-command-host-moved"));
-        await until(() => existsSync(join(work, "running")), "the command to be running", 10_000);
+        if (!(await wait(() => existsSync(join(work, "running")), "the command to be running"))) {
+          return;
+        }
 
         // The host is on another conversation now. No handler is fired for it, so the plugin's
         // own `sessionID` still reads ses_delivery.
@@ -15297,7 +15331,7 @@ console.log(JSON.stringify(args));
             delivery.content.includes("A person ran this shell command")
           )
         ).toEqual([]);
-      }, 20_000);
+      }, SHELL_ROW_TIMEOUT_MS);
 
       // The same move, made before the command is asked for: the delivery awaits the whole body
       // and then the Dispatch accept, and a host that leaves inside that window is already on
@@ -15946,6 +15980,7 @@ console.log(JSON.stringify(args));
       // second message with the first session's command, which was neither this session's
       // command nor a command this session was running.
       test("runs a command for the session the host moved to while another session's still runs", async () => {
+        const wait = rowWait();
         const other = otherSessionDirectory();
         const { agent, fixture, replied, replies, work } = await bootShellSession(
           "shell-command-busy-other-session",
@@ -15961,11 +15996,14 @@ console.log(JSON.stringify(args));
         );
 
         agent.push(directDispatchEnvelope("steer", "shell-command-busy-other-1"));
-        await until(
-          () => existsSync(join(work, "running")),
-          "the first session's command to be running",
-          10_000
-        );
+        if (
+          !(await wait(
+            () => existsSync(join(work, "running")),
+            "the first session's command to be running"
+          ))
+        ) {
+          return;
+        }
 
         // A `/new` to a conversation of its own, with ses_delivery's command still running.
         await moveHost(fixture, other);
@@ -15998,13 +16036,14 @@ console.log(JSON.stringify(args));
           attempt: 1,
           body: `!touch running; until [ -f go ]; do sleep 0.05; done; printf first\n\n\`\`\`\nfirst\n\`\`\`\n\n${withheldOutput}`,
         });
-      }, 20_000);
+      }, SHELL_ROW_TIMEOUT_MS);
 
       // The agent's copy is withheld where the session the command was asked of is not the one
       // open here by the time the report is ready, and the person is told so: the reply and the
       // live view's frame carry the sentence, so neither reads as output the agent went on to
       // act on.
       test("says the agent was handed no output when the session moved on while the command ran", async () => {
+        const wait = rowWait();
         const other = otherSessionDirectory();
         const { agent, fixture, replied, replies, sends, work } = await bootShellSession(
           "shell-command-withheld-copy",
@@ -16017,7 +16056,9 @@ console.log(JSON.stringify(args));
         );
 
         agent.push(directDispatchEnvelope("steer", "shell-command-withheld-copy"));
-        await until(() => existsSync(join(work, "running")), "the command to be running", 10_000);
+        if (!(await wait(() => existsSync(join(work, "running")), "the command to be running"))) {
+          return;
+        }
 
         await moveHost(fixture, other);
         writeFileSync(join(work, "go"), "");
@@ -16040,7 +16081,7 @@ console.log(JSON.stringify(args));
           )
         ).toEqual([]);
         expect(movedSessionFrames()).toEqual([]);
-      }, 20_000);
+      }, SHELL_ROW_TIMEOUT_MS);
 
       // A command runs in a process group of its own, and the session that was asked for it is
       // going, so the plugin hands that group's kill to the shutdown rather than letting the
@@ -16048,19 +16089,8 @@ console.log(JSON.stringify(args));
       // shutdown ends the running command, which the person's reply says in its own words. That
       // the kill ends the group is `src/typed-shell.ts`'s own contract, proven in its own rows,
       // one of which starts a real shell in a process that exits and shows nothing survives it.
-      //
-      // The row's one clock is its own timeout. The wait for the command's pid gives up a margin
-      // before that timeout, measured from the row's start, so it fails by its own name rather
-      // than by bun's timeout line. A wait held past both (a turn of the event loop that came late)
-      // is still parked when bun fails the row and runs its teardown, which aborts the row's end
-      // (`rowEnds`): the wait then returns without reading, and the row returns, so nothing of it
-      // polls or throws after it ended.
-      const SHUTDOWN_ROW_TIMEOUT_MS = 20_000;
-      const SHUTDOWN_ROW_MARGIN_MS = 1_000;
       test("ends a running command when the session shuts down", async () => {
-        const rowStarted = performance.now();
-        const ended = new AbortController();
-        rowEnds.push(ended);
+        const wait = rowWait();
         const { agent, context, fixture, replied, replies, work } = await bootShellSession(
           "shell-command-shutdown-kill",
           // Written in the session's own working directory, which the command runs in: the pid
@@ -16078,16 +16108,11 @@ console.log(JSON.stringify(args));
         // answers that it is there, and gVisor, which answers kill(0, 0) with the last answer of
         // the group, can answer EPERM.
         let written = "";
-        await until(
-          () => {
-            written = existsSync(pidFile) ? readFileSync(pidFile, "utf8") : "";
-            return /^\d+\n$/u.test(written);
-          },
-          "the command to write its pid",
-          SHUTDOWN_ROW_TIMEOUT_MS - SHUTDOWN_ROW_MARGIN_MS - (performance.now() - rowStarted),
-          ended.signal
-        );
-        if (ended.signal.aborted) return;
+        const read = await wait(() => {
+          written = existsSync(pidFile) ? readFileSync(pidFile, "utf8") : "";
+          return /^\d+\n$/u.test(written);
+        }, "the command to write its pid");
+        if (!read) return;
         const pid = Number(written);
         expect(pid).toBeGreaterThan(0);
         // The command is still running: nothing but the shutdown below ends it.
@@ -16101,7 +16126,7 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toMatchObject({
           body: "!echo $$ > pid; exec sleep 600\n\nThe command printed nothing.\n\nThe command was stopped.",
         });
-      }, SHUTDOWN_ROW_TIMEOUT_MS);
+      }, SHELL_ROW_TIMEOUT_MS);
 
       // A session shutting down runs no command: one started now would outlive the session it
       // was asked of. The message is answered saying so rather than left with no answer. The
