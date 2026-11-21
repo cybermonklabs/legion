@@ -30,6 +30,9 @@ func TestRefusalReadsTheCodeOfARefusalAlone(t *testing.T) {
 		{"401 invalid_client", answered(http.StatusUnauthorized, "invalid_client"), "invalid_client"},
 		{"400 naming no code", answered(http.StatusBadRequest, ""), ""},
 		{"a wrapped 400 invalid_grant", fmt.Errorf("refresh: %w", answered(http.StatusBadRequest, "invalid_grant")), "invalid_grant"},
+		{"403 access_denied, as the broker denies a device code", answered(http.StatusForbidden, "access_denied"), "access_denied"},
+		{"404 invalid_grant", answered(http.StatusNotFound, "invalid_grant"), "invalid_grant"},
+		{"408 invalid_grant", answered(http.StatusRequestTimeout, "invalid_grant"), ""},
 		{"429 invalid_grant", answered(http.StatusTooManyRequests, "invalid_grant"), ""},
 		{"500 invalid_client", answered(http.StatusInternalServerError, "invalid_client"), ""},
 		{"503 invalid_grant", answered(http.StatusServiceUnavailable, "invalid_grant"), ""},
@@ -45,12 +48,17 @@ func TestRefusalReadsTheCodeOfARefusalAlone(t *testing.T) {
 	}
 }
 
-// TestRefusesNamesTheStatusesARefusalComesWith pins the statuses a token endpoint refuses with.
+// TestRefusesNamesTheStatusesARefusalComesWith pins the statuses a token endpoint refuses with:
+// every 4xx but 408 and 429.
 func TestRefusesNamesTheStatusesARefusalComesWith(t *testing.T) {
 	for status, want := range map[int]bool{
 		http.StatusOK:                  false,
+		http.StatusFound:               false,
 		http.StatusBadRequest:          true,
 		http.StatusUnauthorized:        true,
+		http.StatusForbidden:           true,
+		http.StatusNotFound:            true,
+		http.StatusRequestTimeout:      false,
 		http.StatusTooManyRequests:     false,
 		http.StatusInternalServerError: false,
 		http.StatusBadGateway:          false,

@@ -264,8 +264,9 @@ func TestCodeFlowExchangeRefusesACodeTheIssuerRefuses(t *testing.T) {
 	}
 }
 
-// A code exchange the token endpoint refuses, a 400 or 401 naming an OAuth error (Refusal), fails
-// as that refusal. Any other failure of the request, a 5xx or a 429 whatever error its body names,
+// A code exchange the token endpoint refuses, an answer naming an OAuth error at a status that is a
+// refusal (oauthrefusal.Refusal: every 4xx but 408 and 429), fails as that refusal. Any other
+// failure of the request, a 5xx, a 408 or a 429 whatever error its body names,
 // or no answer at all, is an issuer that could not answer, and matches ErrIssuerUnavailable in
 // both modes, so a caller answers the person as it answers an issuer it cannot reach rather than
 // as a sign-in that did not verify.
@@ -277,6 +278,8 @@ func TestCodeFlowExchangeReadsAnAnswerThatIsNoRefusalAsTheIssuerUnavailable(t *t
 	}{
 		{"400 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusBadRequest, "invalid_grant") }, false},
 		{"401 invalid_client", func(i *oidctest.Issuer) { i.FailToken(http.StatusUnauthorized, "invalid_client") }, false},
+		{"403 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusForbidden, "invalid_grant") }, false},
+		{"408 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusRequestTimeout, "invalid_grant") }, true},
 		{"503 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusServiceUnavailable, "") }, true},
 		{"503 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusServiceUnavailable, "invalid_grant") }, true},
 		{"500 invalid_client", func(i *oidctest.Issuer) { i.FailToken(http.StatusInternalServerError, "invalid_client") }, true},
@@ -347,7 +350,9 @@ func TestCodeFlowRefreshClassifiesItsFailure(t *testing.T) {
 		{"a revoked refresh token", func(issuer *oidctest.Issuer) { issuer.RevokeGrants() }, true},
 		{"400 invalid_grant", func(issuer *oidctest.Issuer) { issuer.FailToken(http.StatusBadRequest, "invalid_grant") }, true},
 		{"401 invalid_grant", func(issuer *oidctest.Issuer) { issuer.FailToken(http.StatusUnauthorized, "invalid_grant") }, true},
+		// A 403 naming invalid_grant is a refusal, but not one that ends a grant (oauthrefusal.EndsGrant).
 		{"403 invalid_grant", func(issuer *oidctest.Issuer) { issuer.FailToken(http.StatusForbidden, "invalid_grant") }, false},
+		{"408 invalid_grant", func(issuer *oidctest.Issuer) { issuer.FailToken(http.StatusRequestTimeout, "invalid_grant") }, false},
 		{"500", func(issuer *oidctest.Issuer) { issuer.FailToken(http.StatusInternalServerError, "") }, false},
 		{"503", func(issuer *oidctest.Issuer) { issuer.FailToken(http.StatusServiceUnavailable, "") }, false},
 		{"429", func(issuer *oidctest.Issuer) { issuer.FailToken(http.StatusTooManyRequests, "") }, false},

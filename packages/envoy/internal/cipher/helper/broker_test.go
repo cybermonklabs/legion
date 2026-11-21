@@ -73,7 +73,9 @@ const failAlways = 1 << 30
 // POST /v1/oauth/token requires a DPoP proof of that key on every call and answers the device code
 // grant with loginOutcome ("issued" by default, or "denied"/"expired" when a test sets it before
 // Login, or "pending" to hold the login undecided until the test sets "issued"), minting a fresh
-// credential id on "issued", and the refresh grant with refreshOutcome ("" rotates the refresh
+// credential id on "issued". It answers each code at the status the real broker's OAuth library,
+// authelia.com/provider/oauth2, gives it: access_denied 403, the others 400. It answers the
+// refresh grant with refreshOutcome ("" rotates the refresh
 // token and moves the expiry, "invalid_grant" refuses it, "unavailable" answers 503,
 // "rate_limited" answers the broker's 429 invalid_request with Retry-After 1).
 type fakeBroker struct {
@@ -175,9 +177,9 @@ type fakeBroker struct {
 	enrollEmpty2xx     bool
 	deviceAuthEmpty2xx bool
 	// oauthErrorStatus, when set, is the status of every OAuth error the token endpoint answers, in
-	// place of its own 400 or 401: a broker, or a proxy before it, answering 5xx or 429 with a
-	// body that still names access_denied, expired_token or invalid_grant. devicePolls counts every
-	// device code grant the token endpoint receives, whatever it answers.
+	// place of its own: a broker, or a proxy before it, answering 5xx, 408 or 429 with a body that
+	// still names access_denied, expired_token or invalid_grant, or another refusal status.
+	// devicePolls counts every device code grant the token endpoint receives, whatever it answers.
 	oauthErrorStatus int
 	devicePolls      int
 }
@@ -458,7 +460,7 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 				oauthError(400, "authorization_pending")
 				return
 			case "denied":
-				oauthError(400, "access_denied")
+				oauthError(http.StatusForbidden, "access_denied")
 				return
 			case "expired":
 				oauthError(400, "expired_token")

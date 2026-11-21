@@ -154,12 +154,13 @@ func TestARefreshThatDoesNotReachTheBrokerKeepsTheLogin(t *testing.T) {
 	}
 }
 
-// TestARefreshTheBrokerCouldNotAnswerKeepsTheLoginWhateverItsBodyNames: the helper reads the
-// broker's invalid_grant as the login's end only from a 400 or 401 answer. A 5xx whose body names
-// invalid_grant is a broker that could not answer, so the refresh is retried and the credential
-// and the machine file stay as they were.
-func TestARefreshTheBrokerCouldNotAnswerKeepsTheLoginWhateverItsBodyNames(t *testing.T) {
-	for _, status := range []int{http.StatusInternalServerError, http.StatusServiceUnavailable} {
+// TestARefreshKeepsTheLoginUnlessTheBrokerEndsItsGrant: the helper reads the broker's invalid_grant
+// as the login's end only from a 400 or 401 answer (oauthrefusal.EndsGrant), narrower than the
+// refusal it reads a login poll's code from. A 403 or a 408 naming invalid_grant, and a 5xx, a
+// broker that could not answer, end nothing: the refresh is retried and the credential and the
+// machine file stay as they were.
+func TestARefreshKeepsTheLoginUnlessTheBrokerEndsItsGrant(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusRequestTimeout, http.StatusInternalServerError, http.StatusServiceUnavailable} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			f := newFakeBroker(t)
 			b := loggedInBroker(t, f, "ada@example.com")

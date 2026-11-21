@@ -18,12 +18,12 @@ type ClientCheck string
 
 const (
 	// ClientCheckReady: the issuer knows the client and took its secret. It answered the check's
-	// token request 400 or 401 invalid_grant, which is a refusal of the code alone (RFC 6749
-	// section 5.2).
+	// token request invalid_grant at a refusal's status (oauthrefusal.Refusal), which is a refusal
+	// of the code alone (RFC 6749 section 5.2).
 	ClientCheckReady ClientCheck = "ready"
-	// ClientCheckRejected: the issuer refused the client itself, 400 or 401 invalid_client - the
-	// client was deleted, its id is not this issuer's, or its secret has been rotated out from
-	// under the caller. No person can sign in until it is fixed.
+	// ClientCheckRejected: the issuer refused the client itself, invalid_client at a refusal's
+	// status - the client was deleted, its id is not this issuer's, or its secret has been rotated
+	// out from under the caller. No person can sign in until it is fixed.
 	ClientCheckRejected ClientCheck = "client_rejected"
 	// ClientCheckIssuerUnreachable: the issuer could not be asked, or answered something the
 	// check cannot read as either of the two above. It says nothing about the client.
@@ -37,8 +37,8 @@ const (
 // An issuer that knows the client and takes its secret gets as far as the code and refuses that,
 // invalid_grant, which is ClientCheckReady; one that refuses the client itself answers
 // invalid_client, which is ClientCheckRejected. Either is read only from an answer whose status is
-// a refusal (oauthrefusal.Refusal): a 5xx or a 429 is an issuer that cannot answer now, whatever
-// error its body names. Any other answer, and a discovery or transport failure, is
+// a refusal (oauthrefusal.Refusal): a 5xx, a 408 or a 429 is an issuer that cannot answer now,
+// whatever error its body names. Any other answer, and a discovery or transport failure, is
 // ClientCheckIssuerUnreachable: the check has no verdict on the client, and must not report one.
 //
 // The request names no redirect_uri, since no code of this client's exists for one to match, and

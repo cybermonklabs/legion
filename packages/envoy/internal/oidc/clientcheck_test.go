@@ -85,11 +85,11 @@ func TestCheckClientReadsTheIssuersAnswerAboutTheClient(t *testing.T) {
 }
 
 // TestCheckClientReadsTheOAuthErrorOnlyFromARefusal pins that a check reads the OAuth error of the
-// token endpoint's answer only under the statuses an issuer refuses a grant or a client with, 400
-// and 401 (RFC 6749 section 5.2), as Refresh does: invalid_grant there is ready, and
-// invalid_client client_rejected. A 429 or a 5xx is an issuer that cannot answer now, whatever its
-// body names, so the check is issuer_unreachable, with an error naming the status, and says nothing
-// about the client.
+// token endpoint's answer only under a status that is a refusal (oauthrefusal.Refusal: every 4xx
+// but 408 and 429, RFC 6749 section 5.2 giving 400 "unless specified otherwise"): invalid_grant
+// there is ready, and invalid_client client_rejected. A 408, a 429 or a 5xx is an issuer that
+// cannot answer now, whatever its body names, so the check is issuer_unreachable, with an error
+// naming the status, and says nothing about the client.
 func TestCheckClientReadsTheOAuthErrorOnlyFromARefusal(t *testing.T) {
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), checkClientID, checkClientSecret)
@@ -102,6 +102,11 @@ func TestCheckClientReadsTheOAuthErrorOnlyFromARefusal(t *testing.T) {
 		{http.StatusUnauthorized, "invalid_grant", ClientCheckReady},
 		{http.StatusBadRequest, "invalid_client", ClientCheckRejected},
 		{http.StatusUnauthorized, "invalid_client", ClientCheckRejected},
+		{http.StatusForbidden, "invalid_grant", ClientCheckReady},
+		{http.StatusForbidden, "invalid_client", ClientCheckRejected},
+		{http.StatusNotFound, "invalid_client", ClientCheckRejected},
+		{http.StatusRequestTimeout, "invalid_grant", ClientCheckIssuerUnreachable},
+		{http.StatusRequestTimeout, "invalid_client", ClientCheckIssuerUnreachable},
 		{http.StatusTooManyRequests, "invalid_grant", ClientCheckIssuerUnreachable},
 		{http.StatusTooManyRequests, "invalid_client", ClientCheckIssuerUnreachable},
 		{http.StatusInternalServerError, "invalid_grant", ClientCheckIssuerUnreachable},

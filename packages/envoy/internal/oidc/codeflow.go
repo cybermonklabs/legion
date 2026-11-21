@@ -249,8 +249,8 @@ func (f *CodeFlow) Exchange(ctx context.Context, redirectURL, code, nonce string
 // ID token, and refuse one whose nonce is not the sign-in's with ErrNonce. An empty nonce is
 // refused as well, since it binds the token to no sign-in. A token endpoint that refuses the code
 // or the client, an answer naming an OAuth error at a status oauthrefusal.Refusal reads, fails the
-// exchange as that refusal; any other failure of the request, a 5xx or a 429 whatever error its
-// body names, or no answer at all, is an issuer that could not answer and matches
+// exchange as that refusal; any other failure of the request, a 5xx, a 408 or a 429 whatever error
+// its body names, or no answer at all, is an issuer that could not answer and matches
 // ErrIssuerUnavailable, as Refresh reads it.
 func (f *CodeFlow) exchange(ctx context.Context, redirectURL, code, nonce string, options ...oauth2.AuthCodeOption) (Session, error) {
 	issuer, err := f.discovery.discover(ctx)

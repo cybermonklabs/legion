@@ -409,8 +409,8 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 // else, the issuer's authorization code is single-use, and Exchange accepts only an ID token
 // carrying the nonce the cookie bound the sign-in to. An exchange that meets an issuer this
 // process has not discovered (another process started the sign-in), or a token endpoint that
-// cannot answer it (a 5xx or a 429, or no answer: oidc.ErrIssuerUnavailable), is answered 503
-// SIGNIN_UNAVAILABLE; an exchange the token endpoint refuses, and any other failure, 502.
+// cannot answer it (a 5xx, a 408 or a 429, or no answer: oidc.ErrIssuerUnavailable), is answered
+// 503 SIGNIN_UNAVAILABLE; an exchange the token endpoint refuses, and any other failure, 502.
 func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 	if r.ctx.SignIn == nil {
 		signInUnconfigured(w)

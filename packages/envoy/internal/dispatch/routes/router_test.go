@@ -477,10 +477,10 @@ func TestSignInAgainstAnUndiscoveredIssuerAnswers503(t *testing.T) {
 	}
 }
 
-// A callback whose code exchange the token endpoint does not refuse but cannot answer (a 5xx or a
-// 429, whatever error its body names, or no answer at all) answers 503 SIGNIN_UNAVAILABLE and no
-// session, as an exchange that meets an undiscovered issuer does. One the token endpoint refuses,
-// 400 invalid_grant, answers 502 as before.
+// A callback whose code exchange the token endpoint does not refuse but cannot answer (a 5xx, a 408
+// or a 429, whatever error its body names, or no answer at all) answers 503 SIGNIN_UNAVAILABLE and
+// no session, as an exchange that meets an undiscovered issuer does. One the token endpoint
+// refuses, a 400 or 403 naming invalid_grant, answers 502 as before.
 func TestSignInCallbackAnswersATokenEndpointThatCannotAnswer503(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -490,8 +490,10 @@ func TestSignInCallbackAnswersATokenEndpointThatCannotAnswer503(t *testing.T) {
 		{"503 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusServiceUnavailable, "") }, http.StatusServiceUnavailable},
 		{"503 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusServiceUnavailable, "invalid_grant") }, http.StatusServiceUnavailable},
 		{"429 invalid_client", func(i *oidctest.Issuer) { i.FailToken(http.StatusTooManyRequests, "invalid_client") }, http.StatusServiceUnavailable},
+		{"408 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusRequestTimeout, "invalid_grant") }, http.StatusServiceUnavailable},
 		{"no answer", func(i *oidctest.Issuer) { i.DropToken() }, http.StatusServiceUnavailable},
 		{"400 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusBadRequest, "invalid_grant") }, http.StatusBadGateway},
+		{"403 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusForbidden, "invalid_grant") }, http.StatusBadGateway},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			rig := newSignInRig(t, "")

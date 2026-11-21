@@ -38,7 +38,7 @@ const (
 	codeRedirectURIMismatch = "redirect_uri_mismatch"
 	codeInvalidGrant        = "invalid_grant"
 	// The issuer could not be asked or could not answer: its discovery document could not be read,
-	// or its token endpoint answered the code exchange with no refusal (a 5xx or a 429, or no
+	// or its token endpoint answered the code exchange with no refusal (a 5xx, a 408 or a 429, or no
 	// answer at all), both oidc.ErrIssuerUnavailable.
 	codeIssuerUnreachable = "issuer_unreachable"
 	// From the ID token's own verification (oidc.Reason's classes) and its nonce.

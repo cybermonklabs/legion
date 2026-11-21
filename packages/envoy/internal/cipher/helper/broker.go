@@ -595,7 +595,7 @@ func (b *Broker) installCredential(cred *machineCredential, issued *loginState) 
 // "denied"; expired_token, a device code the broker no longer knows (invalid_grant) and the
 // code's own lifetime passing record "expired", each error only from an answer whose status is a
 // refusal (oauthrefusal.Refusal). A poll that does not reach the broker, or that it answers with
-// anything else, a 5xx or a 429 naming one of those errors included, polls again.
+// anything else, a 5xx, a 408 or a 429 naming one of those errors included, polls again.
 func (b *Broker) pollLogin(key *ecdsa.PrivateKey, cfg *oauth2.Config, da *oauth2.DeviceAuthResponse, operator string) {
 	ctx := b.tokenContext(context.Background(), key)
 	settle := func(state string) { b.recordLogin(&loginState{Code: da.UserCode, State: state}) }

@@ -121,8 +121,9 @@ func TestSignInStatusReportsWhatHappenedOnThePage(t *testing.T) {
 // TestSignInStatusWritesAFailedSignInWithACodeFromTheClosedSet drives each failure the codes name through
 // the real callback and pins the word written for it. A failure none of them names writes
 // nothing at all rather than a word meaning "something else": the last named failure stands, at
-// the time it was written. The token endpoint's own code is written from its 400 or 401 answer;
-// a 5xx or a 429 is the provider unreachable (TestSignInCallbackAnswersATokenEndpointThatCannotAnswer503).
+// the time it was written. The token endpoint's own code is written from a 4xx answer other than
+// 408 and 429 (oauthrefusal.Refusal); a 5xx, a 408 or a 429 is the provider unreachable
+// (TestSignInCallbackAnswersATokenEndpointThatCannotAnswer503).
 func TestSignInStatusWritesAFailedSignInWithACodeFromTheClosedSet(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -147,6 +148,7 @@ func TestSignInStatusWritesAFailedSignInWithACodeFromTheClosedSet(t *testing.T) 
 		{name: "an ID token naming no email", claims: map[string]any{"sub": "sub-" + ada, "email_verified": true, "hd": domain}, want: ""},
 		{name: "an expired ID token", spoil: func(c map[string]any) { c["exp"] = time.Now().Add(-time.Hour).Unix() }, want: ""},
 		{name: "a 401 naming invalid_client", tokenStatus: http.StatusUnauthorized, tokenCode: "invalid_client", want: "invalid_client"},
+		{name: "a 403 naming invalid_client", tokenStatus: http.StatusForbidden, tokenCode: "invalid_client", want: "invalid_client"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newRig(t)
@@ -233,10 +235,11 @@ func (r *rig) signInCallback(t *testing.T, recordID string, claims map[string]an
 }
 
 // TestSignInCallbackAnswersATokenEndpointThatCannotAnswer503: a callback whose code exchange the
-// provider's token endpoint does not refuse but cannot answer (a 5xx or a 429, whatever error its
-// body names, or no answer at all) is the provider unreachable. The person is answered 503 "Sign-in
-// unavailable", no session is made, and the status writes issuer_unreachable. An exchange the
-// token endpoint refuses, 400 invalid_grant, is still refused 403 and written invalid_grant.
+// provider's token endpoint does not refuse but cannot answer (a 5xx, a 408 or a 429, whatever error
+// its body names, or no answer at all) is the provider unreachable. The person is answered 503
+// "Sign-in unavailable", no session is made, and the status writes issuer_unreachable. An exchange
+// the token endpoint refuses, a 400 or 403 naming invalid_grant, is still refused 403 and written
+// invalid_grant.
 func TestSignInCallbackAnswersATokenEndpointThatCannotAnswer503(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -249,8 +252,10 @@ func TestSignInCallbackAnswersATokenEndpointThatCannotAnswer503(t *testing.T) {
 		{"503 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusServiceUnavailable, "invalid_grant") }, http.StatusServiceUnavailable, "issuer_unreachable"},
 		{"500 redirect_uri_mismatch", func(i *oidctest.Issuer) { i.FailToken(http.StatusInternalServerError, "redirect_uri_mismatch") }, http.StatusServiceUnavailable, "issuer_unreachable"},
 		{"429 unauthorized_client", func(i *oidctest.Issuer) { i.FailToken(http.StatusTooManyRequests, "unauthorized_client") }, http.StatusServiceUnavailable, "issuer_unreachable"},
+		{"408 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusRequestTimeout, "invalid_grant") }, http.StatusServiceUnavailable, "issuer_unreachable"},
 		{"no answer", func(i *oidctest.Issuer) { i.DropToken() }, http.StatusServiceUnavailable, "issuer_unreachable"},
 		{"400 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusBadRequest, "invalid_grant") }, http.StatusForbidden, "invalid_grant"},
+		{"403 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusForbidden, "invalid_grant") }, http.StatusForbidden, "invalid_grant"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newRig(t)
