@@ -1117,12 +1117,13 @@ func cmdSelf(name string, args []string, stdout, stderr io.Writer) int {
 		writeVerbatim(stdout, raw)
 		return 0
 	}
-	// No operator prints as the empty text does, as it always has: nothing beside a clean address,
-	// and cipheraddr.WordsNotPrinted beside one that is not clean.
-	operator := c.baseURL.Words("")
+	// No operator prints as the empty field does, as it always has: nothing beside a clean address,
+	// and cipheraddr.WordsNotPrinted beside one that is not clean (WordsOf of the zero RemoteText).
+	var operatorField redact.RemoteText
 	if result.Operator != nil {
-		operator = c.baseURL.WordsOf(*result.Operator)
+		operatorField = *result.Operator
 	}
+	operator := c.baseURL.WordsOf(operatorField)
 	fmt.Fprintf(stdout, "enrollment_id: %s\nkind: %s\noperator: %s\nlease_expires_at: %s\nsource: %s\n",
 		idWordsOf(c.baseURL, result.EnrollmentID), c.baseURL.WordsOf(result.Kind), operator, result.LeaseExpiresAt.Format(time.RFC3339), c.source(ctx))
 	for _, g := range result.Grants {
@@ -1304,7 +1305,13 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was %s\n", shownID, src(), known)
 		return 1
 	default:
-		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is in unexpected state %s\n", shownID, src(), c.baseURL.Words(strconv.Quote(state.String())))
+		// The state prints as the rule reads it, quoted beside a clean address, and as
+		// cipheraddr.WordsNotPrinted beside one that is not (WordsOf).
+		shownState := c.baseURL.WordsOf(state)
+		if c.baseURL.Clean() {
+			shownState = strconv.Quote(shownState)
+		}
+		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is in unexpected state %s\n", shownID, src(), shownState)
 		return 1
 	}
 	if grantID == nil {

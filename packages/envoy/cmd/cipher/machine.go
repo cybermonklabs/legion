@@ -259,9 +259,11 @@ func machineRow(base cipheraddr.Address, m OperatorMachine) []string {
 	if m.Expired {
 		state = "expired"
 	}
-	approvedBy := base.Words("-")
-	if !m.ApprovedBy.IsEmpty() {
-		approvedBy = base.WordsOf(m.ApprovedBy)
+	// No approver prints "-" beside a clean address and cipheraddr.WordsNotPrinted beside one that
+	// is not, as the empty field prints there (WordsOf).
+	approvedBy := base.WordsOf(m.ApprovedBy)
+	if m.ApprovedBy.IsEmpty() && base.Clean() {
+		approvedBy = "-"
 	}
 	return []string{idWordsOf(base, m.CredentialID), base.WordsOf(m.Host), approvedBy,
 		m.IssuedAt.UTC().Format(time.RFC3339), m.ExpiresAt.UTC().Format(time.RFC3339), state}
