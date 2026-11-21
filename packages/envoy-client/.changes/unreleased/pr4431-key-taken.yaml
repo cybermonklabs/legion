@@ -1,0 +1,3 @@
+kind: Added
+body: |-
+  `send` and `publish` read the listener's answer to a repeat of an idempotency key another sender's message already holds, which carries that message's `event_id`, times, topic and dedupe key with `duplicate: true` and none of its text, as a `KeyTakenResult`: `{ keyTaken: { eventId, topic, issuedAt }, delivered: false }`, rather than throwing on an envelope it cannot parse. `keyTakenText` and `keyTakenDetails` give the line and the fields both hosts show for it. A delivered `SendResult` or `PublishResult` never carries `keyTaken`.

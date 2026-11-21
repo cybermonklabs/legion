@@ -255,7 +255,9 @@ type SendInput struct {
 // reports that the stream already held this message, so it stored nothing new; the publish still
 // reached the agent's subject. What recognises that repeat, and for how long, is stated on
 // DELIVERY_DUPLICATE_WINDOW_MS in @legion/contracts (contracts.DeliveryDuplicateWindow here). The
-// envelope id then names an envelope JetStream discarded.
+// envelope id then names the copy the stream holds where the listener is of this release, and the
+// envelope it built for the repeat, which JetStream discarded, where it is older; the answer does
+// not say which, so a caller reads no envelope id from a duplicate.
 //
 // State is what the target was when the listener stored the message, SendStateConnected or
 // SendStateStopped. A listener that predates the field answers none, which reads as a connected

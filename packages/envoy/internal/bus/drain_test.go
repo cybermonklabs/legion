@@ -126,7 +126,8 @@ func TestDrainLetsARoleForwardInItsHandlerFinish(t *testing.T) {
 			forwards <- err
 			return
 		}
-		forwards <- forward.Wait()
+		_, err = forward.Wait()
+		forwards <- err
 	}, "drain-test"); err != nil {
 		t.Fatalf("role subscribe: %v", err)
 	}

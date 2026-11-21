@@ -174,7 +174,9 @@ func (s *server) sendResolvedDelivery(
 	// stored for one it knows that is not running. A listener that predates the field answers
 	// none, which reads as connected. A kept send names no state and is sent (above).
 	queued := send.State == dispatchenvoy.SendStateStopped
-	// A duplicate names an envelope JetStream discarded, so the attempt records none.
+	// A duplicate stored nothing new, and its envelope id names an earlier attempt's copy on a
+	// listener of this release but the discarded envelope on an older one, which the answer does
+	// not tell apart, so the attempt records none (dispatchenvoy.SendResult).
 	if send.Duplicate {
 		return sendOutcome{duplicate: true, queued: queued}
 	}

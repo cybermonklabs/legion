@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  `envoy_send` and `envoy_publish` answer a repeat of an idempotency key another sender's message already holds as not delivered, naming that message's event id (`delivered: false`, `key_taken: true`), where a listener that answers such a repeat with that message's ids alone made the tool fail. The phase hook's architect notice reads such an answer as not delivered too, and sends the notice again under a new key.

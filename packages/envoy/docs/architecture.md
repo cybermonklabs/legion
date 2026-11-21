@@ -180,6 +180,8 @@ attempt:
 | The publish is refused as too large (`bus.ErrTooLarge`) | `413` naming the size against the server's max payload |
 | The publish is refused for its subject or key (`bus.ErrRefused`) | `400` naming the refusal, with no `Retry-After` |
 | The stream refuses the publish because it holds its byte limit (`bus.ErrStreamFull`) | `503 {"error":"envoy: the message bus refused the message because its stream is full: <reason>"}` with `Retry-After: 1`, recorded `stream_full` |
+| The stream answers the publish as a duplicate of another request's copy (a repeat under the same key), and the listener reads that copy back at the sequence the verdict named | `200` as the rows above, with `duplicate: true` and the stored copy's envelope (its `event_id`, `issued_at` and body), never the repeat's own new one (`publishHeld`, `cmd/listener/stored_copy.go`); whole to the request's own copy and to the copy's own sender (the same `source` and `source_session`, and, where the copy names a session, the session a broker token proves), and to anyone else only the copy's `event_id`, times, `topic`, `dedupe_key` and `expects_reply` (`requestSender.answer`); the record line names the copy's `event_id` and the request's own sender; a verdict on the bus's own resend that names this request's first send is answered as a new copy, with no `duplicate`; a role send's repeat from a session that has since taken the role, which forwards nothing, is answered with the forward this listener's record names for the earlier holder for the same request (`settledBeforeForward`): the record is the listener's own and lasts 10 minutes; a repeat after that or on another listener answers its own new envelope, as at main |
+| The stream answers the publish as a duplicate, and the copy cannot be read back: the read fails or does not answer, the verdict names sequence 0, or that sequence no longer holds a copy with the request's dedupe key; or the stream refuses the publish while an earlier one under the same message id is in process (`bus.ErrDuplicateInProcess`) | `503 {"error":"envoy: the stream already knows this message's id, and no stored copy of it was read: <reason>"}` with `Retry-After: 1` and no envelope, recorded `stored_copy_unreadable`, and with `"code":"maybe_stored"` where an earlier send of the same publish went unanswered (`bus.ErrUnacknowledged`); the same request again gets the copy once it can be read |
 | The server denies the publish under this listener's own grant (`bus.ErrPublishDenied`) | `403 {"error":"envoy: the message bus denied the publish under this listener's own permissions: <reason>"}` with no `Retry-After`, recorded `publish_denied` (below) |
 | Any other publish failure | `503` with the same prefix and `Retry-After: 1`, carrying the bus's own reason |
 | Before the store read, the sending agent session's count under the operator's sender limit holds no message (below) | `429` with `Retry-After`, recorded `sender_rate_limited`, with nothing read, reported or stored |
@@ -314,8 +316,10 @@ reach its subscriber twice.
 Each inbound send and publish is recorded in one line, INFO when accepted and WARN when refused:
 `listener send` (`target_session`) and `listener publish` (`topic`), both carrying `event_id`,
 `source`, `source_session`, `payload_summary`, `outcome` and `status`, and `holder` as well when a
-role topic resolved one. `outcome` is one of `accepted`, `invalid_request`, `too_large`,
-`bus_unavailable`, `stream_full` and `sender_rate_limited`, plus `no_live_session` for send,
+role topic resolved one. The `event_id` of an accepted repeat is the stored copy's, the one its
+answer names. `outcome` is one of `accepted`, `invalid_request`, `too_large`,
+`bus_unavailable`, `stream_full`, `stored_copy_unreadable` and `sender_rate_limited`, plus
+`no_live_session` for send,
 `session_stopped` for a
 `connected_only` send whose target is stopped, `capability_refused` for send and a role send,
 `publish_denied` for send and publish alike, since a publish on either transport can be denied,

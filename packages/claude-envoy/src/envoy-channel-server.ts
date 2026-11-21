@@ -63,6 +63,8 @@ import {
 import {
   EnvoyToolOperation,
   envoyToolSpecs,
+  keyTakenDetails,
+  keyTakenText,
   publishConfirmationText,
   publishResultDetails,
   sendConfirmationText,
@@ -2296,6 +2298,9 @@ export async function executeEnvoyTool(
         ...(args.idempotency_key === undefined ? {} : { idempotencyKey: args.idempotency_key }),
         ...toMessageMetadata(args),
       })
+      if (result.keyTaken !== undefined) {
+        return { message: keyTakenText(result), ...keyTakenDetails(result) }
+      }
       return {
         message: sendConfirmationText(result),
         event_id: result.envelope.event_id,
@@ -2320,6 +2325,9 @@ export async function executeEnvoyTool(
       // plugin uses (`publishConfirmationText`). This server always names its own session as the
       // source, so the listener sends that session a message for a kept copy no session took,
       // unless it drops the copy more than an hour late, and the line says so.
+      if (result.keyTaken !== undefined) {
+        return { message: keyTakenText(result), ...keyTakenDetails(result) }
+      }
       return {
         message: publishConfirmationText(result, { senderNamed: true }),
         event_id: result.envelope.event_id,

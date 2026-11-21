@@ -122,7 +122,14 @@ type PublishRequest struct {
 }
 
 // SendResponse is the answer to a targeted send. Duplicate reports that JetStream already held
-// this message, so the stream stored nothing new; the publish still reached the agent's subject.
+// another request's copy of this message, so the stream stored nothing new; the publish still
+// reached the agent's subject. The envelope is then the copy the stream holds, read back at the
+// sequence its duplicate verdict named (the listener's publishHeld): its event_id, its issued_at
+// and its body are that copy's, not those of the envelope the listener built for this request,
+// which no stored message carries. A verdict that names this request's own copy, which a resend
+// after a closed connection can, answers that copy with no Duplicate. A copy that cannot be read
+// is the 503 with Retry-After: 1 that the listener writes under its storedCopyUnreadablePrefix,
+// never an envelope the stream does not hold.
 // What recognises that repeat, and for how long, is stated on DELIVERY_DUPLICATE_WINDOW_MS in
 // @legion/contracts (contracts.DeliveryDuplicateWindow in the listener's module). It can only be
 // true for a send whose dedupe key names the upstream event
@@ -134,10 +141,11 @@ type PublishRequest struct {
 // listener's answer reads as.
 type SendResponse struct {
 	Envelope
-	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke
-	// (the listener's expectsReplyAnswer). It shadows the embedded envelope's own field: of two
-	// fields sharing one JSON name encoding/json writes the shallower, so these bytes are what
-	// the answer carries and every SendResponse the listener builds fills them.
+	// ExpectsReply is this answer's expects_reply: the answered envelope's, written in the
+	// dialect the request spoke where the two agree (the listener's expectsReplyAnswer). It
+	// shadows the embedded envelope's own field: of two fields sharing one JSON name
+	// encoding/json writes the shallower, so these bytes are what the answer carries and every
+	// SendResponse the listener builds fills them.
 	ExpectsReply json.RawMessage `json:"expects_reply,omitempty"`
 	Recipient    string          `json:"recipient"`
 	// RecipientState is the state the recipient's record puts it in at the moment the send was
@@ -167,16 +175,23 @@ type SendResponse struct {
 // kept copy's hour in Unix milliseconds, named as the publish route's kept answer names them
 // (PublishResponse). The message reaches the session that holds the role then, live, through the
 // lane's walk. It carries no recipient_state and no state: the message was not stored for the
-// target, so nothing about the target was read.
+// target, so nothing about the target was read. The envelope is the copy the lane holds, as
+// PublishResponse's kept answer gives it: whole for its own sender, and its ids, times and
+// expects_reply alone with Duplicate for a copy another sender kept under the same key.
 type KeptSendResponse struct {
 	Envelope
-	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke,
-	// shadowing the embedded envelope's own field exactly as SendResponse.ExpectsReply does.
+	// ExpectsReply is this answer's expects_reply: the kept copy's, written in the dialect the
+	// request spoke where the two agree, shadowing the embedded envelope's own field exactly as
+	// SendResponse.ExpectsReply does.
 	ExpectsReply json.RawMessage `json:"expects_reply,omitempty"`
 	Recipient    string          `json:"recipient"`
 	Holder       string          `json:"holder,omitempty"`
 	Kept         bool            `json:"kept"`
 	KeptUntil    int64           `json:"kept_until"`
+	// Duplicate reports that the kept copy is another request's, as PublishResponse.Duplicate
+	// reports it for the publish route's kept answer. Absent means false, which is what an older
+	// listener's answer reads as.
+	Duplicate bool `json:"duplicate,omitempty"`
 }
 
 // NoLiveSessionRefusal is the 404 of a send, or of a registry lookup, for a session the listener
@@ -203,11 +218,12 @@ type NoLiveSessionRefusal struct {
 // holds the role and the message waits on the role's kept lane until KeptUntil for the next
 // session that holds it live; 404, nothing was kept. Each field is left out when it is empty, so
 // a role send carries no recipient count and a publish to a topic the stream captures carries the
-// envelope and its counts alone.
+// envelope and its counts alone, and Duplicate where the stream already held the message.
 type PublishResponse struct {
 	Envelope
-	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke,
-	// shadowing the embedded envelope's own field exactly as SendResponse.ExpectsReply does.
+	// ExpectsReply is this answer's expects_reply: the answered envelope's, written in the
+	// dialect the request spoke where the two agree, shadowing the embedded envelope's own field
+	// exactly as SendResponse.ExpectsReply does.
 	ExpectsReply json.RawMessage `json:"expects_reply,omitempty"`
 	Holder       string          `json:"holder,omitempty"`
 	HolderState  SessionState    `json:"holder_state,omitempty"`
@@ -234,6 +250,17 @@ type PublishResponse struct {
 	// naming its holder. An older client reads neither field.
 	Recipients          *int `json:"recipients,omitempty"`
 	RecipientsConnected *int `json:"recipients_connected,omitempty"`
+	// Duplicate reports that the stream already held another request's copy of this message,
+	// under this one's message id, so it stored nothing new and the envelope is the copy it holds
+	// (the listener's publishHeld), as a send's Duplicate reports it (SendResponse). Only a
+	// publish whose dedupe key names its event gets a message id
+	// (contracts.DedupeKeyNamesTheUpstreamEvent in the listener's module), so only such a repeat
+	// gets it: the shared transport's, under the idempotency_key it mints once per message, among
+	// them. A role send's 200 carries it for a forward the stream already held for its holder (the
+	// listener's roleSend.deliveredHeld), whatever the key's form, since every forward has a
+	// message id, and its 202 for a repeat whose kept copy is another request's (roleSend.kept).
+	// Absent means false, which is what an older listener's answer reads as.
+	Duplicate bool `json:"duplicate,omitempty"`
 }
 
 // SessionInfo is the joined view of a session's interest record (topics, dir, machine) and its

@@ -652,16 +652,20 @@ puts it back. Lowering the cap
 (`nats stream edit ENVOY_NOTIFICATIONS --max-consumers=<n>`, which also needs nats-server v2.12.5
 or later) needs every program's binary carrying the lower cap first, for the same reason.
 
-On a clustered NATS (nats-server v2.10.29 among them), the server keeps the id of a message the
-full stream refused on the stream's leader for 72 hours, a purge notwithstanding, and
-acknowledges every retry under that id as a duplicate it does not hold. Envoy then publishes the
-same message once more without its id, so the retry is stored as soon as the stream has room,
-with no operator step. While the stream is still full, that publish is refused too, and the
-retry fails with `stream ENVOY_NOTIFICATIONS acknowledged a duplicate of a message it does not
-hold, and its publish without its id failed: stream ENVOY_NOTIFICATIONS is full: nats: maximum
-bytes exceeded`, which is retried as a full stream is. The stream drops no repeat of a message
-stored without its id, so a later publish under the same id stores another copy, which the
-stream's consumers see.
+nats-server v2.15.1 keeps no id of a message the full stream refused, so a retry under that id is
+refused the same way while the stream is full and stored once it has room, with no operator step.
+
+A send, a topic publish or a role send that the stream answers as a duplicate of another
+request's copy, a repeat under the same idempotency key, is answered `200` with `duplicate: true`
+and that stored copy, its `event_id` included, never the envelope the listener built for the
+repeat. When the listener cannot read that copy back, the answer is `503` with `Retry-After: 1`
+and the body `envoy: the stream already knows this message's id, and no stored copy of it was
+read: …`, and the same request again gets the copy once it can be read. The stored copy is
+answered whole to its own request and to its own sender, the same `source` and `source_session`
+and, where the copy names a session, the session a secrets-broker token proves; anyone else
+repeating the key learns only that it is taken: the copy's `event_id`, its times, its topic, its
+dedupe key and the reply it asks for, and nothing the other sender wrote. Envoy's clients report
+that answer as not delivered, naming the copy's `event_id`.
 
 ### The sender limit
 

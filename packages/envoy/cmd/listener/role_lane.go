@@ -146,7 +146,10 @@ func (f *roleForwarder) publish(sessionID string) {
 			f.finish(forward, err)
 			continue
 		}
-		go func() { f.finish(forward, wait()) }()
+		go func() {
+			_, err := wait()
+			f.finish(forward, err)
+		}()
 	}
 }
 
@@ -201,8 +204,8 @@ func (f *roleForwarder) wait(ctx context.Context) bool {
 // consumer, with acknowledgement and redelivery (roleForwardCopyDelivery). msgID is the forward's
 // Nats-Msg-Id when it is not empty, which is what keeps the stream to one copy per message and
 // holder however many attempts a send makes (roleForward.msgID).
-func startRoleForward(client *bus.Client) func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
-	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+func startRoleForward(client *bus.Client) func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
+	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 		forward, err := client.StartRequestStoredTo(subject, item, msgID, timeout)
 		if err != nil {
 			return nil, err

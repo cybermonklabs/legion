@@ -3326,15 +3326,16 @@ func TestSendHandler_ReportsAJetStreamDuplicate(t *testing.T) {
 	}
 
 	const dispatchSend = `{"target_session":"ses_target","source":"dispatch","message":"ship it","idempotency_key":"message-dup:steer"}`
-	if first := send(t, dispatchSend); first.Duplicate {
+	first := send(t, dispatchSend)
+	if first.Duplicate {
 		t.Fatalf("first send reported a duplicate; the stream held nothing")
 	}
 	second := send(t, dispatchSend)
 	if !second.Duplicate {
 		t.Fatalf("a repeat of a landed idempotency key must answer duplicate: %+v", second)
 	}
-	if second.EventID == "" {
-		t.Fatalf("a duplicate still names the envelope this request minted: %+v", second)
+	if second.EventID != first.EventID {
+		t.Fatalf("a duplicate names event %s, want the copy the stream holds, the first send's %s: %+v", second.EventID, first.EventID, second)
 	}
 
 	// The control: a different key is not a duplicate, so the flag is not simply what every

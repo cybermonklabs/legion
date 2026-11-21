@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { chmodSync, writeFileSync } from "node:fs"
 import { delimiter, join } from "node:path"
+import { EnvelopeSchema } from "@legion/contracts"
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
 import {
   createEnvoyClient,
@@ -103,6 +104,58 @@ test("sends Envoy messages through the shared transport", async () => {
     confirmed: true,
     state: "connected",
   })
+})
+
+// The listener answers a repeat of another sender's key with that message's ids and times alone,
+// its text fields empty: both tools report it as not delivered, naming that message's event id.
+// The control is the envelope schema every answer was read by before, which throws on it.
+test("a send or a publish whose key another sender's message holds is not delivered, and says so", async () => {
+  const taken = {
+    event_id: "evt-alice",
+    source: "",
+    source_event_id: "",
+    topic: "notifications.agent.ses_receiver",
+    dedupe_key: "agent.ses_receiver.key",
+    issued_at: 1,
+    payload_summary: "",
+    trace_id: "",
+    recipient: "ses_receiver",
+    recipient_state: "live",
+    state: "connected",
+    duplicate: true,
+  }
+  expect(() => EnvelopeSchema.parse(taken)).toThrow()
+  const client = createEnvoyClient({
+    baseUrl: "http://envoy.test",
+    fetch: async () => Response.json(taken),
+  })
+  const runtime: ChannelToolRuntime = {
+    identity,
+    client,
+    session: sessionWith([]),
+    clientInstanceID: INSTANCE,
+  }
+  const notDelivered = {
+    message:
+      "not delivered: another sender's message (evt-alice) already holds this idempotency_key, so Envoy stored nothing for you; send it again under a new idempotency_key",
+    event_id: "evt-alice",
+    topic: "notifications.agent.ses_receiver",
+    delivered: false,
+    key_taken: true,
+  }
+
+  expect(
+    await executeEnvoyTool(runtime, "envoy_send", {
+      session_id: "ses_receiver",
+      message: "bob's words",
+    }),
+  ).toEqual(notDelivered)
+  expect(
+    await executeEnvoyTool(runtime, "envoy_publish", {
+      topic: "notifications.team.x",
+      message: "bob's words",
+    }),
+  ).toEqual(notDelivered)
 })
 
 // The list is what the model reads before it decides a peer is dead: a session past its live

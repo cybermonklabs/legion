@@ -31,6 +31,7 @@ import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
   canonicalTopic,
+  EnvelopeSchema,
   type Envelope,
   legacyDispatchIssueSubject,
   type SessionAnswer,
@@ -24168,6 +24169,52 @@ describe("the send and publish answers", () => {
           event_id: "evt_text",
           topic: "notifications.team.test",
           ...published.counts,
+        });
+      } finally {
+        await session.stop();
+      }
+    });
+  }
+
+  // The listener answers a repeat of another sender's key with that message's ids and times
+  // alone, its text fields empty: both tools report it as not delivered, naming that message's
+  // event id. The control is the envelope schema every answer was read by before, which throws
+  // on it.
+  for (const tool of ["envoy_send", "envoy_publish"] as const) {
+    test(`${tool} reports a key another sender's message holds as not delivered`, async () => {
+      const taken = {
+        event_id: "evt_alice",
+        source: "",
+        source_event_id: "",
+        topic: "notifications.team.test",
+        dedupe_key: "publish.key",
+        issued_at: 1,
+        payload_summary: "",
+        trace_id: "",
+        recipient: "ses_target",
+        duplicate: true,
+      };
+      expect(() => EnvelopeSchema.parse(taken)).toThrow();
+      const session = await bootTool(`answers-key-taken-${tool}`, taken);
+
+      try {
+        const result = await session.fixture.tools
+          .find((candidate) => candidate.name === tool)
+          ?.execute(
+            "",
+            tool === "envoy_send"
+              ? { session_id: "ses_target", message: "bob's words" }
+              : { topic: "notifications.team.test", message: "bob's words" }
+          );
+
+        expect(result?.content[0]?.text).toBe(
+          "not delivered: another sender's message (evt_alice) already holds this idempotency_key, so Envoy stored nothing for you; send it again under a new idempotency_key"
+        );
+        expect(result?.details).toStrictEqual({
+          event_id: "evt_alice",
+          topic: "notifications.team.test",
+          delivered: false,
+          key_taken: true,
         });
       } finally {
         await session.stop();
