@@ -1345,15 +1345,17 @@ func wakesWaiting(w *workflowRuntime) int {
 
 // park waits until the refresher is stopped in the hook with no wake waiting: every job it was
 // asked for has ended. The wake it sends runs no job (it only arms the second job's clock), so
-// the refresher begins a turn even when nothing else wakes it. A test that ends before release
-// still lets the refresher go, ahead of the rig's own cleanup, which waits for it to stop.
+// the refresher begins a turn even when nothing else wakes it. It sends that wake under the lock
+// that arms the hold, so the hook, which reads the wakes under the same lock, never parks before
+// the wake is waiting, and the refresher takes it before it parks. A test that ends before
+// release still lets the refresher go, ahead of the rig's own cleanup, which waits for it to stop.
 func (h *heldRefresher) park(t *testing.T, w *workflowRuntime) {
 	t.Helper()
 	t.Cleanup(h.open)
 	h.mu.Lock()
 	h.armed = true
-	h.mu.Unlock()
 	wake(w.rereadWake)
+	h.mu.Unlock()
 	testwait.Eventually(t, "the refresher stopped with no job to run", func() bool {
 		h.mu.Lock()
 		defer h.mu.Unlock()
