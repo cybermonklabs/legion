@@ -79,7 +79,7 @@ const TOKEN_SCOPES: readonly TokenScope[] = [
   },
   {
     allows:
-      "Answers approvals for you, approves the credentials agents ask you for, and changes who may see your projects.",
+      "Reviews documents, answers approvals and keeps decisions for you, approves the credentials agents ask you for, and changes who may see your projects.",
     id: "approve",
     label: "Approve and control credentials",
   },

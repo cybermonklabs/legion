@@ -24,11 +24,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// typeMigrations are the files that write the type nodes, in the order the runner applies them:
-// the seed, then each migration that has changed a type since. The test runs them all a second
-// time, in that order and through the same path the migration runner runs each, to prove a second
-// run leaves the same nodes. The seed alone would not do: run again, it puts back the version and
-// the attributes it was written at, which every later type migration has moved on from.
+// typeMigrations are the type migrations written before the store's backfill, in the order the
+// runner applies them: the seed, then each migration that changed a type before it. The test runs
+// them a second time, in that order and through the same path the migration runner runs each, to
+// prove a second run leaves the same nodes. The seed alone would not do: run again, it puts back
+// the version and the attributes it was written at, which every later type migration has moved on
+// from. A type migration written after the backfill is not listed here and runs once, as the
+// runner applies every file: it writes graph_tuples above the census limit, so it may write only
+// literal `insert … values` rows under the migration census's bounded-write rule, and the seed
+// tuples it writes at source_event 0 fall under no unique key, so a second run would append them
+// again.
 var typeMigrations = []string{
 	"../../internal/dispatch/store/migrations/20261109051232_graph_supertags.up.sql",
 	"../../internal/dispatch/store/migrations/20261113230000_graph_supertags_check_ci_check.up.sql",
@@ -415,12 +420,18 @@ func (d *schemaDrift) report(t *testing.T) {
 	t.Errorf("pmdoc/schema/blocks.json and the store's type nodes disagree on %s%s. "+
 		"A change to pmdoc/schema/blocks.json needs a store migration of its own, like %s: "+
 		"it writes the node of each type or attribute the change adds or alters, with its tuples, and moves every block type's supertag node to the new version. "+
-		"Write one for this change and add it to typeMigrations in this file.",
+		"Write one for this change. It runs once, as the runner applies every file, and joins no second run in this file: "+
+		"written after the store's backfill, it writes under the migration census's bounded-write rule (typeMigrations).",
 		what, versions, typeMigrationExample)
 }
 
-// requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes runs every type migration again, in
-// order, and holds every node row and every tuple to being the one the first run left.
+// requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes runs every type migration written before
+// the store's backfill again, in order, and holds every node row and every tuple to being the one
+// the first run left. A type migration written after the backfill runs once: it writes only literal
+// `insert … values` rows under the migration census's bounded-write rule, and the seed tuples it
+// writes at source_event 0 fall under no unique key, so it cannot run twice unchanged, and the
+// runner applies each file once anyway. Only typeMigrations runs here, and a later change adds no
+// migration to it.
 func requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	before, beforeTuples := schemaRows(t, ctx, pool)

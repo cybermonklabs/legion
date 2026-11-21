@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -144,6 +145,95 @@ func TestTheSizingPrintsNoDateWhereNothingIsOwed(t *testing.T) {
 	} {
 		if !strings.Contains(printed, want) {
 			t.Errorf("the sizing of an empty database prints no line\n\t%s\ngot\n%s", want, printed)
+		}
+	}
+}
+
+// The sizing refuses nothing on size. Once the store is backfilled graph_tuples stays past the
+// limit, so the gate is the migration census's bounded-write rule: a pending migration writes rows
+// of a table above the limit only as an insert of at most pgmigrate.BoundedWriteRows literal rows
+// or an update of at most that many rows by their primary key. A sizing whose graph_tuples is
+// inside the limit now and projected past it within a year, and whose document_blocks, which this
+// branch's migrations alter, is above it already, names that rule beside each of the two and beside
+// neither graph_nodes nor comments, which stay inside; it keeps each table's and each year's
+// verdict, still ends `census: sizing ok`, and refuses nothing in the store census it is part of,
+// whether that census read the store or found none.
+func TestASizingPastTheLimitNamesTheBoundedWriteRuleAndRefusesNothing(t *testing.T) {
+	limit := pgmigrate.CensusTableLimit
+	sizing := &SizingReport{
+		Limit: limit,
+		Tables: []TableSize{
+			{Name: "graph_nodes", Rows: 500_000, Bytes: limit / 8, Held: true},
+			{Name: "graph_tuples", Rows: 700_000, Bytes: limit / 2, Held: true},
+			{Name: "comments", Altered: true, Rows: 20_000, Bytes: limit / 16, Held: true},
+			{Name: "document_blocks", Altered: true, Rows: 4_000_000, Bytes: 2 * limit, Held: true},
+		},
+		Growth: []StoreTableGrowth{
+			{Name: "graph_nodes", Bytes: limit / 8, Rows: 500_000, RowsADay: 100, BytesARow: measuredBytesARow,
+				BytesARowSource: "measured from this database", YearBytes: limit/8 + 100*sizingYearDays*measuredBytesARow},
+			{Name: "graph_tuples", Bytes: limit / 2, Rows: 700_000, RowsADay: 4_000, BytesARow: measuredBytesARow,
+				BytesARowSource: "measured from this database", YearBytes: limit/2 + 4_000*sizingYearDays*measuredBytesARow, Past: true},
+		},
+	}
+	if tuples := sizing.Growth[1]; tuples.YearBytes < limit || sizing.Growth[0].YearBytes >= limit {
+		t.Fatalf("the figures put graph_tuples at %d bytes in a year and graph_nodes at %d against the limit of %d; want graph_tuples past it and graph_nodes inside",
+			tuples.YearBytes, sizing.Growth[0].YearBytes, limit)
+	}
+	var printed bytes.Buffer
+	sizing.Write(&printed)
+	lines := strings.Split(strings.TrimSuffix(printed.String(), "\n"), "\n")
+
+	bound := pgmigrate.Thousands(pgmigrate.BoundedWriteRows)
+	rule := func(table, now, year string) string {
+		return fmt.Sprintf("census: sizing bounded-writes table=%s now=%s year=%s: a pending migration that writes rows of %s"+
+			" may write them only with bounded writes once it is above the limit (pgmigrate's census: an insert of at most %s"+
+			" literal rows, or an update of at most %s rows by their primary key)", table, now, year, table, bound, bound)
+	}
+	want := []string{rule("graph_tuples", "inside", "past"), rule("document_blocks", "at-or-above", "unprojected")}
+	var named []string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "census: sizing bounded-writes ") {
+			named = append(named, line)
+		}
+	}
+	if !slices.Equal(named, want) {
+		t.Errorf("the sizing names the bounded-write rule as\n\t%s\nwant\n\t%s\nin\n%s",
+			strings.Join(named, "\n\t"), strings.Join(want, "\n\t"), printed.String())
+	}
+	for _, verdict := range []string{
+		fmt.Sprintf("census: sizing table name=graph_tuples altered=false rows=700,000 bytes=%d limit_bytes=%d verdict=inside", limit/2, limit),
+		fmt.Sprintf("census: sizing table name=document_blocks altered=true rows=4,000,000 bytes=%d limit_bytes=%d verdict=at-or-above", 2*limit, limit),
+		fmt.Sprintf("census: sizing year table=graph_tuples bytes_now=%d bytes_at_a_year=%d limit_bytes=%d verdict=past",
+			limit/2, sizing.Growth[1].YearBytes, limit),
+	} {
+		if !slices.Contains(lines, verdict) {
+			t.Errorf("the sizing prints no line\n\t%s\nin\n%s", verdict, printed.String())
+		}
+	}
+	if last := lines[len(lines)-1]; last != "census: sizing ok" {
+		t.Errorf("the sizing ends %q, want census: sizing ok:\n%s", last, printed.String())
+	}
+	for _, line := range lines {
+		if strings.Contains(line, "REFUSED") || strings.Contains(line, "refusal") {
+			t.Errorf("the sizing refuses on size: %q", line)
+		}
+	}
+
+	for _, census := range []struct {
+		what, verdict string
+		report        *StoreReport
+	}{
+		{"a census that found no store", "census: store absent, sizing ok", &StoreReport{Absent: true, Sizing: sizing}},
+		{"a census of a store that agrees with its projections", "census: store ok",
+			&StoreReport{Kinds: []KindReport{{Kind: "comment", Table: "comments", Rows: 20_000, Nodes: 20_000}}, Sizing: sizing}},
+	} {
+		var out bytes.Buffer
+		census.report.Write(&out)
+		if census.report.Refused() {
+			t.Errorf("%s refuses on the sizing's sizes:\n%s", census.what, out.String())
+		}
+		if got := out.String(); !strings.HasSuffix(got, "census: sizing ok\n"+census.verdict+"\n") {
+			t.Errorf("%s does not end with the sizing's census: sizing ok and then %q:\n%s", census.what, census.verdict, got)
 		}
 	}
 }

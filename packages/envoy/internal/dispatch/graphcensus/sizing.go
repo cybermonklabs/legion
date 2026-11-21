@@ -52,8 +52,10 @@ var eventRateQuery = fmt.Sprintf(`select type, count(*) / %d.0 as per_day
 // by 20261120122600 in the same release, before any build writes a row of them, so no existing
 // row is rewritten for them; document_blocks, block_refs and comments are altered by
 // 20261109022248, server_build_announcements by 20261115051200 and document_block_versions by
-// 20261116221539 and 20261120122600, and a table that large is a migration that needs another
-// shape, which is what the limit refuses.
+// 20261116221539 and 20261120122600. A pending migration that writes rows of any of them once it
+// is above the limit may write them only with bounded writes, the one write of such a table the
+// migration census admits (pgmigrate.BoundedWriteRows); the sizing names that rule beside such a
+// table and refuses nothing for it (writeBoundedWrites).
 var branchTables = []struct {
 	name    string
 	altered bool
@@ -102,18 +104,18 @@ type StoreTableGrowth struct {
 
 // SizingReport is what the sizing pass read. Every figure in it comes from a count or from a
 // timestamp the database already holds, so two runs over one unchanged database print the same
-// report.
+// report. It refuses nothing: a table at or above the limit, or a store table projected past it
+// within a year, is one a pending migration may write only with bounded writes, and the
+// migration census (pgmigrate.Census) holds every pending migration to that rule, which is the
+// gate. The report names the rule beside each such table (writeBoundedWrites).
 type SizingReport struct {
-	Limit    int64
-	Events   []EventRate
-	Tables   []TableSize
-	Kinds    []StoreKind
-	Growth   []StoreTableGrowth
-	Backlog  BlockIndexBacklog
-	Refusals []string
+	Limit   int64
+	Events  []EventRate
+	Tables  []TableSize
+	Kinds   []StoreKind
+	Growth  []StoreTableGrowth
+	Backlog BlockIndexBacklog
 }
-
-func (s *SizingReport) Refused() bool { return len(s.Refusals) > 0 }
 
 // readSizing reads the growth pass in the census's own snapshot: the write rate by kind over
 // the last 28 days of events, the size of every table this branch's migrations touch, the
@@ -141,11 +143,6 @@ func readSizing(ctx context.Context, tx pgx.Tx) (*SizingReport, error) {
 		size.Altered = table.altered
 		sizes[table.name] = size
 		report.Tables = append(report.Tables, size)
-		if table.altered && size.Held && size.Bytes >= report.Limit {
-			report.Refusals = append(report.Refusals, fmt.Sprintf(
-				"%s is %s, at or above the census limit of %s, and this branch's migrations alter it",
-				size.Name, bytesText(size.Bytes), bytesText(report.Limit)))
-		}
 	}
 	kinds, err := readStoreKinds(ctx, tx)
 	if err != nil {
@@ -176,11 +173,6 @@ func readSizing(ctx context.Context, tx pgx.Tx) (*SizingReport, error) {
 		projected.BytesARow, projected.BytesARowSource = bytesARow(size)
 		projected.YearBytes = size.Bytes + int64(growth.rowsADay*sizingYearDays)*projected.BytesARow
 		projected.Past = projected.YearBytes >= report.Limit
-		if projected.Past {
-			report.Refusals = append(report.Refusals, fmt.Sprintf(
-				"%s reaches %s within a year at %.2f rows a day, past the census limit of %s",
-				projected.Name, bytesText(projected.YearBytes), projected.RowsADay, bytesText(report.Limit)))
-		}
 		report.Growth = append(report.Growth, projected)
 	}
 	backlog, err := readBlockIndexBacklog(ctx, tx)
@@ -195,7 +187,7 @@ func readSizing(ctx context.Context, tx pgx.Tx) (*SizingReport, error) {
 // from the table itself where it holds enough rows for that to mean anything, and otherwise the
 // figure measured for this work, which the report names as borrowed. graph_nodes carries two
 // indexes where graph_tuples carries seven, so the borrowed figure over-states a node, which is
-// the safe direction for a size gate.
+// the safe direction for a projection read against the limit.
 func bytesARow(size TableSize) (int64, string) {
 	if size.Held && size.Rows >= measurableRows {
 		return size.Bytes / size.Rows, "measured from this database"
@@ -256,7 +248,8 @@ func readTableSize(ctx context.Context, tx pgx.Tx, name string) (TableSize, erro
 }
 
 // Write prints the sizing, one `census: sizing ` line per fact, so a driver can look for the
-// line it wants by its leading fields.
+// line it wants by its leading fields. It refuses nothing, so its last line is always
+// `census: sizing ok`.
 func (s *SizingReport) Write(w io.Writer) {
 	fmt.Fprintf(w, "census: sizing window_days=%d year_days=%d limit_bytes=%d\n",
 		sizingWindowDays, sizingYearDays, s.Limit)
@@ -271,12 +264,8 @@ func (s *SizingReport) Write(w io.Writer) {
 			fmt.Fprintf(w, "census: sizing table name=%s held=false\n", table.Name)
 			continue
 		}
-		verdict := "inside"
-		if table.Bytes >= s.Limit {
-			verdict = "at-or-above"
-		}
 		fmt.Fprintf(w, "census: sizing table name=%s altered=%t rows=%s bytes=%d limit_bytes=%d verdict=%s\n",
-			table.Name, table.Altered, pgmigrate.Thousands(table.Rows), table.Bytes, s.Limit, verdict)
+			table.Name, table.Altered, pgmigrate.Thousands(table.Rows), table.Bytes, s.Limit, s.nowVerdict(table))
 	}
 	for _, kind := range s.Kinds {
 		fmt.Fprintf(w, "census: sizing tuples-a-write kind=%s tuples=%d nodes=%d rows_a_day=%.2f"+
@@ -298,13 +287,10 @@ func (s *SizingReport) Write(w io.Writer) {
 		fmt.Fprintf(w, "census: sizing rows-a-day table=%s rows_a_day=%.2f\n", growth.Name, growth.RowsADay)
 		fmt.Fprintf(w, "census: sizing bytes-a-row table=%s bytes_a_row=%d source=%s\n",
 			growth.Name, growth.BytesARow, growth.BytesARowSource)
-		verdict := "inside"
-		if growth.Past {
-			verdict = "past"
-		}
 		fmt.Fprintf(w, "census: sizing year table=%s bytes_now=%d bytes_at_a_year=%d limit_bytes=%d verdict=%s\n",
-			growth.Name, growth.Bytes, growth.YearBytes, s.Limit, verdict)
+			growth.Name, growth.Bytes, growth.YearBytes, s.Limit, yearVerdict(growth))
 	}
+	s.writeBoundedWrites(w)
 	// The backlog of the reconciliation that defers a large document's block index: a loop
 	// that falls behind owes more documents and owes them for longer, and nothing else in this
 	// report would say so. Two lines, so a driver can read the count without parsing the age.
@@ -312,17 +298,58 @@ func (s *SizingReport) Write(w io.Writer) {
 		s.Backlog.Documents, backlogDatedBy)
 	fmt.Fprintf(w, "census: sizing backlog oldest_owed_at=%s oldest_owed_age_seconds=%.2f against=%s\n",
 		refs.OwedTimeText(s.Backlog.OldestOwedAt), s.Backlog.Age().Seconds(), refs.OwedTimeText(s.Backlog.ClockAt))
-	for _, refusal := range s.Refusals {
-		fmt.Fprintf(w, "census: sizing refusal: %s\n", refusal)
-	}
-	if len(s.Refusals) == 0 {
-		fmt.Fprintln(w, "census: sizing ok")
-	} else {
-		fmt.Fprintf(w, "census: sizing REFUSED (%d reason(s))\n", len(s.Refusals))
-	}
+	fmt.Fprintln(w, "census: sizing ok")
 }
 
-// bytesText writes a size as the report prints it: the bytes, and the GiB a human compares.
-func bytesText(n int64) string {
-	return fmt.Sprintf("%d bytes (%.2f GiB)", n, float64(n)/float64(1<<30))
+// nowVerdict is a table's size now against the limit, the word its table line prints, or absent
+// for a table the database does not hold.
+func (s *SizingReport) nowVerdict(table TableSize) string {
+	switch {
+	case !table.Held:
+		return "absent"
+	case table.Bytes >= s.Limit:
+		return "at-or-above"
+	}
+	return "inside"
+}
+
+// yearVerdict is where a store table reaches in a year against the limit, the word its year line
+// prints.
+func yearVerdict(growth StoreTableGrowth) string {
+	if growth.Past {
+		return "past"
+	}
+	return "inside"
+}
+
+// writeBoundedWrites prints one `census: sizing bounded-writes ` line beside each table at or
+// above the limit now and each store table its year projection puts past it, naming the migration
+// census's rule for such a table: a pending migration that writes its rows may write them only
+// with bounded writes, an insert of at most pgmigrate.BoundedWriteRows literal rows or an update
+// of at most that many rows by their primary key, the one write of a table above the limit the
+// migration census admits. That rule, and not the table's size, is the gate: once the store is
+// backfilled graph_tuples stays past the limit, so a sizing that refused on size would refuse
+// every run. The line carries the table's verdict now and its year's, unprojected for a table the
+// sizing does not project.
+func (s *SizingReport) writeBoundedWrites(w io.Writer) {
+	growths := make(map[string]StoreTableGrowth, len(s.Growth))
+	for _, growth := range s.Growth {
+		growths[growth.Name] = growth
+	}
+	bound := pgmigrate.Thousands(pgmigrate.BoundedWriteRows)
+	for _, table := range s.Tables {
+		growth, projected := growths[table.Name]
+		now := s.nowVerdict(table)
+		if now != "at-or-above" && !growth.Past {
+			continue
+		}
+		year := "unprojected"
+		if projected {
+			year = yearVerdict(growth)
+		}
+		fmt.Fprintf(w, "census: sizing bounded-writes table=%s now=%s year=%s: a pending migration that writes rows of %s"+
+			" may write them only with bounded writes once it is above the limit (pgmigrate's census: an insert of at most"+
+			" %s literal rows, or an update of at most %s rows by their primary key)\n",
+			table.Name, now, year, table.Name, bound, bound)
+	}
 }

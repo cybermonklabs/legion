@@ -205,15 +205,18 @@ var markVersionedDocuments = `
 // (block_index_event_cursors.another_build_seen), since that build writes rows with no node; where
 // an event it reads names a row of an issue, a document, an ask or a message with no node, or a
 // removed document whose node still stands (graphcensus.EventsOweObjectPass), as such a build
-// leaves them when it holds every period of the lease; and on each process's first tick with a
-// proven horizon and once objectPassInterval has passed since the process's last pass finished: a
-// conversation's file such a build uploads appends no event, and a process that starts may follow
-// a release that wrote while none of this build's ran. That tick sets the time in the cursor's
-// row, in the statement that moves the cursor, and a debt an earlier tick left stands until a pass
+// leaves them when it holds every period of the lease; and on each process's first tick and once
+// objectPassInterval has passed since the process's last pass finished: a conversation's file such
+// a build uploads appends no event, and a process that starts may follow a release that wrote while
+// none of this build's ran. Where a cursor row stands that tick sets the time in it, in the
+// statement that moves the cursor, and a debt an earlier tick left stands until a pass
 // clears it, so whichever process of the build holds the lease next runs it. It answers owed only
 // once its transaction has committed, and nil where it fails. Before a horizon is proven the
-// cursor holds no row, so no debt can be recorded: such a tick owes the pass only while another
-// build serves (rollNow), and the process's next tick owes it otherwise.
+// cursor holds no row, so no debt can be recorded and no event is read: such a tick owes the pass
+// (rollNow) on the triggers that read no event, while another build serves, on the process's first
+// tick and once objectPassInterval has passed since its last pass. An event log that holds no
+// event never proves a horizon, and a conversation's file the release before uploads there appends
+// none, so only those triggers give it its node.
 func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTick) (full bool, owed *time.Time, err error) {
 	safe, err := s.blockIndexHorizon().Safe(ctx)
 	if err != nil {
@@ -250,8 +253,13 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 	`, s.buildCommit, safe, s.markingRule).Scan(&cursor, &seen); err != nil {
 		return false, nil, fmt.Errorf("read this build's block-index event cursor: %w", err)
 	}
+	// The pass is owed while another build serves and on the first tick after one did, on a
+	// process's first tick, and an interval after its last pass: every trigger but the events',
+	// so a tick that has no cursor yet, on a log that has proven no horizon, owes it too.
+	finished := s.objectPassFinished.Load()
+	owes := tick.AnotherBuild || seen || finished == 0 || s.now().Sub(time.Unix(0, finished)) >= objectPassInterval
 	if cursor == nil {
-		if tick.AnotherBuild {
+		if owes {
 			return false, &rollNow, nil
 		}
 		return false, nil, nil
@@ -259,10 +267,6 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 	// Another process of this build may have moved the cursor past this process's horizon; the
 	// cursor never moves back.
 	next := max(*cursor, safe)
-	// The pass is owed while another build serves and on the first tick after one did, on a
-	// process's first tick, and an interval after its last pass.
-	finished := s.objectPassFinished.Load()
-	owes := tick.AnotherBuild || seen || finished == 0 || s.now().Sub(time.Unix(0, finished)) >= objectPassInterval
 	var read, written int
 	var marked int64
 	var named []string
@@ -369,8 +373,8 @@ const orphanedNodesSwept = 20
 // interval while this build serves alone, and on every tick while another build serves.
 const objectPassInterval = 10 * time.Minute
 
-// rollNow is the debt a tick answers while another build serves before any horizon is proven
-// (readEventsAfterCursor): no cursor row holds it, so the pass runs and no row is cleared.
+// rollNow is the debt a tick answers before any horizon is proven (readEventsAfterCursor): no
+// cursor row holds it, so the pass runs and no row is cleared.
 var rollNow time.Time
 
 // writeObjectNodesAnotherBuildWrote is the block-index tick's second step: while this build owes

@@ -225,12 +225,12 @@ func secretEnv(name, secret, key string) corev1.EnvVarArgs {
 }
 
 // refuseDispatchSeed is value, a plain-typed Input of the component (the NATS seed secret's id),
-// with a seed refused once it resolves: the output fails naming input and never the value, so no
-// child is registered with it.
+// with a seed refused once it resolves: the output fails with a core.InputError naming input and
+// never the value, so no child is registered with it.
 func refuseDispatchSeed(value pulumi.StringInput, dispatch, input string) pulumi.StringOutput {
 	return value.ToStringOutput().ApplyT(func(v string) (string, error) {
 		if bus.HoldsSeed(v) {
-			return "", fmt.Errorf("%s: %w", dispatch, core.SeedRefusal(input))
+			return "", fmt.Errorf("%s: %w", dispatch, core.InputErrorf(input, "%w", core.SeedRefusal(input)))
 		}
 		return v, nil
 	}).(pulumi.StringOutput)
@@ -250,7 +250,7 @@ var iapAudienceRule = regexp.MustCompile(`^/projects/[0-9]+/global/backendServic
 func dispatchIAPAudience(value pulumi.StringInput, dispatch string) pulumi.StringOutput {
 	return value.ToStringOutput().ApplyT(func(v string) (string, error) {
 		if bus.HoldsSeed(v) {
-			return "", fmt.Errorf("%s: %w", dispatch, core.SeedRefusal("iapAudience"))
+			return "", fmt.Errorf("%s: %w", dispatch, core.InputErrorf("iapAudience", "%w", core.SeedRefusal("iapAudience")))
 		}
 		if !iapAudienceRule.MatchString(v) {
 			return "", fmt.Errorf("%s: %w", dispatch, core.InputErrorf("iapAudience",
@@ -272,13 +272,13 @@ func dependsOnInput(in pulumi.StringInput) pulumi.ResourceOption {
 // it resolves (tailnetAuthKey, signInClientSecret): a blank or whitespace-only value is a
 // credential that cannot work (the front door cannot join the tailnet, Dispatch refuses a blank
 // sign-in secret at boot), so it is refused here, and so is one holding an nkey seed. Each
-// refusal names input and never the value.
+// refusal is a core.InputError naming input, and never the value.
 func refuseDispatchSecret(v, dispatch, input string) error {
 	if strings.TrimSpace(v) == "" {
 		return fmt.Errorf("%s: %w", dispatch, core.InputErrorf(input, "%s is blank, which no credential is", input))
 	}
 	if bus.HoldsSeed(v) {
-		return fmt.Errorf("%s: %w", dispatch, core.SeedRefusal(input))
+		return fmt.Errorf("%s: %w", dispatch, core.InputErrorf(input, "%w", core.SeedRefusal(input)))
 	}
 	return nil
 }
@@ -687,19 +687,25 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// a deployment with sign-in on renders what it always rendered (gcp/testdata/dispatch-pod.golden)
 	// and one without it names no client, no issuer and no domain: Dispatch then asks nobody to
 	// sign in. DISPATCH_SIGNIN_OUTSIDE follows the domain only with signInOutside, which needs
-	// sign-in on. The IAP door's three variables take that same place, since the resolver refuses
-	// the Google client beside it, and render only with iapAudience: the identity mode, the
-	// audience, and the domain whose accounts may use Dispatch, which Dispatch holds the signed
-	// header's hd claim to. A deployment without it names no identity mode, and Dispatch keeps its
-	// default. DISPATCH_SERVER_URL is the address a reader is sent back to, so it is the url
-	// output's own derivation (serverURL) and never a second spelling of it, and
-	// DISPATCH_OUTSIDE_ORIGIN follows it only with outsideOrigin, so a deployment that sets neither
-	// outside input renders byte for byte what it always rendered.
+	// sign-in on, and DISPATCH_SIGNIN_WORKSPACE_DOMAINS follows them only with signInWorkspaceDomains,
+	// which needs sign-in on too: the entries comma-joined, as Dispatch splits them. The IAP door's
+	// three variables take that same place, since the resolver refuses the Google client beside it,
+	// and render only with iapAudience: the identity mode, the audience, and the domain whose
+	// accounts may use Dispatch, which Dispatch holds the signed header's hd claim to. A deployment
+	// without it names no identity mode, and Dispatch keeps its default. DISPATCH_SERVER_URL is the
+	// address a reader is sent back to, so it is the url output's own derivation (serverURL) and
+	// never a second spelling of it.
+	// DISPATCH_OUTSIDE_ORIGIN follows it only with outsideOrigin, and DISPATCH_SIGNIN_PASSKEY follows
+	// that only with signInPasskey, which needs outsideOrigin, so a deployment that sets none of the
+	// outside inputs renders byte for byte what it always rendered.
 	if s.signInOn {
 		appEnv = append(appEnv, secretEnv("DISPATCH_SIGNIN_CLIENT_SECRET", dispatchSecretName, "DISPATCH_SIGNIN_CLIENT_SECRET"),
 			valueEnv("DISPATCH_SIGNIN_ISSUER", "https://accounts.google.com"), valueEnv("DISPATCH_SIGNIN_CLIENT_ID", s.signIn.clientID), valueEnv("DISPATCH_SIGNIN_DOMAIN", s.signIn.domain))
 		if s.signInOutside {
 			appEnv = append(appEnv, valueEnv("DISPATCH_SIGNIN_OUTSIDE", "1"))
+		}
+		if len(s.signInWorkspaceDomains) > 0 {
+			appEnv = append(appEnv, valueEnv("DISPATCH_SIGNIN_WORKSPACE_DOMAINS", strings.Join(s.signInWorkspaceDomains, ",")))
 		}
 	}
 	if s.iap {
@@ -710,6 +716,9 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	appEnv = append(appEnv, valueEnv("DISPATCH_SERVER_URL", s.serverURL()))
 	if s.outsideOrigin != "" {
 		appEnv = append(appEnv, valueEnv("DISPATCH_OUTSIDE_ORIGIN", s.outsideOrigin))
+		if s.signInPasskey {
+			appEnv = append(appEnv, valueEnv("DISPATCH_SIGNIN_PASSKEY", "1"))
+		}
 	}
 	appEnv = append(appEnv, valueEnv("DISPATCH_LISTEN_HOST", "0.0.0.0"),
 		corev1.EnvVarArgs{Name: pulumi.String("NATS_URLS"), Value: natsURL}, valueEnv("ENVOY_ALLOW_REMOTE_NATS", "1"), valueEnv("NATS_NKEY_SEED_FILE", "/var/run/secrets/envoy/nats-seed"))

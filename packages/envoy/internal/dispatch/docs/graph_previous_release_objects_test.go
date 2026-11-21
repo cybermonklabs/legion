@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"io"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -200,6 +201,70 @@ func TestARowNoEventNamesGetsItsNodeOnceTheObjectPassIntervalPasses(t *testing.T
 		t.Errorf("the tick after the interval's pass wrote %d object node(s), want none: the next pass is an interval away", next.ObjectNodes)
 	}
 	requireProjectComplete(t, database, []string{"artifact " + later + ": missing"}, "within the interval of the pass that wrote the three")
+}
+
+// On an event log that holds no event, a conversation's file the release before this one uploads
+// gets its node from this build's ticks, with no second backfill. The upload appends no event, so
+// the log stays empty, no safe horizon is ever proven and this build's cursor holds no row: the
+// tick reads no event, and owes the object pass on the process's first tick and once
+// objectPassInterval has passed since its last pass, whatever its cursor holds.
+//
+// The test backfills the empty log, has the release before upload a file, and runs the process's
+// first tick, which writes the file's node. A second file, uploaded after that pass, waits for
+// the interval: the next tick writes nothing, and the tick once the clock has moved past the
+// interval writes it. No tick records a cursor row or a debt, since no horizon is proven.
+//
+// Its control is the tick returning before either trigger when its cursor holds nothing (#4129
+// at bcc22227c2): the first tick writes no node, and the project census names the file `missing`.
+func TestAnEmptyLogsConversationFileGetsItsNodeFromTheTicks(t *testing.T) {
+	database, service := blockIndexService(t)
+	ctx := context.Background()
+	var aged atomic.Int64
+	service.now = func() time.Time { return time.Now().Add(time.Duration(aged.Load())) }
+	if _, err := graphcensus.Backfill(ctx, database, io.Discard); err != nil {
+		t.Fatalf("backfill the store: %v", err)
+	}
+	var events int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from events`).Scan(&events); err != nil || events != 0 {
+		t.Fatalf("the event log holds %d event(s) after the backfill (%v), want none: this test proves nothing", events, err)
+	}
+	requireProjectComplete(t, database, nil, "after the backfill")
+	upload := func(slug string) string {
+		t.Helper()
+		var ref string
+		if err := database.Pool.QueryRow(ctx, `
+			insert into artifacts (session_id, slug, name, kind, created_by)
+			values ($1, $2, $2 || '.png', 'image', jsonb_build_object('kind', 'session', 'id', $1::text))
+			returning ref_key
+		`, rollSession, slug).Scan(&ref); err != nil {
+			t.Fatalf("upload %s to the conversation as the release before: %v", slug, err)
+		}
+		return ref
+	}
+	first := upload("empty-log-first")
+	if tick := awaitedBlockIndexTick(t, service); tick.ObjectNodes != 1 {
+		t.Errorf("the process's first tick on the empty log wrote %d object node(s), want the file's", tick.ObjectNodes)
+	}
+	requireProjectComplete(t, database, nil, "after the process's first tick, with no second backfill")
+	if node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindArtifact, first); err != nil || !held ||
+		node.State != graphstore.StateLive || !slices.Equal(node.Parties, []string{"session:" + rollSession}) {
+		t.Errorf("the file's node is %+v (held %t, %v), want it live between its conversation's session", node, held, err)
+	}
+
+	second := upload("empty-log-second")
+	if tick := awaitedBlockIndexTick(t, service); tick.ObjectNodes != 0 {
+		t.Errorf("a tick within the interval of the last pass wrote %d object node(s), want none", tick.ObjectNodes)
+	}
+	requireProjectComplete(t, database, []string{"artifact " + second + ": missing"}, "within the interval of the last pass")
+	aged.Store(int64(objectPassInterval))
+	if tick := awaitedBlockIndexTick(t, service); tick.ObjectNodes != 1 {
+		t.Errorf("the tick once the interval passed wrote %d object node(s), want the second file's", tick.ObjectNodes)
+	}
+	requireProjectComplete(t, database, nil, "once the interval passed, with no second backfill")
+	var rows int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from block_index_event_cursors`).Scan(&rows); err != nil || rows != 0 {
+		t.Errorf("the ticks left %d cursor row(s) (%v), want none: no horizon was proven", rows, err)
+	}
 }
 
 // createdRow is a row the stand-in for the release before this one created, at its node's

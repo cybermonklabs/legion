@@ -8,9 +8,11 @@
 # which this driver reads out of the Go source rather than trusting the report's own number.
 #
 # It proves three things about the command besides what it printed. It exits non-zero when the
-# command does, which is what the command does when a store table passes the limit inside a year
-# or when a table the migrations alter is already at or above it. It runs the command twice over
-# one unchanged database and compares the two outputs, which must agree, since every figure in the
+# command does, which the command does only where the store census itself refuses or a read fails:
+# the sizing refuses nothing on size, and names the migration census's bounded-write rule beside a
+# table at or above the limit or projected past it, so the limit is held here by this driver's own
+# checks of each table and each year projection (C6, C7). It runs the command twice over one
+# unchanged database and compares the two outputs, which must agree, since every figure in the
 # report comes from a count. And it proves the command writes nothing, by reading the highest
 # tuple sequence and both store tables' row counts before and after the two runs.
 #
@@ -56,8 +58,8 @@
 # The corpus is a seeding of this database's write rate, so the run removes it on the way out,
 # passed or failed (remove_corpus): its blocks land in the last 28 days of `document_blocks`,
 # and left in place the projection that reads those days puts `graph_tuples` past the limit
-# within a year, which would refuse the census of the next run and fail this driver on a corpus
-# of its own rather than on the growth it watches. The removal takes the documents this run
+# within a year, which would fail the next run's check of that year (C7) on a corpus of its own
+# rather than on the growth it watches. The removal takes the documents this run
 # wrote under its own issue, their blocks, the nodes and tuples those blocks made and every row
 # that references those documents, and nothing else; it leaves the issue, closed, and the two
 # comments C2 wrote. What it cannot remove it prints, with what that leaves behind. Two runs of

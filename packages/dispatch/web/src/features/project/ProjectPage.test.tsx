@@ -368,6 +368,75 @@ test("the Access tab, at /access, shows the project's owner and the people and g
   }
 });
 
+// A draft typed on one project's Access tab belongs to that project: going to another project's
+// Access tab draws its own stored values, and its Save sends none of the first project's draft.
+// The panel is keyed by the project, as the issue list and the board are. Control: unkeyed, the
+// panel keeps ALPHA's channel draft on BETA and Save writes it there.
+test("a draft on one project's Access tab is not saved to the project the reader goes to next", async () => {
+  const user = userEvent.setup();
+  const stored = { ALPHA: ["C0ALPHA0001"], BETA: ["C0BETA00001"] } as Record<string, string[]>;
+  const getProjectAccess = spyOn(api, "getProjectAccess").mockImplementation(async (key) => ({
+    groups: [],
+    owner: "alice",
+    people: [],
+    project: key,
+    not_signed_in: [],
+    slack_channels: stored[key] ?? [],
+    visibility: "public",
+  }));
+  const listAccessGroups = spyOn(api, "listAccessGroups").mockResolvedValue([]);
+  const patchProjectAccess = spyOn(api, "patchProjectAccess").mockImplementation(
+    async (key, body) => ({
+      groups: [],
+      owner: "alice",
+      people: [],
+      project: key,
+      not_signed_in: [],
+      slack_channels: body.slack_channels ?? stored[key] ?? [],
+      visibility: "public",
+    })
+  );
+  const project = (key: string, name: string) => ({
+    created_at: "2026-09-10T00:00:00Z",
+    key,
+    name,
+    open_asks: 0,
+    gated_steps: [],
+  });
+  const page = renderPage(
+    ["/projects/BETA/access", "/projects/ALPHA/access"],
+    [project("ALPHA", "Alpha"), project("BETA", "Beta")]
+  );
+  try {
+    const alpha = await screen.findByLabelText<HTMLInputElement>("Channel ids");
+    await waitFor(() => expect(alpha.value).toBe("C0ALPHA0001"));
+    await user.clear(alpha);
+    await user.type(alpha, "C0ALPHADRAFT");
+
+    await user.click(screen.getByRole("button", { name: "Go back" }));
+    await screen.findByRole("heading", { name: "Beta" });
+    const beta = await screen.findByLabelText<HTMLInputElement>("Channel ids");
+    await waitFor(() => expect(beta.value).toBe("C0BETA00001"));
+    await user.click(screen.getByRole("button", { name: "Save channels" }));
+    await waitFor(() => expect(patchProjectAccess).toHaveBeenCalled());
+    expect(patchProjectAccess).not.toHaveBeenCalledWith(
+      "BETA",
+      { slack_channels: ["C0ALPHADRAFT"] },
+      expect.anything()
+    );
+    expect(patchProjectAccess).toHaveBeenLastCalledWith(
+      "BETA",
+      { slack_channels: ["C0BETA00001"] },
+      expect.anything()
+    );
+  } finally {
+    page.restore();
+    getProjectAccess.mockRestore();
+    listAccessGroups.mockRestore();
+    patchProjectAccess.mockRestore();
+  }
+});
+
 test("keeps the issue view preference separate for each signed-in user", async () => {
   const aliceStorageKey = "dispatch.project.issue-view:alice";
   const bobStorageKey = "dispatch.project.issue-view:bob";

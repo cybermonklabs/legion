@@ -142,16 +142,14 @@ func (r *StoreReport) Unpopulated() []string {
 // nothing of the blocks, the roles or the sessions.
 //
 // A database the store does not exist in yet (Absent) has nothing to census. The sizing is taken
-// on just such a database (R4 reads before the first migration), so there the sizing alone
-// decides, and a census asked for without it refuses, since it read nothing.
+// on just such a database (R4 reads before the first migration), and the sizing refuses nothing
+// (SizingReport), so there a census with the sizing passes on the sizing alone, and a census
+// asked for without it refuses, since it read nothing.
 func (r *StoreReport) Refused() bool {
 	if r.Absent {
-		return r.Sizing == nil || r.Sizing.Refused()
+		return r.Sizing == nil
 	}
-	if len(r.Unpopulated()) > 0 || r.Differences() > 0 || r.ProjectFindings() > 0 {
-		return true
-	}
-	return r.Sizing != nil && r.Sizing.Refused()
+	return len(r.Unpopulated()) > 0 || r.Differences() > 0 || r.ProjectFindings() > 0
 }
 
 // The kinds the census holds the store to. The first three are the kinds a table projects, each
@@ -878,8 +876,6 @@ func (r *StoreReport) Write(w io.Writer) {
 	switch {
 	case r.Absent && r.Sizing == nil:
 		fmt.Fprintln(w, "census: store REFUSED (the database holds no store, so the census read nothing)")
-	case r.Absent && r.Sizing.Refused():
-		fmt.Fprintf(w, "census: store absent, sizing REFUSED (%d reason(s))\n", len(r.Sizing.Refusals))
 	case r.Absent:
 		fmt.Fprintln(w, "census: store absent, sizing ok")
 	case r.Differences() > 0:
@@ -892,8 +888,6 @@ func (r *StoreReport) Write(w io.Writer) {
 	case len(empty) > 0:
 		fmt.Fprintf(w, "census: store REFUSED (kind(s) %s checked no row, so the census proves nothing of them)\n",
 			strings.Join(empty, ", "))
-	case r.Sizing != nil && r.Sizing.Refused():
-		fmt.Fprintf(w, "census: store ok, sizing REFUSED (%d reason(s))\n", len(r.Sizing.Refusals))
 	default:
 		fmt.Fprintln(w, "census: store ok")
 	}
