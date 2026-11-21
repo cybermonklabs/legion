@@ -285,18 +285,9 @@ func armPodBackstop(ctx context.Context, tx pgx.Tx, b PodWakeBackstop) error {
 // pass fires. One that came due while the daemon was down is in this read at the next pass after
 // the daemon starts, which is what makes the backstop a stored row rather than a timer.
 func (s *Store) DuePodBackstops(ctx context.Context, project string, now time.Time) ([]PodWakeBackstop, error) {
-	var (
-		out  []PodWakeBackstop
-		read error
-	)
-	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		out, read = duePodBackstops(ctx, tx, project, now)
-		return read
+	return ReadOnly(ctx, s.pool, "read the due backstops of "+project, func(ctx context.Context, tx pgx.Tx) ([]PodWakeBackstop, error) {
+		return duePodBackstops(ctx, tx, project, now)
 	})
-	if err != nil && read == nil {
-		return nil, fmt.Errorf("read the due backstops of %s: %w", project, err)
-	}
-	return out, err
 }
 
 func duePodBackstops(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]PodWakeBackstop, error) {

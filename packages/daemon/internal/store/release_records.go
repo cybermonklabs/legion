@@ -171,16 +171,9 @@ func (s *Store) MarkPodResumeStuck(ctx context.Context, id int64) error {
 // each warns once. The stranded report reads UnfinishedPodResumesTx instead, which keeps a marked
 // row.
 func (s *Store) StuckPodResumes(ctx context.Context, project string, before time.Time) ([]PodResume, error) {
-	var resumes []PodResume
-	var read error
-	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		resumes, read = podResumesWithoutAFirstTurn(ctx, tx, project, before, true)
-		return read
+	return ReadOnly(ctx, s.pool, "read the unfinished resumes of "+project, func(ctx context.Context, tx pgx.Tx) ([]PodResume, error) {
+		return podResumesWithoutAFirstTurn(ctx, tx, project, before, true)
 	})
-	if err != nil && read == nil {
-		err = fmt.Errorf("read the unfinished resumes of %s: %w", project, err)
-	}
-	return resumes, err
 }
 
 // UnfinishedPodResumesTx are the resumes of project the stranded report judges R6 on, read
@@ -310,16 +303,9 @@ func (s *Store) EndPodHoldStreaks(ctx context.Context, project, issue string) er
 // with no streak is left alone, since an update that matches no row costs a write transaction all
 // the same.
 func (s *Store) OpenPodHold(ctx context.Context, project, issue string) (bool, error) {
-	var holding bool
-	var read error
-	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		holding, read = openPodHold(ctx, tx, project, issue)
-		return read
+	return ReadOnly(ctx, s.pool, "read whether a hold streak of "+issue+" is running", func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		return openPodHold(ctx, tx, project, issue)
 	})
-	if err != nil && read == nil {
-		err = fmt.Errorf("read whether a hold streak of %s is running: %w", issue, err)
-	}
-	return holding, err
 }
 
 // openPodHold is the question that both OpenPodHold and readIdleView ask, through the transaction
@@ -347,16 +333,9 @@ func endPodHoldStreaks(ctx context.Context, tx pgx.Tx, project, issue, except st
 // PodReleaseRecords are every release, resume and hold of project recorded at or after since,
 // oldest first, which is what a pod reads to measure a window.
 func (s *Store) PodReleaseRecords(ctx context.Context, project string, since time.Time) (PodReleaseRecords, error) {
-	var out PodReleaseRecords
-	var read error
-	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		out, read = podReleaseRecords(ctx, tx, project, since)
-		return read
+	return ReadOnly(ctx, s.pool, "read the pod release records of "+project, func(ctx context.Context, tx pgx.Tx) (PodReleaseRecords, error) {
+		return podReleaseRecords(ctx, tx, project, since)
 	})
-	if err != nil && read == nil {
-		err = fmt.Errorf("read the pod release records of %s: %w", project, err)
-	}
-	return out, err
 }
 
 func podReleaseRecords(ctx context.Context, tx pgx.Tx, project string, since time.Time) (PodReleaseRecords, error) {

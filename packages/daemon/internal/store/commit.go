@@ -124,6 +124,27 @@ func Transact(ctx context.Context, pool TxPool, write func(ctx context.Context, 
 	return TransactWith(ctx, pool, pgx.TxOptions{}, write)
 }
 
+// ReadOnly runs read in one read-only TransactWith on pool and answers the value it read: the one
+// form of a standalone read. An error read returns is answered as it is, since read names what it
+// read; an error of the transaction itself (its begin, a cancel, its commit) is answered wrapped as
+// "<what>: <error>". On any error the value is T's zero value.
+func ReadOnly[T any](ctx context.Context, pool TxPool, what string, read func(ctx context.Context, tx pgx.Tx) (T, error)) (T, error) {
+	var value, zero T
+	var readErr error
+	err := TransactWith(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		value, readErr = read(ctx, tx)
+		return readErr
+	})
+	switch {
+	case err == nil:
+		return value, nil
+	case readErr == nil:
+		return zero, fmt.Errorf("%s: %w", what, err)
+	default:
+		return zero, err
+	}
+}
+
 // TransactWith runs write in one transaction of pool, opened with options, commits it, and runs
 // the hooks write registered with OnCommit if and only if the transaction committed. write runs
 // once, on the scoped context, and is never retried. Every transaction of the daemon opens here,

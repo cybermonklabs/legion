@@ -527,19 +527,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 // not validate refuses the whole read, naming the claim: a daemon that loaded it would believe in
 // a process it has no way to act on.
 func (s *Store) Claims(ctx context.Context) ([]supervise.Claim, error) {
-	var claims []supervise.Claim
-	var read error
-	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		claims, read = readClaims(ctx, tx)
-		return read
-	})
-	if err != nil && read == nil {
-		return nil, fmt.Errorf("read claims: %w", err)
-	}
-	if err != nil {
-		return nil, err
-	}
-	return claims, nil
+	return ReadOnly(ctx, s.pool, "read claims", readClaims)
 }
 
 // ClaimsTx is Claims through tx's snapshot. State reports use it with their durable issue and

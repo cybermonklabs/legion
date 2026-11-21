@@ -258,16 +258,7 @@ func (s *Store) migrate(ctx context.Context, all []migrations.Migration) (int, e
 // one of the numbered migrations, or the 14-digit UTC timestamp of a migration
 // added since — and 0 for a database no daemon has migrated yet.
 func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
-	var version int
-	var read error
-	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		version, read = schemaVersion(ctx, tx)
-		return read
-	})
-	if err != nil && read == nil {
-		err = fmt.Errorf("read schema_version: %w", err)
-	}
-	return version, err
+	return ReadOnly(ctx, s.pool, "read schema_version", schemaVersion)
 }
 
 // SchemaVersionTx reads the schema version through the caller's transaction.
@@ -332,19 +323,15 @@ func (s *Store) StopBoot(ctx context.Context, id int64, at time.Time) error {
 // them — the two durable facts a restart is proved by. A project that never
 // booted reads 0 and the zero time.
 func (s *Store) Boots(ctx context.Context, project string) (int, time.Time, error) {
-	var (
+	type counted struct {
 		count int
 		first time.Time
-		read  error
-	)
-	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		count, first, read = boots(ctx, tx, project)
-		return read
-	})
-	if err != nil && read == nil {
-		err = fmt.Errorf("read the boots of %s: %w", project, err)
 	}
-	return count, first, err
+	read, err := ReadOnly(ctx, s.pool, "read the boots of "+project, func(ctx context.Context, tx pgx.Tx) (counted, error) {
+		count, first, err := boots(ctx, tx, project)
+		return counted{count: count, first: first}, err
+	})
+	return read.count, read.first, err
 }
 
 // BootsTx reads boot history through the caller's transaction.

@@ -1096,18 +1096,9 @@ func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact
 	read, cancel := context.WithTimeout(ctx, spec.AckWait)
 	defer cancel()
 	return ghrepo.Under(spec.Renames, repo, func(name string) (bool, error) {
-		var (
-			recorded bool
-			readErr  error
-		)
-		err := store.TransactWith(read, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-			recorded, readErr = record.PullRequestRecorded(ctx, tx, name, number)
-			return readErr
+		return store.ReadOnly(read, pool, fmt.Sprintf("read whether %s#%d is recorded", name, number), func(ctx context.Context, tx pgx.Tx) (bool, error) {
+			return record.PullRequestRecorded(ctx, tx, name, number)
 		})
-		if err != nil && readErr == nil {
-			return false, fmt.Errorf("read whether %s#%d is recorded: %w", name, number, err)
-		}
-		return recorded, err
 	})
 }
 

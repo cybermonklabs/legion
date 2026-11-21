@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -58,6 +59,35 @@ func TestEachStandaloneReadOfTheStoreOpensReadOnlyAndReadsNoID(t *testing.T) {
 		}},
 		{name: "IssueReleaseSave", run: func(ctx context.Context, s *Store) error {
 			_, err := s.IssueReleaseSave(ctx, "legion", "LEGION-208", 1)
+			return err
+		}},
+		// The reads that run through ReadOnly, the one form of a standalone read.
+		{name: "SchemaVersion", run: func(ctx context.Context, s *Store) error {
+			_, err := s.SchemaVersion(ctx)
+			return err
+		}},
+		{name: "Boots", run: func(ctx context.Context, s *Store) error {
+			_, _, err := s.Boots(ctx, "legion")
+			return err
+		}},
+		{name: "Claims", run: func(ctx context.Context, s *Store) error {
+			_, err := s.Claims(ctx)
+			return err
+		}},
+		{name: "StuckPodResumes", run: func(ctx context.Context, s *Store) error {
+			_, err := s.StuckPodResumes(ctx, "legion", time.Now())
+			return err
+		}},
+		{name: "OpenPodHold", run: func(ctx context.Context, s *Store) error {
+			_, err := s.OpenPodHold(ctx, "legion", "LEGION-208")
+			return err
+		}},
+		{name: "PodReleaseRecords", run: func(ctx context.Context, s *Store) error {
+			_, err := s.PodReleaseRecords(ctx, "legion", time.Time{})
+			return err
+		}},
+		{name: "DuePodBackstops", run: func(ctx context.Context, s *Store) error {
+			_, err := s.DuePodBackstops(ctx, "legion", time.Now())
 			return err
 		}},
 	} {
