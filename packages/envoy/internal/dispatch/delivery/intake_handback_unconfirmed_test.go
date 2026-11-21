@@ -205,6 +205,11 @@ func writeFiller(conn *natsgo.Conn) error {
 	if err := conn.Publish("testdelivery.stall.filler", make([]byte, 64<<10)); err != nil {
 		return err
 	}
+	return writtenIntoTheSocket(conn)
+}
+
+// writtenIntoTheSocket waits until nats.go has written everything conn had buffered into its socket.
+func writtenIntoTheSocket(conn *natsgo.Conn) error {
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		buffered, err := conn.Buffered()
@@ -215,7 +220,7 @@ func writeFiller(conn *natsgo.Conn) error {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return errors.New("nats.go still held the filler 30 s on")
+			return errors.New("nats.go still held what it had buffered 30 s on")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -317,4 +322,128 @@ func TestAHandBackOnAConnectionGivenUpAsStaleNeverReachesTheStandbysDurable(t *t
 			row.relay.Accepted(), holdLive(t, row.pool), loggedMessages(row.logs()))
 	})
 	moveAndRequireNoLateHandBack(t, row)
+}
+
+// A hand-back an earlier delivery under the same hold left unconfirmed keeps the hold at the stop,
+// and reaches the server before the standby recreates the durable.
+//
+// The intake takes the durable again under the hold it holds after a create or a token write that
+// fails, and after a check that finds the durable elsewhere, so a process can stop while a delivery
+// before the latest still has a hand-back in the socket's kernel send queue that no flush has
+// confirmed. The row's holder takes the hold and the durable by hand, through a relay it can freeze
+// (testnats.StallRelay.Freeze), and its first delivery is handed one message, which its handler
+// leaves unanswered. The row freezes the link, fills the relay's window, and has that delivery hand
+// the message back, so the -NAK goes into the socket's own kernel send queue, where the relay has not
+// read it. It stops that delivery, subscribes a second one under the same hold, which hands nothing
+// back, and stops the holder under a context that has already ended. The row requires the hold still
+// live once that stop has returned, then lets the link move, and requires that the -NAK reached the
+// server before the standby created the durable and that the standby's consumer delivered the
+// message once (requireHandBackBeforeCreation). A stop that reads only the latest delivery released
+// the hold at once, leaving the -NAK to go out whenever the link moved, after a standby could have
+// recreated the durable; that is the negative control, which fails the hold's check.
+func TestAHandBackAnEarlierDeliveryLeftUnconfirmedKeepsTheHoldAtTheStop(t *testing.T) {
+	logs := captureLogs(t)
+	pool, ctx := deliveryTestPool(t)
+	seedDeliverySettings(t, ctx, pool)
+	natsURL := testnats.URL(t)
+	relay := testnats.StartStallRelay(t, natsURL)
+	publisher := intakeTestClient(t)
+	recorded := watchDurableEvents(t, natsURL)
+	client, err := bus.Connect([]string{relay.URL()}, bus.WithName(intakeConnectionName))
+	if err != nil {
+		t.Fatalf("connect the holder through the relay: %v", err)
+	}
+	t.Cleanup(client.Close)
+	handed := make(chan *natsgo.Msg, 1)
+	durable := newHeldDurable(client, deliveryTestLeases(t, pool), deliveryConsumerConfig, intakeKey,
+		func(_ *intakeDelivery, message intakeMessage) {
+			select {
+			case handed <- message.msg:
+			default:
+			}
+		})
+	if !durable.takeHold(ctx) {
+		t.Fatal("control: the holder did not take the delivery durable's hold")
+	}
+	first := durable.config()
+	if _, err := durable.subscribe(first.DeliverSubject); err != nil {
+		t.Fatalf("subscribe the holder's first delivery at %s: %v", first.DeliverSubject, err)
+	}
+	if _, err := publisher.JS().AddConsumer(bus.Stream, &first); err != nil {
+		t.Fatalf("create the delivery durable: %v", err)
+	}
+	token := intakeHoldToken{subject: first.DeliverSubject}
+	if err := durable.hold.SetToken(ctx, token.String()); err != nil {
+		t.Fatalf("record the holder's deliver subject: %v", err)
+	}
+	durable.recorded, durable.subject = token, first.DeliverSubject
+	earlier := delivering(&durable)
+	// Run in reverse: the link moves and the holder stops before its finalizer is waited for, which
+	// then confirms its hand-back and releases the hold.
+	t.Cleanup(durable.waitFinalizers)
+	t.Cleanup(func() {
+		relay.Move()
+		durable.stop(cancelled())
+	})
+
+	startIntakeProcess(t, pool, natsURL, nil)
+	from := recorded.count()
+	sequences := []uint64{publishMergedPullRequest(t, publisher, 100)}
+	var msg *natsgo.Msg
+	select {
+	case msg = <-handed:
+	case <-time.After(30 * time.Second):
+		t.Fatal("control: the holder's first delivery was not handed the message: " + consumerState(publisher))
+	}
+
+	relay.Freeze()
+	holderConn := client.Connection()
+	if err := writeFiller(holderConn); err != nil {
+		t.Fatalf("control: the holder's connection did not write the filler into its socket: %v", err)
+	}
+	relay.AwaitParked(t)
+	earlier.handBack(msg)
+	select {
+	case <-earlier.handBacksLanded():
+	case <-time.After(30 * time.Second):
+		t.Fatal("control: the first delivery's hand-back did not return within 30 s on the frozen link")
+	}
+	if !earlier.handedBack() {
+		t.Fatalf("control: the first delivery withheld its hand-back; logged %q", loggedMessages(logs()))
+	}
+	if err := writtenIntoTheSocket(holderConn); err != nil {
+		t.Fatalf("control: nats.go did not write the hand-back into the socket: %v", err)
+	}
+	requireHandBackStillOnTheHolder(t, relay)
+
+	durable.StopDelivering(cancelled())
+	second := durable.config()
+	if _, err := durable.subscribe(second.DeliverSubject); err != nil {
+		t.Fatalf("subscribe the holder's second delivery at %s: %v", second.DeliverSubject, err)
+	}
+	if latest := delivering(&durable); latest == earlier || latest.hold != earlier.hold || latest.handedBack() {
+		t.Fatal("control: the holder's second delivery is not a new one under the same hold that handed nothing back")
+	}
+	stopped := make(chan struct{})
+	go func() {
+		durable.stop(cancelled())
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the holder's stop did not return within 30 s")
+	}
+	if !holdLive(t, pool) {
+		t.Fatalf("the stop released its hold while the earlier delivery's hand-back was unconfirmed in the socket's send queue, so a standby can recreate the durable before the link moves and sends it; events %q", recorded.since(from))
+	}
+	relay.Move()
+	requireHandBackBeforeCreation(t, recorded, from, publisher, sequences)
+}
+
+// delivering is the latest delivery durable subscribed (heldDurable.delivering), read under its lock.
+func delivering(durable *heldDurable) *intakeDelivery {
+	durable.mu.Lock()
+	defer durable.mu.Unlock()
+	return durable.delivering
 }

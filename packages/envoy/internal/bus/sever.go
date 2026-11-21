@@ -132,12 +132,13 @@ func (d *severableDialer) markState() markState {
 // confirmMarks clears the marks once a flush that began at before has answered, when every marked
 // write had been handed to nats.go by then and no write has been marked since: each was then
 // written ahead of the flush's PING, on the socket the flush answered on or on one closed before
-// it, which its mark reset. A write marked since, or one still to be written, keeps them.
-func (d *severableDialer) confirmMarks(before markState) {
+// it, which its mark reset. A write marked since, or one still to be written, keeps them. It reports
+// whether no mark is left.
+func (d *severableDialer) confirmMarks(before markState) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if before.unwritten != 0 || d.marks != before.marks {
-		return
+		return false
 	}
 	d.marking = false
 	for _, ref := range d.open {
@@ -145,6 +146,14 @@ func (d *severableDialer) confirmMarks(before markState) {
 			conn.setMarked(false)
 		}
 	}
+	return true
+}
+
+// marked reports whether a mark is left (mark, confirmMarks).
+func (d *severableDialer) marked() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.marking
 }
 
 // severableConn is a net.Conn severableDialer handed nats.go, with the TCP socket under it. Its close
@@ -244,7 +253,10 @@ func (c *Client) Sever() {
 // (ConfirmMarked), each socket of the connection -- the one it has, and each one nats.go dials to
 // reconnect -- is reset rather than closed (severableConn): at Close, and when nats.go declares the
 // connection stale and reconnects. So the write is either confirmed, or discarded with the socket that
-// still held it in its kernel send queue, and never sent after the caller went on. A client with no
+// still held it in its kernel send queue, and never sent after the caller went on. The mark on a
+// socket dialed to reconnect is a safeguard: a bus connection refuses a publish while it reconnects
+// (ReconnectBufSize -1), and nats.go drops what it had buffered for the old socket as it binds the new
+// one, so a write marked before the reconnect never reaches the new socket. A client with no
 // connection marks nothing.
 func (c *Client) MarkUnconfirmed() (written func()) {
 	current := c.severable.Load()
@@ -254,15 +266,16 @@ func (c *Client) MarkUnconfirmed() (written func()) {
 	return current.dialer.mark()
 }
 
-// ConfirmMarked reports whether no write marked on the client's connection (MarkUnconfirmed) and
-// taken by nats.go before the call can reach the server later: the connection is closed, which reset
-// every marked socket, or a flush of it answered within timeout. A flush answers on the socket its
-// PING went out on and on no other, since nats.go fails every flush pending as it gives a socket up
-// (processOpErr), and each marked write went out ahead of that PING on the same socket, or on an
-// older one its mark reset as it closed. So a flush on a newer socket confirms nothing an older one
-// can still send. A flush that answers clears the marks, unless a write was marked since it began or
-// one marked before had not been taken yet (severableDialer.confirmMarks). It reads the connection
-// without the client's lock (severable).
+// ConfirmMarked reports whether no write marked on the client's connection (MarkUnconfirmed) can
+// reach the server later: the connection is closed, which reset every marked socket, or a flush of it
+// answered within timeout and cleared every mark. A flush answers on the socket its PING went out on
+// and on no other, since nats.go fails every flush pending as it gives a socket up (processOpErr),
+// and each marked write went out ahead of that PING on the same socket, or on an older one its mark
+// reset as it closed. So a flush on a newer socket confirms nothing an older one can still send. A
+// flush clears the marks, and ConfirmMarked reports true, only when every marked write had been
+// taken by nats.go as it began and none was marked since (severableDialer.confirmMarks): a write
+// still to be taken, or one taken behind the PING, is not confirmed. It reads the connection without
+// the client's lock (severable).
 func (c *Client) ConfirmMarked(timeout time.Duration) bool {
 	current := c.severable.Load()
 	if current == nil {
@@ -278,8 +291,13 @@ func (c *Client) ConfirmMarked(timeout time.Duration) bool {
 	if current.conn.FlushTimeout(timeout) != nil {
 		return false
 	}
-	if current.dialer != nil {
-		current.dialer.confirmMarks(before)
-	}
-	return true
+	return current.dialer == nil || current.dialer.confirmMarks(before)
+}
+
+// CarriesUnconfirmed reports whether the client's connection carries a write marked
+// (MarkUnconfirmed) that no flush has confirmed (ConfirmMarked). It reads the connection without the
+// client's lock (severable).
+func (c *Client) CarriesUnconfirmed() bool {
+	current := c.severable.Load()
+	return current != nil && current.dialer != nil && current.dialer.marked()
 }

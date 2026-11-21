@@ -922,13 +922,21 @@ func (d *heldDurable) releaseHold(hold *duty.Hold, lapse bool) {
 // waited for first, until ctx ends or hold is lost: the stop can return with one still waiting, since
 // its drain ends once nats.go has answered the drain's flush and run the messages it had buffered,
 // which need not wait for the write that holds nats.go's lock. Then the connection is flushed, a round
-// trip to the server, so the hand-backs nats.go had queued have reached it (flushHandBacks). A
-// delivery that handed nothing back reports true at once. The stop sealed delivery before this
-// reads it (intakeDelivery.seal), so no hand-back it does not count can begin afterwards: a
-// subscription callback the stop's unsubscribe went on without is either counted here or withheld.
+// trip to the server, so the hand-backs nats.go had queued have reached it (flushHandBacks). The stop
+// sealed delivery before this reads it (intakeDelivery.seal), so no hand-back it does not count can
+// begin afterwards: a subscription callback the stop's unsubscribe went on without is either counted
+// here or withheld.
+//
+// A delivery that handed nothing back reports true at once only while the connection carries no
+// hand-back a flush has not confirmed (bus.Client.CarriesUnconfirmed). A take-over the intake made
+// again under the same hold -- after a create or a token write that failed, or a check that found the
+// durable elsewhere -- leaves an earlier, stopped delivery, whose hand-back can still sit in the
+// socket's kernel send queue; the release waits for it as for the latest delivery's own, since the
+// flush confirms only once every marked hand-back of every delivery has been taken and reached the
+// server (bus.Client.ConfirmMarked).
 func (d *heldDurable) handBacksReached(ctx context.Context, delivery *intakeDelivery, hold *duty.Hold) bool {
 	if delivery == nil || !delivery.handedBack() {
-		return true
+		return !d.nats.CarriesUnconfirmed() || d.flushHandBacks()
 	}
 	landed := delivery.handBacksLanded()
 	select {

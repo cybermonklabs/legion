@@ -2,7 +2,11 @@ package bus
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"io"
 	"net"
+	"syscall"
 	"testing"
 	"time"
 
@@ -204,4 +208,165 @@ func writeFailedOn(dialer *severableDialer) bool {
 		}
 	}
 	return false
+}
+
+// stalledPeer listens on loopback through a socket whose receive buffer is the smallest the kernel
+// allows, and returns the address and a func that accepts one connection, which the row reads only
+// once the socket under test has closed: until then the peer's window stays full after about a
+// kilobyte, so what the dialer's socket writes after that stays in its own kernel send queue.
+func stalledPeer(t *testing.T) (address string, accept func() net.Conn) {
+	t.Helper()
+	config := net.ListenConfig{Control: func(_, _ string, raw syscall.RawConn) error {
+		var set error
+		if err := raw.Control(func(fd uintptr) {
+			set = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, 1)
+		}); err != nil {
+			return err
+		}
+		return set
+	}}
+	listener, err := config.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the stalled peer: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	return listener.Addr().String(), func() net.Conn {
+		t.Helper()
+		peer, err := listener.Accept()
+		if err != nil {
+			t.Fatalf("accept the dialer's socket: %v", err)
+		}
+		t.Cleanup(func() { _ = peer.Close() })
+		return peer
+	}
+}
+
+// queueMarker writes a 64 KiB filler and then marker on conn, each write into the kernel's send queue,
+// so the marker waits there behind the stalled peer's full window.
+func queueMarker(t *testing.T, conn net.Conn, marker []byte) {
+	t.Helper()
+	if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatalf("set the write deadline: %v", err)
+	}
+	for _, write := range [][]byte{make([]byte, 64<<10), marker} {
+		if _, err := conn.Write(write); err != nil {
+			t.Fatalf("control: a write did not fit in the socket's send queue: %v", err)
+		}
+	}
+}
+
+// closeSendsMarker closes conn and reports whether the peer then reads marker: a normal close sends
+// what the kernel still held, and a reset discards it.
+func closeSendsMarker(t *testing.T, conn, peer net.Conn, marker []byte) bool {
+	t.Helper()
+	// A reset closes the socket before severableConn closes it again, which answers that it is closed.
+	_ = conn.Close()
+	if err := peer.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		t.Fatalf("set the peer's read deadline: %v", err)
+	}
+	// A reset ends the read with an error once the peer has read what it had queued; a read that
+	// runs into the deadline means neither came.
+	read, err := io.ReadAll(peer)
+	if err != nil && !errors.Is(err, syscall.ECONNRESET) {
+		t.Fatalf("read the peer: %v", err)
+	}
+	return bytes.Contains(read, marker)
+}
+
+// A socket the dialer hands out while a write is marked is marked too, so its close is a reset. This
+// is the mark that covers each socket nats.go dials to reconnect (severableDialer.Dial). End to end it
+// is a safeguard: the bus refuses a publish while nats.go reconnects (ReconnectBufSize -1, nats.go
+// v1.55.0 :2426 and :4758), and nats.go drops what it had buffered for the old socket as it binds the
+// new one (bindToNewConn, :2336), so a hand-back cannot reach a socket dialed after its mark. The row
+// dials a stalled peer (stalledPeer), queues a marker behind the full window, and closes the socket.
+// Two subtests: with nothing marked (the control), the close is normal and the peer reads the marker;
+// with a write marked before the dial, the close is a reset and the peer never reads it. The negative
+// control is a dial that does not take the dialer's mark: the second subtest fails.
+func TestASocketDialedWhileAWriteIsMarkedIsResetAtClose(t *testing.T) {
+	marker := []byte("dialed-while-marked")
+	for _, marked := range []bool{false, true} {
+		name := "nothing marked"
+		if marked {
+			name = "a write marked before the dial"
+		}
+		t.Run(name, func(t *testing.T) {
+			address, accept := stalledPeer(t)
+			dialer := newSeverableDialer((&net.Dialer{}).DialContext)
+			if marked {
+				dialer.mark()()
+			}
+			conn, err := dialer.Dial("tcp", address)
+			if err != nil {
+				t.Fatalf("dial the stalled peer: %v", err)
+			}
+			peer := accept()
+			queueMarker(t, conn, marker)
+			sent := closeSendsMarker(t, conn, peer, marker)
+			switch {
+			case marked && sent:
+				t.Fatal("the socket dialed while a write was marked closed normally and sent the marker: the dial did not take the mark")
+			case !marked && !sent:
+				t.Fatal("control: the unmarked socket's close did not send the marker, so the row cannot tell a normal close from a reset")
+			}
+		})
+	}
+}
+
+// A flush clears the marks only when every marked write had been taken as it began and none was
+// marked since (severableDialer.confirmMarks): a write marked after the flush began goes out behind
+// its PING, and one not yet taken goes out whenever nats.go takes it, so the flush's answer confirms
+// neither. The row dials a stalled peer, queues a marker behind the full window, and confirms the
+// marks with a markState read at the flush's start. Three subtests:
+//   - nothing marked since the flush began (the control): the marks clear, and the close is normal, so
+//     the peer reads the marker;
+//   - a write marked after the flush began, and written: the marks stay, and the close is a reset;
+//   - a marked write not yet written as the flush began: the marks stay, and the close is a reset.
+//
+// The negative control is a confirm that clears the marks whatever came after the flush began: the
+// second and third subtests fail.
+func TestAFlushConfirmsNoMarkMadeOrUnwrittenAsItBegan(t *testing.T) {
+	marker := []byte("confirmed-or-not")
+	for _, tc := range []struct {
+		name    string
+		confirm func(*severableDialer) bool
+		cleared bool
+	}{
+		{name: "nothing marked since the flush began", cleared: true, confirm: func(d *severableDialer) bool {
+			d.mark()()
+			return d.confirmMarks(d.markState())
+		}},
+		{name: "a write marked after the flush began", confirm: func(d *severableDialer) bool {
+			d.mark()()
+			before := d.markState()
+			d.mark()()
+			return d.confirmMarks(before)
+		}},
+		{name: "a marked write not yet written as the flush began", confirm: func(d *severableDialer) bool {
+			written := d.mark()
+			before := d.markState()
+			written()
+			return d.confirmMarks(before)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			address, accept := stalledPeer(t)
+			dialer := newSeverableDialer((&net.Dialer{}).DialContext)
+			conn, err := dialer.Dial("tcp", address)
+			if err != nil {
+				t.Fatalf("dial the stalled peer: %v", err)
+			}
+			peer := accept()
+			queueMarker(t, conn, marker)
+			if cleared := tc.confirm(dialer); cleared != tc.cleared {
+				t.Errorf("confirmMarks reported the marks cleared=%t, want %t", cleared, tc.cleared)
+			}
+			sent := closeSendsMarker(t, conn, peer, marker)
+			switch {
+			case tc.cleared && !sent:
+				t.Error("control: the socket whose marks the flush cleared did not send the marker at its close, so the row cannot tell a normal close from a reset")
+			case !tc.cleared && sent:
+				t.Error("the socket closed normally and sent the marker: the flush cleared a mark it had not confirmed")
+			}
+		})
+	}
 }

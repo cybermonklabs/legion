@@ -539,16 +539,26 @@ func (d *intakeDelivery) seal() {
 }
 
 // handBacksLanded is closed once no hand-back publish of this delivery is still waiting for NATS
-// (publishHandBack), and already closed when none is.
+// (publishHandBack), and already closed when none is, or when there is no delivery: a stop whose
+// intake never subscribed waits only for the hand-backs the connection carries
+// (heldDurable.handBacksReached).
 func (d *intakeDelivery) handBacksLanded() <-chan struct{} {
+	if d == nil {
+		return closedLanded()
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.publishing == 0 {
-		landed := make(chan struct{})
-		close(landed)
-		return landed
+		return closedLanded()
 	}
 	return d.published
+}
+
+// closedLanded is a channel that is already closed: no hand-back is waiting.
+func closedLanded() <-chan struct{} {
+	landed := make(chan struct{})
+	close(landed)
+	return landed
 }
 
 // handedBack reports whether this delivery has published any hand-back (publishHandBack).

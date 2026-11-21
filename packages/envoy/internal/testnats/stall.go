@@ -22,7 +22,9 @@ import (
 // Connections the clients make after Stall are relayed as usual. Move reads the stalled connections
 // again: a socket its client closed normally then sends everything its kernel still held, and one it
 // reset sends nothing more. A stalled connection is for a client that gives it up; Move does not
-// make it whole again.
+// make it whole again. Freeze stalls a connection the client keeps: it holds what the server sends
+// rather than dropping it, so after Move the connection carries on, both ways, as a link that
+// recovered does.
 type StallRelay struct {
 	listener net.Listener
 	target   string
@@ -36,10 +38,12 @@ type StallRelay struct {
 // stallConn is one connection the relay relays, with the state of its stall.
 type stallConn struct {
 	client, server net.Conn
-	// gate is nil while the relay reads the client, and open from Stall until Move.
+	// gate is nil while the relay reads the client, and open from Stall or Freeze until Move.
 	gate chan struct{}
-	// stalled is set by Stall and never cleared: the server's bytes are dropped from then on.
-	stalled bool
+	// stalled is set by Stall and Freeze and never cleared; dropServer is set by Stall alone: the
+	// server's bytes are dropped from then on, where a frozen connection holds them until Move.
+	stalled    bool
+	dropServer bool
 	// parked is closed once the reader has stopped at the gate Stall set, so it reads nothing more.
 	parked    chan struct{}
 	parkOnce  *sync.Once
@@ -92,7 +96,13 @@ func (r *StallRelay) Accepted() int {
 
 // Stall stops the relay reading what the clients of every connection it relays now send, and drops
 // what the server sends them from now on.
-func (r *StallRelay) Stall() {
+func (r *StallRelay) Stall() { r.stall(true) }
+
+// Freeze stops the relay reading what the clients of every connection it relays now send, and holds
+// what the server sends them until Move, which then relays both again.
+func (r *StallRelay) Freeze() { r.stall(false) }
+
+func (r *StallRelay) stall(dropServer bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, c := range r.conns {
@@ -100,6 +110,7 @@ func (r *StallRelay) Stall() {
 			c.gate, c.parked, c.parkOnce = make(chan struct{}), make(chan struct{}), new(sync.Once)
 		}
 		c.stalled = true
+		c.dropServer = dropServer
 	}
 }
 
@@ -253,8 +264,9 @@ func (r *StallRelay) toServer(c *stallConn) {
 	_ = c.server.(*net.TCPConn).CloseWrite()
 }
 
-// toClient forwards what the server sends until a stall, and reads and drops it from then on, until
-// the server closes its side.
+// toClient forwards what the server sends until the server closes its side. After Stall it reads and
+// drops it; while frozen (Freeze) it reads nothing until Move, so the server's bytes wait in its
+// socket and reach the client once the link moves.
 func (r *StallRelay) toClient(c *stallConn) {
 	defer close(c.ended)
 	defer c.client.Close()
@@ -262,11 +274,17 @@ func (r *StallRelay) toClient(c *stallConn) {
 	buffer := make([]byte, 32<<10)
 	alive := true
 	for {
+		r.mu.Lock()
+		gate, dropServer := c.gate, c.dropServer
+		r.mu.Unlock()
+		if gate != nil && !dropServer {
+			<-gate
+		}
 		n, err := c.server.Read(buffer)
 		r.mu.Lock()
-		stalled := c.stalled
+		dropServer = c.dropServer
 		r.mu.Unlock()
-		if n > 0 && alive && !stalled {
+		if n > 0 && alive && !dropServer {
 			if _, err := c.client.Write(buffer[:n]); err != nil {
 				alive = false
 			}
