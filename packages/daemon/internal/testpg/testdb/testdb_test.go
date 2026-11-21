@@ -1,9 +1,12 @@
 package testdb
 
 import (
+	"maps"
+	"net/url"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -69,7 +72,7 @@ func TestDatabaseURLRefusesARewriteThatMovesTheConnection(t *testing.T) {
 			name:     "a `?` inside the user name",
 			dsn:      "postgres://evil.example?x=@localhost/db",
 			database: "legion_live_proof_1",
-			refuse:   "the rewrite of LEGION_TEST_PG_DSN is not the connection it was asked for: pgx reads another host and user from it",
+			refuse:   "the rewrite of LEGION_TEST_PG_DSN is not the connection it was asked for: pgx reads another host, user and parameters from it",
 		},
 		{
 			// A second `@` inside the authority is a port of `5433@10.1.2.3` for libpq, which reads
@@ -131,7 +134,7 @@ func TestDatabaseURLRefusesARewriteThatMovesTheConnection(t *testing.T) {
 			name:     "the issue's DSN at the run's first rewrite",
 			dsn:      "postgres://evil.example?x=@localhost/db",
 			database: "postgres",
-			refuse:   "the rewrite of LEGION_TEST_PG_DSN is not the connection it was asked for: pgx reads another host and user from it",
+			refuse:   "the rewrite of LEGION_TEST_PG_DSN is not the connection it was asked for: pgx reads another host, user and parameters from it",
 		},
 		{
 			// The six cases below carry a password into text a parser quotes, which is where a
@@ -171,7 +174,7 @@ func TestDatabaseURLRefusesARewriteThatMovesTheConnection(t *testing.T) {
 			name:     "a password holding a `#` that leaves the DSN a URL",
 			dsn:      "postgres://u:12#SECRET@localhost/db",
 			database: "legion_live_proof_1",
-			refuse:   "the rewrite of LEGION_TEST_PG_DSN is not the connection it was asked for: pgx reads another host, port, user and database from it",
+			refuse:   "the rewrite of LEGION_TEST_PG_DSN is not the connection it was asked for: pgx reads another host, port, user, database and credential from it",
 			secret:   "SECRET",
 		},
 		{
@@ -206,7 +209,7 @@ func TestDatabaseURLRefusesARewriteThatMovesTheConnection(t *testing.T) {
 			name:     "a password holding an `@`",
 			dsn:      "postgres://legion:p@ss@localhost/db",
 			database: "legion_live_proof_1",
-			refuse:   "the rewrite of LEGION_TEST_PG_DSN is not the connection it was asked for: pgx reads another host from it",
+			refuse:   "the rewrite of LEGION_TEST_PG_DSN is not the connection it was asked for: pgx reads another host and credential from it",
 			secret:   "ss",
 		},
 	} {
@@ -234,8 +237,11 @@ func TestDatabaseURLRefusesARewriteThatMovesTheConnection(t *testing.T) {
 	}
 }
 
-// PoolBounded holds every pool pgxpool opens on the URL to PoolConns connections, and keeps the
-// size a DSN sets itself, as internal/daemon's daemonDSN sets one connection.
+// PoolBounded holds every pool pgxpool opens on the URL to PoolConns connections, keeps the size a
+// DSN sets itself, as internal/daemon's daemonDSN sets one connection, and keeps every byte of the
+// query it does not add: pgx reads the query with its own libpq-style parser, which decodes only
+// %XX and keeps a `+`, so a query rebuilt by Go's encoder (`%20` written as `+`) would send the
+// server another value.
 func TestPoolBoundedHoldsThePoolUnlessTheDSNSizesItItself(t *testing.T) {
 	t.Setenv("PGPORT", "")
 	t.Setenv("PGUSER", "legion_test")
@@ -244,9 +250,13 @@ func TestPoolBoundedHoldsThePoolUnlessTheDSNSizesItItself(t *testing.T) {
 		conns           int32
 	}{
 		{"a DSN that sets no size", "postgres://legion_test@127.0.0.1:5433/run?sslmode=disable",
-			"postgres://legion_test@127.0.0.1:5433/run?pool_max_conns=4&sslmode=disable", PoolConns},
+			"postgres://legion_test@127.0.0.1:5433/run?sslmode=disable&pool_max_conns=4", PoolConns},
+		{"a DSN with no query", "postgres://legion_test@127.0.0.1:5433/run",
+			"postgres://legion_test@127.0.0.1:5433/run?pool_max_conns=4", PoolConns},
 		{"a DSN that sets its own size", "postgres://legion_test@127.0.0.1:5433/run?pool_max_conns=1&sslmode=disable",
 			"postgres://legion_test@127.0.0.1:5433/run?pool_max_conns=1&sslmode=disable", 1},
+		{"a DSN whose options hold an encoded space", "postgres://legion_test@127.0.0.1:5433/run?options=-c%20search_path%3Dx&sslmode=disable",
+			"postgres://legion_test@127.0.0.1:5433/run?options=-c%20search_path%3Dx&sslmode=disable&pool_max_conns=4", PoolConns},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := PoolBounded("LEGION_TEST_PG_DSN", tc.dsn)
@@ -262,6 +272,46 @@ func TestPoolBoundedHoldsThePoolUnlessTheDSNSizesItItself(t *testing.T) {
 			}
 			if config.MaxConns != tc.conns {
 				t.Fatalf("a pool on %s holds %d connections, want %d", got, config.MaxConns, tc.conns)
+			}
+			before, err := pgxpool.ParseConfig(tc.dsn)
+			if err != nil {
+				t.Fatalf("pgxpool refused %s: %v", tc.dsn, err)
+			}
+			if !maps.Equal(config.ConnConfig.RuntimeParams, before.ConnConfig.RuntimeParams) {
+				t.Fatalf("pgx reads the parameters %v from %s, want %v as from %s", config.ConnConfig.RuntimeParams, got, before.ConnConfig.RuntimeParams, tc.dsn)
+			}
+		})
+	}
+}
+
+// rewriteDSN refuses a rewrite from which pgx reads any value other than the one asked for, not
+// only another host, port, user or database: a run-time parameter, such as options, and a password
+// (named the credential) are read from the URL too, and each is named in the refusal with no value.
+func TestARewriteThatChangesAnyValuePgxReadsIsRefused(t *testing.T) {
+	t.Setenv("PGPORT", "")
+	t.Setenv("PGUSER", "legion_test")
+	// The password case's URLs are built, as internal/daemon's secretDSN builds its own: a test's
+	// stand-in password is no credential, and a URL literal holding one reads as one.
+	withPassword := func(password string) string {
+		return (&url.URL{Scheme: "postgres", User: url.UserPassword("legion_test", password), Host: "127.0.0.1:5433", Path: "/run"}).String()
+	}
+	for _, tc := range []struct{ name, from, to, moved string }{
+		{"an option", "postgres://legion_test@127.0.0.1:5433/run?options=-c%20search_path%3Dx", "postgres://legion_test@127.0.0.1:5433/run?options=-c+search_path%3Dx", "parameters"},
+		{"a password", withPassword("first"), withPassword("second"), "credential"},
+		{"a connection setting", "postgres://legion_test@127.0.0.1:5433/run?sslmode=disable", "postgres://legion_test@127.0.0.1:5433/run?sslmode=require", "connection settings"},
+		{"nothing", "postgres://legion_test@127.0.0.1:5433/run?sslmode=disable", "postgres://legion_test@127.0.0.1:5433/run?sslmode=disable", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			from, err := pgconn.ParseConfig(tc.from)
+			if err != nil {
+				t.Fatal(err)
+			}
+			to, err := pgconn.ParseConfig(tc.to)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := readingOf(to).moved(readingOf(from)); got != tc.moved {
+				t.Fatalf("the fields that moved from %s to %s = %q, want %q", tc.from, tc.to, got, tc.moved)
 			}
 		})
 	}

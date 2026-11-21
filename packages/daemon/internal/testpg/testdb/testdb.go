@@ -24,9 +24,11 @@ package testdb
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"os"
@@ -224,12 +226,15 @@ const PoolConns = 4
 // poolMaxConns is the key of a DSN's query that pgxpool reads as its pool's size.
 const poolMaxConns = "pool_max_conns"
 
-// PoolBounded is dsn with its pools held to PoolConns connections (pool_max_conns), unless dsn sets
-// a size of its own, which it keeps. name is what the caller read dsn from, and it starts a
-// refusal, as DatabaseURL's does. Only pgxpool reads that key: pgx.Connect sends it to the server
-// as a setting the server does not know, and libpq refuses the URL. So it is on the URLs that
-// only pools open, internal/testpg's Clone and internal/daemon's testDSN, and not on DatabaseURL's
-// or Database's, which an admin connection, a scratch Dispatch and a shell can be given.
+// PoolBounded is dsn with its pools held to PoolConns connections (pool_max_conns), unless pgx
+// already reads a size from dsn, which it keeps. The key is appended to dsn's query as it stands,
+// every other byte of the query kept, since pgx reads a query with its own libpq-style parser
+// (pgconn's parse_url.go), which decodes only %XX and keeps a `+`, where Go's url.Values would
+// write an encoded space back as `+` and drop a pair holding `;`. name is what the caller read dsn
+// from, and it starts a refusal, as DatabaseURL's does. Only pgxpool reads that key: pgx.Connect
+// sends it to the server as a setting the server does not know, and libpq refuses the URL. So it
+// goes only on URLs that only pools open, and never on DatabaseURL's or Database's own, which an
+// admin connection, a scratch Dispatch and a shell can be given.
 func PoolBounded(name, dsn string) (string, error) {
 	return rewriteDSN(name, dsn, rewrite{pooled: true})
 }
@@ -252,16 +257,64 @@ func (r rewrite) applied(read reading) reading {
 	if r.host != "" {
 		read.host, read.port = r.host, r.port
 	}
+	if r.pooled && !read.sized() {
+		read.params = maps.Clone(read.params)
+		read.params[poolMaxConns] = strconv.Itoa(PoolConns)
+	}
 	return read
 }
 
-// reading is what pgconn.ParseConfig read from a DSN: the four fields a rewrite keeps or sets,
-// and the four a refusal names. It holds no password, and a refusal prints no value of it.
+// reading is what pgconn.ParseConfig read from a DSN: the host, port, user and database a rewrite
+// keeps or sets, the password, every run-time parameter (each key pgx does not take itself,
+// pool_max_conns among them, which pgxpool takes out after), and the rest of what pgx reads from a
+// DSN's settings (settings). A refusal names the fields that differ and prints no value of one.
 type reading struct {
 	host     string
 	port     uint16
 	user     string
 	database string
+	password string
+	params   map[string]string
+	settings settings
+}
+
+// settings is what pgx reads from a DSN's settings beside the fields reading names on its own:
+// the connect timeout, the TLS each attempt makes (sslmode and the files and checks it names), the
+// attempts it falls back to, and the authentication and protocol options. The server name a TLS
+// attempt verifies, and the host and port of each fallback, follow the host, which reading compares
+// on its own and Delayed moves.
+type settings struct {
+	connectTimeout           time.Duration
+	tls                      tlsReading
+	fallbacks                string
+	kerberosSrvName          string
+	kerberosSpn              string
+	sslNegotiation           string
+	sslCertMode              string
+	minProtocol, maxProtocol string
+	channelBinding           string
+	requireAuth              string
+}
+
+// tlsReading is what a TLS configuration pgx built from a DSN says of the check it makes: none
+// (off), or whether it skips the server's name, verifies the chain itself, trusts named roots, and
+// sends a certificate of its own.
+type tlsReading struct {
+	on, skipsName, verifiesChain, namesRoots, sendsCertificate bool
+}
+
+func tlsReadingOf(config *tls.Config) tlsReading {
+	if config == nil {
+		return tlsReading{}
+	}
+	return tlsReading{on: true, skipsName: config.InsecureSkipVerify, verifiesChain: config.VerifyPeerCertificate != nil,
+		namesRoots: config.RootCAs != nil, sendsCertificate: len(config.Certificates) != 0 || config.GetClientCertificate != nil}
+}
+
+// sized is whether pgx reads a pool size from the DSN this reading is of.
+func (r reading) sized() bool {
+	_, set := r.params[poolMaxConns]
+	return set
 }
 
 // moved names the fields of this reading that are not asked's, in the order the fields are
@@ -269,17 +322,23 @@ type reading struct {
 // rewrite: which fields moved, and no value of one.
 func (r reading) moved(asked reading) string {
 	var fields []string
-	if r.host != asked.host {
-		fields = append(fields, "host")
-	}
-	if r.port != asked.port {
-		fields = append(fields, "port")
-	}
-	if r.user != asked.user {
-		fields = append(fields, "user")
-	}
-	if r.database != asked.database {
-		fields = append(fields, "database")
+	for _, field := range []struct {
+		name  string
+		moved bool
+	}{
+		{"host", r.host != asked.host},
+		{"port", r.port != asked.port},
+		{"user", r.user != asked.user},
+		{"database", r.database != asked.database},
+		// The password is named "credential": a refusal prints no part of a password, and the
+		// word "password" holds the letters of short ones ("ss", "word").
+		{"credential", r.password != asked.password},
+		{"parameters", !maps.Equal(r.params, asked.params)},
+		{"connection settings", r.settings != asked.settings},
+	} {
+		if field.moved {
+			fields = append(fields, field.name)
+		}
 	}
 	switch len(fields) {
 	case 0:
@@ -293,13 +352,24 @@ func (r reading) moved(asked reading) string {
 
 // readingOf is what pgx read from a DSN it took.
 func readingOf(cfg *pgconn.Config) reading {
-	return reading{host: cfg.Host, port: cfg.Port, user: cfg.User, database: cfg.Database}
+	fallbacks := make([]string, 0, len(cfg.Fallbacks))
+	for _, fallback := range cfg.Fallbacks {
+		fallbacks = append(fallbacks, fmt.Sprintf("%+v", tlsReadingOf(fallback.TLSConfig)))
+	}
+	return reading{host: cfg.Host, port: cfg.Port, user: cfg.User, database: cfg.Database, password: cfg.Password,
+		params: maps.Clone(cfg.RuntimeParams), settings: settings{
+			connectTimeout: cfg.ConnectTimeout, tls: tlsReadingOf(cfg.TLSConfig), fallbacks: strings.Join(fallbacks, ";"),
+			kerberosSrvName: cfg.KerberosSrvName, kerberosSpn: cfg.KerberosSpn, sslNegotiation: cfg.SSLNegotiation,
+			sslCertMode: cfg.SSLCertMode, minProtocol: cfg.MinProtocolVersion, maxProtocol: cfg.MaxProtocolVersion,
+			channelBinding: cfg.ChannelBinding, requireAuth: cfg.RequireAuth,
+		}}
 }
 
 // rewriteDSN is dsn rewritten as want says: one rewrite of dsn's URL, read back with
 // pgconn.ParseConfig, which is the parser pgx connects through. It answers that rewrite where pgx
-// reads it as the reading of dsn with want in it, and a refusal and no DSN at all otherwise. name
-// is what the caller read dsn from, and it starts the refusal.
+// reads it as the reading of dsn with want in it, every value pgx reads compared (reading), and a
+// refusal and no DSN at all otherwise. name is what the caller read dsn from, and it starts the
+// refusal. The query is never rebuilt: a key the rewrite adds is appended to it as it stands.
 //
 // Three strings go through a parser here: dsn through net/url, dsn through pgx, and the rewrite
 // through pgx. A parser that refuses one of them earns the fixed line that names which string it
@@ -315,26 +385,34 @@ func rewriteDSN(name, dsn string, want rewrite) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%s: net/url refuses it", name)
 	}
+	before, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		return "", fmt.Errorf("%s: pgx refuses it", name)
+	}
+	read := readingOf(before)
 	if want.database != "" {
 		parsed.Path = "/" + want.database
 	}
 	if want.host != "" {
 		parsed.Host = net.JoinHostPort(want.host, strconv.Itoa(int(want.port)))
 	}
-	if query := parsed.Query(); want.pooled && !query.Has(poolMaxConns) {
-		query.Set(poolMaxConns, strconv.Itoa(PoolConns))
-		parsed.RawQuery = query.Encode()
+	if want.pooled && !read.sized() {
+		pair := poolMaxConns + "=" + strconv.Itoa(PoolConns)
+		switch {
+		case parsed.RawQuery == "":
+			parsed.RawQuery = pair
+		case strings.HasSuffix(parsed.RawQuery, "&"):
+			parsed.RawQuery += pair
+		default:
+			parsed.RawQuery += "&" + pair
+		}
 	}
 	rewritten := parsed.String()
-	before, err := pgconn.ParseConfig(dsn)
-	if err != nil {
-		return "", fmt.Errorf("%s: pgx refuses it", name)
-	}
 	after, err := pgconn.ParseConfig(rewritten)
 	if err != nil {
 		return "", fmt.Errorf("the rewrite of %s: pgx refuses it", name)
 	}
-	if moved := readingOf(after).moved(want.applied(readingOf(before))); moved != "" {
+	if moved := readingOf(after).moved(want.applied(read)); moved != "" {
 		return "", fmt.Errorf(
 			"the rewrite of %s is not the connection it was asked for: pgx reads another %s from it",
 			name, moved)
