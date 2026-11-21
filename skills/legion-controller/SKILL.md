@@ -56,7 +56,6 @@ Every launch opens with a start message. Envoy keeps no wake sent while no contr
 | A Slack mention | `skill://legion-controller/references/slack-mentions.md` |
 | A finding sent as text | Open an ask ([Findings](#findings-and-the-issues-you-file)) |
 | An answer to a park ask; a deferral ask | `skill://legion-controller/references/park-asks.md`; `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` |
-| `intake-gave-up` | Find the cause, route the fix, then `replay_give_up` once the fix runs in the daemon, or `discard_give_up` with a reason, as the docs site's troubleshooting page, "A message the intake gave up", says |
 | Any other wake, a GitHub mention | `skill://legion-controller/references/wakes.md` |
 
 ## Trees waiting on a root claim
