@@ -20,27 +20,20 @@ import {
   runDigestOf,
 } from "../reserve";
 import { DecisionError, type ReserveVerdict } from "../s10-decision";
-import {
-  assertNoAnswer,
-  CandidateLog,
-  InputsLog,
-  inventoryOf,
-  main,
-  writeTimeAsk,
-} from "../s10-inputs";
+import { assertNoAnswer, CandidateLog, InputsLog, main, writeTimeAsk } from "../s10-inputs";
 import {
   AnswerLog,
   type CandidateCounts,
   INPUTS_VERSION,
   type InventoryLine,
   inventoryLinesOf,
+  inventoryOf,
   pageRecordOf,
   type RequestInputs,
   requestInputsOf,
   type StageRecord,
   stageRecordOf,
 } from "../s10-inputs-io";
-import { S10InputsError } from "../s10-stage";
 
 /**
  * `s10-inputs.ts` against a fake Dispatch that serves the reads it makes in the shapes the real
@@ -1614,7 +1607,7 @@ describe("the claim's inputs, as of each request's judged moment", () => {
         decisions(() => target).decide
       );
       expect(refused.status).toBe(2);
-      expect(refused.errors).toContain("written only under its registered read");
+      expect(refused.errors).toContain("the claim run's stages run only under its registered read");
     } finally {
       process.env[RESERVE_VARIABLE] = `read:${CLAIM}`;
     }
@@ -1773,7 +1766,7 @@ describe("the inventory", () => {
     expect(() => inventoryOf(byCaseId, trees.slice(0, 2), report)).toThrow(
       "which no eligible tree of its record holds"
     );
-    expect(() => inventoryOf(byCaseId, trees, report.slice(1))).toThrow(S10InputsError);
+    expect(() => inventoryOf(byCaseId, trees, report.slice(1))).toThrow(CorpusError);
     const unknown = [...report, "nowhere@2026-11-17T10:00:00Z"];
     expect(() => inventoryOf(byCaseId, trees, unknown)).toThrow("which the build does not hold");
   });
@@ -1801,11 +1794,18 @@ describe("the answer rule", () => {
     // The last edit before the answer; a settlement of the one document; the person's answer
     // after another user's; a restored answer of another user; and, after a settlement of a
     // document of a list S10 cannot read, the person's answer.
-    expect(placed(ASK_A)).toEqual([18, { eventId: 20, own: true }]);
-    expect(placed(ASK_B)).toEqual([24, { eventId: 25, own: true }]);
-    expect(placed(ASK_C)).toEqual([30, { eventId: 31, own: true }]);
-    expect(placed(ASK_R)).toEqual([49, { eventId: 50, own: false }]);
-    expect(placed(ASK_N)).toEqual([57, { eventId: 59, own: true }]);
+    expect(placed(ASK_A)).toEqual([18, { eventId: 20, own: true, settlement: null }]);
+    expect(placed(ASK_B)).toEqual([
+      24,
+      {
+        eventId: 25,
+        own: true,
+        settlement: { type: "artifact.approved", artifactId: "doc-b", version: 4 },
+      },
+    ]);
+    expect(placed(ASK_C)).toEqual([30, { eventId: 31, own: true, settlement: null }]);
+    expect(placed(ASK_R)).toEqual([49, { eventId: 50, own: false, settlement: null }]);
+    expect(placed(ASK_N)).toEqual([57, { eventId: 59, own: true, settlement: null }]);
   });
 
   test("a list it cannot read names no one document, so a settlement of the lead answers nothing", () => {

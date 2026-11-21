@@ -818,7 +818,7 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 // was enrolled unchecked. A list Dispatch did not answer for is refused, since taking it
 // unchecked could name a project its person may not see; so is any list, empty or not, when
 // Dispatch refused the broker's own account or the broker could not read its token
-// (projectaccess.ErrBrokerRefused), a deployment that has not listed the broker, through which no
+// (dispatchread.ErrBrokerRefused), a deployment that has not listed the broker, through which no
 // caller enrolls. An empty list is refused too when Dispatch answered a member kind the broker
 // does not know (projectaccess.ErrUnknownMemberKind), since the kind is what an empty list asks; a
 // list naming projects asks only whether the person may see each, and no kind. Each refusal wraps
@@ -2529,7 +2529,8 @@ func (s *Service) revokeCredential(ctx context.Context, id, person, actor string
 		}
 		svc = *service
 	}
-	if !record.MayDecide(record.KindLauncherCredential, approver, svc, person) {
+	// A machine login's approver is never a group, so no group reader is asked.
+	if !record.MayDecide(record.KindLauncherCredential, approver, svc, person, nil) {
 		return ErrNotApprover
 	}
 	if revokedAt != nil {

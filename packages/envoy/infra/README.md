@@ -407,14 +407,22 @@ How `/v1` admits a caller depends on who reaches the listener:
   `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE` and `ENVOY_OIDC_ACCOUNTS` (`<l>.oidcAccounts` joined
   by commas) in place of the flag, and admits a request only with a projected ServiceAccount token
   `<l>.oidcIssuer` signed for `<l>.oidcAudience`, of a subject `<l>.oidcAccounts` lists; anything
-  else gets 401. A calling pod mounts such a token with a projected volume of its own
-  (`serviceAccountToken` with `audience: <l>.oidcAudience`) and sends it as
-  `Authorization: Bearer <token>`. The NetworkPolicy then narrows who may try, and is not the only
-  guard. The listener renders no `ENVOY_ALLOWED_HOSTS`, since a listener that requires a bearer
-  serves `/v1` to any `Host`, so `<l>.allowedHosts` is refused. It reads the issuer's discovery
-  document when it starts and refuses to start when the issuer does not answer, so its pod needs
-  egress to the issuer, such as GKE's cluster issuer,
-  `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`.
+  else gets 401, except a token it cannot yet check (below). A calling pod mounts such a token with
+  a projected volume of its own (`serviceAccountToken` with `audience: <l>.oidcAudience`) and sends
+  it as `Authorization: Bearer <token>`. The NetworkPolicy then narrows who may try, and is not the
+  only guard. The listener renders no `ENVOY_ALLOWED_HOSTS`, since a listener that requires a
+  bearer serves `/v1` to any `Host`, so `<l>.allowedHosts` is refused. The listener does not read
+  the issuer's discovery document before it starts: it starts, reads the document in the
+  background, and answers every projected token 503 with `Retry-After: 1` until it has read it.
+  Its pod still needs egress to the issuer, such as GKE's cluster issuer,
+  `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`:
+  without it, or with a wrong `<l>.oidcIssuer`, the pod becomes Ready, the rolling update replaces
+  the old pod, and every `/v1` caller then gets that 503. `/healthz`'s `oidc` field reads `false`
+  and `envoy_listener_oidc_issuer_discovered{issuer="cluster"}` reads `0` while the listener has
+  not read the issuer. None of the probes below reads either, and this component renders no scrape
+  of the listener's `/metrics` (its one `PodMonitoring` scrapes the hub's NATS pods), so the
+  deployment that runs the listener adds a scrape of the listener's `/metrics` on 9020, which takes
+  no credential, and an alert on that gauge reading `0`: without them nothing shows this state.
 
 Three probes read the pod's own loopback, two routes between them:
 
@@ -4005,9 +4013,13 @@ sessions that share one user holding it, as a `gcp:NatsHub`'s `sessionUser` does
 each receive every other session's replies, so request/reply from such a session is refused by
 design.
 The listener's connection probe of a session needs no rule of its own: it is a request on that
-same relay subject, which the session's relay subscription receives and answers on the probe's own
-reply inbox under this set's `_INBOX.>` publish, and the listener's `notifications.>` publish and
-`_INBOX.>` subscribe carry the listener's side.
+same relay subject, which the session's relay subscription receives and answers under this set's
+`_INBOX.>` publish, and the listener's `notifications.>` publish and `_INBOX.>` subscribe carry the
+listener's side. Its reply subject names the session, `<reply inbox>.<session id>.<random token>`
+(`bus.SessionReplySubject`: a new reply inbox of the listener's, the session's id, and 128 random
+bits), as each relay frame's does under the relay's one reply inbox. The probe waits only on the
+subject it made for that session, and the relay moves a frame only on a reply whose subject names
+the session the frame was sent to: a reply naming another session changes nothing.
 A host's user, holding `HostPermissions`, subscribes to `_INBOX.>` for its listener.
 
 `HostPermissions(machineID)` is the grant of a host's one NATS user, which its listener and every

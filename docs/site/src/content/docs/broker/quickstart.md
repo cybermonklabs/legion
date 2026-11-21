@@ -64,7 +64,8 @@ agent-secrets: request 0eaf43c4-dea5-4d41-8798-c25f6be7d811 to the broker AGENT_
 agent-secrets: waiting for ada@example.com to approve it on the secrets broker: http://127.0.0.1:62083/approve/<record>
 ```
 
-The approver is the one the broker recorded when the agent asked: the secret's owner, or, for a
+The approver is the one the broker recorded when the agent asked: the secret's owner; for a secret
+a Google group owns, any member of that group, which the line names as `group:<address>`; or, for a
 shared secret, anyone signed in to the broker. Tell that person, not whoever you believe owns the
 secret: a request goes to whomever its owner tag named at the moment it was made.
 `agent-secrets request` and `agent-secrets status` print the same `waiting for …` line while the
