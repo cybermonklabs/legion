@@ -459,11 +459,11 @@ func (s *server) accountAddressAllows(r *http.Request) bool {
 
 // refuseAccountAddress writes 429 RATE_LIMITED and reports true when r's source address has no
 // request left in the bucket (DefaultAccountLimit): authenticate's first step for the
-// accountAuth class and the service class, spent before the caller's token is verified. Its words
-// name the ServiceAccount token those callers really send. The approval page's routes and GET
-// /signin/status spend the same bucket and answer their own refusals, since no browser and no
-// caller of a public route sent a token to be told about (approval.Page.WriteRateLimited,
-// signInStatus).
+// accountAuth class, the service class and the listener class, spent before the caller's token
+// is verified. Its words name the ServiceAccount token those callers really send. The approval
+// page's routes and GET /signin/status spend the same bucket and answer their own refusals, since
+// no browser and no caller of a public route sent a token to be told about
+// (approval.Page.WriteRateLimited, signInStatus).
 func (s *server) refuseAccountAddress(w http.ResponseWriter, r *http.Request) bool {
 	if s.accountAddressAllows(r) {
 		return false

@@ -119,6 +119,13 @@ const (
 	// CallerService is a service logged in with its own ServiceAccount token, by the service and
 	// the account it presented.
 	CallerService = "service"
+	// CallerListener is a listener reading project privacy with its own identity token, by its
+	// BROKER_NATS_SERVICES entry, <kind>/<machine id>, which is also its NATS user's name.
+	CallerListener = "listener"
+	// CallerPrivacyMeasure is the privacy measurement reading project privacy with its own
+	// identity token, by its BROKER_NATS_SERVICES entry, privacy-measure/<run name>; it takes no
+	// NATS user. Its reads are counted apart from a listener's.
+	CallerPrivacyMeasure = "privacy-measure"
 	// CallerSignIn is a person signed in to the broker's approval page, by their login.
 	CallerSignIn = "sign-in"
 	// CallerAirlock is a call through the airlock's proxy port, by the grant and the enrollment

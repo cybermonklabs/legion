@@ -128,6 +128,7 @@ const (
 	labelServiceToken      = "service_token_not_verified"
 	labelTokenTooLong      = "token_too_long"
 	labelServiceNotListed  = "service_not_listed"
+	labelNoNATSUser        = "no_nats_user"
 	labelHeldToProjects    = "held_to_projects"
 	labelSystemSubject     = "system_subject"
 	labelOpenDirection     = "open_direction"
@@ -149,19 +150,23 @@ func credentialKind(req Request) string {
 	return credentialNone
 }
 
-// serviceGrant is entry's kind's grant, before it is held to the entry's projects.
-func serviceGrant(entry ServiceEntry) natsgrant.Permissions {
+// serviceGrant is entry's kind's grant, before it is held to the entry's projects, and ok false
+// for a kind it lists no grant for: the privacy measurement, which reads the broker's GET
+// /v1/project-privacy and no subject of the hub, and any kind added here without one. Such an
+// entry is refused no_nats_user here: an empty grant would reach admit's guard, which refuses it
+// open_direction, as though the grant were open rather than missing.
+func serviceGrant(entry ServiceEntry) (natsgrant.Permissions, bool) {
 	switch entry.Kind {
 	case KindDispatch:
-		return natsgrant.Dispatch(entry.MachineID)
+		return natsgrant.Dispatch(entry.MachineID), true
 	case KindListener:
-		return natsgrant.Listener(entry.MachineID)
+		return natsgrant.Listener(entry.MachineID), true
 	case KindDaemon:
-		return natsgrant.Daemon()
+		return natsgrant.Daemon(), true
 	case KindMeasure:
-		return natsgrant.Measure()
+		return natsgrant.Measure(), true
 	}
-	return natsgrant.Permissions{}
+	return natsgrant.Permissions{}, false
 }
 
 // Decide is the user the service answers req with, or the *Refusal it refuses it with. A session
@@ -277,7 +282,11 @@ func decideService(ctx context.Context, deps Deps, services []ServiceEntry, req 
 	if entry == nil {
 		return Decision{}, refuse(labelServiceNotListed, "service not listed: "+account)
 	}
-	grant, err := scopeGrant(*entry, serviceGrant(*entry))
+	base, ok := serviceGrant(*entry)
+	if !ok {
+		return Decision{}, refuse(labelNoNATSUser, "service takes no NATS user: "+entry.name())
+	}
+	grant, err := scopeGrant(*entry, base)
 	if err != nil {
 		return Decision{}, err
 	}

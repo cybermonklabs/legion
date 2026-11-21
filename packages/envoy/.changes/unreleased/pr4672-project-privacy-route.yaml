@@ -1,0 +1,22 @@
+kind: Added
+body: |-
+  The secrets broker answers `GET /v1/project-privacy`, a listener's read of which Dispatch
+  projects are private, for each privacy decision it makes. The caller presents its own platform
+  identity token, as on the broker's other routes, and only a `listener` or `privacy-measure`
+  entry of `BROKER_NATS_SERVICES` with the whole grant (`*`) is answered; every other caller whose
+  token verifies is `403 not_listener`. `privacy-measure/<run name>/*=<account>` is a new kind of
+  entry, for the Job that measures this read on the listener's path; its reads are counted under
+  `caller_class="privacy-measure"`, the NATS auth service answers it no NATS user, and a broker
+  from before this change refuses it at start. The auth service now refuses an entry of any kind
+  it holds no grant for `no_nats_user`, where it refused it `open_direction` before. A reader on
+  a VM needs `BROKER_GOOGLE_OIDC_AUDIENCE` set, which needs a `google:` entry in
+  `BROKER_API_ACCOUNTS` or a VM service in `BROKER_VM_SERVICES`.
+  Each call asks Dispatch once (`BROKER_PROJECT_ACCESS_URL`), with no cache and nothing kept, and
+  answers `{"projects":[{"project","slack_channels","slack_channels_changed_at"}]}` in key order.
+  Any failure of that read, and a broker with no `BROKER_PROJECT_ACCESS_URL`, is
+  `502 dispatch_unavailable`, never a list, and a WARN line names the failure's kind. At most 64
+  calls ask Dispatch at once in one broker, 16 of one reader's account; the next is `503 busy`
+  at once.
+time: 2026-11-20T23:16:34Z
+custom:
+    Issue: pr4672

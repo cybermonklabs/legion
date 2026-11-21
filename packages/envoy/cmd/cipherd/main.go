@@ -353,9 +353,13 @@ func main() {
 	// never a nil *Client inside one, so every reader's nil check holds.
 	var projectAccess projectaccess.Access
 	var privateList projectaccess.PrivateLister
+	// The same client's fresh read of every private project, which GET /v1/project-privacy answers
+	// a listener; it too stays a nil interface when the setting is unset, where that route answers
+	// 502.
+	var projectPrivacy api.FreshPrivateProjects
 	if cfg.ProjectAccessURL != "" {
 		client := projectaccess.New(cfg.ProjectAccessURL, ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)
-		projectAccess, privateList = client, client
+		projectAccess, privateList, projectPrivacy = client, client, client
 	}
 	// rules.Digest is "" for every secret when no rules file was named, so such a deployment's
 	// policy version is the one it has today.
@@ -688,6 +692,7 @@ func main() {
 		APIAccounts: cfg.APIAccounts, AccountTokens: pod,
 		PodRegistrars: cfg.PodRegistrars, PodRegistrationTokens: discovered.PodRegistration,
 		GoogleAPIAccounts: cfg.GoogleAPIAccounts, GoogleAccountTokens: googleCallers,
+		PrivacyReaders: natscallout.PrivacyReaders(natsServices), ProjectPrivacy: projectPrivacy,
 		Enroll: enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},

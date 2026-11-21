@@ -113,7 +113,12 @@ var exampleServices = []ServiceEntry{
 	{Kind: KindDaemon, Account: daemonAccount, AllProjects: true},
 	{Kind: KindMeasure, Account: measureAccount, Google: true, AllProjects: true},
 	{Kind: KindDaemon, Account: "system:serviceaccount:example-ns:held-daemon"},
+	{Kind: KindPrivacyMeasure, MachineID: "project-privacy-measure", Account: privacyMeasureAccount, AllProjects: true},
+	{Kind: Kind("no-grant"), MachineID: "example-no-grant", Account: noGrantAccount, AllProjects: true},
 }
+
+// noGrantAccount is an entry's account whose kind serviceGrant lists no grant for.
+const noGrantAccount = "system:serviceaccount:example-ns:no-grant"
 
 // A session's live token and a proof over this connection's nonce are answered with a user of
 // that session's own: its delivery channel and agent stream's control subject to subscribe, its
@@ -182,9 +187,11 @@ func TestRefusals(t *testing.T) {
 	readOnly.answer.Person, readOnly.answer.Service = "", "example-reader"
 	readOnly.answer.ProjectScope, readOnly.answer.Scope = ciphertoken.ProjectScopeNone, ciphertoken.ScopeRead
 	tokens := map[string]platformToken{
-		"unlisted-token":  {account: "system:serviceaccount:example-ns:stranger", issued: now, expiry: now.Add(time.Hour)},
-		"two-hours-token": {account: daemonAccount, issued: now, expiry: now.Add(2 * time.Hour)},
-		"held-token":      {account: "system:serviceaccount:example-ns:held-daemon", issued: now, expiry: now.Add(time.Hour)},
+		"unlisted-token":        {account: "system:serviceaccount:example-ns:stranger", issued: now, expiry: now.Add(time.Hour)},
+		"two-hours-token":       {account: daemonAccount, issued: now, expiry: now.Add(2 * time.Hour)},
+		"held-token":            {account: "system:serviceaccount:example-ns:held-daemon", issued: now, expiry: now.Add(time.Hour)},
+		"privacy-measure-token": {account: privacyMeasureAccount, issued: now, expiry: now.Add(time.Hour)},
+		"no-grant-token":        {account: noGrantAccount, issued: now, expiry: now.Add(time.Hour)},
 	}
 	deps := Deps{Introspect: introspector(a, expired, dotted, foreign, unbounded, readOnly), ServiceToken: serviceTokens(tokens)}
 	unreachable := Deps{Introspect: func(context.Context, string) (oauthwire.Introspection, error) {
@@ -228,6 +235,10 @@ func TestRefusals(t *testing.T) {
 		{"an unlisted service", deps, nil, serviceRequest("unlisted-token"), labelServiceNotListed, "service not listed: system:serviceaccount:example-ns:stranger"},
 		{"a two-hour platform token", deps, nil, serviceRequest("two-hours-token"), labelTokenTooLong, "token lives longer than an hour"},
 		{"a service held to projects this broker cannot read", deps, nil, serviceRequest("held-token"), labelHeldToProjects, "held to exchange projects, which this broker cannot read: service daemon/system:serviceaccount:example-ns:held-daemon"},
+		{"the privacy measurement, which takes no NATS user", deps, nil, serviceRequest("privacy-measure-token"), labelNoNATSUser, "service takes no NATS user: privacy-measure/project-privacy-measure"},
+		// An entry of a kind serviceGrant lists no grant for, as one added without one would be,
+		// takes no NATS user, refused as such rather than as an open grant (open_direction).
+		{"a kind with no grant", deps, nil, serviceRequest("no-grant-token"), labelNoNATSUser, "service takes no NATS user: no-grant/example-no-grant"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			ctx := row.ctx

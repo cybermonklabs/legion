@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -16,20 +17,24 @@ const ServicesVariable = "BROKER_NATS_SERVICES"
 type Kind string
 
 // The kinds of service the auth service admits, each answered with its grant of
-// natsgrant: Dispatch's, a listener's, a Legion daemon's and the measurement job's.
+// natsgrant: Dispatch's, a listener's, a Legion daemon's and the measurement job's. The privacy
+// measurement (plan C's measurement of a listener's GET /v1/project-privacy) is a kind of entry
+// too, so the broker answers that read for its account; it has no grant, so the auth service
+// answers it no NATS user (serviceGrant).
 const (
-	KindDispatch Kind = "dispatch"
-	KindListener Kind = "listener"
-	KindDaemon   Kind = "daemon"
-	KindMeasure  Kind = "measure"
+	KindDispatch       Kind = "dispatch"
+	KindListener       Kind = "listener"
+	KindDaemon         Kind = "daemon"
+	KindMeasure        Kind = "measure"
+	KindPrivacyMeasure Kind = "privacy-measure"
 )
 
 // ServiceEntry is one service the auth service admits by its platform identity.
 type ServiceEntry struct {
 	Kind Kind
-	// MachineID is the machine id the grant is built for, which Dispatch's and a listener's
-	// name their durable and queue group by; required for those two kinds and refused for the
-	// others.
+	// MachineID is the entry's machine id: the one Dispatch's and a listener's grant name their
+	// durable and queue group by, and the one a privacy measurement's reads are named by in the
+	// broker's record; required for those three kinds and refused for the others.
 	MachineID string
 	// Account is the platform account whose token the service presents: a ServiceAccount
 	// subject, or a Google account address.
@@ -41,8 +46,9 @@ type ServiceEntry struct {
 	AllProjects bool
 }
 
-// name is the name the user the auth service answers this entry's connections with carries,
-// <kind>/<machine id or account>, which a server's connection listing (/connz) reports.
+// name is the entry's name, <kind>/<machine id or account>: the name of the user the auth service
+// answers its connections with, which a server's connection listing (/connz) reports, and for a
+// privacy measurement, which takes no NATS user, the name the broker's record gives its reads.
 func (e ServiceEntry) name() string {
 	if e.MachineID != "" {
 		return string(e.Kind) + "/" + e.MachineID
@@ -61,12 +67,13 @@ const (
 // ParseServices reads BROKER_NATS_SERVICES: whitespace-separated <kind>/<machine id or ->/<* or
 // ->=<account> entries, in order, where * is the grant whole and - means "the projects this
 // account's exchange entry lists", and the account is written as BROKER_API_ACCOUNTS writes one
-// (config.ParseAccount). It refuses, naming the entry: an unknown kind; a dispatch or listener
-// entry with no machine id, and a daemon or measure entry with one; a machine id that is not one
-// subject token; a measure entry with -, since its grant holds a KV read no project scope can
-// hold and it reads no project's messages; an account config.ParseAccount refuses (a namespace's
-// default account, a Google default or service-agent account); and an account given twice, since
-// one account connects as one service.
+// (config.ParseAccount). It refuses, naming the entry: an unknown kind; a dispatch, listener or
+// privacy-measure entry with no machine id, and a daemon or measure entry with one; a machine id
+// that is not one subject token; a measure entry with -, since its grant holds a KV read no
+// project scope can hold and it reads no project's messages, and a privacy-measure entry with -,
+// since the read it makes answers every private project; an account config.ParseAccount refuses
+// (a namespace's default account, a Google default or service-agent account); and an account given
+// twice, since one account connects as one service.
 func ParseServices(raw string) ([]ServiceEntry, error) {
 	var services []ServiceEntry
 	seen := map[string]string{}
@@ -84,9 +91,48 @@ func ParseServices(raw string) ([]ServiceEntry, error) {
 	return services, nil
 }
 
+// ReadsProjectPrivacy reports whether a service of this kind reads, at the broker's GET
+// /v1/project-privacy, every private project and the Slack channel ids each one's owner named. It
+// is the one statement of which kinds do: the route answers what PrivacyReaders keeps, and nothing
+// else. A listener does, for its privacy decisions, and so does the privacy measurement, which
+// times that read on the listener's own path; Dispatch's own listener's kind joins them when the
+// auth service gains one. Every other kind does not, until someone decides it should here: a kind
+// is not a reader for being named like one, and an outside-facing or project-limited listener
+// reads no other project's privacy.
+func (k Kind) ReadsProjectPrivacy() bool {
+	switch k {
+	case KindListener, KindPrivacyMeasure:
+		return true
+	}
+	return false
+}
+
+// PrivacyReaders is services as GET /v1/project-privacy reads them (api.PrivacyReaders): each
+// entry whose kind reads project privacy and whose grant is whole (*), by its account. Each is
+// named by its entry, <kind>/<machine id>, which for a listener is also the name of the NATS user
+// the auth service gives it (the privacy measurement takes none), and the privacy measurement's
+// reads are told apart from a listener's (api.PrivacyReader.Measurement). An entry held to its
+// exchange projects (-) is none, since the route answers every private project and such an
+// entry's grant reaches only its own.
+func PrivacyReaders(services []ServiceEntry) api.PrivacyReaders {
+	readers := api.PrivacyReaders{K8s: map[string]api.PrivacyReader{}, Google: map[string]api.PrivacyReader{}}
+	for _, entry := range services {
+		if !entry.AllProjects || !entry.Kind.ReadsProjectPrivacy() {
+			continue
+		}
+		reader := api.PrivacyReader{Name: entry.name(), Measurement: entry.Kind == KindPrivacyMeasure}
+		if entry.Google {
+			readers.Google[entry.Account] = reader
+		} else {
+			readers.K8s[entry.Account] = reader
+		}
+	}
+	return readers
+}
+
 func parseService(text string) (ServiceEntry, error) {
 	form := func() error {
-		return fmt.Errorf("%s must be <kind>/<machine id or ->/<* or ->=<account> entries, the kind one of dispatch, listener, daemon or measure and the account system:serviceaccount:<namespace>:<name> or google:<service account email>, got %q", ServicesVariable, text)
+		return fmt.Errorf("%s must be <kind>/<machine id or ->/<* or ->=<account> entries, the kind one of dispatch, listener, daemon, measure or privacy-measure and the account system:serviceaccount:<namespace>:<name> or google:<service account email>, got %q", ServicesVariable, text)
 	}
 	head, account, ok := config.CutNATSServiceEntry(text)
 	if !ok {
@@ -99,8 +145,11 @@ func parseService(text string) (ServiceEntry, error) {
 	entry := ServiceEntry{Kind: Kind(parts[0])}
 	machineID, scope := parts[1], parts[2]
 	switch entry.Kind {
-	case KindDispatch, KindListener:
+	case KindDispatch, KindListener, KindPrivacyMeasure:
 		if machineID == noMachineID {
+			if entry.Kind == KindPrivacyMeasure {
+				return ServiceEntry{}, fmt.Errorf("%s entry %q names no machine id: the broker's record names a privacy measurement's reads by one", ServicesVariable, text)
+			}
 			return ServiceEntry{}, fmt.Errorf("%s entry %q names no machine id: a %s's grant names its durable and its queue group by one", ServicesVariable, text, entry.Kind)
 		}
 		if !natsgrant.SessionToken(machineID) {
@@ -118,8 +167,11 @@ func parseService(text string) (ServiceEntry, error) {
 	case allProjectsScope:
 		entry.AllProjects = true
 	case exchangeScope:
-		if entry.Kind == KindMeasure {
+		switch entry.Kind {
+		case KindMeasure:
 			return ServiceEntry{}, fmt.Errorf("%s entry %q holds the measurement job to its exchange projects, which its grant cannot be held to: it reads a KV bucket and no project's messages, so write *", ServicesVariable, text)
+		case KindPrivacyMeasure:
+			return ServiceEntry{}, fmt.Errorf("%s entry %q holds the privacy measurement to its exchange projects, which its read cannot be held to: GET /v1/project-privacy answers every private project, so write *", ServicesVariable, text)
 		}
 	default:
 		return ServiceEntry{}, form()

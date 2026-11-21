@@ -383,14 +383,16 @@ type Config struct {
 	// release and airlock connection of a secret carrying a dispatch-project tag, about that
 	// project and the credential's person; a project-channels secret asked for by a credential
 	// naming a private project, about that project's channels; the approval page, the pending
-	// lists and each decision, about the projects a request touches; and the model judge,
-	// about whether a request is a private project's. Set with BROKER_PROJECT_ACCESS_TOKEN_FILE
-	// or not at all: with neither, the broker asks Dispatch nothing. It then refuses every secret
-	// carrying a dispatch-project tag (project-unchecked) and serves every other secret as
-	// before; a token that names no project, and an operator entry's token, whose project that
-	// operator's own setting chose, are minted as before; a person's trade that names a project,
-	// and a session enrollment that names projects, are refused, since nothing could say that
-	// person may see them.
+	// lists and each decision, about the projects a request touches; the model judge, about
+	// whether a request is a private project's; and GET /v1/project-privacy, which projects are
+	// private, asked afresh at each call a listener makes. Set with the token file
+	// (BROKER_PROJECT_ACCESS_TOKEN_FILE) or not at all: with neither, the broker asks Dispatch
+	// nothing. It then refuses every secret carrying a dispatch-project tag (project-unchecked)
+	// and serves every other secret as before; a token that names no project, and an operator
+	// entry's token, whose project that operator's own setting chose, are minted as before; a
+	// person's trade that names a project, and a session enrollment that names projects, are
+	// refused, since nothing could say that person may see them; and GET /v1/project-privacy
+	// answers a listener 502 dispatch_unavailable.
 	ProjectAccessURL string
 	// BROKER_PROJECT_ACCESS_TOKEN_FILE: the file holding the broker's own projected
 	// ServiceAccount token for that Dispatch, minted for Dispatch's audience. Read when the broker
@@ -754,15 +756,21 @@ type Config struct {
 	// a seed of its kind (a user, an account, a curve key), naming the variable and never the
 	// value. BROKER_NATS_SERVICES lists the services admitted by platform identity, as
 	// whitespace-separated <kind>/<machine id or ->/<* or ->=<account> entries (dispatch,
-	// listener, daemon or measure; * for the kind's whole grant, - for the projects the account's
-	// exchange entry lists), each account written as BROKER_API_ACCOUNTS writes one and read at
-	// start (natscallout.ParseServices). BROKER_NATS_K8S_AUDIENCE is the audience a service's
-	// projected Kubernetes token must carry, verified against BROKER_K8S_OIDC_ISSUER, which it
-	// needs; BROKER_NATS_GOOGLE_AUDIENCE the audience a service's Google identity token must
-	// carry, verified against BROKER_GOOGLE_OIDC_ISSUER; a service entry whose kind of token has
-	// no audience is refused at start naming it. A session presents its broker access token and
-	// needs neither. All unset, the broker runs no auth service; any set needs the URLs and the
-	// three seed files.
+	// listener, daemon, measure or privacy-measure; * for the kind's whole grant, - for the
+	// projects the account's exchange entry lists), each account written as BROKER_API_ACCOUNTS
+	// writes one and read at start (natscallout.ParseServices); GET /v1/project-privacy answers a
+	// listener or privacy-measure entry with the whole grant (*), the readers natscallout names,
+	// and no other caller, and the auth service answers a privacy-measure entry no NATS user. A
+	// google: reader presents that route a token for BROKER_GOOGLE_OIDC_AUDIENCE, so it needs that
+	// setting, which needs a google: entry in BROKER_API_ACCOUNTS or a VM service: a reader's
+	// entry here does not count, and on a broker with neither no VM reader's token can verify.
+	// BROKER_NATS_K8S_AUDIENCE is the audience a service's projected Kubernetes token must carry,
+	// verified against BROKER_K8S_OIDC_ISSUER, which it needs; BROKER_NATS_GOOGLE_AUDIENCE the
+	// audience a service's Google identity token must carry, verified against
+	// BROKER_GOOGLE_OIDC_ISSUER; a service entry whose kind of token has no audience is refused at
+	// start naming it. A session presents its broker access token and needs neither. All unset, the
+	// broker runs no auth service, and GET /v1/project-privacy answers every caller whose identity
+	// token verifies 403 not_listener; any set needs the URLs and the three seed files.
 	NATS NATSCallout
 	// BROKER_LEASE_SECONDS: an enrollment's lease. A session renews it while it runs; one whose
 	// lease runs out is no longer enrolled and its calls are refused. Time while no broker was

@@ -20,6 +20,7 @@ const (
 	authAccount
 	authService
 	authSignIn
+	authListener
 )
 
 // caller is who server.authenticate proved a request came from. Which field is set follows from
@@ -40,6 +41,8 @@ type caller struct {
 	// signIn is the broker sign-in session a request to the approval page carries, the zero
 	// approval.Session when it carries none that is live.
 	signIn approval.Session
+	// listener is the reader of project privacy whose identity token authenticated the request.
+	listener privacyReader
 }
 
 // power is one authority over the broker a caller of an accountAuth route may hold: one bit, so
@@ -224,6 +227,32 @@ func signInAuth(h func(*approval.Page, http.ResponseWriter, *http.Request, appro
 	return routeHandler{auth: authSignIn, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
 		h(s.deps.Approval, w, r, who.signIn)
 	}}
+}
+
+// listenerAuth is a route for an Envoy listener, and for the privacy measurement that times the
+// listener's read, calling the broker with its own platform identity token: a Kubernetes
+// ServiceAccount's projected token in the cluster, or a Google identity token on a VM, verified as
+// accountAuth's caller's token is and with the same refusals. Its account must be one
+// Deps.PrivacyReaders holds, the entries of BROKER_NATS_SERVICES natscallout decides read project
+// privacy (natscallout.Kind.ReadsProjectPrivacy, the one list of such kinds); any other account,
+// listed under another kind or scope, in another setting or in none, is 403 not_listener
+// (listenerCaller). It spends its source address's bucket first, as accountAuth's routes do.
+//
+// It is a class of its own because its list is another authority: BROKER_NATS_SERVICES already
+// says which accounts are listeners and which run the privacy measurement, and neither is a caller
+// BROKER_API_ACCOUNTS names for this. The handler is given the reader's account, which its slots
+// are counted by; its answer is the same for every reader.
+func listenerAuth(h func(*server, http.ResponseWriter, *http.Request, string)) routeHandler {
+	return routeHandler{auth: authListener, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
+		h(s, w, r, who.listener.account)
+	}}
+}
+
+// privacyReader is the listener or privacy measurement whose identity token authenticated a
+// listenerAuth route: its BROKER_NATS_SERVICES reader (PrivacyReader) and its account.
+type privacyReader struct {
+	PrivacyReader
+	account string
 }
 
 type apiRoute struct {
@@ -440,6 +469,20 @@ func routes() []apiRoute {
 		// period has committed before the review reads it. It is the one route readsGrantLog
 		// reaches: the review reads the broker's record and changes nothing in it.
 		{http.MethodGet, "/v1/grant-log", accountAuth(readsGrantLog, (*server).listGrantLog)},
+		// Answer a listener every private project as Dispatch answers it at this call, for the
+		// listener's privacy decision, and the privacy measurement the same, which times that read
+		// on the listener's path: each project's key, the Slack channel ids its owner named and
+		// when that list last changed, in key order, and an empty list when no project is private.
+		// Only an account BROKER_NATS_SERVICES binds to a listener or a privacy measurement
+		// (privacy-measure) with the whole grant (*) is answered, the readers natscallout names
+		// (Kind.ReadsProjectPrivacy); any other caller whose identity token verifies is 403
+		// not_listener, and Dispatch is not asked. Each call
+		// asks Dispatch once, with no cache and no older answer to fall back on, and a read that
+		// fails in any way (no answer in time, a refusal, an answer it cannot read, a project
+		// without its channels) is 502 dispatch_unavailable, never a list; so is every call to a
+		// broker with no BROKER_PROJECT_ACCESS_URL. At most 64 calls ask Dispatch at once, 16 of
+		// one account's, and the next is 503 busy at once, asking nothing.
+		{http.MethodGet, "/v1/project-privacy", listenerAuth((*server).projectPrivacy)},
 		// List the calling credential's operator's own logins, their machines' logins and the token
 		// logins of the accounts BROKER_POD_OPERATORS maps to them, as Dispatch's machine-logins
 		// page lists them, without the service logins that page also lists. This route, the machine

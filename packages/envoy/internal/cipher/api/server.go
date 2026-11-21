@@ -58,6 +58,16 @@ type Deps struct {
 	Machine             *requests.Machine
 	MachineLogin        *machine.Service
 	Proof               *proof.Verifier
+	// PrivacyReaders are the accounts GET /v1/project-privacy answers, whose identity token
+	// AccountTokens or GoogleAccountTokens verifies: natscallout.PrivacyReaders's choice from
+	// BROKER_NATS_SERVICES. The zero value holds none, so the route answers every caller whose
+	// token verifies 403 not_listener, as a broker that runs no NATS auth service does.
+	PrivacyReaders PrivacyReaders
+	// ProjectPrivacy is Dispatch's list of every private project, read afresh on each call
+	// (projectaccess.Client.PrivateProjectsFresh), which GET /v1/project-privacy answers its
+	// readers. Nil is a broker with no BROKER_PROJECT_ACCESS_URL, which answers that route 502
+	// dispatch_unavailable.
+	ProjectPrivacy FreshPrivateProjects
 	// PodRegistrars is BROKER_POD_REGISTRARS, the registrar and pod account pairs POST
 	// /v1/oauth/exchange/pod-sessions admits: a registration whose caller's login account no
 	// entry pairs with the account of the pod it registers is 403 POD_REGISTRAR_NOT_LISTED,
@@ -177,10 +187,12 @@ type server struct {
 	rereadLimiter *ratelimit.Keyed
 	rereadOverall *ratelimit.Bucket
 	// tokenLimiter is TokenLimit applied per source address (clientAddress), over its route's own
-	// bucket, and accountLimiter AccountLimit, over the bucket every accountAuth route and every
-	// route of the approval page share.
+	// bucket, and accountLimiter AccountLimit, over the bucket every accountAuth route, every
+	// listenerAuth route and every route of the approval page share.
 	tokenLimiter   *ratelimit.Keyed
 	accountLimiter *ratelimit.Keyed
+	// privacyReads are GET /v1/project-privacy's slots (readProjectPrivacy).
+	privacyReads *privacyReads
 }
 
 func Register(mux *http.ServeMux, deps Deps) {
@@ -228,6 +240,7 @@ func Register(mux *http.ServeMux, deps Deps) {
 		rereadOverall:   rereadBucket,
 		tokenLimiter:    ratelimit.NewKeyed(token),
 		accountLimiter:  ratelimit.NewKeyed(account),
+		privacyReads:    newPrivacyReads(),
 	}
 	for _, route := range routes() {
 		// A broker with no provider serves neither the OAuth routes nor the document that names
@@ -277,8 +290,9 @@ const (
 // being 429 RATE_LIMITED with Retry-After, so a flood of forged tokens past that bucket costs no
 // verification and no fetch of the issuer's keys; a listed caller must then hold the power its
 // row declares, and a service's token must name an account BROKER_SERVICE_LOGINS lists and
-// BROKER_POD_OPERATORS does not map (serviceCaller). The approval page's routes spend that same
-// bucket, for the same reason: see the authSignIn case.
+// BROKER_POD_OPERATORS does not map (serviceCaller). A listener's route (listenerAuth) spends that
+// bucket too before its token is verified. The approval page's routes spend that same bucket, for
+// the same reason: see the authSignIn case.
 func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiRoute) (caller, bool) {
 	auth := route.Handler.auth
 	switch auth {
@@ -307,6 +321,11 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 			return caller{}, false
 		}
 		return s.serviceCaller(w, r)
+	case authListener:
+		if s.refuseAccountAddress(w, r) {
+			return caller{}, false
+		}
+		return s.listenerCaller(w, r)
 	case authSignIn:
 		// The page's routes and the sign-in's spend the bucket the account class spends, so no
 		// caller drives them unmetered either. GET /approve/{record} with no session does one
@@ -370,10 +389,11 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 
 // answerCaller is the caller class and identity the answer's record names for a request
 // authenticate let through on route (answer.Recorder.NoteCaller): the launcher credential, the
-// enrollment, the listed account, the service and the account it presented, or the signed-in
-// person. A route that takes no credential is public, and a route of the approval page reached
-// with no live sign-in unauthenticated; a handler that authenticates its own caller notes its
-// class over this one (tokenLogin, and rereadSecret for a session's proof).
+// enrollment, the listed account, the service and the account it presented, the listener or the
+// privacy measurement as <kind>/<machine id>, or the signed-in person. A route that takes no
+// credential is public, and a route of the approval page reached with no live sign-in
+// unauthenticated; a handler that authenticates its own caller notes its class over this one
+// (tokenLogin, and rereadSecret for a session's proof).
 func (c caller) answerCaller(route routeHandler) (class, id string) {
 	switch route.auth {
 	case authLauncher:
@@ -384,6 +404,11 @@ func (c caller) answerCaller(route routeHandler) (class, id string) {
 		return answer.CallerAccount, c.account.Name
 	case authService:
 		return answer.CallerService, serviceIdentity(c.service)
+	case authListener:
+		if c.listener.Measurement {
+			return answer.CallerPrivacyMeasure, c.listener.Name
+		}
+		return answer.CallerListener, c.listener.Name
 	case authSignIn:
 		if c.signIn.Login == "" {
 			return answer.CallerUnauthenticated, ""
@@ -445,67 +470,18 @@ type GoogleVerifier interface {
 
 // accountCaller authenticates a listed caller's own identity token for authenticate, the
 // credential accountAuth's routes take, and answers the caller BROKER_API_ACCOUNTS names it:
-// its name and its powers, which authenticate then checks against the route's.
-//
-// A caller presents one of two tokens, and the setting says which one each account presents: a
-// Kubernetes service account's own projected token, looked up by its subject, or a machine's
-// Google identity token, looked up by the account its email claim names, which is how the Envoy
-// listener calls from a VM that holds no Kubernetes token. Which verifier judges a token is the
-// token's own issuer: a verifier answers oidc.ErrIssuer for a token of any issuer but its own,
-// which is the one error that means "not mine" rather than a refusal, so a token neither
-// verifier claims is simply invalid and no token is ever judged twice.
-//
-// The taxonomy is the one a daemon's token login uses (machine.Service.VerifyServiceToken) and
-// means the same thing for either kind: a broker that trusts no issuer for its callers at all
-// (ACCOUNT_TOKENS_OFF), a token that has expired, one that does not verify — which for a Google
-// token includes one naming no verified account, since the email claim is what names the caller
-// — one that lives longer than machine.MaxTokenLoginLifetime from its issue, so a copied token
-// is spendable for at most an hour, and an account BROKER_API_ACCOUNTS does not name. Only the
-// last is a 403: the credential is sound and it is the broker's list that refuses. No refusal
-// repeats the token.
+// its name and its powers, which authenticate then checks against the route's. The token is
+// platformAccount's to verify, with its refusals; an account BROKER_API_ACCOUNTS does not name is
+// then 403 ACCOUNT_NOT_LISTED, the one refusal that is not the credential's: it is sound and it is
+// the broker's list that refuses.
 func (s *server) accountCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
-	if s.deps.AccountTokens == nil && s.deps.GoogleAccountTokens == nil {
-		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKENS_OFF", "this broker trusts no token issuer for its API callers, so no caller authenticates with an identity token")
+	account, google, ok := s.platformAccount(w, r)
+	if !ok {
 		return caller{}, false
 	}
-	raw := bearer(r)
-	if s.deps.AccountTokens != nil {
-		claims, err := s.deps.AccountTokens.VerifyAccount(r.Context(), raw)
-		if !errors.Is(err, oidc.ErrIssuer) {
-			return s.listedCaller(w, err, claims.Subject, claims.IssuedAt, claims.Expiry, s.deps.APIAccounts)
-		}
-	}
-	if s.deps.GoogleAccountTokens != nil {
-		token, err := s.deps.GoogleAccountTokens.VerifyGoogle(r.Context(), raw)
-		if !errors.Is(err, oidc.ErrIssuer) {
-			if err == nil && (token.Identity.Account == "" || !token.Identity.EmailVerified) {
-				writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the Google identity token names no verified account, so it names no caller (ask for it with format=full)")
-				return caller{}, false
-			}
-			return s.listedCaller(w, err, token.Identity.Account, token.IssuedAt, token.Expiry, s.deps.GoogleAPIAccounts)
-		}
-	}
-	writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the caller's token names no issuer this broker trusts for its API callers")
-	return caller{}, false
-}
-
-// listedCaller is accountCaller's judgement of one verified token, whichever kind it is: err is
-// what its verifier answered, account the name it is looked up by (a ServiceAccount subject or a
-// Google account address), and accounts the half of BROKER_API_ACCOUNTS its kind is listed in.
-func (s *server) listedCaller(w http.ResponseWriter, err error, account string, issuedAt, expiry time.Time, accounts map[string]Account) (caller, bool) {
-	switch {
-	case errors.Is(err, oidc.ErrExpired):
-		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_EXPIRED", "the caller's identity token has expired")
-		return caller{}, false
-	case err != nil:
-		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the caller's identity token does not verify")
-		return caller{}, false
-	case issuedAt.IsZero():
-		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_TOO_LONG_LIVED", "the caller's identity token names no issue time (iat)")
-		return caller{}, false
-	case expiry.Sub(issuedAt) > machine.MaxTokenLoginLifetime+s.deps.Proof.Skew:
-		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_TOO_LONG_LIVED", "the caller's identity token lives longer than an hour from its issue")
-		return caller{}, false
+	accounts := s.deps.APIAccounts
+	if google {
+		accounts = s.deps.GoogleAPIAccounts
 	}
 	listed, found := accounts[account]
 	if !found {
@@ -513,6 +489,94 @@ func (s *server) listedCaller(w http.ResponseWriter, err error, account string, 
 		return caller{}, false
 	}
 	return caller{account: listed}, true
+}
+
+// listenerCaller authenticates the identity token of a listener, or of the privacy measurement,
+// for authenticate, the credential listenerAuth's routes take: platformAccount verifies it, with
+// its refusals, as it does accountCaller's, and the account it names must then be one
+// Deps.PrivacyReaders holds: natscallout's choice from BROKER_NATS_SERVICES of the entries that
+// read project privacy. Any other account, listed under another kind or scope or not at all, is
+// 403 not_listener: the credential is sound, and it is not a reader's. It answers the caller with
+// the reader and its account.
+func (s *server) listenerCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
+	account, google, ok := s.platformAccount(w, r)
+	if !ok {
+		return caller{}, false
+	}
+	readers := s.deps.PrivacyReaders.K8s
+	if google {
+		readers = s.deps.PrivacyReaders.Google
+	}
+	reader, reads := readers[account]
+	if !reads {
+		writeError(w, http.StatusForbidden, "not_listener", "BROKER_NATS_SERVICES binds this account to no listener or privacy measurement with the whole grant, the readers of which projects are private")
+		return caller{}, false
+	}
+	return caller{listener: privacyReader{PrivacyReader: reader, account: account}}, true
+}
+
+// platformAccount verifies a caller's own platform identity token, r's bearer, for accountCaller
+// and listenerCaller, and answers the account it names and whether that is a Google account, or
+// writes the refusal and answers ok false.
+//
+// A caller presents one of two tokens: a Kubernetes service account's own projected token, which
+// names the account by its subject, or a machine's Google identity token, which names it by its
+// email claim, which is how the Envoy listener calls from a VM that holds no Kubernetes token.
+// Which verifier judges a token is the token's own issuer: a verifier answers oidc.ErrIssuer for a
+// token of any issuer but its own, which is the one error that means "not mine" rather than a
+// refusal, so a token neither verifier claims is simply invalid and no token is ever judged twice.
+//
+// The taxonomy is the one a daemon's token login uses (machine.Service.VerifyServiceToken) and
+// means the same thing for either kind, each a 401: a broker that trusts no issuer for its callers
+// at all (ACCOUNT_TOKENS_OFF), a token that has expired, one that does not verify — which for a
+// Google token includes one naming no verified account, since the email claim is what names the
+// caller — and one that lives longer than machine.MaxTokenLoginLifetime from its issue, so a
+// copied token is spendable for at most an hour. No refusal repeats the token.
+func (s *server) platformAccount(w http.ResponseWriter, r *http.Request) (account string, google, ok bool) {
+	if s.deps.AccountTokens == nil && s.deps.GoogleAccountTokens == nil {
+		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKENS_OFF", "this broker trusts no token issuer for its API callers, so no caller authenticates with an identity token")
+		return "", false, false
+	}
+	raw := bearer(r)
+	if s.deps.AccountTokens != nil {
+		claims, err := s.deps.AccountTokens.VerifyAccount(r.Context(), raw)
+		if !errors.Is(err, oidc.ErrIssuer) {
+			return claims.Subject, false, s.tokenSound(w, err, claims.IssuedAt, claims.Expiry)
+		}
+	}
+	if s.deps.GoogleAccountTokens != nil {
+		token, err := s.deps.GoogleAccountTokens.VerifyGoogle(r.Context(), raw)
+		if !errors.Is(err, oidc.ErrIssuer) {
+			if err == nil && (token.Identity.Account == "" || !token.Identity.EmailVerified) {
+				writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the Google identity token names no verified account, so it names no caller (ask for it with format=full)")
+				return "", true, false
+			}
+			return token.Identity.Account, true, s.tokenSound(w, err, token.IssuedAt, token.Expiry)
+		}
+	}
+	writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the caller's token names no issuer this broker trusts for its API callers")
+	return "", false, false
+}
+
+// tokenSound is platformAccount's judgement of one token its issuer's verifier judged, whichever
+// kind it is: err is what the verifier answered, and issuedAt and expiry are the token's own. It
+// writes the refusal of a token that is not sound and answers false.
+func (s *server) tokenSound(w http.ResponseWriter, err error, issuedAt, expiry time.Time) bool {
+	switch {
+	case errors.Is(err, oidc.ErrExpired):
+		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_EXPIRED", "the caller's identity token has expired")
+		return false
+	case err != nil:
+		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the caller's identity token does not verify")
+		return false
+	case issuedAt.IsZero():
+		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_TOO_LONG_LIVED", "the caller's identity token names no issue time (iat)")
+		return false
+	case expiry.Sub(issuedAt) > machine.MaxTokenLoginLifetime+s.deps.Proof.Skew:
+		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_TOO_LONG_LIVED", "the caller's identity token lives longer than an hour from its issue")
+		return false
+	}
+	return true
 }
 
 // serviceCaller authenticates a service's own projected ServiceAccount token for authenticate,
