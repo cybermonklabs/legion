@@ -1,16 +1,15 @@
 package config
 
 import (
-	"crypto/ed25519"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"strings"
-	"unicode"
 
 	"github.com/nats-io/nkeys"
+
+	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 )
 
 // loadNATSCallout reads the NATS auth service's settings (Config.NATS): none set is no service;
@@ -79,14 +78,11 @@ func loadNATSHold(getenv func(string) string, settings *NATSCallout) error {
 	default:
 		return fmt.Errorf("BROKER_NATS_HOLD_READ must be true or false, got %q", value)
 	}
-	entries := strings.FieldsFunc(getenv("BROKER_NATS_HOLD_SIGNING_KEYS"), func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
-	for index, entry := range entries {
-		key, err := base64.RawURLEncoding.Strict().DecodeString(entry)
-		if err != nil || len(key) != ed25519.PublicKeySize {
-			return fmt.Errorf("BROKER_NATS_HOLD_SIGNING_KEYS entry %d is not the unpadded base64url of a %d-byte Ed25519 public key", index+1, ed25519.PublicKeySize)
-		}
-		settings.HoldSigningKeys = append(settings.HoldSigningKeys, ed25519.PublicKey(key))
+	keys, err := signedrecord.ParsePublicKeys("BROKER_NATS_HOLD_SIGNING_KEYS", getenv("BROKER_NATS_HOLD_SIGNING_KEYS"))
+	if err != nil {
+		return err
 	}
+	settings.HoldSigningKeys = keys
 	return nil
 }
 

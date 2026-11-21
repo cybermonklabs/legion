@@ -3,7 +3,9 @@ package signedrecord_test
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,6 +135,34 @@ func TestEachKindOpensWithItsTag(t *testing.T) {
 	} {
 		if lines[0] != want {
 			t.Errorf("lines open with %q, want %q", lines[0], want)
+		}
+	}
+}
+
+// A key list is read from its setting's text: entries parted by whitespace or commas, each the
+// unpadded base64url of a 32-byte Ed25519 public key. An entry that is not is refused naming the
+// setting and its place in the list and never its text, since text pasted there in error may be a
+// private half.
+func TestParsePublicKeysReadsTheSettingsList(t *testing.T) {
+	first, _ := newKey(t)
+	second, _ := newKey(t)
+	encode := func(key ed25519.PublicKey) string { return base64.RawURLEncoding.EncodeToString(key) }
+	keys, err := signedrecord.ParsePublicKeys("EXAMPLE_KEYS", " "+encode(first)+",\n"+encode(second)+" ")
+	if err != nil || len(keys) != 2 || !keys[0].Equal(first) || !keys[1].Equal(second) {
+		t.Fatalf("ParsePublicKeys of two keys = %v, %v", keys, err)
+	}
+	if keys, err := signedrecord.ParsePublicKeys("EXAMPLE_KEYS", "  "); err != nil || len(keys) != 0 {
+		t.Fatalf("ParsePublicKeys of nothing = %v, %v; want no key and no error", keys, err)
+	}
+	secret := base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.PrivateKeySize))
+	for raw, place := range map[string]string{
+		encode(first) + " " + secret:                  "entry 2",
+		base64.StdEncoding.EncodeToString(first):      "entry 1",
+		encode(first) + "," + encode(second) + ",!!!": "entry 3",
+	} {
+		_, err := signedrecord.ParsePublicKeys("EXAMPLE_KEYS", raw)
+		if err == nil || !strings.Contains(err.Error(), "EXAMPLE_KEYS "+place) || strings.Contains(err.Error(), secret) {
+			t.Errorf("ParsePublicKeys(%q) = %v, want a refusal naming EXAMPLE_KEYS %s and not the entry", raw, err, place)
 		}
 	}
 }

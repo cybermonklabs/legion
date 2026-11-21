@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // The refusals, each wrapped with what it names.
@@ -140,6 +141,24 @@ func Verify(keys []ed25519.PublicKey, sig string, lines []string) error {
 		}
 	}
 	return ErrBadSignature
+}
+
+// ParsePublicKeys reads a list of the operator's public keys from the text of setting: entries
+// parted by whitespace or commas, each the unpadded base64url of a 32-byte Ed25519 public key, as
+// BROKER_NATS_HOLD_SIGNING_KEYS and every command that verifies the hold's rows write them. An entry
+// that is not one is refused naming setting and the entry's place in the list, never its text,
+// since text pasted there in error may be a private half. Blank text is no key and no error.
+func ParsePublicKeys(setting, raw string) ([]ed25519.PublicKey, error) {
+	var keys []ed25519.PublicKey
+	entries := strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
+	for index, entry := range entries {
+		key, err := base64.RawURLEncoding.Strict().DecodeString(entry)
+		if err != nil || len(key) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("%s entry %d is not the unpadded base64url of a %d-byte Ed25519 public key", setting, index+1, ed25519.PublicKeySize)
+		}
+		keys = append(keys, ed25519.PublicKey(key))
+	}
+	return keys, nil
 }
 
 // Floor is the highest gen a reader has accepted of one record, so an older signed copy that a
