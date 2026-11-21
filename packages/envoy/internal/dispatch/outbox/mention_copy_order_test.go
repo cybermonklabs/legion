@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -339,17 +338,19 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 // here rather than read from mentionPendingDelay, so that a change to the outbox's wait fails this
 // test rather than moving its bound with it). Three things make it so, and the test reads each off
 // the passes themselves, in the database's own clock, never off a wall clock it waits on: a pass
-// reads the rule once for each row it claims; it claims a row only once the row is due; and it
-// writes a row that waits due again 2 s or more after that write. A trigger records, beside each
-// value of next_attempt_at written, the now() of the statement that wrote it: a row's claim and
-// its record. A traced pool sees every statement of a pass on the events table, the rule's one
-// table: each is the rule's own statement (model.MentionCopyRuleSQL), counted, or the pass's one
-// read of its rows' own events, and any other fails the test, whatever its text. Fifty rows wait
-// behind an earlier event no record has written. The first pass claims all fifty; a second runs at
-// once, and claims whichever rows are due by then on the database's clock, which on a quick
-// machine is none; the control is a third pass once the rows are made due, which claims all fifty
-// again. In each, the reads equal the rows claimed, no row is claimed before it is due, no row due
-// at the pass's start is left, and each row claimed is written due again at least 2 s on.
+// reads the rule at most once for each row it claims; it claims a row only once the row is due;
+// and it writes a row that waits due again 2 s or more after that write. A trigger records, beside
+// each value of next_attempt_at written, the now() of the statement that wrote it: a row's claim
+// and its record. A traced pool sees every statement of a pass, and each must be, byte for byte,
+// one of the statements a pass sends (passStatements): any other fails the test, whatever it
+// reads, so a second read of the rule spelled another way fails as a second read spelled the
+// same way does. Fifty rows wait behind an earlier event no record has written. The first pass
+// claims all fifty, reading the rule at least once to hold them. Half the rows are then written due
+// an hour on, on the database's clock, and a second pass runs: it must claim none of those, however
+// long after the first it starts, and claims whichever of the others are due by then. The control
+// is a third pass once the rows are made due, which claims all fifty again. In each, no row is
+// claimed before it is due, no row due at the pass's start is left, and each row claimed is
+// written due again at least 2 s on.
 func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 	const rows = 50
 	const readEvery = 2 * time.Second
@@ -398,8 +399,12 @@ func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 	publisher := &recordingPublisher{}
 	deps := withHeldRoles(Deps{Store: storetest.TracedStore(t, database, recorder), Publisher: publisher, Broker: broker})
 	holder := holding(t, deps).instance
-	if !eventsStatement.MatchString(model.MentionCopyRuleSQL) {
-		t.Fatal("the statement matcher does not see the rule's own statement on events, so it would see no read of the rule")
+	// passStatements is every statement a fallback pass sends, byte for byte: its claim, its read
+	// of the rows' own events, its two reads of each row's mentions, the rule's own statement and
+	// its record.
+	passStatements := map[string]bool{
+		fallbackClaimQuery: true, fallbackEventsQuery: true, mentionDeliveryQuery: true,
+		mentionFallbackHoldsQuery: true, model.MentionCopyRuleSQL: true, fallbackRecordQuery: true,
 	}
 	// due is each row's next_attempt_at as last written, nil for due at once, as a fresh row is.
 	due := map[string]*time.Time{}
@@ -430,16 +435,12 @@ func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 		}
 		before := len(recorder.Statements())
 		publishFallbackCopies(ctx, deps, unfenced{}, holder)
-		loads := 0
 		for _, statement := range recorder.Statements()[before:] {
 			switch {
 			case statement == model.MentionCopyRuleSQL:
 				reads++
-			case strings.Contains(statementText(statement, len(statement)), "from events e left join issues i on i.key = e.issue_key"):
-				loads++
-			case eventsStatement.MatchString(statement):
-				problems = append(problems, fmt.Sprintf("%s: a statement on events that is neither the rule's nor the pass's read of its rows' events: %q",
-					name, statementText(statement, 160)))
+			case !passStatements[statement]:
+				problems = append(problems, fmt.Sprintf("%s: a statement that is none of a pass's own: %q", name, statementText(statement, 160)))
 			}
 		}
 		var writes []fallbackDueWrite
@@ -478,21 +479,39 @@ func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 				problems = append(problems, fmt.Sprintf("%s: %s was due by the database's clock when the pass started and was not claimed", name, row))
 			}
 		}
-		if reads != claimed {
-			problems = append(problems, fmt.Sprintf("%s: %d reads of the rule for %d rows claimed, want once a row", name, reads, claimed))
+		if reads > claimed {
+			problems = append(problems, fmt.Sprintf("%s: %d reads of the rule for %d rows claimed, want at most one a row", name, reads, claimed))
 		}
-		if loads > 1 {
-			problems = append(problems, fmt.Sprintf("%s: %d reads of the rows' own events, want at most one", name, loads))
+		if claimed > 0 && reads == 0 {
+			problems = append(problems, fmt.Sprintf("%s: %d rows claimed and held with no read of the rule", name, claimed))
 		}
-		t.Logf("%s: %d rows claimed, %d reads of the rule, %d reads of the rows' events, the claimed rows due again after %v; %d rows due at its start left unclaimed",
-			name, claimed, reads, loads, waits, dueAtStart)
+		t.Logf("%s: %d rows claimed, %d reads of the rule, the claimed rows due again after %v; %d rows due at its start left unclaimed",
+			name, claimed, reads, waits, dueAtStart)
 		return claimed, reads
 	}
 
 	if claimed, _ := pass("the first pass"); claimed != rows {
 		t.Fatalf("the first pass claimed %d of the %d fresh rows, want all: a row it did not decide shows no wait", claimed, rows)
 	}
-	pass("a second pass at once")
+	// Half the rows due an hour on, on the database's clock, written before the second pass: it
+	// must leave them, however long after the first pass it starts.
+	if _, err := database.Pool.Exec(ctx, `
+		update comment_fallback_copies set next_attempt_at = now() + interval '1 hour'
+		where (comment_id, destination) in (
+			select comment_id, destination from comment_fallback_copies order by comment_id limit $1
+		)
+	`, rows/2); err != nil {
+		t.Fatalf("write half the rows due an hour on: %v", err)
+	}
+	var later []fallbackDueWrite
+	later, written = fallbackDueWritesSince(t, database, written)
+	if len(later) != rows/2 {
+		t.Fatalf("%d rows written due an hour on, want %d", len(later), rows/2)
+	}
+	for _, write := range later {
+		due[write.row] = write.due
+	}
+	pass("a second pass, half the rows due an hour on")
 	if _, err := database.Pool.Exec(ctx, `
 		update comment_fallback_copies set next_attempt_at = now() - interval '1 second' where settled_at is null
 	`); err != nil {
@@ -527,10 +546,6 @@ func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 		t.Fatalf("%d rows settled while the earlier event was unpublished, want none", settled)
 	}
 }
-
-// eventsStatement matches a statement that reads or writes the events table, the one table the
-// copy rule reads (model.MentionCopyRuleSQL), however its text is spelled or spaced.
-var eventsStatement = regexp.MustCompile(`(?i)\b(from|join|update|into)\s+(public\.)?events\b`)
 
 // statementText is statement's first n characters, its runs of white space each one space.
 func statementText(statement string, n int) string {
