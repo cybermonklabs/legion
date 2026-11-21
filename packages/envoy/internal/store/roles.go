@@ -100,6 +100,19 @@ func (c RoleClaim) HeldByProcess(instance string) bool {
 	return instance != "" && c.ClientInstanceID == instance
 }
 
+// sameGrant reports whether c is the grant read is, as the holder's renewals and the adoption of
+// a claim that names no process leave it: the question a release asks of the claim it reads
+// again after a write of its own lost its compare-and-swap, the delete that frees the claim
+// (Registry.releaseReadRoleClaim) and the mark a hand-back leaves on it
+// (Registry.markRoleClaimHandedBack) alike. ClaimedAt decides it: every grant writes a fresh
+// record stamped with the moment it was made (SetRoleWithPrevious), and a renewal and an adoption
+// carry that moment over untouched (Registry.renewRoleClaim), so a claim whose ClaimedAt moved
+// was granted again since read, to whichever process. A grant stamped in read's own millisecond
+// reads as read.
+func (c RoleClaim) sameGrant(read RoleClaim) bool {
+	return c.ClaimedAt == read.ClaimedAt
+}
+
 // ExpiredRoleClaimRelease reports what releaseReadExpiredRoleClaim's conditional delete did to
 // an expired role claim: ExpiredRoleClaimReleased is the delete that landed, the one outcome the
 // sweep counts as reaped (ReapRoleClaims); ExpiredRoleClaimMissing a role whose record was gone
