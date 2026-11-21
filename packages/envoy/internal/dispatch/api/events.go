@@ -194,8 +194,11 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	if answerNotModified(w, r, etag) {
 		return
 	}
-	key := listAnswerKeyFor(r, eventFeedRoute, r.PathValue("key")+keptViewOf(who), etag)
-	if s.listAnswers.answer(w, key) {
+	// While a project is private, a reader that does not see every object is handed no kept page
+	// and keeps none (keepsListAnswerFor): what its payloads and counts name moves with rows the
+	// key does not name.
+	key, keep := listAnswerKeyFor(r, eventFeedRoute, r.PathValue("key")+keptViewOf(who), etag), keepsListAnswerFor(who)
+	if keep && s.listAnswers.answer(w, key) {
 		return
 	}
 	events, err := s.readEvents(r.Context(), who, issueOwner(r.PathValue("key")), options)
@@ -213,7 +216,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeListAnswer(w, key, encoded, issueHeld)
+	s.writeListAnswer(w, key, encoded, issueHeld && keep)
 }
 
 // keptViewOf is what a kept list answer read for who is filed under beside the owner the request

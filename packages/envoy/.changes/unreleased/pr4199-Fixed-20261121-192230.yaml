@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A broker-issued token whose DPoP proof's `jti` and `htu` together run over 2,048 bytes (in
+  practice, a request path of about 2 KB) is now refused `401 BROKER_TOKEN_PROOF_INVALID`, the
+  caller's own refusal, and the replay store records nothing of it. Before, such a request was
+  served below about 2.7 KB, and above it PostgreSQL could not index the record, so Dispatch
+  answered `503 BROKER_UNAVAILABLE` ("try again in a minute") with a warning blaming the secrets
+  broker. No Dispatch route takes a path near that length.
+time: 2026-11-21T19:22:30.000000000Z
+custom:
+    Issue: pr4199

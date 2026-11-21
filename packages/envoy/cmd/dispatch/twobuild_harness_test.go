@@ -32,7 +32,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -234,9 +236,59 @@ func migrateInOrder(t *testing.T, url string, binaries ...string) {
 	page := lanePage(t)
 	for _, binary := range binaries {
 		p := startDispatchProcessWith(t, url, dispatchOptions{NATSURL: nats, SigningKey: multiprocessSigningKey, Binary: binary, WebDist: page})
-		p.waitHealthy(t)
+		p.waitBooted(t)
 		stop(t, p)
 	}
+}
+
+// bootHangGuard bounds a boot of the two-build lane only so a process that never serves fails the
+// test rather than its binary's timeout. It decides nothing about a boot that is slow: a boot here
+// migrates a database, publishes a page and registers, each as slow as the machine is, and a box
+// carrying a load in the hundreds has held one past a fixed 30 s with nothing wrong
+// (TestTheTwoBuildBootWaitsForReadinessNotTheClock).
+const bootHangGuard = 10 * time.Minute
+
+// waitBooted waits for p to serve: its listening line, then a 200 from /healthz while it still runs
+// (healthyWithin). The process exiting first fails the test at once, with the reason its output
+// gives; bootHangGuard fails a process that is still running and never served, naming the line and
+// the answer the wait was for.
+func (p *dispatchProcess) waitBooted(t *testing.T) {
+	t.Helper()
+	if err := p.healthyWithin(bootHangGuard); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestTheTwoBuildBootWaitsForReadinessNotTheClock: a boot of the lane slower than the 30 s this
+// lane's boots were once held to (waitHealthy's bound) still passes waitBooted, which waits for the
+// process's listening line and a 200 from /healthz. The boot is slowed by a wrapper that sleeps
+// 35 s and then execs this tree's envoy-dispatch, so the process that serves, its inherited socket
+// and its exit are the server's own. The row requires the boot to have taken longer than 30 s, so
+// it fails, rather than passing for nothing, if the delay ever stops outlasting that bound.
+//
+// Control: waitBooted given waitHealthy's 30 s fails this row, "Dispatch never became healthy
+// within 30s", with the process still running and no listening line logged.
+func TestTheTwoBuildBootWaitsForReadinessNotTheClock(t *testing.T) {
+	const fixedBound = 30 * time.Second
+	delay := fixedBound + 5*time.Second
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatalf("find sleep for the slowed boot: %v", err)
+	}
+	slowed := filepath.Join(t.TempDir(), "envoy-dispatch-slowed")
+	script := "#!/bin/sh\n" + sleep + " " + strconv.Itoa(int(delay.Seconds())) + "\nexec " + cmdtest.Build(t, "envoy-dispatch") + ` "$@"` + "\n"
+	if err := os.WriteFile(slowed, []byte(script), 0o755); err != nil {
+		t.Fatalf("write the slowed boot's wrapper: %v", err)
+	}
+	database := storetest.Open(t)
+	started := time.Now()
+	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Binary: slowed})
+	process.waitBooted(t)
+	if took := time.Since(started); took <= fixedBound {
+		t.Fatalf("the slowed boot served %s after its start, within the %s it was meant to outlast", took.Round(time.Millisecond), fixedBound)
+	}
+	t.Logf("the slowed boot served %s after its start", time.Since(started).Round(time.Millisecond))
+	stop(t, process)
 }
 
 // lanePage writes the web dist migrateInOrder's processes serve: an index.html that names
@@ -292,7 +344,7 @@ func (b *twoBuilds) startPrevious(t *testing.T, env map[string]string) *dispatch
 	options := b.options(env)
 	options.Binary, options.WebDist = b.build.path("envoy-dispatch"), b.build.path("web")
 	b.a = startDispatchProcessWith(t, b.databaseURL(t), options)
-	b.a.waitHealthy(t)
+	b.a.waitBooted(t)
 	return b.a
 }
 
@@ -302,7 +354,7 @@ func (b *twoBuilds) startCurrent(t *testing.T, env map[string]string) *dispatchP
 	options := b.options(env)
 	options.Binary = b.binary
 	b.b = startDispatchProcessWith(t, b.databaseURL(t), options)
-	b.b.waitHealthy(t)
+	b.b.waitBooted(t)
 	return b.b
 }
 

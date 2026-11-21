@@ -677,3 +677,117 @@ func TestARemovalRacingAFirstEnrollmentCommitsBoth(t *testing.T) {
 		t.Fatalf("after the removal from their last list the outsider holds %d passkey(s), want the enrollment's ended", n)
 	}
 }
+
+// TestTheOneOwnerRuleAndTheLastListEndHoldWithPasskeysOff (R5): passkeys enrolled while passkey
+// sign-in was on outlive it being turned off, so the writes that guard them run with it off too.
+// While a server runs with DISPATCH_SIGNIN_PASSKEY unset over the same database, Mallory's list
+// naming the outsider, whose passkey alice's link enrolled, is refused (409
+// PASSKEY_OF_ANOTHER_OWNER), and alice's removal of the outsider from PRIV, their last list, ends
+// their account and deletes their passkey. Once the setting is on again the old passkey signs in to
+// nothing and the old cookie reads nothing.
+//
+// Control: skip the refusal and the end while the setting is off (each returning nil when
+// Deps.Passkeys is nil, as at 49d3942d216), and Mallory's list answers 200, the passkey survives
+// the removal, and the row fails.
+func TestTheOneOwnerRuleAndTheLastListEndHoldWithPasskeysOff(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	device := newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin)
+	cookie := r.enrolled(t, device, r.invite(t, outsiderEmail), outsiderEmail)
+	malloryCookie := r.ownerOf(t, "MAL", "mallory@example.com")
+	off, _ := r.serverWith(t, map[string]string{"DISPATCH_SIGNIN_PASSKEY": ""})
+
+	wantCode(t, "Mallory's list naming the outsider with passkeys off", personOn(off, malloryCookie, http.MethodPut, "MAL", outsiderEmail, ""), http.StatusConflict, "PASSKEY_OF_ANOTHER_OWNER")
+	if removed := personOn(off, r.alice, http.MethodDelete, "PRIV", outsiderEmail, ""); removed.Code != http.StatusOK {
+		t.Fatalf("alice's removal of the outsider from PRIV with passkeys off answered %d %s, want 200", removed.Code, removed.Body.String())
+	}
+	if n := r.passkeysOf(t, outsiderEmail); n != 0 {
+		t.Fatalf("after the removal from their last list with passkeys off the outsider holds %d passkey(s), want every one deleted", n)
+	}
+
+	if signedIn := r.signIn(t, r.handler, device); signedIn.Code == http.StatusOK {
+		t.Fatalf("the old passkey's sign-in once passkeys are on again answered 200 %s, want it refused", signedIn.Body.String())
+	}
+	if whoami := whoamiOutside(r.handler, cookie); whoami.Code != http.StatusUnauthorized {
+		t.Fatalf("the old cookie's whoami once passkeys are on again answered %d %s, want 401", whoami.Code, whoami.Body.String())
+	}
+}
+
+// TestAPasskeySignInIsRefusedWhileAnotherOwnersProjectNamesThePerson (R5): a passkey reads only
+// projects its link's maker owns, so its sign-in is refused (403 LISTED_BY_ANOTHER_OWNER) while a
+// project of another owner names its person directly, whatever wrote that list: here a write that
+// skipped the list's refusal, as an earlier release or a direct write of the table would. The
+// person signs in again once that project no longer names them.
+//
+// Control: skip the check in the sign-in (store.PgPasskeys.SignIn reading no made_by), and the
+// sign-in answers 200 and the row fails.
+func TestAPasskeySignInIsRefusedWhileAnotherOwnersProjectNamesThePerson(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	device := newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin)
+	r.enrolled(t, device, r.invite(t, outsiderEmail), outsiderEmail)
+	r.ownerOf(t, "MAL", "mallory@example.com")
+	r.listOn(t, "MAL", access.PrincipalPerson, outsiderEmail)
+
+	wantCode(t, "the outsider's passkey sign-in while MAL names them", r.signIn(t, r.handler, device), http.StatusForbidden, "LISTED_BY_ANOTHER_OWNER")
+	if _, err := r.database.Pool.Exec(context.Background(), `delete from project_access where project_key = 'MAL' and principal = $1`, outsiderEmail); err != nil {
+		t.Fatalf("take the outsider off MAL: %v", err)
+	}
+	if signedIn := r.signIn(t, r.handler, device); signedIn.Code != http.StatusOK {
+		t.Fatalf("the outsider's passkey sign-in once MAL no longer names them answered %d %s, want 200", signedIn.Code, signedIn.Body.String())
+	}
+}
+
+// TestAGoogleSignInThatReplacesAPasskeyAccountDeletesItsPasskeys (R5): a person from outside who
+// later signs in with Google as a full member (an address of the Workspace on another domain)
+// replaces their passkey account, and the replacement deletes that account's passkeys in its own
+// transaction: none signs in again, and none counts as alice's passkey of the address, so
+// Mallory's list naming them and alice's transfer of PRIV both answer 200. A Reset of the full
+// member stays 409 FULL_MEMBER, as for any full member.
+//
+// Control: keep the passkeys at the replacement (signInAccountTx deleting none), and the passkey
+// count is 1, Mallory's list answers 409 PASSKEY_OF_ANOTHER_OWNER, and the row fails.
+func TestAGoogleSignInThatReplacesAPasskeyAccountDeletesItsPasskeys(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	device := newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin)
+	r.enrolled(t, device, r.invite(t, outsiderEmail), outsiderEmail)
+	sessionCookieOf(t, "the outsider's Google sign-in as a full member", codeFlowSignIn(t, r.handler, r.pool, map[string]any{
+		"sub": "google-outsider", "email": outsiderEmail, "email_verified": true, "hd": "example.com",
+	}))
+	if n := r.passkeysOf(t, outsiderEmail); n != 0 {
+		t.Fatalf("after the Google account replaced the passkey account the outsider holds %d passkey(s), want none", n)
+	}
+	if signedIn := r.signIn(t, r.handler, device); signedIn.Code == http.StatusOK {
+		t.Fatalf("the replaced account's passkey signed in: %s", signedIn.Body.String())
+	}
+	wantCode(t, "alice's Reset of the full member", r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+outsiderEmail+"/reset", nil), http.StatusConflict, "FULL_MEMBER")
+	malloryCookie := r.ownerOf(t, "MAL", "mallory@example.com")
+	if listed := personOn(r.handler, malloryCookie, http.MethodPut, "MAL", outsiderEmail, ""); listed.Code != http.StatusOK {
+		t.Fatalf("Mallory's list naming the full member answered %d %s, want 200", listed.Code, listed.Body.String())
+	}
+	if given := r.asOwner(http.MethodPatch, "/api/v1/projects/PRIV/access", map[string]string{"owner": "mallory@example.com"}); given.Code != http.StatusOK {
+		t.Fatalf("alice's transfer of PRIV to Mallory answered %d %s, want 200", given.Code, given.Body.String())
+	}
+}
+
+// TestASignInCeremonyAllowsOneFinish: a sign-in's finish records its ceremony used before it checks
+// the answer, so one begin allows one finish: after an answer that does not verify, the person's
+// own answer to the same ceremony is 400 CEREMONY_EXPIRED, and a new begin signs them in.
+//
+// Control: record the ceremony only once the answer verifies (FinishSignIn not calling
+// store.PgPasskeys.UseCeremony first, as at 49d3942d216), and the second finish answers 200 and the
+// row fails.
+func TestASignInCeremonyAllowsOneFinish(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	device := newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin)
+	r.enrolled(t, device, r.invite(t, outsiderEmail), outsiderEmail)
+	begun := call(r.handler, passkeyOrigin, http.MethodPost, "/auth/passkey/login/begin", map[string]string{})
+	if begun.Code != http.StatusOK {
+		t.Fatalf("the sign-in's begin answered %d %s, want 200", begun.Code, begun.Body.String())
+	}
+	if failed := call(r.handler, passkeyOrigin, http.MethodPost, "/auth/passkey/login/finish", []byte(`{}`), ceremonyCookie(begun)); failed.Code == http.StatusOK {
+		t.Fatalf("a finish with an empty answer answered 200 %s", failed.Body.String())
+	}
+	wantCode(t, "the person's own answer to the ceremony a failed finish took", call(r.handler, passkeyOrigin, http.MethodPost, "/auth/passkey/login/finish", device.assert(t, begun.Body.Bytes()), ceremonyCookie(begun)), http.StatusBadRequest, "CEREMONY_EXPIRED")
+	if signedIn := r.signIn(t, r.handler, device); signedIn.Code != http.StatusOK {
+		t.Fatalf("a new sign-in answered %d %s, want 200", signedIn.Code, signedIn.Body.String())
+	}
+}

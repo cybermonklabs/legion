@@ -52,6 +52,13 @@ type contentAgentRig struct {
 
 func newContentAgentRig(t *testing.T, options testServerOptions) contentAgentRig {
 	t.Helper()
+	return newContentAgentRigWith(t, options, nil)
+}
+
+// newContentAgentRigWith is newContentAgentRig whose server reads its agent stream through wrap,
+// given the rig's in-memory stream; nil reads the stream itself.
+func newContentAgentRigWith(t *testing.T, options testServerOptions, wrap func(*agentstream.Memory) agentstream.Source) contentAgentRig {
+	t.Helper()
 	roster := `[
 		{"session_id":"` + contentCarolPodSession + `","title":"Carol's pod","capabilities":["btw"],"last_seen":900,"projects":["PRIV"]},
 		{"session_id":"` + contentBobSession + `","title":"Bob's","capabilities":["btw"],"last_seen":800,"projects":["PRIV"]},
@@ -70,6 +77,9 @@ func newContentAgentRig(t *testing.T, options testServerOptions) contentAgentRig
 		stream.SetReplay(session, agentstream.Frame(`{"v":1,"kind":"replay","session":"`+session+`"}`))
 	}
 	options.envoyURL, options.agentStream = listener.URL, stream
+	if wrap != nil {
+		options.agentStream = wrap(stream)
+	}
 	seed := seedPrivateProjectWith(t, options)
 	seedPeople(t, seed.database, contentDora)
 	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPublic+"/access/people/"+contentDora, nil, http.StatusOK)
@@ -136,21 +146,22 @@ type contentView struct {
 }
 
 // watch opens v and holds it to its verdict. A hidden view is the no-responder verdict and nothing
-// behind it: the relay never subscribed to the session (no viewer of it) and never told it a viewer
-// is attached, the call that asks it for its replay (no watch). A view that responds is the verdict,
-// then the session's replay, then a frame the session publishes.
+// behind it: the relay never subscribed to the session for it (no viewer of it beyond those views
+// opened before it left) and never told it a viewer is attached, the call that asks it for its
+// replay (no watch). A view that responds is the verdict, then the session's replay, then a frame
+// the session publishes.
 func (rig contentAgentRig) watch(t *testing.T, state string, v contentView) {
 	t.Helper()
-	watches := rig.stream.Watches(v.session)
+	watches, viewers := rig.stream.Watches(v.session), rig.stream.Viewers(v.session)
 	client, got := agentVerdict(t, rig.seed, rig.url, v.caller, v.session)
 	if got != v.want {
 		t.Errorf("%s, %s's agent view of %s (%s) answers %s, want %s", state, v.caller, v.session, v.why, got, v.want)
 		return
 	}
 	if v.want == agentViewHidden {
-		if viewers, told := rig.stream.Viewers(v.session), rig.stream.Watches(v.session)-watches; viewers != 0 || told != 0 {
-			t.Errorf("%s, %s's hidden view of %s (%s) left %d viewers subscribed and told the session %d times a viewer is attached, want none",
-				state, v.caller, v.session, v.why, viewers, told)
+		if added, told := rig.stream.Viewers(v.session)-viewers, rig.stream.Watches(v.session)-watches; added != 0 || told != 0 {
+			t.Errorf("%s, %s's hidden view of %s (%s) subscribed %d viewers and told the session %d times a viewer is attached, want none",
+				state, v.caller, v.session, v.why, added, told)
 		}
 		return
 	}
@@ -177,9 +188,12 @@ func (rig contentAgentRig) watch(t *testing.T, state string, v contentView) {
 //     token that lists PRIV, the no-responder verdict, and the relay neither subscribes to it nor
 //     asks it for its replay;
 //   - so does a session both bob's and carol's credentials proved;
-//   - bob's own session that lists PRIV, and bob's own session whose listener sent no list, relay
-//     their verdict, their replay and their live frames to bob and to his token: such a session
-//     acts with bob's own credential, which reaches only what bob sees.
+//   - bob's own session that lists PRIV relays its verdict, its replay and its live frames to bob
+//     and to his token, since its listener's list bounds what it read within what bob sees;
+//   - bob's own session whose listener sent no list relays them to bob at his browser, whose
+//     credential lists no project, and answers bob's token that lists PRIV the no-responder
+//     verdict: a credential that lists projects watches no unlisted session, which nothing bounds
+//     within its list.
 //
 // carol, an open viewer of a deployment with no private project, is relayed her pod session (R9).
 // The agents list is not this rule's: it keeps access.SessionClause (K6), whose rows carry no
@@ -188,21 +202,22 @@ func (rig contentAgentRig) watch(t *testing.T, state string, v contentView) {
 // Controls: the clause as it was (a restricted viewer passing a session whose written projects and
 // listed ones it sees), under which bob is relayed carol's pod session; the second person's arm
 // dropped, under which bob is relayed the shared session; a restricted viewer's own session with no
-// list refused (the round before), under which bob is refused his unlisted session. Each fails the
-// row.
+// list refused (the round before), under which bob is refused his unlisted session; the own-session
+// arm asking nothing of the viewer's list, under which bob's token is relayed his unlisted session.
+// Each fails the row.
 func TestARestrictedViewerWatchesOnlyASessionItsOwnPersonProved(t *testing.T) {
 	rig := newContentAgentRig(t, testServerOptions{})
 	bobs := func() []contentView {
-		var views []contentView
-		for _, caller := range []privateCaller{callerBob, callerBobPrivToken} {
-			views = append(views,
-				contentView{caller, contentCarolPodSession, agentViewHidden, "carol's, commented on PRIV and read PUB"},
-				contentView{caller, contentSharedSession, agentViewHidden, "proved by bob's credential and by carol's"},
-				contentView{caller, contentBobUnlistedSession, agentViewResponding, "bob's own, its listener sent no list"},
-				contentView{caller, contentBobSession, agentViewResponding, "bob's own, lists PRIV"},
-			)
+		return []contentView{
+			{callerBob, contentCarolPodSession, agentViewHidden, "carol's, commented on PRIV and read PUB"},
+			{callerBob, contentSharedSession, agentViewHidden, "proved by bob's credential and by carol's"},
+			{callerBob, contentBobUnlistedSession, agentViewResponding, "bob's own, its listener sent no list, at his browser"},
+			{callerBob, contentBobSession, agentViewResponding, "bob's own, lists PRIV"},
+			{callerBobPrivToken, contentCarolPodSession, agentViewHidden, "carol's, commented on PRIV and read PUB"},
+			{callerBobPrivToken, contentSharedSession, agentViewHidden, "proved by bob's credential and by carol's"},
+			{callerBobPrivToken, contentBobUnlistedSession, agentViewHidden, "bob's own, its listener sent no list, to a credential that lists PRIV"},
+			{callerBobPrivToken, contentBobSession, agentViewResponding, "bob's own, lists PRIV"},
 		}
-		return views
 	}
 	rig.seed.setVisibility(t, seedPrivate, model.ProjectPublic)
 	for _, v := range bobs() {

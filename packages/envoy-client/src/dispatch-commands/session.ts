@@ -379,9 +379,10 @@ export async function inboxCommand(context: SessionContext): Promise<DispatchToo
   const warnings: string[] = [];
   // A Dispatch with no secrets broker answers null, which is an ordinary deployment: it has
   // no credential requests, so it lists and counts none. The list is a read of the whole
-  // deployment, which Dispatch refuses a restricted member and a credential that lists projects
-  // with 403 DEPLOYMENT_READ_REFUSED: such a caller has no credential list to read, as the web
-  // Inbox never asks them for it, so it is listed and counted as none and warns nothing.
+  // deployment, which Dispatch refuses a restricted member, and a credential acting for one, with
+  // 403 DEPLOYMENT_READ_REFUSED (a full member's credential reads it whatever it lists): such a
+  // caller has no credential list to read, as the web Inbox never asks them for it, so it is
+  // listed and counted as none and warns nothing.
   const requests: readonly CredentialPendingRow[] =
     sideRead(withoutDeploymentRefusal(await pending), "credential requests", warnings)?.pending ??
     [];

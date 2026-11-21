@@ -177,8 +177,17 @@ the server's own with its `pool_` parameters and its password taken out, and rea
 password from the terminal (Enter alone for a database that asks none), as the blocks name them,
 `$DISPATCH_PSQL_URL` with `$DISPATCH_PGPASSWORD` and `$BROKER_PSQL_URL` with `$BROKER_PGPASSWORD`:
 
-```sh
-psql_url() { printf '%s' "$1" | sed -E 's/(\?|&)(pool_[a-z_]+|password)=[^&]*/\1/g; s/&&+/\&/g; s/\?&/?/; s/[?&]$//; s|^([a-z]+://[^:/?@]*):[^@/?]*@|\1@|'; }
+```bash
+psql_url() {
+  case $1 in
+    postgres://*|postgresql://*) ;;
+    *) echo "psql_url: refused: not a postgres:// URL. A keyword/value string (host=... password=...) would put its password on a command line; give the server's URL form" >&2; return 1 ;;
+  esac
+  if printf '%s' "$1" | grep -Eq '^[a-z]+://[^@/?]*/[^@?]*@'; then
+    echo "psql_url: refused: the URL's user part holds an unencoded /, so the password would stay in it; percent-encode the / as %2F" >&2; return 1
+  fi
+  printf '%s' "$1" | sed -E 's/(\?|&)(pool_[a-z_]+|password)=[^&]*/\1/g; s/&&+/\&/g; s/\?&/?/; s/[?&]$//; s|^([a-z]+://[^:/?@]*):[^@/?]*@|\1@|'
+}
 DISPATCH_PSQL_URL=$(psql_url "$DATABASE_URL")
 BROKER_PSQL_URL=$(psql_url "$BROKER_DATABASE_URL")
 [ -n "${DISPATCH_PGPASSWORD+set}" ] || { read -rsp "Dispatch's database password: " DISPATCH_PGPASSWORD; echo >&2; }
@@ -186,11 +195,16 @@ BROKER_PSQL_URL=$(psql_url "$BROKER_DATABASE_URL")
 export DISPATCH_PSQL_URL BROKER_PSQL_URL DISPATCH_PGPASSWORD BROKER_PGPASSWORD
 ```
 
-Those `pool_` parameters are the only ones the broker's deployment adds that libpq does not take; a
-URL without them and without a password is left as it is. A password the environment already holds
-in `DISPATCH_PGPASSWORD` or `BROKER_PGPASSWORD`, from wherever the deployment keeps it, is used as it
-is, and nothing asks for it. `printf` is the shell's own, so the URL reaches `sed` on its input and
-is never an argument either.
+The block is bash's: `read -rsp` prompts for a password without echoing it in bash, and zsh reads
+`-p` as a coprocess instead. Those `pool_` parameters are the only ones the broker's deployment
+adds that libpq does not take; a URL without them and without a password is left as it is. A
+password the environment already holds in `DISPATCH_PGPASSWORD` or `BROKER_PGPASSWORD`, from
+wherever the deployment keeps it, is used as it is, and nothing asks for it. `printf` is the
+shell's own, so the URL reaches `grep` and `sed` on their input and is never an argument either.
+`psql_url` makes no URL and says why for a server's URL whose password it cannot take out: a
+keyword/value string (`host=… password=…`), and a URL whose user part holds an unencoded `/`,
+which libpq and Dispatch's own server read as the end of the host rather than part of the
+password. Write that server's URL in the form it names, and run the block again.
 
 A revocation settled without the broker, by that command or by a statement written by hand, tells
 the broker nothing, and the old account's credentials go on reading secrets there. It also leaves
@@ -378,7 +392,11 @@ the address the reader is on.
 at all. It needs `DISPATCH_SIGNIN_DOMAIN` and `DISPATCH_OUTSIDE_ORIGIN`: Google signs in your own
 people alone, and a person from outside signs in only at the outside address, where Dispatch serves
 no Google sign-in. So the Google client lists no callback on the outside address, only
-`<DISPATCH_SERVER_URL>/auth/callback`, and its consent screen's audience stays Internal. A
+`<DISPATCH_SERVER_URL>/auth/callback`, and its consent screen's audience stays Internal. It also
+needs `DISPATCH_TRUSTED_PROXY_RANGES`, the load balancer's ranges whose `X-Forwarded-For` Dispatch
+reads to limit passkey sign-ins per client address: behind Google's load balancer,
+`35.191.0.0/16,130.211.0.0/22,2600:2d00:1:1::/64`
+([Google's firewall rules](https://cloud.google.com/load-balancing/docs/firewall-rules)). A
 project's owner puts the person's email on the project's access list, then makes an
 invitation link for them on the project's **Access** tab and hands it over however they like. The
 link works once, within 24 hours, for that person only, and making a new one ends the old one. With

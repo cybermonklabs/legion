@@ -219,7 +219,7 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 	// viewer ownerWrite resolved from the request's own credential (readerOf), not the person
 	// actingPerson answers, by. Read as that person, a token listing no project would see the
 	// person's private projects, which the token does not.
-	s.ownerWrite(w, r, "", nil, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, []model.Event, error) {
+	s.ownerWrite(w, r, "", "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, []model.Event, error) {
 		var appended []model.Event
 		var answer model.ProjectAccess
 		if visibility == model.ProjectPrivate {
@@ -297,7 +297,7 @@ type principalWrite func(ctx context.Context, tx pgx.Tx, ev *events.Broker, key,
 // owner whose link enrolled it resets the person first, and one owner binds an outside person.
 func (s *server) putProjectAccessPerson(w http.ResponseWriter, r *http.Request) {
 	email := r.PathValue("email")
-	s.ownerWrite(w, r, "", nil, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
+	s.ownerWrite(w, r, "", "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
 		if err := s.refusePasskeyOfAnotherOwner(ctx, tx, email, by.ID); err != nil {
 			return model.ProjectAccess{}, nil, err
 		}
@@ -309,13 +309,12 @@ func (s *server) putProjectAccessPerson(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// refusePasskeyOfAnotherOwner is errPasskeyOfAnotherOwner when passkey sign-in is on and email's
-// address holds a passkey enrolled through a link someone other than owner made, read in tx under
-// the address's lock; an email that names nobody is left to the list's own refusal.
+// refusePasskeyOfAnotherOwner is errPasskeyOfAnotherOwner when email's address holds a passkey
+// enrolled through a link someone other than owner made, read in tx under the address's lock; an
+// email that names nobody is left to the list's own refusal. It runs whatever
+// DISPATCH_SIGNIN_PASSKEY says: a passkey enrolled while the setting was on reads every project that
+// names its person once it is on again, so a list written while it is off must not name them either.
 func (s *server) refusePasskeyOfAnotherOwner(ctx context.Context, tx pgx.Tx, email, owner string) error {
-	if s.deps.Passkeys == nil {
-		return nil
-	}
 	login, err := access.PersonPrincipal(email)
 	if err != nil {
 		return nil
@@ -333,16 +332,13 @@ func (s *server) refusePasskeyOfAnotherOwner(ctx context.Context, tx pgx.Tx, ema
 	return nil
 }
 
-// refuseTransferOfAnotherOwnersPasskey is errPasskeyOfAnotherOwner when passkey sign-in is on and a
-// person project key's list names directly holds a passkey that a link of someone other than owner,
-// the project's next owner, enrolled (store.ProjectNamesAnotherOwnersPasskey, read under each such
-// person's address lock): handing the project over would leave the link's maker, its owner until
-// now, an account of their own binding that reads it. The maker resets the person first, as a
-// list's naming of them waits for (refusePasskeyOfAnotherOwner).
+// refuseTransferOfAnotherOwnersPasskey is errPasskeyOfAnotherOwner when a person project key's list
+// names directly holds a passkey that a link of someone other than owner, the project's next owner,
+// enrolled (store.ProjectNamesAnotherOwnersPasskey, read under each such person's address lock):
+// handing the project over would leave the link's maker, its owner until now, an account of their
+// own binding that reads it. The maker resets the person first, as a list's naming of them waits for
+// (refusePasskeyOfAnotherOwner). It runs whatever DISPATCH_SIGNIN_PASSKEY says, as that refusal does.
 func (s *server) refuseTransferOfAnotherOwnersPasskey(ctx context.Context, tx pgx.Tx, key, owner string) error {
-	if s.deps.Passkeys == nil {
-		return nil
-	}
 	held, err := store.ProjectNamesAnotherOwnersPasskey(ctx, tx, key, owner)
 	if err != nil {
 		return err
@@ -353,17 +349,19 @@ func (s *server) refuseTransferOfAnotherOwnersPasskey(ctx context.Context, tx pg
 	return nil
 }
 
-// deleteProjectAccessPerson takes a person off the project's access list (removePerson). A
-// deployment with a broker takes the person's machine-login approval lock first, before the
-// project's owner lock (machineLoginApprovalsFirst): the removal may record the revocation of the
-// person's machine logins, which waits for an approve of theirs the broker has not answered, and
-// so that wait holds up no other write of the project's access. Where passkey sign-in is on, the
-// removal takes the person's links of this project and their address before it removes them
-// (lockPasskeyRemoval), and once no list names them directly any more it ends a restricted
-// member's account (endUnlistedPasskeySignIn).
+// deleteProjectAccessPerson takes a person off the project's access list (removePerson). It names
+// the person to access.LockForAccessWrite as the one it removes, which takes their machine-login
+// approval lock first, before the project's owner lock, where a read that takes no lock finds the
+// removal owes the revocation of their machine logins: the record of it waits for an approve of
+// theirs the broker has not answered, and so that wait holds up no other write of the project's
+// access, and a removal that owes nothing, from a list that does not name them, holds up no approve
+// of theirs. Wherever Dispatch keeps passkeys,
+// whatever DISPATCH_SIGNIN_PASSKEY says, the removal takes the person's links of this project and
+// their address before it removes them (lockPasskeyRemoval), and once no list names them directly
+// any more it ends a restricted member's account (endUnlistedPasskeySignIn).
 func (s *server) deleteProjectAccessPerson(w http.ResponseWriter, r *http.Request) {
 	email := r.PathValue("email")
-	s.ownerWrite(w, r, "", s.machineLoginApprovalsFirst(email), func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
+	s.ownerWrite(w, r, "", model.CanonicalLogin(email), func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
 		if err := s.lockPasskeyRemoval(ctx, tx, key, email); err != nil {
 			return model.ProjectAccess{}, nil, err
 		}
@@ -379,15 +377,16 @@ func (s *server) deleteProjectAccessPerson(w http.ResponseWriter, r *http.Reques
 }
 
 // lockPasskeyRemoval takes, in a removal's transaction tx and before it writes anything, what the
-// removal of email from project key's list may end a passkey sign-in under, where passkey sign-in
-// is on (R5): it deletes the person's unused links of key, then takes the address's lock
-// (store.LockAddressTx). That is the order an enrollment takes them in: the link, the address,
-// then the person's sessions' owner lock (store.RecordReachedProjects, through the account
-// binding). The removal itself takes that last lock (access.RemovePrincipal), so it comes after
-// these: taken the other way round, a removal holding the sessions' lock and an enrollment holding
-// the address each wait for the other, and PostgreSQL fails one of them (40P01).
+// removal of email from project key's list may end a passkey sign-in under, wherever Dispatch keeps
+// passkeys (Deps.PasskeyAccounts), whatever DISPATCH_SIGNIN_PASSKEY says (R5): it deletes the
+// person's unused links of key, then takes the address's lock (store.LockAddressTx). That is the
+// order an enrollment takes them in: the link, the address, then the person's sessions' owner lock
+// (store.RecordReachedProjects, through the account binding). The removal itself takes that last
+// lock (access.RemovePrincipal), so it comes after these: taken the other way round, a removal
+// holding the sessions' lock and an enrollment holding the address each wait for the other, and
+// PostgreSQL fails one of them (40P01).
 func (s *server) lockPasskeyRemoval(ctx context.Context, tx pgx.Tx, key, email string) error {
-	if s.deps.Passkeys == nil {
+	if s.deps.PasskeyAccounts == nil {
 		return nil
 	}
 	login := model.CanonicalLogin(email)
@@ -397,77 +396,74 @@ func (s *server) lockPasskeyRemoval(ctx context.Context, tx pgx.Tx, key, email s
 	return store.LockAddressTx(ctx, tx, login)
 }
 
-// machineLoginApprovalsFirst is the lock a write that may record the revocation of email's machine
-// logins takes before any of the project's (store.LockMachineLoginApprovals): a removal and the
-// owner's Reset may wait there for an approve of the person's the broker has not answered, holding
-// no lock of the project's while they do. It is nil for a deployment with no broker.
-func (s *server) machineLoginApprovalsFirst(email string) func(context.Context, pgx.Tx) error {
-	if s.deps.AgentSecrets == nil {
-		return nil
-	}
-	return func(ctx context.Context, tx pgx.Tx) error {
-		return store.LockMachineLoginApprovals(ctx, tx, model.CanonicalLogin(email))
-	}
-}
-
 // removePerson is access.RemovePrincipal for a person, which also owes the broker the revocation of
 // a restricted member's machine logins when the removal takes them off the list: it reads in the
-// removal's transaction whether the list named the person (access.NamesPerson), and only a removal
-// that took them off records the debt (recordMachineLoginRevocation), paid after the commit. Every
-// such removal owes it, whatever other project's list still names them, as R16's approved words
-// read: a machine login is no project's (each trade of it names its own project), so its revoke is
-// whole, and a person another list still names approves a new login, at their browser, for the
-// projects that list them.
+// removal's transaction, before it takes them off, whether the removal owes it (access.RemovalOwes:
+// the list names the person and they are a restricted member), and only such a removal records
+// the debt (recordMachineLoginRevocation), paid after the commit. Every such removal owes it,
+// whatever other project's list still names them, as R16's approved words read: a machine login is
+// no project's (each trade of it names its own project), so its revoke is whole, and a person
+// another list still names approves a new login, at their browser, for the projects that list
+// them. Its read under the project's lock decides: where the same read before the locks did not
+// find the debt, the person's addition to the list or their becoming a restricted member having
+// committed in between, the record takes the person's approval lock then, and while another
+// transaction holds it (an approval of theirs in flight, another owner's removal of them, or the
+// runbook's restore block) the removal is refused 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT and changes
+// nothing, for the owner to send again.
 func (s *server) removePerson(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kind, email string, by model.Actor) (model.ProjectAccess, model.Event, error) {
-	named, err := access.NamesPerson(ctx, tx, key, email)
+	owes, err := access.RemovalOwes(ctx, tx, key, email)
 	if err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
 	}
 	answer, event, err := access.RemovePrincipal(ctx, tx, ev, key, kind, email, by)
-	if err != nil || !named {
+	if err != nil || !owes {
 		return answer, event, err
 	}
 	if err := s.recordMachineLoginRevocation(ctx, tx, email); err != nil {
+		if errors.Is(err, store.ErrMachineLoginApprovalInFlight) {
+			err = fmt.Errorf("the removal found this person on the list only once it held the project's lock, and an approval or another removal of this person is in progress; remove them again in a few seconds (%w)", err)
+		}
 		return model.ProjectAccess{}, model.Event{}, err
 	}
 	return answer, event, nil
 }
 
 // recordMachineLoginRevocation records, in tx, that Dispatch owes the secrets broker the
-// revocation of every machine login person approved for their own machines, when people records
-// person as a restricted member (store.RecordMachineLoginRevocation). While it is owed, the
+// revocation of every machine login person approved for their own machines
+// (store.RecordMachineLoginRevocation). Its caller decided, in tx, that the write owes it: it took
+// a restricted member off a list that named them (access.RemovalOwes). While it is owed, the
 // person's approve is 409 (store.HoldMachineLoginApprovals), so only a login they approve once a
-// pass has settled it survives. A full member, a person with no row and a deployment with no broker
-// (Deps.AgentSecrets nil, where no machine login exists) owe nothing. The broker revocation loop
-// pays it after the write commits (revokeOwedMachineLogins), so the write never waits on the
-// broker: an owner removes a person while the broker is down. Every removal that takes the person
-// off a list records it (removePerson); it is written to be the one record any other write that
-// takes a restricted member off a project makes in its own transaction.
+// pass has settled it survives. A deployment with no broker (Deps.AgentSecrets nil, where no
+// machine login exists) owes nothing. The broker revocation loop pays it after the write commits
+// (revokeOwedMachineLogins), so the write never waits on the broker: an owner removes a person
+// while the broker is down. Every removal that takes the person off a list records it
+// (removePerson); it is written to be the one record any other write that takes a restricted
+// member off a project makes in its own transaction, after it names that person to
+// access.LockForAccessWrite as the one it removes. The record takes the person's approval lock
+// itself without waiting, so a write that did not take it first records under it or is refused
+// store.ErrMachineLoginApprovalInFlight, never records unordered against an approval in flight.
 func (s *server) recordMachineLoginRevocation(ctx context.Context, tx pgx.Tx, person string) error {
 	person = model.CanonicalLogin(person)
 	if s.deps.AgentSecrets == nil || person == "" {
 		return nil
 	}
-	kind, err := access.MemberKind(ctx, tx, person)
-	if err != nil || kind != model.MemberRestricted {
-		return err
-	}
 	return store.RecordMachineLoginRevocation(ctx, tx, person)
 }
 
 // endUnlistedPasskeySignIn is a removal's end of a person's passkey sign-in, in its transaction tx,
-// where passkey sign-in is on (R5), under the address's lock the removal took first
-// (lockPasskeyRemoval): when no project's owner is them and no list names them directly any more
-// (access.Listed, read after the removal and under that lock in tx), it ends their account as the
-// owner's Reset does (store.PgPasskeys.EndAccountTx): a new passkey subject, which revokes their
-// personal tokens and owes the broker the old account's revocation, and their sign-in ended and
-// passkeys deleted. So a later owner who names the address names a new account, and nothing the
+// wherever Dispatch keeps passkeys, whatever DISPATCH_SIGNIN_PASSKEY says (R5: a removal from the
+// last list ends the person for good, an off window included), under the address's lock the removal
+// took first (lockPasskeyRemoval): when no project's owner is them and no list names them directly
+// any more (access.Listed, read after the removal and under that lock in tx), it ends their account
+// as the owner's Reset does (store.PgPasskeys.EndAccountTx): a new passkey subject, which revokes
+// their personal tokens and owes the broker the old account's revocation, and their sign-in ended
+// and passkeys deleted. So a later owner who names the address names a new account, and nothing the
 // old one made acts for it. A full member's address has nothing to end
 // (auth.ErrAddressHeldByMember). The lock puts two removals from the last two lists that name the
 // person in order, so the second reads the first's commit and ends the account, with no broker
 // configured too.
 func (s *server) endUnlistedPasskeySignIn(ctx context.Context, tx pgx.Tx, email string) error {
-	if s.deps.Passkeys == nil {
+	if s.deps.PasskeyAccounts == nil {
 		return nil
 	}
 	login := model.CanonicalLogin(email)
@@ -478,7 +474,7 @@ func (s *server) endUnlistedPasskeySignIn(ctx context.Context, tx pgx.Tx, email 
 	if listed {
 		return nil
 	}
-	if _, err := s.deps.Passkeys.EndAccountTx(ctx, tx, login); err != nil && !errors.Is(err, auth.ErrAddressHeldByMember) {
+	if _, err := s.deps.PasskeyAccounts.EndAccountTx(ctx, tx, login); err != nil && !errors.Is(err, auth.ErrAddressHeldByMember) {
 		return err
 	}
 	return nil
@@ -529,9 +525,9 @@ func atBrowserAs(actor model.Actor) bool {
 }
 
 // namedPerson answers email's stored form when project key's list names it directly, read in tx
-// (access.NamesPerson, the read a removal makes): 400 PROJECT_ACCESS_INPUT for a value that names
-// nobody who could sign in, 409 PERSON_NOT_LISTED for an email the list does not name as a person
-// (a group that holds it never counts), and 409 FULL_MEMBER for a full member's address.
+// (access.NamesPerson): 400 PROJECT_ACCESS_INPUT for a value that names nobody who could sign in,
+// 409 PERSON_NOT_LISTED for an email the list does not name as a person (a group that holds it
+// never counts), and 409 FULL_MEMBER for a full member's address.
 func namedPerson(ctx context.Context, tx pgx.Tx, key, email string) (string, error) {
 	login, err := access.PersonPrincipal(email)
 	if err != nil {
@@ -567,7 +563,7 @@ func namedPerson(ctx context.Context, tx pgx.Tx, key, email string) (string, err
 // under the key is 409 KEY_COMMITTED, never a second link.
 func (s *server) createInvitation(w http.ResponseWriter, r *http.Request) {
 	var answer invitationAnswer
-	if !s.inOwnerWrite(w, r, "", nil, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) ([]model.Event, error) {
+	if !s.inOwnerWrite(w, r, "", "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) ([]model.Event, error) {
 		if err := s.passkeyOwnerRefusal(by); err != nil {
 			return nil, err
 		}
@@ -575,7 +571,7 @@ func (s *server) createInvitation(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		if s.deps.WorkspaceAddress(login) {
+		if s.deps.Passkeys.WorkspaceAddress(login) {
 			return nil, errWorkspaceAddress
 		}
 		if other, err := store.ListedByAnotherOwner(ctx, tx, login, by.ID); err != nil {
@@ -591,7 +587,7 @@ func (s *server) createInvitation(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		answer = invitationAnswer{URL: s.deps.Passkeys.Issuer() + "/enroll#" + token, MadeAt: madeAt, ExpiresAt: expiresAt}
+		answer = invitationAnswer{URL: s.deps.Passkeys.Store().Issuer() + "/enroll#" + token, MadeAt: madeAt, ExpiresAt: expiresAt}
 		return nil, nil
 	}) {
 		return
@@ -608,14 +604,15 @@ func (s *server) createInvitation(w http.ResponseWriter, r *http.Request) {
 // revocation of the old account, and ends their sign-in and deletes their passkeys
 // (store.PgPasskeys.EndAccountTx). So the person signs in again only with a new link, and nothing
 // the old account made or approved acts again, a machine login approved while the Reset ran
-// included (R5, R16). The writes lock as a removal's do: the person's machine-login approval lock
-// before the project's (machineLoginApprovalsFirst), then the revocation's row, the links and the
-// address. The person stays on the list. A full member's address is 409 FULL_MEMBER, read again
+// included (R5, R16). The writes lock as a removal's do: the Reset names the person to
+// access.LockForAccessWrite, which takes their machine-login approval lock before the project's
+// where the Reset owes the revocation (access.RemovalOwes: the list names them and they are a
+// restricted member), then the revocation's row, the links and the address. The person stays on the list. A full member's address is 409 FULL_MEMBER, read again
 // under the address's lock (store.PgPasskeys.EndAccountTx), and an address on a domain of the
 // company's Workspace is 400 WORKSPACE_ADDRESS, as a link for it is. It answers the project's
 // access, as the list's writes do.
 func (s *server) resetProjectAccessPerson(w http.ResponseWriter, r *http.Request) {
-	s.ownerWrite(w, r, "", s.machineLoginApprovalsFirst(r.PathValue("email")), func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
+	s.ownerWrite(w, r, "", model.CanonicalLogin(r.PathValue("email")), func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
 		if err := s.passkeyOwnerRefusal(by); err != nil {
 			return model.ProjectAccess{}, nil, err
 		}
@@ -623,16 +620,22 @@ func (s *server) resetProjectAccessPerson(w http.ResponseWriter, r *http.Request
 		if err != nil {
 			return model.ProjectAccess{}, nil, err
 		}
-		if s.deps.WorkspaceAddress(login) {
+		if s.deps.Passkeys.WorkspaceAddress(login) {
 			return model.ProjectAccess{}, nil, errWorkspaceAddress
 		}
-		if err := s.recordMachineLoginRevocation(ctx, tx, login); err != nil {
+		owes, err := access.RemovalOwes(ctx, tx, key, login)
+		if err != nil {
 			return model.ProjectAccess{}, nil, err
+		}
+		if owes {
+			if err := s.recordMachineLoginRevocation(ctx, tx, login); err != nil {
+				return model.ProjectAccess{}, nil, err
+			}
 		}
 		if err := store.DeletePersonInvitationsTx(ctx, tx, login); err != nil {
 			return model.ProjectAccess{}, nil, err
 		}
-		if _, err := s.deps.Passkeys.EndAccountTx(ctx, tx, login); errors.Is(err, auth.ErrAddressHeldByMember) {
+		if _, err := s.deps.Passkeys.Store().EndAccountTx(ctx, tx, login); errors.Is(err, auth.ErrAddressHeldByMember) {
 			return model.ProjectAccess{}, nil, errFullMember
 		} else if err != nil {
 			return model.ProjectAccess{}, nil, err
@@ -676,7 +679,7 @@ func (s *server) withOwnersPasskeys(ctx context.Context, q store.PasskeyReader, 
 	invitable, others := []string{}, []string{}
 	for _, person := range answer.People {
 		switch {
-		case slices.Contains(full, person) || s.deps.WorkspaceAddress(person):
+		case slices.Contains(full, person) || s.deps.Passkeys.WorkspaceAddress(person):
 		case slices.Contains(listedElsewhere, person):
 			others = append(others, person)
 		default:
@@ -694,24 +697,25 @@ func (s *server) withOwnersPasskeys(ctx context.Context, q store.PasskeyReader, 
 
 // putProjectAccessGroup names a group on the project's access list.
 func (s *server) putProjectAccessGroup(w http.ResponseWriter, r *http.Request) {
-	s.principalWrite(w, r, access.PrincipalGroup, r.PathValue("name"), nil, access.AddPrincipal)
+	s.principalWrite(w, r, access.PrincipalGroup, r.PathValue("name"), "", access.AddPrincipal)
 }
 
 // deleteProjectAccessGroup takes a group off the project's access list.
 func (s *server) deleteProjectAccessGroup(w http.ResponseWriter, r *http.Request) {
-	s.principalWrite(w, r, access.PrincipalGroup, r.PathValue("name"), nil, access.RemovePrincipal)
+	s.principalWrite(w, r, access.PrincipalGroup, r.PathValue("name"), "", access.RemovePrincipal)
 }
 
-// principalWrite runs write, one of access.AddPrincipal and access.RemovePrincipal, for its owner
-// (ownerWrite), taking first, when it is not nil, before any lock of the project's.
-func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, principal string, first func(context.Context, pgx.Tx) error, write principalWrite) {
+// principalWrite runs write, one of access.AddPrincipal and access.RemovePrincipal, or removePerson,
+// for its owner (ownerWrite); removed is the person a removal takes off the list, "" for any other
+// write.
+func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, principal, removed string, write principalWrite) {
 	// A group's name is locked before the project, as a delete of that group locks them
 	// (access.LockForAccessWrite), so the two never wait on each other in a cycle.
 	group := ""
 	if kind == access.PrincipalGroup {
 		group = strings.TrimSpace(principal)
 	}
-	s.ownerWrite(w, r, group, first, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
+	s.ownerWrite(w, r, group, removed, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
 		answer, event, err := write(ctx, tx, s.deps.Events, key, kind, principal, by)
 		if err != nil {
 			return model.ProjectAccess{}, nil, err
@@ -723,10 +727,10 @@ func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, pr
 // ownerWrite runs one write of project {key}'s access for its owner (inOwnerWrite) and answers the
 // project's access as the write left it, with the owner's passkey fields where they apply
 // (withOwnersPasskeys), read in the write's transaction.
-func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string, first func(context.Context, pgx.Tx) error,
+func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group, removed string,
 	write func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, []model.Event, error)) {
 	var answer model.ProjectAccess
-	if !s.inOwnerWrite(w, r, group, first, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) ([]model.Event, error) {
+	if !s.inOwnerWrite(w, r, group, removed, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) ([]model.Event, error) {
 		written, appended, err := write(ctx, tx, key, by, viewer)
 		if err != nil {
 			return nil, err
@@ -741,12 +745,11 @@ func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string
 
 // inOwnerWrite runs one write of project {key}'s access for its owner: the caller acts as a person,
 // and is the project's owner as projects.owner reads in the write's own transaction, under the
-// locks access.LockForAccessWrite takes in the one order every access write takes them (group,
-// the group the write names, or "" for none), after first, a lock the write takes before any of the
-// project's (a removal's or a Reset's machine-login approval lock; nil for none), so an owner change
-// committed meanwhile is read rather than raced and a delete of the group is ordered against the
-// write. It publishes what the write appended once it commits, and reports whether it did; a
-// refusal is answered here. The write is handed the caller's viewer, read from the request's own
+// locks access.LockForAccessWrite takes in the one order every access write takes them (removed,
+// the person a removal or a Reset takes off the list or resets, and group, the group the write
+// names, each "" for none), so an owner change committed meanwhile is read rather than raced and a
+// delete of the group is ordered against the write. It publishes what the write appended once it
+// commits, and reports whether it did; a refusal is answered here. The write is handed the caller's viewer, read from the request's own
 // credential (readerOf), which a refusal it makes reads to name only what that credential sees
 // (access.SetSlackChannels).
 //
@@ -754,8 +757,13 @@ func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string
 // PROJECT_NOT_FOUND exactly as a key no project holds, before the owner is read. Only a caller who
 // sees the project, and so may read its access list, is then told it is not the owner, by the 403
 // PROJECT_OWNER_REQUIRED that names the owner; the other order would name a hidden project's owner
-// to anyone who guessed its key.
-func (s *server) inOwnerWrite(w http.ResponseWriter, r *http.Request, group string, first func(context.Context, pgx.Tx) error,
+// to anyone who guessed its key. The owner is read first with no lock (access.ReadOwner), and a
+// caller who does not own the project is refused before the write takes any: a removal's first
+// lock may be the approval lock of the person it removes, which that person's approve does not
+// wait for, so a removal anyone who sees the project may send and the owner check refuses would
+// otherwise hold that person's approves at 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT. The read under
+// the locks is the one that decides.
+func (s *server) inOwnerWrite(w http.ResponseWriter, r *http.Request, group, removed string,
 	write func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) ([]model.Event, error)) bool {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -776,20 +784,19 @@ func (s *server) inOwnerWrite(w http.ResponseWriter, r *http.Request, group stri
 		return false
 	}
 	defer tx.Rollback(r.Context())
-	if first != nil {
-		if err := first(r.Context(), tx); err != nil {
-			s.writeHandlerError(w, err)
+	owns := func(owner *string, err error) bool {
+		if err != nil {
+			s.writeAccessError(w, err)
 			return false
 		}
+		if owner == nil || *owner != actor.ID {
+			writeError(w, "PROJECT_OWNER_REQUIRED", http.StatusForbidden,
+				"only the project's owner changes who may see it: ask its owner, "+ownerName(owner))
+			return false
+		}
+		return true
 	}
-	owner, err := access.LockForAccessWrite(r.Context(), tx, key, group)
-	if err != nil {
-		s.writeAccessError(w, err)
-		return false
-	}
-	if owner == nil || *owner != actor.ID {
-		writeError(w, "PROJECT_OWNER_REQUIRED", http.StatusForbidden,
-			"only the project's owner changes who may see it: ask its owner, "+ownerName(owner))
+	if !owns(access.ReadOwner(r.Context(), tx, key)) || !owns(access.LockForAccessWrite(r.Context(), tx, key, group, removed)) {
 		return false
 	}
 	appended, err := write(r.Context(), tx, key, actor, who.Viewer)
@@ -847,6 +854,7 @@ func (s *server) writeAccessError(w http.ResponseWriter, err error) {
 		{access.ErrSlackChannelsFull, "CAP_EXCEEDED", http.StatusBadRequest},
 		{access.ErrGroupsPerOwnerFull, "CAP_EXCEEDED", http.StatusBadRequest},
 		{access.ErrSlackChannelShared, "SLACK_CHANNEL_SHARED", http.StatusConflict},
+		{store.ErrMachineLoginApprovalInFlight, "MACHINE_LOGIN_APPROVAL_IN_FLIGHT", http.StatusConflict},
 	} {
 		if errors.Is(err, refusal.match) {
 			writeError(w, refusal.code, refusal.status, err.Error())

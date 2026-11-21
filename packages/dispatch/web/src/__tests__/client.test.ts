@@ -759,6 +759,29 @@ test("API client sends project access and group requests to their routes", async
   expect(JSON.parse(stub.requests[7]?.body as string)).toEqual({ members: ["carol@example.com"] });
 });
 
+// The groups list is read a page at a time, each page's `next` passed as the next read's
+// `after`. A `next` that does not move - a page naming as its `next` an `after` already read -
+// would read the same page again for good, so the read stops at the repeat and fails naming it,
+// having read each page once.
+test("a groups page whose next does not move fails the read instead of reading it again", async () => {
+  const stub = stubFetch((request) =>
+    Response.json(
+      request.path.includes("after=")
+        ? { groups: [{ members: [], name: "crew", owner: "alice" }], next: "crew" }
+        : { groups: [{ members: [], name: "admins", owner: "alice" }], next: "crew" }
+    )
+  );
+  const accessApi = createApiClient(stub.fetch);
+
+  await expect(accessApi.listAccessGroups()).rejects.toThrow(
+    'GET /api/v1/access-groups named next "crew" again'
+  );
+  expect(stub.requests.map(({ path }) => path)).toEqual([
+    "/api/v1/access-groups",
+    "/api/v1/access-groups?after=crew",
+  ]);
+});
+
 test("API client sends inline artifacts as JSON", async () => {
   const stub = stubFetch(() => Response.json({ artifact: {}, version: {} }));
   const api = createApiClient(stub.fetch);

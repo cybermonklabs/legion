@@ -79,6 +79,7 @@ func workspaceDomainsReachTheirReader(t *testing.T) {
 		"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com",
 		"DISPATCH_SIGNIN_WORKSPACE_DOMAINS": " second.example , bücher.example ",
 		"DISPATCH_SIGNIN_PASSKEY":           "1", "DISPATCH_OUTSIDE_ORIGIN": "https://outside.example.com",
+		"DISPATCH_TRUSTED_PROXY_RANGES": googleProxyRanges,
 	})
 	if !slices.Equal(boot.SignInWorkspaceDomains, []string{"second.example", "bücher.example"}) {
 		t.Errorf("SignInWorkspaceDomains = %q, want [second.example bücher.example]", boot.SignInWorkspaceDomains)

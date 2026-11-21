@@ -92,3 +92,38 @@ func TestThePasskeyBeginLimiterServesANewAddressAtTheCap(t *testing.T) {
 		t.Fatalf("after the sweep the limiter remembers %d addresses, want the new one alone", got)
 	}
 }
+
+// TestThePasskeyBeginLimiterKeysAnIPv6AddressOnItsSlash64: a host holds a whole IPv6 /64, so the
+// limiter keys an IPv6 address on its /64. One /64's begins from eleven of its addresses at once
+// are ten served and one refused, while an address of the next /64 and an IPv4 address still begin;
+// and 20,000 addresses of one /64 leave the limiter remembering one key, so one host cannot fill the
+// map of passkeyBeginAddresses.
+//
+// Control: key each IPv6 address on itself (its /128), and the eleventh begin from the /64 is
+// served and the row fails.
+func TestThePasskeyBeginLimiterKeysAnIPv6AddressOnItsSlash64(t *testing.T) {
+	at := time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
+	limiter := newPasskeyBeginLimiter()
+	for n := range passkeyBeginAddressBurst {
+		if !limiter.allow(fmt.Sprintf("2001:db8:7:1::%x", n+1), at) {
+			t.Fatalf("begin %d from 2001:db8:7:1::/64 at once refused, want the first %d allowed", n+1, passkeyBeginAddressBurst)
+		}
+	}
+	if limiter.allow("2001:db8:7:1:ffff:ffff:ffff:ffff", at) {
+		t.Fatalf("begin %d from 2001:db8:7:1::/64 at once, from an address of its own, allowed; want it refused", passkeyBeginAddressBurst+1)
+	}
+	if !limiter.allow("2001:db8:7:2::1", at) {
+		t.Error("a begin from the next /64 refused, want it served")
+	}
+	if !limiter.allow("198.51.100.7", at) {
+		t.Error("a begin from an IPv4 address refused, want it served")
+	}
+
+	spread := newPasskeyBeginLimiter()
+	for n := range 2 * passkeyBeginAddresses {
+		spread.allow(fmt.Sprintf("2001:db8:9:1::%x:%x", n/65536, n%65536), at)
+	}
+	if got := len(spread.byAddress); got != 1 {
+		t.Fatalf("after begins from %d addresses of one /64 the limiter remembers %d keys, want 1", 2*passkeyBeginAddresses, got)
+	}
+}

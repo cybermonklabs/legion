@@ -114,8 +114,9 @@ var serverReads = map[string]string{
 	"comment_create.go:createCommentFor": "loadReplyChain: the thread a document projects (ProjectMark) is written into the document " +
 		"every reader of that document reads, which the document's own read gates by its project",
 	"comment_queries.go:answerCommentList": "the comment list is kept under its owner, its ETag and what its reader sees " +
-		"(keptViewOf) and handed to the next reader who names the same three, so its comments are read for no one reader; the " +
-		"owner's check runs before the kept answer is looked up, and the sessions a comment names are left out for the caller",
+		"(commentListViewOf) and handed to the next reader who names the same three, while no project is private or for a reader " +
+		"that sees every object (keepsListAnswerFor), so its comments are read for no one reader; the owner's check runs before " +
+		"the kept answer is looked up, and the sessions a comment names are left out for the caller",
 	"event_stream_relay.go:page": "the relay reads one page of the event log for every subscriber at once, which each live socket " +
 		"gates by its own viewer (eventReadableSQL) where it sends an event on, and reads again as its viewer where that viewer " +
 		"does not see every object (readerEvents)",

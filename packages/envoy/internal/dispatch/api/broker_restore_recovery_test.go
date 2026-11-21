@@ -648,11 +648,11 @@ func TestTheBrokerRestoredBlockHoldsEachAddressesSessionRow(t *testing.T) {
 		t.Fatalf("after the pass, %s owes %+v, %v; want the revocation settled", email, owing, err)
 	}
 	block := runbookBlockAfter(t, brokerRestoredLead)
-	if len(block.statements) != 6 || block.statements[0] != "begin" || block.statements[5] != "commit" ||
+	if len(block.statements) != 5 || block.statements[0] != "begin" || block.statements[4] != "commit" ||
 		!strings.HasPrefix(block.statements[1], "select u.generation from user_sessions u ") ||
-		!strings.HasPrefix(block.statements[3], "select pg_advisory_xact_lock(") ||
-		!strings.HasPrefix(block.statements[4], "update machine_login_revocations ") {
-		t.Fatalf("the runbook's block for a broker restored alone is %q; want begin, a read of the addresses' session rows, the record-again, the members' machine-login approval locks, the machine-login revocations owed again and commit", block.statements)
+		!strings.HasPrefix(block.statements[3], "with locked as (select r.email, pg_advisory_xact_lock(") ||
+		!strings.Contains(block.statements[3], "\nupdate machine_login_revocations m ") {
+		t.Fatalf("the runbook's block for a broker restored alone is %q; want begin, a read of the addresses' session rows, the record-again, one statement that takes the members' machine-login approval locks and owes again the revocations it locked, and commit", block.statements)
 	}
 	tx, err := r.dispatch.Pool.Begin(ctx)
 	if err != nil {

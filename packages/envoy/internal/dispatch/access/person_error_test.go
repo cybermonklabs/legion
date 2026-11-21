@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 var errDatabaseGone = errors.New("the database is not answering")
@@ -104,6 +105,7 @@ func TestNoAccessErrorNamesAPerson(t *testing.T) {
 		{"PersonAnswer", func(tx pgx.Tx) error { _, err := PersonAnswer(ctx, tx, hiddenEmail); return err }},
 		{"Answer", func(tx pgx.Tx) error { _, err := Answer(ctx, tx, "PRIV", hiddenEmail); return err }},
 		{"Listed", func(tx pgx.Tx) error { _, err := Listed(ctx, tx, hiddenEmail); return err }},
+		{"RemovalOwes", func(tx pgx.Tx) error { _, err := RemovalOwes(ctx, tx, "PRIV", hiddenEmail); return err }},
 		{"Resolve", func(tx pgx.Tx) error { _, err := Resolve(ctx, tx, cookie(hiddenEmail)); return err }},
 		{"ReadProject", func(tx pgx.Tx) error {
 			_, err := ReadProject(ctx, tx, "PRIV", viewerArg(t, *model.ServerViewer))
@@ -111,7 +113,7 @@ func TestNoAccessErrorNamesAPerson(t *testing.T) {
 		}},
 		{"ReadGroup", func(tx pgx.Tx) error { _, err := ReadGroup(ctx, tx, "crew"); return err }},
 		{"ListGroups", func(tx pgx.Tx) error { _, err := ListGroups(ctx, tx, "", model.MaxGroupsPerOwner); return err }},
-		{"LockForAccessWrite", func(tx pgx.Tx) error { _, err := LockForAccessWrite(ctx, tx, "PRIV", "crew"); return err }},
+		{"LockForAccessWrite", func(tx pgx.Tx) error { _, err := LockForAccessWrite(ctx, tx, "PRIV", "crew", ""); return err }},
 		{"SetOwner", func(tx pgx.Tx) error { _, _, err := SetOwner(ctx, tx, broker, "PRIV", hiddenEmail, by); return err }},
 		{"SetVisibility", func(tx pgx.Tx) error {
 			_, _, err := SetVisibility(ctx, tx, broker, "PRIV", model.ProjectPublic, by)
@@ -156,6 +158,32 @@ func TestNoAccessErrorNamesAPerson(t *testing.T) {
 			return err
 		}},
 		{"DeleteGroup", func(tx pgx.Tx) error { _, err := DeleteGroup(ctx, tx, broker, "crew", by); return err }},
+		// The person's machine-login approval lock, the record of a revocation of their machine
+		// logins and an approval's hold of their lock, which a removal and an approve reach and
+		// whose errors the handler's error line writes.
+		{"store.LockMachineLoginApprovals", func(tx pgx.Tx) error { return store.LockMachineLoginApprovals(ctx, tx, hiddenEmail) }},
+		{"store.RecordMachineLoginRevocation", func(tx pgx.Tx) error { return store.RecordMachineLoginRevocation(ctx, tx, hiddenEmail) }},
+		{"store.HoldMachineLoginApprovals", func(tx pgx.Tx) error {
+			_, err := store.HoldMachineLoginApprovals(ctx, tx, hiddenEmail)
+			return err
+		}},
+		// A removal's read before its locks, and the approval lock of the person it takes off, which
+		// it takes where that read finds the list names them and they are a restricted member: the
+		// step makes the person one that PRIV lists, and comes last, since SetOwner and PutGroup above
+		// need them a full member.
+		{"LockForAccessWrite of a removal of the person, a restricted member PRIV lists", func(tx pgx.Tx) error {
+			for _, statement := range []string{
+				`update people set member_kind = 'restricted' where email = $1`,
+				`insert into project_access (project_key, principal_kind, principal, added_by)
+					values ('PRIV', 'person', $1, '{"kind":"user","id":"olga@example.com"}') on conflict do nothing`,
+			} {
+				if _, err := database.Pool.Exec(ctx, statement, hiddenEmail); err != nil {
+					t.Fatalf("make the person a restricted member PRIV lists: %v", err)
+				}
+			}
+			_, err := LockForAccessWrite(ctx, tx, "PRIV", "", hiddenEmail)
+			return err
+		}},
 	}
 	for _, step := range steps {
 		failed := 0

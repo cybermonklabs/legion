@@ -249,8 +249,9 @@ var myAgentRootsWithFacts = `
 
 // The roots each state reads, one `roots` set per state, each carrying the root and the dismissal
 // mark, which only the Dismissed view's rows have. Each is built over seen, the list's narrowing
-// of its roots for a reader that may not see every object (myAgentSeenAnd), or "" for none, which
-// is how the write routes over the same roots read them (api/inbox_read.go, api/inbox_dismiss.go).
+// of its roots for a reader that may not see every object (myAgentSeenAnd), or "" for one that
+// sees every object, which is how the write routes over the same roots read them too
+// (inboxAgentRead, api/inbox_read.go and api/inbox_dismiss.go).
 
 // myAgentUnreadRootsAnd and myAgentInboxRootsAnd are the Inbox's own two states. Each leaves a
 // dismissed root out before it reads anything of its thread: the mark alone says it is dismissed
@@ -297,23 +298,27 @@ func myAgentDismissedRootsHeadAnd(seen string) string {
 		  and ` + myAgentRootIsOneOffAnd(seen)
 }
 
+// myAgentDismissedRootsAnd is those roots whole, with no cut: what a write route over the same
+// marks reads, narrowing them by a mark or a list of ids of its own (api/inbox_dismiss.go), its $4
+// being one of those rather than a page size.
+func myAgentDismissedRootsAnd(seen string) string {
+	return myAgentDismissedRootsHeadAnd(seen) + `
+	)`
+}
+
 var (
 	myAgentUnreadRoots        = myAgentUnreadRootsAnd("")
 	myAgentInboxRoots         = myAgentInboxRootsAnd("")
 	myAgentDismissedRootsHead = myAgentDismissedRootsHeadAnd("")
 	myAgentDismissedCursor    = `
 		  and (d.dismissed_at, d.message_id) < ($5::text::timestamptz, $6::uuid)`
-	// The list's own cut. A write route over the same marks appends a narrowing of its own
-	// instead, its $4 being a mark or a list of ids rather than a page size.
+	// The list's own cut.
 	myAgentDismissedPageCut = `
 		order by d.dismissed_at desc, d.message_id desc
 		limit $4
 	)`
-	myAgentDismissedRootsEnd = `
-	)`
-	myAgentDismissedRoots = myAgentDismissedRootsHead + myAgentDismissedRootsEnd
-	myAgentDismissedPage  = myAgentDismissedRootsHead + myAgentDismissedPageCut
-	myAgentDismissedFrom  = myAgentDismissedRootsHead + myAgentDismissedCursor + myAgentDismissedPageCut
+	myAgentDismissedPage = myAgentDismissedRootsHead + myAgentDismissedPageCut
+	myAgentDismissedFrom = myAgentDismissedRootsHead + myAgentDismissedCursor + myAgentDismissedPageCut
 )
 
 // myAgentRowColumns is what a list read answers for one row, and myAgentRowsOrder the order the

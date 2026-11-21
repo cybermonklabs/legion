@@ -6,7 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "./__tests__/fake-clock";
 import { graphNode } from "./__tests__/graph-fixture";
-import { installFakeLiveSockets } from "./__tests__/live-socket-harness";
+import { type FakeLiveSockets, installFakeLiveSockets } from "./__tests__/live-socket-harness";
 import { answerIssuePatches } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
 import { wholeText } from "./__tests__/whole-text";
@@ -23,7 +23,8 @@ import "./features/answers/AnswersPage";
 import "./features/document/DocumentPage";
 import "./features/margin/Margin";
 import "./features/project/ProjectPage";
-import { COMPACT_VIEWPORT_QUERY } from "./features/shell/useDialog";
+import { COMPACT_VIEWPORT_QUERY, MD_VIEWPORT_QUERY } from "./features/shell/useDialog";
+import { userPreferenceStorageKey } from "./features/shell/userPreference";
 import { SendStoppedError } from "./features/writes/keyed-write";
 import { plainWrite, writesOf } from "./features/writes/write-store";
 
@@ -1000,9 +1001,14 @@ test("desktop shell persists collapsed sidebars and gives the main region the fu
   }
 });
 
-/** The shell at `/`, signed in as alice, its event feed subscribed on the page's live socket;
- *  returns the teardown. */
-async function renderSignedIn(whoAmI: () => Promise<AuthenticatedUser>) {
+/** The shell at `/`, signed in as alice, once its event feed has opened the page's live socket,
+ *  the one socket of `sockets`; returns the teardown. The shell is drawn a render after the
+ *  sign-in check answers, once the draft stores have loaded (`shellFor` in `AuthGate`), and its
+ *  event feed opens the socket in an effect of its own, so "Signed in as alice" can show before
+ *  any socket exists: whether it has by then depends on what else the test file's order left
+ *  pending, and a caller that drives the socket at once would find none ("no live socket was
+ *  opened"). So this waits for the socket itself, and a caller drives it from the first line. */
+async function renderSignedIn(sockets: FakeLiveSockets, whoAmI: () => Promise<AuthenticatedUser>) {
   const originalMatchMedia = window.matchMedia;
   window.matchMedia = (() =>
     ({
@@ -1030,25 +1036,32 @@ async function renderSignedIn(whoAmI: () => Promise<AuthenticatedUser>) {
       </QueryClientProvider>
     </MemoryRouter>
   );
-  await screen.findByText(wholeText("Signed in as alice"));
-  return () => {
+  const teardown = () => {
     view.unmount();
     liveSocketFor(queryClient).close();
     for (const spy of spies) spy.mockRestore();
     window.matchMedia = originalMatchMedia;
   };
+  try {
+    await screen.findByText(wholeText("Signed in as alice"));
+    await waitFor(() => expect(sockets.sockets).toHaveLength(1));
+  } catch (error) {
+    // The caller's own restore runs only once this answers, so a wait that fails puts the real
+    // WebSocket back here, and no later test of the file opens a fake one.
+    teardown();
+    sockets.restore();
+    throw error;
+  }
+  return teardown;
 }
 
 test("the connection pill follows the live socket: none while it connects, Reconnecting… once lost, and a Reload once two minutes pass", async () => {
   const sockets = installFakeLiveSockets();
-  const teardown = await renderSignedIn(async () => ({
+  const teardown = await renderSignedIn(sockets, async () => ({
     event_head: "0",
     kind: "user",
     login: "alice",
   }));
-  // The shell is drawn a render after the sign-in check answers, once the draft stores have loaded
-  // (`shellFor` in `AuthGate`), and its event feed opens the socket in an effect of its own.
-  await waitFor(() => expect(sockets.sockets).toHaveLength(1));
   // Every timer the socket sets from here on runs on the test's clock.
   jest.useFakeTimers();
   const random = spyOn(Math, "random").mockReturnValue(0.5);
@@ -1098,11 +1111,10 @@ test("the connection pill follows the live socket: none while it connects, Recon
 test("a live socket refused once the person is signed out takes the page to sign-in", async () => {
   const sockets = installFakeLiveSockets();
   let signedIn = true;
-  const teardown = await renderSignedIn(async () => {
+  const teardown = await renderSignedIn(sockets, async () => {
     if (!signedIn) throw new ApiError(401, { error: "unauthorized" });
     return { event_head: "0", kind: "user", login: "alice" };
   });
-  await waitFor(() => expect(sockets.sockets).toHaveLength(1));
   try {
     act(() => sockets.latest().open());
     signedIn = false;
@@ -1117,17 +1129,15 @@ test("a live socket refused once the person is signed out takes the page to sign
 
 /** The shell signed in as alice until its live socket is refused and whoami answers `signedOut`:
  *  the way a page already open meets the hourly confirmation that ended its sign-in. Returns the
- *  sign-in page's text, once it shows. The shell opens its live socket after its first render, so
- *  the helper waits for it as the test above does. */
+ *  sign-in page's text, once it shows. */
 async function signInPageAfter(signedOut: ApiError): Promise<string> {
   const sockets = installFakeLiveSockets();
   let signedIn = true;
-  const teardown = await renderSignedIn(async () => {
+  const teardown = await renderSignedIn(sockets, async () => {
     if (!signedIn) throw signedOut;
     return { event_head: "0", kind: "user", login: "alice" };
   });
   try {
-    await waitFor(() => expect(sockets.sockets).toHaveLength(1));
     act(() => sockets.latest().open());
     signedIn = false;
     act(() => sockets.latest().drop(1008));
@@ -1202,12 +1212,14 @@ const BOB_RESTRICTED: AuthenticatedUser = {
   member_kind: "restricted",
 };
 
-/** The shell at `path`, signed in as `user`, on a phone-sized screen when `compact` is set and a
- *  wide one otherwise; returns the priorities read, to count, and the teardown. */
+/** The shell at `path`, signed in as `user`, on a phone-sized screen when `compact` is set, from
+ *  the md width up when `wide` is, and on a wide one otherwise (matching neither query); returns
+ *  the priorities read, to count, and the teardown. */
 function renderShellAt(
   user: AuthenticatedUser,
   path: string,
-  compact = false
+  compact = false,
+  wide = false
 ): { listPriorities: Mock<typeof api.listPriorities>; teardown: () => void } {
   const originalMatchMedia = window.matchMedia;
   window.matchMedia = ((query: string) =>
@@ -1215,7 +1227,8 @@ function renderShellAt(
       addEventListener: () => {},
       addListener: () => {},
       dispatchEvent: () => true,
-      matches: compact && query === COMPACT_VIEWPORT_QUERY,
+      matches:
+        (compact && query === COMPACT_VIEWPORT_QUERY) || (wide && query === MD_VIEWPORT_QUERY),
       media: query,
       onchange: null,
       removeEventListener: () => {},
@@ -1288,6 +1301,43 @@ test("a restricted member's Priorities and Pipeline addresses answer Page not fo
     expect(await screen.findByRole("heading", { name: "Priorities" })).toBeTruthy();
   } finally {
     teardown();
+  }
+});
+
+// The issue page's icon rail (the outline page, from the md width up) offers what the sidebar
+// does: a restricted member's names neither Priorities nor Pipeline, whose addresses answer them
+// Page not found, and keeps Delivery; a full member's names all three.
+test("a restricted member's icon rail on an issue page offers neither Priorities nor Pipeline", async () => {
+  // Nothing here is about the issue, and no Dispatch answers its reads, so they are answered at
+  // the client with the failure the page has always seen rather than reaching the network.
+  const unread = new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"));
+  const issueReads = [
+    spyOn(api, "getIssue").mockRejectedValue(unread),
+    spyOn(api, "listComments").mockRejectedValue(unread),
+    spyOn(api, "listIssueAsks").mockRejectedValue(unread),
+  ];
+  try {
+    for (const [person, offered] of [
+      [BOB_RESTRICTED, false],
+      [{ event_head: "0", kind: "user", login: "alice" }, true],
+    ] as const) {
+      const choice = userPreferenceStorageKey(person.login, "issue.page");
+      window.localStorage.setItem(choice, "outline");
+      const shell = renderShellAt(person, "/issues/CORE-1", false, true);
+      try {
+        const rail = await screen.findByTestId("icon-rail");
+        expect(within(rail).getByRole("link", { name: "Delivery" })).toBeTruthy();
+        for (const name of ["Priorities", "Pipeline"]) {
+          expect(within(rail).queryByRole("link", { name }) !== null).toBe(offered);
+        }
+        expect(shell.listPriorities).not.toHaveBeenCalled();
+      } finally {
+        shell.teardown();
+        window.localStorage.removeItem(choice);
+      }
+    }
+  } finally {
+    for (const read of issueReads) read.mockRestore();
   }
 });
 

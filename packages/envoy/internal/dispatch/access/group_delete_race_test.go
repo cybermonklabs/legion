@@ -59,7 +59,7 @@ func raceAgainstDelete(t *testing.T, project string, write listWrite) {
 		t.Fatalf("begin the list write: %v", err)
 	}
 	defer open.Rollback(ctx)
-	if _, err := LockForAccessWrite(ctx, open, project, "crew"); err != nil {
+	if _, err := LockForAccessWrite(ctx, open, project, "crew", ""); err != nil {
 		t.Fatalf("lock %s for its list write: %v", project, err)
 	}
 
@@ -138,7 +138,7 @@ func TestAGroupsDeleteReadsEachProjectAfterItsLock(t *testing.T) {
 		t.Fatalf("begin the list write: %v", err)
 	}
 	defer open.Rollback(ctx)
-	if _, err := LockForAccessWrite(ctx, open, "OTHER", ""); err != nil {
+	if _, err := LockForAccessWrite(ctx, open, "OTHER", "", ""); err != nil {
 		t.Fatalf("lock OTHER for its list write: %v", err)
 	}
 

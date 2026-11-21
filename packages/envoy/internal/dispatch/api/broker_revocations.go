@@ -207,10 +207,10 @@ func nextPassAt(ctx context.Context, wait time.Duration, due bool, err error, wh
 }
 
 // passkeyAccount reports whether revocation ends a passkey's account (its issuer the outside
-// origin, Deps.Passkeys), which the project owner's Reset replaces, rather than one another Google
-// account took the address of.
+// origin, Deps.PasskeyAccounts), which the project owner's Reset or a removal replaces, rather than
+// one another Google account took the address of.
 func (s *server) passkeyAccount(revocation store.OwedBrokerRevocation) bool {
-	return s.deps.Passkeys != nil && revocation.Issuer == s.deps.Passkeys.Issuer()
+	return s.deps.PasskeyAccounts != nil && s.deps.PasskeyAccounts.Issuer() != "" && revocation.Issuer == s.deps.PasskeyAccounts.Issuer()
 }
 
 // revokedLog is the revocation pass's message for what the broker did ("revoked", "did not

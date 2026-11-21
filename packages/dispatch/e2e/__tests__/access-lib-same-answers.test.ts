@@ -281,3 +281,78 @@ test(
   },
   rowLimit("short", "short", "short")
 );
+
+// A server that dies mid-walk answers no request after it, and two requests that fail alike in
+// transport read alike: one curl error, and no body or headers of their own. So `send` keeps no
+// answer from before as theirs, and `same_answers` counts a pair with no HTTP status as one that
+// differs, rather than as two answers that agree. The stand-in server answers the request before
+// the death, and a listener that closes every connection unanswered stands in for the dead one.
+test(
+  "a pair sent after the server died is one answer that differs, and keeps no earlier body",
+  async () => {
+    const dead = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: {
+        data() {},
+        open(socket) {
+          socket.end();
+        },
+      },
+    });
+    try {
+      const work = scratch();
+      mkdirSync(join(work, "answers"));
+      mkdirSync(join(work, "cookies"));
+      writeFileSync(
+        join(work, "cookies", "main-carol"),
+        "127.0.0.1\tFALSE\t/\tFALSE\t0\tdsession\tcarols-session\n"
+      );
+      const script = `
+        set -euo pipefail
+        work=$1
+        call_seconds=5
+        run_epoch=$(date +%s)
+        source "$2"
+        : >"$work/ids-main.tsv"
+        : >"$work/fill"
+        build_url[main]=$3
+        send main carol GET /api/v1/issues/PRIV-1
+        keep_answer before main "$work/fill"
+        build_url[main]=$4
+        send main carol GET /api/v1/issues/PRIV-1
+        keep_answer hidden main "$work/fill"
+        send main carol GET /api/v1/issues/ZZNONE-1
+        keep_answer missing main "$work/fill"
+        same_answers "the row" hidden missing
+        printf '%s\\n%s\\n%s\\n%s' "$differed" "$(<"$work/answers/before.status")" \\
+          "$(wc -c <"$work/answers/hidden.raw")" "$(<"$work/answers/hidden.status")"
+      `;
+      const run = await runBounded({
+        argv: [
+          "bash",
+          "-c",
+          script,
+          "dies-mid-walk",
+          work,
+          library,
+          `http://127.0.0.1:${server?.port}`,
+          `http://127.0.0.1:${dead.port}`,
+        ],
+        bound: "short",
+        from: import.meta.url,
+      });
+      expect(run.stderr).toBe("");
+      expect(run.code).toBe(0);
+      const [differedCount, before, hiddenBytes, hiddenStatus] = run.stdout.split("\n");
+      // The request before the death was answered, so the one after it had a body to keep.
+      expect(before).toBe("404");
+      expect(hiddenStatus).toStartWith("curl failed: ");
+      expect(Number(hiddenBytes)).toBe(0);
+      expect(Number(differedCount)).toBe(1);
+    } finally {
+      dead.stop(true);
+    }
+  },
+  rowLimit("short")
+);

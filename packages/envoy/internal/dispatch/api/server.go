@@ -185,16 +185,22 @@ type Deps struct {
 	// sign-in records no account (a Cognito pool's group, cmd/dispatch's accountIssuer) or that
 	// signs nobody in.
 	SignInIssuer string
-	// Passkeys is the restricted members' passkeys and their owners' links (store.PgPasskeys),
-	// under the outside origin (Passkeys.Issuer), where passkey sign-in is on (cmd/dispatch:
-	// DISPATCH_SIGNIN_PASSKEY=1); nil where it is off. An owner makes a link and resets a person
-	// only where it is set (project_access.go), and a broker token whose account is a passkey's
-	// is held to it as one of the sign-in issuer's is (brokerTokenAccount).
-	Passkeys *store.PgPasskeys
-	// WorkspaceAddress reports whether an email is on a domain of the company's Workspace
-	// (identity.PasskeyRule.WorkspaceAddress), set with Passkeys: no link is made for such an
-	// address, and the owner's access answer lists none as invitable.
-	WorkspaceAddress func(email string) bool
+	// Passkeys is the restricted members' passkey sign-in at the outside origin (identity.Passkeys:
+	// the ceremonies, their store, Passkeys.Store, and the Workspace's address rule,
+	// Passkeys.WorkspaceAddress), where it is on (cmd/dispatch: DISPATCH_SIGNIN_PASSKEY=1); nil
+	// where it is off. An owner makes a link and resets a person only where it is set
+	// (project_access.go), the owner's access answer carries the passkey fields only then, and a
+	// broker token whose account is a passkey's is held to it as one of the sign-in issuer's is
+	// (brokerTokenAccount).
+	Passkeys *identity.Passkeys
+	// PasskeyAccounts is the passkeys and passkey accounts the database holds (store.PgPasskeys),
+	// set wherever Dispatch keeps people, whatever DISPATCH_SIGNIN_PASSKEY says: passkeys
+	// enrolled while the setting was on outlive it being turned off, so the one-owner refusals of
+	// a list and a transfer and the end of a person's account at their last list's removal run
+	// with it off too (project_access.go), and nothing written while it is off leaves a passkey
+	// that reads another owner's project or a removed person's account standing once it is on
+	// again. It is Passkeys.Store() where Passkeys is set.
+	PasskeyAccounts *store.PgPasskeys
 	// Files holds uploaded files' bytes outside Postgres (cmd/dispatch: DISPATCH_FILE_STORE_BUCKET);
 	// nil keeps them in each version's row, and a row that still holds bytes is served from the
 	// row either way (files.BackfillRows moves them).
@@ -346,10 +352,11 @@ type DepsInput struct {
 	// SignInIssuer is the issuer people sign in through; see Deps.SignInIssuer. NewDeps spells it as
 	// oidc.CanonicalIssuer does.
 	SignInIssuer string
-	// Passkeys is the passkey store where passkey sign-in is on; see Deps.Passkeys.
-	Passkeys *store.PgPasskeys
-	// WorkspaceAddress is set with Passkeys; see Deps.WorkspaceAddress.
-	WorkspaceAddress func(email string) bool
+	// Passkeys is the passkey sign-in where it is on; see Deps.Passkeys.
+	Passkeys *identity.Passkeys
+	// PasskeyAccounts is the database's passkeys whatever the setting says; see
+	// Deps.PasskeyAccounts. NewDeps takes Passkeys.Store() where Passkeys is set.
+	PasskeyAccounts *store.PgPasskeys
 	// Files is the uploaded-file store; nil keeps files in Postgres. See Deps.Files.
 	Files            files.Store
 	TestHooksEnabled bool
@@ -445,6 +452,10 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if url := strings.TrimSpace(input.AgentSecretsURL); url != "" {
 		agentSecretsClient = cipher.New(url, input.AgentSecretsTokenFile)
 	}
+	passkeyAccounts := input.PasskeyAccounts
+	if input.Passkeys != nil {
+		passkeyAccounts = input.Passkeys.Store()
+	}
 	var signInIssuer string
 	if issuer := strings.TrimSpace(input.SignInIssuer); issuer != "" {
 		signInIssuer = oidc.CanonicalIssuer(issuer)
@@ -480,7 +491,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		AgentSecrets:           agentSecretsClient,
 		SignInIssuer:           signInIssuer,
 		Passkeys:               input.Passkeys,
-		WorkspaceAddress:       input.WorkspaceAddress,
+		PasskeyAccounts:        passkeyAccounts,
 		Files:                  input.Files,
 		TestHooksEnabled:       input.TestHooksEnabled,
 		StreamHeartbeat:        heartbeat,
@@ -992,6 +1003,14 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 			RunAccessRecheck(context.Context, time.Duration)
 		}); ok {
 			go recheck.RunAccessRecheck(lifetime, s.accessRecheckEvery())
+		}
+		// A session's documents follow the session content rule, which reads the stored listener
+		// answer only while it is fresh, so the document service refreshes it before each batch's
+		// ask, as the live agent view does (refreshRosterForContent).
+		if refresh, ok := deps.Docs.(interface {
+			SetRosterRefresh(func(context.Context))
+		}); ok {
+			refresh.SetRosterRefresh(s.refreshRosterForContent)
 		}
 	}
 	readclass.Handle(mux, []readclass.Class{readclass.Project, readclass.People, readclass.Deployment}, "GET "+liveSocketPattern,

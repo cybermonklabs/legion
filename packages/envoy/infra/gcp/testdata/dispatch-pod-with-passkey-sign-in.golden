@@ -95,6 +95,10 @@
             "value": "1"
           },
           {
+            "name": "DISPATCH_TRUSTED_PROXY_RANGES",
+            "value": "35.191.0.0/16,130.211.0.0/22,2600:2d00:1:1::/64"
+          },
+          {
             "name": "DISPATCH_LISTEN_HOST",
             "value": "0.0.0.0"
           },

@@ -80,16 +80,21 @@ func MemberKind(ctx context.Context, q Querier, login string) (model.MemberKind,
 	return model.MemberKind(kind), nil
 }
 
-// The lock order every access write takes, so no two of them wait on each other in a cycle: a
-// group's name first (LockGroupName), then the project's owner lock (store.LockOwner), then the
-// rows a write appends events on. A write of a group (PutGroup, DeleteGroup) takes the name and
-// then the projects its delete sweeps; a write of a project's list that names a group takes the
-// same name before the project (LockForAccessWrite), so a delete of that group and the write are
-// ordered by the name: the delete waits for the write and then sweeps its row, or the write,
-// seeing the delete committed, finds no group. A removal of a person takes that person's
-// machine-login approval lock (store.LockMachineLoginApprovals) before any of these, since it may
-// wait there for an approve the secrets broker has not answered, and holds no project's lock while
-// it does; an approval of the person's takes that lock alone, so no cycle forms through it.
+// The lock order every access write takes, so no two of them wait on each other in a cycle: the
+// machine-login approval lock of the person a removal takes off the list
+// (store.LockMachineLoginApprovals), then a group's name (LockGroupName), then the project's owner
+// lock (store.LockOwner), then the rows a write appends events on. A removal of a person takes that
+// person's approval lock before any of the others, since it may wait there for an approve the
+// secrets broker has not answered, and so holds no project's lock while it does; an approval of the
+// person's takes that lock alone, so no cycle forms through it. It takes it only where a read that
+// takes no lock finds that the removal owes the revocation of the person's machine logins
+// (RemovalOwes), since the person's approve does not wait for the lock and is refused while
+// another holds it; a removal that finds it owes only under the project's lock takes it then
+// without waiting (store.RecordMachineLoginRevocation). A write of a group (PutGroup, DeleteGroup)
+// takes the name and then the projects its delete sweeps; a write of a project's list that names a
+// group takes the same name before the project (LockForAccessWrite), so a delete of that group and
+// the write are ordered by the name: the delete waits for the write and then sweeps its row, or the
+// write, seeing the delete committed, finds no group.
 
 // LockGroupName takes, for the rest of tx, the lock that orders every write of group name.
 func LockGroupName(ctx context.Context, tx pgx.Tx, name string) error {
@@ -100,12 +105,28 @@ func LockGroupName(ctx context.Context, tx pgx.Tx, name string) error {
 }
 
 // LockForAccessWrite takes, in the order above, the locks a write of project key's access takes:
-// the group's name when the write names a group (empty when it names none), then the project's
-// owner lock, the advisory lock every writer of a project takes (store.LockOwner), and never a
-// row lock on projects (TestNoForUpdateOnOwnerTables). It answers the project's owner as tx reads
-// it in the statement after that lock, nil for a project with none, and ErrProjectNotFound for an
-// unknown key. AddPrincipal and RemovePrincipal of a group are sound only after it.
-func LockForAccessWrite(ctx context.Context, tx pgx.Tx, key, group string) (*string, error) {
+// the approval lock of removed, the person the write takes off the list (empty for any other
+// write), where a read that takes no lock finds the removal owes the revocation of their machine
+// logins (RemovalOwes), then the group's name when the write names a group (empty when it names
+// none), then the project's owner lock, the advisory lock every writer of a project takes
+// (store.LockOwner), and never a row lock on projects (TestNoForUpdateOnOwnerTables). It answers
+// the project's owner as tx reads it in the statement after that lock, nil for a project with
+// none, and ErrProjectNotFound for an unknown key. AddPrincipal and RemovePrincipal of a group are
+// sound only after it. The record of a removal's machine-login revocation
+// (store.RecordMachineLoginRevocation) takes removed's approval lock itself, at once where this
+// took it, so the removal decides by its own reads under the project's lock whether it owes.
+func LockForAccessWrite(ctx context.Context, tx pgx.Tx, key, group, removed string) (*string, error) {
+	if removed != "" {
+		owes, err := RemovalOwes(ctx, tx, key, removed)
+		if err != nil {
+			return nil, err
+		}
+		if owes {
+			if err := store.LockMachineLoginApprovals(ctx, tx, removed); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if group != "" {
 		if err := LockGroupName(ctx, tx, group); err != nil {
 			return nil, err
@@ -114,8 +135,34 @@ func LockForAccessWrite(ctx context.Context, tx pgx.Tx, key, group string) (*str
 	if err := lockProject(ctx, tx, key); err != nil {
 		return nil, err
 	}
+	return ReadOwner(ctx, tx, key)
+}
+
+// RemovalOwes reports whether a removal of the person login from project key's list owes the
+// revocation of their machine logins, as q reads it: the list names them and they are a restricted
+// member. It is the one rule for it: LockForAccessWrite reads it with no lock to decide whether to
+// take the person's approval lock first, and api.removePerson reads it again under the project's
+// lock, before it takes them off, to decide whether to record the debt. Its error names the
+// project and never the person (TestNoAccessErrorNamesAPerson).
+func RemovalOwes(ctx context.Context, q Querier, key, login string) (bool, error) {
+	var owes bool
+	if err := q.QueryRow(ctx, `
+		select exists (select 1 from project_access where project_key = $1 and principal_kind = $2 and principal = $3)
+			and exists (select 1 from people where email = $3 and member_kind = $4)
+	`, key, PrincipalPerson, model.CanonicalLogin(login), string(model.MemberRestricted)).Scan(&owes); err != nil {
+		return false, fmt.Errorf("read whether a removal from project %s owes a machine-login revocation: %w", key, err)
+	}
+	return owes, nil
+}
+
+// ReadOwner answers project key's owner as q reads it, nil for a project with none, and
+// ErrProjectNotFound for an unknown key, taking no lock. LockForAccessWrite reads it again under
+// the project's owner lock, and only that read decides a write; a write reads it first to refuse a
+// caller who does not own the project before it takes any lock (api.ownerWrite), so a refused write
+// holds up no other.
+func ReadOwner(ctx context.Context, q Querier, key string) (*string, error) {
 	var owner *string
-	err := tx.QueryRow(ctx, `select owner from projects where key = $1`, key).Scan(&owner)
+	err := q.QueryRow(ctx, `select owner from projects where key = $1`, key).Scan(&owner)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
 	}
@@ -238,7 +285,10 @@ func OwnerNotAllowed(login string) error {
 }
 
 // SetVisibility makes project key public or private. It appends project.access_changed in tx.
-// Whether the deployment lets a project be private at all is the caller's to decide first.
+// Whether the deployment lets a project be private at all is the caller's to decide first. A
+// switch from public to private records the project as one each session that may have read it
+// while it was public reached, at the transaction's commit, through the projects table's trigger
+// (projectMadePrivateFunctionBody), so a switch made by an SQL statement alone records them too.
 func SetVisibility(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, visibility string, by model.Actor) (model.ProjectAccess, model.Event, error) {
 	if visibility != model.ProjectPublic && visibility != model.ProjectPrivate {
 		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w, not %q", ErrVisibilityInput, visibility)
@@ -557,6 +607,76 @@ func groupFullMembersSQL(nameExpr string) string {
 		where member.group_name = ` + nameExpr + `)`
 }
 
+// RecordListedReach records, in a statement of its own, each private project of projects, the list
+// of a broker-issued token that proved session, as one the session reached
+// (session_reached_projects): the session reads under that list from the request that presented
+// it on, so what its transcript holds stays bounded by it, as route_roster's trigger keeps a
+// private project a listener record lists, and nothing removes it. A public project, and a key no
+// project holds, record nothing; a pair a row holds already is not written again.
+func RecordListedReach(ctx context.Context, q Querier, session string, projects []string) error {
+	if session == "" || len(projects) == 0 {
+		return nil
+	}
+	var written int
+	if err := q.QueryRow(ctx, `
+		with written as (
+			insert into session_reached_projects (session_id, project_key)
+			select distinct $1::text, listed.key from projects listed
+			where listed.key = any($2::text[]) and listed.visibility = 'private'
+				and not exists (
+					select 1 from session_reached_projects recorded
+					where recorded.session_id = $1::text and recorded.project_key = listed.key)
+			returning 1
+		)
+		select count(*) from written
+	`, session, projects).Scan(&written); err != nil {
+		return fmt.Errorf("record the private projects a session's token lists: %w", err)
+	}
+	return nil
+}
+
+// projectMadePrivateFunctionBody is the body of record_project_made_private(), the function of
+// the projects table's trigger projects_made_private_reached (migration
+// 20261121173500_project_private_reached), which runs at the commit of a transaction that switched
+// a project from public to private, by SetVisibility or by an SQL statement alone. A switch takes
+// the project from every full member its list does not name, and the transcripts of their sessions
+// keep what those sessions read of it while it was public, so the function records the project in
+// session_reached_projects, which the content rule reads as a project the session acted in
+// (SessionContentClause):
+//
+//   - for every session tied to a person (session_owners) who saw the project before the switch,
+//     by its row as the update found it (old), and does not see it after (new): the statements of
+//     store.RecordReachedProjects, rendered for the trigger (store.MadePrivateReachedSQL), a
+//     person no people row holds reading as a full member; a restricted member its list never
+//     named never saw it, and keeps their sessions;
+//   - for every session whose stored listener list names the project
+//     (route_roster_session_projects), whoever proved it, so a list narrowed later keeps what the
+//     session could read under it, as route_roster's trigger keeps a private project's.
+//
+// It first takes the store.SessionOwnerLock of each person it records for, exclusive, in login
+// order, by the statement store.RecordReachedProjects takes them with, and runs at commit, after
+// every other lock the switch takes. It names every table by its schema and sets no search_path,
+// as session_content_visible does. The migration holds this text:
+// TestTheMadePrivateTriggerIsTheBodyGoRenders fails while the function a migrated database holds
+// differs from it.
+func projectMadePrivateFunctionBody() string {
+	return `
+begin
+	` + store.MadePrivateReachedSQL() + `
+	insert into public.session_reached_projects (session_id, project_key)
+	select distinct held.session, new.key
+	from public.route_roster_session_projects listener
+	cross join lateral jsonb_each(listener.projects) as held (session, projects)
+	where listener.id = true and held.session <> ''
+		and jsonb_typeof(held.projects) = 'array' and held.projects ? new.key
+		and not exists (
+			select 1 from public.session_reached_projects recorded
+			where recorded.session_id = held.session and recorded.project_key = new.key);
+	return null;
+end
+`
+}
+
 // TieSession records, in a statement of its own, that session acts for the person login, the
 // canonical login (model.CanonicalLogin) of a broker-issued token that proved the session
 // (session_owners): the tie the live agent view reads (SessionContentClause). A pair a row holds
@@ -582,10 +702,10 @@ func TieSession(ctx context.Context, q Querier, session, login string) error {
 	return nil
 }
 
-// NamesPerson reports whether project key's access list names the person email, read in tx: a
-// removal asks it before RemovePrincipal to tell a removal that took a person off the list from one
-// that left it as it was. An email that names nobody is ErrPrincipalInput, as RemovePrincipal
-// answers it.
+// NamesPerson reports whether project key's access list names the person email directly, read in
+// tx: an owner's link and Reset ask it before they act on the person (api.namedPerson), since each
+// is for a person the list names. An email that names nobody is ErrPrincipalInput, as
+// RemovePrincipal answers it.
 func NamesPerson(ctx context.Context, tx pgx.Tx, key, email string) (bool, error) {
 	name, err := principalOf(PrincipalPerson, email)
 	if err != nil {

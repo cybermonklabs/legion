@@ -36,9 +36,9 @@ const (
 	// passkeyCeremonyCookieInsecure (passkeyCeremonyCookieName).
 	passkeyCeremonyCookie         = "__Host-dispatch_passkey_ceremony"
 	passkeyCeremonyCookieInsecure = "dispatch_passkey_ceremony"
-	// passkeyCeremonyMaxAge is how long the ceremony cookie lives, the ceremony's own timeout
-	// (identity.Passkeys enforces it again from the session it carries).
-	passkeyCeremonyMaxAge = 5 * 60
+	// passkeyCeremonyMaxAge is how long the ceremony cookie lives, in seconds: the ceremony's own
+	// timeout, which identity.Passkeys enforces again from the session it carries.
+	passkeyCeremonyMaxAge = int(identity.PasskeyCeremonyTimeout / time.Second)
 	// passkeyCeremonyFormat leads every ceremony cookie value, so a later shape can be told from
 	// this one.
 	passkeyCeremonyFormat = "p1"

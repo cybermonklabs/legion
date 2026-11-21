@@ -25,8 +25,8 @@ const sessionProjectsFillBatch = 10_000
 // own, as migration 20261116081157_session_projects_proven does at boot, and then fills. A
 // deployment that rolls keeps an old build recording pairs under the old rule while the new one
 // starts, and a fill never takes a pair away, so its operator runs it once the last old pod is
-// gone. From the empty to the marker's row, an open viewer of a deployment that holds a private
-// project reads no session but its own (access.SessionClause). session_owners is not emptied: no
+// gone. From the empty to the marker's row, no viewer of a deployment that holds a private project,
+// open or not, reads a session but its own (access.SessionClause). session_owners is not emptied: no
 // build recorded its pairs under another rule. It exits 0 once it has read every event, 1 when the
 // database cannot be opened or written, and 2 for an argument it does not take.
 func backfillSessionProjects(ctx context.Context, args []string, databaseURL string, stdout, stderr io.Writer) int {

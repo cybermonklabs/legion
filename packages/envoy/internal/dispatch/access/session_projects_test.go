@@ -16,7 +16,11 @@ import (
 func TestAPairRecordedTwiceReadsAsOnce(t *testing.T) {
 	ctx := context.Background()
 	database := seedAccess(t)
+	// The pairs of a filled deployment: while a project is private, SessionClause reads the pairs,
+	// for an open viewer and one that is not open alike, only once session_projects_filled holds
+	// its row (TestARestrictedViewerReadsNoOtherSessionWhileTheFillIsUnfinished).
 	if _, err := database.Pool.Exec(ctx, `
+		insert into session_projects_filled default values;
 		insert into issues (key, project_key, number, title, created_by, rank) values
 			('PRIV-1', 'PRIV', 1, 'One', '{"kind":"user","id":"olga@example.com"}', 'U'),
 			('PRIV-2', 'PRIV', 2, 'Two', '{"kind":"user","id":"olga@example.com"}', 'V');

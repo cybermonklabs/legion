@@ -117,17 +117,19 @@ func (p *PgPasskeys) Issuer() string {
 	return p.issuer
 }
 
-// UsedCeremony is a ceremony whose answer verified, as its finish records it used
-// (useCeremonyTx): its challenge and when it lapses.
+// UsedCeremony is a ceremony as its finish records it used (useCeremonyTx): its challenge and when
+// it lapses.
 type UsedCeremony struct {
 	Challenge string
 	Expires   time.Time
 }
 
 // useCeremonyTx records, in tx, the ceremony's challenge as used, by its SHA-256 under a unique key
-// (passkey_ceremonies), after deleting every one that lapsed more than a minute ago: a finish
-// whose answer verified calls it in the transaction that records what the answer does (Enroll,
-// SignIn), so a ceremony's answer does that at most once however often it is sent, and two
+// (passkey_ceremonies), after deleting every one that lapsed more than a minute ago: an
+// enrollment's finish whose answer verified calls it in the transaction that records the
+// enrollment (Enroll), and a sign-in's finish before it verifies the answer, in a transaction of
+// its own (UseCeremony), so a ceremony's answer does what it does at most once however often it
+// is sent, a sign-in's ceremony allows one finish whether or not its answer verifies, and two
 // finishes of one answer at once commit one, the other waiting on the key and finding it taken
 // (ErrPasskeyCeremonyUsed). No begin writes: the signed ceremony cookie carries what the finish
 // needs, so a begin, which takes no credential, costs the database nothing. A lapsed ceremony's
@@ -146,6 +148,25 @@ func useCeremonyTx(ctx context.Context, tx pgx.Tx, ceremony UsedCeremony) error 
 	}
 	if used.RowsAffected() == 0 {
 		return ErrPasskeyCeremonyUsed
+	}
+	return nil
+}
+
+// UseCeremony records a sign-in's ceremony used in a transaction of its own (useCeremonyTx), before
+// its finish verifies the answer (identity.Passkeys.FinishSignIn): one begin allows one finish, so
+// an answer that fails costs its ceremony, and a caller cannot try answers against one begin's
+// challenge for its five minutes. The same ceremony again is ErrPasskeyCeremonyUsed.
+func (p *PgPasskeys) UseCeremony(ctx context.Context, ceremony UsedCeremony) error {
+	tx, err := p.people.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("record the passkey ceremony used: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := useCeremonyTx(ctx, tx, ceremony); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("record the passkey ceremony used: %w", err)
 	}
 	return nil
 }
@@ -243,8 +264,8 @@ func LockAddressTx(ctx context.Context, tx pgx.Tx, email string) error {
 // passkeys it deleted (endAccountTx).
 func (p *PgPasskeys) EndAccountTx(ctx context.Context, tx pgx.Tx, email string) (int64, error) {
 	login := model.CanonicalLogin(email)
-	if _, err := tx.Exec(ctx, addressLockSQL, login); err != nil {
-		return 0, fmt.Errorf("end the person's account: lock the address: %w", err)
+	if err := LockAddressTx(ctx, tx, login); err != nil {
+		return 0, fmt.Errorf("end the person's account: %w", err)
 	}
 	var full bool
 	if err := tx.QueryRow(ctx, `select coalesce(bool_or(member_kind = 'full'), false) from people where email = $1`, login).Scan(&full); err != nil {
@@ -257,25 +278,27 @@ func (p *PgPasskeys) EndAccountTx(ctx context.Context, tx pgx.Tx, email string) 
 }
 
 // endAccountTx is EndAccountTx under the address's lock tx holds. Where the address records a
-// passkey's account (a subject under the outside origin), it records a new subject
-// (NewPasskeySubject) through the account binding (signInAccountTx), as another account's sign-in
-// would: that revokes the address's personal tokens and, where a broker is configured, owes the
-// broker the revocation of the old account at the session generation it leaves, which ends every
-// machine login and sign-in the old account approved at the broker and refuses every later
-// approve that names it or an older generation. An address that records no passkey's account has
-// its personal tokens revoked alone. Last it ends the sign-in and deletes the passkeys
-// (endPasskeySignInTx), and answers how many it deleted.
+// passkey's account (a subject under an issuer of its own, people.sub_issuer, which only a passkey's
+// account records), it records a new subject (NewPasskeySubject) under that issuer through the
+// account binding (signInAccountTx), as another account's sign-in would: that revokes the
+// address's personal tokens and, where a broker is configured, owes the broker the revocation of the
+// old account at the session generation it leaves, which ends every machine login and sign-in the
+// old account approved at the broker and refuses every later approve that names it or an older
+// generation. It reads the issuer from the row, not from p, so a store built while passkey sign-in
+// is off, which knows no outside origin, ends the account all the same. An address that records no
+// passkey's account has its personal tokens revoked alone. Last it ends the sign-in and deletes the
+// passkeys (endPasskeySignInTx), and answers how many it deleted.
 func (p *PgPasskeys) endAccountTx(ctx context.Context, tx pgx.Tx, login string) (int64, error) {
-	var recorded bool
-	if err := tx.QueryRow(ctx, `select exists (select 1 from people where email = $1 and sub_issuer = $2)`, login, p.issuer).Scan(&recorded); err != nil {
+	var issuer string
+	if err := tx.QueryRow(ctx, `select coalesce((select sub_issuer from people where email = $1), '')`, login).Scan(&issuer); err != nil {
 		return 0, fmt.Errorf("end the person's account: read it: %w", err)
 	}
-	if recorded {
+	if issuer != "" {
 		subject, err := NewPasskeySubject()
 		if err != nil {
 			return 0, err
 		}
-		if _, err := p.people.signInAccountTx(ctx, tx, login, signInAccount{issuer: p.issuer, subject: subject}, nil, model.MemberRestricted); err != nil {
+		if _, err := p.people.signInAccountTx(ctx, tx, login, signInAccount{issuer: issuer, subject: subject}, nil, model.MemberRestricted); err != nil {
 			return 0, fmt.Errorf("end the person's account: record a new one: %w", err)
 		}
 	} else if _, err := tx.Exec(ctx, revokeAddressTokensSQL, login); err != nil {
@@ -548,6 +571,12 @@ func (p *PgPasskeys) Enroll(ctx context.Context, ceremony UsedCeremony, tokenHas
 	if _, err := tx.Exec(ctx, `update outside_invitations set used_at = now() where token_sha256 = $1`, tokenHash[:]); err != nil {
 		return fmt.Errorf("use the invitation: %w", err)
 	}
+	// The address's lock, before the two reads that must not race a list's naming of the person or
+	// another enrollment (refuseAnotherPasskeySubject, ListedByAnotherOwner): every write that
+	// names, ends or signs the address in takes it.
+	if err := LockAddressTx(ctx, tx, login); err != nil {
+		return fmt.Errorf("enroll the passkey: %w", err)
+	}
 	if err := p.refuseAnotherPasskeySubject(ctx, tx, login, subject); err != nil {
 		return err
 	}
@@ -577,12 +606,9 @@ func (p *PgPasskeys) Enroll(ctx context.Context, ceremony UsedCeremony, tokenHas
 }
 
 // refuseAnotherPasskeySubject is ErrEnrollmentSuperseded when email's row records a passkey subject
-// under the outside origin other than subject, read under the address's lock in tx: the subject an
-// enrollment begins from is the row's, so another one is an enrollment that finished meanwhile.
+// under the outside origin other than subject, read under the address's lock tx holds: the subject
+// an enrollment begins from is the row's, so another one is an enrollment that finished meanwhile.
 func (p *PgPasskeys) refuseAnotherPasskeySubject(ctx context.Context, tx pgx.Tx, email, subject string) error {
-	if _, err := tx.Exec(ctx, addressLockSQL, email); err != nil {
-		return fmt.Errorf("enroll the passkey: lock the address: %w", err)
-	}
 	var stored string
 	err := tx.QueryRow(ctx, `select coalesce(sub, '') from people where email = $1 and sub_issuer = $2`, email, p.issuer).Scan(&stored)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -620,26 +646,25 @@ func readPasskey(ctx context.Context, q PasskeyReader, credentialID []byte, lock
 }
 
 // SignIn records a sign-in with the passkey read, which WebAuthn verified with signature counter
-// signCount and flags under ceremony, which it records used first (useCeremonyTx: the same answer
-// again is ErrPasskeyCeremonyUsed), in one transaction under the address's lock, which every write
-// that ends a passkey's sign-in or deletes its passkeys takes first (EndAccountTx, settle),
-// so none of them waits on another in a cycle: the passkey, locked, must still exist (else
-// ErrPasskeyUnknown) with the counter read held (else ErrPasskeySignCount: another sign-in with it
-// finished first), and the address must still record the passkey's user handle under the outside
-// origin (else ErrPasskeyAccountMoved), so a passkey never replaces the account an address
-// records. Then it stores the new counter and flags, and signs the person in as a restricted
-// member through the account binding (signInAccountTx), which under the same account ends nothing.
-func (p *PgPasskeys) SignIn(ctx context.Context, ceremony UsedCeremony, read StoredPasskey, signCount uint32, flags byte) error {
+// signCount and flags, its ceremony already recorded used (UseCeremony), in one transaction under
+// the address's lock, which every write that ends a passkey's sign-in or deletes its passkeys takes
+// first (EndAccountTx, settle), so none of them waits on another in a cycle: the passkey, locked,
+// must still exist (else ErrPasskeyUnknown) with the counter read held (else ErrPasskeySignCount:
+// another sign-in with it finished first), no project of another owner than the one whose link
+// enrolled it may name the person directly (else ErrListedByAnotherOwner, R5: a passkey reads only
+// projects its link's maker owns, whatever wrote the list meanwhile), and the address must still
+// record the passkey's user handle under the outside origin (else ErrPasskeyAccountMoved), so a
+// passkey never replaces the account an address records. Then it stores the new counter and
+// flags, and signs the person in as a restricted member through the account binding
+// (signInAccountTx), which under the same account ends nothing.
+func (p *PgPasskeys) SignIn(ctx context.Context, read StoredPasskey, signCount uint32, flags byte) error {
 	tx, err := p.people.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("sign in with the passkey: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	if err := useCeremonyTx(ctx, tx, ceremony); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, addressLockSQL, read.Email); err != nil {
-		return fmt.Errorf("sign in with the passkey: lock the address: %w", err)
+	if err := LockAddressTx(ctx, tx, read.Email); err != nil {
+		return fmt.Errorf("sign in with the passkey: %w", err)
 	}
 	locked, err := readPasskey(ctx, tx, read.ID, "for update")
 	if err != nil {
@@ -647,6 +672,15 @@ func (p *PgPasskeys) SignIn(ctx context.Context, ceremony UsedCeremony, read Sto
 	}
 	if locked.SignCount != read.SignCount || locked.Email != read.Email {
 		return ErrPasskeySignCount
+	}
+	var madeBy string
+	if err := tx.QueryRow(ctx, `select made_by from passkeys where credential_id = $1`, locked.ID).Scan(&madeBy); err != nil {
+		return fmt.Errorf("read who made the passkey's link: %w", err)
+	}
+	if other, err := ListedByAnotherOwner(ctx, tx, locked.Email, madeBy); err != nil {
+		return err
+	} else if other {
+		return ErrListedByAnotherOwner
 	}
 	err = tx.QueryRow(ctx, `select 1 from people where email = $1 and sub = $2 and sub_issuer = $3 for update`,
 		locked.Email, string(locked.UserHandle), p.issuer).Scan(new(int))
@@ -695,8 +729,8 @@ func (p *PgPasskeys) settle(ctx context.Context, email, subject string, end bool
 		return false, fmt.Errorf("confirm the passkey sign-in of %q: %w", login, err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, addressLockSQL, login); err != nil {
-		return false, fmt.Errorf("confirm the passkey sign-in of %q: lock the address: %w", login, err)
+	if err := LockAddressTx(ctx, tx, login); err != nil {
+		return false, fmt.Errorf("confirm the passkey sign-in of %q: %w", login, err)
 	}
 	var standing bool
 	var passkeys int

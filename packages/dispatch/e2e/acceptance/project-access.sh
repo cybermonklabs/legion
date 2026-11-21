@@ -228,9 +228,10 @@ for server in main twin; do
   # what this check reads: the projects it has provisioned as private, the dev embedder for the
   # meaning leg, the test hooks the route index lists, and the GitHub App the proxy mints its
   # tokens as. DISPATCH_PRIVATE_PROJECTS is the comma-separated keys of the projects a deployment
-  # has provisioned as private (cmd/dispatch privateProjectsSetting, which refuses the boot for
-  # any entry that is no project key): main provisions PRIV, and the twin, which never makes a
-  # project private, sets none. Given no port, start_server sets <server>_port.
+  # has provisioned as private (cmd/dispatch privateProjectsSetting, which ignores an entry that
+  # is no project key, with one ERROR line at boot naming it, and keeps the keys beside it): main
+  # provisions PRIV, and the twin, which never makes a project private, sets none. Given no port,
+  # start_server sets <server>_port.
   private_projects=()
   [ "$server" = twin ] || private_projects=(DISPATCH_PRIVATE_PROJECTS=PRIV)
   envoy_port=$envoy_port database_url=${!database_var} start_server "$server" "$work/bin/dispatch" '' \
@@ -559,6 +560,11 @@ fi
 begin verdict
 note "$compared answers judged, each pair compared and each read held to a rule of its own; by status: $(statuses)"
 [ "$compared" -gt 0 ] || unrun "no answer was judged"
+# An answer judged with no HTTP status - a request that failed in transport, or a socket probe that
+# reached no answer (access-lib.sh's answered) - judged nothing of the server it was sent to.
+unanswered=$(grep -cvE '^([0-9]{3}|socket)$' "$work/statuses" || true)
+[ "$unanswered" = 0 ] ||
+  unrun "$unanswered lines of the answers judged are no HTTP status, each a request that failed in transport or a socket probe that reached no answer: $(grep -vE '^([0-9]{3}|socket)$' "$work/statuses" | sort -u | tr '\n' ' ' | head -c 600)"
 if [ -s "$work/unrun" ]; then
   fail "$(wc -l <"$work/unrun") things did not run:
 $(<"$work/unrun")

@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
@@ -141,6 +142,10 @@ type bootConfig struct {
 	// that a project names directly signs in with a passkey at OutsideOrigin, enrolled through the
 	// project's owner's single-use link (identity.PasskeyRule, identity.Passkeys).
 	SignInPasskey bool
+	// TrustedProxyRanges is DISPATCH_TRUSTED_PROXY_RANGES, the front doors whose X-Forwarded-For the
+	// passkey begins' bound reads (auth.BoundAddress, parseTrustedProxyRanges); nil when unset, which
+	// SignInPasskey refuses (checkSignInSettings).
+	TrustedProxyRanges []netip.Prefix
 	// TestSignInDomainIssuer is DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1, under the test hooks alone:
 	// SignInDomain runs under an issuer other than Google's, the dev OIDC issuer a browser suite
 	// signs people in through.
@@ -582,11 +587,12 @@ func main() {
 	if boot.IAPAudience != "" {
 		slog.Info("dispatch: naming people from Identity-Aware Proxy's signed assertion", "audience", boot.IAPAudience, "keys", boot.IAPKeySetURL, "domain", boot.SignInDomain)
 	}
-	passkeys, ceremonies, err := passkeySignIn(boot, people, rule)
+	passkeyAccounts, ceremonies, err := passkeySignIn(boot, people, rule)
 	if err != nil {
 		slog.Error("dispatch: configure passkey sign-in", "error", err)
 		os.Exit(1)
 	}
+	passkeys := ceremonyStore(ceremonies)
 	if passkeys != nil {
 		slog.Info("dispatch: people outside the domain that a project names sign in with a passkey", "origin", boot.OutsideOrigin)
 	}
@@ -653,27 +659,28 @@ func main() {
 	// holds behind an earlier event to it, and the outbox those of its fallback copies.
 	met := metrics.New()
 	built := routes.AppContextOptions{
-		SigningKey:     signingKey,
-		WebDistDir:     webDistDir,
-		AssetStore:     dashboard.NewStore(database.Pool),
-		DashboardEntry: dashboardBuild.Entry,
-		BuildCommit:    buildCommit,
-		People:         people,
-		Sessions:       sessions,
-		Identity:       requestIdentity,
-		SignIn:         signIn,
-		Passkeys:       ceremonies,
-		Store:          database,
-		ServerURL:      serverURL,
-		Docs:           documentService,
-		Embedder:       embedder,
-		Events:         broker,
-		App:            appCfg,
-		AgentStream:    agentStream,
-		AgentPublisher: agentPublisher,
-		Files:          fileStore,
-		Metrics:        met,
-		Lifetime:       ctx,
+		SigningKey:      signingKey,
+		WebDistDir:      webDistDir,
+		AssetStore:      dashboard.NewStore(database.Pool),
+		DashboardEntry:  dashboardBuild.Entry,
+		BuildCommit:     buildCommit,
+		People:          people,
+		Sessions:        sessions,
+		Identity:        requestIdentity,
+		SignIn:          signIn,
+		Passkeys:        ceremonies,
+		PasskeyAccounts: passkeyAccounts,
+		Store:           database,
+		ServerURL:       serverURL,
+		Docs:            documentService,
+		Embedder:        embedder,
+		Events:          broker,
+		App:             appCfg,
+		AgentStream:     agentStream,
+		AgentPublisher:  agentPublisher,
+		Files:           fileStore,
+		Metrics:         met,
+		Lifetime:        ctx,
 		// Beside the owed revocations RegisterBrokerRevocationMetrics puts on met below.
 		BrokerRevocationsSuperseded: api.NewBrokerRevocationsSuperseded(met),
 	}
@@ -1571,6 +1578,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.SignInPasskey, err = parseSignInSwitch("DISPATCH_SIGNIN_PASSKEY", env.get("DISPATCH_SIGNIN_PASSKEY")); err != nil {
 		return bootConfig{}, err
 	}
+	if boot.TrustedProxyRanges, err = parseTrustedProxyRanges(commaList(env, "DISPATCH_TRUSTED_PROXY_RANGES")); err != nil {
+		return bootConfig{}, err
+	}
 	// Checked with the rest of the sign-in settings (checkSignInSettings).
 	boot.SignInWorkspaceDomains = commaList(env, "DISPATCH_SIGNIN_WORKSPACE_DOMAINS")
 	if boot.OutsideOrigin, err = parseOutsideOrigin(env.get("DISPATCH_OUTSIDE_ORIGIN"), boot.TestHooksEnabled); err != nil {
@@ -2099,7 +2109,37 @@ func appContextOptions(boot bootConfig, rule identity.SignInRule, built routes.A
 	built.OutboxPublishes = !boot.NATSDisabled
 	built.DevSignIn = boot.DevSignIn
 	built.DevRestrictedAdmission = devRestrictedAdmission(boot, built.Store)
+	built.TrustedProxyRanges = boot.TrustedProxyRanges
 	return built
+}
+
+// parseTrustedProxyRanges parses the entries of DISPATCH_TRUSTED_PROXY_RANGES (commaList), each a
+// CIDR, IPv4 or IPv6, written as the network it names (35.191.0.0/16, not 35.191.4.5/16, so the
+// setting trusts what it says), with a prefix longer than /0, since 0.0.0.0/0 or ::/0 would trust
+// every peer's X-Forwarded-For and let any caller pick the address its passkey begins are bounded
+// by. It refuses an empty entry and any other, naming the entry by its position; nil for none.
+func parseTrustedProxyRanges(entries []string) ([]netip.Prefix, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	ranges := make([]netip.Prefix, len(entries))
+	for index, entry := range entries {
+		if entry == "" {
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d is empty", index+1, len(entries))
+		}
+		prefix, err := netip.ParsePrefix(entry)
+		if err != nil {
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d must be a CIDR such as 35.191.0.0/16 or 2600:2d00:1:1::/64", index+1, len(entries))
+		}
+		if prefix != prefix.Masked() {
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d must be written as the network it names, %s", index+1, len(entries), prefix.Masked())
+		}
+		if prefix.Bits() == 0 {
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d trusts every peer's X-Forwarded-For, so any caller would pick the address its passkey begins are bounded by: name the front doors' own ranges", index+1, len(entries))
+		}
+		ranges[index] = prefix
+	}
+	return ranges, nil
 }
 
 // accountIssuer is the issuer of every Google account people records, which the API names a

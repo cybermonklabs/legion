@@ -191,7 +191,11 @@ func TestThreadsOfAPrivateProjectAnswerAsMissing(t *testing.T) {
 		}
 	})
 
-	t.Run("the kept comment list on a cache hit", func(t *testing.T) {
+	// While a project is private no comment list is kept for a reader who does not see every
+	// object (keepsListAnswerFor), carol included: what such a list leaves out moves with rows its
+	// key does not name. So carol's second read is answered afresh, and alice, naming carol's ETag,
+	// reads PRIV's comments as a missing owner's and is answered from nothing kept for carol.
+	t.Run("no comment list is kept for a reader who sees part", func(t *testing.T) {
 		path := "/api/v1/issues/" + key + "/comments"
 		first := threads.request(t, callerCarol, http.MethodGet, path, nil)
 		if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), comment) {
@@ -199,15 +203,15 @@ func TestThreadsOfAPrivateProjectAnswerAsMissing(t *testing.T) {
 		}
 		kept := threads.server.listAnswers.writes.Load()
 		if again := threads.request(t, callerCarol, http.MethodGet, path, nil); again.Body.String() != first.Body.String() ||
-			threads.server.listAnswers.writes.Load() != kept+1 {
-			t.Fatalf("carol's second read was not answered from the kept list: %d writes, want %d", threads.server.listAnswers.writes.Load(), kept+1)
+			threads.server.listAnswers.writes.Load() != kept {
+			t.Fatalf("carol's second read while PRIV is private: %d answers from a kept list, want %d, and the same body", threads.server.listAnswers.writes.Load(), kept)
 		}
 		blind := threadsRequestWith(t, threads.privateSeed, callerAlice, path, first.Header().Get("ETag"))
 		if blind.Code != http.StatusOK || strings.TrimSpace(blind.Body.String()) != "[]" || strings.Contains(blind.Body.String(), comment) {
-			t.Errorf("alice, after carol's list was kept and naming its ETag, reads %d %q; want 200 [] as a missing owner", blind.Code, blind.Body.String())
+			t.Errorf("alice, naming the ETag of carol's list, reads %d %q; want 200 [] as a missing owner", blind.Code, blind.Body.String())
 		}
-		if threads.server.listAnswers.writes.Load() != kept+1 {
-			t.Errorf("alice was answered from the list kept for carol")
+		if threads.server.listAnswers.writes.Load() != kept {
+			t.Errorf("alice was answered from a kept list")
 		}
 	})
 }

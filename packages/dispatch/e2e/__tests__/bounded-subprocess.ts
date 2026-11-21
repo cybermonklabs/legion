@@ -70,10 +70,18 @@
  *   that `row-map.test.ts` waits for cost 45.23 s at most.
  * - `twoStackBuild`, against about nine minutes, measured from cold on that four-core pod. That
  *   child builds two stacks, and each stack is a Go build and an initdb.
+ * - `wholeIndexSweep`, against 82 s: the one run of `restricted-sweep-judging.test.ts` over the
+ *   whole route index, about 400 requests to that file's fake Dispatch, each a curl and a jq. On
+ *   the dev box at a load of 500 to 1200, with two more runs of that file and a run of
+ *   `restricted-sweep.test.ts`'s stacks beside it, on 2026-11-20 and 2026-11-21, it finished in
+ *   32.4 s, 37.6 s, 48.7 s and 49.4 s, and was stopped at the `short` bound it then had after 65 s
+ *   and after 82 s, so a correct run there takes longer than 82 s. 300 s is more than three times
+ *   82 s.
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
- * laptop as in CI: a `short` child after 60 s, a listing after 6 minutes, the generation after
- * 6.5 minutes, and the two-stack build after 30 minutes. A row's limit is what `rowLimit` reads
+ * laptop as in CI: a `short` child after 60 s, a whole-index sweep after 5 minutes, a listing
+ * after 6 minutes, the generation after 6.5 minutes, and the two-stack build after 30 minutes. A
+ * row's limit is what `rowLimit` reads
  * from the bounds of what the row waits for, plus 30 s for its own work, so the child's bound
  * fires before the row's limit and the failure names the child. The lane runs in the
  * `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15 minutes. That job ran green
@@ -108,6 +116,9 @@ export const bounds = Object.freeze({
   generation: 390_000,
   /** The `bun --eval` of `second-global-setup.test.ts`, which builds two stacks. */
   twoStackBuild: 1_800_000,
+  /** One run of `e2e/acceptance/restricted-sweep.sh` over the whole route index against the fake
+   *  Dispatch of `restricted-sweep-judging.test.ts`: about 400 requests, each a curl and a jq. */
+  wholeIndexSweep: 300_000,
 });
 
 /** The name of a bound, which is what a row and a run name rather than a number. */

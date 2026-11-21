@@ -352,18 +352,17 @@ func (s *server) relayMachineLoginApproval(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	held, owed, err := store.HoldMachineLoginApprovals(ctx, tx, person)
-	if err != nil {
-		writeError(w, "MACHINE_LOGIN_APPROVALS_UNREAD", http.StatusServiceUnavailable,
-			"whether a revocation of this person's machine logins is owed could not be read, so the approval was not relayed; try again in a minute")
-		return
-	}
-	if !held {
+	owed, err := store.HoldMachineLoginApprovals(ctx, tx, person)
+	switch {
+	case errors.Is(err, store.ErrMachineLoginApprovalInFlight):
 		writeError(w, "MACHINE_LOGIN_APPROVAL_IN_FLIGHT", http.StatusConflict,
 			"another approval of this person's machine logins is being relayed to the secrets broker, or a removal of theirs from an access list is being recorded; approve again in a few seconds")
 		return
-	}
-	if owed {
+	case err != nil:
+		writeError(w, "MACHINE_LOGIN_APPROVALS_UNREAD", http.StatusServiceUnavailable,
+			"whether a revocation of this person's machine logins is owed could not be read, so the approval was not relayed; try again in a minute")
+		return
+	case owed:
 		writeError(w, "MACHINE_LOGIN_REVOCATION_OWED", http.StatusConflict,
 			"this person's machine logins are being revoked after a removal from an access list; approve again once that is done, in about a minute")
 		return
@@ -386,7 +385,8 @@ func (s *server) relayMachineLoginApproval(w http.ResponseWriter, r *http.Reques
 //     made before people recorded the address's); its account is the one its mint recorded.
 //
 // A broker-issued token never decides: none holds the approve scope these routes require
-// (brokerPersonScopes), so it is refused before it gets here.
+// (brokerPersonScopes), so it is refused before it gets here, and refused here too, before any
+// read (refuseUnboundCredential), since nothing below has an arm for it.
 //
 // Each account the statement binds is the address's recorded one, since each that is not is
 // refused in that same statement, so its issuer is the one people records with it
@@ -403,6 +403,9 @@ func (s *server) relayMachineLoginApproval(w http.ResponseWriter, r *http.Reques
 // as their next request is: 401 NO_IDENTITY for a cookie, 401 TOKEN_REVOKED for a personal token;
 // a read that fails is 503 IDENTITY_UNAVAILABLE. It writes nothing.
 func (s *server) approverStanding(r *http.Request, actor model.Actor) (account credentialAccount, generation int64, err error) {
+	if err := refuseUnboundCredential(actor); err != nil {
+		return credentialAccount{}, 0, err
+	}
 	cookieLogin, cookieGeneration := s.mintCookie(r, actor)
 	var tokenID *string
 	if actor.Act != nil && actor.Act.TokenID != "" {

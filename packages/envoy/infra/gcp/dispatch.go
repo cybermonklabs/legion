@@ -220,6 +220,16 @@ type DispatchArgs struct {
 	// Dispatch takes an address on a domain left out for an outside person's, so a Workspace account
 	// there could hold a passkey, which Workspace offboarding does not end. Unset renders nothing.
 	SignInPasskey bool `pulumi:"signInPasskey,optional"`
+	// TrustedProxyRanges are the front doors whose X-Forwarded-For Dispatch trusts when it bounds
+	// the passkey ceremonies' begins per client address, rendered as DISPATCH_TRUSTED_PROXY_RANGES
+	// right after DISPATCH_SIGNIN_PASSKEY, the entries comma-joined in the order given. With
+	// signInPasskey and this unset it renders Google's external Application Load Balancer's proxy
+	// ranges, 35.191.0.0/16, 130.211.0.0/22 and 2600:2d00:1:1::/64
+	// (https://cloud.google.com/load-balancing/docs/firewall-rules), whose X-Forwarded-For Dispatch
+	// reads in the format Google documents; set it when another front door serves outsideOrigin.
+	// Each is a CIDR net.ParseCIDR takes, written as its network, with a prefix longer than /0. It
+	// needs signInPasskey. Unset without signInPasskey renders nothing.
+	TrustedProxyRanges []string `pulumi:"trustedProxyRanges,optional"`
 	// PublicOrigin is the https origin Dispatch is served at when it has no front door: the
 	// address a reader is sent back to, DISPATCH_SERVER_URL and the url output, served by an
 	// entrance the deployment builds itself, such as a load balancer, which forwards to the app's
@@ -663,6 +673,7 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		values []string
 	}{
 		{"loadBalancerSourceRanges", args.LoadBalancerSourceRanges},
+		{"trustedProxyRanges", args.TrustedProxyRanges},
 		{"oidcAccounts", args.OidcAccounts},
 		{"accessAccounts", args.AccessAccounts},
 		{"allowedApps", args.AllowedApps},
@@ -760,6 +771,9 @@ type dispatchSettings struct {
 	images                                      struct{ envoy, tailscale, proxy, tools string }
 	signIn                                      struct{ clientID, domain string }
 	signInPasskey                               bool
+	// trustedProxyRanges is what DISPATCH_TRUSTED_PROXY_RANGES renders, set only with signInPasskey:
+	// the trustedProxyRanges input, or dispatchGoogleProxyRanges where it is unset.
+	trustedProxyRanges                          []string
 	signInWorkspaceDomains                      []string
 	databaseVersion, databaseTier               string
 	databaseAvailabilityType                    string
@@ -1099,6 +1113,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 	return slices.Concat(dispatchTailnetInputs(args), dispatchSignInInputs(args), []dispatchInput{
 		{"outsideOrigin", args.OutsideOrigin != ""},
 		{"signInPasskey", args.SignInPasskey},
+		{"trustedProxyRanges", len(args.TrustedProxyRanges) > 0},
 		{"signInWorkspaceDomains", len(args.SignInWorkspaceDomains) > 0},
 		{"publicOrigin", args.PublicOrigin != ""},
 		{"iapAudience", args.IapAudience != nil},
@@ -1509,6 +1524,36 @@ func refuseDispatchAccessValues(args *DispatchArgs) error {
 	return nil
 }
 
+// dispatchGoogleProxyRanges are Google's external Application Load Balancer's proxy ranges, IPv4
+// then IPv6 (https://cloud.google.com/load-balancing/docs/firewall-rules), which
+// DISPATCH_TRUSTED_PROXY_RANGES renders with signInPasskey and trustedProxyRanges unset.
+var dispatchGoogleProxyRanges = []string{"35.191.0.0/16", "130.211.0.0/22", "2600:2d00:1:1::/64"}
+
+// refuseDispatchTrustedProxyRanges judges trustedProxyRanges: it needs signInPasskey, since
+// Dispatch reads it only to bound the passkey ceremonies' begins, and each entry must be a CIDR
+// written as its network, which net.ParseCIDR takes and which is the network it names, so the
+// setting trusts what it says, with a prefix longer than /0: 0.0.0.0/0 or ::/0 would trust every
+// peer's X-Forwarded-For, and any caller would pick the address its begins are bounded by. Dispatch
+// refuses to boot on each of these too.
+func refuseDispatchTrustedProxyRanges(args *DispatchArgs) error {
+	if len(args.TrustedProxyRanges) > 0 && !args.SignInPasskey {
+		return core.InputErrorf("trustedProxyRanges", "trustedProxyRanges needs signInPasskey: Dispatch reads it only to bound the passkey ceremonies' begins per client address; set signInPasskey, or unset trustedProxyRanges")
+	}
+	for i, cidr := range args.TrustedProxyRanges {
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return core.InputErrorf("trustedProxyRanges", "trustedProxyRanges[%d] %q must be a CIDR, such as 130.211.0.0/22", i, cidr)
+		}
+		if network.String() != cidr {
+			return core.InputErrorf("trustedProxyRanges", "trustedProxyRanges[%d] %q must be written as the network it names, %s", i, cidr, network)
+		}
+		if ones, _ := network.Mask.Size(); ones == 0 {
+			return core.InputErrorf("trustedProxyRanges", "trustedProxyRanges[%d] %q trusts every peer's X-Forwarded-For, so any caller would pick the address its begins are bounded by: name the front doors' own ranges, such as 130.211.0.0/22", i, cidr)
+		}
+	}
+	return nil
+}
+
 // refuseDispatchEntrance judges what the deployment's own entrance, a load balancer serving
 // publicOrigin, hands the component: loadBalancerSourceRanges, the CIDRs it reaches the app's pods
 // from, and networkEndpointGroupName, the endpoint group it takes as its backend. Each needs
@@ -1749,6 +1794,9 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 				dispatchGroupClause("sign-in", signInGroup))
 		}
 	}
+	if err := refuseDispatchTrustedProxyRanges(args); err != nil {
+		return dispatchSettings{}, err
+	}
 	// The app's two images, which the app's pod runs in either mode: they belong to no group, so
 	// every consumer sets both and neither refusal trails a clause. The front door's two are the
 	// tailnet group's, held to this same digest rule by that group's own function.
@@ -1893,6 +1941,12 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.signIn.domain = strings.TrimSpace(args.SignInDomain)
 	s.outsideOrigin = outsideOrigin
 	s.signInPasskey = args.SignInPasskey
+	if args.SignInPasskey {
+		s.trustedProxyRanges = slices.Clone(args.TrustedProxyRanges)
+		if len(s.trustedProxyRanges) == 0 {
+			s.trustedProxyRanges = slices.Clone(dispatchGoogleProxyRanges)
+		}
+	}
 	if len(args.SignInWorkspaceDomains) > 0 {
 		s.signInWorkspaceDomains = make([]string, len(args.SignInWorkspaceDomains))
 		for i, domain := range args.SignInWorkspaceDomains {

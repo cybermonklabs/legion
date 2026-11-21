@@ -56,7 +56,7 @@ func TestADeferredSendResolvesARoleAsItsAuthorMay(t *testing.T) {
 	role := model.Route{Kind: "role", ID: "reviewer"}
 	resolve := func(ctx context.Context) string {
 		t.Helper()
-		session, _, refusal := seed.server.resolveDeliveryTarget(ctx, role, "btw")
+		session, _, refusal, _ := seed.server.resolveDeliveryTarget(ctx, role, "btw")
 		if refusal != "" {
 			return "refused: " + refusal
 		}

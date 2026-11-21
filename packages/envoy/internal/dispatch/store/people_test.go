@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -1007,6 +1009,109 @@ func TestSignInSubjectConfirmSubjectAndSignInAnnounceAMemberKindChange(t *testin
 	}
 	if got := storedMemberKind(t, database, email); got != string(model.MemberFull) {
 		t.Fatalf("after the steps: member_kind = %q, want full", got)
+	}
+}
+
+// TestAMemberMadeFullTakesNoSessionOwnerLock: a write that makes a restricted member full takes no
+// project from them, since a full member sees every project a restricted one does, so it reads no
+// project (projectsSeenAs) and takes no session-owner lock (RecordReachedProjects, handed none,
+// returns at once). The member is listed on CORE, which a restricted member sees, so a write that
+// read the projects the stored kind saw would hand CORE to RecordReachedProjects and take the lock.
+// With that lock held by another transaction, the hourly confirmation and the sign-in that make
+// the member full each commit while it is still held.
+//
+// Control: projectsSeenAs answering for every change of kind, as it did before this row. Each write
+// then queues behind the held lock, and the row names it.
+func TestAMemberMadeFullTakesNoSessionOwnerLock(t *testing.T) {
+	ctx := context.Background()
+	database := migratedEmptyStore(t)
+	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
+	const email = "made.full@outside.example"
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice@d.example')`); err != nil {
+		t.Fatalf("seed the project: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into project_access (project_key, principal_kind, principal, added_by)
+		values ('CORE', 'person', $1, '{"kind":"user","id":"alice"}')`, email); err != nil {
+		t.Fatalf("list the member on the project: %v", err)
+	}
+	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1", model.MemberRestricted); err != nil {
+		t.Fatalf("the restricted sign-in: %v", err)
+	}
+	for _, write := range []struct {
+		what  string
+		write func() error
+	}{
+		{"the confirmation as full", func() error {
+			return people.ConfirmSubject(ctx, email, "subject-1", "refresh-1", "refresh-2", model.MemberFull)
+		}},
+		{"the sign-in as full", func() error {
+			return people.SignInSubject(ctx, email, "subject-1", "refresh-3", model.MemberFull)
+		}},
+	} {
+		if _, err := database.Pool.Exec(ctx, `update people set member_kind = 'restricted' where email = $1`, email); err != nil {
+			t.Fatalf("%s: make the member restricted again: %v", write.what, err)
+		}
+		holder, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := holder.Exec(ctx, `select pg_advisory_xact_lock(hashtext($1), hashtext($2))`, SessionOwnerLock, email); err != nil {
+			t.Fatalf("%s: hold the member's session-owner lock: %v", write.what, err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- write.write() }()
+		committed := awaitCommitOrQueue(t, holder, done)
+		if err := holder.Rollback(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if !committed {
+			t.Errorf("%s queued behind the member's session-owner lock; want it to take none, since it takes no project from them", write.what)
+			if err := <-done; err != nil {
+				t.Fatalf("%s, once the lock was let go: %v", write.what, err)
+			}
+		}
+		if got := storedMemberKind(t, database, email); got != string(model.MemberFull) {
+			t.Fatalf("%s: member_kind = %q, want full", write.what, got)
+		}
+	}
+}
+
+// awaitCommitOrQueue answers true once the write answers on done with no error, and false as soon
+// as any backend queues behind a lock holder's transaction owns, whichever comes first, reading
+// pg_locks through holder's own connection. Only a hang guard of ten minutes fails a write that
+// does neither.
+func awaitCommitOrQueue(t *testing.T, holder pgx.Tx, done <-chan error) bool {
+	t.Helper()
+	guard := time.Now().Add(10 * time.Minute)
+	for {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("the write: %v", err)
+			}
+			return true
+		default:
+		}
+		var queued bool
+		if err := holder.QueryRow(context.Background(),
+			`select exists (select 1 from pg_locks where not granted and pg_backend_pid() = any(pg_blocking_pids(pid)))`).Scan(&queued); err != nil {
+			t.Fatalf("read pg_locks: %v", err)
+		}
+		if queued {
+			return false
+		}
+		if time.Now().After(guard) {
+			t.Fatal("the write neither answered nor queued behind the held lock within ten minutes")
+		}
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("the write: %v", err)
+			}
+			return true
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }
 

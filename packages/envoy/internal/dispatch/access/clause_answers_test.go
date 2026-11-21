@@ -26,6 +26,8 @@ func TestEveryClauseAnswersTrueOrFalseNeverNull(t *testing.T) {
 		"PersonClause over a stranger":                            PersonClause("'stranger@example.com'", "$1"),
 		"SessionClause over a missing session":                    SessionClause("null::text", "$1"),
 		"SessionClause over another session":                      SessionClause("'session-of-nobody'", "$1"),
+		"SessionContentClause over a missing session":             SessionContentClause("null::text", "$1"),
+		"SessionContentClause over another session":               SessionContentClause("'session-of-nobody'", "$1"),
 		"RoleClause over a missing role":                          RoleClause("null::text", "$1"),
 		"RoleClause over a role nobody holds":                     RoleClause("'reviewer'", "$1"),
 		"RoleProjectClause over a private key":                    RoleProjectClause("'PRIV'", "$1"),

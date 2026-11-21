@@ -410,8 +410,9 @@ export function isDeliveryNotConfigured(error: unknown): boolean {
 }
 
 // A read of the whole deployment - the pending credential requests among them - answers this 403
-// to a viewer that is not open: a restricted member, or a credential that lists its projects. It
-// is definitive like the 404s above: the viewer is what it is, and retrying changes nothing.
+// to a viewer that is not open: a restricted member, or a credential acting for one. A full
+// member's credential reads it whatever projects it lists, as the shared token does. It is
+// definitive like the 404s above: the viewer is what it is, and retrying changes nothing.
 export function isDeploymentReadRefused(error: unknown): boolean {
   return (
     error instanceof ApiError && error.status === 403 && error.code === "DEPLOYMENT_READ_REFUSED"
@@ -1224,14 +1225,25 @@ export class DispatchApiClient {
 
   /** Every group an access list can name, by name, each with its owner and its members' emails:
    *  every page of `listAccessGroupsPage`, read in turn. Settings → Groups and the Access tab's
-   *  group picker both read this whole list. */
+   *  group picker both read this whole list. A page's `next` is the last name it holds, so the
+   *  cursor only moves on; a `next` the read has already passed as `after` would read the same
+   *  pages again for good, so the read stops there and fails naming it. */
   async listAccessGroups(): Promise<AccessGroup[]> {
     const groups: AccessGroup[] = [];
+    const passed = new Set<string>();
     let after: string | undefined;
     do {
       const page = await this.listAccessGroupsPage(after);
       groups.push(...(page.groups ?? []));
       after = page.next;
+      if (after !== undefined) {
+        if (passed.has(after)) {
+          throw new Error(
+            `GET /api/v1/access-groups named next ${JSON.stringify(after)} again, a page it already answered, so the groups were not read whole`
+          );
+        }
+        passed.add(after);
+      }
     } while (after !== undefined);
     return groups;
   }

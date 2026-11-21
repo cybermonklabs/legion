@@ -197,8 +197,10 @@ func (h *deliveryHub) recheckReaders(g *hubGeneration) {
 // other rows (deliveryReaderKey) to the view of its new reader, which answers it with a snapshot:
 // the page drops the rows of a project its caller no longer sees and reads one it now sees. A sub
 // whose new reader its view's GET row refuses (liveReadRefusal) is dropped and sent that refusal
-// instead. A sub replaced or dropped meanwhile is left as it is; a reader that does not resolve
-// keeps its view until the next re-check.
+// instead. A sub replaced or dropped meanwhile is left as it is. A sub whose reader does not
+// resolve is dropped and sent an ended frame (dropped), on which its page subscribes again and is
+// answered as a subscribe is: the re-check cannot show the caller still reads the view's rows, and
+// keeping the old reader would go on sending them rows of a project it may have lost.
 //
 // The key of a reader that sees every object (seesEveryObject) names none of the projects it sees,
 // so a new project moves no such sub: its view is read again, for the reader that sees the project
@@ -209,9 +211,16 @@ func (h *deliveryHub) recheckSubs(g *hubGeneration, subs []*deliverySub) {
 	for _, sub := range subs {
 		reader, err := sub.resolve(g.readContext())
 		if err != nil {
-			if g.ctx.Err() == nil {
-				slog.Warn("dispatch: delivery live hub could not resolve a subscriber's reader again; its view stays", "error", err)
+			if g.ctx.Err() != nil {
+				continue
 			}
+			slog.Warn("dispatch: delivery live hub could not resolve a subscriber's reader again; its view ends and its page subscribes again", "error", err)
+			h.mu.Lock()
+			if h.generation == g && g.conns[sub.conn][sub.id] == sub {
+				h.dropLocked(sub.conn, sub.id)
+				sub.conn.Send(liveEnded(sub.id, liveEndedDropped))
+			}
+			h.mu.Unlock()
 			continue
 		}
 		refusal := liveReadRefusal(g.readContext(), sub.id, sub.view.spec.kind, sub.holds,

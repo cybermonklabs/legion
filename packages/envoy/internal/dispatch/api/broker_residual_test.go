@@ -114,7 +114,7 @@ func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 	stub := ciphertokentest.NewStubBroker(t)
 	served, _ := newAccessServerWith(t, testServerOptions{
 		admitsRestricted: true, brokerTokens: stubBrokerTokens(t, stub),
-		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+		agentSecretsURL: rig.server.URL,
 	})
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
@@ -286,7 +286,7 @@ func TestARemovalWhileTheBrokerIsDownIsPaidOnceItIsBack(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
-		agentSecretsURL:  rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+		agentSecretsURL:  rig.server.URL,
 	})
 	ctx := t.Context()
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {

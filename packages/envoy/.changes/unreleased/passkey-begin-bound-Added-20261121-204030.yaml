@@ -1,0 +1,17 @@
+kind: Added
+body: |-
+  `DISPATCH_TRUSTED_PROXY_RANGES` names the front doors whose `X-Forwarded-For` the passkey
+  ceremonies' begin bound reads, comma-separated CIDRs; `DISPATCH_SIGNIN_PASSKEY=1` refuses startup
+  without it, and an entry that is empty, no CIDR, not written as its network or `/0` refuses
+  startup, named by its position. A begin from a peer outside the ranges is bounded by its own
+  address. A peer in the ranges that is in Google's external Application Load Balancer's proxy
+  ranges is read in the format Google documents, `[SUPPLIED,]CLIENT_IP,LOAD_BALANCER_IP`, so the
+  client is second to last; any other peer in them is read as the rightmost entry not itself in the
+  ranges. So behind a front door other than Google's, one stranger's begins no longer refuse
+  everyone's. Production names `35.191.0.0/16,130.211.0.0/22,2600:2d00:1:1::/64`. An IPv6 address
+  is bounded as its /64. `envoy-infra:gcp:Dispatch` takes an optional input `trustedProxyRanges`,
+  which needs `signInPasskey`; with `signInPasskey` it renders `DISPATCH_TRUSTED_PROXY_RANGES` right
+  after `DISPATCH_SIGNIN_PASSKEY`, Google's three ranges when the input is unset.
+time: 2026-11-21T20:40:30Z
+custom:
+    Issue: outside-passkeys

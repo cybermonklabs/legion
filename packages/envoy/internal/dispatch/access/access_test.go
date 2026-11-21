@@ -202,30 +202,6 @@ func TestCredentialSeesAgreesWithTheSQLRule(t *testing.T) {
 	}
 }
 
-// TestBrokerTokenAdmitsIsTheListRule: the bus's rule for a broker token is CredentialCovers' for a
-// full member: a private project when it lists it, and every project that is not private,
-// whatever it lists.
-func TestBrokerTokenAdmitsIsTheListRule(t *testing.T) {
-	for _, test := range []struct {
-		listed  []string
-		project string
-		private bool
-		want    bool
-	}{
-		{[]string{"PRIV"}, "PRIV", true, true},
-		{[]string{"PRIV"}, "PUB", false, true},
-		{[]string{"PRIV"}, "PRIV2", true, false},
-		{[]string{"PRIV", "PUB"}, "PUB", false, true},
-		{nil, "PUB", false, true},
-		{nil, "PRIV", true, false},
-		{[]string{}, "PRIV", true, false},
-	} {
-		if got := BrokerTokenAdmits(test.listed, test.project, test.private); got != test.want {
-			t.Errorf("BrokerTokenAdmits(%v, %s, private=%t) = %t, want %t", test.listed, test.project, test.private, got, test.want)
-		}
-	}
-}
-
 // TestARestrictedMemberIsNeverAdmittedByAGroup (v24 R2): bob, restricted, is a member of the group
 // OTHER lists and sees nothing of OTHER, while dave, a full member of the same group, sees it.
 func TestARestrictedMemberIsNeverAdmittedByAGroup(t *testing.T) {

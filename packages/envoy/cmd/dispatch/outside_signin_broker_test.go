@@ -275,12 +275,12 @@ func (s *outsideSignIn) brokerRouter(t *testing.T, broker *fakeBroker) (http.Han
 	if err != nil {
 		t.Fatal(err)
 	}
-	passkeys, ceremonies, err := passkeySignIn(boot, s.people.PgPeopleStore, rule)
+	accounts, ceremonies, err := passkeySignIn(boot, s.people.PgPeopleStore, rule)
 	if err != nil {
 		t.Fatal(err)
 	}
-	built.Passkeys = ceremonies
-	built.Identity = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule, passkeys)
+	built.Passkeys, built.PasskeyAccounts = ceremonies, accounts
+	built.Identity = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule, ceremonyStore(ceremonies))
 	appCtx, err := routes.BuildAppContext(appContextOptions(boot, rule, built))
 	if err != nil {
 		t.Fatalf("build the router: %v", err)

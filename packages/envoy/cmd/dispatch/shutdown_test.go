@@ -1566,6 +1566,7 @@ func (p *dispatchProcess) healthyWithin(within time.Duration) error {
 	deadline := time.Now().Add(within)
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
+	answered := "none"
 	for time.Now().Before(deadline) && !exited() {
 		if strings.Contains(p.Output.String(), listening) {
 			request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url("/healthz"), nil)
@@ -1573,7 +1574,9 @@ func (p *dispatchProcess) healthyWithin(within time.Duration) error {
 				return err
 			}
 			response, err := http.DefaultClient.Do(request)
-			if err == nil {
+			if err != nil {
+				answered = err.Error()
+			} else {
 				// A body read to its end puts its connection back in the client's pool before the
 				// caller's next request asks for one. Closed unread, Go's transport drains it after
 				// Close returns (since Go 1.27), so a request sent at once dials a second
@@ -1583,6 +1586,7 @@ func (p *dispatchProcess) healthyWithin(within time.Duration) error {
 				// drain for 5 to 6 s.
 				_, _ = io.Copy(io.Discard, response.Body)
 				_ = response.Body.Close()
+				answered = response.Status
 				if response.StatusCode == http.StatusOK && !exited() {
 					return nil
 				}
@@ -1596,7 +1600,12 @@ func (p *dispatchProcess) healthyWithin(within time.Duration) error {
 	if exited() {
 		return fmt.Errorf("Dispatch exited before it became healthy. %s\n%s\n%s", p.exitCause(), dispatchOutputHeading, p.Output.String())
 	}
-	return fmt.Errorf("Dispatch never became healthy:\n%s", p.Output.String())
+	logged := "it never logged that line"
+	if strings.Contains(p.Output.String(), listening) {
+		logged = "it logged that line, and its last /healthz answer was " + answered
+	}
+	return fmt.Errorf("Dispatch never became healthy within %s: it was still running, and the wait was for its line %q and then a 200 from /healthz; %s:\n%s",
+		within, listening, logged, p.Output.String())
 }
 
 // exitCause is the reason a process that exited before it was healthy gives in its output: the

@@ -359,8 +359,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		OIDCAccounts:          options.oidcAccounts,
 		AccessAccounts:        options.accessAccounts,
 		SignInIssuer:          options.signInIssuer,
-		Passkeys:              passkeysOf(options, database.Pool),
-		WorkspaceAddress:      workspaceAddressOf(options.passkeyIssuer, database.Pool),
+		Passkeys:              passkeysOf(t, options, database.Pool),
 		RestrictedAdmission:   restrictedAdmissionOf(options.admitsRestricted, database.Pool),
 		PrivateProjects:       options.privateProjects,
 		BusProjects:           options.busProjects,
@@ -420,10 +419,12 @@ func restrictedAdmissionOf(admitsRestricted bool, pool *store.Pool) identity.Res
 }
 
 // passkeysOf is Deps.Passkeys for a deployment whose people from outside sign in with a passkey at
-// options.passkeyIssuer, the outside origin, over pool; nil for none. Its people store owes the
-// broker the revocation of an account the Reset replaces where options configure a broker and a
-// sign-in issuer, as cmd/dispatch's peopleOptions gives the one store main shares with it.
-func passkeysOf(options testServerOptions, pool *store.Pool) *store.PgPasskeys {
+// options.passkeyIssuer, the outside origin, over pool, under the passkey rule over
+// testOutsideRule; nil for none. Its people store owes the broker the revocation of an account the
+// Reset replaces where options configure a broker and a sign-in issuer, as cmd/dispatch's
+// peopleOptions gives the one store main shares with it.
+func passkeysOf(t testing.TB, options testServerOptions, pool *store.Pool) *identity.Passkeys {
+	t.Helper()
 	if options.passkeyIssuer == "" {
 		return nil
 	}
@@ -431,16 +432,12 @@ func passkeysOf(options testServerOptions, pool *store.Pool) *store.PgPasskeys {
 	if options.agentSecretsURL != "" && options.signInIssuer != "" {
 		people = append(people, store.WithBrokerRevocations(options.signInIssuer))
 	}
-	return store.NewPgPasskeys(store.NewPgPeopleStore(pool, auth.SingleSigningKey("passkey test key"), nil, people...), options.passkeyIssuer)
-}
-
-// workspaceAddressOf is Deps.WorkspaceAddress beside passkeysOf: the passkey rule's check over
-// testOutsideRule; nil with passkey sign-in off.
-func workspaceAddressOf(issuer string, pool *store.Pool) func(string) bool {
-	if issuer == "" {
-		return nil
+	passkeys := store.NewPgPasskeys(store.NewPgPeopleStore(pool, auth.SingleSigningKey("passkey test key"), nil, people...), options.passkeyIssuer)
+	ceremonies, err := identity.NewPasskeys(options.passkeyIssuer, passkeys, identity.PasskeyRule{OutsideRule: testOutsideRule(pool)})
+	if err != nil {
+		t.Fatalf("build the passkey ceremonies: %v", err)
 	}
-	return identity.PasskeyRule{OutsideRule: testOutsideRule(pool)}.WorkspaceAddress
+	return ceremonies
 }
 
 // waitBackgroundOf waits out served's background work at a test's end. A test that has already

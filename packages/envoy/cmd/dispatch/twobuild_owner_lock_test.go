@@ -183,12 +183,12 @@ func (b *twoBuilds) startNamed(t *testing.T, previous bool, application string) 
 	if previous {
 		options.Binary, options.WebDist = b.build.path("envoy-dispatch"), b.build.path("web")
 		b.a = startDispatchProcessWith(t, url, options)
-		b.a.waitHealthy(t)
+		b.a.waitBooted(t)
 		return b.a
 	}
 	options.Binary = b.binary
 	b.b = startDispatchProcessWith(t, url, options)
-	b.b.waitHealthy(t)
+	b.b.waitBooted(t)
 	return b.b
 }
 

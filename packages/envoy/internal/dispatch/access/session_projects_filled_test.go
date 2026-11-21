@@ -117,28 +117,129 @@ func TestAnOpenViewerReadsNoOtherSessionWhileTheFillIsUnfinished(t *testing.T) {
 	}
 }
 
-// TestTheFillMarkerIsReadOncePerStatement: the open arm's read of session_projects_filled names no
+// TestARestrictedViewerReadsNoOtherSessionWhileTheFillIsUnfinished: `backfill-session-projects
+// --reset` empties session_projects and its marker and refills the pairs one by one, so in the
+// middle of a refill a session can hold its pair in a project the viewer sees and not yet its pair
+// in a private project the viewer does not see. The arm of a viewer that is not open trusted the
+// pairs as the open arm, before it waited for the marker, did not: so while a project is private
+// and the marker is absent, bob, a restricted member who sees PRIV alone, and bob's token that
+// lists PRIV each read no session but bob's own - not ses_refilled, whose PRIV pair is back and
+// whose OTHER pair is not, nor ses_listed, which has no pair and a listener record naming PRIV (the
+// arm of a restricted viewer that reads a listed record). Once the marker is written both read
+// them again, and with no private project both read them by their pairs and records alone, marker
+// or none (R9).
+//
+// Control: SessionClause passing the marker for an open viewer alone, as it did, and bob reads
+// ses_refilled and ses_listed while the refill is unfinished.
+func TestARestrictedViewerReadsNoOtherSessionWhileTheFillIsUnfinished(t *testing.T) {
+	ctx := context.Background()
+	database := seedAccess(t)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into session_projects (session_id, project_key) values ('ses_refilled', 'PRIV');
+		insert into route_roster (answered, sessions, sent_at, expires_at)
+		values (true, '[{"session_id":"ses_listed","projects":["PRIV"]}]', now(), now() + interval '1 hour');
+	`); err != nil {
+		t.Fatalf("seed ses_refilled's pair and ses_listed's listener record: %v", err)
+	}
+	bobSession := model.Actor{Kind: "session", ID: "ses_bob", Owner: new(bob), Credential: &model.Credential{Scopes: model.Scopes, Session: "ses_bob"}}
+	resolve := func(name string, actor model.Actor) model.Viewer {
+		t.Helper()
+		viewer, err := Resolve(ctx, database.Pool, actor)
+		if err != nil {
+			t.Fatalf("%s: Resolve: %v", name, err)
+		}
+		if viewer.Open {
+			t.Fatalf("%s resolves as %+v, want a viewer that is not open", name, viewer)
+		}
+		return viewer
+	}
+	passes := func(viewer model.Viewer, session string) bool {
+		t.Helper()
+		var got bool
+		if err := database.Pool.QueryRow(ctx, `select `+SessionClause("$2", "$1"), viewerArg(t, viewer), session).Scan(&got); err != nil {
+			t.Fatalf("SessionClause %s: %v", session, err)
+		}
+		return got
+	}
+	others := []string{"ses_refilled", "ses_listed"}
+	restricted := func(state string) map[string]model.Viewer {
+		t.Helper()
+		return map[string]model.Viewer{
+			"bob":                         resolve(state+": bob", cookie(bob)),
+			"bob's token that lists PRIV": resolve(state+": bob's token that lists PRIV", personalToken(bob, "PRIV")),
+		}
+	}
+
+	bobAgent := resolve("bob's session", bobSession)
+	for name, viewer := range restricted("unfilled") {
+		if !viewer.AnyPrivate {
+			t.Fatalf("%s resolves as %+v, want a deployment that holds a private project", name, viewer)
+		}
+		for _, session := range others {
+			if passes(viewer, session) {
+				t.Errorf("unfilled, with PRIV private: SessionClause %s for %s = true, want false", session, name)
+			}
+		}
+	}
+	if !passes(bobAgent, "ses_bob") {
+		t.Error("unfilled, with PRIV private: SessionClause ses_bob, his own, = false, want true")
+	}
+
+	if _, err := database.Pool.Exec(ctx, `insert into session_projects_filled default values`); err != nil {
+		t.Fatalf("write the fill's marker: %v", err)
+	}
+	for name, viewer := range restricted("filled") {
+		for _, session := range others {
+			if !passes(viewer, session) {
+				t.Errorf("filled: SessionClause %s for %s = false, want true", session, name)
+			}
+		}
+	}
+
+	if _, err := database.Pool.Exec(ctx, `
+		delete from session_projects_filled;
+		update projects set visibility = 'public';
+	`); err != nil {
+		t.Fatalf("empty the marker and make every project public: %v", err)
+	}
+	for name, viewer := range restricted("with no private project") {
+		if viewer.AnyPrivate {
+			t.Fatalf("%s resolves as %+v with every project public, want no private project", name, viewer)
+		}
+		if !passes(viewer, "ses_refilled") {
+			t.Errorf("unfilled, with no private project: SessionClause ses_refilled for %s = false, want true by its PRIV pair (R9)", name)
+		}
+		if passes(viewer, "ses_listed") {
+			t.Errorf("unfilled, with no private project: SessionClause ses_listed for %s = true, want false: with no private project a viewer that is not open reads a session by its pairs alone (R9)", name)
+		}
+	}
+}
+
+// TestTheFillMarkerIsReadOncePerStatement: SessionClause's read of session_projects_filled names no
 // column of the row it tests, so the statement reads it once (an InitPlan), not once per row. A
-// read over fifty sessions, for an open viewer of a deployment that holds a private project, both
-// with the marker and without it, scans session_projects_filled in one loop.
+// read over fifty sessions, for an open viewer (alice) and for one that is not open (bob) of a
+// deployment that holds a private project, both with the marker and without it, scans
+// session_projects_filled in one loop.
 func TestTheFillMarkerIsReadOncePerStatement(t *testing.T) {
 	ctx := context.Background()
 	database := seedAccess(t)
-	alicePerson, err := Resolve(ctx, database.Pool, cookie(alice))
-	if err != nil {
-		t.Fatalf("alice: Resolve: %v", err)
-	}
-	for _, state := range []struct{ name, sql string }{
-		{"unfilled", `delete from session_projects_filled`},
-		{"filled", `insert into session_projects_filled default values`},
-	} {
-		if _, err := database.Pool.Exec(ctx, state.sql); err != nil {
-			t.Fatalf("%s: %v", state.name, err)
+	for _, person := range []string{alice, bob} {
+		viewer, err := Resolve(ctx, database.Pool, cookie(person))
+		if err != nil {
+			t.Fatalf("%s: Resolve: %v", person, err)
 		}
-		if scans, total := planLoops(t, database.Pool, "session_projects_filled",
-			`select count(*) from generate_series(1, 50) as n where `+SessionClause("'ses_' || n", "$1"),
-			viewerArg(t, alicePerson)); total != 1 {
-			t.Errorf("%s: the read over fifty sessions scans session_projects_filled in %d nodes, %d loops in all; want one loop", state.name, scans, total)
+		for _, state := range []struct{ name, sql string }{
+			{"unfilled", `delete from session_projects_filled`},
+			{"filled", `insert into session_projects_filled default values`},
+		} {
+			if _, err := database.Pool.Exec(ctx, state.sql); err != nil {
+				t.Fatalf("%s: %v", state.name, err)
+			}
+			if scans, total := planLoops(t, database.Pool, "session_projects_filled",
+				`select count(*) from generate_series(1, 50) as n where `+SessionClause("'ses_' || n", "$1"),
+				viewerArg(t, viewer)); total != 1 {
+				t.Errorf("%s, %s: the read over fifty sessions scans session_projects_filled in %d nodes, %d loops in all; want one loop", person, state.name, scans, total)
+			}
 		}
 	}
 }

@@ -61,9 +61,10 @@ var (
 	ErrPasskeyCeremonyExpired = errors.New("the passkey ceremony expired; start it again")
 )
 
-// passkeyCeremonyTimeout is how long a ceremony may take between its begin and its finish, which the
-// browser is told and the server enforces (webauthn.TimeoutConfig.Enforce).
-const passkeyCeremonyTimeout = 5 * time.Minute
+// PasskeyCeremonyTimeout is how long a ceremony may take between its begin and its finish, which
+// the browser is told and the server enforces (webauthn.TimeoutConfig.Enforce), and how long the
+// ceremony cookie lives (routes/passkey.go).
+const PasskeyCeremonyTimeout = 5 * time.Minute
 
 // PasskeyCeremony is a ceremony in flight: what its finish needs from its begin, carried by the
 // browser (routes/passkey.go signs it into a cookie) rather than held by the process that began it,
@@ -114,8 +115,8 @@ func NewPasskeys(origin string, passkeys *store.PgPasskeys, rule PasskeyRule) (*
 			UserVerification:   protocol.VerificationRequired,
 		},
 		Timeouts: webauthn.TimeoutsConfig{
-			Login:        webauthn.TimeoutConfig{Enforce: true, Timeout: passkeyCeremonyTimeout, TimeoutUVD: passkeyCeremonyTimeout},
-			Registration: webauthn.TimeoutConfig{Enforce: true, Timeout: passkeyCeremonyTimeout, TimeoutUVD: passkeyCeremonyTimeout},
+			Login:        webauthn.TimeoutConfig{Enforce: true, Timeout: PasskeyCeremonyTimeout, TimeoutUVD: PasskeyCeremonyTimeout},
+			Registration: webauthn.TimeoutConfig{Enforce: true, Timeout: PasskeyCeremonyTimeout, TimeoutUVD: PasskeyCeremonyTimeout},
 		},
 	})
 	if err != nil {
@@ -306,27 +307,31 @@ func (p *Passkeys) BeginSignIn() (*protocol.CredentialAssertion, PasskeyCeremony
 	return assertion, PasskeyCeremony{Session: *session}, nil
 }
 
-// used is the ceremony as its finish records it used, once its answer verified (store.UsedCeremony).
+// used is the ceremony as its finish records it used (store.UsedCeremony).
 func (c PasskeyCeremony) used() store.UsedCeremony {
 	return store.UsedCeremony{Challenge: c.Session.Challenge, Expires: c.Session.Expires}
 }
 
 // FinishSignIn completes ceremony, a sign-in BeginSignIn began, with body, the browser's answer (the
-// PublicKeyCredential navigator.credentials.get made, as JSON). The passkey is read by the
-// credential id the answer names (store.ErrPasskeyUnknown for none: reset or deleted) and the
-// answer verified against it, its user handle the passkey's own (ErrPasskeyRefused). A signature
-// counter that did not advance while either it or the stored one is non-zero is
-// store.ErrPasskeySignCount (WebAuthn Level 3 §7.2 step 22): a cloned authenticator, or the same
-// answer again. Then the rule is asked again: a person it no longer admits has their sign-in ended
-// and their passkeys deleted, as the hourly confirmation does (store.PgPasskeys.End), and the
-// refusal is returned (ErrNotListed, ErrWorkspaceAddress); lists that cannot be read are
-// ErrMembershipUnreadable and change nothing. Last, the sign-in is recorded through the account
-// binding with the ceremony recorded used, so its answer signs in once (store.PgPasskeys.SignIn,
-// whose refusals it returns: the same answer again is store.ErrPasskeyCeremonyUsed). It answers the
-// person's address and subject.
+// PublicKeyCredential navigator.credentials.get made, as JSON). It first records the ceremony used
+// (store.PgPasskeys.UseCeremony), so one begin allows one finish whatever its answer: the same
+// ceremony again is store.ErrPasskeyCeremonyUsed. The passkey is read by the credential id the
+// answer names (store.ErrPasskeyUnknown for none: reset or deleted) and the answer verified against
+// it, its user handle the passkey's own (ErrPasskeyRefused). A signature counter that did not
+// advance while either it or the stored one is non-zero is store.ErrPasskeySignCount (WebAuthn
+// Level 3 §7.2 step 22): a cloned authenticator, or the same answer again. Then the rule is asked
+// again: a person it no longer admits has their sign-in ended and their passkeys deleted, as the
+// hourly confirmation does (store.PgPasskeys.End), and the refusal is returned (ErrNotListed,
+// ErrWorkspaceAddress); lists that cannot be read are ErrMembershipUnreadable and change nothing.
+// Last, the sign-in is recorded through the account binding (store.PgPasskeys.SignIn, whose
+// refusals it returns, store.ErrListedByAnotherOwner among them). It answers the person's address
+// and subject.
 func (p *Passkeys) FinishSignIn(ctx context.Context, ceremony PasskeyCeremony, body io.Reader) (string, string, error) {
 	if ceremony.Enrollment {
 		return "", "", ErrPasskeyCeremonyExpired
+	}
+	if err := p.store.UseCeremony(ctx, ceremony.used()); err != nil {
+		return "", "", err
 	}
 	parsed, err := protocol.ParseCredentialRequestResponseBody(body)
 	if err != nil {
@@ -366,7 +371,7 @@ func (p *Passkeys) FinishSignIn(ctx context.Context, ceremony PasskeyCeremony, b
 		}
 		return "", "", err
 	}
-	if err := p.store.SignIn(ctx, ceremony.used(), stored, credential.Authenticator.SignCount, credential.Flags.MsgpByte()); err != nil {
+	if err := p.store.SignIn(ctx, stored, credential.Authenticator.SignCount, credential.Flags.MsgpByte()); err != nil {
 		return "", "", err
 	}
 	return model.CanonicalLogin(stored.Email), subject, nil

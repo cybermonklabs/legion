@@ -170,6 +170,9 @@ type Service struct {
 	editNoticeQuiet time.Duration
 	// buildCommit is Deps.BuildCommit.
 	buildCommit string
+	// rosterRefresh is the API's refresh of the stored listener answer (SetRosterRefresh), run
+	// before a socket's ask before each batch of frames (socketStillReads); nil refreshes nothing.
+	rosterRefresh atomic.Pointer[func(context.Context)]
 	// markingRule is the block index's marking rule this build applies, refs.BlockIndexMarkingRule
 	// as New sets it: the rule its marks, its event cursor and its index passes carry
 	// (markVersionedDocuments, readEventsAfterCursor, refs.PlanBlocks). A test sets another to run

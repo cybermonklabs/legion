@@ -476,6 +476,17 @@ import it, `e2e/__tests__/delivery-live-probe.test.ts:6-9` and
 local-instance-support.test.ts:2-5, run in this job's test step and in no other,
 so that read is this gate's (ci_job_reads.py's dispatch_ui).
 
+## dispatch_ui: The route index and the GitHub proxy's expression the restricted sweep's tests read
+
+The route index, `packages/envoy/internal/dispatch/api/testdata/routes.txt`, which
+`e2e/__tests__/restricted-sweep.test.ts`, `restricted-sweep-judging.test.ts`,
+`restricted-sweep-split.test.ts` and the fake they share, `restricted-sweep-fake.ts`, read
+(`restricted-sweep-sockets.test.ts` through that fake), holding
+`e2e/acceptance/restricted-sweep.sh`'s kinds and calls to it (that script reads it row by row);
+and the GitHub proxy's `readable` expression, `githubapi/proxy.go`, which
+`restricted-sweep.test.ts` reads and holds the sweep's proxy reads to. Each of those suites runs
+in this job's test step.
+
 ## dispatch_browser: The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
 
 The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
@@ -1345,15 +1356,21 @@ it, so this one carries only the dispatched term.
 
 The private-projects acceptance drivers (dispatch-project-access, ci-job-dispatch-project-access.yaml
 holds the steps and why they are what they are): from packages/dispatch, e2e/acceptance/project-access.sh
-walks every route as each caller, with every project public and with PRIV made private by the
-store's own write, and e2e/acceptance/project-access-blob.sh builds ./cmd/dispatch of this tree
-and of the merge base through scripts/e2e/lib/two-builds.sh and the rig it sources, starts both
-beside the browser harness's fake Envoy (e2e/fake-envoy.ts, which imports the contracts), and
-compares what each caller reads of the two. The head build's closure spans most of packages/envoy,
-so the filter names the module whole: what every caller reads is the drivers' subject. The run
-reads a few hundred routes from each build, minutes rather than tens of them, so the output
-carries no `full-ci` term: a pull request that changes what any caller reads finds out on its own
-run.
+runs twice: with --all-public, every project public, it runs its listed and confined sections
+alone, and with --private-by-sql, PRIV made private by the store's own write, it walks every
+route as each caller PRIV is hidden from. e2e/acceptance/project-access-blob.sh builds
+./cmd/dispatch of this tree and of the merge base through scripts/e2e/lib/two-builds.sh and the
+rig it sources, starts both beside the browser harness's fake Envoy (e2e/fake-envoy.ts, which
+imports the contracts), and compares what each caller reads of the two. The three go commands
+the job runs (./cmd/dispatch, ./internal/testnats/cmd/natsd and
+./internal/dispatch/api/cmd/routeprobes) compile 97 of the module's 220 packages (`go list
+-deps`), and the filter names the module whole rather than that closure: what every caller reads
+is the drivers' subject, and a change anywhere in it is one they exist to see. The run reads a
+few hundred routes from each build, minutes rather than tens of them, so the output carries no
+`full-ci` term: a pull request that changes what any caller reads finds out on its own run.
+
+The job reads pull requests (`pull-requests: read`) to find the branch the read check's pull
+request targets, the base of `e2e/__tests__/restricted-sweep.test.ts`'s control build.
 
 ## Why the tool fallback proof carries no full-ci term
 

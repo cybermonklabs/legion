@@ -93,12 +93,19 @@ func HoldToRepository(ctx context.Context, owner, repo string) context.Context {
 // checkRedirect is the client's redirect policy: the standard client's (at most ten redirects),
 // and for a request held to a repository a redirect to that repository alone. A request is held
 // by its context (HoldToRepository), or, while any project is private (WithPrivateProjects), to the
-// repository its own path names (/repos/<owner>/<repo>, under the client's API origin): GitHub
-// answers an old name of a renamed or transferred repository with a redirect to the repository as
-// it is now, which the repository rule never judged, so every read Dispatch makes under a
-// repository's name - an issue's, a source's, a pull request's - reads that repository or nothing.
-// A read whose answer to the private-projects question failed is held too. via[0] is the request
-// the client sent, whose context every redirect carries.
+// repository its own path names (/repos/<owner>/<repo>, under the client's API origin): GitHub's
+// REST API answers an old name of a renamed or transferred repository with a redirect to the
+// repository as it is now, which the repository rule never judged, so every REST read Dispatch
+// makes under a repository's name - an issue's, a source's, a pull request's - reads that
+// repository or nothing. A read whose answer to the private-projects question failed is held too.
+// via[0] is the request the client sent, whose context every redirect carries.
+//
+// GraphQL is not held: GitHub's GraphQL API answers an old name with the repository as it is now
+// and no redirect, which no redirect policy sees. Dispatch's one GraphQL read of a repository, the
+// CI reconcile's open heads (cireconcile's Reconciler.query), names the repository by the full
+// name its REST identity read answered (cireconcile's Reconciler.resolve and identify), and that
+// read, under /repos/<owner>/<repo>, is held here: while a project is private an old name fails
+// there, before the GraphQL read is sent.
 func (c *Client) checkRedirect(request *http.Request, via []*http.Request) error {
 	held, ok := request.Context().Value(heldRepositoryKey{}).(heldRepository)
 	if !ok && c.anyPrivate != nil {

@@ -28,7 +28,9 @@ import (
 // created. SessionID is nil when no live holder was found; attemptSessionID remains internal so
 // legacy message attempts retain their existing session-id representation. unanswered says the
 // lookup was cut short by its bound while the request was still live (resolveMentionTarget), so
-// the listener has not said who holds the target.
+// the listener has not said who holds the target. hidden says the target is a session the
+// resolve's reader may not see (resolveDeliveryTarget): its "no live session" is that reader's
+// refusal, not the listener's, and nothing is queued for the session (mayQueueForUnknownSession).
 type ResolvedMention struct {
 	Target       string
 	Delivery     string
@@ -38,6 +40,7 @@ type ResolvedMention struct {
 	title            string
 	attemptSessionID string
 	unanswered       bool
+	hidden           bool
 }
 
 // mentionedSession is the session this mention delivers the comment to, as far as the comment's
@@ -82,7 +85,7 @@ func (s *server) resolveMentionTarget(
 		lookup, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	sessionID, title, resolveError := s.resolveDeliveryTarget(lookup, route, delivery)
+	sessionID, title, resolveError, hidden := s.resolveDeliveryTarget(lookup, route, delivery)
 	if sessionID == "" && resolveError != "" && ctx.Err() == nil &&
 		errors.Is(lookup.Err(), context.DeadlineExceeded) {
 		item.unanswered = true
@@ -91,6 +94,7 @@ func (s *server) resolveMentionTarget(
 	item.title = title
 	item.attemptSessionID = sessionID
 	item.ResolveError = resolveError
+	item.hidden = hidden
 	// A missing session is not a resolved target, even though the legacy message delivery
 	// model retains its requested id in an attempt row. A live session that lacks a mode is
 	// still resolved and participates in the event's session-level suppression calculation.

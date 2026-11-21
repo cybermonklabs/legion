@@ -390,6 +390,14 @@ func (s *server) createStoredMessage(
 			}
 		}
 	}
+	// A session target the writer may not see is answered as one nobody holds, "no live session"
+	// (resolveDeliveryTarget), and this write settles its attempt 1 so, beside the message: a
+	// hidden target never has an attempt committed pending, which a sender - the delivery sweep
+	// above all, which resolves a session route as the server's reader - would send it.
+	hiddenTarget, err := hiddenSessionTarget(ctx, tx, reader, input.Target)
+	if err != nil {
+		return model.Message{}, nil, err
+	}
 	author, err := json.Marshal(actor)
 	if err != nil {
 		return model.Message{}, nil, err
@@ -460,6 +468,7 @@ func (s *server) createStoredMessage(
 	// known before the insert runs, and the stamp and the node's cause name the event's id as the
 	// id sequence left it.
 	var event model.Event
+	var receipt *model.Event
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		if block != nil {
 			queueReplyParentMessageLock(b, parent.ID)
@@ -503,8 +512,23 @@ func (s *server) createStoredMessage(
 		// mode it is sent in (deliverMessageResuming), so this request's own send of a switch asks
 		// for a running session while a later Use BTW instead, which changes no model, inherits
 		// nothing of it. The target is read here and not at validation, since a person's reply
-		// that names none takes its thread root's above.
-		if message.Target != nil {
+		// that names none takes its thread root's above. A target hidden from the writer has its
+		// attempt 1 written failed instead, naming that session as its resolve would
+		// (hiddenSessionTarget), with the receipt the settle of such an attempt appends: nothing is
+		// sent for it, and nothing is left owed.
+		switch {
+		case message.Target != nil && hiddenTarget != "":
+			failure := noLiveSessionPrefix + " " + hiddenTarget
+			b.Queue("", `
+				insert into message_deliveries (message_id, attempt, delivery, session_id, state, error, requested_by,
+				                                urgency, connected_only)
+				values ($1, 1, $2, $6, 'failed', $7, $3, $4, $5)
+			`, messageID, delivery, author, input.Urgency, model.ConnectedOnlyColumn(connectedOnly), hiddenTarget, failure)
+			return s.deps.Events.QueueAppend(b, messageDeliveryReceipt(message, actor, model.MessageDelivery{
+				MessageID: messageID, Attempt: 1, Delivery: delivery, SessionID: hiddenTarget,
+				State: model.DeliveryStateFailed, Error: &failure,
+			}, ""), func(appended model.Event) { receipt = &appended })
+		case message.Target != nil:
 			b.Queue("", `
 				insert into message_deliveries (message_id, attempt, delivery, session_id, state, requested_by,
 				                                urgency, connected_only)
@@ -519,7 +543,18 @@ func (s *server) createStoredMessage(
 		return model.Message{}, nil, err
 	}
 	s.publish(ctx, event)
+	if receipt != nil {
+		s.publish(ctx, *receipt)
+	}
 	s.storeDisplayTrees(ctx, message.ID, input.Body)
+	if message.Target != nil && hiddenTarget != "" {
+		deliveries, err := s.loadMessageDeliveries(ctx, s.deps.Store.Pool, reader, []string{message.ID})
+		if err != nil {
+			return model.Message{}, nil, err
+		}
+		message.Deliveries = deliveries[message.ID]
+		return message, advice, nil
+	}
 	if message.Target != nil {
 		// The send keeps the request's values (its transaction tracking) and drops its
 		// cancellation: a connection cut after the commit - a closed tab, a front door's pod
@@ -547,6 +582,25 @@ func (s *server) createStoredMessage(
 		}
 	}
 	return message, advice, nil
+}
+
+// hiddenSessionTarget answers the session a message's target names when reader may not see it
+// (sessionHiddenThrough, read through q), and "" for a session it sees, a role, and no target. A
+// role's holder is chosen when the message is sent, and its resolve answers a hidden holder as a
+// role nobody claims (resolveDeliveryTarget).
+func hiddenSessionTarget(ctx context.Context, q queryer, reader model.Actor, target *string) (string, error) {
+	if target == nil {
+		return "", nil
+	}
+	route, err := model.ParseRoute(*target)
+	if err != nil || route.Kind != "session" {
+		return "", nil
+	}
+	hidden, err := sessionHiddenThrough(ctx, q, reader, route.ID)
+	if err != nil || !hidden {
+		return "", err
+	}
+	return route.ID, nil
 }
 
 func messageEvent(message model.Message, eventType string, actor model.Actor, payload any) model.Event {

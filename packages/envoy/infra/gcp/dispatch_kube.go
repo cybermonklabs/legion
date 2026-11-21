@@ -695,8 +695,9 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// address a reader is sent back to, so it is the url output's own derivation (serverURL) and
 	// never a second spelling of it.
 	// DISPATCH_OUTSIDE_ORIGIN follows it only with outsideOrigin, and DISPATCH_SIGNIN_PASSKEY follows
-	// that only with signInPasskey, which needs outsideOrigin, so a deployment that sets none of the
-	// outside inputs renders byte for byte what it always rendered.
+	// that only with signInPasskey, which needs outsideOrigin, then DISPATCH_TRUSTED_PROXY_RANGES,
+	// which Dispatch refuses passkey sign-in without, so a deployment that sets none of the outside
+	// inputs renders byte for byte what it always rendered.
 	if s.signInOn {
 		appEnv = append(appEnv, secretEnv("DISPATCH_SIGNIN_CLIENT_SECRET", dispatchSecretName, "DISPATCH_SIGNIN_CLIENT_SECRET"),
 			valueEnv("DISPATCH_SIGNIN_ISSUER", "https://accounts.google.com"), valueEnv("DISPATCH_SIGNIN_CLIENT_ID", s.signIn.clientID), valueEnv("DISPATCH_SIGNIN_DOMAIN", s.signIn.domain))
@@ -713,7 +714,8 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	if s.outsideOrigin != "" {
 		appEnv = append(appEnv, valueEnv("DISPATCH_OUTSIDE_ORIGIN", s.outsideOrigin))
 		if s.signInPasskey {
-			appEnv = append(appEnv, valueEnv("DISPATCH_SIGNIN_PASSKEY", "1"))
+			appEnv = append(appEnv, valueEnv("DISPATCH_SIGNIN_PASSKEY", "1"),
+				valueEnv("DISPATCH_TRUSTED_PROXY_RANGES", strings.Join(s.trustedProxyRanges, ",")))
 		}
 	}
 	appEnv = append(appEnv, valueEnv("DISPATCH_LISTEN_HOST", "0.0.0.0"),

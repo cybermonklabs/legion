@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -127,9 +128,9 @@ func TestNoWriteReachesAHiddenObject(t *testing.T) {
 
 // bodyReferences is every field of a write's body that names an object of a project, with a call
 // alice may make that names it: the row, the path of an object she sees (PUB's issue, project or
-// conversation), and the body with %s where the named object goes. accepted is a row that takes an
-// object nobody holds rather than refusing it: the design gates store a document's id they do not
-// read, so both calls write, and must write the same tables. An external reference names a
+// conversation), and the body with %s where the named object goes. Every row refuses an object
+// nobody holds, so it refuses PRIV's alike: the design gates refuse a document their writer may
+// not see as one naming no document (refuseUnseenGateDocuments). An external reference names a
 // repository PRIV maps, acme/p_x, or acme/p.x, which no mapping holds: a mapping of a project the
 // caller cannot see answers as no mapping. A broadcast's session names privateSession, which has
 // acted in PRIV, to alice, and s-pub, which has acted in no project, to her token that lists PUB
@@ -138,29 +139,28 @@ var bodyReferences = []struct {
 	row, field, path string
 	object           probeObject
 	body             string
-	accepted         bool
 }{
-	{"POST /api/v1/issues", "parent", "/api/v1/issues", probeIssue, `{"project":"PUB","title":"A walked child","parent":"%s"}`, false},
-	{"POST /api/v1/issues", "blocked_by", "/api/v1/issues", probeIssue, `{"project":"PUB","title":"A walked wait","blocked_by":["%s"]}`, false},
-	{"PATCH /api/v1/issues/{key}", "parent", "/api/v1/issues/PUB-1", probeIssue, `{"parent":"%s"}`, false},
-	{"PATCH /api/v1/issues/{key}", "blocked_by", "/api/v1/issues/PUB-1", probeIssue, `{"blocked_by":["%s"]}`, false},
-	{"PATCH /api/v1/issues/{key}", "rank.after", "/api/v1/issues/PUB-1", probeIssue, `{"rank":{"after":"%s"}}`, false},
-	{"POST /api/v1/issues/{key}/comments", "reply_to", "/api/v1/issues/PUB-1/comments", probeComment, `{"body":"A walked reply.","reply_to":"%s"}`, false},
-	{"POST /api/v1/issues/{key}/comments", "ask_id", "/api/v1/issues/PUB-1/comments", probeAsk, `{"body":"A walked answer.","ask_id":"%s"}`, false},
-	{"POST /api/v1/issues/{key}/messages", "in_reply_to", "/api/v1/issues/PUB-1/messages", probeMessage, `{"body":"A walked reply.","in_reply_to":"%s"}`, false},
-	{"POST /api/v1/agents/{session_id}/messages", "in_reply_to", "/api/v1/agents/s1/messages", probeMessage, `{"body":"A walked reply.","delivery":"btw","in_reply_to":"%s"}`, false},
-	{"PUT /api/v1/issues/{key}/design-gates", "gates[].artifact_id", "/api/v1/issues/PUB-1/design-gates", probeDocument, `{"gates":[{"step":"spec","artifact_id":"%s"}]}`, true},
-	{"POST /api/v1/projects/{key}/related", "exclude_issue", "/api/v1/projects/PUB/related", probeIssue, `{"text":"walked","exclude_issue":"%s"}`, false},
-	{"POST /api/v1/issues", "external", "/api/v1/issues", probeMappedRepository, `{"project":"PUB","title":"A walked import","external":"acme/%s#7"}`, false},
-	{"POST /api/v1/issues", "external (no project)", "/api/v1/issues", probeMappedRepository, `{"title":"A walked import","external":"acme/%s#7"}`, false},
-	{"POST /api/v1/broadcasts", "session_ids", "/api/v1/broadcasts", probeSession, `{"body":"To walked sessions.","delivery":"btw","session_ids":["%s"]}`, false},
+	{"POST /api/v1/issues", "parent", "/api/v1/issues", probeIssue, `{"project":"PUB","title":"A walked child","parent":"%s"}`},
+	{"POST /api/v1/issues", "blocked_by", "/api/v1/issues", probeIssue, `{"project":"PUB","title":"A walked wait","blocked_by":["%s"]}`},
+	{"PATCH /api/v1/issues/{key}", "parent", "/api/v1/issues/PUB-1", probeIssue, `{"parent":"%s"}`},
+	{"PATCH /api/v1/issues/{key}", "blocked_by", "/api/v1/issues/PUB-1", probeIssue, `{"blocked_by":["%s"]}`},
+	{"PATCH /api/v1/issues/{key}", "rank.after", "/api/v1/issues/PUB-1", probeIssue, `{"rank":{"after":"%s"}}`},
+	{"POST /api/v1/issues/{key}/comments", "reply_to", "/api/v1/issues/PUB-1/comments", probeComment, `{"body":"A walked reply.","reply_to":"%s"}`},
+	{"POST /api/v1/issues/{key}/comments", "ask_id", "/api/v1/issues/PUB-1/comments", probeAsk, `{"body":"A walked answer.","ask_id":"%s"}`},
+	{"POST /api/v1/issues/{key}/messages", "in_reply_to", "/api/v1/issues/PUB-1/messages", probeMessage, `{"body":"A walked reply.","in_reply_to":"%s"}`},
+	{"POST /api/v1/agents/{session_id}/messages", "in_reply_to", "/api/v1/agents/s1/messages", probeMessage, `{"body":"A walked reply.","delivery":"btw","in_reply_to":"%s"}`},
+	{"PUT /api/v1/issues/{key}/design-gates", "gates[].artifact_id", "/api/v1/issues/PUB-1/design-gates", probeDocument, `{"gates":[{"step":"spec","artifact_id":"%s"}]}`},
+	{"POST /api/v1/projects/{key}/related", "exclude_issue", "/api/v1/projects/PUB/related", probeIssue, `{"text":"walked","exclude_issue":"%s"}`},
+	{"POST /api/v1/issues", "external", "/api/v1/issues", probeMappedRepository, `{"project":"PUB","title":"A walked import","external":"acme/%s#7"}`},
+	{"POST /api/v1/issues", "external (no project)", "/api/v1/issues", probeMappedRepository, `{"title":"A walked import","external":"acme/%s#7"}`},
+	{"POST /api/v1/broadcasts", "session_ids", "/api/v1/broadcasts", probeSession, `{"body":"To walked sessions.","delivery":"btw","session_ids":["%s"]}`},
 }
 
 // TestNoBodyReachesAHiddenObject: every field of a write's body that names an object
 // (bodyReferences) answers PRIV's object exactly as an object nobody holds - the same status and
 // bytes, the same work, and no table written - while the path names an object the caller sees, to
 // alice and to her token that lists PUB, an open viewer that sees PUB alone and names its session
-// (probeActor). An object nobody holds is refused there, except where the row takes one (accepted).
+// (probeActor). An object nobody holds is refused there, and PRIV's alike.
 func TestNoBodyReachesAHiddenObject(t *testing.T) {
 	walk := seedHiddenWrites(t)
 	if walk.issue[seedPublic] != "PUB-1" {
@@ -181,10 +181,10 @@ func TestNoBodyReachesAHiddenObject(t *testing.T) {
 			}
 			missing := walk.callPair(t, caller.who, name, method, reference.path, reference.path,
 				json.RawMessage(fmt.Sprintf(body, hidden)), json.RawMessage(fmt.Sprintf(body, fill.missing)),
-				map[string]string{fill.missing: hidden}, reference.accepted)
-			if refused := missing.Code >= http.StatusBadRequest; refused == reference.accepted {
-				t.Errorf("%s as %s: an object nobody holds answered %d %s; want a refusal: %t", name, caller.who, missing.Code,
-					strings.TrimSpace(missing.Body.String()), !reference.accepted)
+				map[string]string{fill.missing: hidden})
+			if missing.Code < http.StatusBadRequest {
+				t.Errorf("%s as %s: an object nobody holds answered %d %s; want a refusal", name, caller.who, missing.Code,
+					strings.TrimSpace(missing.Body.String()))
 			}
 		}
 	}
@@ -383,6 +383,10 @@ var personAndSessionReferences = []struct {
 // holds, to the callers that see PRIV alone and are not open - bob, a restricted member, and bob's
 // token that lists PRIV - and a role whose holder it may not see as a role nobody holds; and a
 // session to alice, an open viewer, who does not see privateSession, which has acted in PRIV.
+// A message to a session the caller may not see, and that message's Retry, queue nothing on the
+// session's own subject (queueForUnknownSession), which would hand the message to the session
+// once it registers again: the recorder the walk's server publishes through holds no envelope
+// there. A session nobody holds is refused alike, so the two answers stay one.
 // An open viewer is answered as before: alice's message to s-pub and to the role it holds are
 // delivered, which also shows the walk's listener holds both, and she assigns dana.
 func TestNoBodyNamesAHiddenPersonOrSession(t *testing.T) {
@@ -430,6 +434,22 @@ func TestNoBodyNamesAHiddenPersonOrSession(t *testing.T) {
 			if succeeded := missing.Code < http.StatusBadRequest; succeeded != reference.writes {
 				t.Errorf("%s as %s: one nobody holds answered %d %s; want a write: %t", name, caller.who,
 					missing.Code, strings.TrimSpace(missing.Body.String()), reference.writes)
+			}
+			if reference.writes && reference.object == probeSession && strings.HasSuffix(reference.row, "/messages") {
+				walk.assertNothingQueuedOn(t, name+" as "+string(caller.who), hiddenID)
+				// The Retry of each (POST /api/v1/messages/{id}/deliveries) resolves the target
+				// again as its caller, and answers the two as one too.
+				retry := func(message *httptest.ResponseRecorder) *httptest.ResponseRecorder {
+					return walk.request(t, caller.who, http.MethodPost, "/api/v1/messages/"+createdID(t, message)+"/deliveries",
+						json.RawMessage(`{`+probeActor+`,"delivery":"btw"}`))
+				}
+				hiddenRetry, missingRetry := retry(hidden), retry(missing)
+				got, want := deliveryPart(t, hiddenRetry.Body.Bytes()), strings.ReplaceAll(deliveryPart(t, missingRetry.Body.Bytes()), fill.missing, hiddenID)
+				if hiddenRetry.Code != missingRetry.Code || got != want {
+					t.Errorf("%s as %s: the Retry naming %s answers %d %s, and one nobody holds %d %s", name, caller.who, hiddenID,
+						hiddenRetry.Code, strings.TrimSpace(hiddenRetry.Body.String()), missingRetry.Code, strings.TrimSpace(missingRetry.Body.String()))
+				}
+				walk.assertNothingQueuedOn(t, name+" retried as "+string(caller.who), hiddenID)
 			}
 		}
 	}
@@ -503,6 +523,45 @@ func TestWithNoPrivateProjectASessionWriteAnswersAsToday(t *testing.T) {
 	}
 }
 
+// TestAMessageToASessionNobodyHoldsIsQueuedOnlyWithNoPrivateProject: Dispatch queues a message to a
+// session no store of the listener's holds (queueForUnknownSession) only for a writer that may see
+// that session (mayQueueForUnknownSession). While PRIV is private, alice, an open viewer, may not
+// see s-nobody - a session with neither a project nor a listener record passes no viewer but its
+// own then (access.SessionClause) - so her message to it fails "no live session", as one to a
+// session hidden from her does, and nothing is queued on its subject. With no private project (R9)
+// she sees every session, and the same message is queued on s-nobody's own subject, as before.
+func TestAMessageToASessionNobodyHoldsIsQueuedOnlyWithNoPrivateProject(t *testing.T) {
+	walk := seedHiddenWrites(t)
+	const nobody = "s-nobody"
+	send := func() string {
+		t.Helper()
+		sent := walk.request(t, callerAlice, http.MethodPost, "/api/v1/issues/"+walk.issue[seedPublic]+"/messages",
+			json.RawMessage(`{"body":"To a session nobody holds.","target":"session:`+nobody+`","delivery":"btw"}`))
+		if sent.Code != http.StatusCreated {
+			t.Fatalf("alice's message to %s: %d %s", nobody, sent.Code, strings.TrimSpace(sent.Body.String()))
+		}
+		return deliveryPart(t, sent.Body.Bytes())
+	}
+	queuedOn := func() int {
+		count := 0
+		for _, envelope := range publishedBy(t, walk.deps) {
+			if envelope.Topic == contracts.LegacyAgentSubject(nobody) {
+				count++
+			}
+		}
+		return count
+	}
+	if part := send(); !strings.Contains(part, `"state":"failed"`) || !strings.Contains(part, "no live session "+nobody) || queuedOn() != 0 {
+		t.Errorf("PRIV private: alice's message to %s answers %s with %d envelopes queued on its subject, want it failed and none queued",
+			nobody, part, queuedOn())
+	}
+	walk.setVisibility(t, seedPrivate, model.ProjectPublic)
+	if part := send(); !strings.Contains(part, `"state":"queued"`) || queuedOn() != 1 {
+		t.Errorf("PRIV public: alice's message to %s answers %s with %d envelopes queued on its subject, want it queued once",
+			nobody, part, queuedOn())
+	}
+}
+
 // TestASessionGroupWriteAnswersASessionItsWriterMayNotSeeAsOneNobodyHolds: a session group's write
 // that names a session its writer may not see answers as the same write naming a session nobody
 // holds - the same status and bytes, the same work, and no table written (callPair) - and so names
@@ -523,7 +582,7 @@ func TestASessionGroupWriteAnswersASessionItsWriterMayNotSeeAsOneNobodyHolds(t *
 	} {
 		missing := walk.callPair(t, callerAlice, call.name, call.method, call.path, call.path,
 			json.RawMessage(fmt.Sprintf(call.body, privateSession)), json.RawMessage(fmt.Sprintf(call.body, "s-nobody")),
-			map[string]string{"s-nobody": privateSession}, false)
+			map[string]string{"s-nobody": privateSession})
 		if missing.Code != http.StatusNotFound {
 			t.Errorf("%s: alice's write naming s-nobody answered %d %s, want 404: a session nobody holds is one she does not see while PRIV is private",
 				call.name, missing.Code, strings.TrimSpace(missing.Body.String()))

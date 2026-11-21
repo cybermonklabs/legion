@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -28,6 +29,9 @@ const (
 	canonicalOrigin = "http://dispatch.test"
 	passkeyOrigin   = "https://outside.example.com"
 	passkeyRPID     = "outside.example.com"
+	// googleProxyRanges is DISPATCH_TRUSTED_PROXY_RANGES as production sets it: Google's external
+	// Application Load Balancer's proxy ranges.
+	googleProxyRanges = "35.191.0.0/16,130.211.0.0/22,2600:2d00:1:1::/64"
 )
 
 // passkeyRig is a Dispatch signing example.com's people in with Google and, with
@@ -42,7 +46,7 @@ type passkeyRig struct {
 // holding PRIV, owned by alice, whose list names outsiderEmail directly.
 func newPasskeyRig(t *testing.T, overrides map[string]string) *passkeyRig {
 	t.Helper()
-	values := map[string]string{"DISPATCH_SIGNIN_PASSKEY": "1", "DISPATCH_OUTSIDE_ORIGIN": passkeyOrigin}
+	values := map[string]string{"DISPATCH_SIGNIN_PASSKEY": "1", "DISPATCH_OUTSIDE_ORIGIN": passkeyOrigin, "DISPATCH_TRUSTED_PROXY_RANGES": googleProxyRanges}
 	maps.Copy(values, overrides)
 	r := &passkeyRig{outsideSignIn: newOutsideSignIn(t, values)}
 	signedIn := codeFlowSignIn(t, r.handler, r.pool, map[string]any{
@@ -61,7 +65,7 @@ func (r *passkeyRig) serverWith(t *testing.T, overrides map[string]string) (http
 	t.Helper()
 	values := map[string]string{
 		"DISPATCH_SIGNIN_ISSUER": googleIssuer, "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com",
-		"DISPATCH_SIGNIN_PASSKEY": "1", "DISPATCH_OUTSIDE_ORIGIN": passkeyOrigin,
+		"DISPATCH_SIGNIN_PASSKEY": "1", "DISPATCH_OUTSIDE_ORIGIN": passkeyOrigin, "DISPATCH_TRUSTED_PROXY_RANGES": googleProxyRanges,
 	}
 	maps.Copy(values, overrides)
 	boot := resolveWith(t, values)
@@ -898,16 +902,31 @@ func TestPasskeySettingsRefusals(t *testing.T) {
 	}, "DISPATCH_SIGNIN_PASSKEY")
 }
 
+// heldClockServer is another server over the rig's database and boot whose passkey begins' bound
+// reads the time from clock (routes.AppContextOptions.Clock), so a row decides when its begins
+// happen rather than the wall clock.
+func (r *passkeyRig) heldClockServer(t *testing.T, clock func() time.Time) http.Handler {
+	t.Helper()
+	return routerFor(t, r.boot, routes.AppContextOptions{
+		SignIn: signInFlow(r.boot), People: r.people, Store: r.database, Sessions: store.NewPgSessionStore(r.database.Pool),
+		ServerURL: canonicalOrigin, Clock: clock,
+	})
+}
+
 // TestThePasskeyBeginsAreBoundedPerAddress: a ceremony's begin takes no credential, so one client
 // address, as the load balancer names it, gets ten at once and then one a second: the eleventh at
-// once is 429 PASSKEY_RATE_LIMITED with Retry-After, while another address still begins.
+// once is 429 PASSKEY_RATE_LIMITED with Retry-After, while another address still begins. The
+// server's clock is held still, so a stall of the runner between begins decides nothing.
 //
-// Control: mount the begins without limitPasskeyBegins, and the eleventh begin answers 200 and the
-// row fails.
+// Controls: mount the begins without limitPasskeyBegins, and the eleventh begin answers 200 and the
+// row fails; advance the held clock by a second between the tenth and the eleventh begin, and the
+// eleventh answers 200 and the row fails, so the row reads the clock it holds.
 func TestThePasskeyBeginsAreBoundedPerAddress(t *testing.T) {
 	r := newPasskeyRig(t, nil)
+	now := time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
+	handler := r.heldClockServer(t, func() time.Time { return now })
 	begin := func(address string) *httptest.ResponseRecorder {
-		return beginThrough(r.handler, balancerPeer, address+", 35.191.0.10")
+		return beginThrough(handler, balancerPeer, address+", 35.191.0.10")
 	}
 	for n := range 10 {
 		if begun := begin("198.51.100.7"); begun.Code != http.StatusOK {
@@ -971,20 +990,63 @@ func beginThrough(handler http.Handler, peer string, forwarded ...string) *httpt
 }
 
 // TestABeginOffTheBalancerIsBoundedByItsConnection: a begin whose connection does not come from
-// the load balancer (a caller on the tailnet reaching the outside origin's backend) is bounded by
-// its connection's own address, whatever X-Forwarded-For it writes: eleven begins at once from one
-// connection, each naming another address, are ten served and one 429 PASSKEY_RATE_LIMITED.
+// a trusted front door (a caller on the tailnet reaching the outside origin's backend) is bounded
+// by its connection's own address, whatever X-Forwarded-For it writes: eleven begins at once from
+// one connection, each naming another address, are ten served and one 429 PASSKEY_RATE_LIMITED.
+// The server's clock is held still, so a stall of the runner between begins decides nothing.
 //
-// Control: bound such a begin by auth.ForwardedAddress (the rightmost entry the caller wrote), and
-// the eleventh begin answers 200 and the row fails.
+// Controls: bound such a begin by auth.ForwardedAddress (the rightmost entry the caller wrote), and
+// the eleventh begin answers 200 and the row fails; advance the held clock by a second before the
+// eleventh begin, and it answers 200 and the row fails.
 func TestABeginOffTheBalancerIsBoundedByItsConnection(t *testing.T) {
 	r := newPasskeyRig(t, nil)
+	now := time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
+	handler := r.heldClockServer(t, func() time.Time { return now })
 	for n := range 10 {
-		if begun := beginThrough(r.handler, "100.64.0.9:51000", fmt.Sprintf("198.51.100.%d", n)); begun.Code != http.StatusOK {
+		if begun := beginThrough(handler, "100.64.0.9:51000", fmt.Sprintf("198.51.100.%d", n)); begun.Code != http.StatusOK {
 			t.Fatalf("begin %d from one connection answered %d %s, want 200", n+1, begun.Code, begun.Body.String())
 		}
 	}
-	wantCode(t, "the eleventh begin at once from one connection, naming another address", beginThrough(r.handler, "100.64.0.9:51000", "198.51.100.200"), http.StatusTooManyRequests, "PASSKEY_RATE_LIMITED")
+	wantCode(t, "the eleventh begin at once from one connection, naming another address", beginThrough(handler, "100.64.0.9:51000", "198.51.100.200"), http.StatusTooManyRequests, "PASSKEY_RATE_LIMITED")
+}
+
+// TestABeginThroughAnotherTrustedProxyIsBoundedByItsClient: behind a front door that is not
+// Google's load balancer, named in DISPATCH_TRUSTED_PROXY_RANGES (here 192.0.2.0/24, a proxy that
+// appends the client last, as nginx does), a begin is bounded by the client the proxy names, not by
+// the proxy's own address: a stranger's eleven begins through it leave another person's begin
+// through the same proxy served.
+//
+// Control: key every begin on its connection's own address (auth.BoundAddress before
+// DISPATCH_TRUSTED_PROXY_RANGES), and the person's begin is 429 PASSKEY_RATE_LIMITED and the row
+// fails.
+func TestABeginThroughAnotherTrustedProxyIsBoundedByItsClient(t *testing.T) {
+	r := newPasskeyRig(t, map[string]string{"DISPATCH_TRUSTED_PROXY_RANGES": "192.0.2.0/24"})
+	now := time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
+	handler := r.heldClockServer(t, func() time.Time { return now })
+	for range 11 {
+		beginThrough(handler, "192.0.2.10:443", "203.0.113.66")
+	}
+	if begun := beginThrough(handler, "192.0.2.10:443", "198.51.100.7"); begun.Code != http.StatusOK {
+		t.Fatalf("another person's begin through the proxy after a stranger's eleven answered %d %s, want 200", begun.Code, begun.Body.String())
+	}
+}
+
+// TestTheTrustedProxyRangesSettingRefusals: DISPATCH_SIGNIN_PASSKEY=1 refuses startup without
+// DISPATCH_TRUSTED_PROXY_RANGES, and the setting refuses an entry that is not a CIDR, an empty
+// entry, a CIDR with host bits set and a /0, each naming the setting.
+func TestTheTrustedProxyRangesSettingRefusals(t *testing.T) {
+	passkey := func(ranges string) map[string]string {
+		return map[string]string{
+			"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com",
+			"DISPATCH_SIGNIN_PASSKEY": "1", "DISPATCH_OUTSIDE_ORIGIN": passkeyOrigin, "DISPATCH_TRUSTED_PROXY_RANGES": ranges,
+		}
+	}
+	refusedWith(t, passkey(""), "DISPATCH_SIGNIN_PASSKEY needs DISPATCH_TRUSTED_PROXY_RANGES")
+	refusedWith(t, passkey("35.191.0.0/16,not-a-cidr"), "DISPATCH_TRUSTED_PROXY_RANGES entry 2 of 2")
+	refusedWith(t, passkey("35.191.0.0/16,,130.211.0.0/22"), "DISPATCH_TRUSTED_PROXY_RANGES entry 2 of 3 is empty")
+	refusedWith(t, passkey("192.0.2.10/24"), "DISPATCH_TRUSTED_PROXY_RANGES entry 1 of 1")
+	refusedWith(t, passkey("0.0.0.0/0"), "DISPATCH_TRUSTED_PROXY_RANGES entry 1 of 1")
+	refusedWith(t, map[string]string{"DISPATCH_TRUSTED_PROXY_RANGES": "35.191.0.0/16,::/0"}, "DISPATCH_TRUSTED_PROXY_RANGES entry 2 of 2")
 }
 
 // TestAFloodOfBeginsFromManyAddressesLeavesAFreshAddressServed: 400 begins at once from 400

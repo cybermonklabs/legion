@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // recordedMachineLoginRevocation records, in a transaction of its own, that Dispatch owes the
@@ -80,5 +83,64 @@ func TestARemovalRecordedAgainIsNotSettledByAnEarlierClaim(t *testing.T) {
 	}
 	if _, due, err := revocations.NextDue(ctx, time.Minute); err != nil || due {
 		t.Fatalf("NextDue with nothing owed = due %t, %v; want none", due, err)
+	}
+}
+
+// TestARecordOfAMachineLoginRevocationTakesThePersonsApprovalLock: a record of a machine-login
+// revocation is ordered after an approval of the person's in flight only under the person's
+// approval lock, so it takes that lock itself, whatever its caller took first, and never waits for
+// it. A record in a transaction that took no lock holds it until that transaction ends, so an
+// approval of the person's meanwhile is ErrMachineLoginApprovalInFlight; a record in the
+// transaction that holds it already records at once; and a record while an approval in flight
+// holds it is ErrMachineLoginApprovalInFlight at once and records nothing.
+//
+// Control: RecordMachineLoginRevocation taking no lock, and the approval made while the first
+// record's transaction is open takes the lock, named.
+func TestARecordOfAMachineLoginRevocationTakesThePersonsApprovalLock(t *testing.T) {
+	ctx := context.Background()
+	database := migratedEmptyStore(t)
+	const email = "erin@other.example"
+	begin := func() pgx.Tx {
+		t.Helper()
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = tx.Rollback(ctx) })
+		return tx
+	}
+
+	removal := begin()
+	if err := RecordMachineLoginRevocation(ctx, removal, " Erin@Other.example "); err != nil {
+		t.Fatalf("a record in a transaction that took no approval lock = %v, want it recorded", err)
+	}
+	approval := begin()
+	if owed, err := HoldMachineLoginApprovals(ctx, approval, email); !errors.Is(err, ErrMachineLoginApprovalInFlight) {
+		t.Fatalf("an approval of erin's while the record's transaction is open = owed %t, %v; want ErrMachineLoginApprovalInFlight, the record holding her approval lock", owed, err)
+	}
+	if err := RecordMachineLoginRevocation(ctx, removal, email); err != nil {
+		t.Fatalf("a second record in the transaction that holds erin's approval lock = %v, want it recorded", err)
+	}
+	for _, tx := range []pgx.Tx{approval, removal} {
+		if err := tx.Rollback(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	inFlight := begin()
+	if owed, err := HoldMachineLoginApprovals(ctx, inFlight, email); err != nil || owed {
+		t.Fatalf("an approval of erin's with nothing owed = owed %t, %v; want it to hold her approval lock", owed, err)
+	}
+	// The bound only ends a record that waits; one that does not answers at once.
+	bounded, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := RecordMachineLoginRevocation(bounded, begin(), email); !errors.Is(err, ErrMachineLoginApprovalInFlight) {
+		t.Fatalf("a record while an approval of erin's holds her approval lock = %v, want ErrMachineLoginApprovalInFlight at once", err)
+	}
+	if err := inFlight.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if owed, _, err := NewMachineLoginRevocations(database.Pool).Owing(ctx, email); err != nil || owed {
+		t.Fatalf("Owing(%s) after every record was rolled back or refused = %t, %v; want nothing owed", email, owed, err)
 	}
 }

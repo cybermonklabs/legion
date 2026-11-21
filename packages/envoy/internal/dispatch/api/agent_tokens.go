@@ -122,8 +122,9 @@ type createAgentTokenInput struct {
 // waits for the mint, and then the token it made is revoked. A mint whose caller lost the address
 // inserts nothing and is refused as that caller's next request is (mintCallerGone): 401
 // TOKEN_REVOKED for a personal token, 401 NO_IDENTITY for a cookie. A broker-issued token never
-// mints: none holds the approve scope this route requires (brokerPersonScopes). The lock is the
-// one statement a mint costs beyond what it always cost; the re-check rides in the insert.
+// mints: none holds the approve scope this route requires (brokerPersonScopes), and the handler
+// refuses one itself too (refuseUnboundCredential). The lock is the one statement a mint costs
+// beyond what it always cost; the re-check rides in the insert.
 //
 // The token records the Google account its minting credential is bound to (agent_tokens.subject,
 // credentialSubjectSQL), read in the insert beside that re-check: an approve by the token names
@@ -132,6 +133,10 @@ type createAgentTokenInput struct {
 func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
+		return
+	}
+	if err := refuseUnboundCredential(actor); err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	var input createAgentTokenInput
@@ -270,6 +275,25 @@ func mintCallerGone(tokenID *string) error {
 		return errTokenRevoked()
 	}
 	return identity.ErrNoIdentity
+}
+
+// refuseUnboundCredential is the mint's and the decisions' own refusal of a credential that is
+// neither the person's browser (no act) nor a personal token (an act naming its token): an act
+// that names no token, which is a broker-issued token's, since every one proves its session
+// (ciphertoken.ErrNotASession) and actingPerson gives each such credential an act. No such token
+// holds the approve scope these routes require (brokerPersonScopes), so the route's scope gate
+// refuses it first. This holds the routes to that whatever the gate is given: the re-checks a
+// mint and a decision make once the body has arrived (mintAgentTokenSQL, approverStanding) and
+// the account they bind (credentialSubjectSQL) have an arm for a cookie and a personal token
+// alone, so a broker token granted approve would mint and decide with nothing read again, an
+// account replaced while its body was held back included. It answers as the gate does, 403
+// OAUTH_SCOPE_REQUIRED for approve.
+func refuseUnboundCredential(actor model.Actor) error {
+	if actor.Act != nil && actor.Act.TokenID == "" {
+		return missingScopeError(model.ScopeApprove,
+			"a broker-issued token never mints a token or decides a credential request; the person's browser or a personal token holding approve does")
+	}
+	return nil
 }
 
 // errTokenRevoked is the refusal of a revoked personal token.

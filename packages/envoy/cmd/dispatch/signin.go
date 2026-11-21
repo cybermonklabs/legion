@@ -146,6 +146,9 @@ func checkSignInSettings(boot bootConfig, identityMode string) error {
 	if boot.SignInPasskey && boot.OutsideOrigin == "" {
 		return errors.New("DISPATCH_SIGNIN_PASSKEY needs DISPATCH_OUTSIDE_ORIGIN: a person from outside signs in with a passkey at the outside origin alone, whose host is the passkey's relying party, so set DISPATCH_OUTSIDE_ORIGIN, or unset DISPATCH_SIGNIN_PASSKEY")
 	}
+	if boot.SignInPasskey && len(boot.TrustedProxyRanges) == 0 {
+		return errors.New("DISPATCH_SIGNIN_PASSKEY needs DISPATCH_TRUSTED_PROXY_RANGES: the passkey begins are bounded per client address, read from X-Forwarded-For only on a connection from one of those front doors, so set it to the ranges of the load balancer in front of the outside origin (Google's: 35.191.0.0/16,130.211.0.0/22,2600:2d00:1:1::/64), or unset DISPATCH_SIGNIN_PASSKEY")
+	}
 	if len(boot.SignInWorkspaceDomains) > 0 && boot.SignInDomain == "" {
 		return errors.New("DISPATCH_SIGNIN_WORKSPACE_DOMAINS needs DISPATCH_SIGNIN_DOMAIN: it lists the other domains of the Workspace whose people sign in with Google, so set DISPATCH_SIGNIN_DOMAIN under DISPATCH_SIGNIN_ISSUER https://accounts.google.com, or unset DISPATCH_SIGNIN_WORKSPACE_DOMAINS")
 	}
@@ -268,21 +271,40 @@ func signInRule(boot bootConfig, lister identity.Lister) (identity.SignInRule, e
 	}
 }
 
-// passkeySignIn is boot's passkey sign-in under rule, with DISPATCH_SIGNIN_PASSKEY=1: the store of
-// the passkeys and the owners' links over people's database, recording each passkey's subject
-// under the outside origin, and the ceremonies of that origin, which admit a person as rule does.
-// Both are nil with the setting unset.
+// passkeySignIn is boot's passkeys over people's database: the store of the passkeys, the passkey
+// accounts and the owners' links, recording each passkey's subject under the outside origin, which
+// it answers wherever there is a people store, whatever DISPATCH_SIGNIN_PASSKEY says (the
+// one-owner refusals and the end of an account at the last list's removal read and write it with
+// the setting off too: api.Deps.PasskeyAccounts); and, with the setting on, the ceremonies of that
+// origin over the same store, which admit a person as rule does, else nil.
 func passkeySignIn(boot bootConfig, people *store.PgPeopleStore, rule identity.SignInRule) (*store.PgPasskeys, *identity.Passkeys, error) {
-	passkeyRule, ok := rule.(identity.PasskeyRule)
-	if !boot.SignInPasskey || !ok {
+	if people == nil {
 		return nil, nil, nil
 	}
-	passkeys := store.NewPgPasskeys(people, oidc.CanonicalIssuer(boot.OutsideOrigin))
-	ceremonies, err := identity.NewPasskeys(boot.OutsideOrigin, passkeys, passkeyRule)
+	var issuer string
+	if boot.OutsideOrigin != "" {
+		issuer = oidc.CanonicalIssuer(boot.OutsideOrigin)
+	}
+	accounts := store.NewPgPasskeys(people, issuer)
+	passkeyRule, ok := rule.(identity.PasskeyRule)
+	if !boot.SignInPasskey || !ok {
+		return accounts, nil, nil
+	}
+	ceremonies, err := identity.NewPasskeys(boot.OutsideOrigin, accounts, passkeyRule)
 	if err != nil {
 		return nil, nil, err
 	}
-	return passkeys, ceremonies, nil
+	return accounts, ceremonies, nil
+}
+
+// ceremonyStore is the passkey store ceremonies sign people in through, where passkey sign-in is
+// on, and nil where it is off (ceremonies nil): what the hourly confirmation of a passkey's sign-in
+// reads (requestIdentityFor).
+func ceremonyStore(ceremonies *identity.Passkeys) *store.PgPasskeys {
+	if ceremonies == nil {
+		return nil
+	}
+	return ceremonies.Store()
 }
 
 // accessLister is who passkey sign-in asks whether some project names an email directly, as its

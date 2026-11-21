@@ -26,7 +26,10 @@ body: |-
   for it, without the project's lock, so every login the payment finds was approved before the
   removal. A second approve of theirs while one is at the broker is
   `409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT`. The removal never waits on the broker, and a removal
-  from a list that does not name the person owes nothing.
+  from a list that does not name the person owes nothing and holds up no approve of theirs; a
+  removal that finds the member on the list only once it holds the project's lock, their addition
+  having committed meanwhile, is `409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT` while an approve or another
+  removal of theirs is in progress, and changes nothing.
   `/metrics` carries `envoy_dispatch_machine_login_revocations_owed` and
   `envoy_dispatch_machine_login_revocation_oldest_owed_seconds`, so a revocation the broker never
   confirms shows, and the Dispatch README gives an operator's clear of one; the runbook's recovery

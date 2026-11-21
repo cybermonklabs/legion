@@ -12,7 +12,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // POST /api/v1/me/inbox/dismiss takes a thread out of the person's Inbox, and puts it back. A
@@ -66,14 +68,18 @@ var (
 // narrows to no state: a thread the write leaves alone is locked with the rest, as the mark-all
 // locks every thread it named, and a thread the caller has no row for answers nothing and
 // changes nothing, as PUT /api/v1/me/threads/{id}/read does. That is also what makes it one
-// statement for both directions, where the state-matched read above is two.
+// statement for both directions, where the state-matched read above is two. It narrows to the
+// projects the viewer $3 binds sees (access.ProjectClause over the row's own project), as every
+// read of these rows does, so a named thread of a project the caller may not see answers as one
+// it has no row for.
 //
 // The ids are matched against the row's own columns, so the read stays on the caller's own key
 // (user_threads_pkey, which the plan test pins).
-const inboxDismissNamedThreads = `
+var inboxDismissNamedThreads = `
 	select t.thread_id::text, t.issue_key, t.artifact_id::text, t.version
 	from user_threads t
 	where t.login = $1 and t.thread_id = any($2::uuid[])
+	  and ` + access.ProjectClause("t.project_key", "$3") + `
 	order by t.thread_id`
 
 // What this route's four Agent reads add to the mark-all's own (inboxAgentRootsQuery,
@@ -90,17 +96,18 @@ const (
 
 // The four Agent reads themselves, each over the list route's own roots for the state this request
 // writes over (api/replies_agent.go): the Inbox's undismissed roots for a dismissal, the dismissed
-// ones for a restore. Reading them through the list's own constants is what keeps this route and
-// the Dismissed view from disagreeing about whether a thread is dismissed.
+// ones for a restore. Reading them through the list's own builders is what keeps this route and
+// the Dismissed view from disagreeing about whether a thread is dismissed, and about which threads
+// the caller may read (inboxAgentRead).
 var (
-	inboxDismissAgentThreads = inboxAgentRootsQuery(
-		myAgentInboxRoots, inboxAgentUnreadReplies, inboxAgentRepliedThrough)
-	inboxDismissAgentByID = inboxAgentRootsQuery(
-		myAgentInboxRoots, inboxAgentUnreadReplies, inboxDismissNamedRoots)
-	inboxRestoreAgentThreads = inboxAgentRootsQuery(
-		myAgentDismissedRoots, inboxDismissNoReplies, inboxRestoreDismissedThrough)
-	inboxRestoreAgentThreadsByID = inboxAgentRootsQuery(
-		myAgentDismissedRoots, inboxDismissNoReplies, inboxDismissNamedRoots)
+	inboxDismissAgentThreads = newInboxAgentRead(
+		myAgentInboxRootsAnd, "m", inboxAgentUnreadReplies, inboxAgentRepliedThrough)
+	inboxDismissAgentByID = newInboxAgentRead(
+		myAgentInboxRootsAnd, "m", inboxAgentUnreadReplies, inboxDismissNamedRoots)
+	inboxRestoreAgentThreads = newInboxAgentRead(
+		myAgentDismissedRootsAnd, "root", inboxDismissNoReplies, inboxRestoreDismissedThrough)
+	inboxRestoreAgentThreadsByID = newInboxAgentRead(
+		myAgentDismissedRootsAnd, "root", inboxDismissNoReplies, inboxDismissNamedRoots)
 )
 
 // inboxDismissLockAgentRoots takes the root message of every Agent thread a dismissal is about to
@@ -331,8 +338,8 @@ type inboxDismissPlan struct {
 	// request that named its rows changes. The Reply rows it named are read by
 	// inboxDismissNamedThreads, which narrows to no state and so is one statement for both.
 	replyThreads string
-	agentThreads string
-	agentByID    string
+	agentThreads inboxAgentRead
+	agentByID    inboxAgentRead
 	// The writes themselves, over the rows those reads answered.
 	markThreads      string
 	markAgentThreads string
@@ -566,9 +573,15 @@ func inboxDismissSeenNoReply(row, field string) error {
 		row, field)
 }
 
-// dismissInbox answers POST /api/v1/me/inbox/dismiss.
+// dismissInbox answers POST /api/v1/me/inbox/dismiss. The rows it changes are read as the
+// request's reader reads the list (readInboxDismissThreads), so a thread the caller's credential
+// may not see is no row of the request, named or matched.
 func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
+	if !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -632,7 +645,7 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	dismissed, events, err := s.dismissInboxThreads(r.Context(), actor, inboxDismissPlanOf(input), rows, scope)
+	dismissed, events, err := s.dismissInboxThreads(r.Context(), who, actor, inboxDismissPlanOf(input), rows, scope)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -666,7 +679,7 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 // same owners' locks in shared mode: every comment, answer and issue message on those owners waits
 // behind a statement that hangs, so one that cannot finish is better killed.
 func (s *server) dismissInboxThreads(
-	ctx context.Context, actor model.Actor, plan inboxDismissPlan, rows inboxDismissRows, scope inboxReadScope,
+	ctx context.Context, who, actor model.Actor, plan inboxDismissPlan, rows inboxDismissRows, scope inboxReadScope,
 ) (int, []model.Event, error) {
 	login := model.CanonicalLogin(actor.ID)
 	tx, err := s.begin(ctx)
@@ -677,7 +690,7 @@ func (s *server) dismissInboxThreads(
 	if _, err := tx.Exec(ctx, "set local statement_timeout = '"+inboxReadStatementTimeout+"'"); err != nil {
 		return 0, nil, fmt.Errorf("bound the dismissal's statements: %w", err)
 	}
-	read, err := readInboxDismissThreads(ctx, tx, actor, login, plan, rows, scope)
+	read, err := readInboxDismissThreads(ctx, tx, who, actor, login, plan, rows, scope)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -741,7 +754,8 @@ func (s *server) dismissInboxThreads(
 // those ids, through the reads both write routes over these rows share (readInboxReplyRows and
 // readInboxAgentRows, api/inbox_read.go); a filtered request is the mark-all's own read of the
 // state it writes over (readInboxReadThreads), given this plan's two statements and its mark, so
-// that read lives once.
+// that read lives once. Either form reads as who, the request's reader, reads the list: a row
+// named of a thread who may not see answers as a row the caller has none of.
 //
 // What the writes hold each row to comes from the request where it named its rows: every read
 // answers each row's own version and newest reply, and what the page drew is written over them
@@ -749,11 +763,11 @@ func (s *server) dismissInboxThreads(
 // reads answered stands, the server standing in for the page. One mechanism for both forms, and
 // the one place that decides which of the two this request is.
 func readInboxDismissThreads(
-	ctx context.Context, tx pgx.Tx, actor model.Actor, login string,
+	ctx context.Context, tx pgx.Tx, who, actor model.Actor, login string,
 	plan inboxDismissPlan, rows inboxDismissRows, scope inboxReadScope,
 ) (inboxReadThreads, error) {
 	if !rows.named() {
-		read, err := readInboxReadThreads(ctx, tx, actor, login,
+		read, err := readInboxReadThreads(ctx, tx, who, actor, login,
 			plan.replyThreads, plan.agentThreads, plan.through, scope)
 		// The unread replies the read itself drew are the set the check holds each thread to.
 		// They share one backing array, which nothing writes to before the check binds it
@@ -764,13 +778,13 @@ func readInboxDismissThreads(
 	read := newInboxReadThreads()
 	if len(rows.threads) > 0 {
 		if err := readInboxReplyRows(ctx, tx, &read, inboxDismissNamedThreads,
-			login, rows.threads); err != nil {
+			login, rows.threads, refs.VisibilityArg(who)); err != nil {
 			return read, err
 		}
 	}
 	if len(rows.roots) > 0 {
-		args := append(unreadDirectRepliesArgs(actor.ID, nil), rows.roots)
-		if err := readInboxAgentRows(ctx, tx, &read, plan.agentByID, args); err != nil {
+		query, args := plan.agentByID.statementFor(who, append(unreadDirectRepliesArgs(actor.ID, nil), rows.roots))
+		if err := readInboxAgentRows(ctx, tx, &read, query, args); err != nil {
 			return read, err
 		}
 	}

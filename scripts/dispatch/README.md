@@ -155,20 +155,24 @@ reaches both Dispatch's database and the transcript store.
 
 Use one window for both steps. That run chooses `TO`. Both times are UTC, in the form
 `2026-10-01T00:00:00Z`. Each psql run is one read-only transaction, so a mistake cannot write, and
-`-q` keeps psql's `SET` line out of the CSV.
+`-q` keeps psql's `SET` line out of the CSV. `psql` is given Dispatch's database URL with its
+password and its `pool_` parameters taken out, `$DISPATCH_PSQL_URL`, and the password in
+`PGPASSWORD`, `$DISPATCH_PGPASSWORD`, so the password is never an argument of a command, which
+every user of the box can read while it runs; Running Dispatch's "Signing people in" gives the one
+block that makes both from `DATABASE_URL`.
 
 ```bash
 FROM=2026-10-01T00:00:00Z
 TO=2026-10-27T05:00:00Z
 
 # 1. Dispatch: every person's comment in the window, one row per pair.
-psql "$DATABASE_URL" --single-transaction -q -X -v ON_ERROR_STOP=1 --csv \
+PGPASSWORD="$DISPATCH_PGPASSWORD" psql "$DISPATCH_PSQL_URL" --single-transaction -q -X -v ON_ERROR_STOP=1 --csv \
   -c 'SET TRANSACTION READ ONLY' \
   -v from="$FROM" -v to="$TO" \
   -f packages/envoy/internal/dispatch/deliveryaudit/comments.sql > comments.csv
 
 # Optional: Dispatch's whole record of one comment, once for each comment to show.
-psql "$DATABASE_URL" --single-transaction -q -X -v ON_ERROR_STOP=1 --csv \
+PGPASSWORD="$DISPATCH_PGPASSWORD" psql "$DISPATCH_PSQL_URL" --single-transaction -q -X -v ON_ERROR_STOP=1 --csv \
   -c 'SET TRANSACTION READ ONLY' \
   -v comment=03207432-749f-4211-9607-e378dc636807 \
   -f packages/envoy/internal/dispatch/deliveryaudit/trace.sql > trace-03207432.csv

@@ -263,22 +263,53 @@ func peerAddress(r *http.Request) string {
 
 // BoundAddress is the address a per-address bound keys a caller on, where the caller's own text
 // must not pick the key (the passkey ceremonies' begins, routes.limitPasskeyBegins), and whether
-// the request names one. A connection from Google's external load balancer keys on the client
-// address the balancer wrote (balancedClientAddress, as ForwardedAddress reads it), or on the
-// balancer's own address when the header holds no such entry; a request through the balancer
-// carrying more than one X-Forwarded-For line is none the balancer forwarded as it writes the
-// header, so it names no address (false). Any other connection keys on its own address, whatever
-// X-Forwarded-For it carries: that header is then the caller's own text.
-func BoundAddress(r *http.Request) (string, bool) {
+// the request names one. trusted are the front doors whose X-Forwarded-For Dispatch trusts
+// (cmd/dispatch: DISPATCH_TRUSTED_PROXY_RANGES). A connection from a peer outside trusted keys on
+// its own address, whatever X-Forwarded-For it carries: that header is then the caller's own text.
+// A trusted peer's request carrying more than one X-Forwarded-For line is none a front door
+// forwarded as it writes the header, so it names no address (false). Otherwise a trusted peer is
+// read in one of two ways:
+//   - a peer in Google's external load balancer's ranges (googleLoadBalancerRanges) is read in the
+//     format Google documents, [SUPPLIED,]CLIENT_IP,LOAD_BALANCER_IP, where LOAD_BALANCER_IP is the
+//     address of the balancer's forwarding rule
+//     (https://cloud.google.com/load-balancing/docs/https#x-forwarded-for_header): the client is the
+//     second-to-last entry (balancedClientAddress, as ForwardedAddress reads it), so production
+//     names Google's ranges alone and never its forwarding rule's address;
+//   - any other trusted peer, such as an nginx-style proxy that appends the client last, is read as
+//     the rightmost entry that is not itself in trusted: the hops after it are front doors Dispatch
+//     trusts, and anything before it is the caller's own text.
+//
+// A trusted peer whose header names no such client, or whose client entry is no IP address, keys on
+// its own address, where the caller picks nothing. An IPv4 address written as IPv6 keys as the IPv4
+// address it is.
+func BoundAddress(r *http.Request, trusted []netip.Prefix) (string, bool) {
 	peer := peerAddress(r)
-	if !fromGoogleLoadBalancer(peer) {
+	if !inRanges(peer, trusted) {
 		return peer, true
 	}
-	if len(r.Header.Values("X-Forwarded-For")) > 1 {
+	lines := r.Header.Values("X-Forwarded-For")
+	if len(lines) > 1 {
 		return "", false
 	}
-	if client, ok := balancedClientAddress(r); ok {
-		return client, true
+	if inRanges(peer, googleLoadBalancerRanges) {
+		if client, ok := balancedClientAddress(r); ok {
+			return client, true
+		}
+		return peer, true
+	}
+	if len(lines) == 0 {
+		return peer, true
+	}
+	hops := strings.Split(lines[0], ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		addr, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
+		if err != nil {
+			return peer, true
+		}
+		addr = addr.Unmap().WithZone("")
+		if !containedIn(addr, trusted) {
+			return addr.String(), true
+		}
 	}
 	return peer, true
 }
@@ -286,12 +317,22 @@ func BoundAddress(r *http.Request) (string, bool) {
 // fromGoogleLoadBalancer reports whether peer, a connection's address without its port, is one of
 // googleLoadBalancerRanges, an IPv4 address written as IPv6 included.
 func fromGoogleLoadBalancer(peer string) bool {
-	addr, err := netip.ParseAddr(peer)
+	return inRanges(peer, googleLoadBalancerRanges)
+}
+
+// inRanges reports whether address, an IP address written as text, is in one of ranges, an IPv4
+// address written as IPv6 included; text that is no IP address is in none.
+func inRanges(address string, ranges []netip.Prefix) bool {
+	addr, err := netip.ParseAddr(address)
 	if err != nil {
 		return false
 	}
-	addr = addr.Unmap()
-	for _, prefix := range googleLoadBalancerRanges {
+	return containedIn(addr.Unmap(), ranges)
+}
+
+// containedIn reports whether addr is in one of ranges.
+func containedIn(addr netip.Addr, ranges []netip.Prefix) bool {
+	for _, prefix := range ranges {
 		if prefix.Contains(addr) {
 			return true
 		}

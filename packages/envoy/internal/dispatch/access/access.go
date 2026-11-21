@@ -195,11 +195,14 @@ func PersonClause(loginExpr, viewerParam string) string {
 // session_projects places every session in the projects it acted in only once
 // `envoy-dispatch backfill-session-projects` has written session_projects_filled's row: migration
 // 20261116081157_session_projects_proven empties both tables, and the command's --reset does again
-// in a deployment that may already hold a private project. Until the row is written a session of
-// a private project may have no row placing it there, so the open arm passes no session but the
-// viewer's own while any project is private. The marker's read names no column of the row it
-// tests, so a statement makes it once (an InitPlan), and only for an open viewer of a deployment
-// that holds a private project.
+// in a deployment that may already hold a private project, then refills the pairs one by one.
+// Until the row is written a session of a private project may have no row placing it there, or
+// have its pair in a project the viewer sees back before its pair in one the viewer does not, so
+// while any project is private no arm passes a session but the viewer's own: the open arm and the
+// arm of a viewer that is not open alike (migration 20261121165416_session_clause_filled). The
+// marker's read names no column of the row it tests, so a statement makes it once (an InitPlan),
+// and only for a viewer of a deployment that holds a private project that the statement's own SQL
+// does not answer.
 //
 // The server's viewer, the viewer's own session and an open viewer of a deployment that holds no
 // private project are answered in the statement's own SQL, so those rows call nothing and read
@@ -214,7 +217,7 @@ func SessionClause(sessionExpr, viewerParam string) string {
 	return clause("SessionClause", fmt.Sprintf(`(%[3]s or (%[1]s) = %[2]s::jsonb->>'session'
 		or (%[4]s and not %[5]s)
 		or session_clause_visible((%[1]s), %[2]s::jsonb,
-			case when %[4]s and %[5]s then exists (
+			case when %[5]s then exists (
 				select 1 from session_projects_filled
 				offset 0)
 			else true end))`,
@@ -235,18 +238,21 @@ func SessionClause(sessionExpr, viewerParam string) string {
 //   - Every other viewer is relayed no session that acted in or reached a project it does not
 //     see: a session_projects pair, or a session_reached_projects pair, which a change that took
 //     the project from a person the session is tied to wrote (store.RecordReachedProjects: an
-//     access change, or a write of the person's member kind), since the transcript keeps what the
-//     session read while its person saw the project, and the rules below judge the session's
+//     access change, or a write of the person's member kind; a switch to private writes the same
+//     pairs through its trigger, projectMadePrivateFunctionBody), since the transcript keeps what
+//     the session read while its person saw the project, and the rules below judge the session's
 //     people by what they see now.
 //   - A viewer that is not open (a restricted member) is relayed only a session that its own
 //     person's credential alone proved: every person a write or a broker-issued token of the
 //     session recorded (session_owners, the person the token acts for) is the viewer's person, and
-//     one is. Such a session acts with the viewer's own credential, which reaches only what the
-//     viewer sees, so it passes with a listener list or without one, and where the listener lists
-//     its projects each must be one the viewer sees. A session tied to nobody, or one also tied to
-//     another person, answers as one nobody holds, whatever else it did; another person's
-//     credential acting in it ties it to them, which the live view's re-ask before each batch of
-//     frames reads.
+//     one is. Such a session acts with a credential of the viewer's person, which reaches only what
+//     that person sees. Where the listener lists the session's projects, each must be one the
+//     viewer sees. Where it lists none, the session passes only a viewer whose own credential lists
+//     no project (the person's browser, whose visibility argument has no "lists"): a credential of
+//     the same person that lists fewer projects must not read what a session on a wider list read.
+//     A session tied to nobody, or one also tied to another person, answers as one nobody holds,
+//     whatever else it did; another person's credential acting in it ties it to them, which the
+//     live view's re-ask before the replay and before each batch of frames reads.
 //   - An open viewer, while a project is private, is relayed a session that wrote in no project
 //     the viewer does not see, once `envoy-dispatch backfill-session-projects` has filled the pairs
 //     (session_projects_filled). Where the listener record lists the session's credential's
@@ -258,6 +264,11 @@ func SessionClause(sessionExpr, viewerParam string) string {
 //     the viewer sees. So a session only people on no private project proved is watched as
 //     before, one a private project's person proved only by a viewer who sees that project too,
 //     and one with neither a list nor a tie by nobody.
+//
+// A listener list counts only from a stored listener answer (route_roster) that has not passed its
+// expires_at; a session of an expired answer is judged as one whose listener sent no list. A reader
+// that asks this rule again over time refreshes the stored answer first (api:
+// refreshRosterForContent), and a refresh that fails leaves it expired, which fails closed.
 //
 // The server's viewer, the viewer's own session and an open viewer of a deployment that holds no
 // private project are answered in the statement's own SQL, so those rows call nothing and read
@@ -279,47 +290,57 @@ func SessionContentClause(sessionExpr, viewerParam string) string {
 // jsonb), the migration's function: SessionContentClause's decision for the session $1 and the
 // visibility argument $2 for every viewer the clause's own SQL does not answer first, the rule
 // SessionContentClause's comment states. It is written here, beside the clause whose rule it is,
-// over store.PersonSeesProjectSQL, and the migration holds it as this text renders it:
+// over store.PersonSeesProjectSQLIn, and the migration holds it as this text renders it:
 // TestTheContentFunctionIsTheBodyGoRenders fails while the function a migrated database holds
 // differs from it, so a change of either rule here ships with a migration that replaces the
-// function.
+// function. The function runs under its caller's search_path and sets none, which would save and
+// restore the setting on every call, so every table it reads is named by its schema, as
+// session_clause_visible names its tables.
+//
+// The listener record it reads is the projection of route_roster's one row, which serves reads
+// only until its expires_at (routeRosterTTL past the listener's answer, by the database's clock).
+// A row past it is a listener answer nobody has asked again, whose lists may be older than a
+// session's credential is: a token traded again with a private project is still listed without
+// it. So a record past expires_at is no list at all: the session is judged as one whose listener
+// sent none, by the people its writes tied it to, and a session tied to nobody passes no viewer but
+// its own.
 func sessionContentFunctionBody() string {
-	held := `(select listener.projects from route_roster_session_projects listener where listener.id = true)`
+	held := `(select listener.projects from public.route_roster_session_projects listener join public.route_roster roster on roster.id = listener.id where listener.id = true and roster.expires_at > now())`
 	return fmt.Sprintf(`select coalesce(not exists (
-				select 1 from session_projects unseen
+				select 1 from public.session_projects unseen
 				where unseen.session_id = $1 and not (($2->'sees') ? unseen.project_key)
 				offset 0)
 			and not exists (
-				select 1 from session_reached_projects reached
+				select 1 from public.session_reached_projects reached
 				where reached.session_id = $1 and not (($2->'sees') ? reached.project_key)
 				offset 0)
 			and case when coalesce(%[2]s ? $1, false) then
 				(%[2]s->$1) <@ ($2->'sees')
 				and ((%[1]s
-						and exists (select 1 from session_projects_filled offset 0)
+						and exists (select 1 from public.session_projects_filled offset 0)
 						and (jsonb_array_length(%[2]s->$1) > 0
-							or exists (select 1 from session_projects acted where acted.session_id = $1 offset 0)))
+							or exists (select 1 from public.session_projects acted where acted.session_id = $1 offset 0)))
 					or (not %[1]s and %[5]s))
 			else
 				(%[1]s
-					and exists (select 1 from session_projects_filled offset 0)
-					and exists (select 1 from session_owners tied where tied.session_id = $1 offset 0)
+					and exists (select 1 from public.session_projects_filled offset 0)
+					and exists (select 1 from public.session_owners tied where tied.session_id = $1 offset 0)
 					and not exists (
-						select 1 from session_owners tied
-						join projects hidden on hidden.visibility = 'private' and not (($2->'sees') ? hidden.key)
-						left join people tied_person on tied_person.email = tied.login
+						select 1 from public.session_owners tied
+						join public.projects hidden on hidden.visibility = 'private' and not (($2->'sees') ? hidden.key)
+						left join public.people tied_person on tied_person.email = tied.login
 						where tied.session_id = $1 and %[4]s
 						offset 0))
-				or (not %[1]s and %[5]s)
+				or (not %[1]s and %[5]s and not ($2 ? 'lists'))
 			end, false)`,
 		ViewerFlag("$2", "open"), held, ViewerPerson("$2"),
-		store.PersonSeesProjectSQL("tied.login", "tied_person.member_kind", "hidden"),
+		store.PersonSeesProjectSQLIn("public.", "tied.login", "tied_person.member_kind", "hidden"),
 		fmt.Sprintf(`(exists (
-				select 1 from session_owners tied
+				select 1 from public.session_owners tied
 				where tied.session_id = $1 and tied.login = %[1]s
 				offset 0)
 			and not exists (
-				select 1 from session_owners tied
+				select 1 from public.session_owners tied
 				where tied.session_id = $1 and tied.login is distinct from %[1]s
 				offset 0))`, ViewerPerson("$2")))
 }
@@ -385,17 +406,21 @@ func RoleClause(roleExpr, viewerParam string) string {
 }
 
 // PartyClause passes a conversation that belongs to no project, by its parties ("person:<login>",
-// "session:<id>"), when the viewer's own person or session is a party, or the viewer is open, and
-// every session party passes both SessionClause and SessionContentClause. Every such conversation
-// is a session's content: a file of its conversation and that file's node, an ask or a comment on
-// such a file, and a direct message to or from it with every reply under it. What a session writes
-// there can hold whatever it read, which no rule over what it wrote bounds, so each session party
-// is held to the rule the live agent view keeps for the session's transcript too. The content rule
-// only narrows (SessionClause still holds), and the agents list, whose rows carry no content, keeps
-// SessionClause alone (K6). An open viewer of a deployment that holds no private project passes
-// SessionContentClause for every session in its SQL's own `open and not private` arm, as it passes
-// SessionClause, so it reads every conversation as before (R9); a viewer that is not open reads one
-// with a session only where its own person proved that session, as its agent view watches it.
+// "session:<id>"), when the viewer's own person or session is a party, or the viewer is open, or
+// every party is a session, and every session party passes both SessionClause and
+// SessionContentClause. Every such conversation is a session's content: a file of its conversation
+// and that file's node, an ask or a comment on such a file, and a direct message to or from it with
+// every reply under it. What a session writes there can hold whatever it read, which no rule over
+// what it wrote bounds, so each session party is held to the rule the live agent view keeps for the
+// session's transcript too. The content rule only narrows (SessionClause still holds), and the
+// agents list, whose rows carry no content, keeps SessionClause alone (K6). An open viewer of a
+// deployment that holds no private project passes SessionContentClause for every session in its
+// SQL's own `open and not private` arm, as it passes SessionClause, so it reads every conversation
+// as before (R9). A viewer that is not open reads one with a session only where its own person
+// alone proved that session, as its agent view watches it: its direct message to the session, and
+// the session's files and their nodes, whose parties are the session alone. Another person's write
+// as the session ties the session to them too, and from that write on each answers as one nobody
+// holds.
 //
 // A conversation that names no party - null parties, a direct message whose node Dispatch does not
 // hold, or an empty list - says nothing of who may read it: it passes an open viewer while no
@@ -407,7 +432,11 @@ func PartyClause(partiesExpr, viewerParam string) string {
 	return clause("PartyClause", fmt.Sprintf(`(%[2]s
 		or ((('person:' || (%[4]s::jsonb->>'person')) = any(%[1]s)
 				or ('session:' || (%[4]s::jsonb->>'session')) = any(%[1]s)
-				or (%[3]s and (not %[6]s or coalesce(cardinality(%[1]s), 0) > 0)))
+				or (%[3]s and (not %[6]s or coalesce(cardinality(%[1]s), 0) > 0))
+				or (not %[3]s and coalesce(cardinality(%[1]s), 0) > 0 and not exists (
+					select 1 from unnest(%[1]s) party
+					where party not like 'session:%%'
+					offset 0)))
 			and not exists (
 				select 1 from unnest(%[1]s) party
 				where party like 'session:%%' and not (%[5]s and %[7]s)
@@ -472,12 +501,17 @@ func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, e
 
 // RecordedViewer answers what the person a stored row records as its author may see now, in one
 // read of VisibleProjectsSQL: the person a user author names, or a session author's owner, read as
-// that person's credential naming no list (their member kind and every project access names them
-// on, restricted or full, as Resolve reads them). It is not Resolve, which takes the request's own
-// caller with its credential: it is the viewer refs.Reader resolves the short ids of a stored text
-// for, at a write and at every rebuild of that text alike (refs.Reader.seenBy), so it reads no
-// credential and sees no more than the person does. An author that records no person sees what a
-// credential naming nobody sees.
+// that person at a browser (their member kind and every project access names them on, restricted
+// or full, as Resolve reads them, and no credential's list). It is not Resolve, which takes the
+// request's own caller with its credential: it is the viewer refs.Reader resolves the short ids of
+// a stored text for, at a write and at every rebuild of that text alike (refs.Reader.seenBy), so it
+// reads no credential and sees no more than the person does. A session author, and a user author
+// that acted through a token (Act), are read as their person too, not as an agent credential
+// naming no list, which sees no private project: the row stores no credential a rebuild could read
+// again, and such a credential would never resolve a short id of a private project's nodes for an
+// agent of a person on it, nor keep, at a rebuild, an edge resolved while the project was public.
+// A reader still sees a reference only through its own visibility. An author that records no
+// person sees what a credential naming nobody sees: the public projects.
 func RecordedViewer(ctx context.Context, q Querier, recorded model.Actor) (model.Viewer, error) {
 	login := ""
 	switch {
@@ -494,9 +528,8 @@ func RecordedViewer(ctx context.Context, q Querier, recorded model.Actor) (model
 	if recorded.Kind == "session" {
 		viewer.Session = recorded.ID
 	}
-	agent := recorded.Kind != "user" || recorded.Act != nil
 	var held bool
-	if err := q.QueryRow(ctx, VisibleProjectsSQL(), person, false, agent, []string(nil)).
+	if err := q.QueryRow(ctx, VisibleProjectsSQL(), person, false, false, []string(nil)).
 		Scan(&viewer.Sees, &viewer.Restricted, &viewer.AnyPrivate, &held); err != nil {
 		return model.Viewer{}, fmt.Errorf("resolve what a recorded author sees: %w", err)
 	}

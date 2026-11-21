@@ -51,40 +51,68 @@ func TestTheRunbookPassesNoBearerTokenOnACommandLine(t *testing.T) {
 	}
 }
 
-// runbookPsqlCall is a psql call of a runbook page, and the password variable a PGPASSWORD before
-// it names, if any, and the URL variable it is given.
-var runbookPsqlCall = regexp.MustCompile(`(PGPASSWORD="\$([A-Z]+)_PGPASSWORD" )?psql "\$([A-Z_]+)"`)
+// runbookPsqlCall is the one form a psql call of a runbook page takes: the password variable a
+// PGPASSWORD before it names, and the URL variable it is given.
+var runbookPsqlCall = regexp.MustCompile(`PGPASSWORD="\$([A-Z]+)_PGPASSWORD" psql "\$([A-Z_]+)"`)
+
+// psqlCommand is psql named as a command, in any form: given a variable quoted or not, a URL or a
+// keyword/value string written out, or nothing. psql_url and DISPATCH_PSQL_URL are other words.
+var psqlCommand = regexp.MustCompile(`\bpsql\b`)
+
+// runbookPsqlPages are the pages whose psql calls TestTheRunbookPassesNoDatabasePasswordOnACommandLine
+// holds to runbookPsqlCall: the runbook's two pages, the store README, the delivery audit's and the
+// comment-delivery run's (scripts/dispatch).
+var runbookPsqlPages = append(append([]string{}, runbookPaths...), "../store/README.md", "../deliveryaudit/README.md",
+	"../../../../../scripts/dispatch/README.md")
 
 // TestTheRunbookPassesNoDatabasePasswordOnACommandLine: a database URL that holds its password,
 // given to psql as an argument, sits in /proc/<pid>/cmdline while the call runs, which every user
-// of the box can read. So every psql call of the runbook's two pages and of the store README is
-// given its database's password-free URL, DISPATCH_PSQL_URL or BROKER_PSQL_URL, and that
-// database's password in PGPASSWORD, which the environment carries rather than the command line;
-// and the step that makes them (Signing people in) takes the password out of each server's URL,
-// in its user info and in a password parameter, with the pool_ parameters libpq refuses, keeps
-// every other parameter, and reads a password the environment does not already hold from its
-// input.
+// of the box can read. So every psql command in a fenced block of runbookPsqlPages is given its
+// database's password-free URL, DISPATCH_PSQL_URL or BROKER_PSQL_URL, and that database's password
+// in PGPASSWORD, which the environment carries rather than the command line: a psql named in any
+// other form - a variable unquoted, a URL or a keyword/value string written out - fails. And the
+// step that makes them (Signing people in) takes the password out of each server's URL, in its
+// user info and in a password parameter, with the pool_ parameters libpq refuses, keeps every
+// other parameter, reads a password the environment does not already hold from its input, and
+// refuses, making no URL, a server's connection string whose password it cannot take out
+// (psqlURLRows).
 //
 // Controls: the pages as they stood at 697b987b46 (psql "$DATABASE_URL" with the password in the
-// URL); the step's sed without its user-info arm (the URL keeps the password).
+// URL); the step's sed without its user-info arm (the URL keeps the password); the delivery audit's
+// README and the comment-delivery run's as they stood before this row named them (psql
+// "$DATABASE_URL", twice each); the step as it stood at 74a730474c, without its two refusals (the
+// keyword/value string and the unencoded / keep their passwords).
 func TestTheRunbookPassesNoDatabasePasswordOnACommandLine(t *testing.T) {
 	calls := 0
-	for _, path := range append(append([]string{}, runbookPaths...), "../store/README.md") {
+	for _, path := range runbookPsqlPages {
 		text, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
 		}
+		fenced := false
 		for n, line := range strings.Split(string(text), "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "```") {
+				fenced = !fenced
+				continue
+			}
+			if !fenced {
+				continue
+			}
+			commands := len(psqlCommand.FindAllStringIndex(line, -1))
+			calls += commands
+			sound := 0
 			for _, call := range runbookPsqlCall.FindAllStringSubmatch(line, -1) {
-				calls++
-				if call[1] == "" || call[3] != call[2]+"_PSQL_URL" {
-					t.Errorf("%s:%d gives psql %q; want $DISPATCH_PSQL_URL with PGPASSWORD=\"$DISPATCH_PGPASSWORD\" or $BROKER_PSQL_URL with PGPASSWORD=\"$BROKER_PGPASSWORD\"", path, n+1, call[0])
+				if call[2] == call[1]+"_PSQL_URL" && (call[1] == "DISPATCH" || call[1] == "BROKER") {
+					sound++
 				}
+			}
+			if sound != commands {
+				t.Errorf("%s:%d names psql %d time(s), %d of them as PGPASSWORD=\"$DISPATCH_PGPASSWORD\" psql \"$DISPATCH_PSQL_URL\" or PGPASSWORD=\"$BROKER_PGPASSWORD\" psql \"$BROKER_PSQL_URL\"; want every one in that form: %s", path, n+1, commands, sound, strings.TrimSpace(line))
 			}
 		}
 	}
 	if calls == 0 {
-		t.Fatal("UNKNOWN: the runbook's pages and the store README hold no psql call, so nothing was checked")
+		t.Fatal("UNKNOWN: the runbook's pages, the store README and the delivery audit's README hold no psql command in a fenced block, so nothing was checked")
 	}
 
 	if _, err := exec.LookPath("bash"); err != nil {
@@ -97,17 +125,33 @@ func TestTheRunbookPassesNoDatabasePasswordOnACommandLine(t *testing.T) {
 	if err := os.WriteFile(script, []byte(step+"\nprintf '%s\\n' \"$DISPATCH_PSQL_URL\" \"$BROKER_PSQL_URL\" \"$DISPATCH_PGPASSWORD\" \"$BROKER_PGPASSWORD\" >\"$OUT\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// runStep runs the step with env after the test's own environment, less any password the
+	// test's environment holds, and answers the four values it made, one per line, and what it
+	// printed.
+	runStep := func(t *testing.T, input string, env ...string) ([]string, string) {
+		t.Helper()
+		command := exec.Command("bash", script)
+		command.Env = append(append(slices.DeleteFunc(os.Environ(), func(v string) bool {
+			return strings.HasPrefix(v, "DISPATCH_PGPASSWORD=") || strings.HasPrefix(v, "BROKER_PGPASSWORD=")
+		}), "OUT="+out), env...)
+		command.Stdin = strings.NewReader(input)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("the URL step: %v\n%s", err, output)
+		}
+		got, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Split(strings.TrimSuffix(string(got), "\n"), "\n"), string(output)
+	}
 	// Each server URL carries a password in its user part, and Dispatch's in a password= parameter
 	// too, as an operator's URL can; url.UserPassword writes the user part.
 	dispatchURL := url.URL{Scheme: "postgres", User: url.UserPassword("dispatch", "d-secret"), Host: "db.example:5432",
 		Path: "/dispatch", RawQuery: "sslmode=require&password=q-secret"}
 	brokerURL := url.URL{Scheme: "postgres", User: url.UserPassword("broker", "b-secret"), Host: "db.example:5432",
 		Path: "/broker", RawQuery: "pool_max_conns=8&sslmode=disable"}
-	urls := []string{
-		"DATABASE_URL=" + dispatchURL.String(),
-		"BROKER_DATABASE_URL=" + brokerURL.String(),
-		"OUT=" + out,
-	}
+	urls := []string{"DATABASE_URL=" + dispatchURL.String(), "BROKER_DATABASE_URL=" + brokerURL.String()}
 	for _, test := range []struct {
 		name, input string
 		env         []string
@@ -119,29 +163,58 @@ func TestTheRunbookPassesNoDatabasePasswordOnACommandLine(t *testing.T) {
 			[]string{"postgres://dispatch@db.example:5432/dispatch?sslmode=require", "postgres://broker@db.example:5432/broker?sslmode=disable", "from-the-environment", ""}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			command := exec.Command("bash", script)
-			command.Env = append(append(slices.DeleteFunc(os.Environ(), func(v string) bool {
-				return strings.HasPrefix(v, "DISPATCH_PGPASSWORD=") || strings.HasPrefix(v, "BROKER_PGPASSWORD=")
-			}), urls...), test.env...)
-			command.Stdin = strings.NewReader(test.input)
-			if output, err := command.CombinedOutput(); err != nil {
-				t.Fatalf("the URL step: %v\n%s", err, output)
-			}
-			got, err := os.ReadFile(out)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if lines := strings.Split(strings.TrimSuffix(string(got), "\n"), "\n"); !slices.Equal(lines, test.want) {
+			if lines, _ := runStep(t, test.input, append(append([]string{}, urls...), test.env...)...); !slices.Equal(lines, test.want) {
 				t.Errorf("the URL step made %q; want %q, no URL holding a password", lines, test.want)
+			}
+		})
+	}
+	for _, row := range psqlURLRows {
+		t.Run(row.name, func(t *testing.T) {
+			lines, output := runStep(t, "", "DATABASE_URL="+row.server, "BROKER_DATABASE_URL="+brokerURL.String(),
+				"DISPATCH_PGPASSWORD=", "BROKER_PGPASSWORD=")
+			if lines[0] != row.want {
+				t.Errorf("the URL step made %q of %q; want %q", lines[0], row.server, row.want)
+			}
+			if strings.Contains(lines[0], row.password) {
+				t.Errorf("the URL step's URL %q of %q still holds its password %q", lines[0], row.server, row.password)
+			}
+			if row.refusal != "" && !strings.Contains(output, row.refusal) {
+				t.Errorf("the URL step printed %q for %q; want its refusal, %q", output, row.server, row.refusal)
+			}
+			if row.refusal == "" && strings.Contains(output, "psql_url: refused") {
+				t.Errorf("the URL step refused %q: %q", row.server, output)
 			}
 		})
 	}
 }
 
-// runbookBlock is one ```sh block of the runbook: the SQL statements of its psql heredocs, in
-// order, each without its closing semicolon and with its psql variables (:'name') turned into
-// named placeholders (@name); its other lines, the commands, as written; and every line of the
-// block as it stands, for a test that runs the block itself.
+// psqlURLRows are the server connection strings the runbook's URL step is run on, each holding the
+// password password, and the URL it must make of each, empty for one it refuses with refusal. A
+// password in the query placed first, last or alone, and one percent-encoded in the user part, are
+// taken out; a keyword/value string and a user part holding an unencoded / (which libpq and
+// Dispatch's own server read as the end of the host) are refused, so the password is never handed
+// to psql. url.UserPassword writes the encoded user part; the unencoded one, which no url.URL
+// writes, is joined from its parts.
+var psqlURLRows = []struct{ name, server, password, want, refusal string }{
+	{"a password parameter first", "postgres://u@h:5432/db?password=p1-secret&sslmode=require", "p1-secret",
+		"postgres://u@h:5432/db?sslmode=require", ""},
+	{"a password parameter last", "postgres://u@h:5432/db?sslmode=require&password=p2-secret", "p2-secret",
+		"postgres://u@h:5432/db?sslmode=require", ""},
+	{"a password parameter alone", "postgres://u@h:5432/db?password=p3-secret", "p3-secret",
+		"postgres://u@h:5432/db", ""},
+	{"a percent-encoded password in the user part",
+		(&url.URL{Scheme: "postgres", User: url.UserPassword("u", "p4/secret"), Host: "h:5432", Path: "/db"}).String(), "p4%2Fsecret",
+		"postgres://u@h:5432/db", ""},
+	{"an unencoded / in the user part", "postgres://u" + ":" + "p5/secret" + "@" + "h:5432/db", "p5/secret",
+		"", "psql_url: refused: the URL's user part holds an unencoded /"},
+	{"a keyword/value string", "host=h user=u password=p6-secret dbname=db", "p6-secret",
+		"", "psql_url: refused: not a postgres:// URL"},
+}
+
+// runbookBlock is one ```sh or ```bash block of the runbook: the SQL statements of its psql
+// heredocs, in order, each without its closing semicolon and with its psql variables (:'name')
+// turned into named placeholders (@name); its other lines, the commands, as written; and every
+// line of the block as it stands, for a test that runs the block itself.
 type runbookBlock struct {
 	statements, commands, lines []string
 }
@@ -149,8 +222,8 @@ type runbookBlock struct {
 // psqlVariable is a psql variable interpolated as a literal, :'name'.
 var psqlVariable = regexp.MustCompile(`:'([a-z_]+)'`)
 
-// runbookBlockAfter is the first ```sh block the runbook gives after the line starting with lead,
-// its lines trimmed.
+// runbookBlockAfter is the first ```sh or ```bash block the runbook gives after the line starting
+// with lead, its lines trimmed.
 func runbookBlockAfter(t *testing.T, lead string) runbookBlock {
 	t.Helper()
 	lines := runbookLines(t)
@@ -165,7 +238,7 @@ func runbookBlockAfter(t *testing.T, lead string) runbookBlock {
 		line = strings.TrimSpace(line)
 		switch {
 		case !fenced:
-			fenced = line == "```sh"
+			fenced = line == "```sh" || line == "```bash"
 		case heredoc && line == "SQL":
 			if len(statement) > 0 {
 				t.Fatalf("the runbook's block after %q ends a heredoc inside a statement: %q", lead, statement)
@@ -192,7 +265,7 @@ func runbookBlockAfter(t *testing.T, lead string) runbookBlock {
 			heredoc = strings.HasSuffix(line, "<<'SQL'") || strings.HasSuffix(line, "<<SQL")
 		}
 	}
-	t.Fatalf("the runbook gives no closed ```sh block after %q", lead)
+	t.Fatalf("the runbook gives no closed ```sh or ```bash block after %q", lead)
 	return block
 }
 

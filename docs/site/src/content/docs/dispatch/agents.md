@@ -406,8 +406,9 @@ that wrote to no project they do not see when either:
 
 Nobody but the session watches it once it has reached a project they do not see: a project its
 listener once listed while the project was private, or one taken from a person tied to it (taken
-off the project's list, out of a group on that list, no longer its owner, or made a restricted
-member at sign-in). The conversation still holds what the session read then.
+off the project's list, out of a group on that list, no longer its owner, the project made
+private, or the person made a restricted member at sign-in or at the hourly check of their
+membership). The conversation still holds what the session read then.
 
 The live view checks this again before each new part of the conversation it shows, so a view of
 a session that another person's token starts acting in, or that writes in a project you do not

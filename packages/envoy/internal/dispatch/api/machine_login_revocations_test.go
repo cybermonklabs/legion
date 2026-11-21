@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -14,7 +15,10 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/wire"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/cipher"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -31,6 +35,85 @@ func removalAged(t *testing.T, database *store.Store, age time.Duration) {
 	`, age.Seconds(), brokerRevocationRetry.Seconds()); err != nil {
 		t.Fatalf("set the owed machine-login revocations' removal %s back: %v", age, err)
 	}
+}
+
+// approveHeldAtBroker sends erin's browser approve of her own machine login, rec-erin, whose
+// lookup the broker answers as hers (erinsOwnLogin), and returns once the broker holds it
+// unanswered. The broker answers it when release is called, which the test's cleanup calls too,
+// and code then receives Dispatch's answer to the approve. The broker answers at once every other
+// approve of rec-erin that reaches it meanwhile.
+func approveHeldAtBroker(t *testing.T, rig *fakeBrokerRig, served http.Handler) (release func(), code <-chan int) {
+	t.Helper()
+	const approve = "POST /v1/credential-requests/rec-erin/approve"
+	rig.bodyByRoute["POST /v1/machine-logins/lookup"] = erinsOwnLogin
+	reached, held := make(chan struct{}), make(chan struct{})
+	var arrivals atomic.Int32
+	rig.beforeAnswer[approve] = func() {
+		if arrivals.Add(1) == 1 {
+			close(reached)
+			<-held
+		}
+	}
+	release = sync.OnceFunc(func() { close(held) })
+	t.Cleanup(release)
+	answered := make(chan int, 1)
+	go func() {
+		answered <- dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin).Code
+	}()
+	select {
+	case <-reached:
+	case early := <-answered:
+		t.Fatalf("erin's approve answered %d before the broker held it; the broker was sent %v", early, rig.routes)
+	}
+	return release, answered
+}
+
+// advisoryLockWaiters is how many sessions of the test's database, its own aside, wait on an
+// advisory lock: a person's approval lock, a project's owner lock, or another.
+func advisoryLockWaiters(t *testing.T, database *store.Store) int {
+	t.Helper()
+	var n int
+	if err := database.Pool.QueryRow(t.Context(), `select count(*) from pg_stat_activity
+		where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&n); err != nil {
+		t.Fatalf("read how many sessions wait on an advisory lock: %v", err)
+	}
+	return n
+}
+
+// answeredOrWaiting returns once answer yields, with what it yielded and answered true, or once a
+// session of the test's database waits on an advisory lock (advisoryLockWaiters), with answered
+// false, and fails the test after 30 s with neither; what names the request answer is for. Its
+// caller decides what an answer before any wait means.
+func answeredOrWaiting[T any](t *testing.T, database *store.Store, answer <-chan T, what string) (early T, answered bool) {
+	t.Helper()
+	for giveUp := time.Now().Add(30 * time.Second); advisoryLockWaiters(t, database) == 0; time.Sleep(20 * time.Millisecond) {
+		select {
+		case early = <-answer:
+			return early, true
+		default:
+			if time.Now().After(giveUp) {
+				t.Fatalf("%s neither answered nor waited on a lock within 30 s", what)
+			}
+		}
+	}
+	return early, false
+}
+
+// holdOwnerLock begins a transaction of the test's database that holds project key's owner lock,
+// as another write of the project's access holds it, until the row commits or rolls it back; the
+// test's cleanup rolls it back.
+func holdOwnerLock(t *testing.T, database *store.Store, key string) pgx.Tx {
+	t.Helper()
+	ctx := t.Context()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	if err := store.LockOwner(ctx, tx, store.ProjectOwner(key)); err != nil {
+		t.Fatalf("hold %s's owner lock: %v", key, err)
+	}
+	return tx
 }
 
 // TestAMachineLoginPassRevokesWhatTheRemovalOwesWhileItsClaimMaySend: one owed revocation costs
@@ -95,7 +178,7 @@ func TestARemovalRevokesALoginTheBrokersClockStampsAfterIt(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
-		agentSecretsURL:  rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+		agentSecretsURL:  rig.server.URL,
 	})
 	ctx := t.Context()
 	if created := dispatchRequest(t, served, http.MethodPost, "/api/v1/projects", map[string]string{"key": "OTH", "name": "Another project"}, accessCarol); created.Code != http.StatusCreated {
@@ -130,81 +213,43 @@ func TestARemovalRevokesALoginTheBrokersClockStampsAfterIt(t *testing.T) {
 // after the removal then lists it and revokes it, and the revocation settles once a pass's claim
 // comes machineLoginSettleAfter after the removal.
 //
-// Control: record the revocation without taking the person's approval lock, and the removal commits
-// while the approval is in flight; the first pass that follows lists no login, so the login the
-// approval then mints is not among its revokes, named.
+// Control: access.LockForAccessWrite taking no approval lock for the person a removal takes off,
+// and the removal does not wait for the approval: the record's own try of that lock finds the
+// approval holding it, and the removal answers while the approval is in flight, named; with the
+// record's own lock dropped too, it answers 200 then, named.
 func TestALoginApprovedInFlightAsTheRemovalCommitsIsRevoked(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
-		agentSecretsURL:  rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+		agentSecretsURL:  rig.server.URL,
 	})
 	ctx := t.Context()
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
 	}
-	const (
-		list    = "GET /v1/launcher-credentials"
-		approve = "POST /v1/credential-requests/rec-erin/approve"
-	)
-	rig.bodyByRoute["POST /v1/machine-logins/lookup"] = erinsOwnLogin
+	const list = "GET /v1/launcher-credentials"
 	rig.bodyByRoute[list] = `{"credentials":[]}`
-	reached, release := make(chan struct{}), make(chan struct{})
-	rig.beforeAnswer[approve] = func() {
-		close(reached)
-		<-release
-	}
-	approved := make(chan int, 1)
-	go func() {
-		approved <- dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin).Code
-	}()
-	<-reached
+	release, approved := approveHeldAtBroker(t, rig, served)
 	removed := make(chan int, 1)
 	go func() {
 		removed <- dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice").Code
 	}()
-	waitingOnALock := func() bool {
-		var n int
-		if err := database.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&n); err != nil {
-			t.Fatalf("read whether the removal waits on a lock: %v", err)
-		}
-		return n > 0
-	}
-	removedEarly := 0
-	var firstPass []string
-	passed := false
-	for giveUp := time.Now().Add(30 * time.Second); removedEarly == 0 && !waitingOnALock(); time.Sleep(20 * time.Millisecond) {
-		select {
-		case removedEarly = <-removed:
-			// The removal did not wait: its first pass runs now, before the approval's login exists.
-			registered.revokeBrokerDebts(ctx)
-			firstPass, passed = rig.revokes(), true
-		default:
-			if time.Now().After(giveUp) {
-				t.Fatalf("alice's removal of erin neither finished nor waited on a lock within 30 s")
-			}
-		}
+	if early, answered := answeredOrWaiting(t, database, removed, "alice's removal of erin"); answered {
+		t.Fatalf("alice's removal of erin answered %d while erin's approve was in flight, want it waiting on erin's approval lock", early)
 	}
 	rig.bodyByRoute[list] = `{"credentials":[{"credential_id":"cred-in-flight","host":"erin-desktop","service":null,"subject":null,"approved_by":"erin@other.example","issued_at":"` + time.Now().UTC().Format(time.RFC3339) + `","expires_at":"2026-12-20T00:00:00Z","expired":false}]}`
-	close(release)
+	release()
 	if code := <-approved; code != http.StatusOK {
 		t.Fatalf("erin's approve in flight answered %d, want 200: it was admitted before the removal", code)
 	}
-	if removedEarly == 0 {
-		removedEarly = <-removed
-	}
-	if removedEarly != http.StatusOK {
-		t.Fatalf("alice's removal of erin answered %d, want 200", removedEarly)
+	if code := <-removed; code != http.StatusOK {
+		t.Fatalf("alice's removal of erin answered %d, want 200", code)
 	}
 
-	if !passed {
-		// The removal's first pass, after its commit, which waited for the approval.
-		registered.revokeBrokerDebts(ctx)
-		firstPass = rig.revokes()
-	}
-	if !slices.Contains(firstPass, "POST /v1/launcher-credentials/cred-in-flight/revoke-by-approver") {
-		t.Errorf("the first pass after the removal sent %v; want the login erin's approval in flight minted revoked", firstPass)
+	// The removal's first pass, after its commit, which waited for the approval.
+	registered.revokeBrokerDebts(ctx)
+	if first := rig.revokes(); !slices.Contains(first, "POST /v1/launcher-credentials/cred-in-flight/revoke-by-approver") {
+		t.Errorf("the first pass after the removal sent %v; want the login erin's approval in flight minted revoked", first)
 	}
 	removalAged(t, database, machineLoginSettleAfter)
 	registered.revokeBrokerDebts(ctx)
@@ -229,7 +274,7 @@ func TestAClaimedMachineLoginRevocationPastItsSendWindowSendsNoRevoke(t *testing
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
-		agentSecretsURL:  rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+		agentSecretsURL:  rig.server.URL,
 	})
 	ctx := t.Context()
 	for _, write := range []struct{ method, does string }{{http.MethodPut, "names erin on"}, {http.MethodDelete, "takes erin off"}} {
@@ -278,33 +323,17 @@ func TestALoginTheBrokerCommitsAfterTheRelayTimedOutIsRevoked(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
-		agentSecretsURL:  rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+		agentSecretsURL:  rig.server.URL,
 	})
 	ctx := t.Context()
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
 	}
-	const (
-		list    = "GET /v1/launcher-credentials"
-		approve = "POST /v1/credential-requests/rec-erin/approve"
-	)
-	rig.bodyByRoute["POST /v1/machine-logins/lookup"] = erinsOwnLogin
+	const list = "GET /v1/launcher-credentials"
 	rig.bodyByRoute[list] = `{"credentials":[]}`
-	reached, release := make(chan struct{}), make(chan struct{})
-	rig.beforeAnswer[approve] = func() {
-		close(reached)
-		<-release
-	}
-	commit := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(commit)
-
-	if approved := dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin); approved.Code == http.StatusOK {
-		t.Fatalf("erin's approve answered 200 while the broker held it, want Dispatch's call to give up: %s", approved.Body.String())
-	}
-	select {
-	case <-reached:
-	default:
-		t.Fatalf("erin's approve never reached the broker; the broker was sent %v", rig.routes)
+	commit, approved := approveHeldAtBroker(t, rig, served)
+	if code := <-approved; code == http.StatusOK {
+		t.Fatalf("erin's approve answered 200 while the broker held it, want Dispatch's call to give up")
 	}
 	if removed := dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); removed.Code != http.StatusOK {
 		t.Fatalf("alice's removal of erin after the relay gave up answered %d %s, want 200", removed.Code, removed.Body.String())
@@ -341,7 +370,7 @@ func TestAPassBeforeTheBrokersDecisionBoundLeavesTheRevocationOwed(t *testing.T)
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
-		agentSecretsURL:  rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+		agentSecretsURL:  rig.server.URL,
 	})
 	ctx := t.Context()
 	for _, write := range []struct{ method, does string }{{http.MethodPut, "names erin on"}, {http.MethodDelete, "takes erin off"}} {
@@ -389,23 +418,24 @@ func TestAPassBeforeTheBrokersDecisionBoundLeavesTheRevocationOwed(t *testing.T)
 // a pass settles that revocation, and alice puts erin back. erin's browser approve of a new machine
 // login reaches the broker, which has not answered it when an operator runs the block: the block
 // takes erin's approval lock as a removal does, so it waits for the approve, and records the debt
-// anew with its own moment as its removal. The pass after it lists the login the approve minted and
-// revokes it, and leaves the debt owed until a claim comes machineLoginSettleAfter after the block.
+// anew with its own moment as its removal. A block that commits while the approve is in flight
+// fails the row at once: an approve that read nothing owed just before such a block committed may
+// reach the broker after the block's moment, so its login could commit after a claim that settles
+// the debt. The pass after the block lists the login the approve minted and revokes it, and leaves
+// the debt owed until a claim comes machineLoginSettleAfter after the block.
 //
-// Control: the block as it was, with no approval lock and recorded_at kept, and it commits while
-// the approve is in flight; the pass that follows lists no login and settles the old removal's
-// debt, so the login the approve then mints is never revoked, named.
+// Controls: the block's machine-login statement taking no approval lock (pg_advisory_xact_lock
+// dropped from its select), or that lock under another key than store.LockMachineLoginApprovals',
+// and the block commits while the approve is in flight, named; the block keeping the debt's
+// recorded_at, and the pass at once settles the debt, named.
 func TestAnApproveInFlightDuringTheBrokerRestoredBlockIsRevoked(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
-		agentSecretsURL:  rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+		agentSecretsURL:  rig.server.URL,
 	})
 	ctx := t.Context()
-	const (
-		list    = "GET /v1/launcher-credentials"
-		approve = "POST /v1/credential-requests/rec-erin/approve"
-	)
+	const list = "GET /v1/launcher-credentials"
 	rig.bodyByRoute[list] = `{"credentials":[]}`
 	for _, write := range []struct{ method, does string }{
 		{http.MethodPut, "names erin on"}, {http.MethodDelete, "takes erin off"}, {http.MethodPut, "puts erin back on"},
@@ -430,19 +460,7 @@ func TestAnApproveInFlightDuringTheBrokerRestoredBlockIsRevoked(t *testing.T) {
 		}
 	}
 
-	rig.bodyByRoute["POST /v1/machine-logins/lookup"] = erinsOwnLogin
-	reached, release := make(chan struct{}), make(chan struct{})
-	rig.beforeAnswer[approve] = func() {
-		close(reached)
-		<-release
-	}
-	commit := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(commit)
-	approved := make(chan int, 1)
-	go func() {
-		approved <- dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin).Code
-	}()
-	<-reached
+	commit, approved := approveHeldAtBroker(t, rig, served)
 
 	block := runbookBlockAfter(t, brokerRestoredLead)
 	if len(block.statements) < 2 || block.statements[0] != "begin" || block.statements[len(block.statements)-1] != "commit" {
@@ -466,38 +484,16 @@ func TestAnApproveInFlightDuringTheBrokerRestoredBlockIsRevoked(t *testing.T) {
 			return tx.Commit(background)
 		}()
 	}()
-	waitingOnALock := func() bool {
-		var n int
-		if err := database.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&n); err != nil {
-			t.Fatalf("read whether the block waits on a lock: %v", err)
-		}
-		return n > 0
-	}
-	finishedEarly, early := false, error(nil)
-	for giveUp := time.Now().Add(30 * time.Second); !finishedEarly && !waitingOnALock(); time.Sleep(20 * time.Millisecond) {
-		select {
-		case early = <-restored:
-			// The block did not wait: a pass now finds no login of erin's.
-			finishedEarly = true
-			claimable()
-			registered.revokeBrokerDebts(ctx)
-		default:
-			if time.Now().After(giveUp) {
-				t.Fatalf("the runbook's block neither finished nor waited on a lock within 30 s")
-			}
-		}
+	if early, answered := answeredOrWaiting(t, database, restored, "the runbook's block"); answered {
+		t.Fatalf("the runbook's block ended (error %v) while erin's approve was in flight, want it to wait on erin's approval lock", early)
 	}
 	rig.bodyByRoute[list] = erinsLoginListed("cred-in-flight")
 	commit()
 	if code := <-approved; code != http.StatusOK {
 		t.Fatalf("erin's approve in flight answered %d, want 200: it was admitted before the block", code)
 	}
-	if !finishedEarly {
-		early = <-restored
-	}
-	if early != nil {
-		t.Fatalf("the runbook's block: %v", early)
+	if err := <-restored; err != nil {
+		t.Fatalf("the runbook's block: %v", err)
 	}
 
 	claimable()
@@ -523,35 +519,26 @@ func TestASecondApproveOfThePersonWhileOneIsInFlightIsRefused(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	served, _, _ := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
-		agentSecretsURL:  rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+		agentSecretsURL:  rig.server.URL,
 	})
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
 	}
 	const approve = "POST /v1/credential-requests/rec-erin/approve"
-	rig.bodyByRoute["POST /v1/machine-logins/lookup"] = erinsOwnLogin
-	reached, release := make(chan struct{}), make(chan struct{})
-	var arrivals atomic.Int32
-	rig.beforeAnswer[approve] = func() {
-		if arrivals.Add(1) == 1 {
-			close(reached)
-			<-release
-		}
-	}
-	answer := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(answer)
-	first := make(chan int, 1)
-	go func() {
-		first <- dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin).Code
-	}()
-	<-reached
+	answer, first := approveHeldAtBroker(t, rig, served)
 
 	second := dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin)
 	if second.Code != http.StatusConflict || !strings.Contains(second.Body.String(), `"code":"MACHINE_LOGIN_APPROVAL_IN_FLIGHT"`) {
 		t.Errorf("erin's second approve while her first is at the broker = %d %s, want 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT", second.Code, second.Body.String())
 	}
-	if got := arrivals.Load(); got != 1 {
-		t.Errorf("the broker was sent %d approves of erin's, want the first alone", got)
+	sent := 0
+	for _, route := range rig.routes {
+		if route == approve {
+			sent++
+		}
+	}
+	if sent != 1 {
+		t.Errorf("the broker was sent %d approves of erin's, want the first alone", sent)
 	}
 	answer()
 	if code := <-first; code != http.StatusOK {
@@ -566,48 +553,24 @@ func TestASecondApproveOfThePersonWhileOneIsInFlightIsRefused(t *testing.T) {
 // alice's removal of erin from ACC waits for it; alice's addition of carol to ACC's list meanwhile
 // answers 200 without waiting. Once the broker answers, the removal is 200.
 //
-// Control: take the person's approval lock after the project's owner lock (in the record alone), as
-// the head before this row did, and carol's addition waits behind the removal, named.
+// Control: access.LockForAccessWrite taking the approval lock of the person it removes after the
+// project's owner lock, and carol's addition waits behind the removal, named.
 func TestARemovalWaitingOnAnApprovalHoldsUpNoOtherWriteOfTheProject(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	served, database, _ := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
-		agentSecretsURL:  rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+		agentSecretsURL:  rig.server.URL,
 	})
-	ctx := t.Context()
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
 	}
-	const approve = "POST /v1/credential-requests/rec-erin/approve"
-	rig.bodyByRoute["POST /v1/machine-logins/lookup"] = erinsOwnLogin
-	reached, release := make(chan struct{}), make(chan struct{})
-	rig.beforeAnswer[approve] = func() {
-		close(reached)
-		<-release
-	}
-	answer := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(answer)
-	approved := make(chan int, 1)
-	go func() {
-		approved <- dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin).Code
-	}()
-	<-reached
-	lockWaiters := func() int {
-		var n int
-		if err := database.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&n); err != nil {
-			t.Fatalf("read how many writes wait on a lock: %v", err)
-		}
-		return n
-	}
+	answer, approved := approveHeldAtBroker(t, rig, served)
 	removed := make(chan int, 1)
 	go func() {
 		removed <- dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice").Code
 	}()
-	for giveUp := time.Now().Add(30 * time.Second); lockWaiters() == 0; time.Sleep(20 * time.Millisecond) {
-		if time.Now().After(giveUp) {
-			t.Fatalf("alice's removal of erin did not wait on erin's approval within 30 s")
-		}
+	if early, answered := answeredOrWaiting(t, database, removed, "alice's removal of erin"); answered {
+		t.Fatalf("alice's removal of erin answered %d while erin's approve was in flight, want it waiting on erin's approval lock", early)
 	}
 
 	added := make(chan int, 1)
@@ -619,7 +582,7 @@ func TestARemovalWaitingOnAnApprovalHoldsUpNoOtherWriteOfTheProject(t *testing.T
 		select {
 		case addedCode = <-added:
 		default:
-			if waiting := lockWaiters(); waiting > 1 {
+			if waiting := advisoryLockWaiters(t, database); waiting > 1 {
 				t.Errorf("alice's addition of carol to ACC waits on a lock behind erin's removal (%d writes waiting), want it answered while the removal waits on erin's approval", waiting)
 				answer()
 				addedCode = <-added
@@ -637,5 +600,249 @@ func TestARemovalWaitingOnAnApprovalHoldsUpNoOtherWriteOfTheProject(t *testing.T
 	}
 	if code := <-removed; code != http.StatusOK {
 		t.Errorf("alice's removal of erin answered %d once erin's approval ended, want 200", code)
+	}
+}
+
+// TestARefusedRemovalHoldsUpNoApproveOfThePerson: a removal takes the approval lock of the person
+// it takes off the list before the project's owner lock, and that person's approve does not wait
+// for the lock: it is 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT while another transaction holds it. So
+// a removal the caller may not make must take no lock before the caller is known to own the
+// project, or anyone who sees the project could keep a person's approves refused by sending such
+// removals. carol, a full member who sees ACC and does not own it, sends the removal of erin from
+// ACC while another write of ACC's access holds its owner lock: she is answered 403
+// PROJECT_OWNER_REQUIRED without waiting on a lock, and erin's approve of her own machine login
+// meanwhile is 200.
+//
+// Control: ownerWrite taking access.LockForAccessWrite's locks before it reads the owner, as the
+// head before this row did, and carol's removal holds erin's approval lock while it waits on ACC's
+// owner lock, so erin's approve is 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT, named.
+func TestARefusedRemovalHoldsUpNoApproveOfThePerson(t *testing.T) {
+	rig := newFakeBrokerRig(t)
+	served, database, _ := newRegisteredAccessServer(t, testServerOptions{
+		admitsRestricted: true,
+		agentSecretsURL:  rig.server.URL,
+	})
+	ctx := t.Context()
+	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
+		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	rig.bodyByRoute["POST /v1/machine-logins/lookup"] = erinsOwnLogin
+	// Another write of ACC's access, holding ACC's owner lock until the row releases it.
+	other := holdOwnerLock(t, database, "ACC")
+
+	removal := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		removal <- dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, accessCarol)
+	}()
+	// The removal is refused before it takes any lock, so its answer before any wait is this row's
+	// own case.
+	refused, answered := answeredOrWaiting(t, database, removal, "carol's removal of erin from ACC")
+	approved := dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin)
+	if approved.Code != http.StatusOK {
+		t.Errorf("erin's approve while carol's removal of her, which carol may not make, is in flight = %d %s, want 200", approved.Code, approved.Body.String())
+	}
+	if err := other.Rollback(ctx); err != nil {
+		t.Fatalf("release ACC's owner lock: %v", err)
+	}
+	if !answered {
+		refused = <-removal
+	}
+	wantRefusal(t, refused, http.StatusForbidden, "PROJECT_OWNER_REQUIRED", accessCarol, "DELETE erin from ACC's list")
+}
+
+// TestAnOwnerWhoLosesTheProjectBeforeTheLocksIsRefused: ownerWrite refuses a caller who does not own
+// the project by a read that takes no lock (TestARefusedRemovalHoldsUpNoApproveOfThePerson), and
+// that read only refuses: the owner it reads under the project's owner lock decides. alice, ACC's
+// owner as the read with no lock finds her, sends the removal of erin from ACC while another write
+// of ACC's access, holding ACC's owner lock, gives ACC to carol; the removal waits on that lock and,
+// once the transfer commits, is 403 PROJECT_OWNER_REQUIRED, and erin stays on the list and owes
+// nothing.
+//
+// Control: ownerWrite not checking the owner LockForAccessWrite read under the locks, and alice's
+// removal answers 200 and takes erin off a project that is no longer hers, named.
+func TestAnOwnerWhoLosesTheProjectBeforeTheLocksIsRefused(t *testing.T) {
+	rig := newFakeBrokerRig(t)
+	served, database, _ := newRegisteredAccessServer(t, testServerOptions{
+		admitsRestricted: true,
+		agentSecretsURL:  rig.server.URL,
+	})
+	ctx := t.Context()
+	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
+		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	// Another write of ACC's access, which gives ACC to carol under ACC's owner lock and commits
+	// when the row says.
+	transfer := holdOwnerLock(t, database, "ACC")
+	if _, err := transfer.Exec(ctx, `update projects set owner = $1 where key = 'ACC'`, accessCarol); err != nil {
+		t.Fatalf("give ACC to carol: %v", err)
+	}
+
+	removal := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		removal <- dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice")
+	}()
+	if early, answered := answeredOrWaiting(t, database, removal, "alice's removal of erin"); answered {
+		t.Fatalf("alice's removal of erin answered %d %s before the transfer committed, want it waiting on ACC's owner lock", early.Code, early.Body.String())
+	}
+	if err := transfer.Commit(ctx); err != nil {
+		t.Fatalf("commit the transfer of ACC to carol: %v", err)
+	}
+	refused := <-removal
+	if refused.Code != http.StatusForbidden || !strings.Contains(refused.Body.String(), `"code":"PROJECT_OWNER_REQUIRED"`) {
+		t.Errorf("alice's removal of erin, ACC given to carol while it waited on ACC's owner lock = %d %s, want 403 PROJECT_OWNER_REQUIRED", refused.Code, refused.Body.String())
+	}
+	if people := readAccess(t, served, accessCarol).People; !slices.Contains(people, accessErin) {
+		t.Errorf("ACC's list after alice's refused removal names %v, want erin still on it", people)
+	}
+	if owed, _, err := store.NewMachineLoginRevocations(database.Pool).Owing(ctx, accessErin); err != nil || owed {
+		t.Errorf("the revocation of erin's machine logins is owed %t (%v) after alice's refused removal, want nothing owed", owed, err)
+	}
+}
+
+// ownCreated has carol create project OWN, which she then owns, and whose list names nobody.
+func ownCreated(t *testing.T, served http.Handler) {
+	t.Helper()
+	if created := dispatchRequest(t, served, http.MethodPost, "/api/v1/projects", map[string]string{"key": "OWN", "name": "Carol's own project"}, accessCarol); created.Code != http.StatusCreated {
+		t.Fatalf("carol creates OWN: status=%d body=%s", created.Code, created.Body.String())
+	}
+}
+
+// TestARemovalOfAPersonTheListDoesNotNameHoldsUpNoApproveOfThePerson: a removal takes the approval
+// lock of the person it takes off only where it may owe the revocation of their machine logins, a
+// read that takes no lock finding that the list names them and that they are a restricted member,
+// since that person's approve does not wait for the lock: it is 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT
+// while another transaction holds it. Any full member owns a project they create, so otherwise any
+// of them could keep a person's approves refused by removing that person from their own project's
+// list, which records nothing. carol creates OWN, whose list does not name erin, and sends the
+// removal of erin from OWN while another write of OWN's access holds its owner lock: the removal
+// waits on that lock, erin's approve of her own machine login meanwhile is 200, and the removal
+// then answers 200 and owes nothing.
+//
+// Control: access.LockForAccessWrite taking the approval lock of the person a removal takes off
+// whatever that read finds, as the head before this row did, and carol's removal holds erin's
+// approval lock while it waits on OWN's owner lock, so erin's approve is 409
+// MACHINE_LOGIN_APPROVAL_IN_FLIGHT, named.
+func TestARemovalOfAPersonTheListDoesNotNameHoldsUpNoApproveOfThePerson(t *testing.T) {
+	rig := newFakeBrokerRig(t)
+	served, database, _ := newRegisteredAccessServer(t, testServerOptions{
+		admitsRestricted: true,
+		agentSecretsURL:  rig.server.URL,
+	})
+	ctx := t.Context()
+	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
+		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	ownCreated(t, served)
+	rig.bodyByRoute["POST /v1/machine-logins/lookup"] = erinsOwnLogin
+	// Another write of OWN's access, holding OWN's owner lock until the row releases it.
+	other := holdOwnerLock(t, database, "OWN")
+
+	removal := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		removal <- dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/OWN/access/people/"+accessErin, nil, accessCarol)
+	}()
+	if early, answered := answeredOrWaiting(t, database, removal, "carol's removal of erin from OWN"); answered {
+		t.Fatalf("carol's removal of erin from OWN answered %d %s while another write held OWN's owner lock, want it waiting on that lock", early.Code, early.Body.String())
+	}
+	approved := dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin)
+	if approved.Code != http.StatusOK {
+		t.Errorf("erin's approve while carol's removal of her from OWN, whose list does not name her, waits = %d %s, want 200", approved.Code, approved.Body.String())
+	}
+	if err := other.Rollback(ctx); err != nil {
+		t.Fatalf("release OWN's owner lock: %v", err)
+	}
+	if removed := <-removal; removed.Code != http.StatusOK {
+		t.Errorf("carol's removal of erin from OWN once its owner lock was released = %d %s, want 200", removed.Code, removed.Body.String())
+	}
+	if owed, _, err := store.NewMachineLoginRevocations(database.Pool).Owing(ctx, accessErin); err != nil || owed {
+		t.Errorf("the revocation of erin's machine logins is owed %t (%v) after a removal from a list that does not name her, want nothing owed", owed, err)
+	}
+}
+
+// TestARemovalThatFindsThePersonListedOnlyUnderItsLocksIsRefusedWhileTheirApproveIsInFlight: a
+// removal whose read that takes no lock finds the person off the list takes no approval lock of
+// theirs (TestARemovalOfAPersonTheListDoesNotNameHoldsUpNoApproveOfThePerson); but an addition
+// that commits while it waits on the project's owner lock puts them on it, and the removal, which
+// decides by its reads under that lock, then takes them off and owes the revocation of their
+// machine logins. Its record takes their approval lock without waiting
+// (store.RecordMachineLoginRevocation), since the removal holds the project's lock: while an
+// approve of theirs is in flight, the removal is 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT and changes
+// nothing, and once the approve is answered the owner removes them again and owes it. erin's
+// approve of her own machine login reaches the broker, which has not answered it; carol's addition
+// of erin to OWN, in a transaction that holds OWN's owner lock, has not committed when carol's
+// removal of erin from OWN is sent, and the removal waits on that lock; once the addition commits,
+// the removal is 409, OWN's list names erin, and nothing is owed.
+//
+// Control: store.RecordMachineLoginRevocation taking no lock, and carol's removal records while
+// erin's approve is in flight and answers 200, named.
+func TestARemovalThatFindsThePersonListedOnlyUnderItsLocksIsRefusedWhileTheirApproveIsInFlight(t *testing.T) {
+	rig := newFakeBrokerRig(t)
+	served, database, _ := newRegisteredAccessServer(t, testServerOptions{
+		admitsRestricted: true,
+		agentSecretsURL:  rig.server.URL,
+	})
+	ctx := t.Context()
+	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
+		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	ownCreated(t, served)
+	release, approved := approveHeldAtBroker(t, rig, served)
+	// carol's addition of erin to OWN, holding OWN's owner lock until the row commits it.
+	addition := holdOwnerLock(t, database, "OWN")
+	if _, _, err := access.AddPrincipal(ctx, addition, events.NewBroker(), "OWN", access.PrincipalPerson, accessErin, model.Actor{Kind: "user", ID: accessCarol}); err != nil {
+		t.Fatalf("carol's addition of erin to OWN: %v", err)
+	}
+	remove := func() <-chan *httptest.ResponseRecorder {
+		removal := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			removal <- dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/OWN/access/people/"+accessErin, nil, accessCarol)
+		}()
+		return removal
+	}
+	owing := func() bool {
+		t.Helper()
+		owed, _, err := store.NewMachineLoginRevocations(database.Pool).Owing(ctx, accessErin)
+		if err != nil {
+			t.Fatalf("read whether the revocation of erin's machine logins is owed: %v", err)
+		}
+		return owed
+	}
+
+	removal := remove()
+	if early, answered := answeredOrWaiting(t, database, removal, "carol's removal of erin from OWN"); answered {
+		t.Fatalf("carol's removal of erin from OWN answered %d %s before her addition of erin committed, want it waiting on OWN's owner lock", early.Code, early.Body.String())
+	}
+	if err := addition.Commit(ctx); err != nil {
+		t.Fatalf("commit carol's addition of erin to OWN: %v", err)
+	}
+	var refused *httptest.ResponseRecorder
+	select {
+	case refused = <-removal:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("carol's removal of erin from OWN did not answer within 30 s of the addition's commit, with erin's approve in flight: it waits on erin's approval lock under OWN's owner lock")
+	}
+	wantRefusal(t, refused, http.StatusConflict, "MACHINE_LOGIN_APPROVAL_IN_FLIGHT", accessCarol, "DELETE erin from OWN's list, which names her only under its locks, while her approve is in flight")
+	// The record's try of the lock fails behind any holder of it: an approve in flight, another
+	// owner's removal of the person or the runbook's restore block, so the answer names no one cause.
+	if body := refused.Body.String(); !strings.Contains(body, "an approval or another removal of this person is in progress") {
+		t.Errorf("carol's refused removal answers %s; want it to say an approval or another removal of this person is in progress", body)
+	}
+	listed := dispatchRequest(t, served, http.MethodGet, "/api/v1/projects/OWN/access", nil, accessCarol)
+	if people := decodeBody[model.ProjectAccess](t, listed).People; !slices.Contains(people, accessErin) {
+		t.Errorf("OWN's list after carol's refused removal names %v, want erin still on it", people)
+	}
+	if owing() {
+		t.Errorf("the revocation of erin's machine logins is owed after carol's refused removal, want nothing owed")
+	}
+
+	release()
+	if code := <-approved; code != http.StatusOK {
+		t.Fatalf("erin's approve in flight answered %d, want 200", code)
+	}
+	if again := <-remove(); again.Code != http.StatusOK {
+		t.Fatalf("carol's removal of erin from OWN once erin's approve was answered = %d %s, want 200", again.Code, again.Body.String())
+	}
+	if !owing() {
+		t.Errorf("the revocation of erin's machine logins is not owed after carol took her off OWN, want it owed")
 	}
 }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"log/slog"
 	"slices"
 	"strings"
 
@@ -70,8 +71,18 @@ func (s *server) sessionHiddenFrom(ctx context.Context, reader model.Actor, id s
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return true, nil
 	}
+	return sessionHiddenThrough(ctx, s.deps.Store.Pool, reader, id)
+}
+
+// sessionHiddenThrough is sessionHiddenFrom's read made through q, which a write's read phase
+// makes on the transaction it holds (createStoredMessage): one statement, none for an open reader
+// of a deployment that holds no private project (R9).
+func sessionHiddenThrough(ctx context.Context, q queryer, reader model.Actor, id string) (bool, error) {
+	if viewer := reader.Viewer; viewer != nil && viewer.Open && !viewer.AnyPrivate {
+		return false, nil
+	}
 	var sees bool
-	err := s.deps.Store.Pool.QueryRow(ctx, `select `+access.SessionClause("$1::text", "$2"), id, refs.VisibilityArg(reader)).Scan(&sees)
+	err := q.QueryRow(ctx, `select `+access.SessionClause("$1::text", "$2"), id, refs.VisibilityArg(reader)).Scan(&sees)
 	return !sees, err
 }
 
@@ -80,7 +91,8 @@ func (s *server) sessionHiddenFrom(ctx context.Context, reader model.Actor, id s
 // raw transcript, not one message at a time as the HTTP read filters it. A viewer that is not open
 // reads only a session its own person's credential proved. An open reader of a deployment that
 // holds no private project reads every session and costs no read (R9); a server with no database
-// reads none, failing closed.
+// reads none, failing closed. The rule reads a listener list only from a stored listener answer
+// that has not passed its expires_at, so the answer is refreshed first (refreshRosterForContent).
 func (s *server) sessionContentHiddenFrom(ctx context.Context, reader model.Actor, id string) (bool, error) {
 	if viewer := reader.Viewer; viewer != nil && viewer.Open && !viewer.AnyPrivate {
 		return false, nil
@@ -88,9 +100,23 @@ func (s *server) sessionContentHiddenFrom(ctx context.Context, reader model.Acto
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return true, nil
 	}
+	s.refreshRosterForContent(ctx)
 	var reads bool
 	err := s.deps.Store.Pool.QueryRow(ctx, `select `+access.SessionContentClause("$1::text", "$2"), id, refs.VisibilityArg(reader)).Scan(&reads)
 	return !reads, err
+}
+
+// refreshRosterForContent refreshes the stored listener answer before the session content rule
+// reads it (readRouteRoster: the answer this process and every other keeps for routeRosterTTL,
+// fetched once when it has gone stale), since the rule reads a listener list only from a stored
+// answer that has not passed its expires_at, and judges a session of an expired answer by its ties
+// alone. A refresh that fails leaves the stored answer as it was, expired, so the rule judges by
+// the ties: it fails closed. The live agent view's asks and the document sockets' asks before each
+// batch read through it.
+func (s *server) refreshRosterForContent(ctx context.Context) {
+	if _, err := s.readRouteRoster(ctx); err != nil && ctx.Err() == nil {
+		slog.Warn("dispatch: refresh the listener's sessions before the session content rule reads them; the rule reads an expired answer as no list", "error", err)
+	}
 }
 
 // liveReader resolves what stream's caller sees now (readerFor), for liveReadRefusal.

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -98,11 +99,11 @@ func (s *server) startAgentSubscription(ctx context.Context, stream liveStreamer
 // other viewer, while a project is private, only one whose reach it sees: the projects its listener
 // record lists, or with no list the private projects of the people who proved it, and never one
 // that acted in or reached a project it does not see (access.SessionContentClause). The rule is
-// asked again before each batch of the session's frames goes out (with the reader the view last
-// resolved), and with the reader resolved again on each change of a project's access or of a
-// group the event relay carries, on every heartbeat (accessRecheckEvery) and on each re-arm; a
-// view whose session the caller no longer may read ends (dropped), so its page subscribes again
-// and is answered as above.
+// asked again before the session's replay and before each batch of its frames goes out (with the
+// reader the view last resolved), and with the reader resolved again on each change of a project's
+// access or of a group the event relay carries, on every heartbeat (accessRecheckEvery) and on each
+// re-arm; a view whose session the caller no longer may read ends (dropped), so its page subscribes
+// again and is answered as above.
 func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer, sub, sessionID string) {
 	reader, err := s.readerFor(ctx, stream.Caller())
 	if err != nil {
@@ -175,16 +176,58 @@ func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer
 		}
 		return stream.SendWait(ctx, liveAgentFrame(sub, event, data)) == nil
 	}
+	// stillReads resolves what the caller sees again and asks the rule again
+	// (sessionContentHiddenFrom), and reports whether the view goes on: a session the caller may no
+	// longer read is told nothing more, and the view ends.
+	stillReads := func() bool {
+		resolved, err := s.readerFor(ctx, stream.Caller())
+		if err == nil {
+			reader = resolved
+			hidden, err = s.sessionContentHiddenFrom(ctx, reader, sessionID)
+		}
+		return s.agentViewGoesOn(ctx, stream, sub, hidden, err, stopRelay)
+	}
+	// batchStillReads asks the rule again, with the reader the view last resolved, before the
+	// session's replay and before each batch of its frames goes out. A write that ties the session
+	// to another person (session_owners), records a project it newly wrote in (session_projects) or
+	// one its person lost (session_reached_projects) commits before the session publishes the frame
+	// after it, and may take the session from this caller; the replay, the session's whole history,
+	// arrives up to agentStreamReplayTimeout after the view's first ask. Nothing announced in that
+	// write could order the two: the event relay hears a commit through its LISTEN and its
+	// coalescing window (eventRelayCoalesce), and a frame from NATS wins that race, so only a read
+	// in this process after the commit orders the rule before the frame. It reads nothing where no
+	// such write can change the answer (agentViewReadsWhatever). An open reader resolved while no
+	// project was private reads, before each batch, only whether one is now (one indexed exists):
+	// the switch is an access change the relay announces, but a frame can win that race too, so a
+	// project private now resolves the reader again before the batch goes (stillReads).
+	batchStillReads := func() bool {
+		if agentViewReadsWhatever(reader, sessionID) {
+			return true
+		}
+		if viewer := reader.Viewer; viewer != nil && viewer.Open && !viewer.AnyPrivate {
+			private, err := s.anyProjectPrivateNow(ctx)
+			switch {
+			case err != nil:
+				return s.agentViewGoesOn(ctx, stream, sub, false, err, stopRelay)
+			case !private:
+				return true
+			}
+			return stillReads()
+		}
+		hidden, err := s.sessionContentHiddenFrom(ctx, reader, sessionID)
+		return s.agentViewGoesOn(ctx, stream, sub, hidden, err, stopRelay)
+	}
 	// answer says whether anyone is listening on the session's control subject, which says whether
 	// it can stream at all - every plugin release that can answers, and one that predates the live
-	// view never does - and then sends the history it answered with. A session that answers with
-	// nothing has simply not spoken yet, and a replay that failed for any other reason leaves the
-	// viewer the live conversation with no history behind it.
+	// view never does - and then sends the history it answered with, once the rule is asked again
+	// (batchStillReads). A session that answers with nothing has simply not spoken yet, and a replay
+	// that failed for any other reason leaves the viewer the live conversation with no history
+	// behind it.
 	answer := func(replay agentstream.Frame, responding bool) bool {
 		if !send(agentEventResponder, responderEvent(responding)) {
 			return false
 		}
-		return len(replay) == 0 || send(agentEventReplay, replay)
+		return len(replay) == 0 || (batchStillReads() && send(agentEventReplay, replay))
 	}
 	replay, responding := s.replayAgentStream(ctx, source, sessionID)
 	if !answer(replay, responding) {
@@ -205,33 +248,6 @@ func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer
 		default:
 			return ""
 		}
-	}
-	// stillReads resolves what the caller sees again and asks the rule again
-	// (sessionContentHiddenFrom), and reports whether the view goes on: a session the caller may no
-	// longer read is told nothing more, and the view ends.
-	stillReads := func() bool {
-		resolved, err := s.readerFor(ctx, stream.Caller())
-		if err == nil {
-			reader = resolved
-			hidden, err = s.sessionContentHiddenFrom(ctx, reader, sessionID)
-		}
-		return s.agentViewGoesOn(ctx, stream, sub, hidden, err, stopRelay)
-	}
-	// batchStillReads asks the rule again, with the reader the view last resolved, before each
-	// batch of the session's frames goes out. A write that ties the session to another person
-	// (session_owners), records a project it newly wrote in (session_projects) or one its person
-	// lost (session_reached_projects) commits before the session publishes the frame after it, and
-	// may take the session from this caller. Nothing announced in that write could order the two:
-	// the event relay hears a commit through its LISTEN and its coalescing window
-	// (eventRelayCoalesce), and a frame from NATS wins that race, so only a read in this process
-	// after the commit orders the rule before the frame. It reads nothing where no such write can
-	// change the answer (agentViewReadsWhatever).
-	batchStillReads := func() bool {
-		if agentViewReadsWhatever(reader, sessionID) {
-			return true
-		}
-		hidden, err := s.sessionContentHiddenFrom(ctx, reader, sessionID)
-		return s.agentViewGoesOn(ctx, stream, sub, hidden, err, stopRelay)
 	}
 	rearm := time.NewTicker(s.agentWatchInterval)
 	defer rearm.Stop()
@@ -324,17 +340,27 @@ func (s *server) agentViewGoesOn(ctx context.Context, stream liveStreamer, sub s
 }
 
 // agentViewReadsWhatever reports whether the content rule (access.SessionContentClause) answers
-// reader's view of session the same whatever the session's ties, pairs and reached projects hold,
-// so the re-ask before a batch of its frames reads nothing:
+// reader's view of session the same whatever the database holds, so the re-ask before a batch of
+// its frames reads nothing:
 //
 //   - the server's viewer (All), which the rule passes first;
-//   - the viewer's own session, which the rule passes next;
-//   - an open viewer while no project is private (R9), which the rule passes before it reads a
-//     row. A project made private is an access change, on which the view resolves its reader
-//     again (stillReads), so a later batch reads.
+//   - the viewer's own session, which the rule passes next.
+//
+// An open viewer resolved while no project was private is not one of them: the rule passes it
+// only while that still holds, which the re-ask reads (anyProjectPrivateNow).
 func agentViewReadsWhatever(reader model.Actor, session string) bool {
 	viewer := reader.Viewer
-	return viewer != nil && (viewer.All || (viewer.Session != "" && viewer.Session == session) || (viewer.Open && !viewer.AnyPrivate))
+	return viewer != nil && (viewer.All || (viewer.Session != "" && viewer.Session == session))
+}
+
+// anyProjectPrivateNow reads whether any project is private now (access.AnyProjectPrivate): the
+// agent view's re-ask for an open reader resolved while none was. A server with no database holds
+// no project, so none is private.
+func (s *server) anyProjectPrivateNow(ctx context.Context) (bool, error) {
+	if s.deps.Store == nil || s.deps.Store.Pool == nil {
+		return false, nil
+	}
+	return access.AnyProjectPrivate(ctx, s.deps.Store.Pool)
 }
 
 // endAgentAfterFailure ends a view whose relay call failed with an ended frame (dropped), so its

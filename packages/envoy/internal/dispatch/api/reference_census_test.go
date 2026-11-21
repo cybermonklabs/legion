@@ -237,14 +237,23 @@ func schemaReferenceColumns(t *testing.T, fixture fragmentCensusFixture) []strin
 	return columns
 }
 
-// crossReferences are the persons the cross seed (seedCrossReferences) names from each project's
-// rows, beside fragmentCensusFixture's own objects.
+// crossReferences are the persons, the role and the repository the cross seed
+// (seedCrossReferences) names from each project's rows, beside fragmentCensusFixture's own objects.
 type crossReferences struct {
 	// publicPerson is a person no list of PUB's names: bob, PRIV's restricted member. Every walker
 	// that sees PUB is open and reads every person, so he is hidden from none of them.
 	publicPerson string
 	// privatePerson is a person whom a reader that sees PRIV alone does not see: dana.
 	privatePerson string
+	// privateRole is a Legion role of PRIV (contracts.RoleProject reads PRIV off its name), which
+	// PUB's comment mentions: a walker that does not see PRIV reads no reference to it, held or
+	// not (access.RoleProjectClause, the roleProjectReference kind of the rule of references).
+	privateRole string
+	// privateRepository is the repository seedFragmentCensus maps to PRIV, made PRIV's default here,
+	// so PRIV's issues that name no repository resolve to it and PRIV owns it: an open walker that
+	// does not see PRIV reads it nowhere (refs.RepositoryClause), where a mapping that is no
+	// project's default owns nothing and hides nothing.
+	privateRepository string
 }
 
 // seedCrossReferences writes, as carol, who sees both projects, a reference from each project's
@@ -257,7 +266,8 @@ type crossReferences struct {
 // reader that sees PRIV alone does not see, and its ask, which waits on dana as the assignee (an
 // ask asked of its issue's assignee stores no asked_of), is handed to alice, whom that reader does
 // not see either. PUB's pull request is credited to PRIV's issue, as a mapping moved between the two
-// would leave it.
+// would leave it. PUB's comment mentions a role of PRIV too, and PRIV's repository is made PRIV's
+// default, so PRIV owns it.
 func seedCrossReferences(t *testing.T, fixture fragmentCensusFixture) crossReferences {
 	t.Helper()
 	seedPeople(t, fixture.database, hiddenPerson)
@@ -267,8 +277,10 @@ func seedCrossReferences(t *testing.T, fixture fragmentCensusFixture) crossRefer
 			t.Fatalf("carol: %s %s = %d %s", method, path, response.Code, response.Body.String())
 		}
 	}
-	cross := crossReferences{publicPerson: seedBob, privatePerson: hiddenPerson}
+	cross := crossReferences{publicPerson: seedBob, privatePerson: hiddenPerson,
+		privateRole: "legion-" + strings.ToLower(seedPrivate) + "-reviewer", privateRepository: "acme/" + strings.ToLower(seedPrivate) + "-app"}
 	carol(http.MethodPut, "/api/v1/projects/"+seedPrivate+"/default-assignee", map[string]any{"assignee": cross.privatePerson})
+	carol(http.MethodPut, "/api/v1/settings/repo-projects/"+cross.privateRepository, map[string]any{"project": seedPrivate, "default": true})
 	// session-priv, which acted in PRIV, holds the claim on PUB's issue, so that issue's reads and
 	// the payloads of its later writes name a holder the walkers that do not see PRIV may not see.
 	fixture.asSession(t, sessionOfPrivate, seedPublic, http.MethodPost, "/api/v1/issues/"+fixture.public.issue+"/claim", map[string]any{}, http.StatusOK)
@@ -276,9 +288,12 @@ func seedCrossReferences(t *testing.T, fixture fragmentCensusFixture) crossRefer
 		from, to         censusObjects
 		session          string
 		assignee, handed string
+		// role is a role of the other project the issue's comment mentions, where that project's
+		// role is hidden from a walker of this one: PRIV's, from the open walkers of PUB.
+		role string
 	}{
-		{fixture.public, fixture.private, sessionOfPrivate, cross.publicPerson, ""},
-		{fixture.private, fixture.public, sessionOfPublic, cross.privatePerson, seedAlice},
+		{fixture.public, fixture.private, sessionOfPrivate, cross.publicPerson, "", cross.privateRole},
+		{fixture.private, fixture.public, sessionOfPublic, cross.privatePerson, seedAlice, ""},
 	} {
 		issue := "/api/v1/issues/" + pair.from.issue
 		// The issue waits on an issue of the other project of its own, so the two waits close no
@@ -298,9 +313,13 @@ func seedCrossReferences(t *testing.T, fixture fragmentCensusFixture) crossRefer
 		if pair.handed != "" {
 			carol(http.MethodPut, "/api/v1/asks/"+ask+"/asked-of", map[string]any{"asked_of": pair.handed})
 		}
+		mentions := []map[string]string{{"target": "session:" + pair.session}}
+		if pair.role != "" {
+			mentions = append(mentions, map[string]string{"target": "role:" + pair.role})
+		}
 		carol(http.MethodPost, issue+"/comments", map[string]any{
 			"body":     "Waits on dispatch://" + pair.to.issue + " and dispatch://" + pair.to.issue + "/artifact/" + pair.to.issueDocumentSlug + ".",
-			"mentions": []map[string]string{{"target": "session:" + pair.session}},
+			"mentions": mentions,
 		})
 		carol(http.MethodPost, issue+"/messages", map[string]any{
 			"body": "A note for the other project's session.", "target": "session:" + pair.session, "delivery": "btw",
@@ -329,9 +348,10 @@ func seedCrossReferences(t *testing.T, fixture fragmentCensusFixture) crossRefer
 type hiddenObjects map[string]string
 
 // hiddenObjectsOf is every object of project's rows - its key, its issues, its documents, the asks,
-// comments and messages of its issues - with sessions and persons beside them, each named by what
-// it is.
-func hiddenObjectsOf(t *testing.T, fixture fragmentCensusFixture, project string, sessions, persons []string) hiddenObjects {
+// comments and messages of its issues - with sessions, persons, roles and repositories beside them,
+// each named by what it is. A role is found as one identifier-shaped token of a value (the name in
+// a `role:<name>` target), a repository as a whole value (owner/name).
+func hiddenObjectsOf(t *testing.T, fixture fragmentCensusFixture, project string, sessions, persons, roles, repositories []string) hiddenObjects {
 	t.Helper()
 	hidden := hiddenObjects{project: "project " + project}
 	rows, err := fixture.database.Pool.Query(context.Background(), `
@@ -358,6 +378,12 @@ func hiddenObjectsOf(t *testing.T, fixture fragmentCensusFixture, project string
 	}
 	for _, person := range persons {
 		hidden[person] = "person " + person
+	}
+	for _, role := range roles {
+		hidden[role] = "role " + role
+	}
+	for _, repository := range repositories {
+		hidden[repository] = "repository " + repository
 	}
 	return hidden
 }
@@ -467,15 +493,22 @@ func TestNoAnswerNamesAnObjectItsReaderCannotSee(t *testing.T) {
 		}
 	}
 
+	// The open walkers of PUB do not see PRIV's role or its repository. A walker of PRIV alone is
+	// handed no role or repository: a role of PUB, a public project, reaches every reader
+	// (access.RoleProjectClause), and PUB's repository is named to it by the timeline, which answers
+	// a pull request whose issue it sees with its repository (seedCrossReferences credits PUB's pull
+	// request to PRIV's issue).
 	walkers := []struct {
 		caller  privateCaller
 		objects censusObjects
 		hidden  hiddenObjects
 	}{
-		{callerAlice, fixture.public, hiddenObjectsOf(t, fixture, seedPrivate, []string{sessionOfPrivate}, nil)},
-		{callerAlicePubToken, fixture.public, hiddenObjectsOf(t, fixture, seedPrivate, []string{sessionOfPrivate}, nil)},
-		{callerBob, fixture.private, hiddenObjectsOf(t, fixture, seedPublic, []string{sessionOfPublic}, []string{cross.privatePerson, seedAlice})},
-		{callerBobPrivToken, fixture.private, hiddenObjectsOf(t, fixture, seedPublic, []string{sessionOfPublic}, []string{cross.privatePerson, seedAlice})},
+		{callerAlice, fixture.public, hiddenObjectsOf(t, fixture, seedPrivate, []string{sessionOfPrivate}, nil,
+			[]string{cross.privateRole}, []string{cross.privateRepository})},
+		{callerAlicePubToken, fixture.public, hiddenObjectsOf(t, fixture, seedPrivate, []string{sessionOfPrivate}, nil,
+			[]string{cross.privateRole}, []string{cross.privateRepository})},
+		{callerBob, fixture.private, hiddenObjectsOf(t, fixture, seedPublic, []string{sessionOfPublic}, []string{cross.privatePerson, seedAlice}, nil, nil)},
+		{callerBobPrivToken, fixture.private, hiddenObjectsOf(t, fixture, seedPublic, []string{sessionOfPublic}, []string{cross.privatePerson, seedAlice}, nil, nil)},
 	}
 	for _, column := range columns {
 		if referenceDispositions[column].kind != filteredReference {

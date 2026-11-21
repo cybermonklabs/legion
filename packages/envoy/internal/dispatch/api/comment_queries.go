@@ -83,8 +83,11 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 	// mention or a delivery names a session, which the answer leaves out for a caller that does
 	// not see it (leaveOutHiddenCommentSessions), so an answer kept for one reader is handed only to
 	// a reader who sees what it saw. A reader that sees every object files under the owner alone.
-	key := listAnswerKeyFor(r, commentListRoute, name+commentListViewOf(who), etag)
-	if s.listAnswers.answer(w, key) {
+	// While a project is private, a reader that does not see every object is handed no kept answer
+	// and keeps none (keepsListAnswerFor): which sessions it sees moves with rows the key does not
+	// name.
+	key, keep := listAnswerKeyFor(r, commentListRoute, name+commentListViewOf(who), etag), keepsListAnswerFor(who)
+	if keep && s.listAnswers.answer(w, key) {
 		return
 	}
 	// The comments are read as everyReader: one reader's view of a block reserved for its author
@@ -111,7 +114,7 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeListAnswer(w, key, encoded, ownerHeld)
+	s.writeListAnswer(w, key, encoded, ownerHeld && keep)
 }
 
 // commentListWatermark is the pair a comment list's validator is built on, read in one statement

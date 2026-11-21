@@ -1074,6 +1074,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             navigationOpen={navigationOpen}
             onOpenNavigation={() => setNavigationOpen(true)}
             project={routeProject}
+            restricted={restricted}
             user={user}
           />
         ) : isCompactViewport || issueFrame ? null : sidebarHidden ? (

@@ -306,6 +306,9 @@ type pendingMessageDelivery struct {
 	// session's message - is queued for a stopped session.
 	connectedOnly bool
 	frame         []byte
+	// settled is the attempt the claim transaction itself settled, for a resolve that answered
+	// its session hidden from the writer (settleHiddenMessageAttempt): nothing is sent for it.
+	settled *model.MessageDelivery
 }
 
 // messageDeliveryRoute is what a targeted send resolves against the listener: the session a
@@ -440,7 +443,7 @@ func (s *server) recordPendingMessageDelivery(
 		).Scan(&pending.claimedAt, &pending.resolved.attemptSessionID); err != nil {
 			return pendingMessageDelivery{}, err
 		}
-		if err := finishPendingMessageDelivery(ctx, tx, s, message, replyThread, &pending); err != nil {
+		if err := finishPendingMessageDelivery(ctx, tx, s, message, actor, replyThread, &pending); err != nil {
 			return pendingMessageDelivery{}, err
 		}
 		return pending, nil
@@ -532,7 +535,7 @@ func (s *server) recordPendingMessageDelivery(
 			return pendingMessageDelivery{}, err
 		}
 	}
-	if err := finishPendingMessageDelivery(ctx, tx, s, message, replyThread, &pending); err != nil {
+	if err := finishPendingMessageDelivery(ctx, tx, s, message, actor, replyThread, &pending); err != nil {
 		return pendingMessageDelivery{}, err
 	}
 	if superseded != nil {
@@ -580,7 +583,7 @@ func (s *server) openFirstMessageDeliveryAttempt(
 	if err := s.insertMessageDeliveryAttempt(ctx, tx, message, actor, resolved, &pending); err != nil {
 		return pendingMessageDelivery{}, err
 	}
-	if err := finishPendingMessageDelivery(ctx, tx, s, message, replyThread, &pending); err != nil {
+	if err := finishPendingMessageDelivery(ctx, tx, s, message, actor, replyThread, &pending); err != nil {
 		return pendingMessageDelivery{}, err
 	}
 	return pending, nil
@@ -588,15 +591,20 @@ func (s *server) openFirstMessageDeliveryAttempt(
 
 // finishPendingMessageDelivery builds the frame this claimed attempt will be sent with and
 // commits the claim transaction. Both claim paths end here, so a bound sender's frame says
-// exactly what an ordinary one's does.
+// exactly what an ordinary one's does. An attempt whose resolve answered its target hidden from
+// the writer is settled here instead (settleHiddenMessageAttempt).
 func finishPendingMessageDelivery(
 	ctx context.Context,
 	tx pgx.Tx,
 	s *server,
 	message model.Message,
+	actor model.Actor,
 	replyThread *messageReplyThread,
 	pending *pendingMessageDelivery,
 ) error {
+	if pending.resolved.hidden {
+		return s.settleHiddenMessageAttempt(ctx, tx, message, actor, pending)
+	}
 	thread := replyThread
 	if thread == nil {
 		// A retry sends the stored message, so the block it answers is read as its write named
@@ -628,6 +636,37 @@ func finishPendingMessageDelivery(
 	}
 	pending.frame = frame
 	return tx.Commit(ctx)
+}
+
+// settleHiddenMessageAttempt ends, in the claim transaction itself, an attempt whose resolve
+// answered its session hidden from the writer (resolveDeliveryTarget): the row is written failed
+// with that answer, "no live session <id>", the receipt its settle owes is appended, and the
+// transaction commits. The attempt is never committed pending, pinned to a session its writer may
+// not see, so no sender finds it owed - the delivery sweep above all, which resolves a session
+// route as the server's reader and would send it - and no listener is asked. The sender answers the
+// row as settled (pendingMessageDelivery.settled) and sends nothing.
+func (s *server) settleHiddenMessageAttempt(
+	ctx context.Context, tx pgx.Tx, message model.Message, actor model.Actor, pending *pendingMessageDelivery,
+) error {
+	settled, err := scanMessageDelivery(tx.QueryRow(ctx, `
+		update message_deliveries set state = 'failed', error = $3
+		where message_id = $1 and attempt = $2 and state = 'pending'
+		returning `+messageDeliveryColumns,
+		message.ID, pending.attempt, pending.resolved.ResolveError,
+	))
+	if err != nil {
+		return err
+	}
+	receipt, err := s.appendEvent(ctx, tx, messageDeliveryReceipt(message, actor, settled, pending.resolved.title))
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	s.publish(ctx, receipt)
+	pending.settled = &settled
+	return nil
 }
 
 // supersededByModeChangeText is what a stranded attempt records when a retry in another mode
@@ -775,7 +814,10 @@ var errAttemptNotPending = errors.New("delivery attempt is no longer pending")
 // holds that session - is queued by Dispatch itself on that session's own subject
 // (queueForUnknownSession) while this sender still holds the attempt, so every sender of a
 // targeted message queues it alike: the request, a keyed repeat, a broadcast's copy, a Retry and
-// the delivery sweep.
+// the delivery sweep. Each queues only for a session the attempt's writer may see, and never for
+// one its resolve answered hidden (mayQueueForUnknownSession). An attempt whose resolve answered
+// its session hidden is settled failed in its claim transaction and sent nothing at all
+// (settleHiddenMessageAttempt), so none is ever left pending for the delivery sweep.
 func (s *server) deliverMessageResuming(
 	ctx context.Context,
 	message model.Message,
@@ -800,6 +842,9 @@ func (s *server) deliverMessageResuming(
 	)
 	if err != nil {
 		return model.MessageDelivery{}, err
+	}
+	if pending.settled != nil {
+		return *pending.settled, nil
 	}
 	// The key is scoped to the message and the mode, stable across every attempt of that pair,
 	// so a retry of a send that already landed repeats its dedupe key and is recognised as the
@@ -839,8 +884,14 @@ func (s *server) deliverMessageResuming(
 	if err != nil {
 		return model.MessageDelivery{}, err
 	}
-	if held && s.mayQueueForUnknownSession(message, pending, connectedOnly, outcome.failure) {
-		outcome = s.queueForUnknownSession(ctx, message, pending, key, wanted, outcome.failure)
+	if held {
+		queue, err := s.mayQueueForUnknownSession(ctx, message, actor, pending, connectedOnly, outcome.failure)
+		if err != nil {
+			return model.MessageDelivery{}, err
+		}
+		if queue {
+			outcome = s.queueForUnknownSession(ctx, message, pending, key, wanted, outcome.failure)
+		}
 	}
 	return s.completeMessageDelivery(ctx, message, actor, pending, outcome)
 }

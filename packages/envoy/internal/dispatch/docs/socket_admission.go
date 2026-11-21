@@ -368,9 +368,11 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The awareness clients the socket's peer may announce are bounded before ygo reads its
-	// frames (awareness_limit.go), and a socket whose person loses the room before ygo has upgraded
-	// it is refused as a hidden room is (revocableSocketWriter).
-	s.srv.ServeHTTP(&revocableSocketWriter{ResponseWriter: &awarenessLimitWriter{ResponseWriter: w, room: room}, ctx: ctx}, r.WithContext(ctx))
+	// frames (awareness_limit.go), a socket whose person loses the room before ygo has upgraded
+	// it is refused as a hidden room is, and once upgraded each batch of the room's frames asks
+	// first whether its person still reads the room (revocableSocketWriter, recheckedConn).
+	stillReads := func() bool { return s.socketStillReads(ctx, connection.admission, viewer.Open) }
+	s.srv.ServeHTTP(&revocableSocketWriter{ResponseWriter: &awarenessLimitWriter{ResponseWriter: w, room: room}, ctx: ctx, stillReads: stillReads}, r.WithContext(ctx))
 }
 
 // refuseHiddenRoom answers a document socket whose person may not read its room - a document of a
@@ -392,8 +394,11 @@ func refuseHiddenRoom(w http.ResponseWriter) {
 // never once it has hijacked the connection, so it takes no lock.
 type revocableSocketWriter struct {
 	http.ResponseWriter
-	ctx     context.Context
-	refused bool
+	ctx context.Context
+	// stillReads asks, before each batch of frames on the upgraded connection, whether the
+	// socket's person still reads its room (recheckedConn); nil asks nothing.
+	stillReads func() bool
+	refused    bool
 }
 
 // hidden reports whether the socket's admission was revoked for access, and the first time it
@@ -419,12 +424,18 @@ func (w *revocableSocketWriter) Write(body []byte) (int, error) {
 	return w.ResponseWriter.Write(body)
 }
 
-// Hijack takes the connection for ygo's upgrade, unless the socket's person has lost the room.
+// Hijack takes the connection for ygo's upgrade, unless the socket's person has lost the room, and
+// hands ygo a connection that asks before each batch of frames whether they still read it
+// (recheckedConn).
 func (w *revocableSocketWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if w.hidden() {
 		return nil, nil, errAccessRevoked
 	}
-	return http.NewResponseController(w.ResponseWriter).Hijack()
+	conn, rw, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err != nil || w.stillReads == nil {
+		return conn, rw, err
+	}
+	return &recheckedConn{Conn: conn, stillReads: w.stillReads}, rw, nil
 }
 
 // Unwrap gives http.ResponseController the writer underneath.

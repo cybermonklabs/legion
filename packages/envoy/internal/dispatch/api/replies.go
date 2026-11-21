@@ -97,7 +97,8 @@ const myRepliesDismissedCursor = `
 // the viewer bound at $4 sees (access.ProjectClause over the row's own project), so a thread of a
 // project the caller does not see, or that its credential does not list, is no row of its list
 // and counts in no total. The two writes that read the same states (inbox_read.go,
-// inbox_dismiss.go) bind their own parameters there and read without it.
+// inbox_dismiss.go) bind their own parameters there and the same clause over the viewer after them
+// (inboxReplyMatchQuery), so they write over no row the list does not show.
 var myRepliesSeen = `
 	  and ` + access.ProjectClause("u.project_key", "$4")
 
@@ -767,7 +768,9 @@ const threadReadMoves = `login = $1 and thread_id = $2 and read_through < least(
 // putThreadRead answers PUT /api/v1/me/threads/{id}/read: it moves the caller's read mark on one
 // thread forward to read_through (stored as no later than now, as the Agents page's read mark is),
 // so a row a tab read less of a moment ago never comes back. A thread the caller has no row for
-// writes nothing.
+// writes nothing, and nor does a thread of a project the request's reader may not see
+// (access.ProjectClause over the row's own project, as the list reads it): its row is read as no
+// row, so its owner is never locked and its project's log is never written.
 //
 // It runs in the two phases every write route runs in (INFRA-636): a read phase holding no
 // transaction id, which takes the thread's owner lock and then the project's and reads the row
@@ -783,6 +786,10 @@ const threadReadMoves = `login = $1 and thread_id = $2 and read_through < least(
 // read-mark lock order.
 func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
+	if !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -818,8 +825,9 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	var project string
 	var issueKey, artifactID *string
 	err = tx.QueryRow(r.Context(), `
-		select project_key, issue_key, artifact_id::text from user_threads where login = $1 and thread_id = $2
-	`, login, threadID).Scan(&project, &issueKey, &artifactID)
+		select project_key, issue_key, artifact_id::text from user_threads
+		where login = $1 and thread_id = $2 and `+access.ProjectClause("project_key", "$3")+`
+	`, login, threadID, refs.VisibilityArg(who)).Scan(&project, &issueKey, &artifactID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		w.WriteHeader(http.StatusNoContent)
 		return

@@ -81,7 +81,10 @@ email_of() {
 # send BUILD CALLER METHOD PATH [BODY]: one request to BUILD as CALLER, the status in $status, the
 # body in $work/body and the response headers in $work/headers. A person (alice, bob, carol) sends
 # their session cookie and the build's origin, as a browser does; any other caller sends the header
-# $work/auth/BUILD-CALLER holds, so no argument list carries a bearer.
+# $work/auth/BUILD-CALLER holds, so no argument list carries a bearer. Both files are emptied
+# first: curl writes neither when the request fails before an answer, and a failed request must
+# not keep the answer before it as its own. Such a request's status is `curl failed: <why>`, no
+# HTTP status, which same_answers counts as a difference (answered).
 send() {
   local build=$1 caller=$2 method=$3 path=$4 body=${5:-} url=${build_url[$1]}
   local -a credential data=()
@@ -90,6 +93,8 @@ send() {
     *) credential=(-H "@$work/auth/$build-$caller") ;;
   esac
   [ -z "$body" ] || data=(-H 'Content-Type: application/json' --data-binary "$body")
+  : >"$work/body"
+  : >"$work/headers"
   status=$(curl -sS -o "$work/body" -D "$work/headers" -w '%{http_code}' --max-time "$call_seconds" -X "$method" \
     "${credential[@]}" "${data[@]}" "$url$path" 2>"$work/curl") || status="curl failed: $(<"$work/curl")"
 }
@@ -444,14 +449,22 @@ first_difference() {
   esac
 }
 
+# answered STATUS holds when STATUS is an answer a compare can judge: an HTTP status (three
+# digits), or `socket`, the status a socket probe that printed its answer is kept under. A request
+# that failed in transport (send's `curl failed: <why>`) or a socket probe that reached no answer
+# (`error`) is none: two of them read alike, empty and with one curl error, so a server that died
+# mid-walk would otherwise pass every compare after it.
+answered() { [[ "$1" =~ ^[0-9]{3}$ || "$1" == socket ]]; }
+
 # Every answer judged counts in compared, a pair as one and a read held to a rule of its own as
 # one, and an answer that fails its judgement counts once in differed, so no_difference can never
 # name more answers that differ than it judged.
 compared=0
 differed=0
 # same_answers WHAT LEFT RIGHT [LEFT_LINE RIGHT_LINE]: the answers kept as LEFT and RIGHT
-# (keep_answer) are the same status, the same bytes and the same headers. Bytes the two requests
-# were sent alike are the same answer before any mask: a caller cannot tell them apart, and a mask
+# (keep_answer) are answers (answered), the same status, the same bytes and the same headers. A
+# status that is no answer differs from every status, its own included. Bytes the two requests were
+# sent alike are the same answer before any mask: a caller cannot tell them apart, and a mask
 # could only part them (a refusal that names the caller's own list, which a fill also names). Other
 # bytes are compared masked, each with its own fill. LEFT_LINE and RIGHT_LINE, each a header line
 # or empty, are the lines the two servers are declared to answer apart: LEFT's headers must hold
@@ -464,7 +477,11 @@ same_answers() {
   local -a drop=()
   compared=$((compared + 1))
   printf '%s\n' "$(<"$right.status")" >>"$work/statuses"
-  if [ "$(<"$left.status")" != "$(<"$right.status")" ]; then
+  if ! answered "$(<"$left.status")" || ! answered "$(<"$right.status")"; then
+    differs=1
+    printf '%s: no answer to compare: %s answered %s, %s %s\n' "$what" "$2" "$(head -c 400 "$left.status")" \
+      "$3" "$(head -c 400 "$right.status")" >>"$work/differences"
+  elif [ "$(<"$left.status")" != "$(<"$right.status")" ]; then
     differs=1
     printf '%s: %s answered HTTP %s, %s HTTP %s\n   %s: %s\n   %s: %s\n' "$what" "$2" "$(<"$left.status")" \
       "$3" "$(<"$right.status")" "$2" "$(head -c 400 "$left.body")" "$3" "$(head -c 400 "$right.body")" >>"$work/differences"

@@ -20,9 +20,13 @@ const RequestDeadline = 45 * time.Second
 
 // RequestWriteMargin is the time past RequestDeadline that the broker's server gives a handler
 // that honours its context to finish what it already began and write its answer: cmd/cipherd's
-// http.Server WriteTimeout is the two together (writeTimeout). So a write the broker began for a
-// request, a transaction's commit among them, is over within RequestDeadline + RequestWriteMargin
-// of the handler's start, whether or not its caller is still waiting for the answer.
+// http.Server WriteTimeout is the two together (writeTimeout). WriteTimeout bounds the writing of
+// that answer, not the broker's database: a COMMIT the handler sent before RequestDeadline is over
+// when that database completes it, which no deadline here ends, and a cancel does not undo a commit
+// the database already received. Dispatch assumes that the broker's database completes such a
+// commit within this margin, and so that a write the broker began for a request is over within
+// RequestDeadline + RequestWriteMargin of the handler's start, whether or not its caller is still
+// waiting for the answer (Dispatch's api.machineLoginSettleAfter counts on it).
 const RequestWriteMargin = 15 * time.Second
 
 // PendingEntry is one undecided record in GET /v1/pending's answer: one a decision may still

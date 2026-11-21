@@ -117,6 +117,20 @@ func deliveryPart(t *testing.T, body []byte) string {
 	return string(encoded)
 }
 
+// assertNothingQueuedOn fails t, naming call, when the walk's server has queued an envelope on
+// session's own subject itself (queueForUnknownSession): the recorder it publishes through, the one
+// newRegisteredTestServer gives every server (publishedBy), holds what that queue would have
+// stored for the session to read once it registers again.
+func (w hiddenWriteSeed) assertNothingQueuedOn(t *testing.T, call, session string) {
+	t.Helper()
+	for _, envelope := range publishedBy(t, w.deps) {
+		if envelope.Topic == contracts.LegacyAgentSubject(session) {
+			t.Errorf("%s: Dispatch queued an envelope on %s's own subject (%s, key %s), a session the caller may not see",
+				call, session, envelope.Topic, envelope.DedupeKey)
+		}
+	}
+}
+
 // takesAUUID reports whether an idRoutes reason says the route's id is a uuid of a kind the prefix
 // layer does not resolve.
 func takesAUUID(reason string) bool {
@@ -732,7 +746,7 @@ func (w hiddenWriteSeed) compare(t *testing.T, caller privateCaller, sight walkS
 	}
 	hiddenPath, _ := w.fill(t, pattern, probe, sight, true)
 	missingPath, written := w.fill(t, pattern, probe, sight, false)
-	missing := w.callPair(t, caller, name, method, hiddenPath, missingPath, body, body, written, false)
+	missing := w.callPair(t, caller, name, method, hiddenPath, missingPath, body, body, written)
 	if !answersMissing(name, sight, missing) {
 		t.Errorf("%s as %s: the call naming nothing (%s) answered %d %s, which is no answer for a missing object: the row's probe never reaches its read of the object",
 			name, caller, missingPath, missing.Code, strings.TrimSpace(missing.Body.String()))
@@ -768,7 +782,7 @@ func (w hiddenWriteSeed) compareSessionBeside(t *testing.T, caller privateCaller
 	}
 	label := fmt.Sprintf("%s (%s beside an object of %s)", name, hidden, project)
 	missing := w.callPair(t, caller, label, method, path(hidden), path(session.missing), body, body,
-		map[string]string{session.missing: hidden}, false)
+		map[string]string{session.missing: hidden})
 	if !answersMissing(name, sight, missing) {
 		t.Errorf("%s as %s: the call naming a session nobody holds (%s) answered %d %s, which is no answer for a missing session",
 			label, caller, path(session.missing), missing.Code, strings.TrimSpace(missing.Body.String()))
@@ -777,13 +791,12 @@ func (w hiddenWriteSeed) compareSessionBeside(t *testing.T, caller privateCaller
 
 // callPair makes one call naming a hidden object and one naming an object nobody holds, as caller,
 // and holds them to one answer - the second's values written as the first's (written,
-// answerAsHidden) - and to no write of any table, or, for a row that writes either way (writes), to
-// writes of the same tables. A pair that writes nothing is held to the same work as well: the same
-// listener calls, and the same statements, each ending on the same command tag, so a row the hidden
-// call read, locked or wrote before its check, or a listener it asked, is named. It answers the
-// second call's answer.
+// answerAsHidden) - and to no write of any table. The pair is held to the same work as well: the
+// same listener calls, and the same statements, each ending on the same command tag, so a row the
+// hidden call read, locked or wrote before its check, or a listener it asked, is named. It answers
+// the second call's answer.
 func (w hiddenWriteSeed) callPair(t *testing.T, caller privateCaller, name, method, hiddenPath, missingPath string,
-	hiddenBody, missingBody any, written map[string]string, writes bool) *httptest.ResponseRecorder {
+	hiddenBody, missingBody any, written map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	before := w.tableDigests(t)
 	hidden, hiddenStatements, hiddenCalls := w.recorded(t, caller, method, hiddenPath, hiddenBody)
@@ -791,14 +804,11 @@ func (w hiddenWriteSeed) callPair(t *testing.T, caller privateCaller, name, meth
 	hiddenChanged := changedTables(before, afterHidden)
 	missing, missingStatements, missingCalls := w.recorded(t, caller, method, missingPath, missingBody)
 	missingChanged := changedTables(afterHidden, w.tableDigests(t))
-	switch {
-	case writes && !slices.Equal(hiddenChanged, missingChanged):
-		t.Errorf("%s as %s: the call naming the hidden object changed %v, and the call naming nothing %v",
-			name, caller, hiddenChanged, missingChanged)
-	case !writes && len(hiddenChanged) > 0:
+	if len(hiddenChanged) > 0 {
 		t.Errorf("%s as %s: the call naming the hidden object (%s) answered %d %s and changed %v",
 			name, caller, hiddenPath, hidden.Code, strings.TrimSpace(hidden.Body.String()), hiddenChanged)
-	case !writes && len(missingChanged) > 0:
+	}
+	if len(missingChanged) > 0 {
 		t.Errorf("%s as %s: the call naming nothing (%s) answered %d %s and changed %v",
 			name, caller, missingPath, missing.Code, strings.TrimSpace(missing.Body.String()), missingChanged)
 	}
@@ -806,7 +816,7 @@ func (w hiddenWriteSeed) callPair(t *testing.T, caller privateCaller, name, meth
 		t.Errorf("%s as %s: the call naming the hidden object asked the listener %v, and the call naming nothing %v",
 			name, caller, hiddenCalls, calls)
 	}
-	if statements := rewritten(missingStatements, written); !writes && !slices.Equal(hiddenStatements, statements) {
+	if statements := rewritten(missingStatements, written); !slices.Equal(hiddenStatements, statements) {
 		t.Errorf("%s as %s: the call naming the hidden object did other work than the call naming nothing, %s",
 			name, caller, firstDifference(hiddenStatements, statements))
 	}

@@ -233,6 +233,12 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
+		// A session the reader may read can still hold a role of a private project it does not
+		// see, whose name spells that project's key (contracts.RoleProject).
+		if err = leaveOutHiddenSessionRoles(r.Context(), s.deps.Store.Pool, reader, sessions); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if len(sessions) == 0 {
 		WriteJSON(w, http.StatusOK, []agentResponse{})
@@ -270,4 +276,41 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	WriteJSON(w, http.StatusOK, rows)
+}
+
+// leaveOutHiddenSessionRoles writes each session's roles as who reads them: a role of a private
+// project who does not see (a legion-<project>-… name, contracts.RoleProject) is left out, as
+// access.RoleProjectClause leaves out every reference to such a role, held or not; a session's
+// other roles stay, in their order. One read judges every session's roles (seenReferences), made
+// whatever they name, so a list that names a hidden role costs what one that names none costs. Each
+// session that holds a role is given a list of its own: the sessions are a copy of the roster's,
+// whose lists every read shares. A reader that sees every object reads every role, with no read
+// (R9), and no session left to answer reads nothing either.
+func leaveOutHiddenSessionRoles(ctx context.Context, q queryer, who model.Actor, sessions []envoy.Session) error {
+	if seesEveryObject(who) || len(sessions) == 0 {
+		return nil
+	}
+	named := references{}
+	for _, session := range sessions {
+		for _, role := range session.Roles {
+			named.name(roleProjectReference, routeRoleProject("role:"+role))
+		}
+	}
+	seen, err := seenReferences(ctx, q, who, named)
+	if err != nil {
+		return err
+	}
+	for index := range sessions {
+		if len(sessions[index].Roles) == 0 {
+			continue
+		}
+		kept := make([]string, 0, len(sessions[index].Roles))
+		for _, role := range sessions[index].Roles {
+			if seen.holdsRoute("role:" + role) {
+				kept = append(kept, role)
+			}
+		}
+		sessions[index].Roles = kept
+	}
+	return nil
 }

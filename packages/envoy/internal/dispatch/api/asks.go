@@ -197,7 +197,18 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	defer tx.Rollback(r.Context())
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
-	status, err := s.requireOpenOwnerStatus(r.Context(), tx, who, owner)
+	// An issue the path names by its key alone is read as the asker reads it before its lock is
+	// asked for (lockedOwnerReadOnceFound), so an issue of a project the asker does not see is
+	// refused without waiting behind that project's writers, as a key no issue holds is; a
+	// document owner was read as the asker reads it before this (documentOwnerForHandler).
+	read := lockedOwnerRead(tx)
+	if owner.IssueKey != nil {
+		read = lockedOwnerReadOnceFound(tx)
+	}
+	status, open, err := ownerStatus(r.Context(), who, owner, read)
+	if err == nil {
+		err = refuseClosed(open, refusedWhenClosed)
+	}
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -211,8 +222,8 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		return
 	}
 	rowID := ask.ID
-	// The person this question reaches, read here in the read phase, under the owner's lock
-	// requireOpenOwnerStatus took, through the rule every read of that person shares, so the
+	// The person this question reaches, read here in the read phase, under the owner's lock the
+	// owner check above took, through the rule every read of that person shares, so the
 	// caller is told whose Inbox it just landed in rather than having to read the ask again. A
 	// new ask is handed to nobody, so the rule is read over its owner alone
 	// (askWaitingOnPerson): the row itself is only queued below.

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # c-blob-unchanged (private projects, verification v17): with no private project, every caller
-# reads at this build, byte for byte, what it reads at the merge base.
+# reads at this build, byte for byte, what it reads at the merge base, on each route the fixed
+# lists below name and on the live socket's event feed; the routes it does not compare, each with
+# why, are named below under "Not compared".
 #
 # It builds the merge base and this checkout through scripts/e2e/lib/two-builds.sh and starts each
 # on a database of its own, made here on the server DATABASE_URL names and dropped when the run
@@ -10,10 +12,11 @@
 # PRIV, public too, made by carol, each with an issue whose spec is a document with blocks, a
 # comment, an ask, a message, an issue document and a project document; a personal token of each
 # person, which names no project, since the merge base has no list to name one in; and the shared
-# agent token. Then, as each of the seven callers in turn, it makes `POST /api/v1/projects` and
-# reads the fixed list below from both builds, search's meaning leg among them, and compares the
-# status, the headers and the bytes of each pair of answers; and it compares the frames the live
-# socket sends each caller at both builds while carol comments on each project.
+# agent token. Then, as each of the seven callers in turn, it makes `POST /api/v1/projects`, makes,
+# renames and deletes a Delivery session group, and reads the fixed list below from both builds,
+# search's meaning leg among them, and compares the status, the headers and the bytes of each pair
+# of answers; and it compares the frames the live socket's event feed sends each caller at both
+# builds while carol comments on each project.
 #
 # What it masks, each named, and nothing else (access-lib.sh's mask):
 #   - every id the seed writes new: each object's id as its create answered it, each document's
@@ -32,6 +35,25 @@
 # every field private projects add to an answer is omitempty at its default, and any difference
 # fails. The run reads the whole list before it fails, and names, for each answer that differs,
 # the caller, the route and the first byte that differs, with both answers around it.
+#
+# Not compared, each with why:
+#   - `GET /api/v1`, above.
+#   - The live socket's Delivery views (the delivery hub: timeline, measures and pipeline
+#     subscriptions on /ws/live) and its agent view (a session's messages): socket-access.ts
+#     subscribes the event feed alone. Their GET routes are on the fixed list, and the hub's
+#     snapshots and deltas are held to those routes' answers by the api package's tests
+#     (delivery_live_hub_test.go, delivery_live_hub_access_test.go, live_agent_test.go).
+#   - `GET /api/v1/access-groups`: this change pages it, answering `{groups, next}` where the
+#     merge base answered the array of groups, so no byte of the two can match; its pages are held
+#     by access_groups_test.go.
+#   - What the GitHub App's routes answer with an App key: this run starts no GitHub and gives
+#     neither build a key, so `GET /api/v1/github/app-installation/{owner}/{repo}` and the proxy
+#     (`GET /api/github/rest/...`) are compared as each caller is answered at a deployment with no
+#     App key, the refusal both answer before any repository is read. Whether the App is installed
+#     on a repository, and what the proxy forwards, are held by github_app_installation_test.go
+#     and the githubapi package's tests, and by project-access.sh's proxy section.
+# The lists check reads JSON arrays only: a member that is null or absent in every answer (an
+# object no seed fills, an omitempty member) is compared as that null or absence, and holds no row.
 #
 # Usage, from packages/dispatch:
 #
@@ -263,9 +285,10 @@ spec_ask_opened() {
 
 # The seed's writes that deliver to a session, each "ROUTE:LABEL", the object PROJECT's label
 # "PROJECT LABEL" names under /api/v1/ROUTE: the shared token's mention, carol's message to the
-# session, alice's replies to the two asks, carol's reply to the seed's comment and alice's reply
-# to the seed's message, each of the last four naming the session too.
-readonly sends=("comments:mention" "messages:targeted" "comments:ask reply" "comments:choice reply" "comments:comment reply" "messages:message reply")
+# session, alice's replies to the two asks, carol's reply to the seed's comment, alice's reply to
+# the seed's message and carol's follow-up to her message, each of the last five naming the
+# session too.
+readonly sends=("comments:mention" "messages:targeted" "comments:ask reply" "comments:choice reply" "comments:comment reply" "messages:message reply" "messages:follow-up")
 
 # delivery_settled BUILD PROJECT ITEM: on BUILD, PROJECT's send ITEM (a "ROUTE:LABEL" of sends)
 # holds a delivery attempt, and every attempt is settled (no longer pending). A reply is read
@@ -286,25 +309,40 @@ settle() {
 }
 
 # remember_envelopes BUILD remembers the envelope id the listener gave each settled attempt of the
-# seed's sends on BUILD, as "PROJECT LABEL envelope <n>". Both builds send through the one fake
-# listener, which numbers its envelopes in the order it takes them (envelope-<n>), so the same
-# attempt carries another id at each build. The longest ids are remembered first: the mask
-# replaces each as text, and envelope-1 is a part of envelope-12.
+# seed's sends on BUILD, as "PROJECT LABEL envelope <n>", and of each copy of its broadcast, as
+# "broadcast copy <n> envelope <m>", once that copy's delivery has settled. Both builds send
+# through the one fake listener, which numbers its envelopes in the order it takes them
+# (envelope-<n>), so the same attempt carries another id at each build. The longest ids are
+# remembered first: the mask replaces each as text, and envelope-1 is a part of envelope-12.
 remember_envelopes() {
-  local build=$1 project item label value
+  local build=$1 project item label value index=1
   : >"$work/envelopes"
   for project in PUB PRIV; do
     for item in "${sends[@]}"; do
-      send "$build" carol GET "/api/v1/${item%%:*}/$(recalled "$build" "$project ${item#*:}")"
-      expect_status 200 "$build: carol reads the $project ${item#*:}"
-      jq -r --arg label "$project ${item#*:} envelope" --arg id "$(recalled "$build" "$project ${item#*:}")" \
-        '[.. | objects | select(.id == $id) | .deliveries[]? | .envelope_id | select(. != null)] | unique | to_entries[]
-         | "\(.value)\t\($label) \(.key + 1)"' "$work/body" >>"$work/envelopes"
+      envelopes_of "$build" "$project" "$item"
     done
+  done
+  while [ -n "$(recalled "$build" "broadcast copy $index")" ]; do
+    settle "$build" broadcast "messages:copy $index"
+    envelopes_of "$build" broadcast "messages:copy $index"
+    index=$((index + 1))
   done
   while IFS=$'\t' read -r value label; do
     remember "$build" "$label" "$value"
   done < <(awk -F '\t' '{ print length($1) "\t" $0 }' "$work/envelopes" | sort -t $'\t' -k1,1nr | cut -f2-)
+}
+
+# envelopes_of BUILD OWNER ITEM writes to $work/envelopes, one `ID<tab>LABEL` line each, the
+# envelope ids of the attempts of OWNER's send ITEM (a "ROUTE:LABEL", read as delivery_settled
+# reads it), each labelled "OWNER LABEL envelope <n>".
+envelopes_of() {
+  local id
+  id=$(recalled "$1" "$2 ${3#*:}")
+  send "$1" carol GET "/api/v1/${3%%:*}/$id"
+  expect_status 200 "$1: carol reads the $2 ${3#*:}"
+  jq -r --arg label "$2 ${3#*:} envelope" --arg id "$id" \
+    '[.. | objects | select(.id == $id) | .deliveries[]? | .envelope_id | select(. != null)] | unique | to_entries[]
+     | "\(.value)\t\($label) \(.key + 1)"' "$work/body" >>"$work/envelopes"
 }
 
 # decisions_linked BUILD KEY: KEY's decisions on BUILD hold the section's link to its spec's block
@@ -322,13 +360,14 @@ map_repository() {
 # seed_lists BUILD writes, through the routes both builds have, a row into every list an answer
 # read below holds, which the seed above leaves empty, so that no field of such a row can differ
 # unseen (the lists check): a priority and the work under it, in flight and parked; each first
-# issue's labels, link, blocker, child (with a link of its own), parent and design gate; each
-# project's gated steps; an ask with options left open and followed, the seed's ask given options,
-# followed and answered with one; replies to both asks, to the seed's comment and to its message,
-# each naming the session; a comment of the shared token's that mentions the session, and a
-# message to it; an issue whose spec holds a question with options, and a decisions document
-# whose section names that question and its block; and a broadcast. Each send is settled before
-# the next write (settle).
+# issue's labels, link, blocker, child (with a link of its own), parent, design gate and role
+# holder; each project's gated steps; an ask with options left open and followed, the seed's ask
+# given options, followed and answered with one; replies to both asks, to the seed's comment and
+# to its message, each naming the session; a comment of the shared token's that mentions the
+# session, and a message to it, which the session answers and carol follows up; an issue whose
+# spec holds a question with options, and a decisions document whose section names that question
+# and its block; an open P0 issue of each project with no owner (Delivery's unowned_p0); a
+# broadcast; and a Delivery session group. Each send is settled before the next write (settle).
 seed_lists() {
   local build=$1 project key ask edited_at index block
   send "$build" carol POST /api/v1/priorities '{"id":"blob-work","title":"The blob work"}'
@@ -352,8 +391,9 @@ seed_lists() {
     send "$build" carol POST /api/v1/issues "$(jq -cn --arg p "$project" --arg k "$key" '{project: $p, title: ("A blocker of " + $k)}')"
     created "$build" "carol opens $project-3"
     remember "$build" "$project-3 spec" "$(jq -r .primary_artifact_id "$work/body")"
-    send "$build" carol PATCH "/api/v1/issues/$project-3" '{"status":"in_progress"}'
-    created "$build" "carol starts $project-3"
+    # P0, open and with no claim or route, so the Delivery measures list it as a P0 with no owner.
+    send "$build" carol PATCH "/api/v1/issues/$project-3" '{"status":"in_progress","priority":0}'
+    created "$build" "carol starts $project-3 at P0"
     send "$build" carol PATCH "/api/v1/issues/$key" "$(jq -cn --arg p "$project" \
       '{labels: ["blob"], blocked_by: [($p + "-3")], advances: ["blob-work"],
         external_links: [{url: ("https://example.com/" + $p), kind: "doc"}]}')"
@@ -405,6 +445,18 @@ seed_lists() {
     created "$build" "carol sends ses-pub-session a message on $key"
     remember "$build" "$project targeted" "$(jq -r .id "$work/body")"
     settle "$build" "$project" "messages:targeted"
+    # ses-pub-session answers that message's attempt, as its agent does, and carol follows it up to
+    # the session, so the session's targeted messages list replies, one of them delivered; the
+    # shared token writes as the session.
+    send "$build" shared POST "/api/v1/messages/$(recalled "$build" "$project targeted")/reply" \
+      '{"actor":{"kind":"session","id":"ses-pub-session"},"attempt":1,"body":"It is noted."}'
+    created "$build" "ses-pub-session answers carol's message on $key"
+    remember "$build" "$project targeted answer" "$(jq -r .id "$work/body")"
+    send "$build" carol POST "/api/v1/issues/$key/messages" "$(jq -cn --arg m "$(recalled "$build" "$project targeted")" \
+      '{body: "One more thing, for the PUB session.", in_reply_to: $m, target: "session:ses-pub-session", delivery: "btw"}')"
+    created "$build" "carol follows up her message to ses-pub-session on $key"
+    remember "$build" "$project follow-up" "$(jq -r .id "$work/body")"
+    settle "$build" "$project" "messages:follow-up"
     # A question written as a block of an issue's spec is one of its open questions (decisions),
     # beside each section of its decisions document. It is written into the spec the issue opens
     # with: an edit of a spec appends artifact.human_edited once the spec has been quiet for a
@@ -448,6 +500,12 @@ seed_lists() {
     remember "$build" "$project-5 spec" "$(jq -r .primary_artifact_id "$work/body")"
     send "$build" carol PATCH "/api/v1/issues/$key" "$(jq -cn --arg p "$project" '{parent: ($p + "-5")}')"
     created "$build" "carol puts $key under $project-5"
+    # The Legion daemon of the project names the session that holds the first issue's implementer
+    # role, as it publishes a claim; the shared token writes as that daemon's session.
+    send "$build" shared PUT "/api/v1/issues/$key/role-holders" "$(jq -cn --arg p "$project" \
+      '{holders: [{role: "implementer", session: ("ses-" + ($p | ascii_downcase) + "-session")}],
+        actor: {kind: "session", id: ("legion-daemon:" + $p)}}')"
+    created "$build" "the $project daemon names $key's implementer"
   done
   send "$build" carol POST /api/v1/broadcasts '{"body":"A broadcast.","delivery":"btw","session_ids":["ses-pub-session"]}'
   created "$build" "carol broadcasts to ses-pub-session"
@@ -460,6 +518,10 @@ seed_lists() {
     remember "$build" "broadcast copy $index" "$block"
   done < <(jq -r '.. | strings | select(test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))' "$work/body")
   remember_envelopes "$build"
+  # A session group the timeline lists, holding the session no project names.
+  send "$build" carol POST /api/v1/delivery/session-groups '{"name":"Blob group","sessions":["ses-no-list"]}'
+  created "$build" "carol groups ses-no-list"
+  remember "$build" "session group" "$(jq -r .id "$work/body")"
 }
 
 begin seed
@@ -485,6 +547,16 @@ pass
 # remark`, PRIV-1's comment and its spec were answered in one order at one build and in the other
 # at the other, every caller alike. Each search but the one keywords_only names runs both legs,
 # keyword and meaning.
+#
+# The routes this change rewrote are on it too. Delivery's pipeline is read at the run's start
+# (`at`), so its seven days are one set at both builds even when a read falls past midnight; its
+# measures and timeline read their default window, whose ends the mask reads as <time>, and the
+# timeline lists the seed's session group. A session's targeted messages and what reached it are
+# read for both sessions the projects name, PUB's holding the seed's messages and replies. The
+# GitHub App's installation lookup and the proxy are read for the repository PUB is mapped to, as
+# a deployment with no App key answers them (see "Not compared" above).
+pipeline_at=$(date -u -d "@$run_epoch" +%Y-%m-%dT%H:%M:%SZ)
+readonly pipeline_at
 readonly reads=(
   /auth/whoami
   /api/v1/whoami
@@ -508,6 +580,15 @@ readonly reads=(
   /api/v1/settings/repo-projects
   "/api/v1/people/$carol/nodes"
   "/api/v1/people/$alice/nodes"
+  "/api/v1/delivery/pipeline?at=$pipeline_at"
+  /api/v1/delivery/measures
+  /api/v1/delivery/timeline
+  /api/v1/agents/ses-pub-session/messages
+  /api/v1/agents/ses-pub-session/answers
+  /api/v1/agents/ses-priv-session/messages
+  /api/v1/agents/ses-priv-session/answers
+  /api/v1/github/app-installation/acme/pub-map
+  /api/github/rest/repos/acme/pub-map/pulls/1
 )
 readonly project_reads=(
   "/api/v1/issues?project={P}"
@@ -526,6 +607,7 @@ readonly project_reads=(
   "/api/v1/issues/{P}-1/subscribers"
   "/api/v1/issues/{P}-1/references"
   "/api/v1/issues/{P}-4/decisions"
+  "/api/v1/issues/{P}-1/role-holders"
   "/api/v1/references?to=dispatch://{P}-1"
   "/api/v1/comments/{{P} comment}"
   "/api/v1/comments/{{P} mention}"
@@ -548,15 +630,16 @@ readonly declared_header='dispatch-private-projects: 0'
 
 # record_lists PATH writes, for every list in this build's last answer to PATH (each JSON array,
 # the answer itself included), one `ROUTE<tab>WHERE<tab>LENGTH` line to $work/lists.tsv. ROUTE is
-# PATH's template: each seeded object's label ({PUB comment}), issue key (PUB-1), project key and
-# person's login is written {}, and the query is dropped, so a list is one list of its route
-# whichever object the route was read for: the mention's deliveries fill the comments route's
-# .comment.deliveries, which the seed's own comment, sent to no one, leaves empty. WHERE names the
-# list by its members with `[]` for each row of a list above it, as `.[].roles`. An answer that is
-# no JSON holds no list. The lists check reads the file.
+# PATH's template: each seeded object's label ({PUB comment}), issue key (PUB-1), project key,
+# person's login and agent session is written {}, and the query is dropped, so a list is one list
+# of its route whichever object the route was read for: the mention's deliveries fill the comments
+# route's .comment.deliveries, which the seed's own comment, sent to no one, leaves empty, and
+# ses-pub-session's messages fill the messages route's list, which ses-priv-session's leaves empty.
+# WHERE names the list by its members with `[]` for each row of a list above it, as `.[].roles`.
+# An answer that is no JSON holds no list. The lists check reads the file.
 record_lists() {
   local route
-  route=$(sed -E 's/\?.*//; s/\{[^}]*\}/{}/g; s#/(PUB|PRIV)-[0-9]+#/{}#g; s#/projects/(PUB|PRIV)(/|$)#/projects/{}\2#; s#/people/[^/]+/#/people/{}/#' <<<"$1")
+  route=$(sed -E 's/\?.*//; s/\{[^}]*\}/{}/g; s#/(PUB|PRIV)-[0-9]+#/{}#g; s#/projects/(PUB|PRIV)(/|$)#/projects/{}\2#; s#/people/[^/]+/#/people/{}/#; s#/agents/ses-[^/]+/#/agents/{}/#' <<<"$1")
   jq -r --arg route "$route" 'path(.. | arrays) as $at
     | [$route, ($at | map(if type == "number" then "[]" else "." + tostring end) | join("") | if . == "" then "." else . end),
        (getpath($at) | length | tostring)] | @tsv' "$work/answers/head.raw" >>"$work/lists.tsv" 2>/dev/null || true
@@ -585,6 +668,28 @@ for caller in "${callers[@]}"; do
 done
 no_difference
 note "every caller's project answer is the same at both builds"
+pass
+
+begin session-groups
+# Each caller, in the callers' order, makes a Delivery session group of ses-priv-session, renames
+# it and deletes it, on both builds, each answer compared like any read. The group's id is new at
+# each build, so it is remembered under one label at both before its answer is kept. A make that
+# either build refuses leaves nothing to rename or delete, and its refusal is the compare.
+for caller in "${callers[@]}"; do
+  for build in base head; do
+    send "$build" "$caller" POST /api/v1/delivery/session-groups \
+      "$(with_actor "$caller" "$(jq -cn --arg c "$caller" '{name: ("Group of " + $c), sessions: ["ses-priv-session"]}')")"
+    [ "$status" != 201 ] || remember "$build" "group of $caller" "$(jq -r .id "$work/body")"
+    keep_answer "$build" "$build"
+  done
+  same_answers "$caller POST /api/v1/delivery/session-groups" base head '' "$declared_header"
+  [ -n "$(recalled base "group of $caller")" ] && [ -n "$(recalled head "group of $caller")" ] || continue
+  compare "$caller" PATCH "/api/v1/delivery/session-groups/{group of $caller}" \
+    "$(with_actor "$caller" "$(jq -cn --arg c "$caller" '{name: ("Renamed by " + $c)}')")"
+  compare "$caller" DELETE "/api/v1/delivery/session-groups/{group of $caller}" "$(with_actor "$caller" '{}')"
+done
+no_difference
+note "every caller's session group answers are the same at both builds"
 pass
 
 begin reads
@@ -632,7 +737,9 @@ pass
 # unfillable_lists with why no seed can fill it. Each key is `ROUTE<tab>WHERE`, each half a shell
 # pattern, in which a list's `[]` is written `\[\]`. A list a key names that holds a row fails too,
 # and so does a key that names no list read, so the table cannot keep a reason that stopped being
-# true.
+# true. It checks arrays only: an object member, or a nullable one, that is null or absent in
+# every caller's answer holds no row and is not named here, and is compared only as that null or
+# absence (the header's "Not compared").
 declare -A unfillable_lists=(
   ["/api/v1/inbox	\[\].thread.answers"]="the Inbox lists open asks alone, and an answer closes its ask"
   ["/api/v1/*	\[\].payload.deliveries"]="a comment's or message's event carries it as it was written, before any delivery attempt exists: comment_create.go writes its deliveries as [], and createStoredMessage publishes its event before the send"

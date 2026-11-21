@@ -52,13 +52,3 @@ func (c Credential) Sees(project string, private bool) bool {
 	}
 	return CredentialCovers(c, project, private)
 }
-
-// BrokerTokenAdmits is the bus's rule for a broker token (PlanC): a private project when it lists
-// it, and every project that is not private, as CredentialCovers covers a full member's credential.
-// The person's limit is checked apart: it is valid only for a broker token, because the broker
-// checks every listed key against the person through the membership answer at mint and at every
-// trade (no refresh token exists), and never mints an empty list for a restricted member, so a
-// lost project is dropped within BROKER_ACCESS_TOKEN_SECONDS and the answer's cache lifetime.
-func BrokerTokenAdmits(listed []string, project string, private bool) bool {
-	return CredentialCovers(Credential{Listed: listed}, project, private)
-}

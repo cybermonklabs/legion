@@ -36,7 +36,7 @@ func TestM10ARoleOfAHiddenProjectReachesNoSenderWhoCannotSeeIt(t *testing.T) {
 		t.Helper()
 		ctx := context.WithValue(withReader(t.Context(), reader(login)), contextStatementsKey{}, true)
 		before := counter.sent.Load()
-		session, _, refusal := seed.server.resolveDeliveryTarget(ctx, model.Route{Kind: "role", ID: role}, "btw")
+		session, _, refusal, _ := seed.server.resolveDeliveryTarget(ctx, model.Route{Kind: "role", ID: role}, "btw")
 		if refusal != "" {
 			session = "refused: " + strings.ReplaceAll(refusal, role, "<role>")
 		}

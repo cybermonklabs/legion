@@ -244,12 +244,12 @@ func appContextFor(boot bootConfig, built routes.AppContextOptions) (*routes.App
 	if err != nil {
 		return nil, err
 	}
-	passkeys, ceremonies, err := passkeySignIn(boot, pgPeople(built.People), rule)
+	accounts, ceremonies, err := passkeySignIn(boot, pgPeople(built.People), rule)
 	if err != nil {
 		return nil, err
 	}
-	built.Passkeys = ceremonies
-	built.Identity = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule, passkeys)
+	built.Passkeys, built.PasskeyAccounts = ceremonies, accounts
+	built.Identity = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule, ceremonyStore(ceremonies))
 	return routes.BuildAppContext(appContextOptions(boot, rule, built))
 }
 
@@ -749,6 +749,28 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		"DISPATCH_OUTSIDE_ORIGIN":           outsideOriginReachesItsReaders,
 		"DISPATCH_SIGNIN_WORKSPACE_DOMAINS": workspaceDomainsReachTheirReader,
 		"DISPATCH_SIGNIN_PASSKEY":           passkeySettingReachesItsReaders,
+		// Boot parses each entry, trimmed, as a CIDR and refuses passkey sign-in without them, and
+		// the router is handed them as boot parsed them, which the passkey begins' bound reads
+		// (TestABeginThroughAnotherTrustedProxyIsBoundedByItsClient drives that bound end to end).
+		"DISPATCH_TRUSTED_PROXY_RANGES": func(t *testing.T) {
+			passkey := map[string]string{
+				"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com",
+				"DISPATCH_SIGNIN_PASSKEY": "1", "DISPATCH_OUTSIDE_ORIGIN": "https://outside.example.com",
+				"DISPATCH_TRUSTED_PROXY_RANGES": " 192.0.2.0/24 , 2001:db8:100::/48 ",
+			}
+			boot := resolveWith(t, passkey)
+			const want = "[192.0.2.0/24 2001:db8:100::/48]"
+			if got := fmt.Sprint(boot.TrustedProxyRanges); got != want {
+				t.Errorf("TrustedProxyRanges = %s, want %s", got, want)
+			}
+			if got := fmt.Sprint(appContextOptions(boot, nil, routes.AppContextOptions{}).TrustedProxyRanges); got != want {
+				t.Errorf("appContextOptions hands the router TrustedProxyRanges %s, want %s", got, want)
+			}
+			passkey["DISPATCH_TRUSTED_PROXY_RANGES"] = ""
+			refusedWith(t, passkey, "DISPATCH_SIGNIN_PASSKEY needs DISPATCH_TRUSTED_PROXY_RANGES")
+			passkey["DISPATCH_TRUSTED_PROXY_RANGES"] = "192.0.2.0/24,example.com"
+			refusedWith(t, passkey, "DISPATCH_TRUSTED_PROXY_RANGES entry 2 of 2 must be a CIDR")
+		},
 		"DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER": func(t *testing.T) {
 			domain := map[string]string{"DISPATCH_SIGNIN_ISSUER": "http://127.0.0.1:9", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com", "DISPATCH_TEST_HOOKS": "1"}
 			refusedWith(t, domain, "DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com")

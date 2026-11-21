@@ -1127,6 +1127,22 @@ it unset the component renders exactly what it rendered before it existed. An `e
 `envoy-dispatch` predates the setting ignores it, as it ignores every variable its settings table
 does not list.
 
+`trustedProxyRanges`, optional, lists the front doors whose `X-Forwarded-For` Dispatch trusts when it
+bounds the passkey ceremonies' begins per client address. It renders
+`DISPATCH_TRUSTED_PROXY_RANGES` on the app's container right after `DISPATCH_SIGNIN_PASSKEY`, the
+entries comma-joined in the order given. With `signInPasskey` set and this input unset, it renders
+Google's external Application Load Balancer's proxy ranges, `35.191.0.0/16,130.211.0.0/22,2600:2d00:1:1::/64`
+([Google's firewall rules page](https://cloud.google.com/load-balancing/docs/firewall-rules)). Dispatch
+reads a connection from those ranges in the format
+[Google documents](https://cloud.google.com/load-balancing/docs/https#x-forwarded-for_header),
+`[SUPPLIED,]CLIENT_IP,LOAD_BALANCER_IP`, so the address of the balancer's forwarding rule is never
+listed. Set the input when another front door serves `outsideOrigin`: Dispatch reads a connection
+from any other range it lists as the rightmost entry that is not itself in the ranges, and every
+other connection by its own address. Each entry is a CIDR `net.ParseCIDR` takes, written as its
+network, with a prefix longer than `/0`, and the input needs `signInPasskey`; each refusal names
+`trustedProxyRanges`. Dispatch refuses `DISPATCH_SIGNIN_PASSKEY=1` without the setting, so an
+`envoyImage` that reads it needs this component version. Without `signInPasskey` it renders nothing.
+
 `signInWorkspaceDomains`, unset by default, lists the other domains the Google Workspace owns
 beside `signInDomain`. It renders `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` on the app's container, the
 entries comma-joined in the order given, right after `DISPATCH_SIGNIN_DOMAIN`. Dispatch treats an

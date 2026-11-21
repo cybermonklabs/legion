@@ -150,14 +150,17 @@ func announceMemberKindChange(ctx context.Context, tx pgx.Tx, stored string, wri
 }
 
 // projectsSeenAs answers, in tx, every project email sees as a person of the member kind stored
-// (PersonSeesProjectSQL), in key order, when written is another kind, and none when it is the
-// same. A write that changes the member kind a people row holds reads it under the row's lock and
-// before its update, and then hands it to RecordReachedProjects with email, after its update, so
-// every session tied to email keeps each of those projects the kind written no longer sees: a full
-// member the sign-in rule restricts loses every public project and every one a group admitted
-// them to, unless it names them, and their sessions' transcripts keep what they read of each.
+// (PersonSeesProjectSQL), in key order, when written makes the person restricted from another
+// kind, and none otherwise. A write that changes the member kind a people row holds reads it under
+// the row's lock and before its update, and then hands it to RecordReachedProjects with email,
+// after its update, so every session tied to email keeps each of those projects the kind written
+// no longer sees: a full member the sign-in rule restricts loses every public project and every
+// one a group admitted them to, unless it names them, and their sessions' transcripts keep what
+// they read of each. A write that makes a restricted member full takes nothing from them, since a
+// full member sees every project a restricted one does (PersonSeesProjectSQL's arms), so it reads
+// nothing, and RecordReachedProjects, handed no project, takes no lock and writes nothing.
 func projectsSeenAs(ctx context.Context, tx pgx.Tx, email, stored string, written model.MemberKind) ([]string, error) {
-	if stored == string(written) {
+	if stored == string(written) || written != model.MemberRestricted {
 		return nil, nil
 	}
 	var seen []string
@@ -329,6 +332,17 @@ func (s *PgPeopleStore) signInAccountTx(ctx context.Context, tx pgx.Tx, email st
 		}
 		recorded.tokensRevoked = tokens.RowsAffected()
 		owed = []string{stored}
+		// An account of another issuer than the one now signing in held the address: a passkey's
+		// account (people.sub_issuer is the outside origin) that a Google account replaces, or a
+		// passkey's under another outside origin. Its passkeys go with it, so none signs in again
+		// and none counts as another owner's passkey of the address (HeldByAnotherOwnersPasskey,
+		// ProjectNamesAnotherOwnersPasskey). An enrollment and a passkey's sign-in lock its passkey
+		// rows after the address, as this does.
+		if storedIssuer != "" && storedIssuer != account.issuer {
+			if _, err := tx.Exec(ctx, `delete from passkeys where email = $1`, email); err != nil {
+				return signInRecorded{}, fmt.Errorf("delete the passkeys of the account that %q's sign-in replaces: %w", email, err)
+			}
+		}
 	case recorded.firstRecording:
 		if recorded.tokensRevoked, owed, err = revokeOtherAccountsTokens(ctx, tx, email, subject); err != nil {
 			return signInRecorded{}, err

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -245,46 +247,68 @@ func TestAWarmCommentListReadRunsOnlyItsValidatorsStatement(t *testing.T) {
 	t.Logf("a warm comment-list read costs %d round trip: %s", len(counted), strings.Join(roundTripLines(counted), "\n"))
 }
 
-// Two people who see the same projects share one kept comment list. Its bytes turn on its reader
-// only through the sessions its mentions and deliveries name (leaveOutHiddenCommentSessions),
-// which access.SessionClause decides from the reader's session, whether it is open and what it
-// sees, never from its person: the comments, their reply blocks and their mentions and deliveries
-// are read as everyReader. So alice and dana, open members who see PUB alone once PRIV is
-// private, read one answer, and the second read is the kept one. bob, who sees PRIV alone, is
-// filed apart and builds his own. So is carol, who sees PUB and PRIV, on the very list alice and
-// dana keep: only the viewer part of the key (commentListViewOf) tells her read from theirs.
-func TestTwoReadersWhoSeeTheSameShareAKeptCommentList(t *testing.T) {
+// Two people who see the same projects share one kept comment list only while no project is
+// private. Its bytes turn on its reader through the sessions its mentions and deliveries name
+// (leaveOutHiddenCommentSessions), which access.SessionClause decides from the reader's viewer and
+// from rows the key does not name - a session's pairs, its listener record, the fill marker - so
+// while PRIV is private no reader that does not see every object is handed a kept answer or keeps
+// one (keepsListAnswerFor, TestAKeptListServesNoReaderWhoseViewMovedUnderIt): alice and dana, open
+// members who see PUB alone, each read the list built, with the same bytes, and so do carol, who
+// sees PUB and PRIV, and bob, a restricted member. Once PRIV is public alice and dana see every
+// object and share one answer, the second read being the kept one, as every reader did before a
+// project could be private (R9); bob, who is not open and sees PRIV alone, keeps his own, filed
+// apart by the viewer part of the key (commentListViewOf).
+func TestTwoReadersWhoSeeTheSameShareAKeptCommentListOnlyWhileNoProjectIsPrivate(t *testing.T) {
 	seed := seedPrivateProject(t)
 	seedPeople(t, seed.database, hiddenPerson)
 	issue := seed.issue[seedPublic]
 	seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/issues/"+issue+"/comments",
 		map[string]any{"body": "A comment both readers read."}, http.StatusCreated)
 	target := commentListOf(issue)
-	first := dispatchRequest(t, seed.handler, http.MethodGet, target, nil, seedAlice)
-	if first.Code != http.StatusOK {
-		t.Fatalf("alice reads %s: %d %s", target, first.Code, first.Body.String())
+	keptOver := func(read func() *httptest.ResponseRecorder) (uint64, *httptest.ResponseRecorder) {
+		t.Helper()
+		answered := seed.server.listAnswers.answered()
+		response := read()
+		if response.Code != http.StatusOK {
+			t.Fatalf("read %s: %d %s", target, response.Code, response.Body.String())
+		}
+		return seed.server.listAnswers.answered() - answered, response
 	}
-	answered := seed.server.listAnswers.answered()
-	second := dispatchRequest(t, seed.handler, http.MethodGet, target, nil, hiddenPerson)
-	if second.Code != http.StatusOK || second.Body.String() != first.Body.String() {
-		t.Fatalf("dana reads %s: %d %s, want alice's answer %s", target, second.Code, second.Body.String(), first.Body.String())
+	asAlice := func() *httptest.ResponseRecorder {
+		return dispatchRequest(t, seed.handler, http.MethodGet, target, nil, seedAlice)
 	}
-	if kept := seed.server.listAnswers.answered() - answered; kept != 1 {
-		t.Errorf("dana's read of %s was answered from the cache %d times, want once: she sees what alice sees", target, kept)
+	asDana := func() *httptest.ResponseRecorder {
+		return dispatchRequest(t, seed.handler, http.MethodGet, target, nil, hiddenPerson)
 	}
-	answered = seed.server.listAnswers.answered()
-	if apart := seed.request(t, callerBob, http.MethodGet, commentListOf(seed.issue[seedPrivate]), nil); apart.Code != http.StatusOK {
-		t.Fatalf("bob reads PRIV's comments: %d %s", apart.Code, apart.Body.String())
+	asBob := func() *httptest.ResponseRecorder {
+		return seed.request(t, callerBob, http.MethodGet, commentListOf(seed.issue[seedPrivate]), nil)
 	}
-	if kept := seed.server.listAnswers.answered() - answered; kept != 0 {
-		t.Errorf("bob's first read of PRIV's comments was answered from the cache %d times, want none", kept)
+	asCarol := func() *httptest.ResponseRecorder { return seed.request(t, callerCarol, http.MethodGet, target, nil) }
+
+	_, first := keptOver(asAlice)
+	for name, read := range map[string]func() *httptest.ResponseRecorder{"alice": asAlice, "dana": asDana, "carol": asCarol, "bob": asBob} {
+		for attempt := range 2 {
+			if kept, response := keptOver(read); kept != 0 {
+				t.Errorf("with PRIV private, %s's read %d was answered from the kept answers %d times, want none: %s sees part of the deployment",
+					name, attempt+1, kept, name)
+			} else if name == "dana" && response.Body.String() != first.Body.String() {
+				t.Errorf("dana reads %s as %s, want alice's answer %s", target, response.Body.String(), first.Body.String())
+			}
+		}
 	}
-	answered = seed.server.listAnswers.answered()
-	if carols := seed.request(t, callerCarol, http.MethodGet, target, nil); carols.Code != http.StatusOK {
-		t.Fatalf("carol reads %s: %d %s", target, carols.Code, carols.Body.String())
+
+	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
+	keptOver(asAlice)
+	if kept, second := keptOver(asDana); kept != 1 {
+		t.Errorf("with no private project dana's read of %s was answered from the kept answers %d times, want once: she sees what alice sees (R9)", target, kept)
+	} else if _, again := keptOver(asAlice); second.Body.String() != again.Body.String() {
+		t.Errorf("with no private project dana reads %s as %s, want alice's answer %s", target, second.Body.String(), again.Body.String())
 	}
-	if kept := seed.server.listAnswers.answered() - answered; kept != 0 {
-		t.Errorf("carol's read of %s, which alice and dana keep, was answered from the cache %d times, want none: she sees PRIV too", target, kept)
+	if kept, _ := keptOver(asBob); kept != 0 {
+		t.Errorf("with no private project bob's first read of PRIV's comments was answered from the kept answers %d times, want none: no reader that sees what he sees read it", kept)
+	}
+	if kept, _ := keptOver(asBob); kept != 1 {
+		t.Errorf("with no private project bob's second read of PRIV's comments was answered from the kept answers %d times, want once (R9)", kept)
 	}
 }
 

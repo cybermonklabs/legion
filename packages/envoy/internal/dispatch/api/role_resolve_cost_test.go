@@ -68,7 +68,7 @@ func TestARoleHeldByAHiddenSessionCostsWhatAnUnheldRoleCosts(t *testing.T) {
 	resolve := func(ctx context.Context, role string) (int64, string) {
 		t.Helper()
 		before := counter.sent.Load()
-		_, _, refusal := seed.server.resolveDeliveryTarget(context.WithValue(ctx, contextStatementsKey{}, true), model.Route{Kind: "role", ID: role}, "btw")
+		_, _, refusal, _ := seed.server.resolveDeliveryTarget(context.WithValue(ctx, contextStatementsKey{}, true), model.Route{Kind: "role", ID: role}, "btw")
 		return counter.sent.Load() - before, strings.ReplaceAll(refusal, role, "<role>")
 	}
 	for name, ctx := range map[string]context.Context{

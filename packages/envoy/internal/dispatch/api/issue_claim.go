@@ -209,9 +209,12 @@ func claimHolderHidden(ctx context.Context, q queryer, who model.Actor, claim *m
 // transaction open and no pooled connection held. `holder` is that session's own record - its
 // State and the LastSeen that dates it, which is all the rule asks about - or nil when the
 // registry holds no record of it at all, which is gone. `fetched` is false when the caller
-// never needed it, which is every claim of an issue nobody else holds.
+// never needed it, which is every claim of an issue nobody else holds. `unknown` says the
+// listener was not asked, because the caller may not see the holder (judgeHolder): nothing is
+// established about it, and the holder keeps its claim (claimBlockedBy).
 type holderLiveness struct {
 	fetched bool
+	unknown bool
 	holder  *envoy.Session
 }
 
@@ -318,6 +321,9 @@ func claimBlockedBy(
 	if !judged.live.fetched {
 		return errHolderUnjudged
 	}
+	if judged.live.unknown {
+		return &claimConflict{claim: *current, forcible: rule.forcible}
+	}
 	if judged.live.holder == nil {
 		return nil
 	}
@@ -404,6 +410,13 @@ func issueClaimSession(claim *model.IssueClaim) string {
 // does, under the lock, against the row as it stands then. The holder is read as who reads the
 // issue, so an issue of a project who does not see is no row: its holder is never read and the
 // listener is never asked about it, as for a key no issue holds.
+//
+// A holder the caller, who, may not see (claimHolderHidden) on an issue it does see is judged
+// unknown, and the listener is not asked about it either: an answer that turned on that session's
+// liveness would tell the caller whether a session it may not see is running. Like an unresponsive
+// holder the registry cannot date (judgeClaim), an unknown one keeps its claim, so the caller is
+// refused whatever the session's state, naming no holder (claimConflict.hidden), and a person's force
+// takes it as it takes any claim.
 func (s *server) judgeHolder(
 	ctx context.Context, who model.Actor, key string, actor model.Actor, rule personRule,
 ) (judgement, error) {
@@ -413,6 +426,14 @@ func (s *server) judgeHolder(
 	}
 	judged := judgement{holder: holder}
 	if !errors.Is(claimBlockedBy(holder, actor, rule, judged, time.Now()), errHolderUnjudged) {
+		return judged, nil
+	}
+	hidden, err := claimHolderHidden(ctx, s.deps.Store.Pool, who, holder)
+	if err != nil {
+		return judgement{}, err
+	}
+	if hidden {
+		judged.live = holderLiveness{fetched: true, unknown: true}
 		return judged, nil
 	}
 	judged.live, err = s.fetchHolderLiveness(ctx, *holder)

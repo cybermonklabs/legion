@@ -1365,13 +1365,18 @@ func scanIssueChildren(rows pgx.Rows) ([]model.IssueChild, error) {
 // row's.
 //
 // A gate is the issue's own row, but the document it names can be another project's (the write
-// stores the id and reads nothing of it): a gate naming a document its reader does not see is left
-// out, as the rule of references leaves out every such reference (references_seen.go). A gate
-// naming an id no document holds is answered as stored.
+// stores the id and reads nothing of it): a reader that does not see every object
+// (seesEveryObject) is answered only the gates whose id names a document it sees, as the rule of
+// references leaves out every reference to an object its reader does not see
+// (references_seen.go). A gate naming an id no document holds is left out for it too, since one
+// answered as stored beside one left out would tell such a reader which ids name a document it
+// does not see. A reader that sees every object is answered every gate as stored, an id no
+// document holds included, as before a project could be private (R9).
 var issueDesignGatesStatement = `
 		select g.step, g.artifact_id from design_gates g where g.issue = $1 and ` + access.IssueProjectClause("$1", "$3") + `
-			and not exists (select 1 from artifacts gate_document where gate_document.id = ` + store.CastableUUID("g.artifact_id") + `
-				and not ` + access.DocumentClause("gate_document", "$3") + ` offset 0)
+			and (` + access.ViewerFlag("$3", "all") + ` or (` + access.ViewerFlag("$3", "open") + ` and not ` + access.ViewerFlag("$3", "private") + `)
+				or exists (select 1 from artifacts gate_document where gate_document.id = ` + store.CastableUUID("g.artifact_id") + `
+					and ` + access.DocumentClause("gate_document", "$3") + ` offset 0))
 		order by array_position($2::text[], g.step)
 	`
 

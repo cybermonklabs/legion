@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"github.com/sjawhar/envoy/internal/dispatch/bytelru"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
@@ -149,15 +150,17 @@ func writeListAnswerBytes(w http.ResponseWriter, gzipped bool, body listAnswerBy
 	}
 }
 
-// writeListAnswer writes encoded as the answer under key and keeps what it wrote. The caller has
-// already compared the ETag, so what arrives here is an answer that goes out whole.
+// writeListAnswer writes encoded as the answer under key and keeps what it wrote when keep says
+// it may. The caller has already compared the ETag, so what arrives here is an answer that goes
+// out whole.
 //
-// ownerHeld is what the validator's read found: whether any row answers the owner the request
-// named. An owner nothing holds is answered the empty list rather than a refusal, as both routes
+// keep is false in two cases. An owner nothing holds (the validator's read found no row answering
+// the owner the request named) is answered the empty list rather than a refusal, as both routes
 // have always done, and that answer is kept under no key - the owner is the path the caller
 // spelled, so a signed-in caller asking for one made-up owner after another would otherwise fill
-// this cache with empty lists under keys of its own choosing.
-func (s *server) writeListAnswer(w http.ResponseWriter, key listAnswerKey, encoded listAnswerBytes, ownerHeld bool) {
+// this cache with empty lists under keys of its own choosing. And an answer read for a reader no
+// kept answer may serve (keepsListAnswerFor) is kept under no key either.
+func (s *server) writeListAnswer(w http.ResponseWriter, key listAnswerKey, encoded listAnswerBytes, keep bool) {
 	body, gzipped := encoded, false
 	if key.gzip && len(encoded) >= compressibleMinimum {
 		compressed, err := gzipListAnswer(encoded)
@@ -170,7 +173,7 @@ func (s *server) writeListAnswer(w http.ResponseWriter, key listAnswerKey, encod
 			body, gzipped = compressed, true
 		}
 	}
-	if ownerHeld && gzipped == key.gzip {
+	if keep && gzipped == key.gzip {
 		// The bytes carry the coding the key names, so a reader of this entry can be told what it
 		// is being sent from the key alone. An answer under compressibleMinimum is left plain for
 		// a caller that takes gzip (compressAnswers leaves it plain too) and is kept under no
@@ -179,6 +182,24 @@ func (s *server) writeListAnswer(w http.ResponseWriter, key listAnswerKey, encod
 		s.listAnswers.keep(key, body)
 	}
 	writeListAnswerBytes(w, gzipped, body)
+}
+
+// keepsListAnswerFor reports whether a list answer read for who may be kept here and handed to the
+// next reader whose request names the same key, and whether such a reader may be handed one. The
+// answer's bytes turn on what who sees: the sessions a comment's mentions and deliveries name and
+// the references an event's payload and its backlink counts name are left out or counted by the
+// access clauses, and those read rows of their own beside the viewer - a session's pairs, its
+// listener record, the fill marker, its reached projects - which move with no write to the list
+// and so with no move of its validator, while the key names only the viewer itself
+// (commentListViewOf, keptViewOf). A session that becomes hidden from alice after she read a list
+// would then be handed back to her from the kept bytes. So while a project is private no answer is
+// kept for a reader that does not see every object (seesEveryObject), and every such read builds
+// its own; a reader that sees every object reads every object whatever those rows hold, and keeps
+// as before. A deployment that holds no private project keeps every answer as before (R9), as
+// does a nil viewer's, which reads nothing of any project. What this costs the readers it holds
+// back is measured by TestAKeptListServesNoReaderWhoseViewMovedUnderIt's report.
+func keepsListAnswerFor(who model.Actor) bool {
+	return seesEveryObject(who) || who.Viewer == nil || !who.Viewer.AnyPrivate
 }
 
 // encodeListAnswer is body encoded exactly as WriteJSON writes it, trailing newline and all, so

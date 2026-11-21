@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -110,6 +111,11 @@ type AppContext struct {
 	// and, for a context with no Store, nothing, since it has no event log to read (whoami then
 	// answers 503). A test sets it to answer a head of its own.
 	eventHead func(r *http.Request) (int64, error)
+	// clock is AppContextOptions.Clock, time.Now where it is nil: what the passkey begins' bound
+	// reads the time from (limitPasskeyBegins).
+	clock func() time.Time
+	// trustedProxyRanges is AppContextOptions.TrustedProxyRanges.
+	trustedProxyRanges []netip.Prefix
 }
 
 // AppContextOptions is the explicit-injection bundle main.go assembles
@@ -134,10 +140,13 @@ type AppContextOptions struct {
 	Store          *store.Store
 	AgentTokens    *auth.SharedAgentTokens
 	DefaultProject string
-	// Passkeys is the passkey ceremonies where passkey sign-in is on, nil where it is off; the API
-	// is handed their store and their rule's check of a Workspace address (api.DepsInput.Passkeys,
-	// WorkspaceAddress). See AppContext.Passkeys.
+	// Passkeys is the passkey ceremonies where passkey sign-in is on, nil where it is off; the API is
+	// handed them whole (api.DepsInput.Passkeys), reading their store and their rule's check of a
+	// Workspace address from them. See AppContext.Passkeys.
 	Passkeys *identity.Passkeys
+	// PasskeyAccounts is the database's passkeys wherever Dispatch keeps people, whatever passkey
+	// sign-in says (api.DepsInput.PasskeyAccounts): Passkeys' own store where it is set.
+	PasskeyAccounts *store.PgPasskeys
 	// NewIssueLabel and NewIssueSession configure the issue the search bar files from a person's
 	// typed words (cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION); empty
 	// where the deployment configured neither. See api.DepsInput.
@@ -199,6 +208,13 @@ type AppContextOptions struct {
 	// SignInIssuer is the issuer people sign in through (cmd/dispatch: DISPATCH_SIGNIN_ISSUER);
 	// empty for none. See api.DepsInput.
 	SignInIssuer string
+	// Clock is what the passkey begins' bound reads the time from (limitPasskeyBegins); nil reads
+	// time.Now. A test holds it still, so a row's begins are not decided by the wall clock.
+	Clock func() time.Time
+	// TrustedProxyRanges are the front doors whose X-Forwarded-For the passkey begins' bound reads
+	// (cmd/dispatch: DISPATCH_TRUSTED_PROXY_RANGES, auth.BoundAddress); nil trusts none, and every
+	// begin is bounded by its connection's own address.
+	TrustedProxyRanges []netip.Prefix
 	// Files is the uploaded-file store main built from DISPATCH_FILE_STORE_BUCKET; nil keeps
 	// files in Postgres. See api.DepsInput.
 	Files            files.Store
@@ -291,11 +307,6 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 	if opts.Passkeys != nil && outsideOrigin == "" {
 		return nil, fmt.Errorf("BuildAppContext: Passkeys needs an OutsideOrigin, the only origin a passkey signs in at")
 	}
-	var passkeyStore *store.PgPasskeys
-	var workspaceAddress func(string) bool
-	if opts.Passkeys != nil {
-		passkeyStore, workspaceAddress = opts.Passkeys.Store(), opts.Passkeys.WorkspaceAddress
-	}
 	apiDeps, err := api.NewDeps(api.DepsInput{
 		Store:                  opts.Store,
 		Identity:               opts.Identity,
@@ -327,8 +338,8 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		AgentSecretsURL:        opts.AgentSecretsURL,
 		AgentSecretsTokenFile:  opts.AgentSecretsTokenFile,
 		SignInIssuer:           opts.SignInIssuer,
-		Passkeys:               passkeyStore,
-		WorkspaceAddress:       workspaceAddress,
+		Passkeys:               opts.Passkeys,
+		PasskeyAccounts:        opts.PasskeyAccounts,
 		Files:                  opts.Files,
 		TestHooksEnabled:       opts.TestHooksEnabled,
 		RouteRosterTTL:         opts.RouteRosterTTL,
@@ -352,6 +363,10 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 	if apiDeps.Store == nil {
 		eventHead = func(*http.Request) (int64, error) { return 0, errNoEventLog }
 	}
+	clock := opts.Clock
+	if clock == nil {
+		clock = time.Now
+	}
 	return &AppContext{
 		SigningKey:     opts.SigningKey,
 		WebDistDir:     opts.WebDistDir,
@@ -372,6 +387,9 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		apiDeps:        apiDeps,
 		eventHead:      eventHead,
 		lifetime:       opts.Lifetime,
+		clock:          clock,
+		// The ranges as boot parsed them, which nothing changes after.
+		trustedProxyRanges: opts.TrustedProxyRanges,
 	}, nil
 }
 
