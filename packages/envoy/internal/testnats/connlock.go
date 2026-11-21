@@ -23,26 +23,39 @@ const connLockSpare = 30 * time.Second
 // takes it for reading (Conn.Status, nats.go:6564). nats.go gives no way to hold it, so it is read
 // from the unexported field, as the listener's tests read a registry's lock
 // (cmd/listener/refilling_test.go, watcherGuard). A nats.go whose Conn has no such field fails the
-// test by name.
-func connLock(t testing.TB, conn *natsgo.Conn) *sync.RWMutex {
+// test by name with Errorf, so a caller on a goroutine other than the test's goes on, and reports
+// false.
+func connLock(t testing.TB, conn *natsgo.Conn) (*sync.RWMutex, bool) {
 	t.Helper()
 	if field := reflect.ValueOf(conn).Elem().FieldByName("mu"); field.IsValid() {
 		if lock, ok := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Interface().(*sync.RWMutex); ok {
-			return lock
+			return lock, true
 		}
 	}
-	t.Fatal("nats.go's Conn has no field mu of type sync.RWMutex, the connection lock HoldWriteLock takes: find the lock this nats.go's Conn.publish holds through its write")
-	return nil
+	t.Error("nats.go's Conn has no field mu of type sync.RWMutex, the connection lock HoldWriteLock takes: find the lock this nats.go's Conn.publish holds through its write")
+	return nil, false
 }
 
 // takeConnLock takes conn's connection lock (connLock) for writing and reports true once the caller
 // holds it; the caller lets it go with Unlock. nats.go holds the lock only while one of its calls
 // runs, so the take waits only for the calls that hold it now. Its one bound is the test binary's
-// deadline less connLockSpare, a guard against a lock nothing lets go; it reports false when the
-// test ends first, and a take that gets the lock after the wait has ended lets it go at once.
+// deadline less connLockSpare (testwait.Left), a guard against a lock nothing lets go. It never ends
+// its goroutine: the hand-back rows call HoldWriteLock from a hook on the intake's goroutine, where
+// t.Fatal would end the hook rather than the test. So when it cannot take the lock - no such field,
+// a deadline already no more than connLockSpare away, the guard passing - it fails the test by name
+// with Errorf and reports false. It reports false too, failing nothing, when the test ends first. A
+// take that gets the lock after the wait has ended lets it go at once.
 func takeConnLock(t *testing.T, conn *natsgo.Conn) (*sync.RWMutex, bool) {
 	t.Helper()
-	lock := connLock(t, conn)
+	lock, found := connLock(t, conn)
+	if !found {
+		return nil, false
+	}
+	bound, err := testwait.Left(t, connLockSpare)
+	if err != nil {
+		t.Error(err)
+		return nil, false
+	}
 	handed, abandoned := make(chan struct{}), make(chan struct{})
 	go func() {
 		lock.Lock()
@@ -52,17 +65,17 @@ func takeConnLock(t *testing.T, conn *natsgo.Conn) (*sync.RWMutex, bool) {
 			lock.Unlock()
 		}
 	}()
-	guard := time.NewTimer(testwait.Remaining(t, connLockSpare))
+	guard := time.NewTimer(bound)
 	defer guard.Stop()
 	select {
 	case <-handed:
 		return lock, true
 	case <-t.Context().Done():
 		close(abandoned)
-		return lock, false
+		return nil, false
 	case <-guard.C:
 		close(abandoned)
-		t.Fatalf("another nats.go call still held the connection lock %s before the test binary's deadline: nothing let it go", connLockSpare)
-		return lock, false
+		t.Errorf("another nats.go call still held the connection lock %s before the test binary's deadline: nothing let it go", connLockSpare)
+		return nil, false
 	}
 }

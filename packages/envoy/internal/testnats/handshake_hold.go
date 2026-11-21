@@ -129,7 +129,9 @@ func (h *HandshakeHold) Release() {
 // (takeConnLock). It returns once it holds the lock, which no reading of how long nats.go takes to
 // answer decides: from then every nats.go call on conn that needs the lock - a publish, a flush, a
 // close, a read of the status - waits until the func it returns thaws the proxy (Restore) and lets
-// the lock go. The test's end calls that func too.
+// the lock go. The test's end calls that func too. When it cannot take the lock it fails the test by
+// name without ending its goroutine, which may be a hook's rather than the test's (takeConnLock),
+// and returns a func that only thaws the proxy.
 func (h *HandshakeHold) HoldWriteLock(t *testing.T, conn *natsgo.Conn) (release func()) {
 	t.Helper()
 	h.Freeze()

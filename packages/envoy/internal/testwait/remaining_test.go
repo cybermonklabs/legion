@@ -39,7 +39,7 @@ func TestRemainingIsTheDeadlineLessTheSpare(t *testing.T) {
 func TestASpentDeadlineNamesWhatRanBeforeTheWait(t *testing.T) {
 	failure := spentChild(t, "60s")
 	for _, part := range []string{
-		"testwait.Remaining: the test binary's deadline leaves ",
+		"testwait: TestSpentDeadlineChild/waits: the test binary's deadline leaves ",
 		" not more than the 59s this wait must leave its test: the binary began its tests ",
 		" ago under -timeout 1m0s, and what ran before this wait (an earlier test, or this test's own earlier waits) used up that deadline",
 	} {
@@ -58,9 +58,30 @@ func TestASpentDeadlineNamesWhatRanBeforeTheWait(t *testing.T) {
 // raise it.
 func TestATimeoutNoLongerThanTheSpareAsksForALargerOne(t *testing.T) {
 	failure := spentChild(t, "30s")
-	want := "testwait.Remaining: the test binary's -timeout is 30s, not more than the 59s this wait must leave its test before the deadline, so no test has room to wait: raise -timeout"
+	want := "testwait: TestSpentDeadlineChild/waits: the test binary's -timeout is 30s, not more than the 59s this wait must leave its test before the deadline, so no test has room to wait: raise -timeout"
 	if failure != want {
 		t.Fatalf("the wait under -timeout 30s failed with %q, want %q", failure, want)
+	}
+}
+
+// Left fails nothing: with no more than the spare left it returns the line Remaining fails with,
+// as an error, and the test goes on unfailed. A spare of a day is more than any -timeout a run of
+// this package takes, so the line asks for a larger -timeout; under -timeout 0 there is no line.
+func TestLeftReturnsTheLineAndFailsNothing(t *testing.T) {
+	timeout, known := binaryTimeout()
+	left, err := Left(t, 24*time.Hour)
+	if _, bounded := t.Deadline(); !bounded {
+		if left != unbounded || err != nil {
+			t.Fatalf("under -timeout 0 Left is %s, %v, want %s and no error", left, err, unbounded)
+		}
+		return
+	}
+	want := "testwait: TestLeftReturnsTheLineAndFailsNothing: the test binary's -timeout is " + timeout.String() + ", not more than the 24h0m0s this wait must leave its test before the deadline, so no test has room to wait: raise -timeout"
+	if !known || left != 0 || err == nil || err.Error() != want {
+		t.Fatalf("Left with a day's spare is %s, %v (-timeout %s read: %t), want 0 and %q", left, err, timeout, known, want)
+	}
+	if t.Failed() {
+		t.Fatal("Left failed the test, though it only returns the line")
 	}
 }
 
@@ -81,12 +102,12 @@ func spentChild(t *testing.T, timeout string) string {
 	}
 	var failures []string
 	for line := range strings.Lines(stderr.String()) {
-		if strings.HasPrefix(line, "testwait.Remaining: ") {
+		if strings.HasPrefix(line, "testwait: TestSpentDeadlineChild/waits: ") {
 			failures = append(failures, strings.TrimSuffix(line, "\n"))
 		}
 	}
 	if len(failures) != 1 || !strings.Contains(stdout.String(), failures[0]+"\n") || !strings.Contains(stdout.String(), "--- FAIL: TestSpentDeadlineChild/waits (") {
-		t.Fatalf("the child under -timeout %s did not fail its waiting row with one testwait.Remaining line on stderr and the same failure:\n%s\nstderr:\n%s", timeout, stdout.String(), stderr.String())
+		t.Fatalf("the child under -timeout %s did not fail its waiting row with one testwait line on stderr and the same failure:\n%s\nstderr:\n%s", timeout, stdout.String(), stderr.String())
 	}
 	return failures[0]
 }
