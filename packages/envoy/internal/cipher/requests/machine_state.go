@@ -2443,10 +2443,20 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		lifetime = defaultLifetime(set, names, nil)
 	}
 	// denied is set when the current policy denies one of the names because the secret's
-	// requesters tag no longer lists this session: the approval is recorded as the request's own
-	// denial below rather than refused, since no login could approve such a name.
+	// requesters tag no longer lists this session, or because Dispatch calls the session's person
+	// a restricted member: the approval is recorded as the request's own denial below rather than
+	// refused, since no login could approve such a name. A restricted member's approval is that
+	// denial before the policy is read, naming the request's first name, so it writes no grant
+	// whatever its names: currentPolicyAdmits passes over a name the policy no longer serves, so a
+	// request whose every name left the policy has no name for Evaluate to deny, and would
+	// otherwise be granted. currentPolicyAdmits still runs, so its refusals (the judge's own rules,
+	// a withheld name no one may approve now) leave the request pending as they always did, and a
+	// name it denies is the one the denial names.
 	var denied *policyDenial
 	if approve {
+		if enr.Restricted {
+			denied = &policyDenial{name: requested[0].name, reason: policy.CallerReason(policy.ReasonRestrictedMember)}
+		}
 		requester, err := m.requester(ctx, tx, enr, facts)
 		if err != nil {
 			return Decision{}, false, err
@@ -2603,10 +2613,12 @@ func decidedUnder(ctx context.Context, tx pgx.Tx, requestID string, granted []re
 // decides: the secret's requesters tag no longer lists this session's person or its pod's service
 // (policy.ReasonRequesterNotListed), the secret belongs to a private project the session does not
 // name (or to one Dispatch does not hold), or Dispatch calls the session's person a restricted
-// member (policy.ReasonRestrictedMember). It is deliberately not a record.ErrNotApprover: no login
-// could approve such a name, so leaving the card pending would wait on a person who can do nothing
-// with it. applyDecisionAttempt records the approval as the request's denial instead, and its
-// message is that denial's detail, in the words a session is told (policy.CallerReason).
+// member (policy.ReasonRestrictedMember). applyDecisionAttempt makes the last one itself too, ahead
+// of currentPolicyAdmits, so that a request whose names the policy no longer serves is denied too.
+// It is deliberately not a record.ErrNotApprover: no login could approve such a name, so leaving
+// the card pending would wait on a person who can do nothing with it. applyDecisionAttempt records
+// the approval as the request's denial instead, and its message is that denial's detail, in the
+// words a session is told (policy.CallerReason).
 type policyDenial struct{ name, reason string }
 
 func (e *policyDenial) Error() string {

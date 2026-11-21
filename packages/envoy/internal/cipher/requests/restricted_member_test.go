@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
+	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
 // TestARestrictedOperatorGetsNoSecret is the request machine's half of the rule that a restricted
@@ -39,6 +41,12 @@ import (
 // by the group is not put to its owner, and another member's approval of the group's human-tier
 // secret the session left pending is the policy's denial. The control is a full member of the
 // same group, which reuses, is released, is put to the owner and is granted what it was.
+//
+// The same holds of an Anthropic federation secret the group owns and lists, whose release the
+// broker mints: the release of the grant the session got as a member before the machine asked
+// mints nothing and ends the grant, another member's approval of the one it left pending is the
+// policy's denial, and a fresh ask is denied. The control is a full member of the same group,
+// minted the token once, granted and given its grant back.
 func TestARestrictedOperatorGetsNoSecret(t *testing.T) {
 	const (
 		outsider = "outsider@outside.example"
@@ -290,6 +298,114 @@ func TestARestrictedOperatorGetsNoSecret(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("an Anthropic federation secret a group owns and lists mints a restricted member of it nothing", func(t *testing.T) {
+		const groupApprover = "approver@example.com"
+		for _, who := range []struct {
+			name       string
+			person     string
+			restricted bool
+		}{
+			{"a restricted member of the group", groupMember, true},
+			{"a full member of the group", secondMember, false},
+		} {
+			t.Run(who.name, func(t *testing.T) {
+				f := newGroupFixture(t)
+				f.directory.Set(approversGroup, groupMember, secondMember, groupApprover)
+				for _, name := range []string{"FED_A", "FED_B"} {
+					f.local.Put(policytest.TypeSecret(name, approversForm, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation)))
+				}
+				if err := f.m.Policy.Refresh(ctx); err != nil {
+					t.Fatalf("policy refresh: %v", err)
+				}
+				for _, name := range []string{"FED_A", "FED_B"} {
+					if !f.m.Policy.Get().Secrets[name].PersonApprovesEveryRelease() {
+						t.Fatalf("the policy does not serve %s as an Anthropic federation secret; the fixture is wrong", name)
+					}
+				}
+				var mints atomic.Int32
+				f.m.Minters = map[string]Minter{policy.TypeAnthropicFederation: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+					mints.Add(1)
+					return secrets.Minted{Value: "minted-federation-token"}, nil
+				}}
+				session, key := newEnrollment(t, f.m.Store, "session", "fed-box-"+t.Name(), new(who.person), nil)
+				ask := func(t *testing.T, name string) Request {
+					t.Helper()
+					// A federation secret's max-grant is an hour (policytest.FixtureMaxGrant), so
+					// the request names that lifetime.
+					req, err := f.m.Create(ctx, session, signRequestFor(t, f.m, key, 60*60, name), "", nil)
+					if err != nil {
+						t.Fatalf("Create(%s): %v", name, err)
+					}
+					return req
+				}
+				// Before the machine asks Dispatch: FED_A asked for and approved by another member
+				// of the group, and FED_B left pending on the group.
+				heldA := ask(t, "FED_A")
+				if heldA.State != "pending" || heldA.RecordID == nil {
+					t.Fatalf("Create(FED_A) as a member = %+v; want it pending on the group", heldA)
+				}
+				approvedA, err := f.m.ApplyDecision(ctx, *heldA.RecordID, true, groupApprover)
+				if err != nil || approvedA.GrantID == "" {
+					t.Fatalf("ApplyDecision(approve FED_A) as a member = %+v, %v; want a grant", approvedA, err)
+				}
+				pendingB := ask(t, "FED_B")
+				if pendingB.State != "pending" || pendingB.RecordID == nil {
+					t.Fatalf("Create(FED_B) as a member = %+v; want it pending on the group", pendingB)
+				}
+				stand := projectaccesstest.NewServer(t, nil, map[string]string{
+					groupMember:   projectaccess.MemberRestricted,
+					secondMember:  projectaccess.MemberFull,
+					groupApprover: projectaccess.MemberFull,
+				})
+				f.m.Projects = projectaccess.New(stand.URL, stand.Account, nil)
+
+				t.Run("the release of its grant of the federation secret", func(t *testing.T) {
+					before := mints.Load()
+					released, err := f.m.Values(ctx, approvedA.GrantID, session, nil, ReleaseCall{})
+					minted := mints.Load() - before
+					if !who.restricted {
+						if err != nil || released.Values["FED_A"] != "minted-federation-token" || minted != 1 {
+							t.Fatalf("Values(FED_A) = %v, %v with %d mints; want the minted token, minted once", released.Values, err, minted)
+						}
+						return
+					}
+					if !errors.Is(err, ErrGrantNotLive) || !errors.Is(err, errRestrictedMember) || len(released.Values) != 0 || minted != 0 {
+						t.Fatalf("Values(FED_A) = %v, %v with %d mints; want ErrGrantNotLive for a restricted member, nothing minted", released.Values, err, minted)
+					}
+					requireGrantEnded(t, f.m, approvedA.GrantID)
+				})
+
+				t.Run("another member's approval of the federation secret it left pending", func(t *testing.T) {
+					before := mints.Load()
+					dec, err := f.m.ApplyDecision(ctx, *pendingB.RecordID, true, groupApprover)
+					switch {
+					case who.restricted && (err != nil || dec.State != "denied" || dec.GrantID != "" || !strings.Contains(dec.Detail, "FED_B: "+policy.ReasonRestrictedMember)):
+						t.Fatalf("ApplyDecision(approve FED_B) by %s = %+v, %v; want it denied naming %s and no grant", groupApprover, dec, err, policy.ReasonRestrictedMember)
+					case !who.restricted && (err != nil || dec.State != "granted" || dec.GrantID == ""):
+						t.Fatalf("ApplyDecision(approve FED_B) by %s = %+v, %v; want it granted", groupApprover, dec, err)
+					}
+					if minted := mints.Load() - before; minted != 0 {
+						t.Fatalf("the approval minted %d tokens; want none", minted)
+					}
+				})
+
+				t.Run("a fresh ask for the federation secret", func(t *testing.T) {
+					req := ask(t, "FED_A")
+					if !who.restricted {
+						if req.GrantID == nil || *req.GrantID != approvedA.GrantID {
+							t.Fatalf("Create(FED_A) = %+v; want grant %s given back", req, approvedA.GrantID)
+						}
+						return
+					}
+					if req.State != "denied" || req.GrantID != nil || req.RecordID != nil || req.Detail == nil ||
+						!strings.Contains(*req.Detail, "FED_A: "+policy.ReasonRestrictedMember) {
+						t.Fatalf("Create(FED_A) = %+v; want it denied naming %s, with no grant and no record", req, policy.ReasonRestrictedMember)
+					}
+				})
+			})
+		}
+	})
 }
 
 // TestARestrictedMembersGrantEndsWhateverItsNames: a restricted member's grant is ended at its
@@ -297,12 +413,19 @@ func TestARestrictedOperatorGetsNoSecret(t *testing.T) {
 // longer serves, which on its own is a pause and not an end (noLongerServed), still ends, and ends
 // as a restricted member's (errRestrictedMember). The control is the same grant shape under a full
 // member, which is refused for the name that is gone and left live.
+//
+// An approval of a request a restricted member's session left pending writes no grant whatever
+// its names either: when the policy no longer serves any of them, so that no name is left for the
+// policy to deny, the approval is still the policy's denial, restricted-member. The control is the
+// same approval of a full member's request for the same name, which is granted, as an approval of
+// a name the policy no longer serves is (its release is then refused for the name).
 func TestARestrictedMembersGrantEndsWhateverItsNames(t *testing.T) {
 	const outsider = "outsider@outside.example"
 	ctx := context.Background()
 	m, _, _, _ := newFixture(t)
 	gone := policytest.Secret("GONE_SECRET", policy.OwnerShared, policy.TierAgent, "gone-v1")
-	retag(t, m, gone, policytest.Secret("KEPT_SECRET", policy.OwnerShared, policy.TierAgent, "kept-v1"))
+	goneKey := policytest.Secret("GONE_KEY", policy.OwnerShared, policy.TierHuman, "gone-key-v1")
+	retag(t, m, gone, goneKey, policytest.Secret("KEPT_SECRET", policy.OwnerShared, policy.TierAgent, "kept-v1"))
 	twoNames := func(t *testing.T, person string) (string, string) {
 		t.Helper()
 		session, key := newEnrollment(t, m.Store, "session", person+"-box-"+t.Name(), new(person), nil)
@@ -314,9 +437,27 @@ func TestARestrictedMembersGrantEndsWhateverItsNames(t *testing.T) {
 	}
 	outsiderSession, outsiderGrant := twoNames(t, outsider)
 	fullSession, fullGrant := twoNames(t, fixtureOperator)
+	// Each person's session also leaves a request for GONE_KEY pending before the policy drops it.
+	pendingGoneKey := func(t *testing.T, person string) Request {
+		t.Helper()
+		session, key := newEnrollment(t, m.Store, "session", person+"-asks-"+t.Name(), new(person), nil)
+		req, err := m.Create(ctx, session, signRequest(t, m, key, "needs the key", "GONE_KEY"), "", nil)
+		if err != nil || req.State != "pending" || req.RecordID == nil {
+			t.Fatalf("Create(GONE_KEY) for %s = %+v, %v; want pending with a record", person, req, err)
+		}
+		return req
+	}
+	outsiderPending := pendingGoneKey(t, outsider)
+	fullPending := pendingGoneKey(t, fixtureOperator)
 	fixtureStore(m).Delete(gone.Name)
+	fixtureStore(m).Delete(goneKey.Name)
 	if err := m.Policy.Refresh(ctx); err != nil {
 		t.Fatalf("policy refresh: %v", err)
+	}
+	for _, name := range []string{"GONE_SECRET", "GONE_KEY"} {
+		if _, served := m.Policy.Get().Secrets[name]; served {
+			t.Fatalf("the policy still serves %s; the fixture is wrong", name)
+		}
 	}
 	dispatch := projectaccesstest.NewServer(t, nil, map[string]string{outsider: projectaccess.MemberRestricted, fixtureOperator: projectaccess.MemberFull})
 	m.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
@@ -335,6 +476,22 @@ func TestARestrictedMembersGrantEndsWhateverItsNames(t *testing.T) {
 	var revoked bool
 	if err := m.Store.Pool.QueryRow(ctx, `select revoked_at is not null from grants where id=$1`, fullGrant).Scan(&revoked); err != nil || revoked {
 		t.Fatalf("%s's grant %s revoked = %t, %v; want it left live", fixtureOperator, fullGrant, revoked, err)
+	}
+
+	// The approval of the restricted member's request whose one name the policy no longer serves
+	// is the policy's denial, restricted-member, and writes no grant.
+	dec, err := m.ApplyDecision(ctx, *outsiderPending.RecordID, true, "bob@example.com")
+	if err != nil || dec.State != "denied" || dec.GrantID != "" || !strings.Contains(dec.Detail, "GONE_KEY: "+policy.ReasonRestrictedMember) {
+		t.Fatalf("ApplyDecision(approve %s's GONE_KEY, no longer served) = %+v, %v; want it denied naming %s and no grant", outsider, dec, err, policy.ReasonRestrictedMember)
+	}
+	var grants int
+	if err := m.Store.Pool.QueryRow(ctx, `select count(*) from grants where request_id=$1`, outsiderPending.ID).Scan(&grants); err != nil || grants != 0 {
+		t.Fatalf("%s's GONE_KEY request holds %d grants, %v; want none", outsider, grants, err)
+	}
+
+	// The control: the same approval of the full member's request is granted.
+	if dec, err := m.ApplyDecision(ctx, *fullPending.RecordID, true, "bob@example.com"); err != nil || dec.State != "granted" || dec.GrantID == "" {
+		t.Fatalf("ApplyDecision(approve %s's GONE_KEY, no longer served) = %+v, %v; want it granted", fixtureOperator, dec, err)
 	}
 }
 

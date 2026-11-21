@@ -823,13 +823,14 @@ Dispatch cannot say what kind of member that person is.
 
 A secret's owner may be a Google group, written `group:` and the group's lowercase email, and so
 may an entry of its `requesters`. Each member of an owner group stands where the one owner of a
-person's secret stands: a member's own session gets the group's agent-tier secret at once; every
-other request for it, and every request for its human-tier secret, waits for the group's
-approval, which any member gives on the broker's page, and any member dismisses once it expires;
-and a member the group's last good read listed, however old that read is, lists and revokes the
-grants a member or the model judge approved ([Approvals](#approvals)). A member Dispatch calls a
-restricted member is none of that, and decides, lists, revokes and dismisses nothing of the
-group's ([Machine login](#machine-login)).
+person's secret stands: a member's own session gets the group's agent-tier secret at once (a
+restricted member's session gets none of the group's secrets, as it gets no other secret:
+[Machine login](#machine-login)); every other request for it, and every request for its
+human-tier secret, waits for the group's approval, which any member gives on the broker's page,
+and any member dismisses once it expires; and a member the group's last good read listed,
+however old that read is, lists and revokes the grants a member or the model judge approved
+([Approvals](#approvals)). A member Dispatch calls a restricted member is none of that, and
+decides, lists, revokes and dismisses nothing of the group's ([Machine login](#machine-login)).
 A member may approve a request their own session made, as a sole owner may approve their own: a
 group owner is not a second person, and no rule asks for one. A `requesters` entry naming a
 group admits a session whose person is a member. A list, revoke or dismissal that names the
