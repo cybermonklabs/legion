@@ -68,11 +68,11 @@ var (
 
 // firstAccounts is how many accounts the shared server starts with. Every time a test asks for
 // one past them, the server doubles them by a reload: a server's start time grows faster than its
-// account count (0.9 s for 1,000 on a loaded devbox, 26 s for 5,000). The reload's wait,
-// connectTimeout, caps that growth: at half a CPU, doubling 4,096 accounts took 36 s and 65 s in
-// two measurements, so the test that asks for account 4,097 fails. A package run takes one account
-// for each test and subtest that asks (103 for cmd/listener, 64 for internal/store), so -count=40
-// of cmd/listener in one binary reaches the ceiling.
+// account count (0.9 s for 1,000 on a loaded devbox, 26 s for 5,000). At half a CPU, doubling
+// 4,096 accounts took 36 s and 65 s in two measurements, which the test that asks for account
+// 4,097 waits out, within its deadline (testDeadline). A package run takes one account for each
+// test and subtest that asks (103 for cmd/listener, 64 for internal/store), so -count=40 of
+// cmd/listener in one binary reaches that size.
 const firstAccounts = 256
 
 // init runs in every test binary that imports this package, whichever helper its tests use. Every
@@ -344,10 +344,10 @@ func (s *Server) detach() *natsserver.Server {
 // accepting clients, hands off the JetStream leaderships it holds, and closes its clients over its
 // lame-duck window (rigLameDuck), so they move to the other servers they know rather than all at
 // once. It returns once the server has shut down, keeping its store and URL for a later Start as
-// Stop does. A stopped server does nothing. A lame duck that has not finished within connectTimeout
-// is shut down at once and returned as an error rather than failing the test here, so a caller may
+// Stop does. A stopped server does nothing. A lame duck that has not finished by testDeadline is
+// shut down at once and returned as an error rather than failing the test here, so a caller may
 // run it on a goroutine of its own and fail on the test's goroutine (testing allows FailNow there
-// only).
+// only): t is read for its deadline alone.
 //
 // Either way it returns only once the lame duck's own goroutine has returned, not only once
 // WaitForShutdown has: nats-server v2.15.1's lameDuckMode shuts JetStream down, writing every
@@ -355,7 +355,7 @@ func (s *Server) detach() *natsserver.Server {
 // and a Shutdown called while another runs returns at once (2620). The Shutdown this sends at the
 // deadline can therefore finish, and close what WaitForShutdown waits on, while the lame duck still
 // writes the store, and the cleanup start registers would then remove that store under it.
-func (s *Server) LameDuck() error {
+func (s *Server) LameDuck(t testing.TB) error {
 	srv := s.detach()
 	if srv == nil {
 		return nil
@@ -366,13 +366,20 @@ func (s *Server) LameDuck() error {
 		srv.WaitForShutdown()
 		close(ended)
 	}()
+	var timeout <-chan time.Time
+	deadline, bounded := testDeadline(t)
+	if bounded {
+		timer := time.NewTimer(time.Until(deadline))
+		defer timer.Stop()
+		timeout = timer.C
+	}
 	select {
 	case <-ended:
 		return nil
-	case <-time.After(connectTimeout):
+	case <-timeout:
 		srv.Shutdown()
 		<-ended
-		return fmt.Errorf("the NATS server did not finish its lame duck within %s: %s", connectTimeout, s.log.String())
+		return fmt.Errorf("the NATS server did not finish its lame duck by %s, short of the test's deadline: %s", deadline.Format(time.RFC3339), s.log.String())
 	}
 }
 
@@ -451,9 +458,9 @@ func (s *Server) Reload(t testing.TB, config string) error {
 	// server's as well: a reload can neither move the one nor turn the other on or off.
 	opts.ConfigFile = s.configPath
 	opts.JetStream = jetStream
-	release, err := s.relay.hold()
+	release, err := s.relay.hold(t)
 	if err == nil {
-		err = s.relay.barrier()
+		err = s.relay.barrier(t)
 	}
 	if err != nil {
 		release()

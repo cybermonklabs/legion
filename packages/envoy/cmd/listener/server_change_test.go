@@ -661,7 +661,7 @@ func (s *serverChangeSoak) disrupt(t *testing.T, lameDuck bool) {
 	disrupted := make(chan error, 1)
 	go func() {
 		if lameDuck {
-			disrupted <- server.LameDuck()
+			disrupted <- server.LameDuck(t)
 			return
 		}
 		server.Stop(t)

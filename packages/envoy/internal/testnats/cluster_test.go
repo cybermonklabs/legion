@@ -106,7 +106,7 @@ func TestALameDuckMemberSendsItsClientsToAnotherMember(t *testing.T) {
 		t.Fatalf("the members advertised %v to the client, want no URL beyond the ones it was given", discovered)
 	}
 
-	if err := cluster.Servers[0].LameDuck(); err != nil {
+	if err := cluster.Servers[0].LameDuck(t); err != nil {
 		t.Fatal(err)
 	}
 
