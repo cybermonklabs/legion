@@ -6146,11 +6146,17 @@ func TestMemoryGuardPanicReasonNamesTheLineThatPanickedTwoCallsDeep(t *testing.T
 // panicTwoCallsDeep panics one call below itself (panicHere), with the line of that panic in line.
 func panicTwoCallsDeep(line *int) { panicHere(line) }
 
-// panicHere panics, with the line of its panic in line.
+// panicHere panics, with the line of its panic in line: callerLine runs inside the panic's own
+// argument, so the line it gives is the panic's, wherever that line moves (thread
+// PRRT_kwDORFy7ds66UWB8 of review round 5 of cybermonklabs/legion#4273).
 func panicHere(line *int) {
-	_, _, at, _ := runtime.Caller(0)
-	*line = at + 2
-	panic("a test's panic two calls deep")
+	panic(callerLine(line, "a test's panic two calls deep"))
+}
+
+// callerLine sets line to the line of the call of it, its caller's, and is msg.
+func callerLine(line *int, msg string) string {
+	_, _, *line, _ = runtime.Caller(1)
+	return msg
 }
 
 // A panic while the guard reads the smaps of its processes lets go of a smaps buffer that a large
