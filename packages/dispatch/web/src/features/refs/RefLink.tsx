@@ -147,7 +147,8 @@ export function RefLink({
   // exist and for a link whose words its author wrote, the words the author wrote stand. An
   // issue is the issue's own address or a tab of its page (`issueOfRoute`).
   const issueKey = issueOfRoute(route);
-  const issueStatus = issueKey !== undefined && !missing && title !== undefined ? status : undefined;
+  const issueStatus =
+    issueKey !== undefined && !missing && title !== undefined ? status : undefined;
   const named =
     reads === "words" || missing
       ? undefined
