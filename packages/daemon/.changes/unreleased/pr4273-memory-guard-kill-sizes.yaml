@@ -10,10 +10,11 @@ body: |-
     fork, its parent gone or not, until its executable or arguments change. An argument rewrite
     (setproctitle, process.title) is not a new program: a process that was no fork keeps its size as
     of the kill whatever its arguments become. In the order's tier of growth since the stay's first
-    kill, a process first read after that kill counts from 0 unless that first read is a fork's. A
-    grower that steps between a reading and the guard's reads at it, whose read at the kill failed,
-    that runs its own program only after the kill's reading, or that the guard first read after the
-    stay's first kill, now counts as grown, so the guard ends it rather than waiting or ending a
-    larger process that never grew.
+    kill, a process first read after that kill counts from 0 unless one of its reads at the reading
+    of that first read is a fork's, its parent read there before or after it. A grower that steps
+    between a reading and the guard's reads at it, whose read at the kill failed, that runs its own
+    program only after the kill's reading, or that the guard first read after the stay's first kill,
+    now counts as grown, so the guard ends it rather than waiting or ending a larger process that
+    never grew.
 custom:
     Issue: pr4273
