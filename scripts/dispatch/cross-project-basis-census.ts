@@ -549,50 +549,65 @@ function parseEventsFile(text: string, path: string): LogEvent[] {
   });
 }
 
-/**
- * The event id the window's pages start after: the least `after` whose next event is at or after
- * `from`, or the log's end. The log is paged by id, and created_at rises with it, so a doubling and
- * then a halving search finds it in a few dozen reads of one event each.
- */
-async function windowStart(config: DispatchConfig, from: number): Promise<number> {
-  const reaches = async (after: number) => {
-    const [next] = await get<LogEvent[]>(config, `/api/v1/events/log?after=${after}&limit=1`);
-    return next === undefined || date(next.created_at, "an event's created_at") >= from;
-  };
-  if (await reaches(0)) return 0;
-  let low = 0;
-  let high = 1;
-  while (!(await reaches(high))) {
-    low = high;
-    high *= 2;
+/** The id of the first event the event log holds after `after`, or undefined when it holds none. */
+async function nextEventId(config: DispatchConfig, after: number): Promise<number | undefined> {
+  const [next] = await get<LogEvent[]>(config, `/api/v1/events/log?after=${after}&limit=1`);
+  if (next !== undefined && next.id <= after) {
+    throw new Error(`GET /api/v1/events/log returned no id after ${after}`);
   }
-  while (high - low > 1) {
-    const middle = Math.floor((low + high) / 2);
-    if (await reaches(middle)) high = middle;
-    else low = middle;
-  }
-  return high;
+  return next?.id;
 }
 
-/** Every event of the window, read from the event log a page at a time. */
+/**
+ * The id of the log's last event as the log stands when the read begins, or 0 for an empty log.
+ * The route reads forward by id and takes no `before`, no order and no time, so a doubling and then
+ * a halving search finds it, one event a read: whether an event lies after an id falls with the id
+ * alone, whatever the events' times.
+ */
+async function lastEventId(config: DispatchConfig): Promise<number> {
+  // `last` is an event's id and no event lies after `beyond`, so the log's last id is between them.
+  let last = await nextEventId(config, 0);
+  if (last === undefined) return 0;
+  let beyond = last * 2;
+  for (let next = await nextEventId(config, beyond); next !== undefined; ) {
+    last = next;
+    beyond = next * 2;
+    next = await nextEventId(config, beyond);
+  }
+  while (last < beyond) {
+    const middle = Math.floor((last + beyond) / 2);
+    const next = await nextEventId(config, middle);
+    if (next === undefined) beyond = middle;
+    else last = next;
+  }
+  return last;
+}
+
+/**
+ * Every event of the window: the whole event log, read a page at a time by id from its first event
+ * through its last when the read began, with each event filtered by its time. Dispatch stamps an
+ * event with its transaction's start, and a transaction that started earlier can append later
+ * (`events.Broker.Append`), so ids and times are not in one order: no event's time says where the
+ * window's other events lie.
+ */
 async function readWindow(config: DispatchConfig, from: string, to: string): Promise<LogEvent[]> {
   const fromTime = date(from, "--from");
   const toTime = date(to, "--to");
+  const end = await lastEventId(config);
   const events: LogEvent[] = [];
-  let after = await windowStart(config, fromTime);
-  while (true) {
+  for (let after = 0; after < end; ) {
     const page = await get<LogEvent[]>(
       config,
       `/api/v1/events/log?after=${after}&limit=${EVENT_LOG_PAGE}`
     );
-    events.push(...page.filter((event) => inWindow(event, fromTime, toTime)));
     const last = page.at(-1);
-    if (last === undefined || date(last.created_at, "an event's created_at") >= toTime) {
-      return events;
-    }
+    // No event lies after `after` any longer: nothing the read began with is left.
+    if (last === undefined) break;
     if (last.id <= after) throw new Error(`GET /api/v1/events/log returned no id after ${after}`);
+    events.push(...page.filter((event) => event.id <= end && inWindow(event, fromTime, toTime)));
     after = last.id;
   }
+  return events;
 }
 
 /** Each issue's whole history, `ISSUE_CONCURRENCY` at a time, each through a client of its own, so
