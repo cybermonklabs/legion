@@ -5,10 +5,12 @@ body: |-
   topic and `POST /v1/messages/send` answered such a resend `503` with `bus_unavailable`, "the
   message bus did not answer: a publish under the same message id is still in process", so a
   sender that retried during a hub failover was told its message was not taken while its first
-  attempt was being stored. Every publish the listener makes under a message id now publishes
-  again every 50 ms until the stream answers with the earlier attempt's copy: the two routes, a
-  role send's forward to its holder, a role-lane forward, a kept-lane walk's forward, a keep and a
-  takeover's copy. A role send's forward refused that way is sent again inside the same attempt,
+  attempt was being stored. Every publish whose answer a request is answered or charged by now
+  publishes again every 50 ms until the stream answers with the earlier attempt's copy: the two
+  routes, a role send's forward to its holder, a role-lane forward and a kept-lane walk's forward,
+  and so do a keep and a takeover's copy. The sweep's wake report, a kept copy's dead letter and a
+  delivery exception do not, and still log a failed publish while the earlier publish stores the
+  one copy. A role send's forward refused that way is sent again inside the same attempt,
   not counted as a forward that failed and made again. A request whose budget ends while the
   earlier attempt is still in process, a role send's included, is answered `503` with
   `Retry-After: 1`, the body `envoy: an earlier attempt of this message is still being stored: …`

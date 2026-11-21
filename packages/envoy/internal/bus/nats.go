@@ -1815,8 +1815,9 @@ func streamFull(err error) error {
 // names the one it will hold (nats-server's JSStreamDuplicateMessageConflict). It is not an
 // ErrRefused: the same publish sent again once the earlier one is stored is answered as a
 // duplicate with that copy's sequence, which is what a caller that reads the acknowledgement
-// retries for (PublishStoredAck, PublishAckWithin; every publish the listener makes under a message
-// id, cmd/listener's publishPastInProcess). The error still matches nats-server's *nats.APIError.
+// retries for (PublishStoredAck, PublishAckWithin; cmd/listener's publishPastInProcess, which the
+// listener's request publishes, keep and takeover copy take). The error still matches
+// nats-server's *nats.APIError.
 var ErrDuplicateInProcess = errors.New("a publish under the same message id is still in process")
 
 // jsStreamDuplicateMessageConflict is nats-server's code for a publish whose message id is a

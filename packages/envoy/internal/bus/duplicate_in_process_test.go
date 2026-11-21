@@ -12,9 +12,9 @@ import (
 // with nats-server's code 10158 and no sequence (JSStreamDuplicateMessageConflict): the earlier
 // copy is not stored yet, so nothing names the copy this publish duplicates. storedRefusal, the
 // mapping sendStored makes of a failed publish on the stored path, names that answer
-// ErrDuplicateInProcess, which every listener publish under a message id retries, and the
-// server's own error still matches beside it. It is no ErrRefused, since the same publish sent
-// again is answered once the earlier one is stored. A full stream's refusal is named ErrStreamFull
+// ErrDuplicateInProcess, which cmd/listener's publishPastInProcess retries, and the server's own
+// error still matches beside it. It is no ErrRefused, since the same publish sent again is
+// answered once the earlier one is stored. A full stream's refusal is named ErrStreamFull
 // alone, and every other answer passes through as it was. The test calls storedRefusal itself, so
 // a change to the mapping sendStored makes fails it. The answer is the server's own APIError
 // value; a cluster whose routes are frozen gives the code itself, which cmd/listener's in-process
