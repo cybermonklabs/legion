@@ -465,16 +465,16 @@ path, and the key is missing altogether on a listener older than the field.
 
 ## The NATS grant a Legion daemon needs
 
-Legion's daemon reads Dispatch, GitHub and listener events from the stream through a durable
-consumer per project for each: `legion-go-<project>-dispatch` (filtering
-`notifications.dispatch.issue.>` alone), `legion-go-<project>-github` (filtering each repository
-the project works in), `legion-go-<project>-wake` (filtering both `notifications.legion.wake`, the
-wake subject every daemon shares, and `notifications.legion.<token>.wake`, the project's own, the
-token being the project as its claim tokens spell it, while the listener's role and agent reports
-move from the one to the other) and `legion-go-<project>-ready` (filtering
-`notifications.legion.wake`, from its own creation on, for the listener's liveness report).
-It sends its own notices to roles and to the
-controller through the listener's HTTP API, not over NATS.
+Legion's daemon reads Dispatch, GitHub and listener events from the stream through four durable
+consumers per project, each on one filter: `legion-go-<project>-dispatch` (the project's issue
+events, `notifications.dispatch.issue.<project>.>`), `legion-go-<project>-github` (every
+repository's GitHub events, `notifications.github.>`; the daemon drops in its own process the
+events of a repository it does not work in), `legion-go-<project>-wake` (the listener's wake
+reports for the project, `notifications.legion.<token>.wake`, the token being the project as its
+claim tokens spell it) and `legion-go-<project>-ready` (the listener's liveness report,
+`notifications.legion.wake`, the one wake subject every daemon shares, which carries nothing
+else). It sends its own notices to roles and to the controller through the listener's HTTP API,
+not over NATS.
 
 So the NATS user the daemon connects as needs these permissions:
 
@@ -491,15 +491,15 @@ When `envoy-infra:gcp:NatsHub` renders this user, set its `daemon` field to `tru
 | `$JS.ACK.ENVOY_NOTIFICATIONS.>` | |
 
 The last row is the subject a consumer acknowledges a message on. Replies to the API requests come
-back on `_INBOX.>`. The stored-message get (`STREAM.MSG.GET`) is how `legion state` reads each
-consumer's oldest waiting message, whose time is the consumer's lag; it only reads, one message at
-a time. A daemon whose user lacks it still runs. NATS does not answer a request it refuses, so the
-daemon's state shows each consumer with messages waiting as `unavailable: read the oldest waiting
-message: context deadline exceeded`, its waiting count still shown and the other consumers
-unchanged, and the daemon's log names the refused subject.
+back on `_INBOX.>`. The stream's info (`STREAM.INFO`) and the stored-message get
+(`STREAM.MSG.GET`) are read only by a daemon of a release before each consumer had one filter:
+such a daemon opens its consumers with the first and times each consumer's lag by its oldest
+waiting message with the second. A later daemon reads neither: it opens each consumer by name,
+and `legion state` times the lag from the consumer's own info. The grant keeps both rows until no
+earlier daemon runs.
 
 The consumer subjects end in `>`, so the grant reaches every consumer of `ENVOY_NOTIFICATIONS`,
-not just the daemon's three: a holder of the daemon's seed can read, recreate with another filter,
+not just the daemon's four: a holder of the daemon's seed can read, recreate with another filter,
 and drain any consumer of the stream, every host's listener consumer and another project's daemon
 consumers included. It can also create a push consumer whose delivery subject is any subject at
 all, so it can send the stream's messages to subjects it may not publish to itself: role lanes,

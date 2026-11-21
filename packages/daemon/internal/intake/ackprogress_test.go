@@ -143,7 +143,7 @@ func publishHeldBacklog(t *testing.T, js jetstream.JetStream) {
 // a row that drives a single message through the daemon needs.
 func publishIssueEvent(t *testing.T, js jetstream.JetStream, key string, id int) {
 	t.Helper()
-	publish(t, js, "notifications.dispatch.issue."+key+".issue.updated", envelopeJSON(t, fmt.Sprintf("held-%d", id), "dispatch",
+	publish(t, js, issueSubject(key, "issue.updated"), envelopeJSON(t, fmt.Sprintf("held-%d", id), "dispatch",
 		fmt.Sprintf(`{"id":%d,"issue_key":%q,"seq":1,"notify":true,"type":"issue.updated","actor":{"kind":"user","id":"someone"},`+
 			`"payload":{"key":%q,"status":"backlog","title":"a held event","parent":null,"rank":"A","labels":[],"resolved_repo":"sjawhar/legion"}}`, id, key, key)))
 }

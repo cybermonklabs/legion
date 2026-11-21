@@ -102,14 +102,17 @@ func TestTheReadyConsumerStartsAtItsCreation(t *testing.T) {
 }
 
 // The wake consumer migrates in place, keeping its name, its creation and its ack floor at each
-// step. Widen: this release's boot updates the consumer of today's shape, on the shared wake
-// subject alone, to both wake subjects, the shared one and the project's own, and a report the
-// project's subject gains after the boot is delivered and applied.
+// step. Widen is deploy 1's step, held at its own head (cybermonklabs/legion#4743): the consumer of
+// today's shape, on the shared wake subject alone, is updated to both wake subjects. Narrow is this
+// build's step: the consumer deploy 1 left, on both wake subjects, is updated to the project's
+// subject alone, and a report the project's subject gains after the boot is delivered and applied,
+// while a role report a listener still puts on the shared subject reaches neither consumer as a
+// fact.
 //
-// Control: a consumer created at the next message in place of the update has no ack floor, so the
-// comparison would name the lost floor.
+// Control: a consumer created at the next message in place of the update has another ack floor,
+// so the comparison would name the recreate.
 func TestTheWakeConsumerWidensAndNarrowsInPlace(t *testing.T) {
-	t.Run("Widen", func(t *testing.T) {
+	t.Run("Narrow", func(t *testing.T) {
 		ctx := context.Background()
 		pool := migratedPool(t)
 		createWrites(t, pool)
@@ -120,21 +123,26 @@ func TestTheWakeConsumerWidensAndNarrowsInPlace(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		before := wakeConsumerInShape(t, js, stream, wake, []string{legionWakeSubject})
-		requireARecreateIsSeen(t, js, stream, before, []string{legionWakeSubject, projectWake})
+		before := wakeConsumerInShape(t, js, stream, wake, []string{legionWakeSubject, projectWake})
+		requireARecreateIsSeen(t, js, stream, before, []string{projectWake})
 
 		consumers, err := OpenConsumers(ctx, js, pool, spec)
 		if err != nil {
 			t.Fatalf("OpenConsumers: %v", err)
 		}
-		requireUpdatedInPlace(t, stream, before, []string{legionWakeSubject, projectWake})
+		requireUpdatedInPlace(t, stream, before, []string{projectWake})
 
 		stop := runConsumers(t, consumers, wakeMarks())
 		defer stop()
+		publish(t, js, legionWakeSubject, wakeReport(t, "role-on-shared", ListenerWakeRole, "legion-capture-capture-8-architect"))
 		publish(t, js, projectWake, wakeReport(t, "role-on-project", ListenerWakeRole, "legion-capture-capture-7-architect"))
 		testwait.Eventually(t, "the report on the project's wake subject applied", func() bool {
 			return slices.Contains(writeHandlers(t, pool), "wake-role_message-legion-capture-capture-7-architect")
 		})
+		waitDelivered(t, stream, readyConsumerName(spec.Project))
+		if got := writeHandlers(t, pool); slices.Contains(got, "wake-role_message-legion-capture-capture-8-architect") {
+			t.Fatalf("applied %q: a role report on the shared subject reached the narrowed daemon", got)
+		}
 	})
 }
 

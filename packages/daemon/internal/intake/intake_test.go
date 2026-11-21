@@ -679,25 +679,23 @@ func settingsSubject(project string) string {
 	return "notifications.dispatch.project." + project + ".settings.repo_project.updated"
 }
 
-// A boot narrows the Dispatch consumer an earlier daemon made to the issue events alone: the
-// consumer that heard the subject of Dispatch's settings.repo_project.updated beside them is
-// updated in place, its position kept, and its filters read back exactly
-// notifications.dispatch.issue.>. An event Dispatch then publishes on that settings subject is
-// never delivered: once an issue event published after it is acknowledged, nothing is pending
-// or awaiting its acknowledgement, and processed_events holds a row for the issue events alone.
+// A boot narrows the Dispatch consumer an earlier daemon made to this project's issue events
+// alone: the consumer that heard every project's issue events and the subject of Dispatch's
+// settings.repo_project.updated beside them is updated in place, its position kept, and its one
+// filter reads back exactly notifications.dispatch.issue.<project>.>. An event Dispatch then
+// publishes on that settings subject, or on another project's issues, is never delivered: once an
+// issue event of this project published after them is acknowledged, nothing is pending or awaiting
+// its acknowledgement, and processed_events holds a row for this project's issue events alone.
 //
-// The read-back of the filters is the control: with the settings subject put back among them, and
-// no decode of its event left (A8: no branch stays for it), the event is delivered and terminated
-// as poison, so the counts and the rows below read the same, and only the filters tell the two
-// apart (INFRA-4401 P4; dispatch://INFRA-4401 check a-go, item 2). dispatch://INFRA-3532's own
-// change deletes this test, which names Dispatch's settings event only to prove the daemon hears
-// none of it, with the rename pass.
-func TestTheBootNarrowsTheDispatchConsumerToTheIssueEvents(t *testing.T) {
+// The read-back of the filter is the control: with the settings subject or the whole issue family
+// put back, the other events are delivered and acknowledged with no fact or terminated as poison,
+// so the counts and the rows below read the same, and only the filter tells the two apart.
+func TestTheBootNarrowsTheDispatchConsumerToThisProjectsIssueEvents(t *testing.T) {
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
-	backlog := publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	backlog := publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 	if _, err := stream.CreateConsumer(context.Background(), jetstream.ConsumerConfig{
 		Durable:        dispatchConsumerName(spec.Project),
 		FilterSubjects: []string{"notifications.dispatch.issue.>", settingsSubject(spec.Project)},
@@ -710,8 +708,8 @@ func TestTheBootNarrowsTheDispatchConsumerToTheIssueEvents(t *testing.T) {
 		t.Fatalf("OpenConsumers over the earlier daemon's consumer: %v", err)
 	}
 	narrowed := consumerInfo(t, stream, dispatchConsumerName(spec.Project))
-	if want := []string{"notifications.dispatch.issue.>"}; narrowed.Config.FilterSubject != "" || !slices.Equal(narrowed.Config.FilterSubjects, want) {
-		t.Fatalf("Dispatch consumer filters = %q %v, want exactly %v", narrowed.Config.FilterSubject, narrowed.Config.FilterSubjects, want)
+	if want := "notifications.dispatch.issue.CAPTURE.>"; narrowed.Config.FilterSubject != want || len(narrowed.Config.FilterSubjects) != 0 {
+		t.Fatalf("Dispatch consumer filters = %q %v, want exactly %s", narrowed.Config.FilterSubject, narrowed.Config.FilterSubjects, want)
 	}
 	if narrowed.NumPending != 1 || narrowed.Delivered.Stream != 0 {
 		t.Fatalf("the narrowed consumer has %d pending and delivered through stream sequence %d, want its backlog of 1 (stream sequence %d) kept and nothing delivered: the boot updates the consumer in place",
@@ -722,7 +720,9 @@ func TestTheBootNarrowsTheDispatchConsumerToTheIssueEvents(t *testing.T) {
 
 	settings := envelopeJSON(t, "dispatch-70-"+spec.Project, "dispatch", fmt.Sprintf(`{"id":70,"issue_key":null,"artifact_id":null,"project":%q,"seq":0,"type":"settings.repo_project.updated","actor":{"kind":"user","id":"smoke"},"notify":true,"created_at":"2026-10-16T18:00:00Z","payload":{"mapping":{"repo":"acme/widgets","project":%q,"default":false},"deleted":false}}`, spec.Project, spec.Project))
 	publish(t, js, settingsSubject(spec.Project), settings)
-	last := publish(t, js, "notifications.dispatch.issue.CAPTURE-4.issue.created", capturedIssueCreatedEnvelope(t))
+	publish(t, js, "notifications.dispatch.issue.OTHER.OTHER-9.issue.updated", envelopeJSON(t, "dispatch-other-9", "dispatch",
+		`{"id":99,"issue_key":"OTHER-9","seq":1,"notify":true,"type":"issue.updated","payload":{}}`))
+	last := publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-4.issue.created", capturedIssueCreatedEnvelope(t))
 	assertAcknowledgedThrough(t, stream, dispatchConsumerName(spec.Project), last)
 	if info := consumerInfo(t, stream, dispatchConsumerName(spec.Project)); info.NumPending != 0 || info.NumAckPending != 0 {
 		t.Fatalf("the Dispatch consumer has %d pending and %d awaiting acknowledgement, want none", info.NumPending, info.NumAckPending)
@@ -743,9 +743,10 @@ func TestTheBootNarrowsTheDispatchConsumerToTheIssueEvents(t *testing.T) {
 	}
 }
 
-// The repositories GitHub intake hears change at runtime (SetRepositories): the
-// GitHub consumer's filters and the decoder's set change together, so a newly listed repository's
-// event is applied and an unlisted one's is acknowledged untouched.
+// The repositories GitHub intake hears change at runtime (SetRepositories) in the decoder's set
+// alone: the GitHub consumer hears every repository's events on its one filter, so a newly listed
+// repository's event is applied and an unlisted one's is acknowledged with no fact, and the
+// consumer is never written: its filter and its creation stay as the boot made them.
 func TestSetRepositoriesChangesTheRepositoriesGitHubIntakeHears(t *testing.T) {
 	pool := migratedPool(t)
 	createWrites(t, pool)
@@ -755,18 +756,24 @@ func TestSetRepositoriesChangesTheRepositoriesGitHubIntakeHears(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
+	booted := consumerInfo(t, stream, githubConsumerName(spec.Project))
+	if booted.Config.FilterSubject != githubFilter || len(booted.Config.FilterSubjects) != 0 {
+		t.Fatalf("GitHub consumer filters = %q %v, want exactly %s", booted.Config.FilterSubject, booted.Config.FilterSubjects, githubFilter)
+	}
 	stop := runConsumers(t, consumers, writeHandler("github", nil))
 	defer stop()
 
+	opened := strings.ReplaceAll(string(capturedGitHubEnvelope(t, "pr-opened.json")), "sjawhar/legion", "acme/widgets")
+	publish(t, js, "notifications.github.acme.widgets.pr.42", []byte(opened))
+	assertNoAckPending(t, stream, githubConsumerName(spec.Project))
+	if got := writeCount(t, pool); got != 0 {
+		t.Fatalf("%d facts applied for a repository the daemon does not hear yet, want none", got)
+	}
 	widgets := []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion"), ghrepo.MustParse("acme/widgets")}
 	if err := consumers.SetRepositories(context.Background(), widgets); err != nil {
 		t.Fatalf("SetRepositories: %v", err)
 	}
-	if got, want := consumerInfo(t, stream, githubConsumerName(spec.Project)).Config.FilterSubjects, githubFilters(widgets); !slices.Equal(got, want) {
-		t.Fatalf("GitHub consumer filters = %v, want %v", got, want)
-	}
-	opened := strings.ReplaceAll(string(capturedGitHubEnvelope(t, "pr-opened.json")), "sjawhar/legion", "acme/widgets")
-	publish(t, js, "notifications.github.acme.widgets.pr.42", []byte(opened))
+	publish(t, js, "notifications.github.acme.widgets.pr.43", []byte(strings.ReplaceAll(opened, `\"number\":42`, `\"number\":43`)))
 	testwait.Eventually(t, "the newly listed repository's event applied", func() bool { return writeCount(t, pool) == 1 })
 
 	if err := consumers.SetRepositories(context.Background(), capturedRepositories); err != nil {
@@ -775,40 +782,33 @@ func TestSetRepositoriesChangesTheRepositoriesGitHubIntakeHears(t *testing.T) {
 	if decoded, err := decodeMessage("notifications.github.acme.widgets.pr.42", spec.Project, consumers.repositories(), []byte(opened)); err != nil || decoded.Fact != nil {
 		t.Fatalf("decode of an unlisted repository's event = %#v, %v; want no fact", decoded.Fact, err)
 	}
-	// A daemon serving no repository hears none: the consumer filters on a subject no repository's
-	// events are published on, never on none, which would hear every subject of the stream.
 	if err := consumers.SetRepositories(context.Background(), nil); err != nil {
 		t.Fatalf("SetRepositories of none: %v", err)
-	}
-	if got := consumerInfo(t, stream, githubConsumerName(spec.Project)).Config.FilterSubjects; !slices.Equal(got, []string{"notifications.github.-.-"}) {
-		t.Fatalf("GitHub consumer filters hearing none = %v, want the one no repository publishes on", got)
 	}
 	if decoded, err := decodeMessage("notifications.github.sjawhar.legion.pr.42", spec.Project, consumers.repositories(), capturedGitHubEnvelope(t, "pr-opened.json")); err != nil || decoded.Fact != nil {
 		t.Fatalf("decode while hearing none = %#v, %v; want no fact", decoded.Fact, err)
 	}
+	after := consumerInfo(t, stream, githubConsumerName(spec.Project))
+	if after.Config.FilterSubject != githubFilter || len(after.Config.FilterSubjects) != 0 || !after.Created.Equal(booted.Created) {
+		t.Fatalf("GitHub consumer after four SetRepositories = filter %q %v, created %s; want the boot's %s, created %s, never written",
+			after.Config.FilterSubject, after.Config.FilterSubjects, after.Created, githubFilter, booted.Created)
+	}
 }
 
-// A SetRepositories whose consumer update fails changes nothing: the decoder's set stays the
-// repositories the GitHub consumer still filters on, so the caller can retry it and nothing decodes
-// an event of a repository the consumer was never told to hear.
-func TestAFailedSetRepositoriesChangesNothing(t *testing.T) {
-	js, stream := testJetStream(t)
+// A SetRepositories naming a zero repository is refused and changes nothing: the decoder's set
+// stays the one the daemon heard.
+func TestASetRepositoriesOfAZeroRepositoryChangesNothing(t *testing.T) {
+	js, _ := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
 	consumers, err := OpenConsumers(context.Background(), js, migratedPool(t), spec)
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
-	canceled, cancel := context.WithCancel(context.Background())
-	cancel()
-	widgets := []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion"), ghrepo.MustParse("acme/widgets")}
-	if err := consumers.SetRepositories(canceled, widgets); err == nil {
-		t.Fatal("SetRepositories with a failed consumer update reported no failure")
+	if err := consumers.SetRepositories(context.Background(), []ghrepo.Repository{ghrepo.MustParse("acme/widgets"), {}}); err == nil {
+		t.Fatal("SetRepositories with a zero repository reported no failure")
 	}
 	if got := consumers.repositories(); !slices.Equal(got, capturedRepositories) {
-		t.Fatalf("the decoder's set after a failed update = %v, want it unchanged, %v", got, capturedRepositories)
-	}
-	if got, want := consumerInfo(t, stream, githubConsumerName(spec.Project)).Config.FilterSubjects, githubFilters(capturedRepositories); !slices.Equal(got, want) {
-		t.Fatalf("GitHub consumer filters = %v, want them unchanged, %v", got, want)
+		t.Fatalf("the decoder's set after a refused update = %v, want it unchanged, %v", got, capturedRepositories)
 	}
 }
 
@@ -846,7 +846,7 @@ func TestConsumePreparesAnIssueEventsRepositoryBeforeApplyingIt(t *testing.T) {
 	stop := startConsume(t, js, spec, pool, writeHandler("prepared", nil), record)
 	defer stop()
 
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 	testwait.Eventually(t, "the event applied once its repository was prepared", func() bool { return writeCount(t, pool) == 1 })
 	assertNoAckPending(t, stream, dispatchConsumerName(spec.Project))
 	mu.Lock()
@@ -860,9 +860,11 @@ func TestConsumePreparesAnIssueEventsRepositoryBeforeApplyingIt(t *testing.T) {
 }
 
 // Envoy's goldens (packages/contracts/fixtures/github-envelopes, which its golden test writes from
-// its webhook fixtures) are the subjects its listener publishes. For each, the consumer configured
-// with the payload's repository filters on a prefix of the golden's topic and decodes the workflow
-// fact the golden carries: the two sides spell a repository's subject segments alike, a dotted name
+// its webhook fixtures) are the subjects its listener publishes. For each, the subject begins with
+// the daemon's spelling of the payload's repository (githubRepositoryPrefix), which decodeChecks
+// holds a checks settlement's subject to, and the consumer's one filter takes it; it decodes the
+// workflow fact the golden carries: the two sides spell a repository's subject segments alike, a
+// dotted name included. The golden push, which is to main, decodes to the BasePush of that base, and the same
 // included. The golden push, which is to main, decodes to the BasePush of that base, and the same
 // push to an issue's branch decodes to its Push. A pull request event decodes to a fact only on an
 // issue's branch, so the golden pull requests, on a branch of their own, decode to none, and the
@@ -889,9 +891,8 @@ func TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer(t *testing.T) {
 				t.Fatalf("decode golden: %v", err)
 			}
 			repository := ghrepo.MustParse(golden.Payload["repo"].(string))
-			filter := githubFilters([]ghrepo.Repository{repository})[0]
-			if !strings.HasPrefix(golden.Topic, strings.TrimSuffix(filter, ">")) {
-				t.Fatalf("%s's consumer filters %s, which does not match Envoy's %s", repository, filter, golden.Topic)
+			if prefix := githubRepositoryPrefix(repository) + "."; !strings.HasPrefix(golden.Topic, prefix) || !strings.HasPrefix(golden.Topic, strings.TrimSuffix(githubFilter, ">")) {
+				t.Fatalf("%s's subjects begin %s and the GitHub consumer filters %s, and neither matches Envoy's %s", repository, prefix, githubFilter, golden.Topic)
 			}
 			decode := func() decodedMessage {
 				t.Helper()
@@ -1056,8 +1057,8 @@ func TestAJobEnvelopeIsNoFact(t *testing.T) {
 		`"name":"release","status":"completed","conclusion":"success","started_at":"2026-10-12T10:01:21Z",` +
 		`"completed_at":"2026-10-12T10:02:02Z","head_sha":"f15b4562bb3b9ba82cf4c25a82ff0a312fc3e80b",` +
 		`"url":"https://github.com/sjawhar/legion/actions/runs/38230245571/job/114758907253"}`
-	if filter := githubFilters(capturedRepositories)[0]; !strings.HasPrefix(subject, strings.TrimSuffix(filter, ">")) {
-		t.Fatalf("the repository's filter %s does not take the job subject %s, so this proves nothing", filter, subject)
+	if prefix := githubRepositoryPrefix(capturedRepositories[0]) + "."; !strings.HasPrefix(subject, prefix) {
+		t.Fatalf("the repository's subjects begin %s, which does not take the job subject %s, so this proves nothing", prefix, subject)
 	}
 	decoded, err := decodeMessage(subject, "CAPTURE", capturedRepositories, envelopeJSON(t, "job-1", "github", payload))
 	if err != nil {
@@ -1146,8 +1147,8 @@ func TestConsumeTermsPoisonMessagesOnce(t *testing.T) {
 	stop := startConsume(t, js, spec, pool, writeHandler("applied", nil))
 	defer stop()
 
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-208.issue.updated", []byte(`{`))
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-208.issue.updated", envelopeJSON(t, "dispatch-poison", "dispatch", `{"id":1,"issue_key":"CAPTURE-208","seq":1,"notify":true,"type":"issue.updated","payload":{"key":"CAPTURE-999","status":"todo","title":"wrong key"}}`))
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-208.issue.updated", []byte(`{`))
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-208.issue.updated", envelopeJSON(t, "dispatch-poison", "dispatch", `{"id":1,"issue_key":"CAPTURE-208","seq":1,"notify":true,"type":"issue.updated","payload":{"key":"CAPTURE-999","status":"todo","title":"wrong key"}}`))
 	testwait.Eventually(t, "two poison logs", func() bool { return strings.Count(logs.String(), "poison JetStream message") == 2 })
 	time.Sleep(3 * spec.AckWait)
 	if got := strings.Count(logs.String(), "poison JetStream message"); got != 2 {
@@ -1185,22 +1186,26 @@ func TestConsumeTermsAGitHubEnvelopeWithNoPayloadAndAppliesTheNext(t *testing.T)
 	assertNoAckPending(t, stream, githubConsumerName(spec.Project))
 }
 
-// One NATS stream carries every Dispatch project's issue events. A daemon acts only on its own
-// project's: another project's event is acknowledged and never reaches a handler, as the shipped
-// daemon drops it (events.ts: a subject key outside the configured projects returns).
-func TestConsumeAcknowledgesAnotherProjectsDispatchEventWithoutApplyingIt(t *testing.T) {
+// One NATS stream carries every Dispatch project's issue events. A daemon's Dispatch consumer
+// filters its own project's alone (notifications.dispatch.issue.<project>.>), so another project's
+// event is never delivered to it and never reaches a handler: with another project's event stored
+// between two of its own, the consumer delivers its own two and nothing else.
+func TestAnotherProjectsDispatchEventNeverReachesTheConsumer(t *testing.T) {
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
 	spec.Project = "LEGION"
-	stop := startConsume(t, js, spec, pool, writeHandler("foreign", nil))
+	stop := startConsume(t, js, spec, pool, writeHandler("own", nil))
 	defer stop()
 
-	sent := publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
-	assertAcknowledgedThrough(t, stream, dispatchConsumerName(spec.Project), sent)
-	if got := writeCount(t, pool); got != 0 {
-		t.Fatalf("handler writes for another project's event = %d, want 0", got)
+	own := strings.ReplaceAll(string(capturedIssueUpdatedEnvelope(t)), "CAPTURE-3", "LEGION-3")
+	publish(t, js, "notifications.dispatch.issue.LEGION.LEGION-3.issue.updated", []byte(own))
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	last := publish(t, js, "notifications.dispatch.issue.LEGION.LEGION-3.issue.updated", []byte(own))
+	assertAcknowledgedThrough(t, stream, dispatchConsumerName(spec.Project), last)
+	if delivered := consumerInfo(t, stream, dispatchConsumerName(spec.Project)).Delivered.Consumer; delivered != 2 {
+		t.Fatalf("the LEGION consumer delivered %d messages, want its own 2 and never CAPTURE's", delivered)
 	}
 }
 
@@ -1331,8 +1336,8 @@ func TestConsumeDeduplicatesOneEventAcrossDeliveries(t *testing.T) {
 	defer stop()
 
 	message := capturedIssueUpdatedEnvelope(t)
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", message)
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", message)
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", message)
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", message)
 	testwait.Eventually(t, "one deduplicated write", func() bool { return writeCount(t, pool) == 1 })
 	assertNoAckPending(t, stream, dispatchConsumerName(spec.Project))
 }
@@ -1355,7 +1360,7 @@ func TestConsumeNaksRollbackAndAppliesRedeliveryOnce(t *testing.T) {
 	stop := startConsume(t, js, spec, pool, handler)
 	defer stop()
 
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 	testwait.Eventually(t, "redelivery committed once", func() bool { return calls.Load() >= 2 && writeCount(t, pool) == 1 })
 	assertNoAckPending(t, stream, dispatchConsumerName(spec.Project))
 }
@@ -1367,11 +1372,11 @@ func TestConsumeRestartResumesAfterAcknowledgedMessage(t *testing.T) {
 	spec := consumerSpec(&lockedBuffer{})
 	stop := startConsume(t, js, spec, pool, writeHandler("restart", nil))
 
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 	testwait.Eventually(t, "first committed message", func() bool { return writeCount(t, pool) == 1 })
 	stop()
 
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-4.issue.created", capturedIssueCreatedEnvelope(t))
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-4.issue.created", capturedIssueCreatedEnvelope(t))
 	stop = startConsume(t, js, spec, pool, writeHandler("restart", nil))
 	defer stop()
 	testwait.Eventually(t, "durable consumer resumes after ack", func() bool { return writeCount(t, pool) == 2 })
@@ -1386,7 +1391,7 @@ func TestAFreshConsumerStartsAtTheNextMessage(t *testing.T) {
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 	publish(t, js, "notifications.github.sjawhar.legion.pr.42", capturedGitHubEnvelope(t, "pr-opened.json"))
 
 	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
@@ -1400,7 +1405,7 @@ func TestAFreshConsumerStartsAtTheNextMessage(t *testing.T) {
 	}
 	stop := runConsumers(t, consumers, writeHandler("fresh", nil))
 	defer stop()
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-4.issue.created", capturedIssueCreatedEnvelope(t))
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-4.issue.created", capturedIssueCreatedEnvelope(t))
 	testwait.Eventually(t, "the next message committed", func() bool { return writeCount(t, pool) >= 1 })
 	assertNoAckPending(t, stream, dispatchConsumerName(spec.Project))
 	if got := writeCount(t, pool); got != 1 {
@@ -1410,17 +1415,17 @@ func TestAFreshConsumerStartsAtTheNextMessage(t *testing.T) {
 
 // A consumer that already exists keeps its position, whatever policy created it: an earlier daemon's
 // consumer (created delivering all) still owes its unacknowledged backlog, and a boot that updates
-// it still applies the configuration that may change, the repositories it filters on.
+// it in place still applies the configuration that may change, its one filter.
 func TestAnExistingConsumerKeepsItsPosition(t *testing.T) {
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 	publish(t, js, "notifications.github.sjawhar.legion.pr.42", capturedGitHubEnvelope(t, "pr-opened.json"))
 	for _, config := range []jetstream.ConsumerConfig{
 		{Durable: dispatchConsumerName(spec.Project), FilterSubject: "notifications.dispatch.issue.>", AckPolicy: jetstream.AckExplicitPolicy, AckWait: spec.AckWait},
-		{Durable: githubConsumerName(spec.Project), FilterSubjects: githubFilters(spec.Repositories), AckPolicy: jetstream.AckExplicitPolicy, AckWait: spec.AckWait},
+		{Durable: githubConsumerName(spec.Project), FilterSubjects: []string{"notifications.github.sjawhar.legion.>", "notifications.github.acme.widgets.>"}, AckPolicy: jetstream.AckExplicitPolicy, AckWait: spec.AckWait},
 	} {
 		if _, err := stream.CreateConsumer(context.Background(), config); err != nil {
 			t.Fatalf("create the earlier daemon's consumer %s: %v", config.Durable, err)
@@ -1436,8 +1441,8 @@ func TestAnExistingConsumerKeepsItsPosition(t *testing.T) {
 			t.Errorf("%s has %d messages pending after the boot, want its backlog of 1", name, pending)
 		}
 	}
-	if got, want := consumerInfo(t, stream, githubConsumerName(spec.Project)).Config.FilterSubjects, githubFilters(spec.Repositories); !slices.Equal(got, want) {
-		t.Errorf("GitHub consumer filters = %v, want the boot's %v", got, want)
+	if info := consumerInfo(t, stream, githubConsumerName(spec.Project)); info.Config.FilterSubject != githubFilter || len(info.Config.FilterSubjects) != 0 {
+		t.Errorf("GitHub consumer filters = %q %v, want the boot's one, %s", info.Config.FilterSubject, info.Config.FilterSubjects, githubFilter)
 	}
 
 	stop := startConsume(t, js, spec, pool, writeHandler("existing", nil))
@@ -1486,7 +1491,7 @@ func TestConsumeCommitsRefusalAndAcknowledges(t *testing.T) {
 	stop := startConsume(t, js, spec, pool, writeHandler("refusal", &Refusal{Status: 409, Code: "DESIGN_GATE_CLOSED", Message: "approve version 3"}))
 	defer stop()
 
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 	testwait.Eventually(t, "refusal committed", func() bool { return writeCount(t, pool) == 1 && strings.Count(logs.String(), "committed refusal") == 1 })
 	assertNoAckPending(t, stream, dispatchConsumerName(spec.Project))
 }

@@ -6,9 +6,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -83,56 +81,40 @@ func TestAnIssueNameInNeitherFormIsPoison(t *testing.T) {
 	}
 }
 
-// Through the Dispatch durable: an issue event named in the new form is applied; one named in the
-// old form is applied too, and logged at INFO with its subject and the running count of old-form
-// names the consumer has read, the first at once and then at most one line a minute, since every
-// daemon hears every project's events; and one whose name is in neither form is logged at ERROR
-// with its subject, its stream sequence and the running count of such names, and terminated. It
-// leaves the stream as poison does, never acknowledged in silence.
+// Through the Dispatch durable, which filters this project's new form alone
+// (notifications.dispatch.issue.<project>.>): an issue event named in the new form is applied; one
+// named in the old form, of this project or another, is never delivered, so no old-form line is
+// logged and nothing is applied; and one under this project's prefix whose name carries no key is
+// logged at ERROR with its subject, its stream sequence and the running count of such names, and
+// terminated. It leaves the stream as poison does, never acknowledged in silence.
 //
 // Negative control, run when this was written: make decodeDispatchFact answer a name in neither
 // form with no fact and no error, as the merge base did for a key it could not read; the wait for
 // the ERROR line times out, the name acknowledged with nothing logged.
-func TestTheDispatchDurableReadsBothFormsAndRefusesANameInNeither(t *testing.T) {
+func TestTheDispatchDurableHearsOnlyTheNewFormAndRefusesANameInNeither(t *testing.T) {
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
 	logs := &lockedBuffer{}
 	spec := consumerSpec(logs)
-	var elapsed atomic.Int64
-	opened := time.Date(2026, 11, 16, 3, 0, 0, 0, time.UTC)
-	spec.Now = func() time.Time { return opened.Add(time.Duration(elapsed.Load())) }
 	stop := startConsume(t, js, spec, pool, writeHandler("applied", nil))
 	defer stop()
 	dispatch := dispatchConsumerName(spec.Project)
 	const oldFormLine = "an issue event named in the old form"
 
+	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	publish(t, js, "notifications.dispatch.issue.LEGION-7.issue.updated", capturedIssueUpdatedEnvelope(t))
 	last := publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-4.issue.created", projectFormIssueCreatedEnvelope(t))
 	assertAcknowledgedThrough(t, stream, dispatch, last)
 	if got := writeCount(t, pool); got != 1 {
-		t.Fatalf("the new form's event applied %d facts, want 1", got)
+		t.Fatalf("%d facts applied, want 1: the new form's event alone", got)
+	}
+	if delivered := consumerInfo(t, stream, dispatch).Delivered.Consumer; delivered != 1 {
+		t.Fatalf("the Dispatch durable delivered %d messages, want only the new form's 1", delivered)
 	}
 	if strings.Contains(logs.String(), oldFormLine) {
-		t.Fatalf("the new form was logged as the old one:\n%s", logs)
+		t.Fatalf("an old-form name was logged, so the durable read it:\n%s", logs)
 	}
-
-	last = publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
-	assertAcknowledgedThrough(t, stream, dispatch, last)
-	if got := writeCount(t, pool); got != 2 {
-		t.Fatalf("the old form's event applied %d facts in all, want 2", got)
-	}
-	requireLogLine(t, logs, oldFormLine, "subject=notifications.dispatch.issue.CAPTURE-3.issue.updated", "legacy_count=1")
-
-	// Another project's event in the old form, inside the minute: counted, no second line.
-	last = publish(t, js, "notifications.dispatch.issue.LEGION-7.issue.updated", capturedIssueUpdatedEnvelope(t))
-	assertAcknowledgedThrough(t, stream, dispatch, last)
-	if got := strings.Count(logs.String(), oldFormLine); got != 1 {
-		t.Fatalf("%d old-form lines inside one minute, want 1:\n%s", got, logs)
-	}
-	elapsed.Store(int64(time.Minute))
-	last = publish(t, js, "notifications.dispatch.issue.LEGION-8.issue.updated", capturedIssueUpdatedEnvelope(t))
-	assertAcknowledgedThrough(t, stream, dispatch, last)
-	requireLogLine(t, logs, oldFormLine, "subject=notifications.dispatch.issue.LEGION-8.issue.updated", "legacy_count=3")
 
 	neither := publish(t, js, "notifications.dispatch.issue.CAPTURE.issue.updated", capturedIssueUpdatedEnvelope(t))
 	testwait.Eventually(t, "the name in neither form logged at ERROR", func() bool {
@@ -140,8 +122,8 @@ func TestTheDispatchDurableReadsBothFormsAndRefusesANameInNeither(t *testing.T) 
 	})
 	requireLogLine(t, logs, "poison JetStream message", "neither_form_count=1", "stream_seq="+strconv.FormatUint(neither.Sequence, 10))
 	assertNoAckPending(t, stream, dispatch)
-	if got := writeCount(t, pool); got != 2 {
-		t.Fatalf("%d facts applied in all, want 2: a name in neither form applies nothing", got)
+	if got := writeCount(t, pool); got != 1 {
+		t.Fatalf("%d facts applied in all, want 1: a name in neither form applies nothing", got)
 	}
 }
 

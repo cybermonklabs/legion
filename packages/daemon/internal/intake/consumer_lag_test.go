@@ -19,16 +19,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// A consumer the daemon is not running counts every message published to it as waiting, the
-// oldest at the first one's stream time; it is stalled once 60 seconds pass with messages waiting
-// and none handled since it opened, and not once it acknowledges one, until 60 more seconds pass
-// with none handled — a message it keeps naking is not progress. A poison message it terminates is
-// handled.
+// A consumer the daemon is not running counts every message published to it as waiting; it is
+// stalled once 60 seconds pass with messages waiting and none handled since it opened, and not once
+// it acknowledges one, until 60 more seconds pass with none handled — a message it keeps naking is
+// not progress. The oldest waiting message's age is read from the consumer's own info, the moment
+// its ack floor last moved: unknown before the consumer has acknowledged anything, and the moment
+// of the acknowledgement that moved it after. A poison message it terminates is handled.
 func TestConsumerLagCountsWhatWaitsAndCallsAConsumerStalledWhenNoneIsHandledFor60Seconds(t *testing.T) {
 	ctx := context.Background()
 	pool := migratedPool(t)
 	createWrites(t, pool)
-	js, stream := testJetStream(t)
+	js, _ := testJetStream(t)
 	clock := &lagClock{now: time.Now()}
 	spec := consumerSpec(&lockedBuffer{})
 	spec.Now = clock.Now
@@ -37,14 +38,13 @@ func TestConsumerLagCountsWhatWaitsAndCallsAConsumerStalledWhenNoneIsHandledFor6
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
-	var stored []time.Time
 	for number := 1; number <= 3; number++ {
-		stored = append(stored, publishStored(t, js, stream, fmt.Sprintf("notifications.github.sjawhar.legion.pr.%d", number), pullRequestOpenedEnvelope(t, number)))
+		publish(t, js, fmt.Sprintf("notifications.github.sjawhar.legion.pr.%d", number), pullRequestOpenedEnvelope(t, number))
 	}
 
 	lags := consumers.Lag(ctx)
 	if names := lagNames(lags); !slices.Equal(names, []string{dispatch, github, wakeConsumerName(spec.Project), readyConsumerName(spec.Project)}) {
-		t.Fatalf("Lag names %q, want the Dispatch, GitHub, listener-wake and listener-ready consumers", names)
+		t.Fatalf("Lag names %q, want the Dispatch, GitHub, wake and ready consumers", names)
 	}
 	for _, lag := range []ConsumerLag{lagNamed(t, lags, dispatch), lagNamed(t, lags, wakeConsumerName(spec.Project)), lagNamed(t, lags, readyConsumerName(spec.Project))} {
 		if lag.Waiting != 0 || !lag.OldestAt.IsZero() || lag.Stalled || lag.Unavailable != "" {
@@ -52,9 +52,8 @@ func TestConsumerLagCountsWhatWaitsAndCallsAConsumerStalledWhenNoneIsHandledFor6
 		}
 	}
 	got := lagNamed(t, lags, github)
-	if got.Waiting != 3 || !got.OldestAt.Equal(stored[0]) || got.OldestAge != clock.Now().Sub(stored[0]) || got.Stalled || !got.LastHandledAt.IsZero() || got.Unavailable != "" {
-		t.Fatalf("GitHub consumer before any is handled = %+v, want 3 waiting, the oldest stored at %s and %s old, not stalled, none handled",
-			got, stored[0], clock.Now().Sub(stored[0]))
+	if got.Waiting != 3 || !got.OldestAt.IsZero() || got.Stalled || !got.LastHandledAt.IsZero() || got.Unavailable != "" {
+		t.Fatalf("GitHub consumer before any is handled = %+v, want 3 waiting, the oldest's age unknown (the ack floor has never moved), not stalled, none handled", got)
 	}
 
 	clock.advance(consumerStallAfter - time.Second)
@@ -68,6 +67,7 @@ func TestConsumerLagCountsWhatWaitsAndCallsAConsumerStalledWhenNoneIsHandledFor6
 
 	// pr-2 fails every time it is applied, so it is naked again and again and keeps waiting.
 	var naks atomic.Int32
+	beforeRun := time.Now()
 	stop := runConsumers(t, consumers, handlerFunc(func(ctx context.Context, tx pgx.Tx, fact Fact) (Result, error) {
 		opened, ok := fact.(PullRequestOpened)
 		if !ok {
@@ -85,9 +85,15 @@ func TestConsumerLagCountsWhatWaitsAndCallsAConsumerStalledWhenNoneIsHandledFor6
 	testwait.Eventually(t, "pr-1 and pr-3 acknowledged and pr-2 naked twice", func() bool {
 		return slices.Equal(writeHandlers(t, pool), []string{"pr-1", "pr-3"}) && naks.Load() >= 2 && lagNamed(t, consumers.Lag(ctx), github).Waiting == 1
 	})
+	afterAcks := time.Now()
 	got = lagNamed(t, consumers.Lag(ctx), github)
-	if got.Waiting != 1 || !got.OldestAt.Equal(stored[1]) || !got.LastHandledAt.Equal(handledAt) || got.Stalled || got.Unavailable != "" {
-		t.Fatalf("GitHub consumer after two acknowledgements = %+v, want pr-2 waiting, oldest at its %s, last handled at %s, not stalled", got, stored[1], handledAt)
+	if got.Waiting != 1 || !got.LastHandledAt.Equal(handledAt) || got.Stalled || got.Unavailable != "" {
+		t.Fatalf("GitHub consumer after two acknowledgements = %+v, want pr-2 waiting, last handled at %s, not stalled", got, handledAt)
+	}
+	// pr-1's acknowledgement moved the ack floor; pr-3's did not, since pr-2 is below it.
+	if got.OldestAt.Before(beforeRun.Add(-time.Second)) || got.OldestAt.After(afterAcks.Add(time.Second)) || got.OldestAge != clock.Now().Sub(got.OldestAt) {
+		t.Fatalf("GitHub consumer's oldest = %s (%s old), want the moment pr-1's acknowledgement moved its ack floor, between %s and %s, aged against the daemon's clock",
+			got.OldestAt, got.OldestAge, beforeRun, afterAcks)
 	}
 
 	clock.advance(consumerStallAfter + time.Second)
@@ -97,104 +103,73 @@ func TestConsumerLagCountsWhatWaitsAndCallsAConsumerStalledWhenNoneIsHandledFor6
 		t.Fatalf("GitHub consumer 61 seconds after its last acknowledgement, naking since = %+v, want stalled, last handled at %s", got, handledAt)
 	}
 
-	publish(t, js, "notifications.dispatch.issue.CAPTURE-208.issue.updated", []byte(`{`))
+	publish(t, js, "notifications.dispatch.issue.CAPTURE.CAPTURE-208.issue.updated", []byte(`{`))
 	testwait.Eventually(t, "the poison message terminated and counted as handled", func() bool {
 		lag := lagNamed(t, consumers.Lag(ctx), dispatch)
 		return lag.Waiting == 0 && lag.LastHandledAt.Equal(clock.Now())
 	})
 }
 
-// What NATS does not answer, or refuses, is named in the consumer's unavailable, and Lag still
-// returns every consumer: a CONSUMER.INFO that fails leaves waiting and stalled unknown; a
-// STREAM.MSG.GET that fails or never answers leaves only the oldest unknown, the never-answered
-// read cut at its own bound, before the consumer's.
+// A CONSUMER.INFO that fails is named in each consumer's unavailable, and Lag still returns every
+// consumer, with waiting and stalled unknown.
 func TestConsumerLagNamesWhatNATSDidNotAnswer(t *testing.T) {
 	ctx := context.Background()
-	served, stream := testJetStream(t)
+	served, _ := testJetStream(t)
 	standIn := &lagStandIn{JetStream: served}
 	clock := &lagClock{now: time.Now()}
 	spec := consumerSpec(&lockedBuffer{})
 	spec.Now = clock.Now
-	github := githubConsumerName(spec.Project)
 	consumers, err := OpenConsumers(ctx, standIn, migratedPool(t), spec)
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
-	publishStored(t, served, stream, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
+	publish(t, served, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
 	clock.advance(consumerStallAfter + time.Second)
 
-	t.Run("the consumer's info refused", func(t *testing.T) {
-		refused := errors.New("nats: permissions violation")
-		standIn.info, standIn.getMsg = refused, nil
-		defer func() { standIn.info = nil }()
-		lags := consumers.Lag(ctx)
-		if len(lags) != 4 {
-			t.Fatalf("Lag = %+v, want all four consumers", lags)
+	refused := errors.New("nats: permissions violation")
+	standIn.info = refused
+	lags := consumers.Lag(ctx)
+	if len(lags) != 4 {
+		t.Fatalf("Lag = %+v, want all four consumers", lags)
+	}
+	for _, lag := range lags {
+		if lag.Waiting != 0 || lag.Stalled || !lag.OldestAt.IsZero() || lag.Unavailable != "read the consumer's info: "+refused.Error() {
+			t.Errorf("%s = %+v, want nothing known and the refusal named", lag.Name, lag)
 		}
-		for _, lag := range lags {
-			if lag.Waiting != 0 || lag.Stalled || !lag.OldestAt.IsZero() || lag.Unavailable != "read the consumer's info: "+refused.Error() {
-				t.Errorf("%s = %+v, want nothing known and the refusal named", lag.Name, lag)
-			}
-		}
-	})
-
-	t.Run("the oldest waiting message refused", func(t *testing.T) {
-		refused := errors.New("nats: permissions violation")
-		standIn.getMsg = func(context.Context) (*jetstream.RawStreamMsg, error) { return nil, refused }
-		lags := consumers.Lag(ctx)
-		got := lagNamed(t, lags, github)
-		if got.Waiting != 1 || !got.Stalled || !got.OldestAt.IsZero() || got.Unavailable != "read the oldest waiting message: "+refused.Error() {
-			t.Fatalf("GitHub consumer = %+v, want 1 waiting and stalled kept, the oldest unknown and the refusal named", got)
-		}
-		if dispatch := lagNamed(t, lags, dispatchConsumerName(spec.Project)); dispatch.Unavailable != "" {
-			t.Errorf("Dispatch consumer, nothing waiting = %+v, want no message read and nothing unavailable", dispatch)
-		}
-	})
-
-	t.Run("the oldest waiting message never answered", func(t *testing.T) {
-		standIn.getMsg = func(ctx context.Context) (*jetstream.RawStreamMsg, error) {
-			<-ctx.Done()
-			return nil, ctx.Err()
-		}
-		started := time.Now()
-		lags := consumers.Lag(ctx)
-		if took := time.Since(started); took < consumerOldestBound || took >= consumerLagBound {
-			t.Fatalf("Lag took %s against a read that never answers, want it cut at the oldest message's %s bound, before the consumer's %s", took, consumerOldestBound, consumerLagBound)
-		}
-		got := lagNamed(t, lags, github)
-		if got.Waiting != 1 || !got.Stalled || !got.OldestAt.IsZero() || got.Unavailable != "read the oldest waiting message: "+context.DeadlineExceeded.Error() {
-			t.Fatalf("GitHub consumer = %+v, want 1 waiting and stalled kept, the oldest unknown and the deadline named", got)
-		}
-	})
+	}
 }
 
-// A NATS server refuses a publish its user lacks with an asynchronous -ERR alone and never answers
-// the request, so a stored-message get (STREAM.MSG.GET, which a deployment's daemon user lacks
-// same time, each within a bound of its own: the Dispatch, GitHub, wake and ready consumers each
-// have messages waiting (the wake and ready consumers both hear the shared wake subject at this
-// step of the wake migration), so each one's get waits consumerOldestBound out inside its own
-// consumerLagBound while the others' infos answer all the same. Each consumer whose oldest
-// message could not be read keeps its waiting count and stalled flag and names that read, and Lag
-// as a whole stays within one consumerLagBound.
-func TestConsumerLagCountsEveryConsumerWhileNATSRefusesTheOldestMessageRead(t *testing.T) {
+// Every read OpenConsumers and Lag make goes through a consumer of the daemon's own: under a user
+// refused every read of the stream itself, its info (STREAM.INFO, which lists its subjects) and a
+// stored message (STREAM.MSG.GET), which a daemon held to its projects is not granted, the consumers
+// open and every one's waiting count and stalled flag are answered, nothing unavailable. The
+// refusal is shown real on the same connection first: a stream info read is refused.
+func TestConsumerLagReadsNoStreamState(t *testing.T) {
 	ctx := context.Background()
 	daemonSeed, daemonPublic := testnkeys.User(t)
 	adminSeed, adminPublic := testnkeys.User(t)
 	_, uri := testnats.StartNkeyAuthorizedUsers(t, testnats.Image,
-		testnats.NkeyUser{Public: daemonPublic, Permissions: `{ publish: { deny: ["$JS.API.STREAM.MSG.GET.>"] } }`},
+		testnats.NkeyUser{Public: daemonPublic, Permissions: `{ publish: { deny: ["$JS.API.STREAM.MSG.GET.>", "$JS.API.STREAM.INFO.>", "$JS.API.DIRECT.GET.>"] } }`},
 		testnats.NkeyUser{Public: adminPublic})
 	admin := jetStreamAs(t, uri, adminSeed, "admin")
 	if _, err := admin.CreateStream(ctx, jetstream.StreamConfig{Name: notificationStream, Subjects: []string{"notifications.>"}}); err != nil {
 		t.Fatalf("create the notification stream: %v", err)
 	}
+	daemon := jetStreamAs(t, uri, daemonSeed, "the daemon's user")
+	refusedRead, cancel := context.WithTimeout(ctx, 2*time.Second)
+	if _, err := daemon.Stream(refusedRead, notificationStream); err == nil {
+		cancel()
+		t.Fatal("the daemon's user read the stream's info, so this test shows nothing about reads it may not make")
+	}
+	cancel()
 	clock := &lagClock{now: time.Now()}
 	spec := consumerSpec(&lockedBuffer{})
 	spec.Now = clock.Now
-	consumers, err := OpenConsumers(ctx, jetStreamAs(t, uri, daemonSeed, "the daemon's user"), migratedPool(t), spec)
+	consumers, err := OpenConsumers(ctx, daemon, migratedPool(t), spec)
 	if err != nil {
-		t.Fatalf("OpenConsumers as the daemon's user: %v", err)
+		t.Fatalf("OpenConsumers as a user refused every stream read: %v", err)
 	}
-	publish(t, admin, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	publish(t, admin, "notifications.dispatch.issue.CAPTURE.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 	for number := 1; number <= 3; number++ {
 		publish(t, admin, fmt.Sprintf("notifications.github.sjawhar.legion.pr.%d", number), pullRequestOpenedEnvelope(t, number))
 	}
@@ -202,20 +177,14 @@ func TestConsumerLagCountsEveryConsumerWhileNATSRefusesTheOldestMessageRead(t *t
 		fmt.Sprintf(`{"kind":"listener_ready","at":%d}`, clock.Now().UnixMilli())))
 	clock.advance(consumerStallAfter + time.Second)
 
-	started := time.Now()
-	lags := consumers.Lag(ctx)
-	if took := time.Since(started); took > consumerLagBound+time.Second {
-		t.Fatalf("Lag took %s, want it within its %s bound", took, consumerLagBound)
-	}
-	refused := "read the oldest waiting message: " + context.DeadlineExceeded.Error()
 	want := []ConsumerLag{
-		{Name: dispatchConsumerName(spec.Project), Waiting: 1, Stalled: true, Unavailable: refused},
-		{Name: githubConsumerName(spec.Project), Waiting: 3, Stalled: true, Unavailable: refused},
-		{Name: wakeConsumerName(spec.Project), Waiting: 1, Stalled: true, Unavailable: refused},
-		{Name: readyConsumerName(spec.Project), Waiting: 1, Stalled: true, Unavailable: refused},
+		{Name: dispatchConsumerName(spec.Project), Waiting: 1, Stalled: true},
+		{Name: githubConsumerName(spec.Project), Waiting: 3, Stalled: true},
+		{Name: wakeConsumerName(spec.Project)},
+		{Name: readyConsumerName(spec.Project), Waiting: 1, Stalled: true},
 	}
-	if !slices.Equal(lags, want) {
-		t.Fatalf("Lag with the stored-message get refused =\n%+v\nwant\n%+v", lags, want)
+	if lags := consumers.Lag(ctx); !slices.Equal(lags, want) {
+		t.Fatalf("Lag under a user refused every stream read =\n%+v\nwant\n%+v", lags, want)
 	}
 }
 
@@ -253,55 +222,19 @@ func (c *lagClock) advance(by time.Duration) {
 	c.now = c.now.Add(by)
 }
 
-// lagStandIn is the test's NATS server whose notification stream refuses or never answers what a
-// test says: every CONSUMER.INFO fails with info when it is set, and every STREAM.MSG.GET is
-// getMsg's answer when it is set; everything else is the real server's. The test sets both only
-// while no consumer runs, so nothing reads them concurrently.
+// lagStandIn is the test's NATS server whose consumers' info reads fail with info when it is set;
+// everything else is the real server's. The test sets it only while no consumer runs, so nothing
+// reads it concurrently.
 type lagStandIn struct {
 	jetstream.JetStream
-	info   error
-	getMsg func(context.Context) (*jetstream.RawStreamMsg, error)
+	info error
 }
 
-func (s *lagStandIn) Stream(ctx context.Context, name string) (jetstream.Stream, error) {
-	stream, err := s.JetStream.Stream(ctx, name)
-	if err != nil {
-		return nil, err
+func (s *lagStandIn) Consumer(ctx context.Context, stream, name string) (jetstream.Consumer, error) {
+	if s.info != nil {
+		return nil, s.info
 	}
-	return lagStandInStream{Stream: stream, standIn: s}, nil
-}
-
-type lagStandInStream struct {
-	jetstream.Stream
-	standIn *lagStandIn
-}
-
-func (s lagStandInStream) Consumer(ctx context.Context, name string) (jetstream.Consumer, error) {
-	if s.standIn.info != nil {
-		return nil, s.standIn.info
-	}
-	return s.Stream.Consumer(ctx, name)
-}
-
-func (s lagStandInStream) GetMsg(ctx context.Context, seq uint64, opts ...jetstream.GetMsgOpt) (*jetstream.RawStreamMsg, error) {
-	if s.standIn.getMsg != nil {
-		return s.standIn.getMsg(ctx)
-	}
-	return s.Stream.GetMsg(ctx, seq, opts...)
-}
-
-// publishStored publishes data on subject and is the time the stream stored it at.
-func publishStored(t *testing.T, js jetstream.JetStream, stream jetstream.Stream, subject string, data []byte) time.Time {
-	t.Helper()
-	ack, err := js.Publish(context.Background(), subject, data)
-	if err != nil {
-		t.Fatalf("publish %s: %v", subject, err)
-	}
-	message, err := stream.GetMsg(context.Background(), ack.Sequence)
-	if err != nil {
-		t.Fatalf("read message %d back: %v", ack.Sequence, err)
-	}
-	return message.Time
+	return s.JetStream.Consumer(ctx, stream, name)
 }
 
 func lagNames(lags []ConsumerLag) []string {

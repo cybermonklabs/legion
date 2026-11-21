@@ -34,6 +34,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
+// hearsNothing stands in for the runtime's subscription update (workflowRuntime's
+// setRepositories) in a runtime a test builds with no consumers: it takes every set and hands it
+// nowhere, so a launch that hears its repository (workLaunched) adds it to the heard set as the
+// daemon's does, with no intake behind it.
+func hearsNothing(context.Context, []ghrepo.Repository) error { return nil }
+
 // installations answers each App's installation on each repository, by "<role> <owner/name>";
 // a repository it does not name is installed for both Apps, fail answers an error for every read
 // and failing an error for the reads it names. delay is how long each read takes, as a GitHub
@@ -285,7 +291,7 @@ func TestADefaultBranchReadGitHubNeverAnswersHoldsUpNoJobOfTheRefresher(t *testi
 		t.Fatal(err)
 	}
 	committed()
-	testwait.Eventually(t, "the refresher's sixth job taking zeta/tools out of the cache set at its tree's close", func() bool {
+	testwait.Eventually(t, "the refresher's fifth job taking zeta/tools out of the cache set at its tree's close", func() bool {
 		return slices.Equal(repositoryNames(w.cacheRepositories()), []string{"acme/widgets"})
 	})
 }

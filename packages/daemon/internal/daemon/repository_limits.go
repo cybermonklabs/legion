@@ -77,7 +77,7 @@ func defaultBranchLimit(err error) (*githubrest.Answer, time.Duration, bool) {
 // of a read GitHub refused for its rate limit (holdLimited, and defaultBranches.Named for any read
 // of a repository read or held before): it says so, naming the repository, the branch, the limit as
 // GitHub's headers gave it and when the hold ends, and keeps the repository for the refresher's
-// fifth job, which reads it from GitHub again once the hold ends (heldReads, rereadHeldBranches). A
+// fourth job, which reads it from GitHub again once the hold ends (heldReads, rereadHeldBranches). A
 // hold made before the refresher runs, during the boot, waits for it.
 func (w *workflowRuntime) heldThroughLimit(read limitedRead, held ghbranch.Repository) {
 	w.heldMu.Lock()

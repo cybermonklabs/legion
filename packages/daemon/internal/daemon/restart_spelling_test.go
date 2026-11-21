@@ -22,10 +22,11 @@ import (
 )
 
 // A live issue whose record keeps a shared clone's spelling of its repository (acme/widgets) is
-// heard after a restart in GitHub's spelling (Acme/Widgets), which Envoy's subjects carry and NATS
-// matches case-sensitively, even when nothing the restarted daemon has read names the repository:
-// the record keeps GitHub's spelling beside its own, so the boot subscribes from the database, not
-// from a read a restart forgets. The workspace keeps the clone's spelling.
+// heard after a restart in GitHub's spelling (Acme/Widgets), which Envoy's subjects carry, even
+// when nothing the restarted daemon has read names the repository: the record keeps GitHub's
+// spelling beside its own, so the boot hears it from the database, not from a read a restart
+// forgets, and the GitHub consumer, on every repository's events, holds the event for it. The
+// workspace keeps the clone's spelling.
 func TestARestartStillHearsARecordsRepositoryInGitHubsSpelling(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -80,8 +81,8 @@ func TestARestartStillHearsARecordsRepositoryInGitHubsSpelling(t *testing.T) {
 	if _, err := intake.OpenConsumers(ctx, js, pool, intake.ConsumerSpec{Project: "LEGION", Repositories: heard, Logger: quietLogger()}); err != nil {
 		t.Fatal(err)
 	}
-	if filters := githubFilterSubjects(t, stream); !slices.Contains(filters, "notifications.github.Acme.Widgets.>") {
-		t.Fatalf("GitHub filters after the restart = %v, want Acme/Widgets heard in GitHub's spelling", filters)
+	if got := repositoryNames(heard); !slices.Contains(got, "Acme/Widgets") {
+		t.Fatalf("GitHub intake hears %v after the restart, want Acme/Widgets in GitHub's spelling", got)
 	}
 	if _, err := js.Publish(ctx, "notifications.github.Acme.Widgets.pr.42", []byte(`{}`)); err != nil {
 		t.Fatal(err)

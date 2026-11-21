@@ -570,7 +570,8 @@ run_gate() {
 }
 
 # mutant <function> <name>: writes a copy of the gate and the readers it sources from lib/
-# (daemon-release-gate-read-*.sh) under ${temporary_dir}/mutant-<name>/, in which the one file that
+# (daemon-release-gate-read-*.sh and legion-deployment-projects.sh) under
+# ${temporary_dir}/mutant-<name>/, in which the one file that
 # defines <function> as `<function>() {` ... `}` holds the definition read from stdin instead, and
 # sets mutant_gate to the copy's gate. When no file, or more than one, defines <function>, it fails
 # a row naming that and sets mutant_gate to a path that does not exist, so a control never runs
@@ -582,7 +583,7 @@ mutant() {
   rm -rf "$dir"
   mkdir -p "$dir/lib"
   cp "$script" "$dir/daemon-release-gate.sh"
-  cp "$(dirname "$script")"/lib/daemon-release-gate-read-*.sh "$dir/lib/" 2>/dev/null || true
+  cp "$(dirname "$script")"/lib/daemon-release-gate-read-*.sh "$(dirname "$script")"/lib/legion-deployment-projects.sh "$dir/lib/" 2>/dev/null || true
   for file in "$dir/daemon-release-gate.sh" "$dir"/lib/*.sh; do
     if [ ! -f "$file" ] || ! grep -qxF "$1() {" "$file"; then continue; fi
     found=$((found + 1))

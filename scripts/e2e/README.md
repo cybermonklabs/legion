@@ -2416,8 +2416,8 @@ A signal to the whole process group does not stop the removal:
 
 - a teardown command that fails prints `cleanup warning: line N exited S`, never a check's `FAIL` line, and leaves the exit status the checks set.
 
-- **Production NATS, stream `ENVOY_NOTIFICATIONS`**: the daemon's four durable consumers.
-  They are named by the Dispatch key: `legion-go-<project>-dispatch` (`notifications.dispatch.issue.>`), `legion-go-<project>-github` (`notifications.github.sjawhar.legion-smoke.>`), `legion-go-<project>-wake` (`notifications.legion.wake` and `notifications.legion.<token>.wake`) and `legion-go-<project>-ready` (`notifications.legion.wake`) — `LEGSMOKE` by default.
+- **Production NATS, stream `ENVOY_NOTIFICATIONS`**: the daemon's four durable consumers, each on one filter.
+  They are named by the Dispatch key: `legion-go-<project>-dispatch` (`notifications.dispatch.issue.<project>.>`), `legion-go-<project>-github` (`notifications.github.>`), `legion-go-<project>-wake` (`notifications.legion.<token>.wake`) and `legion-go-<project>-ready` (`notifications.legion.wake`) — `LEGSMOKE` by default.
 
   - The teardown deletes every consumer named under `legion-go-<project>-` and notes each it deleted or could not delete, so a consumer the daemon gains needs no change here.
 

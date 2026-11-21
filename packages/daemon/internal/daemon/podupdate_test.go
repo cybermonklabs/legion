@@ -419,7 +419,7 @@ func (r *podUpdateRig) awaitAskQueued(role claim.Role, round string) record.Outb
 
 // roleTopic is the Envoy topic of role's claim, which the round's ask to that role goes to.
 func (r *podUpdateRig) roleTopic(role claim.Role) string {
-	return notify.RoleTopicPrefix + string(r.tokens[role])
+	return notify.RoleTopic(string(r.tokens[role]))
 }
 
 // runLane runs every update-ask row the outbox holds through the rig's lane, oldest first, as

@@ -36,9 +36,12 @@ const (
 	dispatchGrantConsumer = "legion-go-CAPTURE-dispatch"
 	githubGrantConsumer   = "legion-go-CAPTURE-github"
 	wakeGrantConsumer     = "legion-go-CAPTURE-wake"
-	// wakeGrantSubject is intake's legionWakeSubject, the third durable's whole filter, which
-	// this package cannot read from there.
-	wakeGrantSubject = "notifications.legion.wake"
+	readyGrantConsumer    = "legion-go-CAPTURE-ready"
+	// wakeGrantSubject is intake's wakeSubject for CAPTURE, the wake durable's one filter, and
+	// readyGrantSubject intake's legionWakeSubject, the ready durable's, which this package cannot
+	// read from there.
+	wakeGrantSubject  = "notifications.legion.capture.wake"
+	readyGrantSubject = "notifications.legion.wake"
 )
 
 // The deployment and this proof share natsgrant.Daemon: core wraps the same values as the
@@ -47,14 +50,14 @@ const (
 func TestDaemonPermissionsOnRealServers(t *testing.T) {
 	for _, image := range testnatsimages.Images {
 		t.Run(image.Name, func(t *testing.T) {
-			t.Run("the daemon restarts, reads its consumers' lag, acknowledges Dispatch, GitHub and the listener's wake, and receives exceptions", func(t *testing.T) {
+			t.Run("the daemon restarts, reads its consumers' lag, acknowledges Dispatch, GitHub and the listener's wake and ready reports, and receives exceptions", func(t *testing.T) {
 				grant := natsgrant.Daemon()
 				daemonSeed, admin, js, server, uri := startDaemonGrantServer(t, image.Ref, grant)
 				defer admin.Close()
 				stream := createDaemonNotificationStream(t, js)
 
 				first := connectDaemonGrant(t, uri, daemonSeed, &syncBuffer{})
-				for _, name := range []string{dispatchGrantConsumer, githubGrantConsumer, wakeGrantConsumer} {
+				for _, name := range []string{dispatchGrantConsumer, githubGrantConsumer, wakeGrantConsumer, readyGrantConsumer} {
 					if _, err := stream.Consumer(t.Context(), name); err != nil {
 						t.Fatalf("the first daemon creates %s: %v", name, err)
 					}
@@ -67,7 +70,7 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 				conn := restarted.conn.Load()
 
 				exception := make(chan []byte, 1)
-				subscription, err := subscribeNoticeExceptions(conn, func(data []byte) { exception <- append([]byte(nil), data...) })
+				subscription, err := subscribeNoticeExceptions(conn, "CAPTURE", func(data []byte) { exception <- append([]byte(nil), data...) })
 				if err != nil {
 					t.Fatalf("subscribe to role-lane exceptions: %v", err)
 				}
@@ -76,16 +79,21 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 					t.Fatalf("flush the exceptions subscription: %v", err)
 				}
 
-				publishDaemonGrantFixture(t, js, "../intake/testdata/dispatch/issue-updated.json")
-				publishDaemonGrantFixture(t, js, "../intake/testdata/github/pr-opened.json")
+				// The captured event's own topic is the old keyed form; the narrowed Dispatch
+				// consumer hears only the project form Dispatch now publishes it on.
+				publishDaemonGrantFixture(t, js, "../intake/testdata/dispatch/issue-updated.json", issueSubject("CAPTURE-3", "issue.updated"))
+				publishDaemonGrantFixture(t, js, "../intake/testdata/github/pr-opened.json", "")
 				publishDaemonGrantEnvelope(t, js, wakeGrantSubject, "envoy", "listener-wake-grant",
+					fmt.Sprintf(`{"kind":"role_message","role":"legion-capture-capture-90-implementer","at":%d}`, time.Now().UnixMilli()))
+				publishDaemonGrantEnvelope(t, js, readyGrantSubject, "envoy", "listener-ready-grant",
 					fmt.Sprintf(`{"kind":"listener_ready","at":%d}`, time.Now().UnixMilli()))
 				// Before the consumers run, each has its one event waiting, so the state's lag read
-				// makes every request it can under the grant: each consumer's info and its oldest
-				// waiting message's stored-message get.
+				// makes every request it makes under the grant: each consumer's info, and nothing of
+				// the stream's own. No consumer has acknowledged anything, so none names when its
+				// oldest waiting message began to wait.
 				for _, lag := range restarted.consumers.Lag(t.Context()) {
-					if lag.Waiting != 1 || lag.OldestAt.IsZero() || lag.Unavailable != "" {
-						t.Fatalf("lag of %s under the daemon grant = %+v, want its one event waiting with its time and nothing unavailable", lag.Name, lag)
+					if lag.Waiting != 1 || lag.Unavailable != "" {
+						t.Fatalf("lag of %s under the daemon grant = %+v, want its one event waiting and nothing unavailable", lag.Name, lag)
 					}
 				}
 
@@ -93,7 +101,7 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 				stop := runDaemonGrantConsumers(t, restarted, handler)
 				defer stop()
 
-				if err := admin.Publish("notifications.envoy.exceptions.notifications.role.example", []byte("retry this notice")); err != nil {
+				if err := admin.Publish("notifications.envoy.exceptions.notifications.role.CAPTURE.example", []byte("retry this notice")); err != nil {
 					t.Fatalf("publish the role-lane exception: %v", err)
 				}
 				if err := admin.Flush(); err != nil {
@@ -113,16 +121,16 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 					t.Fatalf("role-lane exception = %q, want %q", got, "retry this notice")
 				}
 				testwait.Eventually(t, "the daemon naking one delivery and applying its redelivery with every event type", func() bool {
-					return handler.calls.Load() >= 4
+					return handler.calls.Load() >= 5
 				})
-				requireDaemonGrantAcknowledged(t, stream, dispatchGrantConsumer, githubGrantConsumer, wakeGrantConsumer)
+				requireDaemonGrantAcknowledged(t, stream, dispatchGrantConsumer, githubGrantConsumer, wakeGrantConsumer, readyGrantConsumer)
 				if strings.Contains(logs.String(), "NATS refused the daemon a permission") {
 					t.Fatalf("the daemon logged a permission refusal:\n%s", logs.String())
 				}
 				if serverLog := daemonGrantServerLogs(t, server); strings.Contains(serverLog, "Permissions Violation") {
 					t.Fatalf("the server logged a permissions violation:\n%s", serverLog)
 				}
-				t.Log("restarted daemon created the three consumers, read their lag, NAKed then acknowledged every event kind, and received the role-lane exception without a permission refusal")
+				t.Log("restarted daemon created the four consumers, read their lag, NAKed then acknowledged every event kind, and received the role-lane exception without a permission refusal")
 			})
 
 			t.Run("without the dispatch consumer-create permission, the daemon and server report it", func(t *testing.T) {
@@ -234,7 +242,9 @@ func (h *failFirstDaemonGrantHandler) Apply(context.Context, pgx.Tx, intake.Fact
 	return intake.Result{}, nil
 }
 
-func publishDaemonGrantFixture(t *testing.T, js jetstream.JetStream, path string) {
+// publishDaemonGrantFixture publishes the captured envelope at path on subject, or on its own
+// topic when subject is empty.
+func publishDaemonGrantFixture(t *testing.T, js jetstream.JetStream, path, subject string) {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -246,7 +256,10 @@ func publishDaemonGrantFixture(t *testing.T, js jetstream.JetStream, path string
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		t.Fatalf("decode %s: %v", path, err)
 	}
-	if _, err := js.Publish(t.Context(), envelope.Topic, data); err != nil {
+	if subject == "" {
+		subject = envelope.Topic
+	}
+	if _, err := js.Publish(t.Context(), subject, data); err != nil {
 		t.Fatalf("publish %s: %v", path, err)
 	}
 }

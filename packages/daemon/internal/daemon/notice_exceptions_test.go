@@ -20,7 +20,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
@@ -714,43 +713,6 @@ func TestAStoppedTreesSpecDecisionReportGoesToTheControllerOnce(t *testing.T) {
 	}
 }
 
-// The report arrives over core NATS on the original role topic's exceptions subject; the
-// subscription hears it there and queues the notice again.
-func TestARoleLaneExceptionOnNATSQueuesTheNoticeAgain(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-1", Title: "Root", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion", now: time.Now}
-	conn := testnats.Connect(t, testnats.URL(t))
-	failed := make(chan error, 1)
-	sub, err := subscribeNoticeExceptions(conn, func(data []byte) {
-		if err := runner.rehold(context.Background(), data); err != nil {
-			failed <- err
-		}
-	})
-	if err != nil {
-		t.Fatalf("subscribe: %v", err)
-	}
-	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	topic := "notifications.role.legion-legion-legion-1-architect"
-	report := laneReport{"evt-exception", "delivery_failed", topic, "design-approved on LEGION-1", record.Notice{Kind: "design-approved", Version: 3}, "legion-outbox:9", "ses_live"}
-	if err := conn.Publish("notifications.envoy.exceptions."+topic, report.envelope(t)); err != nil {
-		t.Fatalf("publish the report: %v", err)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for len(queuedNotices(t, pool)) == 0 && time.Now().Before(deadline) {
-		select {
-		case err := <-failed:
-			t.Fatalf("rehold: %v", err)
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-	if got := queuedNotices(t, pool); len(got) != 1 || got[0] != `LEGION-1 {"kind": "design-approved", "resends": 1, "version": 3, "resend_of": 9}` {
-		t.Fatalf("queued %v, want the design-approved notice of LEGION-1", got)
-	}
-}
-
 // A relaunch can take minutes to take the Envoy role back. Until then the listener still forwards
 // to the stopped session's registration and reports each copy as a late receipt from it, and once
 // that registration lapses (here 5 minutes after the session stopped) it refuses the publish, and
@@ -1224,7 +1186,7 @@ func TestANoticeIsKeptWhileItsArchitectsSessionIsUnresponsive(t *testing.T) {
 	}))
 	defer server.Close()
 	refused := func() error {
-		return notify.New(server.URL, "").Publish(context.Background(), notify.RoleTopicPrefix+string(architect),
+		return notify.New(server.URL, "").Publish(context.Background(), notify.RoleTopic(string(architect)),
 			noticeSummary(notice.Kind, row.Issue), notice, record.OutboxKey(row.ID))
 	}
 

@@ -81,8 +81,8 @@ func TestTheAddressingNamesTheIssuesOwnArchitect(t *testing.T) {
 	architect(child, supervise.StateWorking)
 	architect(grandchild, supervise.StateWorking)
 	// The whole sentence a child's planner is told, so nothing but the architect it names moved.
-	want := "Legion addressing: your role topic is `" + notify.RoleTopicPrefix + string(mustClaimToken(t, child, claim.RolePlanner)) + "`" + owns(child) +
-		"the project's controller is `" + notify.RoleTopicPrefix + string(claim.ControllerToken("legion")) + "`; " +
+	want := "Legion addressing: your role topic is `" + notify.RoleTopic(string(mustClaimToken(t, child, claim.RolePlanner))) + "`" + owns(child) +
+		"the project's controller is `" + notify.RoleTopic(string(claim.ControllerToken("legion"))) + "`; " +
 		"a sibling role on your issue is your topic with the trailing `-<role>` replaced."
 	if got := addressing(child, claim.RolePlanner); got != want {
 		t.Errorf("the child's planner, while the child's architect works, is told %q; want %q", got, want)

@@ -615,7 +615,7 @@ func (r *subArchitectLive) startsWithItsArchitect(key string) api.Issue {
 func (r *subArchitectLive) told(key string) []record.Notice {
 	r.t.Helper()
 	var notices []record.Notice
-	for _, published := range r.notices.acceptedOn(notify.RoleTopicPrefix + string(r.token(key, claim.RoleArchitect))) {
+	for _, published := range r.notices.acceptedOn(notify.RoleTopic(string(r.token(key, claim.RoleArchitect)))) {
 		var notice record.Notice
 		if err := json.Unmarshal([]byte(published.Payload), &notice); err != nil {
 			r.t.Fatalf("decode the notice payload %q: %v", published.Payload, err)
@@ -674,7 +674,7 @@ func (r *subArchitectLive) catchUpNames(key string, told record.Notice, want ...
 // TestASubArchitectsCatchUpGoesToItAlone holds the rule for a catch-up whose architect has stopped.
 func (r *subArchitectLive) catchUpOnItsOwnTopicAlone(key string) {
 	r.t.Helper()
-	own := notify.RoleTopicPrefix + string(r.token(key, claim.RoleArchitect))
+	own := notify.RoleTopic(string(r.token(key, claim.RoleArchitect)))
 	r.notices.mu.Lock()
 	accepted := slices.Clone(r.notices.accepted)
 	r.notices.mu.Unlock()
@@ -805,7 +805,7 @@ func (r *subArchitectLive) publishIssue(key, status, parent string, blockers []s
 	if err != nil {
 		r.t.Fatalf("encode the Dispatch event: %v", err)
 	}
-	return r.publish("notifications.dispatch.issue."+key+".issue.updated", "dispatch", fmt.Sprintf("%s-%s-%d", key, status, r.seq), string(payload))
+	return r.publish(issueSubject(key, "issue.updated"), "dispatch", fmt.Sprintf("%s-%s-%d", key, status, r.seq), string(payload))
 }
 
 // register brings the launched claim of role on issue to ready, as its pane's shim and its agent

@@ -164,7 +164,7 @@ func TestReleaseAppliesAHeldRunningStatusBeforeUnslottedRepair(t *testing.T) {
 		t.Fatalf("controller notices before release = %#v, want none", notices)
 	}
 
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "held-position-reached", intake.DispatchConsumerPosition{AckFloorStream: 5}, engine, admission); err != nil {
+	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "held-position-reached", intake.DispatchConsumerPosition{AckFloorStream: 5, Idle: true}, engine, admission); err != nil {
 		t.Fatalf("release held position: %v", err)
 	}
 	got := issue(t, pool, waiting.Key)

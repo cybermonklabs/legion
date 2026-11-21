@@ -70,6 +70,7 @@ var legionHidden = [][]string{
 	{"workspace-init", "provision"}, {"workspace-init", "cache"},
 	{"git-credential"}, {"git"}, {"gh"},
 	{"leak-check"}, {"leak-check", "pre-push"}, {"leak-check", "text"},
+	{"cutover-read"}, {"cutover-read", "drain"}, {"cutover-read", "filters"},
 }
 
 // The conformance case's two lists are newRoot's commands, split by Hidden, cobra's own help and

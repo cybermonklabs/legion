@@ -201,6 +201,12 @@ jobs:
       - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
         run: bash scripts/daemon-release-gate.test.sh
         working-directory: packages/envoy
+      - name: Verdict test for daemon-running-gate.sh (fakes gh, kubectl, crane and git; no cluster)
+        run: bash scripts/daemon-running-gate.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for cutover-read.sh (fakes kubectl; no cluster)
+        run: bash scripts/cutover-read.test.sh
+        working-directory: packages/envoy
       - name: One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)
         run: bash loadtest/run-step.test.sh
         working-directory: packages/envoy

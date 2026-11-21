@@ -26,16 +26,16 @@ var renamedWidgets = ghrepo.MustRename("acme/widgets", "cybermonklabs/widgets")
 // A rename configured before the transfer changes nothing the daemon records on: the refresher
 // reads both names' installations (readPairs), GitHub answers that neither App is installed on
 // cybermonklabs/widgets, which it does not have yet, and the rename rule serves a record on
-// acme/widgets under its own name. What it does change is what GitHub intake hears: the consumer's
-// filter subjects carry both names, so an event arrives whichever name GitHub sends it under on
-// the day the repository moves, and an issue Dispatch resolves to the name it moved to is recorded
-// on the one the daemon read, under that one name. With no pair configured none of it happens:
-// nothing is heard under the second name until an issue is recorded on it.
+// acme/widgets under its own name. What it does change is what GitHub intake hears: the set its
+// decoder keeps names both, so an event arrives whichever name GitHub sends it under on the day
+// the repository moves, and an issue Dispatch resolves to the name it moved to is recorded on the
+// one the daemon read, under that one name. With no pair configured none of it happens: nothing
+// is heard under the second name until an issue is recorded on it.
 func TestARenameConfiguredBeforeTheTransferIsHeardWhileTheServedSetIsUnchanged(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		renames ghrepo.Renames
-		// heard is what GitHub intake hears, which is also the GitHub consumer's filter subjects.
+		// heard is what GitHub intake hears: the set its decoder keeps (heardGitHubSubjects).
 		heard []string
 	}{
 		{name: "the pair configured", renames: ghrepo.MustRenames(renamedWidgets), heard: []string{"acme/widgets", "cybermonklabs/widgets", "zeta/tools"}},
@@ -65,10 +65,10 @@ func TestARenameConfiguredBeforeTheTransferIsHeardWhileTheServedSetIsUnchanged(t
 				want = append(want, "notifications.github."+strings.ReplaceAll(repo, "/", ".")+".>")
 			}
 			slices.Sort(want)
-			got := githubFilterSubjects(t, stream)
+			got := heardGitHubSubjects(t, stream, w)
 			slices.Sort(got)
 			if !slices.Equal(got, want) {
-				t.Fatalf("the GitHub consumer's filter subjects = %v, want %v", got, want)
+				t.Fatalf("GitHub intake hears %v, want %v", got, want)
 			}
 			resolved, err := w.ResolveRepository("cybermonklabs/widgets")
 			if err != nil {

@@ -453,7 +453,7 @@ func (r *dequeueRig) seed(t *testing.T, stands phase.Phase, merger supervise.Cla
 	issue := dequeueIssue{key: key, number: 300 + index, head: dequeueHead(300 + index)}
 	claims := []supervise.Claim{r.claim(t, key, claim.RoleMerger, merger)}
 	issue.merger = claims[0].Token
-	issue.topic = notify.RoleTopicPrefix + string(issue.merger)
+	issue.topic = notify.RoleTopic(string(issue.merger))
 	if stands == phase.Implementing {
 		claims = append(claims, r.claim(t, key, claim.RoleImplementer, supervise.StateSuspended))
 	}
@@ -489,7 +489,7 @@ func (r *dequeueRig) seedUnderSecondRoot(t *testing.T, lingering bool) dequeueIs
 	merger := r.claim(t, key, claim.RoleMerger, supervise.StateSuspended)
 	merger.Tree = rootKey
 	issue.merger = merger.Token
-	issue.topic = notify.RoleTopicPrefix + string(issue.merger)
+	issue.topic = notify.RoleTopic(string(issue.merger))
 
 	root := startedAgainIssue(r.cfg, rootKey, rootKey, phase.Merging)
 	if lingering {

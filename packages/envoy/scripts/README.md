@@ -943,6 +943,69 @@ it sources; CI runs it in the `envoy-go-checks` job of `.github/workflows/ci.yam
 with it: a copy of the gate whose VM leg reads an absent `listenerImage` as no hub, and one that
 reads pi-envoy alone in an image, must each open on the fixture that exists to catch it.
 
+## daemon-running-gate.sh
+
+Says whether every Legion daemon that runs now runs a build of cybermonklabs/legion at or after a
+commit. Plan C reads it once the deploy that drops the shared wake filter runs in production:
+
+```bash
+packages/envoy/scripts/daemon-running-gate.sh --deployment <owner/repo> [--context <kube-context>] <commit>
+```
+
+`daemon-release-gate.sh` reads the deployment's image pins, which say what should run. This gate
+reads what does run. It reads the deployment's Legion projects through the same file,
+`lib/legion-deployment-projects.sh`, so the two never disagree on which daemons run: a project at
+`replicas: 0` or `daemon: false` is `SKIPPED`, and one on another runtime is `UNKNOWN`.
+
+For each running daemon it checks three things. Its Deployment is found in the namespace
+`legion.ProjectNamespace` gives it: `legion`, or `legion-<key>` for a key the deployment's
+`shared/legion/privateprojects/lists.go` declares private. Its name is `legion-daemon` for SMOKE,
+else `legion-<key>-daemon`.
+
+- **The rollout is complete:** `status.observedGeneration` equals `metadata.generation`; the
+  updated, ready and current replica counts equal `spec.replicas`; and no older ReplicaSet the
+  Deployment owns still holds a pod.
+- **Every running container's build is at or after the commit:** the gate reads the pod's own
+  `imageID` digest, never the pod template's pin, with `crane config`. Its
+  `org.opencontainers.image.revision` must have the commit as an ancestor
+  (`git merge-base --is-ancestor`, in this clone). An image built from another repository is listed
+  and not judged.
+- **The daemon reports the same build:** `kubectl exec … -c legion -- legion version` must print
+  that same commit.
+
+It prints `CURRENT`, `SKIPPED`, `GATE SHUT` naming the pod, container, digest and revision or the
+rollout field, or `UNKNOWN` naming any read it could not make. Its last line is `GATE OPEN`
+(exit 0), `GATE SHUT` (exit 1) or `UNKNOWN` (exit 3).
+
+`daemon-running-gate.test.sh` proves every verdict behind fakes of `gh`, `kubectl`, `crane` and
+`git`. Its control is a copy of the gate that reads the pod template's pin in place of the pods'
+`imageID`s; that copy passes a pod still on an older digest, which the gate shuts. CI runs it in
+the `envoy-go-checks` job.
+
+## cutover-read.sh
+
+Runs `legion cutover-read drain|filters --projects <KEY,…>`, plan C's drain read and filter read,
+in the cluster under the in-cluster listener's NATS grant, from a worker image pinned by digest:
+
+```bash
+packages/envoy/scripts/cutover-read.sh --context <kube-context> --image <worker image>@sha256:<digest> drain --projects <KEY,…>
+```
+
+- The **drain read** is step 3 of the wake migration, taken from deploy 4's head before deploy 4
+  merges. It passes only when every message stored on `notifications.legion.wake`, past each
+  `legion-go-<project>-wake` durable's ack floor, is `listener_ready`.
+- The **filter read** runs after deploy 4 is live. It passes only when every daemon durable is on
+  exactly its kind's filter set.
+
+Both read the stream's info, its consumer list and stored messages by sequence
+(`STREAM.MSG.GET`), and make no call on a durable. The logic and its live tests are in
+`packages/daemon/internal/intake/cutover_read.go`.
+
+The Job copies the listener Deployment's ServiceAccount, `NATS_URLS`, `NATS_NKEY_SEED_FILE` and the
+seed's volume, runs as nobody with every capability dropped, and is deleted and read back gone. The
+script exits as the command does: 0 on `GATE OPEN`, 1 on `GATE SHUT`, 3 on `UNKNOWN`. A Job that
+gives no verdict is `UNKNOWN`. `cutover-read.test.sh` proves this behind a fake `kubectl`.
+
 ## Measuring search on a copy of the corpus
 
 Three scripts measure a change to Dispatch search against the real corpus rather than a seeded

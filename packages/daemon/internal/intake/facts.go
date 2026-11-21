@@ -429,8 +429,9 @@ func (f DispatchClaim) namedIssue() (string, bool) { return f.Key, true }
 // all. The daemon's boot-owned poll reads one (Consumers.DispatchPosition) for Reconcile, and
 // again on a ticker while admission holds anything back, applying each changed reading through
 // ApplyFact as a synthetic fact — never decoded from a real Dispatch event. Admission is the only
-// handler that acts on it: it releases every hold whose target the position has Reached, applies
-// each released key's own listing snapshot, and promotes, all in the same transaction.
+// handler that acts on it: once the position has Reached the end of what the consumer was given,
+// it releases every hold, applies each released key's own listing snapshot, and promotes, all in
+// the same transaction.
 type DispatchConsumerPosition struct {
 	AckFloorStream int64
 	Idle           bool
@@ -438,14 +439,14 @@ type DispatchConsumerPosition struct {
 
 func (DispatchConsumerPosition) namedIssue() (string, bool) { return "", false }
 
-// Reached says whether the consumer at this position has caught up to target, a notification
-// stream sequence: its ack floor is at or past it, or it is idle. Idle covers a target the ack
-// floor alone can never reach — one set past the consumer's own last matching message, since the
-// stream also carries GitHub subjects the Dispatch consumer's filter never matches, or past
-// messages that landed before a consumer created at DeliverNewPolicy existed, which it will never
-// be given.
-func (p DispatchConsumerPosition) Reached(target int64) bool {
-	return p.AckFloorStream >= target || p.Idle
+// Reached says whether the consumer at this position has caught up: it is idle, every message on
+// its filter delivered and acknowledged (the consumer's own NumPending and NumAckPending, both
+// zero). The consumer's own info is the whole measurement: a stream position to compare its ack
+// floor with would need the stream's info, which a daemon held to its projects may not read, and
+// the stream also carries other projects' and GitHub's messages its filter never matches. Under
+// unbroken traffic on the project's own filter a hold waits for one idle reading.
+func (p DispatchConsumerPosition) Reached() bool {
+	return p.Idle
 }
 
 // IssueStatus is one issue as Dispatch shows it now: its key, the project that key names, its
@@ -1398,12 +1399,13 @@ type CheckBound struct {
 
 func (f CheckBound) namedIssue() (string, bool) { return f.Issue, true }
 
-// ListenerWake is one report the Envoy listener publishes on notifications.legion.wake, the one
-// subject whose consumer every daemon runs: the listener alone sees a message published to a
-// role topic with no live holder and a message sent to the agent subject of a session that is
-// gone, and both must bring a released pod back. The listener does not know which daemon owns a
-// session and must not learn: it reports the role token or the session id it saw, every daemon
-// reads the report, and each acts only on a released claim of its own project.
+// ListenerWake is one report the Envoy listener publishes: a role or agent wake on the wake subject
+// of the one project it is for, notifications.legion.<token>.wake, which only that project's daemon
+// reads, and its own liveness report on notifications.legion.wake, the one subject every daemon
+// reads. The listener alone sees a message published to a role topic with no live holder and a
+// message sent to the agent subject of a session that is gone, and both must bring a released pod
+// back. It names the project of a role by the role's own name and of a session by the session's
+// record; the daemon acts only on a released claim of its own.
 //
 // Kind is ListenerWakeRole, ListenerWakeAgent or ListenerWakeReady. Role is the claim token of
 // the role topic a message was published to, Session the session a message was sent to, and At

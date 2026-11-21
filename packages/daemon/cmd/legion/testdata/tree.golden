@@ -22,6 +22,9 @@ legion config check	--config string
 legion config reference	--json bool
 legion controller
 legion controller start	--config string	--daemon-url string
+legion cutover-read	hidden
+legion cutover-read drain	hidden	--projects string
+legion cutover-read filters	hidden	--projects string
 legion gh	hidden	words unread
 legion git	hidden	words unread
 legion git-credential	hidden	words unread

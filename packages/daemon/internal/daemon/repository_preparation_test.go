@@ -506,7 +506,7 @@ func TestRecordingAnIssueOnANewRepositoryHearsItInTheSamePass(t *testing.T) {
 	w, client, _, stream := preparationRig(t, &installations{})
 	engine, admission := rigHandlers(w)
 	heard := "notifications.github." + strings.ReplaceAll(strangerNamed, "/", ".") + ".>"
-	if filters := githubFilterSubjects(t, stream); slices.Contains(filters, heard) {
+	if filters := heardGitHubSubjects(t, stream, w); slices.Contains(filters, heard) {
 		t.Fatalf("GitHub filters = %v before any record, want %s unheard", filters, heard)
 	}
 	if cached := repositoryNames(w.cacheRepositories()); slices.Contains(cached, strangerNamed) {
@@ -528,7 +528,7 @@ func TestRecordingAnIssueOnANewRepositoryHearsItInTheSamePass(t *testing.T) {
 	if got := recordedIssue(t, w, "LEGION-941"); got == nil || got.Repo != strangerNamed {
 		t.Fatalf("LEGION-941 = %+v, want it recorded on %s", got, strangerNamed)
 	}
-	if filters := githubFilterSubjects(t, stream); !slices.Contains(filters, heard) {
+	if filters := heardGitHubSubjects(t, stream, w); !slices.Contains(filters, heard) {
 		t.Fatalf("GitHub filters = %v, want %s heard from the record that names it", filters, heard)
 	}
 	if cached := repositoryNames(w.cacheRepositories()); !slices.Contains(cached, strangerNamed) {
@@ -552,7 +552,7 @@ func TestALaunchAddsItsRepositoryToTheCacheSetAndTheHeardSet(t *testing.T) {
 	w, _, installs, stream := preparationRig(t, &installations{})
 	putOutboxIssue(t, w.pool, w.records.(projectRecords).Store, doneOn("LEGION-942", "LEGION", strangerNamed, "trunk"))
 	heard := "notifications.github." + strings.ReplaceAll(strangerNamed, "/", ".") + ".>"
-	if slices.Contains(repositoryNames(w.cacheRepositories()), strangerNamed) || slices.Contains(githubFilterSubjects(t, stream), heard) {
+	if slices.Contains(repositoryNames(w.cacheRepositories()), strangerNamed) || slices.Contains(heardGitHubSubjects(t, stream, w), heard) {
 		t.Fatalf("%s cached or heard before the launch, want neither: no live record names it and the boot did not read its record", strangerNamed)
 	}
 	repo, branch, err := w.launchRepository(ctx, "LEGION-942")
@@ -565,7 +565,7 @@ func TestALaunchAddsItsRepositoryToTheCacheSetAndTheHeardSet(t *testing.T) {
 	if cached := repositoryNames(w.cacheRepositories()); !slices.Contains(cached, strangerNamed) {
 		t.Fatalf("the cache set after the launch = %v, want %s in it", cached, strangerNamed)
 	}
-	if filters := githubFilterSubjects(t, stream); !slices.Contains(filters, heard) {
+	if filters := heardGitHubSubjects(t, stream, w); !slices.Contains(filters, heard) {
 		t.Fatalf("GitHub filters after the launch = %v, want %s heard", filters, heard)
 	}
 }

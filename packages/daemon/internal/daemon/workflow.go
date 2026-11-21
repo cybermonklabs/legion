@@ -91,13 +91,12 @@ type workflowRuntime struct {
 	conn      atomic.Pointer[nats.Conn]
 	consumers *intake.Consumers
 	// setRepositories replaces the repositories GitHub intake hears, the one route the runtime
-	// reaches that stream call by (updateSubscription). The boot leaves it nil, which means
+	// reaches intake's SetRepositories by (updateSubscription). The boot leaves it nil, which means
 	// w.consumers.SetRepositories: the boot opens the consumers (connect) before anything that
 	// hears a repository runs — a fact that records an issue, a launch, the refresher's backfill —
-	// so no caller asks whether they are open. A test sets it to a stand-in, since consumers is the
-	// concrete *intake.Consumers: a test of the heard set's publication, which has to hold the call
-	// while it proves no transaction waits on it (INFRA-3169), and a test whose runtime opens no
-	// consumers and whose launch or backfill hears a repository (hearsNothing).
+	// so no caller asks whether they are open. A test whose runtime opens no consumers and whose
+	// launch or backfill hears a repository sets it to a stand-in (hearsNothing), since consumers is
+	// the concrete *intake.Consumers.
 	setRepositories func(ctx context.Context, repositories []ghrepo.Repository) error
 	outbox          *outbox
 	// outboxWake is the outbox as the records' wake reaches it (wakeOutbox): the records are built
@@ -204,28 +203,24 @@ type workflowRuntime struct {
 	releaseWaits      map[string]map[string]releaseWait
 	recoveryHeldSince time.Time
 	recheckAfter      func(time.Duration) <-chan time.Time
-	// rereadWake, recoverWake, heardWake, heldWake and liveWake are the refresher's wakes, one
-	// request held at most each (wake): a bad answer kept outside the refresher (its second job's
-	// clock), a repository left unread or answered again (its third, recoverRepositories), a
-	// consumer update JetStream refused (its fourth, republishHeard), a default branch held through
-	// a rate limit (its fifth, rereadHeldBranches), and a write that can change the live records
-	// (its sixth, refreshLive). heldReads is each repository whose default branch is held through a
-	// rate limit, by its lowercased <owner>/<name>, with the limit's end (heldThroughLimit), under
-	// heldMu. backfillPending marks a record the backfill left without its repository columns,
-	// which the second job tries again (backfillLater).
-	rereadWake, recoverWake, heardWake, heldWake, liveWake chan struct{}
-	heldMu                                                 sync.Mutex
-	heldReads                                              map[string]limitedRead
-	backfillPending                                        atomic.Bool
-	// heard is what GitHub intake hears (heardRepositories): the boot's set (heardAtBoot), each
+	// rereadWake, recoverWake, heldWake and liveWake are the refresher's wakes, one request held at
+	// most each (wake): a bad answer kept outside the refresher (its second job's clock), a
+	// repository left unread or answered again (its third, recoverRepositories), a default branch
+	// held through a rate limit (its fourth, rereadHeldBranches), and a write that can change the
+	// live records (its fifth, refreshLive). heldReads is each repository whose default branch is
+	// held through a rate limit, by its lowercased <owner>/<name>, with the limit's end
+	// (heldThroughLimit), under heldMu. backfillPending marks a record the backfill left without
+	// its repository columns, which the second job tries again (backfillLater).
+	rereadWake, recoverWake, heldWake, liveWake chan struct{}
+	heldMu                                      sync.Mutex
+	heldReads                                   map[string]limitedRead
+	backfillPending                             atomic.Bool
+	// heard is what GitHub intake hears (heardRepositories): the boot's set (heardAtBoot), and each
 	// repository a record first names, a launch works or the refresher's backfill writes on a
-	// record added to it with no read of the records (hearOrPend, hearRepository), and the whole set
-	// published again after JetStream refused an addition (republishHeard). Every write holds
+	// record added to it with no read of the records (hear, hearRepository). Every write holds
 	// heardMu, and publishes a set that holds every repository the one before it held; a recording
 	// reads it with no lock at all, so one whose repository it names waits on nothing
 	// (hearRepository, which says why reading it without the lock is sound).
-	// heardPending marks a consumer update JetStream refused, and heardMissed is each repository
-	// whose own addition it refused, under heardMu, which the refresher's next publication adds.
 	// unread is each repository whose GitHub reads a preparation could not make (leaveUnread) or
 	// the boot's listing did not make (leaveForRecovery), lowercased, with why, under
 	// recoveringMu: while any is, the refresher recovers again of its own and so reads GitHub again
@@ -240,8 +235,6 @@ type workflowRuntime struct {
 	// a repository cache of (cacheRepositories), published for the sweep to read without a lock.
 	heardMu      sync.Mutex
 	heard        atomic.Pointer[[]ghrepo.Repository]
-	heardPending atomic.Bool
-	heardMissed  []ghrepo.Repository
 	unread       map[string]string
 	unreadMarks  map[string]uint64
 	unreadMarked uint64
@@ -655,7 +648,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		tokens: tokens, apps: tokens, forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchToken), repositories: repos,
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
 		failed:     make(chan error, 1),
-		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1),
+		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1),
 		heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1),
 		readied: newWakeSet[claim.Token](), handedOff: newWakeSet[string](), mergeStates: newWakeSet[string](),
 		mergeStateRunning: map[string]*mergeStateRun{},
@@ -1362,10 +1355,6 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		scope = append(scope, summary)
 		listed = append(listed, fact)
 	}
-	target, err := w.consumers.DispatchTarget(ctx)
-	if err != nil {
-		return fmt.Errorf("read notification stream target: %w", err)
-	}
 	position, err := w.consumers.DispatchPosition(ctx)
 	if err != nil {
 		return fmt.Errorf("read Dispatch consumer position: %w", err)
@@ -1436,7 +1425,7 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 				return err
 			}
 		}
-		if err := w.admission.Reconcile(scoped, tx, listed, target, position); err != nil {
+		if err := w.admission.Reconcile(scoped, tx, listed, position); err != nil {
 			return err
 		}
 		return settle(scoped, tx)
@@ -1997,7 +1986,7 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 		// A notice the listener accepted but could not forward is queued again (outbox.rehold).
 		// Each re-hold runs on the subscription's own goroutine, beside every lane of the outbox,
 		// so it takes a mark of its own rather than the one this goroutine waits on.
-		sub, err := subscribeNoticeExceptions(w.conn.Load(), func(data []byte) {
+		sub, err := subscribeNoticeExceptions(w.conn.Load(), roleLaneProject(w.projectID), func(data []byte) {
 			if err := w.outbox.rehold(store.ForConcurrentWorker(running), data); err != nil {
 				w.log.Error("role-lane exception not re-held", "error", err)
 			}
@@ -2116,21 +2105,22 @@ func (w *workflowRuntime) pollHoldReleaseWith(ctx context.Context, reader positi
 			w.log.Error("read Dispatch consumer position for a held release", "error", err)
 			continue
 		}
-		// This never releases on the strength of the timer — only a Reached position does that,
-		// through the ApplyFact below — so a stuck hold stays stuck, but an operator now sees why:
-		// the target it is waiting for and its current ack floor. Not the stream sequence stuck
-		// behind that floor: the notification stream also carries GitHub subjects interleaved with
-		// Dispatch's, so ack_floor+1 can name a message that has nothing to do with this hold.
+		// This never releases on the strength of the timer — only a position that has Reached the
+		// end of what the consumer was given does that, through the ApplyFact below — so a stuck
+		// hold stays stuck, but an operator now sees why: the consumer's ack floor, and that it is
+		// not idle. Not the stream sequence stuck behind that floor: the notification stream also
+		// carries GitHub subjects interleaved with Dispatch's, so ack_floor+1 can name a message
+		// that has nothing to do with this hold.
 		if waiting := time.Since(heldSince); waiting >= warnAfter && time.Since(warnedAt) >= warnEvery {
 			warnedAt = time.Now()
 			w.log.Warn("admission: a hold has not released", "waiting", waiting.Round(time.Second),
-				"target", w.admission.Target(), "ack_floor", position.AckFloorStream)
+				"ack_floor", position.AckFloorStream, "idle", position.Idle)
 		}
 		hold := w.admission.Holds()
 		if haveLast && position == last && hold == lastHold {
 			continue
 		}
-		eventID := fmt.Sprintf("dispatch-position:%s:%s:%d:%d:%d:%t", w.dispatchProject, w.bootID, hold, w.admission.Target(), position.AckFloorStream, position.Idle)
+		eventID := fmt.Sprintf("dispatch-position:%s:%s:%d:%d:%t", w.dispatchProject, w.bootID, hold, position.AckFloorStream, position.Idle)
 		if _, err := intake.ApplyFact(ctx, w.pool, "dispatch", eventID, position, w.handlers...); err != nil {
 			w.log.Warn("apply Dispatch consumer position failed", "error", err)
 			continue

@@ -1323,7 +1323,7 @@ func TestARoundNoReviewDecidesTellsTheArchitect(t *testing.T) {
 			}
 			for _, notice := range told {
 				if notice.Role != claim.RoleReviewer || notice.Phase != phase.Reviewing || !strings.Contains(notice.Reason, headOne) ||
-					notice.Topic != "notifications.role.legion-legion-legion-208-reviewer" {
+					notice.Topic != "notifications.role.LEGION.legion-legion-legion-208-reviewer" {
 					t.Fatalf("notice %+v, want the reviewer's reviewing round, naming the head, at the reviewer's role topic", notice)
 				}
 			}

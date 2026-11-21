@@ -173,7 +173,7 @@ func heldAdmission(t *testing.T, w *workflowRuntime, repo string) {
 // holds for it, and the boot waited for none of it: the limit says nothing about the repository,
 // and the record's branch is the one GitHub named when the issue was recorded. A read of the branch
 // and an admission's preparation inside the limit are answered from the held branch and ask GitHub
-// nothing, and the first read after the reset, the refresher's fifth job's, is the read the refused
+// nothing, and the first read after the reset, the refresher's fourth job's, is the read the refused
 // one owed: here GitHub has renamed the default branch since, and that read serves the new name.
 func TestABootServesARecordedDefaultBranchThroughARateLimitAndReadsItAgainAfterTheReset(t *testing.T) {
 	var reset atomic.Int64
@@ -258,7 +258,7 @@ func TestALaunchWithNoDefaultBranchHeldKeepsARateLimitAsItsReadErrorAndReadsOnce
 }
 
 // A repository GitHub still refuses for its secondary rate limit after the first wait is served on
-// the branch a record holds throughout, rather than left out: the refresher's fifth job reads it
+// the branch a record holds throughout, rather than left out: the refresher's fourth job reads it
 // again at each wait GitHub asks for, and each refusal holds the branch again and says so, naming
 // the Retry-After and the secondary budget. The other repository is served throughout, and once
 // GitHub answers, the read takes GitHub's branch, with no restart.
@@ -456,11 +456,9 @@ func TestARecordedDefaultBranchIsHeldOnlyForTheRepositoryTheRecordNames(t *testi
 // that names the issue, the repository and the cause, and the boot goes on (INFRA-4401 D11): it
 // waits on GitHub for no record. Every other record is filled. The refresher's second job then
 // tries the record again (backfillLater) and fills it once GitHub answers, and GitHub intake hears
-// the filled record's repository as it hears a new record's (hearOrPend), with the heard set left
-// pending for nothing, since nothing refused it; the read of the live records is asked for, so the
-// record joins the live set and the cache set. Control: with the fill heard by marking the heard
-// set pending, as before INFRA-4401's review, the heard set does not name zeta/tools and is left
-// pending.
+// the filled record's repository as it hears a new record's (hear), by one change of the set its
+// decoder keeps; the read of the live records is asked for, so the record joins the live set and
+// the cache set.
 func TestABootsBackfillLeavesARecordGitHubDoesNotAnswerForAndTheRefresherFillsIt(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -498,7 +496,7 @@ func TestABootsBackfillLeavesARecordGitHubDoesNotAnswerForAndTheRefresherFillsIt
 			var published [][]ghrepo.Repository
 			w := &workflowRuntime{pool: pool, records: projectRecords{Store: record.NewStore(), project: "LEGION"}, repositories: newRepositories("LEGION", ghrepo.Renames{}),
 				dispatch:        &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-7", ResolvedRepo: "zeta/tools"}, {Key: "LEGION-9", ResolvedRepo: "acme/widgets"}}},
-				dispatchProject: "LEGION", stateDir: t.TempDir(), heardWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1), log: slog.New(slog.NewJSONHandler(logs, nil)),
+				dispatchProject: "LEGION", stateDir: t.TempDir(), liveWake: make(chan struct{}, 1), log: slog.New(slog.NewJSONHandler(logs, nil)),
 				defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now),
 				setRepositories: func(_ context.Context, repos []ghrepo.Repository) error {
 					published = append(published, repos)
@@ -528,9 +526,8 @@ func TestABootsBackfillLeavesARecordGitHubDoesNotAnswerForAndTheRefresherFillsIt
 			if unfilled := unfilledKeys(t, w); len(unfilled) != 0 {
 				t.Fatalf("unfilled after the refresher's backfill = %v, want none", unfilled)
 			}
-			if w.backfillPending.Load() || w.heardPending.Load() || len(w.heardWake) != 0 {
-				t.Fatalf("backfill pending %v, heard set pending %v, its job woken %v; want nothing left and nothing pending: JetStream refused no update",
-					w.backfillPending.Load(), w.heardPending.Load(), len(w.heardWake) != 0)
+			if w.backfillPending.Load() {
+				t.Fatal("the backfill is still pending after the refresher filled the record, want nothing left")
 			}
 			if heard := repositoryNames(*w.heard.Load()); !slices.Equal(heard, []string{"acme/widgets", "zeta/tools"}) || len(published) != 1 {
 				t.Fatalf("GitHub intake hears %v after %d publications, want zeta/tools added to the boot's acme/widgets by one", heard, len(published))

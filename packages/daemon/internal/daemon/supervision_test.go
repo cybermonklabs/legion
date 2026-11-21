@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	recordpkg "github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -190,10 +191,10 @@ func TestRunLaunchesWithThePromptInstructionsAndSecretsItWasGiven(t *testing.T) 
 		t.Errorf("the role prompt %s is outside the state directory", spec.Prompt.RolePromptPaths[0])
 	}
 	project, _ := claim.ProjectToken(cfg.Project)
-	if want := "`notifications.role." + string(token) + "`"; !strings.Contains(spec.Prompt.Addressing, want) {
+	if want := "`" + notify.RoleTopic(string(token)) + "`"; !strings.Contains(spec.Prompt.Addressing, want) {
 		t.Errorf("the addressing %q does not name the claim's role topic %s", spec.Prompt.Addressing, want)
 	}
-	if want := "`notifications.role.legion-" + project + "-controller`"; !strings.Contains(spec.Prompt.Addressing, want) {
+	if want := "`" + notify.RoleTopic(string(claim.ControllerToken(project))) + "`"; !strings.Contains(spec.Prompt.Addressing, want) {
 		t.Errorf("the addressing %q does not name the controller %s", spec.Prompt.Addressing, want)
 	}
 	if !reflect.DeepEqual(spec.Secrets, map[string]string{"ENVOY_TOKEN": "envoy-bearer"}) {

@@ -25,15 +25,25 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
-// noticeExceptionSubjects is where the Envoy listener reports a role-lane forward it could not
-// complete: notifications.envoy.exceptions.<the original role topic>
-// (packages/envoy/cmd/listener/delivery.go, publishDeliveryException). A role topic is outside the
+// noticeExceptionSubject is where the Envoy listener reports a role-lane forward it could not
+// complete for a role whose lane is under project: notifications.envoy.exceptions.<the original
+// role topic> (packages/envoy/cmd/listener/delivery.go, publishDeliveryException), the role topic
+// named with its project first, notifications.role.<project>.<role>. A role topic is outside the
 // notification stream, so the report goes over core NATS and reaches only a subscriber connected
-// when it is sent. The role topic has two forms while every reader takes both
-// (dispatch://INFRA-3862), the role alone and its project first, so the subscription takes every
-// name under the role lanes' prefix, which the daemon's grant names whole (natsgrant.Daemon), and
-// exceptionNotice reads either form.
-const noticeExceptionSubjects = "notifications.envoy.exceptions." + notify.RoleTopicPrefix + ">"
+// when it is sent. The subscription takes that project's role lanes alone, which a grant holding
+// the daemon to its projects names, and no other project's; the role alone, the name's old form, is
+// refused by every listener once no reader is left on it, so nothing reports a forward under it.
+// exceptionNotice reads the role from the report.
+func noticeExceptionSubject(project string) string {
+	return "notifications.envoy.exceptions." + subjectforms.RoleSubject(project, "*")
+}
+
+// roleLaneProject is the project the lanes of this deployment's roles are under: the one each of
+// its role tokens names (legion-<projectToken>-…), as notify.RoleTopic publishes a notice under it,
+// whatever the deployment's Dispatch key.
+func roleLaneProject(projectToken string) string {
+	return subjectforms.RoleProject(string(claim.ControllerToken(projectToken)))
+}
 
 // The listener's own liveness windows for a role holder (packages/envoy/internal/session), read
 // through sessiontiming (the one public door onto the generated contracts numbers the listener
@@ -82,9 +92,10 @@ type roleLaneException struct {
 	DedupeKey        string `json:"dedupe_key"`
 }
 
-// subscribeNoticeExceptions subscribes rehold to every role-lane exception on conn.
-func subscribeNoticeExceptions(conn *nats.Conn, rehold func(data []byte)) (*nats.Subscription, error) {
-	sub, err := conn.Subscribe(noticeExceptionSubjects, func(msg *nats.Msg) { rehold(msg.Data) })
+// subscribeNoticeExceptions subscribes rehold to every role-lane exception of project's roles on
+// conn (noticeExceptionSubject).
+func subscribeNoticeExceptions(conn *nats.Conn, project string, rehold func(data []byte)) (*nats.Subscription, error) {
+	sub, err := conn.Subscribe(noticeExceptionSubject(project), func(msg *nats.Msg) { rehold(msg.Data) })
 	if err != nil {
 		return nil, fmt.Errorf("subscribe to role-lane exceptions: %w", err)
 	}
@@ -101,7 +112,7 @@ func subscribeNoticeExceptions(conn *nats.Conn, rehold func(data []byte)) (*nats
 // still handled here because a listener of the deployed, older build raises it until the rollout
 // finishes. Such a listener sends a
 // role message on its role lane, which forwards it once and reports a failure on
-// noticeExceptionSubjects instead of answering it; a listener of the confirmed route answers the
+// noticeExceptionSubject instead of answering it; a listener of the confirmed route answers the
 // publish itself, and the notice executor re-holds from that answer (notice). Both run one policy,
 // reholdNotice. The subscription stays while a deployment may run an earlier listener.
 //
@@ -314,7 +325,7 @@ func (r *outbox) noticePublished(row record.OutboxRow, payload record.Notice, ar
 func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reason, recipient string) error {
 	key := record.OutboxKey(reported.row)
 	issue, notice := reported.issue, reported.notice
-	topic := notify.RoleTopicPrefix + string(reported.architect)
+	topic := notify.RoleTopic(string(reported.architect))
 	held := r.supervisedClaim(reported.architect)
 	if !holdsRole(held) {
 		root, lingers, err := r.issueTree(ctx, issue)
@@ -484,9 +495,10 @@ type reportedNotice struct {
 
 // exceptionNotice reads the notice a report is about: a publish of this daemon's outbox (its
 // dedupe key names a row) to the role topic of an architect of this project, in either form of
-// the lane's name (the role alone, or this daemon's Dispatch project and then the role), whose
-// summary is the executor's own "<kind> on <issue>" for an issue of this project and whose payload
-// is that notice. ok is false for a report about anything else, a lane of another project
+// the lane's name (the role alone, or the project its role token names and then the role, the
+// lane notify.RoleTopic publishes the notice to, whatever this daemon's Dispatch project is),
+// whose summary is the executor's own "<kind> on <issue>" for an issue of this project and whose
+// payload is that notice. ok is false for a report about anything else, a lane of another project
 // among them.
 func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, bool) {
 	row, ok := record.ParseOutboxKey(exception.DedupeKey)
@@ -497,8 +509,8 @@ func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, b
 	if !isRole {
 		return reportedNotice{}, false
 	}
-	project, token, legacy := subjectforms.CanonicalRole(lane)
-	if (!legacy && project != r.dispatchProject) || !strings.HasPrefix(token, "legion-"+r.project+"-") || !strings.HasSuffix(token, "-"+string(claim.RoleArchitect)) {
+	project, token, _ := subjectforms.CanonicalRole(lane)
+	if project != subjectforms.RoleProject(token) || !strings.HasPrefix(token, "legion-"+r.project+"-") || !strings.HasSuffix(token, "-"+string(claim.RoleArchitect)) {
 		return reportedNotice{}, false
 	}
 	var notice record.Notice

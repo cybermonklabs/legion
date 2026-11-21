@@ -401,7 +401,7 @@ func TestAHeldQueuedRootIsAdoptedOnlyOnceTheHoldReleases(t *testing.T) {
 		t.Fatalf("held %s = %#v, want it left its own root at generation 1", child, got)
 	}
 
-	applyFact(t, pool, admission, "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 5})
+	applyFact(t, pool, admission, "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 5, Idle: true})
 	if admission.Held() {
 		t.Fatal("the hold is still standing once the consumer reached its position")
 	}
