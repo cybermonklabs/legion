@@ -21,7 +21,10 @@ import (
 // every P. The rig cannot tell whose wait that is, so the window is UNKNOWN, a rig problem, never a
 // pass. Taking that wait out as the runtime's, the rig before this row read such a gap - a
 // reviewer's forcing of 145 workers at 72 Ps, 50.125 ms on the clock and 1.826 ms of the thread's
-// CPU - as 0.159 ms made, and the window kept D6 (2026-11-21).
+// CPU - as 0.159 ms made, and the window kept D6 (2026-11-21). The yields cost the thread CPU of
+// its own, 0.9 to 5.8 ms in 10 runs on a loaded machine: where that alone breaks D6, with the
+// runtime's wait taken out, the window is a violation, which the rig names before the wait, and
+// that is not a pass either.
 func TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP(t *testing.T) {
 	storetest.RequireXidGapJudgment(t)
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(xidLoadProcs))
@@ -66,6 +69,13 @@ func TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP(t *t
 			storetest.XidMillis(gap.GoRunnable), xidOwnPsSpin, window.Detail())
 	}
 	err := report.Err()
+	if broken := window.Violations(); len(broken) > 0 {
+		if err == nil || !strings.Contains(err.Error(), "XID WINDOW VIOLATION") {
+			t.Fatalf("a window that breaks D6 with the runtime's wait taken out (%s): verdict %v, want that violation", strings.Join(broken, "; "), err)
+		}
+		t.Logf("the yields' own CPU broke D6 with the runtime's wait taken out: %s", strings.Join(broken, "; "))
+		return
+	}
 	if err == nil || !strings.Contains(err.Error(), "UNKNOWN: backend") || !strings.Contains(err.Error(), "keeps D6 only if its goroutine's waits on the runtime") {
 		t.Fatalf("a gap whose goroutine waited while the operation's own goroutines held every P: verdict %v, want the window UNKNOWN", err)
 	}
