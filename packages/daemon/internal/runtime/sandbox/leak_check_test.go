@@ -268,7 +268,7 @@ func TestARoleStartedInAKeptPodIsToldTheCheckerItsPodWasBuiltUnder(t *testing.T)
 				o.LeakCheck, o.LeakCheckSetting = servedLeakCheck(), moved
 				movedReservation(o)
 			})
-			if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) == 0 {
+			if drifted := driftOf(t, g, r2, loc); len(drifted) == 0 {
 				t.Fatalf("the pod has drifted from nothing, so this case proves nothing")
 			}
 			kept := resumeTester(t, g, r2, loc)
@@ -364,7 +364,7 @@ func TestADigestPushedIntoAPodThatRecordsNoneIsToldToItsLaterRoles(t *testing.T)
 			if pod := g.pod(name); pod == nil || string(pod.UID) != loc.Sandbox.PodUID {
 				t.Fatalf("the pod is %v after the record, want the one built, %s", pod, loc.Sandbox.PodUID)
 			}
-			if drifted := driftOf(t, g.ctx, r2, kept); len(drifted) != 0 {
+			if drifted := driftOf(t, g, r2, kept); len(drifted) != 0 {
 				t.Fatalf("PodDrift = %q after the record, want nothing", drifted)
 			}
 			if tc.edit != nil {
@@ -406,7 +406,7 @@ func TestADigestPushedIntoAPodThatRecordsNoneIsToldToItsLaterRoles(t *testing.T)
 
 			// A daemon restarted under another digest reads the record as the digest the pod holds.
 			r3 := restartedOver(t, g, later, func(o *Options) { o.LeakCheck, o.LeakCheckSetting = servedLeakCheck(), moved })
-			if drifted := slices.Contains(driftOf(t, g.ctx, r3, later), movedReason); drifted != tc.drifts {
+			if drifted := slices.Contains(driftOf(t, g, r3, later), movedReason); drifted != tc.drifts {
 				t.Fatalf("PodDrift under the moved digest names %q: %t, want %t", movedReason, drifted, tc.drifts)
 			}
 		})
@@ -444,8 +444,8 @@ func TestAKeptPodRecordsAndTellsTheManifestItsReconnectedLauncherWasServed(t *te
 			leakCheckPushedAnnotation, pushed.Annotations[leakCheckPushedAnnotation], err, source.manifest, kept.Sandbox.PodUID)
 	}
 	reason := "leak check manifest " + source.manifest + ", now " + configured.ManifestSHA256
-	if drifted := slices.Contains(driftOf(t, g.ctx, r2, kept), reason); !drifted {
-		t.Fatalf("PodDrift = %q, want the served manifest drift %q", driftOf(t, g.ctx, r2, kept), reason)
+	if drifted := slices.Contains(driftOf(t, g, r2, kept), reason); !drifted {
+		t.Fatalf("PodDrift = %q, want the served manifest drift %q", driftOf(t, g, r2, kept), reason)
 	}
 
 	before := countOf(g.sent(workerToken), shimwire.TypeLauncherLeakCheck)
@@ -491,7 +491,7 @@ func TestAChangedManifestDigestIsDrift(t *testing.T) {
 				withOptions(func(o *Options) { o.LeakCheck, o.LeakCheckSetting = servedLeakCheck(), tc.built }))
 			loc := g.spawn(workerSpec(t))
 			r2 := restartedOver(t, g, loc, func(o *Options) { o.LeakCheck, o.LeakCheckSetting = servedLeakCheck(), tc.now })
-			drifted := driftOf(t, g.ctx, r2, loc)
+			drifted := driftOf(t, g, r2, loc)
 			switch {
 			case tc.reason == "" && len(drifted) != 0:
 				t.Fatalf("PodDrift = %q, want nothing", drifted)

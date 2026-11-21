@@ -119,23 +119,47 @@ func (e *Erasure) readEmbeddings(ctx context.Context, tx pgx.Tx, read *erasedRea
 	return nil
 }
 
-// readSearch lists the search rows that stand on a version the run deletes: the document's own
-// search row, and the issue's search vector where the document is its spec (restateSearch).
+// readSearch lists the search rows the run deletes or writes again: the node's own rows of the
+// keyword table, every version of its text the keyword fill wrote, which go; and for a document a
+// version of which the run deletes, the document's own search row, the issue's search vector where
+// the document is its spec (restateSearch), and the vector of each keyword row of that issue that
+// names a version the run deletes, which is written again without it (restateKeywordVersions). The
+// keyword rows are listed by their key, each set in event_seq order.
 func (e *Erasure) readSearch(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
-	if len(read.artifacts) == 0 {
-		return nil
+	if len(read.artifacts) > 0 {
+		var searched bool
+		if err := tx.QueryRow(ctx, `select exists (select 1 from document_search where artifact_id = $1::uuid)`,
+			read.document.artifact).Scan(&searched); err != nil {
+			return fmt.Errorf("read the search row of %s: %w", read.document.refKey, err)
+		}
+		if searched {
+			read.listing.search = append(read.listing.search, "rewrite document_search of "+read.document.refKey)
+		}
+		if issue := read.document.specIssue(); issue != "" {
+			read.listing.search = append(read.listing.search, "rewrite issues.search of "+issue)
+		}
 	}
-	var searched bool
-	if err := tx.QueryRow(ctx, `select exists (select 1 from document_search where artifact_id = $1::uuid)`,
-		read.document.artifact).Scan(&searched); err != nil {
-		return fmt.Errorf("read the search row of %s: %w", read.document.refKey, err)
+	document := ""
+	if read.document != nil {
+		document = read.document.artifact
 	}
-	if searched {
-		read.listing.search = append(read.listing.search, "rewrite document_search of "+read.document.refKey)
+	rows, err := tx.Query(ctx, `
+		select line from (
+			select 0 as arm, v.event_seq, 'delete search_text_versions ' || v.kind || ' ' || v.id || ' event_seq ' || v.event_seq as line
+			from search_text_versions v where v.kind = $1 and v.id = $2
+			union all
+			select 1, v.event_seq, 'rewrite search_text_versions.search of issue ' || v.id || ' event_seq ' || v.event_seq
+			from search_text_versions v
+			where v.kind = 'issue' and v.id = $3 and v.spec_artifact_id = nullif($4, '')::uuid and v.spec_version = any($5::integer[])
+		) listed order by arm, event_seq`, e.Kind, e.ID, read.document.specIssue(), document, read.numbers)
+	if err != nil {
+		return fmt.Errorf("read the keyword versions of %s:%s: %w", e.Kind, e.ID, err)
 	}
-	if issue := read.document.specIssue(); issue != "" {
-		read.listing.search = append(read.listing.search, "rewrite issues.search of "+issue)
+	lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("read the keyword versions of %s:%s: %w", e.Kind, e.ID, err)
 	}
+	read.listing.search = append(read.listing.search, lines...)
 	return nil
 }
 
@@ -192,9 +216,11 @@ type derivedRows struct {
 
 // derivedTables is every table holding rows that derive from a node, by name, each with the rows
 // of it that do. It is the same derivation apply writes by, row set for row set: the node's own
-// rows, its tuples, its projections, its own document's rows, its embedding rows, the events about
-// it and its project's term statistics, which the run counts again. The rows that cannot exist
-// without a projection row are added by leftDerived, from the foreign keys into the projections.
+// rows, its tuples, its projections, its own document's rows, its embedding rows, its keyword
+// versions and the search vector of each keyword version of its spec issue that names a version
+// the run deletes, the events about it and its project's term statistics, which the run counts
+// again. The rows that cannot exist without a projection row are added by leftDerived, from the
+// foreign keys into the projections.
 var derivedTables = map[string][]derivedRows{
 	"graph_nodes":  {{where: `held.kind = bound.kind and held.id = bound.id`}},
 	"graph_tuples": {{where: `(held.from_kind = bound.kind and held.from_id = bound.id) or (held.to_kind = bound.kind and held.to_id = bound.id)`}},
@@ -208,6 +234,10 @@ var derivedTables = map[string][]derivedRows{
 	"artifact_versions":    {{where: `held.artifact_id = nullif(bound.document, '')::uuid and held.number = any(bound.numbers)`}},
 	"document_search":      {{where: `held.artifact_id = nullif(bound.document, '')::uuid and cardinality(bound.numbers) > 0`}},
 	"issues":               {{columns: []string{"search"}, where: `bound.spec_issue <> '' and held.key = bound.spec_issue and cardinality(bound.numbers) > 0`}},
+	"search_text_versions": {
+		{where: `held.kind = bound.kind and held.id = bound.id`},
+		{columns: []string{"search"}, where: `bound.spec_issue <> '' and held.kind = 'issue' and held.id = bound.spec_issue and held.spec_artifact_id = nullif(bound.document, '')::uuid and held.spec_version = any(bound.numbers)`},
+	},
 	"embeddings": {{where: `(held.kind = bound.kind and held.id = bound.id)
 		or (bound.window_kind <> '' and held.kind = bound.window_kind and split_part(held.id, '#', 1) = bound.owner_key)
 		or (bound.document <> '' and held.kind in ('document', '` + refs.DocumentWindowKind + `') and split_part(held.id, '#', 1) = bound.document)

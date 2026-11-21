@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -286,4 +289,101 @@ func seedPreStoreBlock(t *testing.T, database *store.Store, document preStoreDoc
 	`, document.artifactID, blockID, document.refKey+"#"+blockID, "Block "+blockID+"."); err != nil {
 		t.Fatalf("write block %s of %s: %v", blockID, document.refKey, err)
 	}
+}
+
+// keywordVersion is one row of the keyword table (search_text_versions) as the keyword fill
+// writes it. The fill writes its rows from the event log, and these seeds write rows directly with
+// no event for most of them, so a test writes the rows it needs itself (writeKeywordVersion).
+// issue is the item's issue, "" for none; specArtifact and specVersion name the version of an
+// issue's primary document its row holds the words of, and are "" and 0 on any other kind's row.
+type keywordVersion struct {
+	kind, id, issue, project string
+	seq                      int32
+	event                    int64
+	body                     string
+	specArtifact             string
+	specVersion              int32
+}
+
+// keywordVersionInsert writes one keywordVersion as the fill's insert writes a decided version
+// (textversions' insertVersionsQuery): its vector made by the functions that insert makes it with,
+// an issue's from its key, its title and the markdown of the spec version it names, and any other
+// kind's from its body. Its event_id is the event given, or its event_seq where none is.
+const keywordVersionInsert = `
+	insert into search_text_versions
+	       (kind, id, issue_key, project_key, event_id, event_seq, started_at, body, body_from,
+	        spec_artifact_id, spec_version, search)
+	select r.kind, r.id, nullif(r.issue_key, ''), r.project_key, coalesce(nullif(r.event_id, 0), r.event_seq), r.event_seq,
+	       now(), r.body, 'event', nullif(r.spec_artifact_id, '')::uuid, nullif(r.spec_version, 0),
+	       case r.kind
+	         when 'issue' then issue_search_vector(r.id, r.body,
+	           (select a.markdown from artifact_versions a
+	             where a.artifact_id = nullif(r.spec_artifact_id, '')::uuid and a.number = r.spec_version))
+	         else search_vector('', search_text(r.body))
+	       end
+	  from (select $1::text, $2::text, $3::text, $4::text, $5::bigint, $6::integer, $7::text, $8::text, $9::integer)
+	       as r (kind, id, issue_key, project_key, event_id, event_seq, body, spec_artifact_id, spec_version)`
+
+// keywordWriter is what writeKeywordVersion writes through: the pool, or a transaction that
+// stands for a batch of the fill.
+type keywordWriter interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
+// writeKeywordVersion writes version as a row of the keyword table through writer
+// (keywordVersionInsert).
+func writeKeywordVersion(t *testing.T, writer keywordWriter, version keywordVersion) {
+	t.Helper()
+	tag, err := writer.Exec(context.Background(), keywordVersionInsert, version.kind, version.id, version.issue,
+		version.project, version.event, version.seq, version.body, version.specArtifact, version.specVersion)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("write the keyword version %+v: %d rows, %v", version, tag.RowsAffected(), err)
+	}
+}
+
+// keywordVersionRow is one row of the keyword table read whole, in its text form, so a read after
+// the erase can say whether any byte of it moved.
+func keywordVersionRow(t *testing.T, database *store.Store, kind, id string, seq int32) string {
+	t.Helper()
+	var row string
+	if err := database.Pool.QueryRow(context.Background(), `
+		select v::text from search_text_versions v where v.kind = $1 and v.id = $2 and v.event_seq = $3`,
+		kind, id, seq).Scan(&row); err != nil {
+		t.Fatalf("read the keyword version %s %s event_seq %d: %v", kind, id, seq, err)
+	}
+	return row
+}
+
+// keywordVersionsOf counts the rows of the keyword table of one item.
+func keywordVersionsOf(t *testing.T, database *store.Store, kind, id string) int {
+	t.Helper()
+	var rows int
+	if err := database.Pool.QueryRow(context.Background(),
+		`select count(*) from search_text_versions where kind = $1 and id = $2`, kind, id).Scan(&rows); err != nil {
+		t.Fatalf("count the keyword versions of %s %s: %v", kind, id, err)
+	}
+	return rows
+}
+
+// keywordVersionsHolding names, by key, every row of the keyword table whose body or vector holds
+// text, each with the columns that hold it. A vector is read in its text form, which spells each
+// lexeme, so a text of one word the parser keeps as written is found in it.
+func keywordVersionsHolding(t *testing.T, database *store.Store, text string) []string {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select '(' || kind || ',' || id || ',' || event_seq || ')' ||
+		       case when position($1 in body) > 0 then ' body' else '' end ||
+		       case when position($1 in search::text) > 0 then ' search' else '' end ||
+		       ': ' || body
+		from search_text_versions
+		where position($1 in body) > 0 or position($1 in search::text) > 0
+		order by kind, id, event_seq`, text)
+	if err != nil {
+		t.Fatalf("read the keyword versions holding %q: %v", text, err)
+	}
+	held, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the keyword versions holding %q: %v", text, err)
+	}
+	return held
 }

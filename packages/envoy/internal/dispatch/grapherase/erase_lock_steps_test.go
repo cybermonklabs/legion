@@ -163,6 +163,112 @@ func TestTheEraseTakesTheCommentsRowBeforeItTouchesItsWindows(t *testing.T) {
 	}
 }
 
+// holdFillBackStatement is the statement that takes the keyword fill's cursor row `for share`,
+// after the node's projection rows and before the erase reads anything under its locks
+// (textversions.HoldFillBack).
+const holdFillBackStatement = "select event_id from public.search_text_versions_fill where id = 1 for share"
+
+// TestTheEraseWaitsForAKeywordBatchInFlightAndListsWhatItWrote holds the erase to holding the
+// keyword fill back (textversions.HoldFillBack) before it reads under its locks. A batch of the
+// fill reads an item's text from its event and its row and writes its keyword version
+// (search_text_versions) in a transaction of its own, which takes the fill's cursor row
+// `for update` first. A batch that read the comment before the erase took its locks and commits
+// after the erase deleted the comment's versions would leave a version holding the erased text.
+//
+// The fill has run before: its cursor row stands, created as its first batch creates it
+// (textversions' createCursorQuery). A transaction stands for a batch: it takes the cursor row
+// `for update`, as every batch does first, and writes a keyword version of the comment holding its
+// text, at the event_seq after the one the table holds. The confirmed erase, given the digest of a
+// run without --confirm made before that batch began, queues behind it at the statement that takes
+// the cursor row. Once the batch commits, the listing the erase reads under its locks names the
+// batch's version, which that digest does not cover, so the erase refuses and removes nothing; the
+// erase run again lists it and removes every keyword version of the comment. An erase that did not
+// hold the fill back would not wait: it would read its listing without the batch's version, delete
+// the versions it listed, and leave the batch's, committed after it, holding the erased text.
+func TestTheEraseWaitsForAKeywordBatchInFlightAndListsWhatItWrote(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedAgreeingStore(t, database)
+	const word = "pangolin4vestibule"
+	if _, err := database.Pool.Exec(ctx, `update comments set body = $2 where id = $1::uuid`, seeded.comment, word); err != nil {
+		t.Fatalf("write the comment's body: %v", err)
+	}
+	writeKeywordVersion(t, database.Pool, keywordVersion{kind: commentNodeKind, id: seeded.comment, project: "CORE", seq: 1, body: word})
+	if _, err := database.Pool.Exec(ctx, `
+		insert into search_text_versions_fill (id, event_id, holder, rules) values (1, 0, null, 1) on conflict (id) do nothing`); err != nil {
+		t.Fatalf("create the keyword fill's cursor row as its first batch does: %v", err)
+	}
+	listing := dryRun(t, database, commentNodeKind, seeded.comment)
+
+	batch, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the keyword fill's batch: %v", err)
+	}
+	defer batch.Rollback(ctx)
+	var cursor int64
+	if err := batch.QueryRow(ctx, `select event_id from search_text_versions_fill where id = 1 for update`).Scan(&cursor); err != nil {
+		t.Fatalf("take the keyword fill's cursor row as a batch does: %v", err)
+	}
+	writeKeywordVersion(t, batch, keywordVersion{kind: commentNodeKind, id: seeded.comment, project: "CORE", seq: 2, body: word})
+
+	answered := make(chan eraseAnswer, 1)
+	go func() {
+		erasure, err := Erase(context.Background(), database.Pool.Config().ConnString(), commentNodeKind, seeded.comment,
+			listing.Digest, time.Millisecond)
+		answered <- eraseAnswer{erasure, err}
+	}()
+	pid := eraseBackendIn(t, ctx, database)
+	if early, done := storetest.WaitForQueuedBehind(t, batch, pid, answered, lockstep.Wait); done {
+		if err := batch.Commit(ctx); err != nil {
+			t.Fatalf("commit the keyword fill's batch: %v", err)
+		}
+		t.Fatalf("the erase answered (applied %t, err %v) without waiting for the keyword fill's batch in flight; once that batch committed, the keyword table holds the erased comment's text in %q",
+			early.erasure != nil && early.erasure.Applied, early.err, keywordVersionsHolding(t, database, word))
+	}
+	waited := strings.ToLower(lockstep.WaitingStatement(t, database, pid))
+	t.Logf("the erase waits behind the keyword fill's batch at %q", waited)
+	if !strings.HasPrefix(waited, holdFillBackStatement) {
+		t.Errorf("the erase waits behind the keyword fill's batch at %q, which is not the statement that takes the cursor row (%q)",
+			waited, holdFillBackStatement)
+	}
+	if err := batch.Commit(ctx); err != nil {
+		t.Fatalf("commit the keyword fill's batch: %v", err)
+	}
+
+	var answer eraseAnswer
+	select {
+	case answer = <-answered:
+	case <-time.After(lockstep.Wait):
+		t.Fatalf("the erase did not answer within %s of the keyword fill's batch's commit", lockstep.Wait)
+	}
+	if answer.err != nil {
+		t.Fatalf("the erase failed once the keyword fill's batch committed: %v", answer.err)
+	}
+	if !answer.erasure.Mismatch() || answer.erasure.Applied {
+		t.Fatalf("the erase answered mismatch %t and applied %t once the batch committed, want its listing to name the batch's keyword version, which the digest it was given does not cover, and nothing removed:\n%s",
+			answer.erasure.Mismatch(), answer.erasure.Applied, strings.Join(answer.erasure.Listing, "\n"))
+	}
+	if !listed(answer.erasure, "delete search_text_versions comment "+seeded.comment+" event_seq 2") {
+		t.Errorf("the listing the erase read under its locks does not name the batch's keyword version:\n%s",
+			strings.Join(answer.erasure.Listing, "\n"))
+	}
+	if rows := keywordVersionsOf(t, database, commentNodeKind, seeded.comment); rows != 2 {
+		t.Errorf("the refused erase left %d keyword version(s) of the comment, want the 2 it held", rows)
+	}
+
+	erasure, err := confirmedErase(t, database, commentNodeKind, seeded.comment, time.Millisecond)
+	if err != nil {
+		t.Fatalf("erase the comment again: %v", err)
+	}
+	requireTheCommentErased(t, database, erasure, seeded.comment)
+	if held := keywordVersionsHolding(t, database, word); len(held) != 0 {
+		t.Errorf("after the erase run again the keyword versions %q hold the erased text", held)
+	}
+	if rows := keywordVersionsOf(t, database, commentNodeKind, seeded.comment); rows != 0 {
+		t.Errorf("after the erase run again the keyword table holds %d version(s) of the comment, want none", rows)
+	}
+}
+
 // windowTheComment indexes the blocks of comment and writes its windows, committed, as the block
 // index tick leaves a comment: the index of its body (refs.IndexItem), then the window arm's write
 // (refs.WriteItemWindows).

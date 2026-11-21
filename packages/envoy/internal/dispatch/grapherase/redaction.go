@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -116,7 +117,11 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		return fmt.Errorf("read the events about %s:%s: %w", e.Kind, e.ID, err)
 	}
 	for _, event := range found {
-		payload, originals, err := redactPayload([]byte(event.payload), read.texts, e.marker(), read.document != nil)
+		comment := ""
+		if refs.ItemKind(e.Kind) == refs.ItemComment {
+			comment = e.ID
+		}
+		payload, originals, err := redactPayload([]byte(event.payload), read.texts, e.marker(), read.document != nil, comment)
 		if err != nil {
 			return fmt.Errorf("redact the payload of event %d: %w", event.id, err)
 		}
@@ -143,7 +148,14 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 // quoted says the payload quotes a document, whose blocks are other nodes': a text is then
 // replaced only where it stands as a block of its own (redactBlockQuote). A value under one of
 // quotedFields quotes another node whatever the payload, and is replaced the same way.
-func redactPayload(payload []byte, texts []string, marker string, quoted bool) ([]byte, []string, error) {
+//
+// comment is the erased comment's id, empty for any other node. A payload that is that comment's
+// own (its `id`) and whose `body_truncated` is true carries only the first part of the body
+// (model.EventBody), cut at the last blank line, else line break, else character within the
+// event's bound, so the cut can fall inside a block: that block then stands in the payload in
+// part, which no erased text matches whole, and its bytes would stay. Every byte of that body is
+// the comment's own, so the whole value is replaced with the marker (ownCutBody).
+func redactPayload(payload []byte, texts []string, marker string, quoted bool, comment string) ([]byte, []string, error) {
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.UseNumber()
 	var value any
@@ -185,7 +197,14 @@ func redactPayload(payload []byte, texts []string, marker string, quoted bool) (
 		}
 		return value
 	}
+	cutBody, cut := ownCutBody(value, comment)
 	value = redact(value, "", "")
+	if cut {
+		value.(map[string]any)["body"] = marker
+		if !slices.Contains(originals, cutBody) {
+			originals = append(originals, cutBody)
+		}
+	}
 	if len(originals) == 0 {
 		return payload, nil, nil
 	}
@@ -196,6 +215,18 @@ func redactPayload(payload []byte, texts []string, marker string, quoted bool) (
 		return nil, nil, err
 	}
 	return bytes.TrimSpace(written.Bytes()), originals, nil
+}
+
+// ownCutBody answers the top-level `body` of value, a decoded payload, where the payload is the
+// comment's own (its `id` is comment) and says the event cut that body (`body_truncated` true),
+// and false otherwise, an empty comment included.
+func ownCutBody(value any, comment string) (string, bool) {
+	top, ok := value.(map[string]any)
+	if !ok || comment == "" || top["id"] != comment || top["body_truncated"] != true {
+		return "", false
+	}
+	body, ok := top["body"].(string)
+	return body, ok
 }
 
 // quotedFields are the values of a comment's own event (model.CommentEventPayload) that quote
