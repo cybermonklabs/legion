@@ -425,6 +425,31 @@ test("the reviewer treats a result with no report as a failed run, not a verdict
   );
 });
 
+// A review round's pair is recorded as one row per half rather than prose, so a half that did not
+// run, or whose findings the reviewer set aside, shows in the body. The reviewer answers a
+// `CHANGES` from either half in its review, and approves only when both halves ran at the reviewed
+// head or both rows read `not run` for a diff that touches no runtime code.
+test("the pair is recorded as a row per half, and the reviewer approves only past both", () => {
+  const prBody = collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"));
+  expect(prBody).toContain(
+    "over <the whole change | <last-reviewed-sha>..<sha>>, one row per half: - `thermonuclear-deep-review`: <APPROVE | CHANGES>, <n> findings stand"
+  );
+  expect(prBody).toContain(
+    "- `thermonuclear-code-quality`: <APPROVE | CHANGES>, <n> findings stand"
+  );
+  expect(prBody).toContain(
+    "each row reads `not run (<the whole change | <last-reviewed-sha>..<sha>> touches no runtime code)`, and the two rows of the last round the pair ran in stay beside them"
+  );
+  const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
+  expect(mergeGate).toContain(
+    "A `CHANGES` from either half is answered in the review: its findings are carried into a `REQUEST_CHANGES`, or each finding is recorded with why it does not stand"
+  );
+  expect(mergeGate).toContain("Your `APPROVE` needs both halves run at the reviewed head");
+  expect(mergeGate).toContain(
+    "or both `Thermo` rows reading `not run` because the diff the round reads touches no runtime code"
+  );
+});
+
 // The pair's own text bounds what it reads and what it reports: a range its task names limits
 // what it must read, and a defect it sees in code the pull request changed before that range is
 // still a finding, while code the pull request leaves unchanged stays out of its findings, because
@@ -488,7 +513,7 @@ test("each reviewer text says the last two sentences of each task are always the
 test("every shipped prompt and bash-running agent says how to read a piped command's status", () => {
   countedOncePerFile(
     // biome-ignore lint/suspicious/noTemplateCurlyInString: `${PIPESTATUS[0]}` is the shell expansion the rule teaches, quoted verbatim.
-    "Read a piped command's status with `${PIPESTATUS[0]}`, or with `set -o pipefail` inside a subshell of that one line; never set `pipefail` at the top level of your shell, where a later `cmd | head` exits 141 and reads as a failure although it did its job. Never pipe a write — a `dispatch` command that records something, or any command whose own output tells you what it did — into `head`, `tail` or `grep`: the status you read would be the pager's, and the line that says what happened is the line you cut.",
+    "Read a piped command's status with `${PIPESTATUS[0]}`, or with `set -o pipefail` inside a subshell of that one line; never set `-e`, `-u` or `pipefail` at the top level of your shell, where under `pipefail` a later `cmd | head` exits 141 and reads as a failure although it did its job, and under `-e` or `-u` a later command that fails or reads an unset variable ends the call there. Never pipe a write — a `dispatch` command that records something, or any command whose own output tells you what it did — into `head`, `tail` or `grep`: the status you read would be the pager's, and the line that says what happened is the line you cut.",
     [
       "packages/daemon/internal/prompts/go/worker-common.md",
       "packages/daemon/internal/prompts/go/architect-common.md",
@@ -534,7 +559,7 @@ test("the worker prompt tells a role to read the pull request's head after its o
     "an empty one when your work is complete",
     "A new head is a different commit, so record each `before_merge` check again at the new head. A check carrying `ci_check` is CI's, so skip it.",
     "tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
-    "The push you make to answer an update message is the exception: that message has you answer the daemon and end the turn at once, so make this read in your next turn, before your phase completes.",
+    "The push you make to answer an update message is the exception: that message has you push, let your subagents and background jobs finish or stop them, push what they made, answer the daemon and end the turn, so make this read in your next turn, before your phase completes.",
     "The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
     "the empty commit that carries the pull request onto the commit you pushed",
   ];

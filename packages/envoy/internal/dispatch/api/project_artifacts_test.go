@@ -54,8 +54,9 @@ func TestCreateProjectDocumentJSONAndMultipart(t *testing.T) {
 		t.Fatalf("project image = %#v", imageUpload.Artifact)
 	}
 
-	updated := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/CORE/artifacts", map[string]string{
+	updated := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/CORE/artifacts", map[string]any{
 		"name": "Design notes", "content": "# Revised notes\n",
+		"precondition": uploadBase(t, handler, first.Artifact.ID),
 	}, "alice")
 	if updated.Code != http.StatusCreated {
 		t.Fatalf("update JSON project document: status=%d body=%s", updated.Code, updated.Body.String())

@@ -130,6 +130,10 @@ on:
         description: "ci.yaml's needs.changes.outputs.check_action_pins_test: check-action-pins.test.sh and what it tests."
         type: string
         required: true
+      check_workflow_files_test:
+        description: "ci.yaml's needs.changes.outputs.check_workflow_files_test: check-workflow-files.test.sh and what it tests."
+        type: string
+        required: true
       check_private_names_test:
         description: "ci.yaml's needs.changes.outputs.check_private_names_test: check-private-names.test.sh and what it tests."
         type: string
@@ -334,7 +338,7 @@ jobs:
         run: bun test scripts/priorities-seed.test.ts
 
       # The guides' own layout, in this job because it installs Bun's dependencies, which the
-      # test's Markdown parser needs (scripts/semantic-line-breaks.guides.test.ts:5-7). The
+      # test's Markdown parser needs (scripts/semantic-line-breaks.guides.test.ts:6-8). The
       # step has a filter of its own, guide_layout, naming the five guides the test reads and
       # the checker it spawns: no other step of this job reads one of them, so a run that
       # changed none of them skips this step.
@@ -405,6 +409,10 @@ jobs:
       - name: Test the action pin check
         if: inputs.changes-result != 'success' || inputs.check_action_pins_test == 'true'
         run: .github/scripts/check-action-pins.test.sh
+
+      - name: Test the workflow file check
+        if: inputs.changes-result != 'success' || inputs.check_workflow_files_test == 'true'
+        run: .github/scripts/check-workflow-files.test.sh
 
       - name: Test the private-name check
         if: inputs.changes-result != 'success' || inputs.check_private_names_test == 'true'
@@ -586,10 +594,11 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.check_ts_filters_test == 'true'
         run: .github/scripts/check-ts-filters.test.sh
 
-      # Beside the two checks above, and needing no Go either: every case is one line of text,
-      # read by the line reader of .github/scripts/go-test-step-expansion.py, or the hash of a
-      # script that file's AUDITED_SCRIPTS pins. The script's own run compiles the three Go
-      # modules it covers and is run by hand rather than by any job.
+      # Beside the two checks above, and needing no Go either: every case is text, read by the
+      # line and step readers of .github/scripts/go-test-step-expansion.py (the step reader over
+      # every go test step of ci.yaml and the workflows its jobs call, so a step it would refuse
+      # fails here), or the hash of a script that file's AUDITED_SCRIPTS pins. The script's own
+      # run compiles the three Go modules it covers and is run by hand rather than by any job.
       - name: Test the go test step expansion
         if: inputs.changes-result != 'success' || inputs.go_test_step_expansion_test == 'true'
         run: .github/scripts/go-test-step-expansion.test.sh

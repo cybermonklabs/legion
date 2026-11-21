@@ -465,7 +465,7 @@ func copyDueAtOnce(held supervise.Claim, resends int, recipient string) bool {
 	if !supervise.SaidReady(held.State) {
 		return false
 	}
-	return resends == 0 || recipient != "" && recipient != held.Session
+	return resends == 0 || recipient != "" && !held.HoldsSession(recipient)
 }
 
 // reportedNotice is the notice a failed publish was, as exceptionNotice reads it from a report or
@@ -579,7 +579,7 @@ func (r *outbox) releaseWaiting(ctx context.Context, architects ...claim.Token) 
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
 		for _, row := range released {
-			if err := r.records.ExpediteOutbox(scoped, tx, row, now); err != nil {
+			if _, err := r.records.ExpediteOutbox(scoped, tx, row, now); err != nil {
 				return err
 			}
 		}

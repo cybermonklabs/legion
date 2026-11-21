@@ -164,7 +164,10 @@ type roleSend struct {
 	// read live, so that is what it carries there; a 202 kept for a lapsed holder carries
 	// unresponsive or gone (kept).
 	holderState session.State
-	attempts    int
+	// warnings is what the route's answers name of the topic's old form (store.Registry.ReadRole):
+	// the 200 and the 202 carry it, as the subscribe and claim routes' answers carry theirs.
+	warnings []string
+	attempts int
 }
 
 // settle counts and logs the send's outcome, the one delivery line a send writes, once its answer
@@ -188,7 +191,7 @@ func (s *roleSend) settle(outcome sendOutcome) {
 // holder's record put it in, which GET /v1/roles/<role> names the same way.
 func (s *roleSend) delivered(outcome sendOutcome) {
 	s.record.holder = s.holder
-	s.record.accept(s.w, listenerwire.PublishResponse{Envelope: s.item, ExpectsReply: s.expectsReply, Holder: s.holder, HolderState: s.holderState})
+	s.record.accept(s.w, listenerwire.PublishResponse{Envelope: s.item, ExpectsReply: s.expectsReply, Holder: s.holder, HolderState: s.holderState, Warnings: s.warnings})
 	s.settle(outcome)
 }
 
@@ -202,7 +205,10 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 // message was not kept: writeRoleHolderError's 404 (unclaimed or holder_lapsed), which the Legion
 // daemon reads as notify.ErrNoHolder, recorded role_unclaimed or role_lapsed, with its refusal
 // exception (publishRefusalException). The role lane counts an unclaimed role skipped and a lapsed
-// holder failed when its own keep fails.
+// holder failed when its own keep fails. A keep whose publish went out and was never acknowledged
+// (bus.ErrUnacknowledged) is answered so too, as at main, although it may have stored the copy:
+// what each role route answers is unchanged here, and a sender that publishes again after the
+// 404 gives the role's next holder the message once more, which at-least-once delivery allows.
 //
 // It is also the one place a message to a Legion role of a released issue pod is seen at all, so
 // it raises the wake report beside the answer, before either answer and waiting for neither
@@ -217,7 +223,7 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 	// The wake is what this message costs its sender, whether it is kept or answered 404 below.
 	s.record.charge.woke()
 	if s.keep && roleKeepable(result) {
-		if kept, ok := keepForNextHolder(*s.d.delivery, s.role, s.item); ok {
+		if kept, err := keepForNextHolder(*s.d.delivery, s.role, s.item); err == nil {
 			s.kept(result, kept)
 			return
 		}
@@ -270,6 +276,7 @@ func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 		Kept:         true,
 		KeptReason:   result.State,
 		KeptUntil:    kept.until,
+		Warnings:     s.warnings,
 	}
 	if result.LastSeen != 0 {
 		answer.LastSeen = &result.LastSeen
@@ -381,15 +388,17 @@ func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 // of the forward however many attempts there are. Every read takes ctx, the send's window, so
 // none outlasts it: a send whose window ends is answered 504. expectsReply is the expects_reply
 // its answers write (expectsReplyAnswer, api.go), the request's own dialect; the envelope this
-// send forwards and keeps carries the envelope's own value.
-func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time) {
-	send := &roleSend{w: w, record: record, d: d, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived}
+// send forwards and keeps carries the envelope's own value. warnings is what its 200 and 202 name
+// of the topic's old form.
+func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time, warnings []string) {
+	send := &roleSend{w: w, record: record, d: d, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived, warnings: warnings}
 	// The sender is stamped before the holder is resolved, so the copy a keep stores carries the
 	// sender's title, roles and directory exactly as the forward of a live delivery does: the
 	// envelope is kept as it is here (keepRoleMessage), and the holder that is handed it later
 	// reads the same stamp this send's own 202 names.
 	send.item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
 	firstCtx, cancelFirst := context.WithDeadline(ctx, arrived.Add(sendRequestBudget))
+	resolvedAt := d.delivery.now()
 	first, err := roles.ResolveHolder(firstCtx, d.registry, roleHolderSessions{d.sessions}, role)
 	cancelFirst()
 	if err != nil {
@@ -410,7 +419,8 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 	forwarded.DedupeKey = roleForwardDedupePrefix + item.DedupeKey
 	resolved := first
 	for pass := 0; ; pass++ {
-		if pass > 0 || !sessionIsLive(first.HolderState) {
+		if pass > 0 || !sessionIsLive(first.HolderState) || roles.ResolutionTooOld(resolvedAt, d.delivery.now()) {
+			resolvedAt = d.delivery.now()
 			resolved, err = roles.ResolveHolder(ctx, d.registry, roleHolderSessions{d.sessions}, role)
 			if err != nil && ctx.Err() != nil {
 				// The window ended under the resolution: what it read says nothing more.

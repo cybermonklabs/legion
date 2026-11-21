@@ -70,10 +70,11 @@ const CloneTimeout = 30 * time.Minute
 // CheckoutTimeout is the bound of a command that writes a whole working copy — every file of the
 // repository's tree into a workspace that holds none — which is the issue's checkout alone today
 // (`jj sparse reset`, Provision), so the next such command takes this constant rather than a third
-// one. One write of the largest repository mapped, example-org/oss-verify-proofs-internal, 282,134
-// files and 11.56 GiB, took 548.8 s and 554.9 s in an issue pod: this is 6.5 times that measured
-// run, and three times it at the worst rate measured over a 60-second window of it (10.0 MiB/s,
-// which writes the 11.56 GiB in 19.7 minutes).
+// one. One write of the largest repository a project then worked in,
+// example-org/oss-verify-proofs-internal, 282,134 files and 11.56 GiB, took 548.8 s and 554.9 s
+// in an issue pod: this is 6.5 times that measured run, and three times it at the worst rate
+// measured over a 60-second window of it (10.0 MiB/s, which writes the 11.56 GiB in 19.7
+// minutes).
 const CheckoutTimeout = time.Hour
 
 // Command is one process the provisioner runs, each bounded independently of every other: most
@@ -862,8 +863,11 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 
 // GitHubCredentialHelper is the `credential.helper` every shared clone gets: `legion
 // git-credential`, which answers git from the hosts.yml of the owner the repository's path names
-// (the owner's directory of LEGION_GH_OWNERS_DIR, and nothing else; ghconfig.HostsFile), since
-// every shared clone also sets credential.useHttpPath so git passes that path. The `legion` in it
+// (the owner's directory of LEGION_GH_OWNERS_DIR; ghconfig.HostsFile), since every shared clone
+// also sets credential.useHttpPath so git passes that path. For a repository of an owner with no
+// such directory it reads the repository from GitHub with GH_CONFIG_DIR's token, and answers a
+// fork with the token of its parent's owner, or else of its source's owner, where the bundle
+// holds that directory (cmd/legion's forkUpstreamDir). The `legion` in it
 // is resolved on PATH when git runs it, so the one it reaches is the process's own (a pane's
 // launcher directory, the image's /opt/legion/bin), and the value names no path of this machine's
 // that the clone would carry to another.

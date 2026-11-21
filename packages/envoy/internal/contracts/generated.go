@@ -122,6 +122,12 @@ const MintedDedupeKeyPattern = "^(?:envoy\\.role\\.forward\\.)?(?:publish|agent\
 // and the string the dashboard keys its retry wording on cannot drift apart.
 const ReceiptTimeoutCause = "The listener didn't answer within the send window; the message may already have been delivered."
 
+// StoreUnconfirmedCause is what a delivery attempt records when the listener answered its send
+// 503 with the code that says the message may be stored (listenerwire.CodeMaybeStored). Generated
+// from STORE_UNCONFIRMED_CAUSE in packages/contracts so the string Dispatch writes and the string
+// the dashboard keys its retry wording on cannot drift apart.
+const StoreUnconfirmedCause = "The listener sent the message but could not confirm it was stored; the message may already have been delivered."
+
 // MaxBroadcastRecipients is the most sessions one broadcast sends to. Generated from
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
 // cannot drift apart.
@@ -279,6 +285,71 @@ const DispatchItemBlocks = 32768
 // packages/contracts; the server enforces it, names it in its refusal, and publishes it through
 // GET /api/v1/limits.
 const DispatchEventBodyMax = 32000
+
+// DispatchEventTypes is every event type Dispatch writes to its log, sorted: the members of the
+// DispatchEvent union. Generated from DISPATCH_EVENT_TYPES in packages/contracts, which the
+// TypeScript compiler holds to that union, so a Go reader that sorts every type, as the keyword
+// fill's inventory test (internal/dispatch/textversions) does, learns of a new type from it.
+var DispatchEventTypes = []string{
+	"architecture.sync_failed",
+	"architecture.synced",
+	"artifact.approved",
+	"artifact.changes_requested",
+	"artifact.created",
+	"artifact.human_edited",
+	"artifact.removed",
+	"artifact.renamed",
+	"artifact.version",
+	"ask.anchor_refreshed",
+	"ask.answered",
+	"ask.asked_of",
+	"ask.edited",
+	"ask.follower_added",
+	"ask.follower_removed",
+	"ask.handed_back",
+	"ask.opened",
+	"ask.resolved",
+	"block.invalid",
+	"block.repaired",
+	"child.added",
+	"child.removed",
+	"child.status",
+	"comment.anchor_refreshed",
+	"comment.answered",
+	"comment.created",
+	"comment.delivery",
+	"comment.edited",
+	"comment.reopened",
+	"comment.resolved",
+	"decision.kept",
+	"handoff.recorded",
+	"issue.claimed",
+	"issue.closed",
+	"issue.created",
+	"issue.deployed",
+	"issue.pull_request_attribution_changed",
+	"issue.released",
+	"issue.updated",
+	"message.accepted",
+	"message.answered",
+	"message.created",
+	"message.delivery",
+	"priority.updated",
+	"project.created",
+	"project.updated",
+	"result.recorded",
+	"result.retracted",
+	"settings.architecture_source.updated",
+	"settings.project_default_assignee.updated",
+	"settings.repo_project.updated",
+	"subscription.remove_requested",
+	"subscription.removed",
+	"suggestion.accepted",
+	"suggestion.rejected",
+	"user_agent_state.updated",
+	"user_state.updated",
+	"user_thread_state.updated",
+}
 
 // DispatchHandoffBodyMax is the longest phase handoff body, in UTF-8 bytes, that
 // POST /api/v1/issues/{key}/handoffs/{phase} accepts. Generated from DISPATCH_HANDOFF_BODY_MAX in

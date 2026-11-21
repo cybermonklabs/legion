@@ -4,7 +4,7 @@
 // /v1/sessions, GET /v1/registry/<session_id>, GET /v1/interests/, GET /v1/roles/<role>, the GET
 // routes of /v1/legion/agents and DELETE /v1/sessions/<session_id>, and the envelope and the
 // states they carry. The listener (cmd/listener) writes and reads these types, and so does each of
-// its Go clients: the broker's wake (internal/broker/wake), Dispatch's client
+// its Go clients: the broker's wake (internal/cipher/wake), Dispatch's client
 // (internal/dispatch/envoy), the load-test harness's listener client (loadtest/listenerclient),
 // the refill rig (internal/testnats/cmd/refillrig), and the Legion daemon's publisher and
 // controller probe, which is another module and so needs this package public.
@@ -58,13 +58,20 @@ type TmuxPlace struct {
 }
 
 // APIError is the body of a /v1 error answer. Code names an answer a caller acts on beyond its
-// status (the list routes' refilling 503, code refilling); every other answer leaves it out.
-// Expected names the request fields the refusal is about.
+// status (the list routes' refilling 503, code refilling, and a send's or publish's 503 that may
+// have stored the message, CodeMaybeStored); every other answer leaves it out. Expected names the
+// request fields the refusal is about.
 type APIError struct {
 	Code     string   `json:"code,omitempty"`
 	Error    string   `json:"error"`
 	Expected []string `json:"expected,omitempty"`
 }
+
+// CodeMaybeStored is the code of a send's or a publish's 503 whose publish went out and was never
+// acknowledged: the stream may hold the message, so a caller reads it as a receipt timeout - it may
+// have landed, and a repeat under the same idempotency key is recognised - and not as a send that
+// stored nothing. Every other 503 of those routes leaves the code out.
+const CodeMaybeStored = "maybe_stored"
 
 // MessageBody is the message a send or a publish carries, which the listener builds the envelope
 // it puts on the bus from. A sender that leaves Source out speaks as an agent.
@@ -95,6 +102,14 @@ type SendRequest struct {
 	// switch at all, and on every send of a message whose agents-route request set it. Absent,
 	// which is every other sender and every older client, nothing changes.
 	ConnectedOnly bool `json:"connected_only,omitempty"`
+	// Role marks a send Dispatch makes for a route to a role with that role, which the envelope
+	// then carries (Envelope.Role): the target is the session the role's claim named when
+	// Dispatch resolved the route. The listener takes it from Dispatch's own verified principal
+	// alone (its roleMarkRefusal), since the body's source is the caller's own word, and refuses
+	// every other caller carrying it 403 naming the field. A send that carries it is answered 200
+	// SendResponse while the role's claim still names the target, and 202 KeptSendResponse when
+	// the claim names another session, or none. Absent, nothing changes.
+	Role string `json:"role,omitempty"`
 }
 
 // PublishRequest is the body of POST /v1/messages/publish: a message for a topic, a role's among
@@ -143,6 +158,25 @@ type SendResponse struct {
 	// known-session record's last write.
 	LastSeen  int64 `json:"last_seen,omitempty"`
 	Duplicate bool  `json:"duplicate,omitempty"`
+}
+
+// KeptSendResponse is the send route's 202 for a send marked with a role (SendRequest.Role) whose
+// claim named another session than the target, or none, when the send arrived: the send's
+// envelope as the role's kept lane holds it, its recipient as the request named it, the session
+// the claim names (Holder, absent for a role nobody claims), and Kept and KeptUntil, the end of the
+// kept copy's hour in Unix milliseconds, named as the publish route's kept answer names them
+// (PublishResponse). The message reaches the session that holds the role then, live, through the
+// lane's walk. It carries no recipient_state and no state: the message was not stored for the
+// target, so nothing about the target was read.
+type KeptSendResponse struct {
+	Envelope
+	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke,
+	// shadowing the embedded envelope's own field exactly as SendResponse.ExpectsReply does.
+	ExpectsReply json.RawMessage `json:"expects_reply,omitempty"`
+	Recipient    string          `json:"recipient"`
+	Holder       string          `json:"holder,omitempty"`
+	Kept         bool            `json:"kept"`
+	KeptUntil    int64           `json:"kept_until"`
 }
 
 // NoLiveSessionRefusal is the 404 of a send, or of a registry lookup, for a session the listener
@@ -200,6 +234,11 @@ type PublishResponse struct {
 	// naming its holder. An older client reads neither field.
 	Recipients          *int `json:"recipients,omitempty"`
 	RecipientsConnected *int `json:"recipients_connected,omitempty"`
+	// Warnings names a role send's role when its topic named it in the old form, the role alone,
+	// with its new form, project first ("<old> is the old form of <new>; name <new>",
+	// store.Registry.ReadRole), as the subscribe and claim routes name an old form; it is left out
+	// when the topic named the role in the new form, and from every answer that is no role send.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // SessionInfo is the joined view of a session's interest record (topics, dir, machine) and its

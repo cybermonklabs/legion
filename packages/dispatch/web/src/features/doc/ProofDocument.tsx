@@ -19,6 +19,7 @@ import {
   isDocumentUnloadable,
 } from "../../api/client";
 import { artifactBlocksQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, AuthenticatedUser, Version } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
@@ -59,6 +60,7 @@ import {
 import { textSourceOf, uniquePrefixMatch } from "../refs/text-references";
 import { importWhenOnline } from "../shell/DeploymentResilience";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AskBlockCard } from "./AskBlockCard";
@@ -199,6 +201,12 @@ export interface ProofDocumentProps {
   /** Called beside the document's own refresh once the server has recorded an answer written in
    *  one of its decision blocks, so a host that selected the question learns it was answered. */
   onAskAnswered?(askId: string): void;
+  /** Called with this document's live editor as the document makes it, and with `undefined` as
+   *  it tears that editor down: a host that acts on the editor's view itself - a row of an
+   *  issue's outline holds every edit of it to the row's own block (`issue-page/node-caret.ts`) -
+   *  takes it here, in the task the editor is made in, which has drawn the document by then
+   *  where the room already held it. */
+  onEditorHandle?(handle: EditorHandle | undefined): void;
   onToolbarChange?(toolbar: DocumentToolbar | undefined): void;
   /** Called in `pane` only, with the server's reason, when the document cannot be opened: a tree
    *  outside the Proof schema, a history that cannot load, or any other failed admission. The
@@ -258,6 +266,7 @@ export function ProofDocument({
   isClosed,
   owner,
   onAskAnswered,
+  onEditorHandle,
   onToolbarChange,
   onUnavailable,
   onVersionChange,
@@ -289,6 +298,10 @@ export function ProofDocument({
   const activeMarkId = anchoredThread?.markId ?? undefined;
   const activeMarkIdRef = useRef(activeMarkId);
   activeMarkIdRef.current = activeMarkId;
+  // The host's hold on the editor, read through a ref like the mark above, so a host that
+  // re-renders reopens nothing.
+  const onEditorHandleRef = useRef(onEditorHandle);
+  onEditorHandleRef.current = onEditorHandle;
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [pending, setPending] = useState<PendingState | undefined>(undefined);
   // Whoever waits for this browser's edits of this document to reach the server
@@ -416,6 +429,7 @@ export function ProofDocument({
   const nameVersion = useKeyedWrite({
     // `write` comes first: `onSuccess` reads its answer.
     write: (summary: string, bounds) => api.createArtifactVersion(artifact.id, { summary }, bounds),
+    method: "POST",
     inline: true,
     label: () => `New version of ${artifact.name}`,
     onSuccess: (created) => {
@@ -423,7 +437,9 @@ export function ProofDocument({
       // answer to give, the store has read the document again.
       setIsNameDialogOpen(false);
       if (created === null) return;
-      queryClient.setQueryData<Artifact>(["artifact", artifact.id], (current) => {
+      // Over any read of the document still out: asked before the version was made, it would
+      // take the version back off the list (`replaceQueryData`).
+      replaceQueryData<Artifact>(queryClient, ["artifact", artifact.id], (current) => {
         const source = current ?? artifact;
         return {
           ...source,
@@ -448,6 +464,7 @@ export function ProofDocument({
       if (tooltips) return;
       return reread;
     },
+    method: "POST",
     write: (_variables, bounds) => api.rebuildArtifact(artifact.id, undefined, bounds),
   });
   const liveMarkdown = liveTextQuery.data?.markdown ?? "";
@@ -713,6 +730,7 @@ export function ProofDocument({
         connectionRef.current = undefined;
       }
       setEditorHandle((current) => (current === editor ? undefined : current));
+      if (editor !== undefined) onEditorHandleRef.current?.(undefined);
       disposeEditorBindings = undefined;
       editor = undefined;
       document = undefined;
@@ -1003,6 +1021,7 @@ export function ProofDocument({
                   editor = handle;
                   editorRef.current = handle;
                   setEditorHandle(handle);
+                  onEditorHandleRef.current?.(handle);
                   disposeEditorBindings = bindEditor(handle, connection);
                 })
                 .catch(reportLoadFailure);
@@ -1077,7 +1096,7 @@ export function ProofDocument({
   return (
     <section aria-label="Document editor" className="space-y-4">
       <NameVersionDialog
-        error={nameVersion.isError}
+        error={nameVersion.error}
         onClose={() => {
           nameVersion.reset();
           setIsNameDialogOpen(false);
@@ -1136,9 +1155,15 @@ export function ProofDocument({
           </button>
           {rebuild.isError ? (
             <p className={failedText}>
-              {rebuild.error instanceof Error
-                ? rebuild.error.message
-                : "Could not rebuild this document."}
+              {/* A rebuild the reader stopped may have been made, and the button above is a
+                  press of its own, under a key of its own. */}
+              {rebuild.error instanceof SendStoppedError
+                ? stoppedWriteNote(`the rebuild of ${artifact.name}`, "made", {
+                    anew: "Rebuilding again sends a new rebuild.",
+                  })
+                : rebuild.error instanceof Error
+                  ? rebuild.error.message
+                  : "Could not rebuild this document."}
             </p>
           ) : null}
         </div>
@@ -1255,6 +1280,7 @@ export function ProofDocument({
                   <button
                     aria-label={`${count} references on block`}
                     className={`pointer-events-auto absolute right-0 min-h-11 min-w-11 rounded-full text-xs font-semibold ${countChip}`}
+                    data-block-references={block.id}
                     key={block.id}
                     onClick={() => {
                       marginRef.current.filterToBlock(block.id);

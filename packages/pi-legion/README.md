@@ -8,10 +8,10 @@ lifecycle, which boots a root architect or a phase worker from the daemon's pane
 worker is in open until its `handoff_complete`. A session without that environment gets nothing from
 it. The Envoy messaging and Dispatch tools every session uses are `@sjawhar/pi-envoy`'s, and this
 plugin reaches them through the in-process interface that package publishes
-(`packages/pi-shared/AGENTS.md`): in a Legion session the entry refuses to run, naming the remedy,
-when no `@sjawhar/pi-envoy` is loaded, when the loaded one speaks another interface version, or
-when the pre-split package is still installed beside it (`AGENTS.md`, "What this plugin needs from
-pi-envoy").
+(`packages/pi-shared/src/interface.ts`): in a Legion session the entry refuses to run, naming the
+remedy, when no `@sjawhar/pi-envoy` is loaded, when the loaded one speaks another interface
+version, or when the pre-split package is still installed beside it (`envoyPluginRefusal` in
+`extensions/legion.ts`), and exits the process, which the daemon sees as a failed launch.
 
 ## Installing both into the daemon's profile
 
@@ -54,10 +54,12 @@ and Envoy skills, the text skills and the secrets broker's client (`agent-secret
 `skill://dispatch/...`, which resolves by name once both are installed.
 
 `scripts/pi-plugin-prepack.sh` at the repository root is both plugins' `prepack`: it builds the one
-entry, writes the notices and stages this package's partition of `skills/`. It refuses to pack with
-the committed manifest, whose `omp.extensions` names `extensions/legion.ts`; the release workflow's
-`pi_legion_build` job (`.github/workflows/release.yaml`), the worker image and the e2e pack step
-rewrite it to `["dist/legion.js"]` before `bun pm pack`. Only the e2e pack step restores it
+entry, writes the notices, stages this package's partition of `skills/`, and takes group and other
+write from every path the pack ships (each `files` entry, the manifest and the root's README and
+licence files), so the tarball's modes do not depend on the packer's umask. It refuses to pack
+with the committed manifest, whose `omp.extensions` names `extensions/legion.ts`; the release
+workflow's `pi_legion_build` job (`.github/workflows/release.yaml`), the worker image and the e2e
+pack step rewrite it to `["dist/legion.js"]` before `bun pm pack`. Only the e2e pack step restores it
 afterwards: the build job's tree is discarded, and nothing commits a version — the committed
 manifest's `.version` stays where it last was, and the `pi-legion-v` tag the release makes records
 the release. The manifest's `legion` key carries the daemon
@@ -81,3 +83,21 @@ The two cross-entry tests (`extensions/legion-role-claim.test.ts`,
 the pinned Oh My Pi (`LEGION_TEST_OMP`). Each release's changelog entries are in its GitHub release
 notes; `CHANGELOG.md` is the history before that, and the history before the split is in
 `packages/pi-envoy/CHANGELOG.md`.
+
+## Local checks
+
+From this directory:
+
+```sh
+bun run test
+bun test src/tools.test.ts   # one file
+bunx tsc --noEmit
+bunx biome check extensions/ src/
+```
+
+The real-binary tests (`extensions/*-omp.test.ts`) skip unless `LEGION_TEST_OMP` names an Oh My Pi
+binary and `LEGION_TEST_NATS_URL` a NATS server, except on GitHub Actions, where they never skip:
+
+```sh
+LEGION_TEST_OMP=<omp> LEGION_TEST_NATS_URL=<nats> bun test ./extensions/*-omp.test.ts
+```

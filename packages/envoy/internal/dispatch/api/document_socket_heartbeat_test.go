@@ -13,7 +13,7 @@ import (
 	gws "github.com/gorilla/websocket"
 	"github.com/reearth/ygo/crdt"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -144,7 +144,7 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 	const heartbeat = 250 * time.Millisecond
 	for _, beside := range []struct {
 		name   string
-		answer func(jkt string) brokertoken.Introspection
+		answer func(jkt string) ciphertoken.Introspection
 	}{
 		{"a read-only token", readOnlyToken},
 		{"a token that writes", liveNamedToken},
@@ -239,8 +239,8 @@ func TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat(t *tes
 
 	client.quiet(t, 3*heartbeat+heartbeat/2, "a live socket whose token the broker holds live")
 
-	rig.tokens.broker.Says(token, brokertoken.Introspection{Active: false})
-	if closed := client.closeError(t, brokertoken.AffirmativeCacheTTL+2*heartbeat+time.Second); closed.Code != gws.ClosePolicyViolation {
+	rig.tokens.broker.Says(token, ciphertoken.Introspection{Active: false})
+	if closed := client.closeError(t, ciphertoken.AffirmativeCacheTTL+2*heartbeat+time.Second); closed.Code != gws.ClosePolicyViolation {
 		t.Fatalf("the live socket closed with %d %q once the broker stopped holding its token live, want 1008", closed.Code, closed.Text)
 	}
 }

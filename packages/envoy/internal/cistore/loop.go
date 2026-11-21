@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,18 +35,23 @@ type Publisher interface {
 // SHA a settlement stands for. A record a head-gated listener left terminal and
 // unsettled settles only within the handover grace (due, legacyBacklog). held is
 // set at each pass to how many such records the pass held back (backlogHeld).
+// A record the loop does not settle - one not ready, or a head-gated
+// listener's leftover it holds back - is named in one log line once it has had
+// no event for heldAfter, and again only when its snapshot or its hold changes
+// (logHeldLocked); each settlement published is logged too (settle).
 // The store's CAS makes the loop idempotent across replicas.
 //
 // Passes run only at the instants start + k*tick, where start is when the loop
 // started. The first runs at k = 1 and looks at every cached record; each later
 // one runs only at an instant by which a cached record changed (the store's
 // change feed) or a record the loop waits on fell due (its debounce ran out, its
-// claim went stale, or its handover grace ended). With nothing changed and
-// nothing due the loop arms no timer. A record is attempted at the first instant
-// at or after it falls due, and looked at again at the next instant after each
-// attempt, so an attempt that did not settle it is retried there. A store
-// feeds one loop at a time (attachSummary): the loop detaches from it once its
-// context ends, and a loop started on the store after that starts afresh.
+// claim went stale, its handover grace ended, or it was held for heldAfter).
+// With nothing changed and nothing due the loop arms no timer. A record is
+// attempted at the first instant at or after it falls due, and looked at again
+// at the next instant after each attempt, so an attempt that did not settle it
+// is retried there. A store feeds one loop at a time (attachSummary): the loop
+// detaches from it once its context ends, and a loop started on the store after
+// that starts afresh.
 func StartSummaryLoop(ctx context.Context, store *Store, pub Publisher, debounce, tick time.Duration, held *metrics.Gauge, logger *logging.Logger) {
 	if tick <= 0 {
 		// A non-positive tick has no grid; it panics in the caller, as time.NewTicker does.
@@ -123,28 +129,52 @@ func claimFresh(st State, now int64, debounce time.Duration) bool {
 		st.Claim.ClaimedAt >= now-(2*debounce).Milliseconds()
 }
 
+// heldAfter is how long after its last event a record the loop does not settle waits before the
+// loop names what holds it (logHeldLocked): a record that is not ready (verdictStuck), and a
+// head-gated listener's leftover the loop holds back (verdictHeld). Ten minutes is the default idle
+// release of an issue pod (the daemon's runtime.kubernetes.idle_release), so a head the listener
+// holds is named before its worker's pod goes.
+const heldAfter = 10 * time.Minute
+
+// heldLineAt is the millisecond from which the loop names what holds st: heldAfter past its last
+// event.
+func heldLineAt(st State) int64 {
+	return st.LastEventAt + heldAfter.Milliseconds()
+}
+
 // verdict is what a pass does with a record (schedule).
 type verdict int
 
 const (
-	// verdictIdle: the record is settled or not ready, and only a change makes it otherwise.
+	// verdictIdle: the record is settled, and only a change makes it otherwise.
 	verdictIdle verdict = iota
 	// verdictWait: the record's verdict changes at a later millisecond.
 	verdictWait
 	// verdictHeld: the record is unsettled, ready and a head-gated listener's leftover
 	// (legacyBacklog), which only a change makes otherwise.
 	verdictHeld
+	// verdictStuck: the record is unsettled, not ready (settlementReady) and has been quiet for
+	// heldAfter, which only a change makes otherwise: the pass names what holds it and files it
+	// idle.
+	verdictStuck
 	// verdictAttempt: the pass tries to settle the record now.
 	verdictAttempt
 )
 
 // schedule returns the verdict on st at now, in wall-clock milliseconds, and for verdictWait the
 // first millisecond at which the verdict changes. A record is attempted exactly when it is due
-// and carries no fresh claim, and held exactly when it is unsettled, ready and legacyBacklog holds
-// it.
+// and carries no fresh claim, held exactly when it is unsettled, ready and legacyBacklog holds
+// it, and stuck exactly when it is unsettled, not ready and quiet for heldAfter (heldLineAt); an
+// unsettled record that is not ready waits until then.
 func schedule(st State, now int64, debounce time.Duration) (verdict, int64) {
-	if st.SettledEmitted || !settlementReady(st) {
+	if st.SettledEmitted {
 		return verdictIdle, 0
+	}
+	if !settlementReady(st) {
+		if at := heldLineAt(st); now < at {
+			return verdictWait, at
+		}
+		return verdictStuck, 0
 	}
 	if d := st.LastEventAt + debounce.Milliseconds(); now < d {
 		return verdictWait, d
@@ -222,9 +252,9 @@ func (q *deadlineQueue) remove(key string) {
 }
 
 // summarizer is the summary loop's view of one store: the records waiting on time, queued by the
-// millisecond their verdict changes, and the records it holds back. Every other cached record is
-// idle until the store's change feed names it. A store feeds one summarizer at a time
-// (attachSummary).
+// millisecond their verdict changes, the records it holds back, and what it last named of each
+// record it holds. Every other cached record is idle until the store's change feed names it. A
+// store feeds one summarizer at a time (attachSummary).
 type summarizer struct {
 	store    *Store
 	debounce time.Duration
@@ -233,32 +263,47 @@ type summarizer struct {
 	mu    sync.Mutex
 	queue deadlineQueue
 	held  map[string]struct{}
+	// heldLogged holds, for each key whose held line was logged (logHeldLocked), the record's
+	// snapshot (State.Hash) and the hold the line named, so the line is logged once for each. A
+	// key's entry is dropped when its record settles or leaves the cache, and every entry when the
+	// cache is emptied for a recreated bucket (takeChanges).
+	heldLogged map[string]heldMark
+}
+
+// heldMark is what a held line was logged for (logHeldLocked): the record's snapshot (State.Hash)
+// and each hold the snapshot does not take. Whether a check has a run id is not one: the snapshot
+// takes each check's run id.
+type heldMark struct {
+	snapshot                    string
+	overflowed, legacy, claimed bool
 }
 
 func newSummarizer(store *Store, debounce time.Duration) *summarizer {
 	return &summarizer{
-		store:    store,
-		debounce: debounce,
-		queue:    deadlineQueue{index: map[string]int{}},
-		held:     map[string]struct{}{},
+		store:      store,
+		debounce:   debounce,
+		queue:      deadlineQueue{index: map[string]int{}},
+		held:       map[string]struct{}{},
+		heldLogged: map[string]heldMark{},
 	}
 }
 
 // pass runs one pass at now (wall-clock milliseconds). It files each record the change feed names
 // by its verdict, takes every queued record due by now, and attempts the due ones in key order,
-// queueing each attempted record at now so the next pass looks at it again. It returns how many
-// records it holds back (verdictHeld) and, when the queue is not empty, the earliest queued
-// millisecond.
+// queueing each attempted record at now so the next pass looks at it again. Filing a record it
+// holds past heldAfter logs what holds it, once (logHeldLocked). It returns how many records it
+// holds back (verdictHeld) and, when the queue is not empty, the earliest queued millisecond.
 func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (held int, next int64, ok bool) {
 	z.mu.Lock()
 	keys, reset := z.store.takeChanges()
 	if reset {
 		z.queue = deadlineQueue{index: map[string]int{}}
 		z.held = map[string]struct{}{}
+		z.heldLogged = map[string]heldMark{}
 	}
 	var batch []string
 	for key := range keys {
-		if _, attempt := z.fileLocked(key, now); attempt {
+		if _, attempt := z.fileLocked(logger, key, now); attempt {
 			batch = append(batch, key)
 		}
 	}
@@ -270,7 +315,7 @@ func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (hel
 	sort.Strings(batch)
 	for _, key := range batch {
 		z.mu.Lock()
-		st, attempt := z.fileLocked(key, now)
+		st, attempt := z.fileLocked(logger, key, now)
 		z.mu.Unlock()
 		if !attempt {
 			continue
@@ -291,28 +336,123 @@ func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (hel
 }
 
 // fileLocked reads key's cached record and files it by its verdict at now: a wait in the queue at
-// the millisecond the verdict changes, a held record in held, an idle or uncached one in neither.
-// For an attempt it returns the record and true, and files the key in neither.
-func (z *summarizer) fileLocked(key string, now int64) (State, bool) {
+// the millisecond the verdict changes, a held record in held, an idle, stuck or uncached one in
+// neither. A stuck record has its held line logged (logHeldLocked) as it is filed. A held record
+// is also queued at heldLineAt while that is ahead of now, a queue entry of its own since a held
+// record waits on nothing else, and has its held line logged once it is not: so it stays in held,
+// counted by backlogHeld, and is never attempted. For an attempt it returns the record and
+// true, and files the key in neither.
+func (z *summarizer) fileLocked(logger *logging.Logger, key string, now int64) (State, bool) {
 	z.queue.remove(key)
 	delete(z.held, key)
 	st, cached := z.store.cachedState(key)
 	if !cached {
+		delete(z.heldLogged, key)
 		return State{}, false
 	}
 	switch v, at := schedule(st, now, z.debounce); v {
+	case verdictIdle:
+		delete(z.heldLogged, key)
 	case verdictWait:
 		z.queue.set(key, at)
+	case verdictStuck:
+		z.logHeldLocked(logger, key, st)
 	case verdictHeld:
 		z.held[key] = struct{}{}
+		if at := heldLineAt(st); now < at {
+			z.queue.set(key, at)
+		} else {
+			z.logHeldLocked(logger, key, st)
+		}
 	case verdictAttempt:
 		return st, true
 	}
 	return State{}, false
 }
 
+// heldRunningNamed is how many of a held record's checks that are not terminal its held line
+// names; running_count gives how many there are.
+const heldRunningNamed = 20
+
+// logHeldLocked logs `checks held a head`, the line that names what holds st, the record cached
+// under key, from the record itself: the head, its generation and its check count; each check that
+// is not terminal as name:status (sorted, the first heldRunningNamed, and running_count); each
+// suite that is not completed as `<id> app=<app id> status=<status> runs=<count>` (sorted by id),
+// its count `unknown` when the record holds none (Suite.RunCount); whether no check has a run id
+// (no_run_id); and the hold Hash does not take: overflowed, no schema (a head-gated listener's
+// leftover, legacy), and a claim held. It is WARN where the record holds a check and every one is
+// terminal (every_check_finished, as terminal reads it), and INFO otherwise, which a long job and a
+// lost completion both give. It logs once for each snapshot and hold (heldLogged): a record filed
+// again with the snapshot and hold it logged logs nothing, so no tick or pass logs it twice, and a
+// change of the hold alone logs once more. Callers hold z.mu.
+func (z *summarizer) logHeldLocked(logger *logging.Logger, key string, st State) {
+	mark := heldMark{snapshot: st.Hash(), overflowed: st.Overflowed, legacy: st.Schema == 0, claimed: st.Claim != nil}
+	if z.heldLogged[key] == mark {
+		return
+	}
+	z.heldLogged[key] = mark
+	noRunID := !hasCheckRunID(st)
+
+	running := make([]string, 0)
+	for name, check := range st.Checks {
+		switch classify(check) {
+		case catRunning, catQueued:
+			if check.Name != "" {
+				name = check.Name
+			}
+			running = append(running, name+":"+check.Status)
+		}
+	}
+	sort.Strings(running)
+	runningCount := len(running)
+	if runningCount > heldRunningNamed {
+		running = running[:heldRunningNamed]
+	}
+	suiteIDs := make([]string, 0, len(st.Suites))
+	for id, suite := range st.Suites {
+		if suite.Status != "completed" {
+			suiteIDs = append(suiteIDs, id)
+		}
+	}
+	sort.Strings(suiteIDs)
+	suites := make([]string, len(suiteIDs))
+	for i, id := range suiteIDs {
+		suite := st.Suites[id]
+		runs := "unknown"
+		if suite.RunCount != nil {
+			runs = strconv.Itoa(*suite.RunCount)
+		}
+		suites[i] = fmt.Sprintf("%s app=%s status=%s runs=%s", id, suite.AppID, suite.Status, runs)
+	}
+	everyCheckFinished := len(st.Checks) > 0 && runningCount == 0
+	level := slog.LevelInfo
+	if everyCheckFinished {
+		level = slog.LevelWarn
+	}
+	logger.LogEvent(level, "checks held a head",
+		slog.String("owner", st.Owner),
+		slog.String("repo", st.Repo),
+		slog.String("number", st.Number),
+		slog.String("sha", st.SHA),
+		slog.Uint64("generation", st.Generation),
+		slog.Int("checks", len(st.Checks)),
+		slog.Bool("every_check_finished", everyCheckFinished),
+		slog.Any("running", running),
+		slog.Int("running_count", runningCount),
+		slog.Any("suites", suites),
+		slog.Bool("overflowed", st.Overflowed),
+		slog.Bool("no_run_id", noRunID),
+		slog.Bool("legacy", mark.legacy),
+		slog.Bool("claimed", mark.claimed),
+	)
+}
+
 // settle tries to settle the record cached under key at now: it reclaims a stale claim, claims the
 // record, and publishes and marks its settlement, releasing the claim when the publication fails.
+// A publication that succeeded logs `checks settlement published`, one INFO line naming the head,
+// the generation and snapshot it settled, and whether it superseded an earlier settlement of the
+// record, so a settlement that never became a role message is shown to have left the listener; a
+// publication refused or failed logs no such line.
 func (z *summarizer) settle(pub Publisher, logger *logging.Logger, key string, cached State, now int64) {
 	store, debounce := z.store, z.debounce
 	staleBefore := now - (2 * debounce).Milliseconds()
@@ -348,7 +488,8 @@ func (z *summarizer) settle(pub Publisher, logger *logging.Logger, key string, c
 		}
 		return
 	}
-	held, err := store.ClaimStillHeld(key, state.Generation, state.Hash())
+	snapshot := state.Hash()
+	held, err := store.ClaimStillHeld(key, state.Generation, snapshot)
 	if err != nil {
 		logger.Warn("checks claim verification failed", slog.String("error", err.Error()), slog.String("sha", state.SHA))
 		return
@@ -380,6 +521,15 @@ func (z *summarizer) settle(pub Publisher, logger *logging.Logger, key string, c
 		}
 		return
 	}
+	logger.Info("checks settlement published",
+		slog.String("owner", state.Owner),
+		slog.String("repo", state.Repo),
+		slog.String("number", state.Number),
+		slog.String("sha", state.SHA),
+		slog.Uint64("generation", state.Generation),
+		slog.String("snapshot", snapshot),
+		slog.Bool("superseded", state.EmittedCount > 0),
+	)
 	if _, err := store.MarkSettled(key, state.Generation); err != nil {
 		logger.Warn("checks mark-settled failed", slog.String("error", err.Error()))
 	}

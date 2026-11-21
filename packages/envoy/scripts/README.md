@@ -137,7 +137,7 @@ Brings up the whole local surface the airlock's checks run on, with no container
 runtime and no cluster, and prints the exports a check needs. It runs
 `dev-broker.sh` for Postgres, `dev-oidc-issuer`, the six built binaries and that
 script's own broker, and reads what it printed, rather than starting any of that a
-second time. On top it starts a `cmd/dev-airlock-stands` of its own (the stand-in
+second time. On top it starts a `cmd/dev-proxy-stands` of its own (the stand-in
 services S and T, the GitHub, Google and Microsoft endpoints and the AWS service,
 and the certificate authority they are signed by), which is a second such process:
 `dev-broker.sh` starts one too, for the GitHub its own `github-app` secrets mint
@@ -231,14 +231,41 @@ consumers (`scripts/az-broker`, `scripts/secret-run`, `shims/gh`,
 model with `lake`, prints its theorem statements and their axioms, runs the comparison
 fuzz test for ten minutes, and runs the six mutants through `airlock-mutants.sh`.
 
+Before starting `k7`, set these operator inputs. An absent or empty input is a usage
+error (exit 2), reported before setup starts, and so is a broker name that is not
+uppercase letters, digits and single underscores starting with a letter, the one form
+the broker reads:
+
+- `AIRLOCK_GCLOUD_SECRET`: the broker name of the operator's gcloud login, which the
+  consumer's `scripts/gcloud-broker` reads, for example `GCLOUD_OPERATOR`.
+- `AIRLOCK_GWS_READ_SECRET`: the broker name of the operator's Google Workspace
+  read login, for example `GWS_OPERATOR_READ_OAUTH`.
+- `AIRLOCK_GWS_ADMIN_SECRET`: the broker name of the operator's Google Workspace
+  administrator login, for example `GWS_OPERATOR_ADMIN_OAUTH`.
+- `AIRLOCK_GWS_TIER_KEY`: the account key in `gws/accounts.json` whose
+  `tiers.read.command` the check reads, for example `operator`.
+
+The check uses fake login values in its local store, each stored under the name the
+broker reads its input's name by (lower-cased, each underscore a hyphen). These inputs
+identify the consumer's existing broker names and account; they do not rename the
+operator's logins. `bash packages/envoy/scripts/airlock-check.test.sh` calls the k7
+fixture and Google consumer boundary directly under fakes. It checks required inputs,
+fake broker rules, store names and consumer results without starting a stack.
+
 The programs the checks drive are files, not text a run writes out. The three Go
-clients are subcommands of `cmd/dev-airlock-stands`, the binary `dev-broker.sh`
+clients are subcommands of `cmd/dev-proxy-stands`, the binary `dev-broker.sh`
 builds and `dev-airlock.sh` runs: `probe-private` is `k4`'s private-address probe,
 `probe-bound` is `k7`'s call to a bound host, and `load` is `k9`'s load driver and
 the plain tunnel its baseline goes through. CI compiles and vets all three with the
-rest of that command. The others are under `scripts/airlock/`: `memscan.py`, `k6`'s
-boto3 steps (`aws-boto3.py`), `k7`'s Slack poster (`slack.ts`) and `k7`'s git
-credential helper.
+rest of that command. The others are under `scripts/airlock/`: `k7-consumers.sh`
+(the fixture and Google consumer boundary), `memscan.py`, `k6`'s boto3 steps
+(`aws-boto3.py`), `k7`'s Slack poster (`slack.ts`) and `k7`'s git credential helper.
+
+The grant's proxy password and placeholder stay out of a command's arguments, which
+every process of the pod reads in `/proc/<pid>/cmdline`. `load` reads the proxy URL from
+`--proxy-file` and the bearer from `--header-file`, and refuses `--proxy` and `--header`;
+curl reads the proxy from a config (`-K`) and the header from standard input; and `k7`'s
+git step reads the proxy from `GIT_CONFIG_*`. Each file is a `<(printf …)` path.
 
 Where a check needs a secret the stack does not hold, the run extends the stack's own
 fake Secrets Manager and makes every broker reread it. A control that needs other
@@ -332,6 +359,83 @@ for the stack's start under a short one. The stack runs in a session of its own 
 is stopped as one process group, so a stop during the build — the script's exit, a
 wait that ran out, Ctrl-C — ends that build with the stack.
 
+## project-secrets-check.sh
+
+Shows on the local stack that a private Dispatch project's secret goes only to a
+credential that names the project (R11 of dispatch://INFRA-3862). It starts one
+`dev-stack.sh --project-access` run, makes `PRIV` private (owner carol, access list
+bob), writes `PRIV_KEY` (tagged `dispatch-project=PRIV`, shared, agent tier) and
+`PUB_KEY` (untagged), and drives six callers. For each it runs `agent-secrets request`
+of the two secrets and one trade (`packages/cipher-client/scripts/print-trade.ts`,
+which prints the token's `project_scope` and `projects` from the broker's
+introspection), and prints one `PASS` or `FAIL` line per answer, naming the caller and
+the secret. The last line is `project-secrets-check: <n> rows ran, <m> passed`; it
+exits 0 only when all 16 rows ran and passed.
+
+```bash
+cd packages/envoy && LEGION_TEST_PG_DSN=... bash scripts/project-secrets-check.sh
+```
+
+| Caller | What passes |
+| --- | --- |
+| PRIV's pod (`legion-priv-worker`, mapped to PRIV for carol by its exchange entry) | its trade is `named` with `["PRIV"]`; after `agent-secrets enroll --pod --service legion-priv`, `PRIV_KEY` and `PUB_KEY` are granted |
+| carol's session listing PRIV (`AGENT_SECRETS_PROJECTS=PRIV`) on the stack's machine, which no machine registration names | avenue F's refusal (`machine_not_registered` at the trade, `MACHINE_NOT_REGISTERED` at enrollment); before F's check exists, only a `person`-scope token with `["PRIV"]`, and both secrets granted. The line says which branch ran |
+| alice's session listing PRIV | her trade is refused (her person cannot see PRIV) and her enrollment is refused `PROJECT_NOT_VISIBLE` |
+| carol's session naming nothing | `PUB_KEY` granted, `PRIV_KEY` denied `project-not-named` |
+| the machine's own session | its trade names no project, `PUB_KEY` granted, `PRIV_KEY` denied `project-not-named` |
+| PRIV's pod behind the airlock | a request through the proxy that spends the `PRIV_KEY` placeholder is served by the bound host (the host's own answer is read); after carol is taken off PRIV and the broker's 30-second K3 cache has passed, the next request's `CONNECT` is refused 407 |
+
+carol and alice each sign in with `agent-secrets login` on a box of their own (a HOME,
+key directory, sign-in store and `agent-secrets-helper` each), at the stack's issuer.
+Their sessions read no sign-in, so `agent-secrets register --exec` sends them to the
+box's helper, which enrolls them under the person's sign-in with the projects the
+session listed.
+
+The negative control writes `PRIV_KEY` with no project tag. Every caller then gets it,
+and the run exits 1 with the line `control: the first caller that got PRIV_KEY although
+it should have been refused: <caller>` (on the right stack, carol's session naming
+nothing):
+
+```bash
+LEGION_TEST_PG_DSN=... bash scripts/project-secrets-check.sh --control untagged
+```
+
+Live mode runs the session half against a deployment and writes nothing:
+
+```bash
+bash scripts/project-secrets-check.sh --broker-url <broker> --secret <NAME>
+```
+
+Its environment names the pod's exchange token (`AGENT_SECRETS_MACHINE_TOKEN_FILE`),
+the pod's enrolled key directory (`AGENT_SECRETS_KEY_DIR`), the operator's helper with
+its machine login (`AGENT_SECRETS_HELPER_SOCK`), and an account token the broker lists
+in `BROKER_API_ACCOUNTS` (`AGENT_SECRETS_ACCOUNT_TOKEN_FILE`), the only caller the
+broker lets read a token's introspection. A missing one of the first three exits 2; a
+missing account token fails the trade line as `UNKNOWN`. It runs the pod's trade (which
+names the project), the pod's request for the secret, and the operator's session
+listing that project, which reads F's check as the stack's row does. It takes no
+Dispatch URL, since nothing of the session half reads one.
+
+Until avenue A's `DISPATCH_ACCESS_ACCOUNTS` boot setting (t-a-5) and its private-project
+switch (t-a-20) are on the branch under test, the run writes Dispatch's rows directly
+in place of three of A's routes, reads them back, and says so on its output. The writes
+are two functions, each named for the route it stands in for, so each body becomes that
+call once the route answers: `standin_patch_access_private` for `PATCH
+/api/v1/projects/PRIV/access {"visibility":"private"}` and `PUT
+/api/v1/projects/PRIV/access/people/bob@example.com`, and, in the airlock row,
+`standin_patch_access_owner` for `PATCH /api/v1/projects/PRIV/access
+{"owner":"bob@example.com"}`. The rows need A's schema (`projects.owner`,
+`projects.visibility`, `project_access`), so on a Dispatch without it the run stops
+before any row with the route the write stands in for.
+
+`scripts/project-secrets-check.test.sh` proves the driver's own decisions with fakes of
+`dev-stack.sh`, `agent-secrets`, its helper, `bun`, `psql`, `curl`, `python3` and
+`sleep`: each row passes on the right answer and fails naming its caller and secret on
+a wrong one, the control fails, a run whose rows matched nothing fails, and live mode
+refuses half its options. It needs bash and jq and takes a few seconds. The driver
+needs what `dev-stack.sh` needs (Docker included, for the airlock's stands), `bun` with
+this repository's packages installed, and a few minutes.
+
 ## callout-check.sh
 
 Proves, on the whole local stack behind the NATS auth service, what the hub lets a
@@ -373,7 +477,7 @@ a hub that never drops the killed broker's connection fails line 6.
 ## backend-count.sh
 
 Counts, for each test it names, the runs that passed on each store backend: the test's
-own `aws` and `gcp` subtests (`onEachStore`, `cmd/agent-secrets/secret_kind_test.go`),
+own `aws` and `gcp` subtests (`onEachStore`, `cmd/cipher/secret_kind_test.go`),
 so a store or use change cannot pass on one backend alone.
 
 ```bash
@@ -391,7 +495,9 @@ cannot stand in for a new test's.
 `GO_TEST_SKIP='^(TestA|TestB)$/^aws$'` makes both lines read `aws=0` and the run exit 1.
 `GO_TEST_TIMEOUT` replaces the 5-minute `-timeout`, which `ci.yaml`'s `envoy-go` job counts
 in its time budget; the job runs it as "Count the store-form rows on each backend", over
-`./cmd/agent-secrets/` and `./internal/broker/api/`.
+`./cmd/cipher/` and `./internal/cipher/api/`, as those tests' one run: the job's unit
+step and its database-skips step skip them by name (`BACKEND_COUNT_TESTS` in
+`.github/scripts/ci_job_reads.py`).
 
 ## database-skips.sh
 
@@ -409,7 +515,7 @@ packages/envoy/scripts/database-skips.sh --report REPORT.json [PACKAGE...]
 ```
 
 A `PACKAGE` is a pattern under `packages/envoy`, `./dir/` or `./dir/...`. With none it runs
-its default table, `./internal/broker/...` and `./cmd/broker/`, less the packages its
+its default table, `./internal/cipher/...` and `./cmd/cipherd/`, less the packages its
 `DEFAULT_EXCEPT` takes out of them: the race lane's packages under the broker's tree, of which the
 auth service's `natscallout`, which opens no database, is the one today (`DATABASE_SKIPS_PATTERN`
 in `.github/scripts/ci_job_reads.py`, which refuses the script when `DEFAULT_EXCEPT` says
@@ -419,12 +525,13 @@ reads that report. `--var NAME` names a variable the packages need, and repeats;
 `database_skips=UNKNOWN` naming it, and nothing runs.
 `--race` adds `-race`, and `--timeout D` replaces the `-timeout`, as `GO_TEST_TIMEOUT` does
 when `--timeout` is not given; it bounds each package's test binary and not the run, since
-the packages run several at a time, so one that starts late ends later. `--report` reads a
-`go test -json` report instead and runs nothing, and refuses the three options that shape a
-run.
+the packages run several at a time, so one that starts late ends later. `--skip PATTERN` adds
+go test's `-skip`; go test reports nothing for a test it leaves out, so that test is neither
+run nor counted as a skip. `--report` reads a `go test -json` report instead and runs nothing,
+and refuses the four options that shape a run.
 
 It names the packages as `go list` does under the run's own flags, so a pattern spelled
-`./cmd/./broker/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
+`./cmd/./cipherd/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
 listed package, then `database_skips=N` and, for a run of its own, `go_test_exit=E`. The tests
 `EXPECTED_SKIPS` names in the script skip by their own design in every CI run, which sets the
 database variables and none of what those tests need (a corpus, a seeded database, a built
@@ -442,11 +549,13 @@ dump and a data race report among them), the build output and, for a run of its 
 stderr. A run of its own also prints each package's `pass|fail PACKAGE <seconds>s` on stderr.
 
 `ci.yaml`'s `envoy-go` job runs it as "Count the database broker suites' skips", with
-`--timeout 20m`, the unit step's own `-timeout`, and a step limit of its own
+`--timeout 20m`, the unit step's own `-timeout`, `--skip` of the one test of
+`./internal/cipher/api/` that the job's "Count the store-form rows on each backend" runs
+(`backend-count.sh`, above), and a step limit of its own
 (`timeout-minutes: 30`) that its time budget counts, and `envoy-go-race-api` runs the
 Dispatch API through it as the second line above.
 `database-skips.test.sh` holds it to five controls, which `envoy-go` runs as "Test the database
-skip counter": a skip planted through a Go overlay in `./internal/broker/api/`, `./cmd/broker/`
+skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`, `./cmd/cipherd/`
 and `./internal/dispatch/api/` is counted; either variable unset or empty is UNKNOWN; a report
 that shows no run (no test ran, only expected skips ran, or one package ran none) is UNKNOWN,
 a failed test fails, a race report filed under a passed subtest is printed, and a skip in a
@@ -458,7 +567,7 @@ a scratch Postgres named by both `BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_D
 ## aws-moto-check.sh
 
 Runs the built `agent-secrets` against moto's AWS, with no AWS account:
-`cmd/agent-secrets/secret_moto_test.go`'s `TestTheBuiltCLIAgainstMoto` (build tag
+`cmd/cipher/secret_moto_test.go`'s `TestTheBuiltCLIAgainstMoto` (build tag
 `moto`), which creates IAM users `writer` and `nobody` in moto, writes them as profiles,
 turns moto's IAM checks on, and runs the secret forms under each source of the AWS SDK's
 own order: access keys in the environment, which outrank `AWS_PROFILE`; `AWS_PROFILE`;
@@ -488,7 +597,7 @@ How many theorems there are is written nowhere: this script and `k15` both count
 model to.
 
 ```bash
-packages/envoy/scripts/airlock-lean-axioms.sh packages/envoy/internal/broker/airlock/lean
+packages/envoy/scripts/airlock-lean-axioms.sh packages/envoy/internal/cipher/proxyrules/lean
 ```
 
 It runs `lake env lean Axioms.lean` in that directory and writes what that printed to
@@ -536,7 +645,7 @@ from that wheel's own requirements.
 ## airlock-mutants.sh
 
 Proves that the airlock's differential fuzz test and the Lean proofs catch a defect
-in the decision code. Each file of `internal/broker/airlock/testdata/mutants` is one
+in the decision code. Each file of `internal/cipher/proxyrules/testdata/mutants` is one
 defect as a unified diff; for each, the script copies `packages/envoy` to a fresh
 directory under `$TMPDIR`, applies that one patch there, and requires the copy to
 fail — a `go-*.patch` under the comparison fuzz test over the committed seed corpus,
@@ -833,6 +942,147 @@ developer box, its versions and a project's fields in `lib/daemon-release-gate-c
 it sources; CI runs it in the `envoy-go-checks` job of `.github/workflows/ci.yaml`. Two controls run
 with it: a copy of the gate whose VM leg reads an absent `listenerImage` as no hub, and one that
 reads pi-envoy alone in an image, must each open on the fixture that exists to catch it.
+
+## legacy-subjects-gate.sh
+
+Says whether any reader or writer of the bus still uses the old form of a name the project rename
+moved: an issue event named by its key alone (`notifications.dispatch.issue.ACME-12.…`), an agent's
+or a role's name with no project (`notifications.agent.<session>`, `notifications.role.<role>`), a
+kept lane with no project, and a failed-delivery report of one. It is the reading a pull request
+quotes before it refuses the old form and deletes the code that reads both forms. One reading
+cannot show that nothing moved, so the gate is read twice, at least the stream's retention apart
+(`ENVOY_NOTIFICATIONS`' `max_age`, 72 hours):
+
+```bash
+packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record first.json [--listener <machine>=<url>]...
+# at or after the time the first run names:
+packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record second.json --since first.json [--listener <machine>=<url>]...
+```
+
+A listener outside the cluster is read over `https`; `--insecure` takes an `http://` URL, whose
+answer anyone on the way could read or change. Once the hub is not static, `--token-file <path>`
+names where the listener Deployment mounts its projected NATS token, which the Job then connects
+with in place of the seed, and `--inbox-prefix <prefix>` the inbox prefix the listener identity's
+grant subscribes, which every `nats` call of the Job then takes.
+
+What it reads, all of it read-only:
+
+- **Every listener's counter**: `envoy_listener_legacy_subjects_total` (every label set: `interest`
+  for a topic a registration named, `role` for a role a claim named, `role_read` for a valid role a
+  publish, the role lane or `GET /v1/roles/<role>` named) and the start-time gauge
+  `envoy_listener_start_time_seconds`, whose one label, `machine`, is the listener's
+  `ENVOY_MACHINE_ID`. The listeners in the cluster are found by what they run, not by name: every
+  container, in any namespace, of an image whose path ends `legion/envoy` that runs the image's own
+  entrypoint (`envoy-listener`), on the bus the reading is about, the `NATS_URLS` of the
+  `envoy-listener` Deployment; a listener container on another bus (a load-test stack's, on its own
+  NATS) is named (`SKIP`) and not read. Each is read from its pod's log: a listener logs the two
+  metrics, as `/metrics` serves them, on a `listener legacy subjects` line every minute, and the
+  gate takes the newest of the last five minutes, which must be at most three minutes older than
+  the reading. The log and not `/metrics`, because the operator may read every listener pod's log
+  and may not reach Dispatch's listener's `/metrics`: the API server's pod proxy is refused in
+  namespace `dispatch`, and that listener's NetworkPolicy admits its port from Dispatch's own pods
+  alone. A listener outside the cluster, such as a VM hub's, is named with
+  `--listener <machine>=<url>`, the machine being its `ENVOY_MACHINE_ID`, and read at
+  `<url>/metrics`. Each reading is held to the machine it was read as: an outside listener's gauge
+  must name the machine the operator gave, and a pod's must name its container's
+  `ENVOY_MACHINE_ID` when it names one, so a URL serving another listener prints `UNKNOWN` rather
+  than counting for that machine. Every listener with its durable on the bus (`listener-<machine>`),
+  bound now or not, must be one of those: one that is not prints `UNKNOWN` by name, so a listener
+  nobody named, or one offline, asleep or restarting at the reading, is never left out of the count
+  while its durable lasts (7 days unbound).
+- **Over NATS**, from a one-off Job in namespace `envoy` that connects as the in-cluster listener
+  does (`lib/legacy-subjects-gate-nats.sh`): who the server says the connection is
+  (`$SYS.REQ.USER.INFO`, which the in-cluster listener's static grant refuses, so the gate then
+  names the credential: the seed's nkey user, or the token's subject); the stream's info; every
+  consumer of the stream (`$JS.API.CONSUMER.LIST`, which the listener's grant holds, where `nats
+  consumer ls` asks `CONSUMER.NAMES`, which it does not); the stream's subjects under
+  `notifications.dispatch.issue.>`, `notifications.agent.>`,
+  `notifications.envoy.exceptions.notifications.agent.>` and `notifications.envoy.kept.>`; the
+  last message of each of those subjects in an old form (`$JS.API.STREAM.MSG.GET` by
+  `last_by_subj`: its subject, stream sequence and time alone, never its content; at most 1000 of
+  them, the rest counted, since they only name the newest old-form message and decide no verdict);
+  and every record of the interest store `envoy_interests`. A list longer than one answer is read
+  page by page, each page from the last item of the page before, and a refused or empty answer
+  ends that list's reads at once.
+
+The first reading shuts on no old-form name. The stream keeps the old-form messages published
+before every producer moved for its whole retention, and interest records and consumer filters may
+still be in an old form, so the first reading names each it finds (`FOUND`) and records the
+stream's last sequence, the newest old-form message and every old-form counter. The second reading,
+at least the retention later, shuts on any old-form message the stream still holds (one published
+after the first reading's last stream sequence named apart); a listener whose count rose
+under any kind; a consumer one of whose filters only an old-form name matches and whose new form
+the same consumer does not also filter under every project its names carry (a Legion daemon's
+`legion-go-<project>-<kind>` or any other; a session consumer filters both forms of its topics
+until the old form is refused, so its old filter loses nothing; a new form under one project,
+beside an old filter whose names carry any, covers that project alone); an interest record holding
+an old-form topic other than its session's own agent subject, which the listener writes into every
+record itself until the old form is
+refused; a reading named with `--since` that shut the gate; and less than the retention between the
+two, the readings' and each listener's own two reads of its counter. The old form is the gate's own
+rule (`lib/legacy-subjects-gate-forms.jq`, `old_form`, which the gate also hands the Job to choose
+the subjects whose last message it reads), so the gate stays right once the code that reads both
+forms is deleted. It takes as old a filter that matches some old-form name of a family the rename
+moved and no new-form name of it, even where it names no key: `notifications.dispatch.issue.*.comment.created`
+has the old form's length, one token short of every new-form issue event's name, so it hears the
+old form alone; the listener's counter takes it as old too (`contracts.LegacyIssueFilter`). A filter
+that reaches a family through a wildcard in the family's own tokens
+(`notifications.dispatch.*.*.comment.created`, `notifications.*.reviewer`, `*.role.reviewer`,
+`notifications.envoy.kept.*.x`) is held to the same rule; the counter holds an issue filter to it,
+and is narrower on the agent, role and kept families' wildcards.
+
+What it cannot see prints `UNKNOWN`, never `GATE OPEN`: a surface it could not read or that
+answered nothing (no listener, no Legion daemon consumer, no issue or agent subject on the stream,
+no interest record, which a production bus always holds), a refused read named by its request, a
+list whose pages do not join (the server's count changed between them, a page does not start at
+the last item of the one before, or fewer distinct items were read than the server counts), an
+answer that is no JSON object, a listener that is not running or whose newest counter line is
+stale, a build that logs or serves no old-form counter, a reading whose start-time gauge names
+another machine than the one read (or none, outside the cluster), a listener that restarted between
+the readings (its pod's restart count or its start-time gauge moved, or it is a new pod), a
+listener of the first reading that is gone, a start-time gauge served at one reading only, a record
+that cannot be written, and at the second reading: a first reading that did not read every surface,
+a stream that is not the
+one the first reading read (its `envoy_stream_id` changed), a stream that does not hold the whole
+window (its first message is younger than the window, less an hour: it was purged or made anew),
+and readings further apart than a listener's durable outlives its listener. A listener read at two
+readings is compared only while both readings show it is the one process. A judgement that fails
+on what it was given prints `UNKNOWN` and writes its record too.
+
+The Job takes the ServiceAccount, the NATS URL, and the NATS seed file (or, with `--token-file`,
+the projected token) and the volume holding it from the listener Deployment `envoy/envoy-listener`
+as deployed, runs the nats-box image the deployment pins for its own NATS Jobs as nobody (65534)
+with every capability dropped, no Kubernetes API token mounted and a scratch directory in memory,
+with `backoffLimit: 0`, `activeDeadlineSeconds: 300`, `ttlSecondsAfterFinished: 600`, and labels
+`created-by: legacy-subjects-gate` and `owner: <your login>` (`unknown` for a uid with no name).
+The gate reads the Job's log, deletes it and reads back that no Job or pod of its name is left;
+one it could not delete prints `UNKNOWN` with the command that deletes it, and one it could not
+create is never deleted. The Job's log holds what the gate judges and no more: of an interest
+record, its session id and its topics, never its directory, machine or title; of a stored message,
+its subject, stream sequence and time; of a seed `nsc` could not read, a fixed line. The cluster
+keeps that log in its logging backend after the Job is deleted, as it keeps the listener's own,
+which already logs every topic it delivers, so the Job adds no kind of text the namespace does not
+log.
+
+It prints `IDENTITY` (whom the NATS reads ran as), `READ`, `PASS`, `FOUND` (an old-form name a
+first reading found), `GATE SHUT` or `UNKNOWN` per surface, the Job's creation and deletion, and the
+verdict alone on the last line: `GATE OPEN` (exit 0) at a clean second reading, `GATE SHUT` (exit
+1), `UNKNOWN` (exit 3), and at a first reading that read every surface `FIRST READING`, naming its
+`FOUND` count, the stream sequence the second reading reads after, and when to read again (exit 4).
+It writes the reading to `--record` in every case, as a new file in a directory that exists when
+the gate starts: a file made at that path meanwhile is left as it is, and the reading prints
+`UNKNOWN`. A second reading that opened is a first reading for the next window. A usage error exits
+2 and reads nothing. It
+needs `kubectl` signed in to the cluster as an account that may list pods in every namespace, read
+the logs of the listener pods in each namespace that runs one, read the listener Deployment, and
+create, read, read the logs of and delete Jobs and pods in `envoy` (a developer box's account: list
+through its `container.viewer` role, the rest through its `edit` role in `envoy` and its `pods/log`
+read in `dispatch`), plus `jq`, `curl` and `base64`.
+
+`legacy-subjects-gate.test.sh` proves every verdict behind a fake `kubectl` and a fake `curl`,
+with the Job's log written in its own format, runs the Job's own script under `sh` behind a fake
+`nats`, and holds the old-form rule row by row; CI runs it in the `envoy-go-checks` job of
+`.github/workflows/ci.yaml`.
 
 ## Measuring search on a copy of the corpus
 

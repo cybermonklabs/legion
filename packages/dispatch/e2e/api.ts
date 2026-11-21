@@ -418,6 +418,12 @@ export function getIssue(key: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}", { params: { key } }, options);
 }
 
+/** `GET /api/v1/issues/{key}/decisions`: the issue's decision records, each with whether it
+ *  waits for the reader's review and the Keep a person recorded. */
+export function getIssueDecisions(key: string, options: ApiOptions = {}) {
+  return get("/api/v1/issues/{key}/decisions", { params: { key } }, options);
+}
+
 /** `GET /api/v1/issues/{key}/events`: the issue's events in the server's order.
  *
  *  The answer is typed `DispatchEvent[]`, not the document's `Event[]`: Go's `model.Event.Payload`
@@ -671,6 +677,28 @@ export function createIssueArtifact(
   return post("/api/v1/issues/{key}/artifacts", { body: input, params: { key: issue } }, options);
 }
 
+/** Uploads bytes as an issue artifact through the multipart form the file picker posts. The JSON
+ *  body `createIssueArtifact` sends carries text only, so an image can only be seeded this way,
+ *  and `request` sends JSON alone, so the form goes out as its own fetch. */
+export async function uploadIssueFile(
+  issue: string,
+  input: { bytes: Uint8Array<ArrayBuffer>; contentType: string; name: string },
+  login = "alice"
+): Promise<Result<"/api/v1/issues/{key}/artifacts", "post">> {
+  const form = new FormData();
+  form.append("name", input.name);
+  form.append("file", new Blob([input.bytes], { type: input.contentType }), input.name);
+  const response = await fetch(
+    new URL(routeUrl("/api/v1/issues/{key}/artifacts", { key: issue }), baseUrl),
+    { body: form, headers: await userHeaders(login), method: "POST" }
+  );
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`upload ${input.name} to ${issue} failed: ${response.status} ${text}`);
+  }
+  return (await response.json()) as Result<"/api/v1/issues/{key}/artifacts", "post">;
+}
+
 /** `GET /api/v1/issues/{key}/artifacts`: every artifact the issue holds, as the Documents tab's
  *  own `["artifacts", key]` read lists them, each with its role and its versions. */
 export function listIssueArtifacts(issue: string, options: ApiOptions = {}) {
@@ -731,6 +759,29 @@ export function resolveAsk(
   options: ApiOptions = {}
 ) {
   return post("/api/v1/asks/{id}/resolve", { body: input, params: { id } }, options);
+}
+
+/** A person declining to answer an ask, with the note they leave (c-decisions). */
+export function declineAsk(
+  id: string,
+  input: Body<"/api/v1/asks/{id}/decline", "post">,
+  options: ApiOptions = {}
+) {
+  return post("/api/v1/asks/{id}/decline", { body: input, params: { id } }, options);
+}
+
+/** A person keeping one decision as its text reads now (`getIssueDecisions`'s `text_sha256`). */
+export function keepDecision(
+  artifact: string,
+  block: string,
+  textSha256: string,
+  options: ApiOptions = {}
+) {
+  return post(
+    "/api/v1/artifacts/{id}/blocks/{block_id}/keep",
+    { body: { text_sha256: textSha256 }, params: { block_id: block, id: artifact } },
+    options
+  );
 }
 
 export function createComment(
@@ -816,6 +867,20 @@ export function followAsk(id: string, sessionID: string, actor: Actor) {
 /** The document's current canonical markdown, as the server's live room holds it. */
 export function getArtifactText(id: string, options: ApiOptions = {}) {
   return get("/api/v1/artifacts/{id}/text", { params: { id } }, options);
+}
+
+/** The base an upload replacing the document names: the token its live read answers, in the shape
+ *  `CreateArtifactInput.precondition` takes. An upload over a document the owner already holds
+ *  says which text it replaces, and the server checks it under the write's own lock. */
+export async function documentBase(
+  id: string,
+  options: ApiOptions = {}
+): Promise<{ readonly document: string }> {
+  const { token } = await getArtifactText(id, options);
+  if (token === undefined) {
+    throw new Error(`document ${id} answers no document token`);
+  }
+  return { document: token };
 }
 
 /** The blocks of the document's current version, each with the span of markdown it covers. */

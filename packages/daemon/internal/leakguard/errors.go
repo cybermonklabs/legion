@@ -15,9 +15,9 @@ const (
 	bySharedCheck RefusedBy = "the shared public leak check refused it"
 )
 
-// Refusal is a write refused because of the text it carries. It is one half of this package's
-// failure vocabulary; the other is *SetupFailure. Both refuse the write, and a call site tells
-// them apart with errors.As to say which one it met.
+// Refusal is a write refused because of the text it carries. It is one of the three answers this
+// package refuses a write with; the others are *SetupFailure and *NotFound. All three refuse the
+// write, and a call site tells them apart with errors.As to say which one it met.
 type Refusal struct {
 	// What is the write, in the entry point's words: "the push to origin", "the gh call".
 	What string
@@ -45,10 +45,10 @@ func (r *Refusal) Error() string {
 
 // SetupFailure is a write refused because a check could not be made to run: no shared check
 // resolved, the shared check exited 2 or some status it does not document, the rule engine failed,
-// or a destination's visibility could not be read. It refuses the write exactly as a *Refusal
-// does — a check that did not run has cleared nothing — and says so in the shared check's own
-// words, so that a person reading a log can tell a broken pod from a write that names something
-// private.
+// or a destination's visibility could not be read, other than a read GitHub answered 404, which is
+// a *NotFound. It refuses the write exactly as a *Refusal does — a check that did not run has
+// cleared nothing — and says so in the shared check's own words, so that a person reading a log
+// can tell a broken pod from a write that names something private.
 type SetupFailure struct {
 	// What is the write, in the entry point's words, as a Refusal's is.
 	What string
@@ -68,4 +68,26 @@ func (f *SetupFailure) Error() string {
 
 func (f *SetupFailure) Unwrap() error {
 	return f.Err
+}
+
+// NotFound is a write refused because GitHub answered the destination's visibility read with 404:
+// no repository of that name exists, or the read's credential cannot see it. The guard read no
+// visibility, so it refuses the write as it does for a *SetupFailure, but it says what GitHub
+// answered and holds neither marker: the write named nothing private, and no check failed to run,
+// so a person who read either marker would look for the wrong fault.
+type NotFound struct {
+	// What is the write, in the entry point's words, as a Refusal's is.
+	What string
+	// Repo is the destination, "owner/name", already masked as a report masks a path (maskPath).
+	Repo string
+}
+
+func (f *NotFound) Error() string {
+	return f.What + ": " + notFoundText(f.Repo)
+}
+
+// notFoundText is what a *NotFound and the read's own *notFoundError say of repo, a repository
+// GitHub answered 404 for, repo already masked.
+func notFoundText(repo string) string {
+	return "GitHub answers 404 for " + repo + ", so the repository does not exist or this credential cannot read it"
 }

@@ -28,6 +28,9 @@ import (
 // check makes one call, Describe, and verify two, Describe and Current, so reading a secret needs
 // no grant beyond its metadata and its value; a Current that finds its default version unserved may
 // read that version's metadata once more to report it as Unserved. Only generate counts versions.
+//
+// A new store implements Store, joins the stores map in cmd/envoy-infra/main.go and runs
+// testStoreContract (store_contract_test.go).
 type Store interface {
 	// Label names the version the store serves by default, in check's and verify's lines.
 	Label() string

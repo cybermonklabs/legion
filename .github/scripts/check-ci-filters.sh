@@ -86,11 +86,25 @@
 #      other job of the run; a job CI_OK_EXEMPT names that does report to ci-ok, or that
 #      CI_OK_SELECTED_BY also maps, or
 #      that is no job of the file at all; a job named for a check main's ruleset requires (ci-ok
-#      and pr-title) that is not the job of that name, and either of those two jobs renamed by a
-#      `name:`, since a job posts its own check under its display name and a skipped one posts a
-#      pass; a pr-title job that is missing, since nothing else reports that check on a pull
-#      request or a merge group; a ci-ok job — the verdict, whose own check run is the other
-#      check that ruleset requires — that is missing, that CI_OK_EXEMPT does not name, or whose
+#      and pr-title), or named by an expression that can evaluate to one, that is not the job of
+#      that name; ci-ok carrying any `name:` but `${{ github.event_name == 'workflow_dispatch' &&
+#      needs.changes.outputs.ref_is_main != 'true' && 'ci-ok (dispatch)' || 'ci-ok' }}`, pr-title
+#      any but `${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' ||
+#      'pr-title' }}`, since a job posts its own check under its display name, a skipped one posts
+#      a pass, and a dispatch of any ref but exactly refs/heads/main tests that ref's tree and
+#      lands its check runs on the branch's head, a pull request's head, beside the pull
+#      request's own, where a reader by name takes the newer; the ci-ok job's step "Set every
+#      other ci-ok on this head to this job's conclusion" carrying any `if:` but `${{ always() &&
+#      (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true')
+#      }}`, since on any other dispatch it would set a pull request's ci-ok check runs to that
+#      run's verdict; the changes job lacking the output `ref_is_main: ${{
+#      steps.ref.outputs.is_main }}` or its one step `ref`, whose `run:` is exactly `if [
+#      "$GITHUB_REF" = refs/heads/main ]; then echo is_main=true; else echo is_main=false; fi >>
+#      "$GITHUB_OUTPUT"` with no `if:`, since an expression's `==` and `!=` ignore case and read
+#      refs/heads/Main as main where the shell's `=` does not; a pr-title job that is missing, since nothing else
+#      reports that check on a pull request or a merge group; a ci-ok job — the verdict, whose own
+#      check run is the other check that ruleset requires — that is missing, that CI_OK_EXEMPT
+#      does not name, or whose
 #      needs: is not every job of the file but itself and the exempt ones, since a job outside
 #      that list ends after a verdict that says nothing about it; and a job of the file that is
 #      in none of ci-ok's three classes, or in two of them: CI_OK_SELECTED_BY maps it to the
@@ -200,7 +214,7 @@
 #      every Bun job and this check holds every filter gating such a job to all of them. What the
 #      rule prevents is exactly that: a workspace missing from the table is a manifest no filter
 #      has to select, so a change to it starts no job. It prevents nothing else, and
-#      packages/broker-client is the case that shows the difference - it was outside the table
+#      packages/cipher-client is the case that shows the difference - it was outside the table
 #      from the day it was added, and its own typecheck and tests ran in no job for a second
 #      reason no rule reads, that no step ran them. The other way round is a read every Bun job
 #      declares of a manifest no install reads. The manifest is read as
@@ -213,7 +227,7 @@
 #      sources are another matter, which this rule says nothing about either: a job can compile a
 #      package whose filter never selects it, which is why ci_job_reads.py's envoy_client_dep
 #      declares, in one place for every gate whose job compiles @legion/envoy-client, that it
-#      compiles @legion/broker-client with it.
+#      compiles @legion/cipher-client with it.
 #  14. a workflow of .github/workflows other than ci.yaml that runs on `merge_group`, naming the
 #      file: ci-ok-report.sh POSTs the failing ci-ok of a merge-group run the reporting job's
 #      own result decides, so the queue learns a group is doomed without waiting for the ci-ok
@@ -299,37 +313,15 @@
 #      check-image-trigger-paths.sh judges with the image's build context). The write mode
 #      writes the block into the on.push.paths of a PUSH_WORKFLOWS workflow as well, since
 #      rule 8 holds that list equal to its filter and a hand would have to copy it otherwise.
-#  18. a dorny/paths-filter step of the changes job whose `filters` string is within 32,768
-#      bytes of 131,072, naming the step, the size and the cap. Actions hands a step's input to
-#      the action as one environment variable, INPUT_FILTERS, and Linux caps one environment
-#      string at MAX_ARG_STRLEN, 131,072 bytes: a block above that does not make the action
-#      filter badly, it stops the job from starting at all, with `An error occurred trying to
-#      start process '.../node24/bin/node' ... Argument list too long` and no filter output for
-#      any job of the run. That is what one run gave (dispatch://INFRA-1413, pull request
-#      #2945): the whole block in one step measured 137,498 bytes of this branch's text once the
-#      520 generated `!` patterns rule 17 wrote at that measurement were in it (137,494 when
-#      that issue measured it), against 76,669 bytes on main. The cure is that the changes job
-#      declares its filters in more than one paths-filter step - three today, each string below
-#      the cap - and this rule is what keeps the next filter from growing one of
-#      them back over the cap: it fails here, on the pull request that writes it, rather than
-#      on a runner. The margin is a quarter of the cap. No step's size is kept here, since every
-#      filter edit moves it, and the check prints a size only in the refusal of a step that
-#      reaches the margin; the 14 bytes of `INPUT_FILTERS=` the kernel counts beside the value
-#      are many times over inside that margin. Every rule above reads the filters of all those
-#      steps as one set, since that is what the job's outputs hand on; a group an anchor names that
-#      filters of more than one step share is written out in each of them, because a YAML anchor
-#      reaches no further than the string it is in, and the copies must be the same patterns under
-#      the same quantifier or this rule's own refusal names two steps that differ,
+#  18. retired: the `filters` input is now a path, which cannot reach the environment-variable cap.
 #  19. an output of the changes job reading `steps.<id>.outputs.<name>` where <id> is no step of
-#      the job, or is a paths-filter step that does not declare filter <name>, or where <name>
-#      is declared in two paths-filter steps, naming the output, the reference and the step that
-#      does declare the filter. With the filters split over three steps (rule 18) an output names
-#      the step its own filter is in, and one naming another step is empty on every run, which
-#      reads as a filter that never matched: the job it gates would be skipped on every change
-#      it selects, and nothing else here would say so. A reference to a step that is no
-#      paths-filter step carries no filter and is held only to being a step of the job: that is
-#      the step merging the three steps' verdicts into the `filter_verdicts` output
-#      .github/scripts/ci-ok.jq reads as one object,
+#      the job, or is a step that is not its dorny/paths-filter step, or where <name> is no
+#      filter of .github/ci-filters.yaml, naming the output and the reference. Such an output is
+#      empty on every run, which reads as a filter that never matched: the job it gates would be
+#      skipped on every change it selects, and nothing else here would say so. Which step
+#      declares a name was the other half of this rule and has no subject left: the filters are
+#      one file, which the one step hands the action whole, so a name is a filter of the job
+#      exactly when that file holds it,
 #  20. a step's vets for another platform - the Runs of mode vet whose env sets GOOS, one per
 #      tag set, today the three darwin vet steps ci_job_reads.py's darwin_vet pins - that
 #      between them pass over a file go builds for that platform under some tags, naming the
@@ -343,7 +335,18 @@
 #      own tags, and one go list then compiles is the miss. The steps read their sets off the
 #      module with .github/scripts/go_build_tags.py at run time and ci_job_reads.py gives their
 #      Runs what it prints now, so this rule fails when that script stops printing a set a
-#      file needs.
+#      file needs,
+#  21. a dorny/paths-filter step of any workflow of .github/workflows whose `filters` input is
+#      not exactly .github/ci-filters.yaml, naming the file, the job and the step. Every rule
+#      above reads that file, so a filter written into a workflow's own text instead is read by
+#      none of them: it would gate its job on patterns no coverage rule here has seen, and
+#      nothing would say so.
+#
+# Rules 1, 6, 9 and 17 name .github/ci-filters.yaml in their refusals, the file the filters are
+# in, and rule 8 names it as the file holding the filter a workflow's paths must equal. That file
+# is read once per run, and a run that cannot read it stops there, naming the file and whether it
+# is absent or there and refusing the open: every job is selected by a filter of it, so a run that
+# read none would hold every filter to nothing.
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of
 # `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of
@@ -438,11 +441,12 @@
 #
 # THE TWO MODES. This check takes an optional mode argument. `check`, the default a bare call
 # takes, is every refusal above. `write` is the same run with rule 17's verdict replaced by its
-# remedy: it writes each gate filter's generated block into ci.yaml and refuses nothing of rule
-# 17, leaving every other refusal as it is, since the blocks it writes are computed from the
-# read sets the rest of this check builds and a run that cannot build them writes nothing worth
-# keeping. Only ci.yaml is written, and only inside those blocks. Any other word, or more than
-# one, fails naming both.
+# remedy: it writes each gate filter's generated block into .github/ci-filters.yaml, and into the
+# on.push.paths of docs-pages.yaml, the PUSH_WORKFLOWS workflow rule 8 holds equal to the docs
+# filter, and refuses nothing of rule 17, leaving every other refusal as it is, since the blocks
+# it writes are computed from the read sets the rest of this check builds and a run that cannot
+# build them writes nothing worth keeping. Only those two files are written, and only inside
+# those blocks. Any other word, or more than one, fails naming both.
 #
 # Run from anywhere: .github/scripts/check-ci-filters.sh
 #                    .github/scripts/check-ci-filters.sh write
@@ -468,11 +472,11 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 # A bare call checks: that is the contract the ci-filters job calls under, and a caller who says
-# nothing is asking for the verdict, never for a rewrite of ci.yaml.
+# nothing is asking for the verdict, never for a rewrite of .github/ci-filters.yaml.
 case "$#:${1:-}" in
   0: | 1:check | 1:write) ;;
   *)
-    echo "::error file=.github/scripts/check-ci-filters.sh::this check takes one optional mode: \`check\` (the default) refuses a generated block of ci.yaml that is not rule 17's, and \`write\` writes those blocks instead. Run \`.github/scripts/check-ci-filters.sh\` or \`.github/scripts/check-ci-filters.sh write\`." >&2
+    echo "::error file=.github/scripts/check-ci-filters.sh::this check takes one optional mode: \`check\` (the default) refuses a generated block of .github/ci-filters.yaml that is not rule 17's, and \`write\` writes those blocks instead. Run \`.github/scripts/check-ci-filters.sh\` or \`.github/scripts/check-ci-filters.sh write\`." >&2
     exit 1
     ;;
 esac

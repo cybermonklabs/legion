@@ -1398,7 +1398,7 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 		{[]string{"api", "repos/sjawhar/legion/pulls/1", "--jq", ".title"}, filepath.Join(root, "sjawhar")},
 		{[]string{"issue", "transfer", "3", "sjawhar/legion", "-R", "sjawhar/legion-smoke"}, filepath.Join(root, "sjawhar")},
 		{[]string{"repo", "list", "sjawhar"}, filepath.Join(root, "sjawhar")},
-		// A repository of an owner the project maps nothing of: the bundle holds that owner's
+		// A repository of an owner no record of the project names: the bundle holds that owner's
 		// directory because the role's App is installed on the account, and the token in it
 		// reaches every repository of that installation.
 		{[]string{"pr", "create", "-R", "example-org/deployment", "--fill"}, filepath.Join(root, "example-org")},
@@ -2609,12 +2609,14 @@ func TestLegionGhLetsOnlyTheRateLimitReadBypassTheGuard(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			record := filepath.Join(t.TempDir(), "gh")
+			check := ghCheckAt(t, tc.check)
 			env := map[string]string{
 				"GH_CONFIG_DIR":        defaultDir,
 				"GH_STANDIN_RECORD":    record,
 				"LEGION_GH_OWNERS_DIR": root,
 				"LEGION_GH_PATH":       stub,
-				"PUBLIC_LEAK_CHECK":    ghCheckAt(t, tc.check),
+				"PUBLIC_LEAK_CHECK":    check,
+				leakguard.CheckerVar:   ghManifestOf(t, check),
 				testProvenCheckEnv:     ghProvenProgramSHA256,
 			}
 			if code, _, stderr := legionGhIn(t, repository, env, "", tc.args...); code != tc.wantCode {
@@ -3108,15 +3110,11 @@ func TestGhConfigShapeRefusesADirectoryThatSendsElsewhere(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			// A check that opened a named pipe would wait on it, so each runs with a bound.
+			// A check that opened a named pipe would wait on it, and fails the row by name before
+			// the test binary's deadline (testwait.Receive), the only bound on the wait.
 			done := make(chan error, 1)
 			go func() { done <- ghConfigShape(dir) }()
-			var err error
-			select {
-			case err = <-done:
-			case <-time.After(5 * time.Second):
-				t.Fatalf("ghConfigShape did not return within 5 s")
-			}
+			err := testwait.Receive(t, "ghConfigShape with "+tc.name, done)
 			switch {
 			case tc.want == "" && err != nil:
 				t.Fatalf("ghConfigShape = %v, want none", err)
@@ -3126,5 +3124,24 @@ func TestGhConfigShapeRefusesADirectoryThatSendsElsewhere(t *testing.T) {
 				t.Fatalf("ghConfigShape's refusal %q quotes the value", err)
 			}
 		})
+	}
+}
+
+// The git gh runs for a push makes the pre-push hook, whose guard resolves the check from
+// PUBLIC_LEAK_CHECK and holds it to the deployment's checker (leakguard.CheckerVar), so gh's
+// environment keeps both of its caller's: without the checker, that guard would run a check whose
+// program hashes otherwise, which the role's own guard refuses.
+func TestGhsChildEnvironmentKeepsTheLeakCheckAndItsChecker(t *testing.T) {
+	checker := strings.Repeat("5e", 32)
+	caller := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(),
+		leakguard.CheckVar + "=/opt/check/public-leak-check.sh", leakguard.CheckerVar + "=" + checker}
+	kept := map[string]string{}
+	for _, entry := range ghChildEnviron(caller, nil) {
+		if name, value, ok := strings.Cut(entry, "="); ok && (name == leakguard.CheckVar || name == leakguard.CheckerVar) {
+			kept[name] = value
+		}
+	}
+	if kept[leakguard.CheckVar] != "/opt/check/public-leak-check.sh" || kept[leakguard.CheckerVar] != checker {
+		t.Fatalf("gh's environment kept %v of the leak check, want both of its caller's", kept)
 	}
 }

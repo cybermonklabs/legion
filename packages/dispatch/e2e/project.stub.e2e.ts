@@ -4,7 +4,7 @@
  *  and the width a table row gives a long title.
  *
  *  Each reads what the browser does, so each runs against a recording rather than against a
- *  harness (packages/dispatch/AGENTS.md, "The stubbed layer"). The walk that seeds nine issues,
+ *  harness (packages/dispatch/README.md, "The stubbed layer"). The walk that seeds nine issues,
  *  presses eight filters and creates a document in its editor stayed in `project.e2e.ts`.
  */
 import { expect, type Locator } from "@playwright/test";

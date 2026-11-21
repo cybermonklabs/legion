@@ -23,6 +23,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -44,17 +45,21 @@ type Runtime interface {
 	// On an error the caller owns stopping any previous process of the claim, and Spawn has
 	// stopped any process it started itself.
 	Spawn(ctx context.Context, spec SpawnSpec) (Locator, error)
-	// Resume starts the same agent again from the session file the spec names, after waiting
-	// for the previous incarnation to be Gone. prev is the incarnation the caller recorded, nil
-	// when it recorded none, and a hint: a runtime that finds a claim's process by the claim's own
-	// place, as a sandbox finds a role's launcher in its issue's pod, waits out whatever runs
-	// there even when prev is nil. A claim resumes the agent it recorded or none: a fresh agent on
-	// a claim that had one is the failure the same-agent refusal exists to catch. A session the
+	// Resume starts the same agent again from the session the spec names, by its file
+	// (ResumeSessionFile) or, for a claim that records no file of it, by its id (ResumeSession),
+	// after waiting for the previous incarnation to be Gone. prev is the incarnation the caller
+	// recorded, nil when it recorded none, and a hint: a runtime that finds a claim's process by the
+	// claim's own place, as a sandbox finds a role's launcher in its issue's pod, waits out whatever
+	// runs there even when prev is nil. A claim resumes the agent it recorded or none: a fresh agent
+	// on a claim that had one is the failure the same-agent refusal exists to catch. A session the
 	// runtime looked for and did not find is ErrSessionFileMissing, and a session store that could
 	// not be asked at all is ErrSessionStore; every runtime answers both the same way, having
-	// started nothing, and the caller tells them apart by what it does next (supervise's start).
-	// On an error the caller owns stopping prev (Suspend), and Resume has stopped any process it
-	// started itself.
+	// started nothing, and the caller tells them apart by what it does next (supervise's start). A
+	// Resume by the id alone that the runtime could not send, because the pod's launcher has not
+	// said it can look a session up by its id, is ErrSessionLookupUnavailable, having started
+	// nothing; only the sandbox runtime answers it, and the caller's next Resume has the agent's own
+	// command resolve the id (ResumeByAgent). On an error the caller owns stopping prev (Suspend),
+	// and Resume has stopped any process it started itself.
 	Resume(ctx context.Context, prev *Locator, spec SpawnSpec) (Locator, error)
 	// Suspend stops the process gracefully, within the runtime's stop grace, and keeps everything
 	// a later Resume needs: the agent's session, and whatever the runtime holds for the claim. The
@@ -118,10 +123,12 @@ type Runtime interface {
 	// life — and only for a claim that runs in one: it answers nothing for a claim with no
 	// process, which records no place at all, and nothing for the project controller's own pod,
 	// which has no issue workspace and nothing to push. The daemon opens an update round on a
-	// non-empty answer: the round asks each role of that place to push its work and answer (api's
-	// claims/ready-for-update), and replaces the place (ReplacePod) once every asked role has
-	// answered and no turn runs, or at the round's bound (pod_update_grace_minutes) whatever the
-	// roles answered, an operator's suspension excepted.
+	// non-empty answer: the round asks each role of that place to do the steps of its update
+	// message (supervise.UpdateTask) and answer (api's claims/ready-for-update), and replaces the
+	// place (ReplacePod) once every asked role has answered, no turn runs and no claim's activity
+	// report holds it (internal/daemon's roundEnd.holding), or at the round's bound
+	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, an operator's
+	// suspension excepted.
 	//
 	// ErrPodGone is the place the locator records not being there, or being ended for something
 	// other than this round's own replacement, which is neither drift nor a failure to ask:
@@ -153,10 +160,11 @@ type Runtime interface {
 	CleanupTree(ctx context.Context, tree string) error
 }
 
-// ErrSessionFileMissing is a Resume whose spec.ResumeSessionFile is held by no store the runtime
-// can resume it from: no folder the tmux runtime searched holds that session, or the session table
-// the Kubernetes launcher reads has no row for it. The session is gone, not unreachable, so the
-// caller starts a fresh agent in its place, charged nothing and reported (supervise's start).
+// ErrSessionFileMissing is a Resume whose session, named by spec.ResumeSessionFile or by the id
+// spec.ResumeSession, is held by no store the runtime can resume it from: no folder the tmux
+// runtime searched holds that session, or the session table the Kubernetes launcher reads has no
+// row for it. The session is gone, not unreachable, so the caller starts a fresh agent in its
+// place, charged nothing and reported (supervise's start).
 // Nothing was started. Both runtimes answer this for that one fact, whatever else is configured —
 // the operator's takeover of another runtime's claims (`runtime.tmux.take_over`) changes which
 // sessions are found, never what a session found nowhere means.
@@ -168,6 +176,14 @@ var ErrSessionFileMissing = errors.New("the recorded session file is missing")
 // again every minute until the store answers (supervise's startWaitsForStore). Nothing was
 // started.
 var ErrSessionStore = errors.New("the session store could not be asked")
+
+// ErrSessionLookupUnavailable is a Resume by id (spec.ResumeSession, without spec.ResumeByAgent)
+// that the runtime did not send, because the pod's launcher has not said that it can look a
+// session up by its id (shimwire.LauncherHello.ResumesBySession). Nothing was started, and the
+// caller may call Resume again with ResumeByAgent set, which has the agent's own command resolve
+// the id instead (supervise's start). The sandbox runtime wraps it in an error that names the
+// claim, the Sandbox and the pod uid.
+var ErrSessionLookupUnavailable = errors.New("the pod's launcher cannot look a session up by its id")
 
 // ErrPodGone is PodDrift asked about a place that is not there, or on its way out for an act
 // that is not its round's: the Sandbox the locator records is gone, no pod of it is running, the
@@ -195,12 +211,35 @@ var ErrPodGone = errors.New("the pod the locator records is not there")
 // locator: an update round whose claims record no pod — every claim suspended, since a suspension
 // lets the process go and its locator with it (supervise's letGo) — has no claim left to ask
 // PodDrift through, and only the issue to ask by (internal/daemon's podlessRound). A pod other
-// than the round's own, or none, is that round's pod gone, and the round ends; the round's own
-// pod, or no answer, leaves it waiting. A runtime whose processes run in no pod implements
-// nothing here, and the daemon then reads no answer, which a round never needs from it, since
-// such a runtime answers no drift and so opens no pod round.
+// than the round's own, or none, is that round's pod gone, and the round ends. The round's own pod
+// is replaced by the issue where nothing holds it (IssuePodReplacer), and otherwise, or with no
+// answer, the round waits. A runtime whose processes run in no pod implements nothing here, and
+// the daemon then reads no answer, which a round never needs from it, since such a runtime
+// answers no drift and so opens no pod round.
 type IssuePodReader interface {
 	IssuePod(issue string) (pod string, read bool)
+}
+
+// IssuePodReplacer ends the pod of an update round that has no role process in it, asked by the
+// issue alone, and returns when the runtime no longer has that pod. It is ReplacePod for a round
+// with no claim left to name the pod through: every role of the pod is suspended or between
+// launches, so no claim records a locator in it, and ReplacePod has no process to act through
+// (internal/daemon's podlessRound and roundWithNoProcessInItsPod, dispatch://INFRA-4109 R7).
+// Without it such a round holds the pod, and the issue's next launch goes into a pod that the
+// round is about to replace.
+//
+// podUID is the round's own pod. The call is a no-op returning nil where the runtime holds no
+// Sandbox of the issue, where the Sandbox is already suspended, and where the pod the Sandbox
+// holds is not podUID: there is then no pod of that round to end. It creates nothing in its
+// stead, as ReplacePod creates nothing: the issue's next launch builds a pod from the current
+// configuration.
+//
+// due is the caller's last word, with ReplacePod's contract: it is asked under whatever the
+// runtime holds the pod with and immediately before the runtime ends anything, nil goes on, and
+// any error is returned having changed nothing. A runtime whose processes run in no pod
+// implements nothing here.
+type IssuePodReplacer interface {
+	ReplaceIssuePod(ctx context.Context, issue, podUID string, due func(context.Context) error) error
 }
 
 // LaunchSessionNamer names the session a launch's agent starts or resumes under, where the
@@ -219,34 +258,101 @@ type LaunchSessionNamer interface {
 // IssueSuspender stops an issue's pod once authorize, called under the runtime's issue launch
 // lock, says the issue's durable close and its complete stored role population allow it (false
 // finishes the close without acting). Once the pod is stopped, the issue's Sandbox is deleted
-// with everything it owns — the role Secrets holding each launcher's token and credentials — and
-// the call returns once the cluster no longer has it; a Sandbox already gone is success, so a
-// retried close finishes. Nothing durable is kept by keeping it: an issue pod's disk is the pod's
-// own and went with the pod, so the issue's next launch makes the Sandbox again.
+// with everything it owns — the role Secrets holding each launcher's token and credentials, and a
+// kept volume (IssueReleaser) — and the call returns once the cluster no longer has it; a Sandbox
+// already gone is success, so a retried close finishes. A close keeps nothing: the issue has left
+// the workflow, and its next launch, if a person sets it todo again, makes the Sandbox again.
 // Process-only runtimes have no shared issue resources to suspend.
 type IssueSuspender interface {
 	SuspendIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error
 }
 
+// IssueReleaser stops an issue's pod for a release, which leaves the issue in the workflow: the
+// idle release, and the release of a pod no claim of the issue can use. It is named apart from
+// Runtime.Release, which ends one claim's process. It stops the pod once authorize, called under
+// the runtime's issue launch lock, says the release still stands (false finishes the release
+// without acting). Then it keeps what the issue's next pod can use: a Sandbox that owns the
+// issue's kept volume stays, Suspended, with that volume, and the Secrets that the next launch
+// writes again are deleted. Every other Sandbox is deleted, as IssueSuspender deletes it. A Sandbox
+// already gone is success, so a retried release finishes. Process-only runtimes have no pod to
+// release.
+type IssueReleaser interface {
+	ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error
+}
+
+// IssueVolumeReader says whether the issue's Sandbox holds a kept volume that it held already at
+// since and that the issue's next launch keeps: the runtime's stored Sandbox of the issue owns a
+// kept volume, was made before since, carries no reset mark, and has the disk shape that the
+// configuration now renders for the issue. A Sandbox made at or after since holds a new volume,
+// which holds nothing of a pod before it. The next launch deletes a Sandbox that carries the reset
+// mark or that has another disk shape, with its volume. The daemon asks it when a pod goes before
+// its update round is over, with the time the round opened, to tell the issue whether the work its
+// roles did not push is still on the volume, and in the rename pass's live-pod rules, at each boot
+// and each pod end, with the present time, to keep the issue on the name its workspace on the
+// volume is under. Every runtime that runs a pod per issue implements it, since the daemon's test
+// of such a runtime (issuePods) needs it; one whose pods keep no volume answers false.
+type IssueVolumeReader interface {
+	IssueKeepsVolume(issue string, since time.Time) bool
+}
+
 // WorkspaceBundler asks one live role's process to bundle the unpushed work of the issue
 // workspace every role of the issue shares, so a release can keep it while the pod, its disk and
-// the workspace on it go. The role named must be one whose process runs: the shim builds the
-// bundle with the jj and git of the workspace it already works in. A runtime whose processes
-// share no workspace implements nothing here, and the release of such a pod saves nothing because
-// there is no such pod.
+// the workspace on it go. A kept volume does not go: the release keeps the Sandbox that owns it
+// (IssueReleaser), and the pod after the release takes no saved work that volume holds
+// (HeldWorkspaceBundleDrop). The save is still made, because a reset replaces a kept volume, and
+// the save is then the one copy of the unpushed work. The role named must be one whose process
+// runs: the shim builds the bundle with the jj and git of the workspace it already works in. A
+// runtime whose processes share no workspace implements nothing here, and the release of such a
+// pod saves nothing because there is no such pod.
 type WorkspaceBundler interface {
 	BundleWorkspace(ctx context.Context, issue string, role claim.Role) (WorkspaceBundle, error)
 }
 
+// WorkspaceWorkReader asks one live role's process whether the issue workspace every role of the
+// issue shares holds work that no branch or tag on origin holds. It is the read a pod update round
+// makes before it replaces a pod without waiting for every role, so that the replacement can name
+// what goes with the pod, and it is one runtime call so that INFRA-3271 can make the same read with
+// its own reading (spec R1 of INFRA-4109). The role named must be one whose process runs in the
+// issue's pod: its shim reads the workspace with the jj it already works with. The read keeps
+// nothing of the work and saves no bundle; the one thing it writes is jj's snapshot of the working
+// copy (Conn.WorkspaceWork). A runtime whose processes share no workspace implements nothing
+// here.
+type WorkspaceWorkReader interface {
+	WorkspaceWork(ctx context.Context, issue string, role claim.Role) (WorkspaceWork, error)
+}
+
+// WorkspaceWork is what one read of an issue's workspace found (WorkspaceWorkReader). Work is a
+// commit under a workspace's working copy or a local bookmark that no branch or tag on origin
+// holds. A commit with no change and no description is no work, and neither is a commit a fetch
+// left visible or a side head that no working copy and no bookmark reaches (the shim's
+// workspaceWorkRevset says why).
+type WorkspaceWork struct {
+	// Head is the commit id of the working copy the read was made in.
+	Head string
+	// Changed is that working-copy commit holding a change: it is not empty.
+	Changed bool
+	// Commits are the first work commit ids, newest first, at most
+	// shimwire.MaxWorkspaceWorkCommits of them.
+	Commits []string
+	// Count is how many work commits there are in all, those Commits lists included.
+	Count int
+}
+
+// HoldsWork is whether the read found work: a change in the working copy, or a commit origin does
+// not hold.
+func (w WorkspaceWork) HoldsWork() bool { return w.Changed || w.Count > 0 }
+
 // SavedWorkspaceBundle answers the bundle an issue's last release saved for the pod of podUID,
 // created at podCreated, to restore, and what that ask did to the bundle. It is the other half
-// of WorkspaceBundler: the save's own store (store.Store.TakeWorkspaceBundleForRestore), handed
-// to the runtime so that the runtime, which alone knows when a replacement pod's launcher is up,
-// can carry the saved work back into the new workspace before any role of that pod starts.
+// of WorkspaceBundler: the save's own store (store.Store.TakeWorkspaceBundleForRestore, bound to
+// the daemon's project where the daemon wires it), handed to the runtime so that the runtime,
+// which alone knows when a replacement pod's launcher is up, can carry the saved work back into
+// the new workspace before any role of that pod starts.
 //
 // WorkspaceBundleNone is nothing to send and nothing recorded: an issue never released, one
 // whose restore the launcher confirmed, one whose release a wake cancelled, one whose bundle has
-// had its one attempt already, and the pod the work was taken off asking for its own workspace's
+// had its one attempt already, one the daemon's project does not record, whose bundle another
+// project's daemon saved, and the pod the work was taken off asking for its own workspace's
 // work back. The runtime calls this at every start of every role, and a release stops the roles
 // of the pod it is releasing, so a role relaunched in that pod before the teardown deletes it is
 // one of those calls; the store knows that pod by the uid the save recorded
@@ -278,6 +384,22 @@ type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCre
 // the issue's next pod.
 type WorkspaceBundleRestored func(ctx context.Context, issue string, release int64) error
 
+// HeldWorkspaceBundleDrop drops the bundle an issue's last release saved where the pod of podUID
+// holds that work on its volume already: the pod's Sandbox owns the issue's kept volume and was
+// created at keptSince, before the save. That volume is the one the work was taken off, so the pod
+// is sent nothing. The launcher would refuse a bundle sent there, because its workspace is older
+// than the save. It would then log a notice that the work was lost, and the bundle would hold the
+// issue's pod (workflow.IdleHoldBundleUnrestored). The drop answers the release and the time of
+// the bundle it dropped, never its body, and true. False is nothing dropped, and the runtime then
+// takes the bundle as SavedWorkspaceBundle answers it. It deletes the row a confirmed restore
+// deletes (store.Store.DropHeldWorkspaceBundle, bound to the daemon's project where the daemon
+// wires it), under the take's own rules: the pod the work came off drops nothing, a bundle whose
+// one attempt is spent drops nothing, and a bundle of an issue the daemon's project does not
+// record drops nothing. A Sandbox created after the save holds a new volume, which a reset made,
+// and its pod restores the bundle. So does a Sandbox created in the save's own second, which the
+// rule cannot order against the save.
+type HeldWorkspaceBundleDrop func(ctx context.Context, issue, podUID string, keptSince time.Time) (WorkspaceBundle, bool, error)
+
 // MemoryGuardKilled is the daemon's reading of one process an issue pod's launcher ended with
 // SIGKILL because the pod was near its memory limit, or, in a microVM pod, one that the pod's own
 // kernel stopped because the pod ran out of memory (the report's Cause,
@@ -290,8 +412,9 @@ type WorkspaceBundleRestored func(ctx context.Context, issue string, release int
 // launcher cannot name another role, issue or pod.
 //
 // It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
-// of the daemon's own packages, so the import is acyclic, and a second copy of the report would
-// be one more shape to keep in step for no reader that needs it.
+// of the daemon's own packages but internal/redact, which imports nothing of the daemon's, so the
+// import is acyclic, and a second copy of the report would be one more shape to keep in step for
+// no reader that needs it.
 //
 // An error, a store that did not answer among them, is returned to the session, which logs it
 // and drops the report: nothing acknowledges the frame, so the launcher does not send it again,
@@ -307,9 +430,10 @@ type MemoryGuardKilled func(ctx context.Context, issue string, token claim.Token
 // roles container a new counting line for the daemon's notice bounds, is inside the report.
 //
 // It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
-// of the daemon's own packages, so this import is acyclic, and a third near-copy of the report —
-// the wire's, the runtime's and the record's — would be three shapes to keep in step where two
-// are already the price of a durable notice.
+// of the daemon's own packages but internal/redact, which imports nothing of the daemon's, so
+// this import is acyclic, and a third near-copy of the report — the wire's, the runtime's and the
+// record's — would be three shapes to keep in step where two are already the price of a durable
+// notice.
 //
 // A store that does not answer is logged and the report is dropped there. The launcher cannot
 // hold it again once the daemon has read it, and it is not asked to: the trimmer sweeps on, and
@@ -320,6 +444,15 @@ type MemoryGuardKilled func(ctx context.Context, issue string, token claim.Token
 // comment says of its delete). The report that the trimmer switched itself off is its last, and
 // one dropped here is not sent again.
 type VolumeReported func(ctx context.Context, issue, podUID string, report shimwire.LauncherVolumeReport) error
+
+// RoundPodEnds is the daemon's reading of the pod update round over a live issue pod a launch
+// would keep: whether the round open over podUID, the live pod of token's issue, has ended by the
+// daemon's rule for a round with no role process in its pod (internal/daemon's
+// roundPodEndsAtLaunch, dispatch://INFRA-4109 R7). The runtime asks it under the pod's launch turn.
+// A yes has the launch replace the pod as the round's own replacement and start its role in a new
+// pod, so the role is launched once rather than into a pod the round is about to replace. An error
+// fails the launch as any of its steps does.
+type RoundPodEnds func(ctx context.Context, token claim.Token, podUID string) (bool, error)
 
 // RegistrationDeadline is the registration deadline's base Boot×RegistrationIntervals bound plus
 // grace: the supervisor's armRegistration calls it with ProvisionBound before a claim's hello and
@@ -369,7 +502,13 @@ func (k Known) Validate() error {
 // values — each is written to a 0600 file and reaches the process as a `<NAME>_FILE` pointer — and
 // carries only what is the claim's to carry: a credential every agent of the deployment shares,
 // like the Dispatch bearer, is a runtime option. ResumeSessionFile is set only by `Resume`, and it
-// names the transcript the same agent continues from.
+// names the transcript the same agent continues from. ResumeSession is the session id a `Resume`
+// continues when the claim records no file of it: it is set only by supervise's Machine.start, in
+// its branch that resumes a session by its id, and only when ResumeSessionFile is empty.
+// ResumeByAgent is read only with ResumeSession: the agent's own command resolves the id
+// (`--resume=<ResumeSession>`), and the runtime names no session and no file to the pod's
+// launcher. Machine.start sets it only on the second `Resume` of a try whose first `Resume`
+// answered ErrSessionLookupUnavailable.
 // Plugins, set only under Kubernetes (specs.SpawnSpec, LEGION-164), carries the plugin pair a
 // stale-plugin relaunch installs into the kept pod before Oh My Pi starts, in place of the
 // image's own copies; nil for every launch that installs nothing — every tmux launch, and every
@@ -401,6 +540,8 @@ type SpawnSpec struct {
 	Repository        ghrepo.Repository
 	DefaultBranch     string
 	ResumeSessionFile string
+	ResumeSession     string
+	ResumeByAgent     bool
 	Plugins           *PluginInstall
 	Variants          []Variant
 	IssueTrailer      string
@@ -632,7 +773,8 @@ type Observation struct {
 	//
 	// It is bounded at PodEndRunes, which is a kubelet message with room to spare: the eviction
 	// message above is 120 runes, and the longest the kubelet writes names each resource it
-	// reclaimed. A longer one is cut at that bound with an ellipsis.
+	// reclaimed. A longer one is cut at that bound with an ellipsis, once the URL rule has read it
+	// whole (PodEnd).
 	PodEnd string
 }
 
@@ -648,9 +790,13 @@ const PodEndRunes = 400
 
 // PodEnd is reason and message as Observation.PodEnd holds them, bounded at PodEndRunes: the
 // reason alone when there is no message, "" when there is no reason, and a value cut at the
-// bound with an ellipsis when the two together pass it. Both the runtime that observes a pod and
-// any test that asserts on the field build the value here, so one rule decides what a claim and
-// a notice carry.
+// bound with an ellipsis when the two together pass it. The joined text is cut by redact.Runes,
+// which gives it whole through the URL rule (redact.URLCredentials) before the cut, so a URL the
+// cut falls inside has lost its userinfo and its query already: a cut made first could end inside
+// a URL's userinfo, before its "@", and leave the start of a user name or a password where the
+// rule the claim keeps the value under (storetext.FarSideText) reads it as the URL's host. Both
+// the runtime that observes a pod and any test that asserts on the field build the value here, so
+// one rule decides what a claim and a notice carry.
 func PodEnd(reason, message string) string {
 	if reason == "" {
 		return ""
@@ -659,11 +805,7 @@ func PodEnd(reason, message string) string {
 	if message != "" {
 		end += ": " + message
 	}
-	runes := []rune(end)
-	if len(runes) <= PodEndRunes {
-		return end
-	}
-	return string(runes[:PodEndRunes-1]) + "…"
+	return redact.Runes(end, PodEndRunes)
 }
 
 // GitIdentity is the author a worker's commits carry.

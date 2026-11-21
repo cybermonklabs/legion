@@ -2,6 +2,7 @@ package bus
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -144,9 +145,43 @@ const DeliverSubjectPrefix = NotificationTopicPrefix + "envoy.deliver."
 // DeliverSubject is the relay subject of session sessionID: the subject the listener that owns the
 // session publishes each message of its consumer (SessionConsumerName) on, and the session
 // subscribes to. Every message a session on NATS gets travels on it: no session takes a message
-// from a plain NATS subscription of its own ("Session consumers" in packages/envoy/AGENTS.md).
+// from a plain NATS subscription of its own (packages/envoy/docs/architecture.md, "Session
+// consumers" under "Runtime shape").
 func DeliverSubject(sessionID string) string {
 	return DeliverSubjectPrefix + sessionID
+}
+
+// SessionReplySubject is the reply subject of one request made of session sessionID,
+// <inbox>.<session id>.<token>: inbox a reply inbox of the requester's own (nats.NewInbox), then
+// the session's id, then a token of 128 random bits (crypto/rand.Text, 26 base32 characters).
+// Every request a session answers carries one - the relay's frames (cmd/listener's
+// sessionRelays), the listener's connection probe and Dispatch's agent stream replay
+// (internal/dispatch/agentstream). The id is there so that a grant can admit a session's own
+// replies alone (SessionReplies) and the relay can refuse a reply that names another session
+// than its frame's; the token is random so that no session can guess the subject of a request
+// made of another, since it is derived from nothing a session can see, and a session's grant
+// reads no other session's relay or control subject. So once natsgrant.Session publishes
+// SessionReplies in place of every _INBOX. subject, a session on that grant can neither answer a
+// request made of another session nor guess the subject of one. A holder of the shared session
+// user or of a host user reads every session's relay subject and may publish to every _INBOX.
+// subject, so none of this holds against it. sessionID is one subject token, as every session
+// with a consumer's is (SessionConsumerName).
+func SessionReplySubject(inbox, sessionID string) string {
+	return inbox + "." + sessionID + "." + rand.Text()
+}
+
+// SessionReplies is the one publish entry under _INBOX. a grant of session sessionID needs: it
+// admits every reply subject SessionReplySubject makes for that session, and none it makes for
+// another, nor a requester's plain inbox (_INBOX.<id> or nats.go's _INBOX.<id>.<token>).
+//
+// sessionID must be one subject token: no dot, no wildcard (* or >) and no whitespace, the rule
+// SessionConsumerName holds a session's id to. SessionReplies does not check it, so its caller
+// must: an id of * admits every session's replies, and since the entry ends in >, the entry of an
+// id also admits the replies of every id that extends it by a dot (a's entry admits a.b's, and
+// a.b's admits a.b.c's), so no session id may hold a dot. An id such as a* is one plain token and
+// admits nothing extra.
+func SessionReplies(sessionID string) string {
+	return nats.InboxPrefix + "*." + sessionID + ".>"
 }
 
 // ConnectionProbeHeader is the one header the listener's connection probe carries on a session's
@@ -234,14 +269,16 @@ var streamSubjects = []string{
 
 // listenerOwnStreamLanes are the subjects the stream carries for the listener itself: the kept
 // lane, holding the role messages it could not deliver and the per-role drain cursors over them
-// (KeptTopicPrefix), and the resume lane, holding where each deleted session consumer stopped
-// (SessionResumeSubjectPrefix). Each is the stream's alone and no consumer filter takes one
-// (consumerFilterSubjects): a kept copy still carries its role topic in the envelope, so a
-// consumer handed one would deliver it as a role message and re-trigger role delivery on every
-// listener, and a drain cursor and a resume record are no envelope at all. The listener reads
-// both lanes itself instead (cmd/listener/role_keep.go, SessionConsumers). A lane added here is
-// carried by the stream and kept out of every consumer's filter by that one list.
-var listenerOwnStreamLanes = []string{KeptTopicPrefix + ">", SessionResumeSubjectPrefix + ">"}
+// (KeptTopicPrefix), the resume lane, holding where each deleted session consumer stopped
+// (SessionResumeSubjectPrefix), and the takeover lane, holding each role a session took from
+// another and how far the copy of the other's role messages has gone (TakeoverSubjectPrefix).
+// Each is the stream's alone and no consumer filter takes one (consumerFilterSubjects): a kept
+// copy still carries its role topic in the envelope, so a consumer handed one would deliver it as
+// a role message and re-trigger role delivery on every listener, and a drain cursor, a resume
+// record and a takeover record are no envelope at all. The listener reads the lanes itself instead
+// (cmd/listener/role_keep.go, cmd/listener/role_takeover.go, SessionConsumers). A lane added here
+// is carried by the stream and kept out of every consumer's filter by that one list.
+var listenerOwnStreamLanes = []string{KeptTopicPrefix + ">", SessionResumeSubjectPrefix + ">", TakeoverSubjectPrefix + ">"}
 
 // ListenerOwnLanes reports the lanes the stream carries for the listener itself
 // (listenerOwnStreamLanes), each as the prefix every topic of that lane begins with
@@ -315,6 +352,10 @@ var privateStreamSubjects = []string{
 	// the stream sequence its delivery stopped at (SessionResumeSubject): no session may
 	// register a topic under it and no replay hands one out.
 	SessionResumeSubjectPrefix + ">",
+	// A role a session took from another, which names both sessions and how far the copy of the
+	// previous holder's role messages has read (TakeoverSubject): the listener alone reads the
+	// lane, and no session may register a topic under it.
+	TakeoverSubjectPrefix + ">",
 }
 
 // ControllerNoticeRole reports the Legion role token whose holder topic's notices are for, and
@@ -448,7 +489,7 @@ func readStreamSubjects(js nats.JetStreamContext) ([]string, error) {
 // (keepStream), so while two builds run, the older one never reverts what the newer one set.
 // The consumer cap (streamMaxConsumers) takes none: like the copies and the byte limit it is
 // only ever raised, so two builds that compile different caps never lower each other's.
-const streamConfigGeneration = 4
+const streamConfigGeneration = 5
 
 // streamGenerationKey is the stream metadata key that holds the generation of its settings. A
 // stream without it was last set by a build before generations: generation 0.

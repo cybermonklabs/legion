@@ -54,7 +54,8 @@ hours the stream still holds shows no receipts.
 ## Consumer delivery
 
 `createConsumerDelivery` (`@legion/envoy-client/consumer-delivery`) is a session's side of the
-listener's relay of its durable consumer ("Session consumers" in `packages/envoy/AGENTS.md`). A
+listener's relay of its durable consumer (the "Session consumers" item of "Runtime shape" in
+`packages/envoy/docs/architecture.md`). A
 host makes one per session, subscribes its `subject` (`notifications.envoy.deliver.<session id>`)
 before it registers, passes `registration()` as the registration's `delivery` field, and gives the
 registration's answer and the topics it carried to `answered`, which returns `consumer`, the one
@@ -159,12 +160,41 @@ listener's warning returns, so a reword reaches both languages from one place.
 `natsConnectionOptions({ servers, name, credential })` (`@legion/envoy-client/nats-connection`) is
 the nats.js `connect` options every session plugin dials with: the credential `natsAuthOptions`
 builds from the resolved `NatsCredential` (`src/nats-auth.ts`, which the package does not export, so
-a plugin dials only with these options), reconnecting forever 2 s apart, and a ping every 10 s
+a plugin dials only with these options), a dial timeout of 10 s (`NATS_DIAL_TIMEOUT_MS`),
+reconnecting forever (2 s apart for a seed or no credential), and a ping every 10 s
 (`NATS_PING_INTERVAL_MS`) with the connection dropped on the tick that finds two pings unanswered
 (`NATS_MAX_PINGS_OUT`). So a
 path that freezes without closing is left within 30 s and redialed at once, and a session is back
-within 52 s when that redial also hangs on nats.js's 20 s dial timeout and the 2 s wait; nats.js's
-default 120 s interval left a frozen path for up to 6 minutes. A failed connect is logged as
+within 42 s when that redial also hangs for its 10 s timeout and the 2 s wait (a broker-token
+session lost less than a minute after its last dial: within 50 s); nats.js's
+default 120 s interval left a frozen path for up to 6 minutes. A session that presents its broker
+token never gives up over a refused credential, and redials on `brokerRedialDelays` instead of
+2 s apart: at once when it loses a connection that lived a minute or more past its last dial,
+then after waits drawn anew between half and all of 4 s, 8 s, 16 s, then 20 s for good
+(`brokerRedialWaitBounds`), so a hub that refuses every session at once is asked again about 73
+times a second by 1,100 of them rather than 550, and each one's next redial comes within 20 s of
+the hub admitting again. A connection lost less than a minute after its last dial (for one that
+was admitted at once, the dial that opened it) keeps its place in the backoff: its first redial
+waits out the rest of the wait drawn at that dial. A token the connection has yet to present (a
+renewal, a session switch) goes out within about a second (`BROKER_REDIAL_POLL_MS`), in the middle
+of a wait too, once for each token, between the planned redials, whose schedule it does not move.
+A token of another session than the last one dialed (a switch) goes out so whatever the wait; a
+renewal goes out so at most once between two planned redials while the hub refuses, and once more
+after each admission (`BrokerNatsCredential.admitted`). A seed or no credential keeps the flat 2 s.
+A plugin opens its connection with
+`connectNats(connect, options, plan, hooks)`: one bound around the whole `connect()` (the name
+lookup, every address and every server, which nats.js times one at a time), and a failed dial
+dialed again 250 ms later, doubling to 4 s, inside a budget (`NATS_DIAL_PLAN`, `natsDialBudget`),
+unless no redial can cure the failure. Under a broker token (`hooks.credential`) a hub's refusal
+waits on the broker-token backoff instead, 2-4 s, 4-8 s, 8-16 s, then 10-20 s, and a token it
+refuses twice is dropped and another trade started at once, once for the session until a dial is
+admitted, on the count the credential keeps and its keeper shares
+(`BrokerNatsCredential.refused`); the host logs each drop as it is made, whether or not another
+dial follows (`hooks.onTokenDropped`, `NATS_DIAL_TOKEN_DROPPED`). A server that closes a dial
+during its
+handshake, as
+nats-server does to a CONNECT that comes more than 2 s after its INFO, fails it at once
+(`patches/nats@2.29.3.patch`). A failed connect is logged as
 `natsDialFailure(named, error, presenting)`: `could not connect to NATS at <servers> presenting
 <credential>: <reason>`, built once for every caller (pi-envoy, the channel server, the e2e bridge,
 `nats-stream` and `dispatch-user-turns`). The servers are named by the setting that holds them
@@ -212,7 +242,7 @@ reconnects the connection with each new token, before the server drops the user 
 admitted as; a renewal that fails is retried at 2 s doubling to a minute and warned about once,
 then every 30 minutes, never naming the token. It reads the connection's status too: a server
 that refuses the live token in hand is warned of at once, and at that token's second refusal the
-keeper drops it (`BrokerNatsCredential.drop`, here and in the token client) and trades for
+keeper drops it (`BrokerNatsCredential.refused`, here and in the token client) and trades for
 another. Refusals are counted per token (`tokenGeneration`), and a drop is made once per session
 until the connection is back (`tokenSession`), so a session switched to has its revoked token
 dropped in its turn, and an auth service that is away costs each session one trade for the
@@ -226,7 +256,7 @@ the trade all of it but the connection's share, 8 s or half the bound.
 The module imports nats.js's types alone, since every bundle that reads `envoySettings` imports it.
 
 nats.js 2.29.3, the last 2.x release, leaves a redial's socket open when it gives up on that dial
-at its 20 s timeout (a TCP connect that hangs, or a server that never sends `INFO`): it closes
+at its dial timeout (a TCP connect that hangs, or a server that never sends `INFO`): it closes
 only a transport that finished connecting, so the socket keeps the process alive and a channel
 server never exits on SIGTERM. Its stale-connection close (two unanswered pings) flushes the
 transport before it destroys the socket, and behind data a dead path never acknowledged that flush
@@ -278,6 +308,54 @@ LEGION_E2E_DISPATCH_STACK=1 DISPATCH_TEST_DATABASE_URL="$LEGION_TEST_PG_DSN" \
 
 CI runs both in `ci.yaml`'s `envoy-session-stall` job, which is the one lane of this package with
 both a PostgreSQL and a Go.
+
+## The listener's relay socket
+
+A session whose settings say `ENVOY_INBOUND=listener` takes its inbound messages through the
+listener's relay socket rather than NATS, so an agent on a machine outside the deployment's network
+reaches Envoy over HTTPS alone. `connectListenerRelay(options, signal)`
+(`@legion/envoy-client/listener-relay`) opens it and answers a `ListenerRelay` once the first socket
+is open: a connection of the shape a session plugin holds over NATS (`InboundConnection`:
+`subscribe`, `publish`, `flush`, `isClosed`, `drain`, `close`, `status` and `closed`), so the
+plugin's consumer delivery runs on either. Each open is `GET <listener>/v1/sessions/<session>/relay`,
+a WebSocket of subprotocol `envoy-relay.v1`, with a fresh proof of the session's broker token
+(`Authorization: DPoP`, `DPoP`, `htm` GET, `htu` the socket's https URL). With the setting, a NATS
+server named or not, a listener at a plain http address of another machine turns Envoy off as a
+whole, its tools included, since the token would cross the network unencrypted (a conflict with a
+NATS server is named first); this machine's own
+listener may be plain http, and a session not set to `listener` (a pod inside its cluster, say)
+keeps a plain http listener. The frames are JSON: the
+session sends `sub` of its own relay subject, `unsub`, and `pub` of a relay receipt on a frame's
+reply, which is all the socket takes; the listener sends `msg`, whose `headers` map each name, case
+kept, to the list of its values in order (`RelaySocketHeaders.get` and `values`), and `err`. A
+frame past 2 MiB, larger than any the listener sends, is dropped unread. A
+`sub` the listener refuses (`subject_not_granted`, or `subscription_limit` past the one
+subscription a socket holds) ends that subscription with an error naming its subject and code, as
+a nats.js subscription a server refused does, and is logged once; a frame it cannot
+read it answers `bad_frame` and closes the socket 1008, which the client logs naming the ops of the
+frames it sent since the listener last answered a ping, since the answer names none.
+The listener reads a socket's frames one at a time and answers no `sub` it grants, so `flush` sends
+a WebSocket ping and resolves at its pong, after every `sub` before it is held; a flush whose
+socket closes or is replaced first rejects. The socket carries
+neither the connection probe nor the agent stream, so a host opens no live view over it, and the
+start notice says so. The listener closes an open socket by why: 4401 (the token lapsed) and 1012
+(it is stopping) open again at once however often they come, the first with a fresh trade; 4403
+(the token was revoked or no longer names what the socket was opened with) after 1 s doubling to a
+minute, with a fresh trade; 1013 (the broker or NATS cannot be asked) after 5 s doubling to a
+minute; 1001 and 1006 at once, then after 1 s doubling while they repeat; any other close, 1008
+included, after 1 s doubling (`relayReopenDelay`). An upgrade the listener refuses names its status
+in Bun's `error` event: 401 and 403 wait as 4403 does and trade a fresh token, 503 after a 1013
+goes on with the 1013's waits, and any other status, an upgrade not answered within 20 s, a
+listener that cannot be reached and a failed trade are tried again after 1 s doubling to a minute.
+Each cause doubles its own waits, and a socket open a minute starts them all afresh. Every other
+open presents the token in hand, with a fresh proof. A trade that failed is told to the session
+once per outage (`inboundUnavailable`). The socket never ends an outage: the report is the
+host's, shared with its registrations, so only a registration the listener accepted ends it, and
+one follows every open. A repeated
+failure is logged once until its words change. Each reopen takes every live subscription again and
+reports `reconnect`, so the host registers a new epoch and the listener redelivers what it never
+acknowledged. `follow()` opens the socket again for the session the name reads now, which a host
+runs when it moves to another session.
 
 ## HTTP transport
 
@@ -391,7 +469,17 @@ has nothing to retry either way.
 give no consumer is refused by name, and its reason is on `EnvoyApiError`, under the one canonical
 list of them (`ErrorWireSchema.reason` in `src/transport.ts`). The same list holds
 `sender_rate_limited`, the reason of the 429 a send or a publish gets when its agent session has
-sent faster than the listener lets one session send: the message was not stored.
+sent faster than the listener lets one session send: the message was not stored. A listener in
+edge mode refuses a whole registration that names a topic of no project of the session's token,
+403 `topic_not_in_project` or `repository_not_in_project`, naming each refused topic as the
+registration carried it (`EnvoyApiError.refused`): `registerWithRelay`
+(`@legion/envoy-client/relay-registration`) has the host drop exactly those and tell the session
+which, once, with the reason (`drop`, worded by `refusedTopicsNoticeText`), logs one line naming
+them, and registers the rest at once, whichever path registered. The resend names only the topics
+the session still follows (`followed` is read again before it), so one unsubscribed while the
+registration waited is not put back, and the relay forgets only the refused topics
+(`ConsumerDelivery.unfollow`), so one another registration added meanwhile stays followed. Its 503
+`repositories_unknown` and 403 `token_not_admitted` drop nothing.
 
 ## envoy.json
 
@@ -537,16 +625,28 @@ one of the two set. A `notice` says why nothing is wrong: `<file> sets envoy.ena
 Envoy is off`, `<file> names no Envoy listener or NATS server, and neither ENVOY_URL nor
 ENVOY_NATS_URL is set: Envoy is off`, or the missing-file text. An `error` names what could not be
 read or used. `ENVOY_URL`, `ENVOY_NATS_URL` (comma-separated), `ENVOY_TOKEN_FILE` then
-`ENVOY_TOKEN`, `NATS_NKEY_SEED_FILE` then `NATS_NKEY_SEED`, and `NATS_AUTH` each override their own
-field of the section; with no `envoy` section, `ENVOY_URL` or `ENVOY_NATS_URL` alone names an Envoy,
-which is how a Legion pane gets the one its daemon names. An empty `ENVOY_*` or `NATS_AUTH` variable
-counts as unset; an empty `NATS_NKEY_SEED_FILE` or `NATS_NKEY_SEED` is refused, naming it. `inbound`
-is how the session takes inbound messages: `{ natsUrls, natsCredential }`, never with an empty
-`natsUrls`, or `{ off }`, `off` saying why: `Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL)`
-when nothing names one, a credential's refusal (below), or `this session opens no NATS connection`
-for a caller that opens none (`{ nats: false }`: the `dispatch` command, `claude-envoy`'s
-`envoy-send`, pi-legion's extension). The credential is resolved only when there are NATS servers
-to use it on, so that caller resolves none. A seed is the credential wherever one is set. Otherwise
+`ENVOY_TOKEN`, `NATS_NKEY_SEED_FILE` then `NATS_NKEY_SEED`, `NATS_AUTH` and `ENVOY_INBOUND` each
+override their own field of the section; with no `envoy` section, `ENVOY_URL` or `ENVOY_NATS_URL`
+alone names an Envoy, which is how a Legion pane gets the one its daemon names. An empty `ENVOY_*`
+or `NATS_AUTH` variable counts as unset; an empty `NATS_NKEY_SEED_FILE` or `NATS_NKEY_SEED` is
+refused, naming it. `inbound` is how the session takes inbound messages: `{ natsUrls,
+natsCredential }`, never with an empty `natsUrls`; `{ relaySetting, relayCredential }`, the
+listener's relay socket (below); or `{ off }`, `off` saying why: `Envoy has no NATS server
+(envoy.natsUrls, ENVOY_NATS_URL)` when nothing names one, a credential's refusal (below), or
+`this session opens no NATS connection` for a caller that opens none (`{ nats: false }`: the
+`dispatch` command, `claude-envoy`'s `envoy-send`, pi-legion's extension). `ENVOY_INBOUND`, else
+`envoy.inbound`, chooses between the first two: `nats`, or nothing set, is NATS, resolved as
+before; `listener` is the relay socket at `<ENVOY_URL>/v1/sessions/<session>/relay`, presenting the
+session's broker credential (`relayCredential`, `brokerCredential`), which is the only credential
+the socket admits. `listener` is refused, turning off inbound messages alone, beside a NATS server
+(`ENVOY_INBOUND is listener, and ENVOY_NATS_URL names NATS servers: set one of the two`, or the
+file's `envoy.natsUrls`), with a bearer for the listener, on a machine with no broker route, and for a
+caller that names no session (`noSessionNamed`); a listener at a plain http address of another
+machine turns Envoy off as a whole (`localhost`, 127.0.0.0/8 and `::1` may stay plain http); any
+other value is refused as `ENVOY_INBOUND
+is neither nats nor listener`, never echoing it. The NATS credential is resolved only when there
+are NATS servers to use it on, so a caller that opens no NATS connection resolves none.
+A seed is the credential wherever one is set. Otherwise
 `NATS_AUTH`, else `envoy.natsAuth`, names it: `broker` is the session's broker token, and `none`, or
 nothing set, is no credential, whatever broker route the machine has, since that route says nothing
 about whether the hub runs an auth service. `broker` on a machine with no broker route
@@ -656,78 +756,93 @@ was made, since its 60 s deadline counts from there. The numbers come from the 3
 write commands that succeeded between 2026-10-31 21:00Z and 2026-11-02 07:30Z, each timed whole
 (p50 1.8 s, p95 19.6 s, p99 45.5 s). All of it sits inside the call's own 60 s deadline, so a
 Dispatch that is down holds a `dispatch` command, and the session waiting on it, no longer than
-that. How a write ends is one transition table (`write-outcome.ts`, `writeStep`), and the write
+that.
+How a write ends is one transition table (`write-outcome.ts`, `writeStep`), and the write
 loop (`#write`) decides nothing else. A write is in one of two states: nothing sent, or may have
 landed. An attempt may have landed when it got a 5xx or `409 KEY_IN_FLIGHT`, was cut off for
 silence (an upload's included), failed in transport after it went out (a reset after Dispatch
 read it), its answer's body broke off or was ended by the deadline or the caller's stop, or it was
 ended by either while it was in flight; a refused connection or a name that did not resolve
 reached nothing. Every answer's body is read inside its attempt, so a 2xx settles only once its
-body is read whole. From "may have landed", only such a 2xx or a refusal Dispatch's keyed layer
-judged for the key (the key echoed back) settles the write. A 2xx that is no answer of Dispatch's
+body is read whole. From "may have landed", only a 2xx Dispatch wrote, read whole (not an empty,
+untyped or non-JSON one; a bodiless 204 or 205 is one; not one without exactly this request's key
+once an earlier answer of the call carried it), `409 KEY_COMMITTED` (a landing) or a final
+refusal settles the write. A final refusal is one of these:
+
+- an answer marked `Idempotency-Replayed: ?1`: Dispatch's stored answer, or a recovery replay;
+- `422 KEY_REUSED` that echoes exactly this request's key. Every attempt of one call sends the
+  call's one key and its bytes encoded once, and Dispatch's digest covers the method, the route
+  pattern, its path values, the query, the content type less its boundary, and the body
+  (`writeRequestFields`), so a key held under another digest was claimed by no attempt of this
+  call. That needs the client never to send one key for two different writes: `#writeCall`
+  (`src/dispatch-http.ts:2080`) mints one per call, `dispatch-keyed-writes.test.ts` ("send one
+  Idempotency-Key per write call") shows five writes going under five keys, and
+  `dispatch-write-outcomes.test.ts` fails any run whose attempts carried two keys. A caller that
+  names its own key (`projectArtifact`, `docEdit`) names one intent with it: AskGate's decision
+  record reads `KEY_REUSED` as another writer of that intent;
+- a fresh answer that echoes exactly this request's key, has a 4xx status `storedStatus` keeps
+  (not 401, 408 or 429), and has none of the keyed layer's own codes `KEY_IN_FLIGHT`,
+  `KEY_COMMITTED` and `KEY_REUSED`: a handler answered under the key's claim, and Dispatch keeps
+  that answer for the key.
+
+A refusal made before the key claim echoes no key (a 401, a 403, a 413,
+`400 REQUEST_BODY_UNREADABLE`), and neither does a build without the keyed layer, so each leaves
+the write unsettled. The key decides only how a final answer reads; every retry goes regardless.
+Each clause holds only once every replica runs `b1c42d1d7d` (below). Every resend starts within
+55 s of the first attempt, far below the 24 h `IdempotencyKeyTTL`
+(`packages/envoy/internal/contracts/generated.go`), after which Dispatch deletes a key and claims
+a later request under it fresh. A 2xx that is no answer of Dispatch
 settles nothing from either state: one whose body is empty or not typed JSON (a captive portal's
-200 page; every Dispatch write answers JSON, or a bodiless 204 or 205), whatever the process knows,
-and one that carries no key back from a Dispatch this process knows runs the keyed layer. Every
-other end — a 3xx, a page something in Dispatch's place wrote, a refusal Dispatch's auth made
-before its keyed layer ran (a 401, `403 READ_ONLY_TOKEN`, a second `401
-BROKER_TOKEN_NOT_ACTIVE`), a credential that cannot present, no route to the end, the deadline,
-the caller's stop, or no attempt or time left, a 5xx included — is `DispatchWriteUnsettledError`,
-with what ended it as its cause and the write's key as its `key`. Before anything may have landed,
-a write that ends is told that event's own error: the refusal (a 3xx included, which says nothing
-reached Dispatch), the transport's failure (a refused connection on every attempt is told as
-Dispatch being unreachable), the credential's, the deadline's or the stop's. A credential whose
-trade goes on (the broker credential's fail-fast `TradeRetryingError`) is presented again on the
-write's pacing, and before anything may have landed a deadline or a stop that ends the wait after
-it ends the write with that credential's error (after a landing, the write is unsettled with the
-deadline's or the stop's own); a trade still unanswered, a pod's registration still pending (each
-told only once the credential has waited out its share of the deadline) and a credential refused
-for good end the write at once. A write presents as one identity. Dispatch keys a write per
-login, the person or the service and never the session (`requestKeyLogin`), so a repeat as
-another person or as the machine is a new key there and could run the write twice. The client's
+200 page; every Dispatch write answers JSON, or a bodiless 204 or 205), or one without exactly the
+request's key once an earlier answer of the same call carried it back, since Dispatch's keyed
+layer answers every keyed write with the key (a gateway's own JSON 201). Only the call's own
+answers count; nothing is kept across calls. Every other end — a 3xx,
+a page something in Dispatch's place wrote, a refusal Dispatch's auth made before its keyed layer
+ran (a 401, `403 READ_ONLY_TOKEN`, a second `401 BROKER_TOKEN_NOT_ACTIVE`), a credential that
+cannot present, no route to the end, the deadline, the caller's stop, or no attempt or time left,
+a 5xx included — is `DispatchWriteUnsettledError`, with what ended it as its cause and the
+write's key as its `key`.
+Before anything may have landed, a write that ends is told that event's own error: the refusal (a
+3xx included, which says nothing reached Dispatch), the transport's failure (a refused connection
+on every attempt is told as Dispatch being unreachable), the credential's, the deadline's or the
+stop's. A credential whose trade goes on (the broker credential's fail-fast `TradeRetryingError`)
+is presented again on the write's pacing, and before anything may have landed a deadline or a stop
+that ends the wait after it ends the write with that credential's error (after a landing, the write
+is unsettled with the deadline's or the stop's own); a trade still unanswered, a pod's registration
+still pending (each told only once the credential has waited out its share of the deadline) and a
+credential refused for good end the write at once. A write presents as one identity. Dispatch keys
+a write per login, the person or the service and never the session (`requestKeyLogin`), so a repeat
+as another person or as the machine is a new key there and could run the write twice. The client's
 pin is stricter than that key on purpose: an identity is the session and the broker variables the
 client was made from as well as the sign-in it trades (`RequestCredential.identity`), since the
 client cannot tell whether another session trades as the same person. So once an attempt may have
-landed, a presentation as another identity (a sign-out, a sign-in, a session switch) is never
-sent, and the write ends unsettled with its key; before that, a repeat reaches no handler and goes
-as the new identity. One change no identity sees is the broker binding another person to the same
-sign-in between two trades of one write; the broker does not do that today.
-When the write ends unsettled after this call saw the keyed layer judge it, the error says
-Dispatch finishes an attempt it received, and to read the write back before sending it again,
-since a new command sends it under a new key. A conversion that writes nothing
-(the markdown round trip) never leaves "nothing sent", so it keeps its own answers.
-`dispatch-write-outcomes.test.ts` drives the client through every (state, event) pair and every
-sequence of events up to its limits against that rule.
+landed, a presentation as another identity (a sign-out, a sign-in, a session switch) is never sent,
+and the write ends unsettled with its key; before that, a repeat reaches no handler and goes as the
+new identity. One change no identity sees is the broker binding another person to the same sign-in
+between two trades of one write; the broker does not do that today. When the write ends unsettled,
+the error says Dispatch finishes an attempt it received, and to read the write back before sending
+it again, since a new command sends it under a new key. A conversion that writes nothing (the
+markdown round trip) never leaves "nothing sent", so it keeps its own answers.
 
-A write that may have landed is asked again only against a Dispatch this process has lately seen
-run the keyed layer, since an earlier Dispatch ignores the header and would run a retried write a
-second time; before anything may have landed (a refused connection, a 408 or 429, a credential
-whose trade goes on), a repeat is no second write, and nothing is asked first. A failing
-answer that echoes the request's key (`Idempotency-Key: <key>`) is that proof itself, a 2xx whose
-body then broke off included, so one of Dispatch's 5xx, 429 or `409 KEY_IN_FLIGHT` is resent
-without a probe, paced by the `Retry-After` its headers carried. A transport failure, a silence cut and a
-gateway's answer carry no echo, so they rely on what an echo, or a `GET /healthz` answering
-`idempotency_keys: true`, showed for that origin within the last five minutes
-(`KEYED_LAYER_MEMORY_MS`), and otherwise read `/healthz` before the first resend, bounded at 5 s.
-The probe presents no credential: Dispatch serves `/healthz` outside its API, and a credential
-failing at that moment would otherwise end a write the keyed layer could take again. Its status
-is not read, since Dispatch answers 503 while its database or NATS is down and still says
-`idempotency_keys`; a probe that fails, times out, answers no JSON or lacks the field means no
-resend, and the attempt's own failure is the call's. Only a yes is remembered, and only for those
-five minutes, so a rollback to a Dispatch without the layer is noticed within that bound.
-Dispatch's own refusal that carries no echo says its layer did not judge the request, so it sets
-the memory aside and `/healthz` decides afresh. The probe runs only after a write has already
-failed, so the ordinary path makes no request of its own.
+Every Dispatch that carries `b1c42d1d7d` runs the keyed layer on every `POST` and `PATCH` route
+(the deploy order below says when the client may rely on that). A retry
+therefore always sends the same key and encoded body again, without probing `/healthz` or keeping
+process or session memory of a server capability. A transport failure, a silence cut, a gateway or
+Dispatch 5xx, a 408, a 429 and `409 KEY_IN_FLIGHT` each retry within the write's pacing and
+deadline. `dispatch-keyed-resend.test.ts` uses a Bun stand-in that stores one comment for a retry
+under its key while `/healthz` is unavailable. `dispatch-keyed-resend-live.test.ts` starts a real
+Dispatch whose first caller lookup answers 503 before it stores anything, then proves the client's
+same-key resend stores one comment. `dispatch-write-outcomes.test.ts` drives every (state, event)
+pair and every sequence of events up to its limits.
 
-The `dispatch` command runs each call in a process of its own, so it carries that memory in its
-session's `state.json` (`keyedLayer`: each origin with the wall-clock time of its last sighting,
-`keyedLayerMemory`), and the next call of the session takes in every sighting still under five
-minutes old (`rememberKeyedLayer`). Without it every call would know nothing and ask `/healthz`,
-which the load that stalled the write can keep from answering within 5 s, and the write would be
-reported as perhaps taken effect rather than asked again. A sighting the file dates more than five
-minutes back, ahead of the clock, or not as a time is passed over. The wall clock is the one clock
-calls share, so a clock set back between two calls stretches the five minutes by as much, and two
-calls racing in one session can bring back a sighting one of them set aside, which still ends
-five minutes after the answer that showed it.
+Before sessions use this client, every replica that can serve a write route must run
+`b1c42d1d7d` or later; only then does a final refusal prove that nothing earlier landed. An older
+build runs the handler with no key when it cannot resolve the caller or the body is past its limit
+(`keyedWrites`), so an earlier attempt can land unkeyed and lose its answer: this client's retry
+under its key then runs the write again, and a fresh echoed refusal or a `KEY_REUSED` after it
+would read as nothing written. A fleet commit that names `b1c42d1d7d` while a rollout is still
+going does not prove that every replica runs it. Do not roll Dispatch back below that build while
+sessions use this client; fix forward instead.
 
 A non-2xx answer is thrown as `DispatchServiceError`. Dispatch's own refusal, JSON with a string
 `error`, is the error's message under its `code` (`HTTP_<status>` when the server set none), with
@@ -833,7 +948,7 @@ instead (`AGENT_SECRETS_URL` with `AGENT_SECRETS_MACHINE_IDENTITY`, `brokerCrede
 credential is then a DPoP-bound access token presented under the `DPoP` scheme rather than a
 bearer. Every bearer source above is resolved first and unchanged, so a session that has one
 behaves exactly as it did. The machine's identity is one of three (`machineIdentity` in
-`@legion/broker-client/environment`). `kubernetes` reads a pod's projected token from
+`@legion/cipher-client/environment`). `kubernetes` reads a pod's projected token from
 `AGENT_SECRETS_MACHINE_TOKEN_FILE`. `metadata` asks the metadata server for a Compute Engine
 machine's Google identity token, for the audience `AGENT_SECRETS_MACHINE_AUDIENCE`. `pool` mints
 a Google identity token through a workload identity pool, as the Go client's `PoolIdentity`
@@ -845,7 +960,7 @@ An identity with one of its variables missing is an error that names the variabl
 A pod writes under a session name only once its deployment has registered that name for the pod,
 and its trade can reach the broker first. The broker refuses that trade with a description
 beginning `pod_session_not_registered:`, and that refusal is never final (`podSessionUnregistered`
-in `@legion/broker-client/token-errors`).
+in `@legion/cipher-client/token-errors`).
 
 The client trades through one retry loop per session (`BrokerTokenClient.token`), and no caller
 starts a second one or cuts its wait short, so the broker sees one trade per slot of the loop's
@@ -898,8 +1013,10 @@ trades that person, as the Go client does:
   the broker's sign-in domain, so the broker asks Dispatch no member kind for this trade. A value
   that is no list fails the call naming the variable. The machine's own trade names no project.
 
-Dispatch gives the token that names a person the `person` and `approve` scopes, so the session
-writes as that person.
+Dispatch gives the token that names a person the `person` scope, so the session writes as that
+person. It never gives a broker token `approve`: a review, an answer to an approval request, a
+machine login's decision and a personal token's mint need the person's browser, or a personal
+token (`DISPATCH_TOKEN`) the person gave `approve`.
 
 The client reads the sign-ins as the Go client reads them (`signins.ts`). The directory is
 `AGENT_SECRETS_SIGNIN_DIR`, else `$XDG_STATE_HOME/agent-secrets/signins`, else
@@ -968,9 +1085,11 @@ calling trades about every ten minutes. Every `dispatch` command, Claude Code ho
 `envoy-send` is a process of its own, so each one trades once.
 
 A revoke of the sign-in on Dispatch ends the tokens of that sign-in, and the next trade is
-refused with words that name `agent-secrets login`. The revoke does not end a personal agent
-token that an agent made with the person's `approve` scope before the revoke. It does not end a
-machine-login approval that an agent made with that scope before the revoke.
+refused with words that name `agent-secrets login`. Dispatch gives the sign-in's tokens no
+`approve` (above), so an agent under it makes no personal token and decides no machine login. A
+Dispatch release before that rule did give them `approve`: a personal token or a machine-login
+approval an agent made under one then is not ended by the revoke, so revoke each on its own
+Dispatch page.
 
 `DISPATCH_TOKEN_BROKER=1` makes the broker route the only one. No bearer is read at all: not the
 variables, not the chosen file's `dispatch.token`, not a checkout's pair. A machine that can trade
@@ -1029,8 +1148,8 @@ be written, the result still prints, with one line saying so.
 
 `dispatch-session-state.ts` keeps one directory per session under `DISPATCH_STATE_DIR` (default
 `<XDG_STATE_HOME or ~/.local/state>/dispatch/sessions/<id>`): `state.json` carries what a
-long-lived host remembered across calls (the triage lines and pictures already shown, the asks
-whose follow notice was printed, which Dispatch lately showed it runs the keyed layer), and
+long-lived host remembered across calls (the triage lines and pictures already shown, and the asks
+whose follow notice was printed), and
 `results.jsonl` gets one line per call with the tool's `details` or its refusal, a refusal the CLI
 made before the call reached Dispatch included, which pi-envoy's run-end check reads; a line that
 is not JSON is named (file and line number) and skipped. Directories idle for 14 days are removed,
@@ -1099,11 +1218,12 @@ minute later before reading the refusal as an older Dispatch. In a rollout, a se
 build took but whose answer was lost, and was then sent again to an older build, may still have
 recorded the review, at the version named: `dispatch doc-read` shows the document's approval.
 A review records an approval or a request for changes in the person's name, so it works only with
-a token that names a person who holds `approve`. A session gets such a token from a person's
-sign-in on the machine (above). Dispatch refuses any other token with `403 OAUTH_SCOPE_REQUIRED`
-or `403 SIGN_IN_REQUIRED`. `--version` is the version the caller read, and it must be the version
-the review would record: the document's latest settled version, or the version an open approval
-request names for the document. Dispatch refuses any other version with `409 REVIEW_VERSION_MOVED`,
+a token that names a person who holds `approve`: a personal token (`DISPATCH_TOKEN`) the person
+gave `approve`. A broker token, a person's sign-in included, never holds it. Dispatch refuses any
+other token with `403 OAUTH_SCOPE_REQUIRED` or `403 SIGN_IN_REQUIRED`. `--version` is the version
+the caller read, and it must be the version the review would record: the document's latest
+settled version, or the version an open approval request names for the document. Dispatch
+refuses any other version with `409 REVIEW_VERSION_MOVED`,
 which names the version to read, and records nothing. With an approval request open, the review
 answers that request and records the same verdict on every document the request names, each at
 the version the request names. The output names the state, the version and the actor that

@@ -99,11 +99,13 @@ func (t *Table) Cwd(pid int) (string, error) {
 	return os.Readlink(filepath.Join(t.proc, strconv.Itoa(pid), "cwd"))
 }
 
-// scan reads every process under proc. A process that ends while the scan reads it is left out:
+// Scan reads every process under proc. A process that ends while the scan reads it is left out:
 // it holds nothing any longer, and a missing file is how the kernel says so. A zombie and a dead
 // process are left out the same way (errExited), and so is a process that a read after its stat's
 // finds ended (endedSince). Any other failure to read its stat, exe or ns/pid counts it in unread.
-func scan(proc string) (*Table, error) {
+// The guard, the guest watch and the launcher's session peer check all read their table through
+// it, so each knows a process by the same reads.
+func Scan(proc string) (*Table, error) {
 	entries, err := os.ReadDir(proc)
 	if err != nil {
 		return nil, err
@@ -273,8 +275,10 @@ func parseStat(stat []byte) (*Process, error) {
 	return p, nil
 }
 
-// readStartTime is pid's start time as its stat reads now.
-func readStartTime(proc string, pid int) (uint64, error) {
+// ReadStartTime is pid's start time as its stat under proc reads now. A caller that read a
+// process before compares it with the start time it read then: a different one is a process that
+// took the pid after the first one ended.
+func ReadStartTime(proc string, pid int) (uint64, error) {
 	stat, err := os.ReadFile(filepath.Join(proc, strconv.Itoa(pid), "stat"))
 	if err != nil {
 		return 0, err

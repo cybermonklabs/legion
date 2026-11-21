@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/sjawhar/envoy/internal/broker/wire"
+	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -64,7 +64,8 @@ type routeShape struct {
 	Params any
 	// Advice is a zero value of the advice shape the success answer carries beside its payload
 	// (withAdvice, withRawAdvice and withSuggestions merge an `advice` sibling into the payload
-	// object rather than nesting it, write_advice.go:471-517); nil for an answer that carries none.
+	// object rather than nesting it: withAdvice and withRawAdvice in write_advice.go,
+	// withSuggestions in suggestions.go); nil for an answer that carries none.
 	Advice any
 	// Refusals are this route's refusal bodies richer than errorBody, each with its status.
 	Refusals []routeAnswer
@@ -1011,57 +1012,57 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/events/log":             {Status: http.StatusOK, Response: []model.Event{}, Params: eventLogQuery{}},
 	// The relay rows. Dispatch writes the broker's bytes unparsed (relayBrokerResponse), so each
 	// Response names the shape the broker's own handler answers with, declared in
-	// internal/broker/wire and matched through the agentsecrets.Client method the handler calls.
+	// internal/cipher/wire and matched through the cipher.Client method the handler calls.
 	"GET /api/v1/credential-requests": {
-		// GET /v1/pending (agentsecrets.Client.Pending).
+		// GET /v1/pending (cipher.Client.Pending).
 		Status: http.StatusOK, Response: wire.PendingResponse{}, Params: credentialApproverQuery{},
 		// A Dispatch with no broker answers 200 and the JSON literal `null` rather than
 		// 404 FEATURE_OFF, so every page of such a deployment reads this route cleanly.
 		Nullable: true,
 	},
 	"POST /api/v1/credential-requests/{id}/approve": {
-		// POST /v1/credential-requests/{record}/approve (agentsecrets.Client.Approve).
+		// POST /v1/credential-requests/{record}/approve (cipher.Client.Approve).
 		Status: http.StatusOK, Response: wire.DecisionResponse{}, Request: credentialDecisionInput{}, OptionalRequest: true,
 	},
 	"POST /api/v1/credential-requests/{id}/deny": {
-		// POST /v1/credential-requests/{record}/deny (agentsecrets.Client.Deny), which answers
+		// POST /v1/credential-requests/{record}/deny (cipher.Client.Deny), which answers
 		// the terminal state rather than a credential.
 		Status: http.StatusOK, Response: wire.StateResponse{}, Request: credentialDecisionInput{}, OptionalRequest: true,
 	},
 	"POST /api/v1/credential-requests/{id}/dismiss": {
-		// POST /v1/credential-requests/{record}/dismiss (agentsecrets.Client.Dismiss). Dispatch
+		// POST /v1/credential-requests/{record}/dismiss (cipher.Client.Dismiss). Dispatch
 		// reads no body: the one field the broker takes, the approver, is the caller.
 		Status: http.StatusOK, Response: wire.DismissResponse{},
 	},
 	"POST /api/v1/credential-requests/machine-lookup": {
-		// POST /v1/machine-logins/lookup (agentsecrets.Client.MachineLookup). Dispatch forwards
+		// POST /v1/machine-logins/lookup (cipher.Client.MachineLookup). Dispatch forwards
 		// the body to the broker unparsed (readRelayBody) rather than reading it, but the broker
 		// does read it, so the route takes the shape the broker declares.
 		Status: http.StatusOK, Response: wire.RecordResponse{}, Request: wire.MachineLookupRequest{},
 	},
 	"GET /api/v1/credential-grants": {
-		// GET /v1/grants (agentsecrets.Client.Grants).
+		// GET /v1/grants (cipher.Client.Grants).
 		Status: http.StatusOK, Response: wire.ApproverGrantsResponse{}, Params: credentialApproverQuery{},
 	},
 	"POST /api/v1/credential-grants/{id}/revoke": {
-		// POST /v1/grants/{id}/revoke-by-approver (agentsecrets.Client.RevokeByApprover).
+		// POST /v1/grants/{id}/revoke-by-approver (cipher.Client.RevokeByApprover).
 		Status: http.StatusOK, Response: wire.StateResponse{},
 	},
 	"GET /api/v1/machine-logins": {
-		// GET /v1/launcher-credentials (agentsecrets.Client.MachineLogins).
+		// GET /v1/launcher-credentials (cipher.Client.MachineLogins).
 		Status: http.StatusOK, Response: wire.LauncherCredentialsResponse{},
 	},
 	"POST /api/v1/machine-logins/{id}/revoke": {
 		// POST /v1/launcher-credentials/{id}/revoke-by-approver
-		// (agentsecrets.Client.RevokeMachineLogin).
+		// (cipher.Client.RevokeMachineLogin).
 		Status: http.StatusOK, Response: wire.StateResponse{},
 	},
 	"GET /api/v1/signins": {
-		// GET /v1/person-signins (agentsecrets.Client.SignIns).
+		// GET /v1/person-signins (cipher.Client.SignIns).
 		Status: http.StatusOK, Response: wire.PersonSignInsResponse{},
 	},
 	"POST /api/v1/signins/{id}/revoke": {
-		// POST /v1/person-signins/{id}/revoke (agentsecrets.Client.RevokeSignIn), which says how
+		// POST /v1/person-signins/{id}/revoke (cipher.Client.RevokeSignIn), which says how
 		// many access tokens ended with the sign-in.
 		Status: http.StatusOK, Response: wire.PersonSignInRevokedResponse{},
 	},

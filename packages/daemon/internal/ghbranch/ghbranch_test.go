@@ -164,7 +164,7 @@ func TestDefaultBranchReadsTheRepository(t *testing.T) {
 }
 
 // Read is the repository as GitHub names it, its own spelling of owner and name (`full_name`) and
-// its default branch: Dispatch keeps a mapping lowercased, and GitHub's events, and the subjects
+// its default branch: Dispatch may hand a name lowercased, and GitHub's events, and the subjects
 // Envoy publishes them on, carry GitHub's spelling.
 func TestReadIsTheRepositoryAsGitHubNamesIt(t *testing.T) {
 	g := &github{defaultBranch: "release/v7.1", fullName: "Acme/Widgets"}

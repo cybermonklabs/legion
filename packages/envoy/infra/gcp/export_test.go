@@ -167,9 +167,12 @@ type DispatchSettings struct {
 	ProxyEphemeral     string
 	PprofPort          int
 	// ServerURL is DISPATCH_SERVER_URL and the url output (serverURL), and OutsideOrigin the
-	// second origin as rendered, "" when unset.
-	ServerURL     string
-	OutsideOrigin string
+	// second origin as rendered, "" when unset. SignInDomain and SignInWorkspaceDomains are
+	// DISPATCH_SIGNIN_DOMAIN and DISPATCH_SIGNIN_WORKSPACE_DOMAINS' entries as rendered.
+	ServerURL              string
+	OutsideOrigin          string
+	SignInDomain           string
+	SignInWorkspaceDomains []string
 }
 
 // ResolveDispatch resolves Dispatch's plain inputs for the external refusal and default tests.
@@ -180,24 +183,26 @@ func ResolveDispatch(args *DispatchArgs) (DispatchSettings, error) {
 	}
 	strategy := dispatchStrategyFor(s.replicas)
 	settings := DispatchSettings{
-		DatabaseVersion:    s.databaseVersion,
-		DatabaseTier:       s.databaseTier,
-		DeletionProtection: s.deletionProtection,
-		Namespace:          s.namespace,
-		Replicas:           s.replicas,
-		StrategyType:       strategy.strategyType,
-		AgentSecretsURL:    s.agentSecretsURL,
-		AppClientID:        s.appClientID,
-		AppID:              s.appID,
-		AppKeySecretName:   s.appKeySecretName,
-		AppKeySecretKey:    s.appKeySecretKey,
-		AppCPU:             s.appResources.appCPU,
-		AppMemory:          s.appResources.appMemory,
-		AppEphemeral:       s.appResources.appEphemeralStorage,
-		ProxyEphemeral:     s.appResources.proxyEphemeralStorage,
-		PprofPort:          s.pprofPort,
-		ServerURL:          s.serverURL(),
-		OutsideOrigin:      s.outsideOrigin,
+		DatabaseVersion:        s.databaseVersion,
+		DatabaseTier:           s.databaseTier,
+		DeletionProtection:     s.deletionProtection,
+		Namespace:              s.namespace,
+		Replicas:               s.replicas,
+		StrategyType:           strategy.strategyType,
+		AgentSecretsURL:        s.agentSecretsURL,
+		AppClientID:            s.appClientID,
+		AppID:                  s.appID,
+		AppKeySecretName:       s.appKeySecretName,
+		AppKeySecretKey:        s.appKeySecretKey,
+		AppCPU:                 s.appResources.appCPU,
+		AppMemory:              s.appResources.appMemory,
+		AppEphemeral:           s.appResources.appEphemeralStorage,
+		ProxyEphemeral:         s.appResources.proxyEphemeralStorage,
+		PprofPort:              s.pprofPort,
+		ServerURL:              s.serverURL(),
+		OutsideOrigin:          s.outsideOrigin,
+		SignInDomain:           s.signIn.domain,
+		SignInWorkspaceDomains: s.signInWorkspaceDomains,
 	}
 	if rolling := strategy.rollingUpdate; rolling != nil {
 		settings.RollingUpdate = &DispatchRollingUpdate{MaxUnavailable: rolling.maxUnavailable, MaxSurge: rolling.maxSurge}

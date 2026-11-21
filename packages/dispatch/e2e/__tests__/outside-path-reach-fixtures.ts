@@ -1,38 +1,48 @@
 /** The fixtures of the tests of `e2e/acceptance/outside-path-reach.sh`, the driver of the check
- *  `c-outside-path-reach` (dispatch://INFRA-3862), which a person from outside runs on their own
- *  device to measure which of our listed addresses that device reaches over the path we give them.
+ *  `c-outside-path-reach`, which measures which of our listed addresses a machine reaches over the
+ *  path we give a person from outside.
  *  Four files use them: `outside-path-reach-input.test.ts` (the inputs the script refuses, the
  *  origin's two answers and its classifier, none of which reaches a probe),
  *  `outside-path-reach.test.ts` (runs that probe), `outside-path-reach-blackhole.test.ts` (the
  *  two runs that need a network dropping TEST-NET-1) and `outside-path-reach-tmout.test.ts` (a
- *  list on a pipe under an inherited TMOUT).
+ *  list on a pipe under an inherited TMOUT). The tests of the sibling HTTPS check
+ *  `e2e/acceptance/outside-edge-refusals.sh` take `fakeHost`, `closedPort`, `bash`, `curl`,
+ *  `verdict` and `Run` from here too, through `outside-edge-refusals-fixtures.ts` and directly.
  *  `bun test` collects only `*.test.ts` and its kin, so this module runs nowhere of its own.
  *
  *  Every row runs the script itself against real listeners: a fake Dispatch (`Bun.serve`, which
  *  holds a connection that sends nothing, as any HTTP server does) for the origin, and
- *  `Bun.listen` for a target, each on a port the kernel picks and held for the whole run. The fake
- *  Dispatch answers from a process beside this one, as `fakeDispatch` says. A closed port is one
+ *  `Bun.listen` for a target, each on a port the kernel picks and held for the whole run. Each
+ *  fake Dispatch answers from a process of its own, as `fakeDispatch` says. A closed port is one
  *  taken from below the kernel's ephemeral range and found refusing: a port a listener held and
  *  gave back can be handed by the kernel to the next listener any concurrent row, or any other
  *  test file, starts, and the closed target would then read REACHED.
  *  The script lets `http` through only with `OUTSIDE_PATH_ALLOW_HTTP=1` and a `127.0.0.1` origin,
- *  which these rows set. HOME is a directory of the run's own, so no `~/.curlrc` of the host's
- *  reaches the script's curl unless a row writes one.
+ *  which these rows set. HOME is a directory of the run's own, or of the `driveEach` call's own
+ *  for the runs that call starts, so no `~/.curlrc` of the host's reaches the script's curl unless
+ *  a row writes one.
  *
  *  Where a row needs an answer no real listener gives (an https origin on port 443, a probe exit
  *  curl gives only on a broken network), it puts a `curl` of its own first on PATH that answers
  *  for the hosts it names and hands every other call to the host's curl.
+ *
+ *  Every curl a run is given answers the script's `curl -q --version` with
+ *  {@link CURL_VERSION_LINE} and asks no resolver: a curl linked with OpenLDAP, as Ubuntu's is,
+ *  looks this machine's own name up when it prints its version. Measured on Ubuntu 24.04's curl
+ *  8.5.0 with OpenLDAP 2.6.10, that is 10 queries of the name and its search domains, and 30.2 s
+ *  where the resolver answers after 6 s, so each run waited on the machine's DNS before it did
+ *  anything else. Every other call goes to the host's curl.
  */
 
-import { test } from "bun:test";
+import { beforeAll, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import type { Subprocess, udp } from "bun";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import type { udp } from "bun";
 import type { Answers, Seen } from "./outside-path-reach-origin";
 
 export const script = fileURLToPath(
@@ -43,27 +53,58 @@ export const bash = hostTool("bash") ?? "bash";
 export const curl = hostTool("curl") ?? "curl";
 const hostSleep = hostTool("sleep") ?? "sleep";
 const mkdir = hostTool("mkdir") ?? "mkdir";
+const hostEnv = hostTool("env") ?? "env";
 
-/** One row that stops before the probes: `test.skipIf(skip)` with a timeout of the row's own,
- *  60 s, past bun's default of 5 s and whatever timeout the runner sets. */
+/** What every curl a run is given answers `curl -q --version` with: a version line the script
+ *  takes, 7.40.0 being the oldest it takes. The script reads only its second word. A row that
+ *  needs another version answers `--version` itself first, as the too-old rows do. The stand-in
+ *  echoes it in single quotes, so it holds none. */
+export const CURL_VERSION_LINE =
+  "curl 7.40.0 (a stand-in for the curl of this host) libcurl/7.40.0";
+
+/** The timeout of a row that stops before the probes. It only stops a run that hangs: each such row
+ *  is decided by the verdicts and exit codes its runs print, and its work is counted (one runner
+ *  per row; 86 `Bun.spawn` calls in one run of the input file, 87 where zsh is present, the fake
+ *  Dispatch host included). A hang guard is at least twice the longest correct run, read on the
+ *  machines that run it. The slowest such row measured, the byte row (64 runners of 12 runs of the
+ *  script), took 54.5 s on two CPUs shared with eight busy loops and five other runs of the file
+ *  (378 row results, none failing; 53.7 s in an earlier such run), so the guard is twice that,
+ *  rounded up to the second. In CI's dispatch-ui job on 2026-11-19 (job 135904767413) the file's 21
+ *  rows passed, the slowest in 1.54 s; alone on the dev box at a 1-minute load of 339 to 695 the
+ *  whole file took 1.4 to 1.5 s. */
+const rowTimeout = 109_000;
+
+/** One row that stops before the probes: `test.skipIf(skip)` with `rowTimeout`. */
 export function row(skip: boolean) {
-  return (name: string, body: () => Promise<void>) => test.skipIf(skip)(name, body, 60_000);
+  return (name: string, body: () => Promise<void>) => test.skipIf(skip)(name, body, rowTimeout);
 }
 
-/** One row that reaches the probes, as `row` with a timeout of its own. It only stops a run that
- *  hangs: no row reads how long a run took. A run takes about 29 s (five rounds 6 s apart, the last
- *  up to curl's 5 s), and the script's own timers allow it 49 s (two reads of the origin of up to
- *  10 s each, four sleeps of 6 s and a last probe of 5 s). A hang guard is at least twice the
- *  longest correct run, read on the machines that run it. In CI's dispatch-ui job on 2026-11-17,
- *  the one run of these rows took 29.7 s for the holding-targets row and at most 33.1 s for any
- *  such row (a TMOUT=3 row), so twice that is 66.2 s, past the package's 60 s; 14 runs of the rows
- *  they replaced took at most 31.5 s. The guard is 435 s, three times the slowest such row of an
- *  earlier version, 144.9 s, in 12 runs on two CPUs shared with eight busy loops and five other runs
- *  of the four files (these rows' slowest in 12 such runs: 91.0 s), so a loaded dev box does not
- *  stop a correct run. */
+/** The timeout of a row that reaches the probes. It only stops a run that hangs: no row reads how
+ *  long a run took. A run takes about 29 s (five rounds 6 s apart, the last up to curl's 5 s), and
+ *  the script's own timers, at their defaults, allow it 49 s (two reads of the origin of up to 10 s
+ *  each, four sleeps of 6 s and a last probe of 5 s). A hang guard is at least twice the longest
+ *  correct run, read on the machines that run it. In CI's dispatch-ui job on 2026-11-17, the one
+ *  run of these rows took 29.7 s for the holding-targets row and at most 33.1 s for any such row (a
+ *  TMOUT=3 row), so twice that is 66.2 s, past the package's 60 s; 14 runs of the rows they
+ *  replaced took at most 31.5 s. The guard is 435 s, three times the slowest such row of an earlier
+ *  version, 144.9 s, in 12 runs on two CPUs shared with eight busy loops and five other runs of the
+ *  four files (these rows' slowest in 12 such runs: 91.0 s), so a loaded dev box does not stop a
+ *  correct run. */
+const probingRowTimeout = 435_000;
+
+/** One row that reaches the probes, as `row` with `probingRowTimeout`. */
 export function probingRow(skip: boolean) {
-  return (name: string, body: () => Promise<void>) => test.skipIf(skip)(name, body, 435_000);
+  return (name: string, body: () => Promise<void>) =>
+    test.skipIf(skip)(name, body, probingRowTimeout);
 }
+
+/** The bound every run here gives each of the script's two reads of its origin, to connect and in
+ *  all (`OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS` and `OUTSIDE_PATH_ORIGIN_READ_SECONDS`): twice the
+ *  longest row's timeout. The fake Dispatch answers from a process of its own, which a loaded host
+ *  can keep off the CPU past the script's own 3 s and 10 s; under this bound such a read is late,
+ *  and only the row's own timeout ends a run whose fake never answers. A row that reads the
+ *  script's own defaults sets both empty. */
+const originSeconds = String((2 * probingRowTimeout) / 1000);
 
 /** A bash loop that waits until `file` exists, with no limit but this test process's life: once
  *  this process has gone it ends the waiting shell with status 70, so no waiter outlives this test
@@ -111,100 +152,121 @@ export function byteRefusal(where: string, offset: number): string {
   );
 }
 
-/** The fake Dispatch host's own program, which `fakeDispatch` runs. */
-const hostProgram = fileURLToPath(new URL("./outside-path-reach-origin.ts", import.meta.url));
-
-/** A fake Dispatch host: its control server's URL, and its process. */
-interface Host {
-  url: string;
-  child: Subprocess;
+/** One fake a host of fakes serves: the port it answers on, the record of every request it
+ *  answered, in the order it answered them, and its stop. */
+export interface Fake<Entry> {
+  port: number;
+  seen(): Promise<Entry[]>;
+  /** Stops the host, which closes the fake's connections. A host that has gone already, as one a
+   *  row's timeout killed, stops at once. */
+  stop(): Promise<void>;
 }
 
-/** This module's fake Dispatch host, which the first `fakeDispatch` starts, so one process serves
- *  every fake Dispatch of a test file rather than a Bun runtime of its own for each. It is kept
- *  here so the pipe to its stdin, whose closing ends it, is never collected. */
-let host: Promise<Host> | undefined;
-
-async function startHost(): Promise<Host> {
-  const child = Bun.spawn([process.execPath, hostProgram], {
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "inherit",
-  });
-  // Its first line on stdout is its control server's port, and it prints nothing after it.
-  const reader = child.stdout.getReader();
-  const decoder = new TextDecoder();
-  let printed = "";
-  while (!printed.includes("\n")) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    printed += decoder.decode(value, { stream: true });
-  }
-  reader.releaseLock();
-  const port = Number(printed.split("\n")[0]);
-  if (!(port > 0)) {
-    child.stdin.end();
-    const code = await child.exited;
-    throw new Error(
-      `the fake Dispatch host exited ${code} with no port printed: ${JSON.stringify(printed)}`
-    );
-  }
-  return { url: `http://127.0.0.1:${port}`, child };
+/** The start of a fake from `config`, each in a host process of its own, a process beside the test
+ *  process that runs `program` as `bun <program>`. The program serves the control server of
+ *  `fake-host-server.ts`: it prints that server's port on 127.0.0.1 as its first line on stdout and
+ *  nothing after it; `POST /` with the config starts its one fake and answers `{ port }`, and
+ *  `GET /seen` answers that fake's record. It exits once its stdin closes, so it never outlives the
+ *  test process. `what` names the host in every error. `fakeDispatch` below starts
+ *  `outside-path-reach-origin.ts` this way, and the edge-refusal tests the stand-in edges of
+ *  `outside-edge-refusals-edge.ts`.
+ *
+ *  A host serves one fake, never the fakes of other rows, because Bun's test runner, once a row
+ *  passes its timeout, kills every process a row of the file started that is still running (it
+ *  prints `killed N dangling processes`), whichever row started it. A host shared by the rows of a
+ *  file died with the first row that timed out, and every row after it failed: in a run of
+ *  `outside-edge-refusals.test.ts` at a load of 690 to 930, one row's script ran 129 s past its
+ *  90 s limit, and the 76 rows after it each read `the stand-in edge host did not answer`. Each
+ *  row now stops its own host, so a timeout kills only the hosts of the rows still running. */
+export function fakeHost<Config, Entry>(
+  program: string,
+  what: string
+): (config: Config) => Promise<Fake<Entry>> {
+  return async (config) => {
+    const child = Bun.spawn([process.execPath, program], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "inherit",
+    });
+    const stop = async () => {
+      child.kill();
+      await child.exited;
+    };
+    try {
+      // Its first line on stdout is its control server's port, and it prints nothing after it.
+      const reader = child.stdout.getReader();
+      const decoder = new TextDecoder();
+      let printed = "";
+      while (!printed.includes("\n")) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        printed += decoder.decode(value, { stream: true });
+      }
+      await reader.cancel();
+      const controlPort = Number(printed.split("\n")[0]);
+      if (!(controlPort > 0)) {
+        throw new Error(`${what} printed no port: ${JSON.stringify(printed)}`);
+      }
+      const call = async (path: string, init?: RequestInit) => {
+        const named = `${init?.method ?? "GET"} ${path}`;
+        let response: Response;
+        try {
+          response = await fetch(`http://127.0.0.1:${controlPort}${path}`, init);
+        } catch (error) {
+          // A host that has died or refuses: Bun's own error names neither the host nor the call,
+          // and the test runner prints it beneath this one as the cause.
+          throw new Error(`${what} did not answer ${named}`, { cause: error });
+        }
+        if (!response.ok) {
+          throw new Error(
+            `${what} answered ${named} with ${response.status}: ${await response.text()}`
+          );
+        }
+        return response;
+      };
+      const started = await call("/", { method: "POST", body: JSON.stringify(config) });
+      const { port } = (await started.json()) as { port: number };
+      return {
+        port,
+        async seen() {
+          return (await (await call("/seen")).json()) as Entry[];
+        },
+        stop,
+      };
+    } catch (error) {
+      await stop();
+      throw error;
+    }
+  };
 }
 
-/** One request to the fake Dispatch host's control server, at `path`. */
-async function control(path: string, init?: RequestInit): Promise<Response> {
-  host ??= startHost();
-  const { url } = await host;
-  const call = `${init?.method ?? "GET"} ${path}`;
-  let response: Response;
-  try {
-    response = await fetch(`${url}${path}`, init);
-  } catch (error) {
-    // A host that has died or refuses: Bun's own error names neither the host nor the call, and
-    // the test runner prints it beneath this one as the cause.
-    throw new Error(`the fake Dispatch host did not answer ${call}`, { cause: error });
-  }
-  if (!response.ok) {
-    throw new Error(
-      `the fake Dispatch host answered ${call} with ${response.status}: ${await response.text()}`
-    );
-  }
-  return response;
-}
+/** Starts a fake Dispatch in a host of its own. */
+const dispatchHost = fakeHost<Answers, Seen>(
+  fileURLToPath(new URL("./outside-path-reach-origin.ts", import.meta.url)),
+  "a fake Dispatch host"
+);
 
-/** A fake Dispatch, served by the fake Dispatch host, whose head in `outside-path-reach-origin.ts`
- *  says what it answers for `health`, `projects` and `refusal`. `seen()` reads the list of every
- *  request it answered, in the order it answered them, and `stop()` stops it and closes its
- *  connections.
+/** A fake Dispatch, whose head in `outside-path-reach-origin.ts` says what it answers for
+ *  `health`, `projects` and `refusal`. `seen()` reads the list of every request it answered, in the
+ *  order it answered them, and `stop()` stops it and closes its connections.
  *
  *  It answers from a process of its own, whose event loop does nothing but answer, because a
- *  server in the test process answers only while the test process's event loop runs, and the
- *  script gives each of its reads of the origin 10 s (`curl --max-time 10`). With the fake
+ *  server in the test process answers only while the test process's event loop runs. Under the
+ *  script's default of 10 s for each read of the origin (`curl --max-time 10`), with the fake
  *  Dispatch in the test process, the row "fails naming an origin that serves a read with no
  *  credential" read "did not answer as Dispatch" (UNKNOWN) in place of FAIL 2 times in 320 runs of
  *  its file under the e2e lane's load, and once in 47 ordinary runs of the lane. In four runs that
  *  each ran the harness lane 20 times (`bun run test:repeat --lane harness --reruns 20`), a 50 ms
  *  interval timer in that file measured the test process's longest stall at 5,850, 12,681, 6,080
  *  and 1,557 ms, and its longest stall during that row's run of the script at 1,517, 12,631, 6,030
- *  and 757 ms: a stall past 10 s leaves the script's read of `/api/v1/projects` unanswered. */
-export async function fakeDispatch(
+ *  and 757 ms: under that default, a stall past 10 s leaves the script's read of
+ *  `/api/v1/projects` unanswered. The runs here give each read `originSeconds` instead. */
+export function fakeDispatch(
   health = 200,
   projects = 401,
   refusal: object = { code: "NO_IDENTITY" }
-) {
-  const answers: Answers = { health, projects, refusal };
-  const started = await control("/", { method: "POST", body: JSON.stringify(answers) });
-  const { port } = (await started.json()) as { port: number };
-  return {
-    port,
-    async seen(): Promise<Seen[]> {
-      return (await (await control(`/${port}/seen`)).json()) as Seen[];
-    },
-    async stop(): Promise<void> {
-      await control(`/${port}`, { method: "DELETE" });
-    },
-  };
+): Promise<Fake<Seen>> {
+  return dispatchHost({ health, projects, refusal });
 }
 
 /** The lowest port the kernel hands out for `port: 0` here: Linux's `ip_local_port_range`, else
@@ -334,12 +396,81 @@ const listFeeder = [
   "esac",
 ].join("\n");
 
+/** The bash wrapper `driveEach` runs: the script once for each run in its arguments, each with the
+ *  variables its run names on top of the wrapper's own environment, `together` runs at a time, and
+ *  each run's stdout, stderr and exit code in the files `<n>.out`, `<n>.err` and `<n>.code` of the
+ *  directory it is given, `n` counted from 0. Its arguments: the host's `env`, the shell, the
+ *  script, the directory and `together`, then for each run the count of its variables and each
+ *  variable as `NAME=VALUE`. `env` puts each variable into the environment it starts the shell
+ *  with, so no name passes through the wrapper's own bash, which keeps some names read-only, sets
+ *  others for itself (`SHLVL`, `PIPESTATUS`, `DIRSTACK`) and uses its own loop's. */
+const eachRunner = [
+  "env=$1 shell=$2 script=$3 out=$4 together=$5",
+  "shift 5",
+  "n=0",
+  'while [ "$#" -gt 0 ]; do',
+  "  count=$1",
+  "  shift",
+  "  (",
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: bash's slice of its arguments, the run's variables.
+  '    (exec "$env" -- "${@:1:count}" "$shell" "$script" </dev/null >"$out/$n.out" 2>"$out/$n.err")',
+  '    printf "%s" "$?" >"$out/$n.code"',
+  "  ) &",
+  '  shift "$count"',
+  "  n=$((n + 1))",
+  "  [ $((n % together)) -ne 0 ] || wait",
+  "done",
+  "wait",
+].join("\n");
+
 /** Reserves the calling test file's scratch directory and returns it with the helpers that write
  *  there. Call it at the test file's module scope: `temporaryDirectory` registers the hooks that
  *  make and remove the directory in the scope it is called from, and this module is evaluated
  *  once per process, so a directory reserved in its own body would belong to the first file. */
 export function reachFixtures() {
-  const scratch = temporaryDirectory("outside-path-reach");
+  // The rows write about 3,600 entries here, the target files and the three result files of each
+  // `driveEach` run, and the removal hook removes what is left inside its 60 s. On a disk other
+  // programs share one creation took up to 84 ms, so the directory is on tmpfs where the host has
+  // one that allows exec, which the `curl` and `sleep` the rows write here need, and that has room
+  // for six runs at once (the loaded runs of docs/testing.md). tmpfs charges a page for each file
+  // that holds data, so `driveEach` removes its results once read: with them kept to the end, one
+  // run of outside-path-reach-input.test.ts held 10.7 MiB of tmpfs at once; with them removed, 6.7
+  // to 7.5 MiB, and one run of all four files 7.3 to 7.8 MiB (three readers, 2026-11-20). So 8 MiB
+  // a run, 48 MiB for six, which an empty 64 MiB `/dev/shm` (a Legion role's, Docker's default)
+  // holds. One with more than 16 MiB in use, such as a stopped run's leftovers, sends the scratch to
+  // `tmpdir()`: a slower removal there, where too little room would fail rows with ENOSPC.
+  const scratch = temporaryDirectory("outside-path-reach", {
+    root: memoryRoot({ need: 6 * 8 * 2 ** 20 }),
+  });
+  /** The directory of the `curl` every run is given: it answers `-q --version` with
+   *  {@link CURL_VERSION_LINE} and hands every other call to the host's curl. `scratch` exists
+   *  from the `beforeAll` its call registered, which Bun runs before this one. */
+  const standIns = join(scratch, "curl-stand-in");
+  const curlStandIn = join(standIns, "curl");
+  beforeAll(() => {
+    mkdirSync(standIns);
+    writeFileSync(
+      curlStandIn,
+      `#!${bash}\ncase "$*" in "-q --version") echo '${CURL_VERSION_LINE}'; exit 0 ;; esac\nexec ${curl} "$@"\n`,
+      { mode: 0o755 }
+    );
+  });
+
+  /** The environment every run of the script starts with, whether `drive` or `driveEach` starts
+   *  it: HOME `home`, PATH the host's with the curl stand-in first unless `path` names another,
+   *  TMPDIR this process's, the flag that lets the script take the harness's http origin, and
+   *  `originSeconds` for the two reads of the origin. A change to how a run is started goes here,
+   *  so the two helpers cannot drift apart. */
+  function runEnvironment(home: string, path: string | undefined): Record<string, string> {
+    return {
+      HOME: home,
+      PATH: path ?? `${standIns}:${process.env.PATH ?? ""}`,
+      TMPDIR: tmpdir(),
+      OUTSIDE_PATH_ALLOW_HTTP: "1",
+      OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS: originSeconds,
+      OUTSIDE_PATH_ORIGIN_READ_SECONDS: originSeconds,
+    };
+  }
 
   /** One run of the script with `env`, over a HOME of its own holding `curlrc` as `.curlrc` when
    *  given, PATH the host's unless given, and run by bash unless `shell` names another program.
@@ -390,13 +521,7 @@ export function reachFixtures() {
             script,
           ];
     const child = Bun.spawn(argv, {
-      env: {
-        HOME: home,
-        PATH: options.path ?? process.env.PATH ?? "",
-        TMPDIR: tmpdir(),
-        OUTSIDE_PATH_ALLOW_HTTP: "1",
-        ...env,
-      },
+      env: { ...runEnvironment(home, options.path), ...env },
       stdin: "ignore",
       stderr: "pipe",
       stdout: "pipe",
@@ -407,6 +532,83 @@ export function reachFixtures() {
       new Response(child.stderr).text(),
     ]);
     return { code, stdout, stderr };
+  }
+
+  /** One run of the script for each of `runs`, each with its own variables on top of
+   *  `runEnvironment`, all started by one bash child of the test process, `together` of them at a
+   *  time (all of them unless given), and the results in the order of `runs`. Bun.spawn returns
+   *  only once its child has started its program, and that wait holds the test process's event
+   *  loop, which every row of the file shares: on a loaded host one spawn held it 13 s. A row that
+   *  starts one child for its runs holds the loop once, where a child of its own for each run held
+   *  it once for each, and waited behind every other row's spawns before each.
+   *  A run started here differs from one `drive` starts in four ways, none of which the script
+   *  reads or traps: it inherits SHLVL and PWD from the runner's bash, where `drive`'s run
+   *  sets its own, so under bash 5.2 its SHLVL is 2, not 1; it is a background job of a
+   *  non-interactive shell, which bash 3.2 starts with SIGINT and SIGQUIT ignored, where `drive`'s
+   *  run has them as the test process gives them (bash 5.2 restores them at the `exec`); the runs
+   *  of one call share one HOME, in which none is given a `.curlrc`; and its stdout and stderr are
+   *  files, where `drive`'s are the sockets Bun.spawn's `pipe` gives. The runner hands each run's
+   *  variables to the host's `env`, so every name reaches the run as given, as `drive`'s
+   *  `Bun.spawn` passes it; a name no environment can hold (empty, or holding `=`) is refused. */
+  async function driveEach(
+    runs: Record<string, string>[],
+    options: { path?: string; together?: number } = {}
+  ): Promise<Run[]> {
+    for (const name of runs.flatMap(Object.keys)) {
+      if (name === "" || name.includes("=")) {
+        throw new Error(`driveEach cannot pass ${JSON.stringify(name)}: no environment holds it`);
+      }
+    }
+    const out = join(scratch, `each-${randomUUID()}`);
+    mkdirSync(out);
+    const child = Bun.spawn(
+      [
+        bash,
+        "-c",
+        eachRunner,
+        "each",
+        hostEnv,
+        bash,
+        script,
+        out,
+        String(options.together ?? runs.length),
+        ...runs.flatMap((env) => [
+          String(Object.keys(env).length),
+          ...Object.entries(env).map(([name, value]) => `${name}=${value}`),
+        ]),
+      ],
+      {
+        env: runEnvironment(join(scratch, `home-${randomUUID()}`), options.path),
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "pipe",
+      }
+    );
+    const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    if (code !== 0) throw new Error(`the runner of ${runs.length} runs exited ${code}:\n${stderr}`);
+    try {
+      return runs.map((_, n) => {
+        try {
+          const exit = readFileSync(join(out, `${n}.code`), "utf8");
+          if (!/^\d+$/.test(exit))
+            throw new Error(`it left no exit code (${JSON.stringify(exit)})`);
+          return {
+            code: Number(exit),
+            stdout: readFileSync(join(out, `${n}.out`), "utf8"),
+            stderr: readFileSync(join(out, `${n}.err`), "utf8"),
+          };
+        } catch (error) {
+          // The runner exits 0 whatever became of a run, and a redirect it could not make is
+          // named only on its own stderr.
+          throw new Error(
+            `run ${n} of ${runs.length}: ${(error as Error).message}; the runner's stderr:\n${stderr}`
+          );
+        }
+      });
+    } finally {
+      // Each result file holds a page of tmpfs until it goes: see `scratch`.
+      rmSync(out, { recursive: true, force: true });
+    }
   }
 
   /** A target file holding `lines`, under the run's scratch directory. */
@@ -433,12 +635,13 @@ export function reachFixtures() {
     );
   }
 
-  /** A PATH directory holding only symlinks to the named host programs. */
+  /** A PATH directory holding only symlinks to the named host programs, `curl` the stand-in that
+   *  hands every call but `-q --version` to the host's curl. */
   function pathOf(...programs: string[]): string {
     const directory = join(scratch, `path-${randomUUID()}`);
     mkdirSync(directory);
     for (const program of programs) {
-      const found = hostTool(program);
+      const found = program === "curl" ? curlStandIn : hostTool(program);
       if (found === null) throw new Error(`${program} is not on this host's PATH`);
       symlinkSync(found, join(directory, program));
     }
@@ -446,10 +649,11 @@ export function reachFixtures() {
   }
 
   /** A PATH directory holding bash, sleep and a `curl` that runs `answers` (bash, which may answer
-   *  and exit) and hands every call it does not answer to the host's curl. */
+   *  and exit) and hands every call it does not answer to the curl stand-in, and so to the host's
+   *  curl. */
   function pathWithCurl(answers: string): string {
     const path = pathOf("bash", "sleep");
-    writeFileSync(join(path, "curl"), `#!${bash}\n${answers}\nexec ${curl} "$@"\n`, {
+    writeFileSync(join(path, "curl"), `#!${bash}\n${answers}\nexec ${curlStandIn} "$@"\n`, {
       mode: 0o755,
     });
     return path;
@@ -517,5 +721,16 @@ export function reachFixtures() {
   const v6Only = () =>
     pathWithCurl(`case "$*" in *'telnet://['*) printf '0.000010 0.000000'; exit 7 ;; esac`);
 
-  return { scratch, drive, targets, written, list, pathOf, pathWithCurl, pathRounds, v6Only };
+  return {
+    scratch,
+    drive,
+    driveEach,
+    targets,
+    written,
+    list,
+    pathOf,
+    pathWithCurl,
+    pathRounds,
+    v6Only,
+  };
 }
