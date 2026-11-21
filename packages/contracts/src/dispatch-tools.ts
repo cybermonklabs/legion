@@ -1809,7 +1809,7 @@ export const dispatchToolSpecs = [
       "The result is recorded against the check's own issue, so a child's run of a parent's " +
       "check appears under that check. A closed issue takes a result only for a check whose " +
       "when is after_merge or default_branch, the production check after the merge. It refuses " +
-      "every other record with 409 ISSUE_CLOSED, as it refuses every other write. " +
+      "every other record with 409 ISSUE_CLOSED. " +
       "A check a document version rewords while the result is being written is 409 " +
       "CHECK_CONTENDED, with nothing recorded: run the same command again. " +
       RESULT_RETRACT_RULE +
