@@ -440,7 +440,7 @@ The second kind is a part of its read that a loop gives up:
   redelivery request, or a rate limit stops the sweep.
 - The CI reconcile: a repository it reads that it cannot read (it gets no token for it, GitHub does
   not answer for it or gives it a name that is not `owner/name`, or its open pull requests cannot
-  be listed), a repository a project maps that the App is not installed on, a pull request head it
+  be listed), a project's default repository that the App is not installed on, a pull request head it
   cannot read (an answer too large included), a failed read of a head's commit statuses, or a
   rate limit that ends the pass, also one already in force when the pass starts. A read that the
   pass's own time limit cut short is not one of these.

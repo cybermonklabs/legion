@@ -133,8 +133,8 @@ func (s *Server) SetDown(down bool) {
 }
 
 // SetRepositories makes the list project's issues resolve to, which the repository route answers,
-// a copy of list from now on; an empty list is answered as []. The project's mapped list, which
-// the membership answer carries, does not change.
+// a copy of list from now on; an empty list is answered as []. The membership answer's own list
+// of the project does not change.
 func (s *Server) SetRepositories(project string, list []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -217,7 +217,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		if repositories {
 			// Dispatch's repository answer: the project and the list its issues resolve to,
-			// sorted byte-wise, [] for none. The mapped list is the membership answer's alone.
+			// sorted byte-wise, [] for none. The membership answer's own list is not part of it.
 			resolved := append([]string{}, row.Resolved...)
 			slices.Sort(resolved)
 			writeJSON(w, http.StatusOK, map[string]any{"project": key, "repositories": resolved})

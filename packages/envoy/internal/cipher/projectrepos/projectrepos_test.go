@@ -15,13 +15,13 @@ import (
 )
 
 // standIn serves PRIV, whose issues resolve to acme/pub and acme/two, and EMPTY, whose issues
-// resolve to none. Each also has a mapped list of its own, which the membership answer carries and
-// the repository answer must not: a client that read it would answer acme/mapped.
+// resolve to none. Each also has the membership answer's own list, which the repository answer
+// must not carry: a client that read it would answer acme/member.
 func standIn(t *testing.T) *projectaccesstest.Server {
 	t.Helper()
 	return projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
-		"PRIV":  {Visibility: "private", Repositories: []string{"acme/mapped"}, Resolved: []string{"acme/pub", "acme/two"}},
-		"EMPTY": {Visibility: "private", Repositories: []string{"acme/mapped"}},
+		"PRIV":  {Visibility: "private", Repositories: []string{"acme/member"}, Resolved: []string{"acme/pub", "acme/two"}},
+		"EMPTY": {Visibility: "private", Repositories: []string{"acme/member"}},
 	}, nil)
 }
 
@@ -177,22 +177,22 @@ func TestProjectRepositoriesClientCallsARefusedTokenTheBrokersOwn(t *testing.T) 
 	}
 }
 
-// TestTheRepositoryAnswerIsTheIssuesListNotTheMappedOne: one Dispatch, read by both of the broker's
-// clients with one account as cmd/cipherd wires them, keeps two lists of a project's repositories
-// apart. The repository client answers the list the project's issues resolve to, and never the
-// list the membership answer names for the project, which the membership client is answered on the
-// same Dispatch; a project none of whose issues resolves to a repository is [], whatever that
-// list holds.
-func TestTheRepositoryAnswerIsTheIssuesListNotTheMappedOne(t *testing.T) {
+// TestTheRepositoryAnswerIsTheIssuesListNotTheMembershipList: one Dispatch, read by both of the
+// broker's clients with one account as cmd/cipherd wires them, keeps two lists of a project's
+// repositories apart. The repository client answers the list the project's issues resolve to, and
+// never the membership answer's own list, which the membership client is answered on the same
+// Dispatch; a project none of whose issues resolves to a repository is [], whatever that list
+// holds.
+func TestTheRepositoryAnswerIsTheIssuesListNotTheMembershipList(t *testing.T) {
 	server := standIn(t)
 	for project, want := range map[string][]string{"PRIV": {"acme/pub", "acme/two"}, "EMPTY": {}} {
 		got, err := clientOf(server).Repositories(t.Context(), project)
 		if err != nil || !reflect.DeepEqual(got, want) {
-			t.Fatalf("Repositories(%s) = %q, %v; want the issues' list %q, not the mapped one", project, got, err, want)
+			t.Fatalf("Repositories(%s) = %q, %v; want the issues' list %q, not the membership answer's own list", project, got, err, want)
 		}
 		answer, err := projectaccess.New(server.URL, server.Account, nil).Access(t.Context(), project, "")
-		if err != nil || !reflect.DeepEqual(answer.Repositories, []string{"acme/mapped"}) {
-			t.Fatalf("Access(%s) from the same Dispatch with the same account = %q, %v; want its mapped list acme/mapped", project, answer.Repositories, err)
+		if err != nil || !reflect.DeepEqual(answer.Repositories, []string{"acme/member"}) {
+			t.Fatalf("Access(%s) from the same Dispatch with the same account = %q, %v; want the membership answer's own list acme/member", project, answer.Repositories, err)
 		}
 	}
 }
