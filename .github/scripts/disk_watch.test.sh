@@ -12,8 +12,9 @@
 # that is the runner this script must work on too (no Go toolchain, no Docker daemon, no
 # database), and it proves the two tools are named and skipped rather than failing the step. The
 # two margins are driven from state files written here by hand, so the numbers in the line are
-# chosen rather than measured; the falling-least case is measured, against 64 MiB of real writes,
-# and the stall case is measured against a real sampler stopped with SIGSTOP for four seconds.
+# chosen rather than measured; the falling-least case is measured, against 64 MiB of real writes
+# to a tmpfs only it can see (it says SKIP where the kernel refuses an unprivileged mount), and the
+# stall case is measured against a real sampler stopped with SIGSTOP for four seconds.
 # Everything is written under $TMPDIR (mktemp -d honours it), never /tmp by name.
 #
 # Run from anywhere: .github/scripts/disk_watch.test.sh
@@ -155,17 +156,55 @@ echo "case: the detached sampler outlives the process that started it"
 check "the sampler is alive after start returned" "$(alive "$pid")"
 
 echo "case: the least value falls when the watched file system fills"
-dd if=/dev/zero of="$watched/filler" bs=1M count=64 status=none
-least=$before
-for _ in $(seq 20); do
-  sleep 0.5
-  least=$(field "$state" least_kb)
-  [ "$least" -lt "$before" ] && break
-done
-check "least_kb fell below before_kb after 64 MiB was written" \
-  "$([ "$least" -lt "$before" ] && echo true || echo false)"
-check "before_kb is unchanged" "$(is "$(field "$state" before_kb)" "$before")"
-rm -f "$watched/filler"
+# What this proves is that the sampler reads the free space of the file system it watches while
+# that file system fills, and keeps the fall as the least it has seen. On a file system other
+# writers share, the fall it sees is the sum of every writer's: on a shared dev box disk the free
+# space moved by up to 1,300 MiB in 20 s, so another writer freeing more than 64 MiB hid the case's
+# write and failed this case, and another writer filling - or the sampler's own state and series
+# files beside the watched directory - let it pass with no reading of the case's write at all. So
+# the case watches a tmpfs that only it can see: mounted in an unprivileged user and mount
+# namespace, with the sampler started inside it and the state file outside it, on $work. The one
+# write that tmpfs ever takes is the case's 64 MiB, so the least free must fall by all of it.
+# Where the kernel refuses an unprivileged mount, there is no file system only this case writes:
+# a run by hand says SKIP and counts nothing rather than measuring a shared one, and CI, whose job
+# turns Ubuntu's AppArmor restriction off first (ci-job-test.yaml), fails the case instead.
+private="$work/private"
+private_state="$work/private.json"
+mkdir "$private"
+if private_out=$(unshare --user --map-root-user --mount sh -c 'mount -t tmpfs -o size=1m tmpfs "$1"' sh "$private" 2>&1); then
+  # The sampler outlives this shell and keeps the namespace, and the tmpfs in it, until it stops.
+  private_status=0
+  private_out=$(unshare --user --map-root-user --mount sh -c '
+    mount -t tmpfs -o size=128m tmpfs "$1" || exit 90
+    env -i PATH="$2" HOME="$3" TMPDIR="$3" "$4" start --path "$1" --state "$5" || exit 91
+    dd if=/dev/zero of="$1/filler" bs=1M count=64 status=none || exit 92
+  ' sh "$private" "$work/bin" "$work" "$watch" "$private_state" 2>&1) || private_status=$?
+  check "start watched a tmpfs only this case writes, and the case wrote 64 MiB on it" \
+    "$(is "$private_status" 0)"
+  if [ "$private_status" = 0 ]; then
+    pid=$(field "$private_state" sampler_pid)
+    private_before=$(field "$private_state" before_kb)
+    fell=0
+    for _ in $(seq 20); do
+      fell=$((private_before - $(field "$private_state" least_kb)))
+      [ "$fell" -ge 65536 ] && break
+      sleep 0.5
+    done
+    check "least_kb fell by at least the 64 MiB written, 65536 kB below before_kb" \
+      "$([ "$fell" -ge 65536 ] && echo true || echo false)"
+    check "before_kb is unchanged" "$(is "$(field "$private_state" before_kb)" "$private_before")"
+    # The sampler is the last process in that namespace, so stopping it also frees the tmpfs.
+    run_watch report --state "$private_state"
+    check "report stopped that sampler" "$(is "$(alive "$pid")" false)"
+    [ "$(alive "$pid")" = true ] || pid=""
+  else
+    printf '%s\n' "$private_out" >&2
+  fi
+elif [ "${GITHUB_ACTIONS:-}" = true ]; then
+  check "the kernel granted an unprivileged tmpfs mount, which the job's step before this one allows: ${private_out%%$'\n'*}" false
+else
+  echo "  SKIP: the falling-least case (no file system only it writes: the kernel refused an unprivileged tmpfs mount: ${private_out%%$'\n'*})"
+fi
 
 echo "case: the sampler writes the machine to a series file beside the state"
 series="$state.series"

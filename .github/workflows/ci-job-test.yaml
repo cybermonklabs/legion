@@ -514,6 +514,18 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.race_memory_test == 'true'
         run: .github/scripts/race_memory.test.sh
 
+      # The machine watch's falling-least case watches a tmpfs it mounts in an unprivileged user
+      # and mount namespace, so that no other writer moves the free space it reads, and it fails
+      # rather than skips under GITHUB_ACTIONS. Ubuntu 24.04 restricts unprivileged user namespaces
+      # with an AppArmor sysctl, so the job turns it off on its throwaway runner, as daemon-go does
+      # (`|| true`: a runner image without the key restricts nothing), and the unshare after it is
+      # the verdict that the restriction is gone.
+      - name: Allow unprivileged user namespaces (the machine watch's falling-least case)
+        if: inputs.changes-result != 'success' || inputs.disk_watch_test == 'true'
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          unshare --user --map-root-user --mount true
+
       - name: Test the machine watch
         if: inputs.changes-result != 'success' || inputs.disk_watch_test == 'true'
         run: .github/scripts/disk_watch.test.sh
