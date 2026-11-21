@@ -98,20 +98,26 @@ func scopeOf(ctx context.Context) *commitScope {
 //
 // The hook list is not goroutine-safe: OnCommit is called only on the goroutine that runs
 // TransactWith's write. It panics on a context no TransactWith scopes, since a write made outside
-// TransactWith has no commit to wait for.
+// TransactWith has no commit to wait for, and on a scope whose write has returned, since that
+// transaction's hooks were taken then and one appended later would never run.
 func OnCommit(ctx context.Context, fn func()) {
 	scope := scopeOf(ctx)
 	if scope == nil {
 		panic("store.OnCommit outside a transaction's commit scope (store.Transact)")
 	}
+	if !scope.writing.Load() {
+		panic("store.OnCommit on a transaction whose write has returned (store.Transact): the hook would never run")
+	}
 	scope.hooks = append(scope.hooks, fn)
 }
 
-// CommitScoped reports whether ctx is within a transaction's commit scope (TransactWith): a caller
-// that wants a hook to run once the write it just made has committed can tell a transaction that
-// will commit from a write made outside any scope, which has no commit to wait for.
+// CommitScoped reports whether ctx is within a transaction's commit scope (TransactWith) whose
+// write still runs: a caller that wants a hook to run once the write it just made has committed
+// can tell a transaction that will commit from a write made outside any scope, or after the
+// scope's write returned, neither of which has a commit to wait for.
 func CommitScoped(ctx context.Context) bool {
-	return scopeOf(ctx) != nil
+	scope := scopeOf(ctx)
+	return scope != nil && scope.writing.Load()
 }
 
 // Transact is TransactWith with pgx's default options: a read-write transaction that reads its id

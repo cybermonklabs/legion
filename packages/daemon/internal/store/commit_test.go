@@ -598,14 +598,18 @@ func TestTheOutcomeWatchEndsWhenThePoolCloses(t *testing.T) {
 	rig.wantHooks(t, 0)
 }
 
+// CommitScoped is true only while a TransactWith body runs: on the body's context kept past its
+// return it is false, and OnCommit panics there, since that transaction's hooks were taken when
+// the body returned and a hook appended later would never run.
 func TestCommitScopedIsTrueOnlyWithinTransact(t *testing.T) {
 	if CommitScoped(context.Background()) {
 		t.Fatal("CommitScoped(context.Background()) = true, want false")
 	}
 	rig := newCommitRig(t)
 	var scoped bool
+	var kept context.Context
 	if err := Transact(WithTransactionTracking(context.Background()), rig.pool, func(ctx context.Context, _ pgx.Tx) error {
-		scoped = CommitScoped(ctx)
+		scoped, kept = CommitScoped(ctx), ctx
 		return nil
 	}); err != nil {
 		t.Fatalf("Transact: %v", err)
@@ -613,15 +617,23 @@ func TestCommitScopedIsTrueOnlyWithinTransact(t *testing.T) {
 	if !scoped {
 		t.Fatal("CommitScoped inside Transact's body = false, want true")
 	}
+	if CommitScoped(kept) {
+		t.Fatal("CommitScoped on the body's context after Transact returned = true, want false")
+	}
+	if recovered := onCommitPanic(kept); recovered == nil || !strings.Contains(fmt.Sprint(recovered), "store.Transact") {
+		t.Fatalf("OnCommit on the body's context after Transact returned panicked with %v, want a panic naming store.Transact", recovered)
+	}
+}
+
+// onCommitPanic is what OnCommit on ctx panics with, or nil.
+func onCommitPanic(ctx context.Context) (recovered any) {
+	defer func() { recovered = recover() }()
+	OnCommit(ctx, func() {})
+	return nil
 }
 
 func TestOnCommitPanicsOutsideATransaction(t *testing.T) {
-	var recovered any
-	func() {
-		defer func() { recovered = recover() }()
-		OnCommit(context.Background(), func() {})
-	}()
-	if text := fmt.Sprint(recovered); recovered == nil || !strings.Contains(text, "store.Transact") {
+	if recovered := onCommitPanic(context.Background()); recovered == nil || !strings.Contains(fmt.Sprint(recovered), "store.Transact") {
 		t.Fatalf("OnCommit outside a transaction panicked with %v, want a panic naming store.Transact", recovered)
 	}
 }
