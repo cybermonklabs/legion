@@ -36,20 +36,26 @@
 #     does (lib/legacy-subjects-gate-nats.sh): who the server says the connection is, the stream's
 #     info, every consumer of the stream, the stream's subjects under notifications.dispatch.issue.>,
 #     notifications.agent.>, notifications.envoy.exceptions.notifications.agent.> and
-#     notifications.envoy.kept.>, and every record of the interest store envoy_interests.
+#     notifications.envoy.kept.>, the last message (subject, stream sequence and time) of each of
+#     those subjects in an old form, and every record of the interest store envoy_interests.
 #
-# What holds the gate shut:
+# The first reading shuts on no old-form name: the stream still holds the old-form messages
+# published before every producer moved, for its retention, and interest records and consumer
+# filters may still be in an old form. It names each one it finds (FOUND), and records the stream's
+# last sequence, the newest old-form message and every old-form counter. What holds the gate shut at
+# the second reading, at least the stream's retention later:
 #
+#   - an old-form message the stream holds that was published after the first reading's last
+#     stream sequence (its subject's last message, read by last_by_subj, is later);
+#   - a listener whose count rose since the first reading, under any kind;
 #   - a consumer one of whose filters only an old-form name matches, and whose new form the same
 #     consumer does not also filter (a session consumer filters both forms of each topic until the
 #     old form is refused, so its old filter loses nothing; a filter that is the old form alone,
 #     a Legion daemon's legion-go-<project>-<kind> or any other, would go deaf once publishers stop);
-#   - an old-form subject the stream still holds;
 #   - an interest record holding an old-form topic other than its session's own agent subject,
 #     which the listener writes into every record itself until the old form is refused;
-#   - at a second reading: a listener whose count rose since the first reading, a first reading
-#     that was not clean, or less than the retention between the two (for each listener, between
-#     the two moments its counter was read).
+#   - a reading named with --since that shut the gate, or less than the retention between the two
+#     readings (for each listener, between the two moments its counter was read).
 #
 # The old form is the gate's own rule (lib/legacy-subjects-gate-forms.jq, old_form), so the gate
 # stays right once the code that reads the old form is deleted.
@@ -84,12 +90,14 @@
 # already log.
 #
 # It prints the identity the NATS reads ran as (`IDENTITY`), one line per surface, `READ`, `PASS`,
-# `GATE SHUT` or `UNKNOWN`, the Job's creation and deletion, and the verdict alone on the last
-# line: `GATE OPEN` (exit 0) at a clean second reading, `GATE SHUT` (exit 1) when anything shut it,
-# `UNKNOWN` (exit 3) otherwise when anything was not read, and at a clean first reading `FIRST
-# READING`, naming when to read again (exit 4). It writes the reading to --record in every case, a
-# file that must not exist yet; a clean second reading's record is a clean first reading for the
-# next window. A usage error exits 2 and reads nothing.
+# `FOUND` (an old-form name a first reading found), `GATE SHUT` or `UNKNOWN`, the Job's creation and
+# deletion, and the verdict alone on the last line: `GATE OPEN` (exit 0) at a clean second reading,
+# `GATE SHUT` (exit 1) when anything shut it, `UNKNOWN` (exit 3) otherwise when anything was not
+# read, and at a first reading that read every surface `FIRST READING`, naming how many old-form
+# names it found, the stream sequence the second reading reads after, and when to read again (exit
+# 4). It writes the reading to --record in every case, a file that must not exist yet; a second
+# reading that opened is a first reading for the next window. A usage error exits 2 and reads
+# nothing.
 #
 # It needs bash, kubectl (a context for the cluster that runs the listeners and the hub bridge,
 # signed in as an account that may list pods in every namespace, read the logs of the listener
@@ -168,8 +176,8 @@ earlier=null
 if [ -n "$since" ]; then
   [ -r "$since" ] || usage "--since $since cannot be read"
   earlier=$(jq -c . "$since" 2>/dev/null) || usage "--since $since is no JSON"
-  jq -e '.gate == "legacy-subjects-gate" and .version == 2 and (.finished_at | type) == "number"' <<<"$earlier" >/dev/null ||
-    usage "--since $since is no legacy-subjects-gate reading of this version (2)"
+  jq -e '.gate == "legacy-subjects-gate" and .version == 3 and (.finished_at | type) == "number"' <<<"$earlier" >/dev/null ||
+    usage "--since $since is no legacy-subjects-gate reading of this version (3)"
   [ "$(jq -r .context <<<"$earlier")" = "$context" ] ||
     usage "--since $since read the cluster $(jq -r .context <<<"$earlier"), not $context"
 fi
@@ -304,6 +312,7 @@ else
     owner=${owner%-}
     jq -n --arg name "$job" --arg namespace "$job_namespace" --arg owner "${owner:-unknown}" \
       --arg image "$nats_box" --rawfile script "$job_script" --argjson deadline "$job_deadline" \
+      --rawfile forms "$here/lib/legacy-subjects-gate-forms.jq" \
       --arg inbox "$inbox_prefix" --slurpfile identity "$work/identity.json" '
       $identity[0] as $id
       | {"app.kubernetes.io/name": "legacy-subjects-gate", "created-by": "legacy-subjects-gate", owner: $owner} as $labels
@@ -318,7 +327,7 @@ else
              containers: [{name: "read", image: $image, command: ["sh", "-c", $script],
                env: ([{name: "NATS_URL", value: $id.urls},
                       (if $id.credential == "token" then {name: "NATS_TOKEN_FILE", value: $id.file} else {name: "NATS_NKEY", value: $id.file} end),
-                      {name: "WORK_DIR", value: "/work"}]
+                      {name: "WORK_DIR", value: "/work"}, {name: "FORMS_JQ", value: $forms}]
                      + (if $inbox == "" then [] else [{name: "NATS_INBOX_PREFIX", value: $inbox}] end)),
                volumeMounts: [$id.mount + {readOnly: true}, {name: $scratch, mountPath: "/work"}],
                resources: {requests: {cpu: "250m", memory: "512Mi"}, limits: {cpu: "250m", memory: "512Mi"}},
@@ -383,7 +392,7 @@ if ! jq -L "$here/lib" -f "$judge" "$work/input.json" >"$work/judgement.json" 2>
     --argjson earlier "$earlier" --arg error "$(first_line "$work/judge.err")" '
     "the judgement could not read what the gate read: \($error | gsub("[[:cntrl:]]"; "?"))" as $why
     | {verdict: "unknown", window: 259200, lines: ["UNKNOWN: " + $why],
-       record: {gate: "legacy-subjects-gate", version: 2, context: $context, started_at: $started,
+       record: {gate: "legacy-subjects-gate", version: 3, context: $context, started_at: $started,
          finished_at: $finished, read_at: ($started | todate), verdict: "unknown",
          compared_with: (if $earlier == null then null else $earlier.read_at end),
          identity: null, stream: null, listeners: [], consumers_old: [], subjects_old: [], interests_old: [],
@@ -404,8 +413,10 @@ case "$verdict" in
   shut) echo "GATE SHUT"; exit 1 ;;
   unknown) echo "UNKNOWN"; exit 3 ;;
   clean)
-    again=$(jq -r '(.record.finished_at + .window) | todate' "$work/judgement.json")
-    echo "FIRST READING: $record holds a clean reading; read again at or after $again with --since $record"
+    again=$(jq -r '.again | todate' "$work/judgement.json")
+    found=$(jq -r .found "$work/judgement.json")
+    last_seq=$(jq -r .last_seq "$work/judgement.json")
+    echo "FIRST READING: $record holds a first reading of every surface, with $found FOUND line(s) naming old-form names still in use; read again at or after $again with --since $record: that reading opens only if no old-form message follows stream sequence $last_seq, no listener's count moved, and no interest record or consumer filter holds an old form"
     exit 4
     ;;
 esac

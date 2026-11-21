@@ -6,12 +6,16 @@
 # nats-box image (busybox sh, the nats CLI, nsc, jq and base64), never on the box that runs the
 # gate. It connects as the in-cluster listener does: NATS_URL is the listener's NATS_URLS, and the
 # credential is either NATS_NKEY, the listener's seed file (NATS_NKEY_SEED_FILE), which the nats CLI
-# reads itself, or NATS_TOKEN_FILE, the listener's projected NATS token, which this script reads
-# into NATS_TOKEN for the CLI. NATS_INBOX_PREFIX, when set, is passed to every nats call as
-# --inbox-prefix, for a grant that subscribes only its identity's own inbox prefix. It makes read
-# requests only: who the server says the connection is, the stream's info, the stream's consumer
-# list, the stream's subjects under each family the rename moved, the interest bucket's keys and
-# each key's record. It judges nothing; the gate does.
+# reads itself, or NATS_TOKEN_FILE, the listener's projected NATS token, which this script presents
+# as a service does to the auth service: user `service` (natscred.ServiceUser) and the token as its
+# password, NATS_USER and NATS_PASSWORD for the CLI. NATS_INBOX_PREFIX, when set, is passed to every
+# nats call as --inbox-prefix, for a grant that subscribes only its identity's own inbox prefix. It
+# makes read requests only: who the server says the connection is, the stream's info, the stream's
+# consumer list, the stream's subjects under each family the rename moved, the last message of each
+# of those subjects that is in an old form, the interest bucket's keys and each key's record. It
+# judges nothing; the gate does. Which subjects are in an old form is the gate's own rule, which the
+# gate hands the Job in FORMS_JQ (lib/legacy-subjects-gate-forms.jq, old_form); without it no last
+# message is read, and the gate reads that as old-form subjects it could not read.
 #
 # Each read is printed as one line of five tab-separated fields: the read's name, its argument,
 # the nats CLI's exit status, and its standard output and standard error, each in base64 on one
@@ -21,18 +25,19 @@
 # answered nothing is read no further, so a refused list ends at once rather than at the Job's
 # deadline. The last line is `end`, so a log cut short is told from one that is whole.
 #
-# What the log holds is what the gate judges, and of an interest record only its session id and
-# its topics: the record's directory, machine and every other field are left out. The credential is
-# named by its public part alone: the nkey's public key (nsc derives it in a directory of memory
+# What the log holds is what the gate judges: of an interest record only its session id and its
+# topics, the record's directory, machine and every other field left out; of a stored message only
+# its subject, its stream sequence and its time, never its headers or its content. The credential
+# is named by its public part alone: the nkey's public key (nsc derives it in a directory of memory
 # the gate's Job mounts at WORK_DIR, deleted with the pod), or the token's subject, audience,
 # issuer and expiry, never the token.
 #
-# The JetStream API is called by its subjects, `$JS.API.CONSUMER.LIST.<stream>` and
-# `$JS.API.STREAM.INFO.<stream>`, because those are what the listener's grant holds
-# (natsgrant.Listener: sessionConsumerCalls and listenerGrant); `nats consumer ls` asks
-# `$JS.API.CONSUMER.NAMES.<stream>`, which it does not. A list longer than one answer is read page
-# by page, each page starting at the last item of the page before (the server sorts both lists by
-# name), so the gate can see that the list did not shift between two pages.
+# The JetStream API is called by its subjects, `$JS.API.CONSUMER.LIST.<stream>`,
+# `$JS.API.STREAM.INFO.<stream>` and `$JS.API.STREAM.MSG.GET.<stream>`, because those are what the
+# listener's grant holds (natsgrant.Listener: sessionConsumerCalls and listenerGrant); `nats
+# consumer ls` asks `$JS.API.CONSUMER.NAMES.<stream>`, which it does not. A list longer than one
+# answer is read page by page, each page starting at the last item of the page before (the server
+# sorts both lists by name), so the gate can see that the list did not shift between two pages.
 set -u
 
 stream=ENVOY_NOTIFICATIONS
@@ -82,12 +87,17 @@ next_page() {
   esac
 }
 
-# What the credential names, read first: a token is the CLI's credential once it is in NATS_TOKEN.
+# What the credential names, read first: a projected token is the CLI's credential once it is in
+# NATS_PASSWORD beside NATS_USER=service, the shape the auth service admits a service by
+# (natscred.Service: CONNECT's user and password; natscallout's credentialKind), never NATS_TOKEN,
+# which it reads as no credential at all.
 : >"$work/err"
 if [ -n "${NATS_TOKEN_FILE:-}" ]; then
-  if NATS_TOKEN=$(cat "$NATS_TOKEN_FILE" 2>"$work/err") && [ -n "$NATS_TOKEN" ]; then
-    export NATS_TOKEN
-    payload=$(printf '%s' "$NATS_TOKEN" | cut -d. -f2 | tr '_-' '/+')
+  if token=$(cat "$NATS_TOKEN_FILE" 2>"$work/err") && [ -n "$token" ]; then
+    NATS_USER=service
+    NATS_PASSWORD=$token
+    export NATS_USER NATS_PASSWORD
+    payload=$(printf '%s' "$token" | cut -d. -f2 | tr '_-' '/+')
     while [ $((${#payload} % 4)) != 0 ]; do payload="$payload="; done
     printf '%s' "$payload" | base64 -d 2>>"$work/err" | jq -c '{sub, aud, iss, exp}' >"$work/out" 2>>"$work/err"
     emit credential token "$?"
@@ -120,6 +130,7 @@ while :; do
   [ "$offset" = "done" ] && break
 done
 
+: >"$work/subject-pages"
 for family in \
   'notifications.dispatch.issue.>' \
   'notifications.agent.>' \
@@ -128,10 +139,29 @@ for family in \
   offset=0
   while :; do
     request subjects "$family $offset" "\$JS.API.STREAM.INFO.$stream" "{\"subjects_filter\":\"$family\",\"offset\":$offset}"
+    jq -c . "$work/out" >>"$work/subject-pages" 2>/dev/null
     offset=$(next_page .state.subjects)
     [ "$offset" = "done" ] && break
   done
 done
+
+# The last message of each subject the pages list that is in an old form (FORMS_JQ, the gate's own
+# rule), by `last_by_subj`: its subject, stream sequence and time alone, which a second reading
+# compares with the first reading's last sequence. A subject whose messages expired since the list
+# answers no message found.
+: >"$work/old-subjects"
+if [ -n "${FORMS_JQ:-}" ]; then
+  printf '%s\n' "$FORMS_JQ" >"$work/legacy-subjects-gate-forms.jq"
+  jq -r -L "$work" 'include "legacy-subjects-gate-forms"; try (.state.subjects | objects | keys[] | select(old_form)) catch empty' \
+    "$work/subject-pages" 2>/dev/null | sort -u >"$work/old-subjects"
+fi
+while IFS= read -r subject; do
+  n req --raw "\$JS.API.STREAM.MSG.GET.$stream" "$(jq -cn --arg s "$subject" '{last_by_subj: $s}')" >"$work/msg" 2>"$work/err"
+  status=$?
+  jq -c 'if type == "object" then {type, error, message: (if (.message | type) == "object" then {subject: .message.subject, seq: .message.seq, time: .message.time} else null end)} else error("no object") end' \
+    "$work/msg" >"$work/out" 2>/dev/null || cp "$work/msg" "$work/out"
+  emit old_last "$subject" "$status"
+done <"$work/old-subjects"
 
 n kv ls "$bucket" >"$work/out" 2>"$work/err"
 status=$?

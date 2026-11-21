@@ -9,14 +9,17 @@
 # script is run under sh behind a fake nats, so the log it writes is the log the gate is given.
 #
 # Each surface the gate exists to read has a case that shuts the gate or makes it UNKNOWN for that
-# reason alone, beside the clean fleet that is the only case that opens it: a listener's count that
-# rose between the readings, under any kind, a Legion daemon's consumer still on an old filter, a
-# consumer list that cannot be read at all, a stream still holding an old-form subject, an interest
-# record holding one, a listener whose counter cannot be read, a listener whose restart only its
-# start-time gauge shows, a listener offline at the reading, a list that moved between its pages, a
-# stream that is not the first reading's or does not hold the whole window, and an answer that is no
-# JSON object. Every case runs from the same clean fixture with one thing changed, so each fails for
-# its own reason. The old-form rule itself is held row by row. The summary counts cases.
+# reason alone, beside the clean fleet that is the only case that opens it: at the second reading, a
+# listener's count that rose between the readings, under any kind, a Legion daemon's consumer still
+# on an old filter, an old-form message published after the first reading's last stream sequence,
+# and an interest record holding an old-form topic; at either, a consumer list that cannot be read
+# at all, a listener whose counter cannot be read, a listener whose restart only its start-time
+# gauge shows, a listener offline at the reading, a list that moved between its pages, a stream that
+# is not the first reading's or does not hold the whole window, and an answer that is no JSON
+# object. A first reading on a bus that still holds old-form messages, interests and consumer
+# filters is a first reading that names each. Every case runs from the same clean fixture with one
+# thing changed, so each fails for its own reason. The old-form rule itself is held row by row. The
+# summary counts cases.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -174,13 +177,19 @@ interest() {
     | {session_id: $s, topics: $t}'
 }
 
-# stream_info [FIRST_TS [STREAM_ID]] prints the stream's info answer.
+# stream_info [FIRST_TS [STREAM_ID [LAST_SEQ]]] prints the stream's info answer.
 stream_info() {
-  jq -cn --arg first "${1:-2026-11-18T00:00:00.123456789Z}" --arg id "${2-stream-id-1}" '
+  jq -cn --arg first "${1:-2026-11-18T00:00:00.123456789Z}" --arg id "${2-stream-id-1}" --argjson last "${3:-900}" '
     {type: "io.nats.jetstream.api.v1.stream_info_response", created: "2026-11-01T00:00:00Z",
      config: {name: "ENVOY_NOTIFICATIONS", max_age: 259200000000000,
        metadata: (if $id == "" then {} else {envoy_stream_id: $id} end)},
-     state: {messages: 9, first_ts: $first}}'
+     state: {messages: 9, first_ts: $first, last_seq: $last}}'
+}
+
+# last_message SUBJECT SEQ prints the Job's line of the last message of SUBJECT, as the Job prints a
+# stream message get's answer: its subject, sequence and time alone.
+last_message() {
+  line old_last "$1" 0 "$(jq -cn --arg s "$1" --argjson q "$2" '{type: "io.nats.jetstream.api.v1.stream_msg_get_response", error: null, message: {subject: $s, seq: $q, time: "2026-11-20T10:00:00Z"}}')" ""
 }
 
 # A request the grant refuses, as nats-box 0.19.0 answered it against nats-server 2.15.1 under the
@@ -411,10 +420,10 @@ done_case
 
 new_case "a first reading of an earlier version of the gate is refused"
 first_reading_of 73
-jq '.version = 1' "$FAKE/earlier.json" >"$FAKE/old.json"
+jq '.version = 2' "$FAKE/earlier.json" >"$FAKE/old.json"
 reading --since "$FAKE/old.json"
 expect_status 2
-expect_line "is no legacy-subjects-gate reading of this version (2)"
+expect_line "is no legacy-subjects-gate reading of this version (3)"
 [ ! -s "$FAKE/calls" ] || fail "the gate called $(head -n 1 "$FAKE/calls")"
 done_case
 
@@ -437,7 +446,7 @@ done_case
 new_case "a clean fleet's first reading is a first reading, never GATE OPEN"
 reading
 expect_status 4
-expect_last "FIRST READING: $FAKE/record.json holds a clean reading; read again at or after $(jq -r '(.finished_at + 259200) | todate' "$FAKE/record.json") with --since $FAKE/record.json"
+expect_last "FIRST READING: $FAKE/record.json holds a first reading of every surface, with 0 FOUND line(s) naming old-form names still in use; read again at or after $(jq -r '(.finished_at + 259200 + 180) | todate' "$FAKE/record.json") with --since $FAKE/record.json: that reading opens only if no old-form message follows stream sequence 900, no listener's count moved, and no interest record or consumer filter holds an old form"
 expect_no_line "GATE OPEN"
 expect_line "PASS: the stream holds 2 subject(s) under notifications.dispatch.issue.>, none in an old form"
 expect_line "PASS: no consumer of the stream's 7 filters a name only the old form matches (3 of them are Legion daemons')"
@@ -448,7 +457,7 @@ expect_no_line "dispatch-6c2a"
 expect_no_line "front-door"
 grep -qF -- "-n dispatch logs dispatch-listener-55d1 -c envoy-listener --since=5m" "$FAKE/calls" || fail "Dispatch's listener was not read from its log"
 ! grep -qF -- "proxy" "$FAKE/calls" || fail "a listener was read through the pod proxy"
-[ "$(jq -r .verdict "$FAKE/record.json")" = clean ] || fail "the record's verdict is $(jq -r .verdict "$FAKE/record.json"), want clean"
+[ "$(jq -r .verdict "$FAKE/record.json")" = complete ] || fail "the record's verdict is $(jq -r .verdict "$FAKE/record.json"), want complete"
 [ "$(jq '.listeners | length' "$FAKE/record.json")" = 3 ] || fail "the record holds $(jq '.listeners | length' "$FAKE/record.json") listeners, want 3"
 [ "$(jq -r .stream.id "$FAKE/record.json")" = stream-id-1 ] || fail "the record holds the stream id $(jq -r .stream.id "$FAKE/record.json"), want stream-id-1"
 [ "$(jq -r .identity.credential.names "$FAKE/record.json")" = "$listener_nkey" ] || fail "the record names the credential $(jq -c .identity "$FAKE/record.json")"
@@ -461,7 +470,7 @@ job_file="$FAKE/created-job.json"
 if [ ! -f "$job_file" ]; then
   fail "no Job was created"
 else
-  jq -e --arg image "mirror.gcr.io/natsio/nats-box:0.19.0@sha256:00f10dd4156f28ece84bb3a52cf356ef220ebaa0494310caa90dec184d9e2b89" '
+  jq -e --rawfile forms "$here/lib/legacy-subjects-gate-forms.jq" --arg image "mirror.gcr.io/natsio/nats-box:0.19.0@sha256:00f10dd4156f28ece84bb3a52cf356ef220ebaa0494310caa90dec184d9e2b89" '
     .metadata.namespace == "envoy" and (.metadata.name | startswith("legacy-subjects-gate-"))
     and .metadata.labels["created-by"] == "legacy-subjects-gate" and (.metadata.labels.owner | length) > 0
     and .spec.backoffLimit == 0 and .spec.activeDeadlineSeconds == 300 and .spec.ttlSecondsAfterFinished == 600
@@ -469,7 +478,7 @@ else
     and .spec.template.spec.securityContext.runAsUser == 65534 and .spec.template.spec.securityContext.runAsNonRoot == true
     and .spec.template.spec.containers[0].image == $image
     and .spec.template.spec.containers[0].securityContext.capabilities.drop == ["ALL"]
-    and .spec.template.spec.containers[0].env == [{name: "NATS_URL", value: "nats://envoy-hub.envoy.svc.cluster.local:4222"}, {name: "NATS_NKEY", value: "/var/run/secrets/nats-seed/nats-seed"}, {name: "WORK_DIR", value: "/work"}]
+    and .spec.template.spec.containers[0].env == [{name: "NATS_URL", value: "nats://envoy-hub.envoy.svc.cluster.local:4222"}, {name: "NATS_NKEY", value: "/var/run/secrets/nats-seed/nats-seed"}, {name: "WORK_DIR", value: "/work"}, {name: "FORMS_JQ", value: $forms}]
     and .spec.template.spec.containers[0].volumeMounts == [{name: "nats-seed", mountPath: "/var/run/secrets/nats-seed", readOnly: true}, {name: "legacy-subjects-gate-work", mountPath: "/work"}]
     and .spec.template.spec.volumes[0].csi.volumeAttributes.secretProviderClass == "envoy-listener-nats-seed"
     and .spec.template.spec.volumes[1] == {name: "legacy-subjects-gate-work", emptyDir: {medium: "Memory", sizeLimit: "16Mi"}}' "$job_file" >/dev/null ||
@@ -491,7 +500,7 @@ jq '.spec.template.spec.containers[0].env |= map(select(.name != "NATS_NKEY_SEED
 replace_row credential nkey "$(line credential token 0 '{"sub":"system:serviceaccount:envoy:envoy-listener","aud":["nats"],"iss":"https://container.googleapis.com/x","exp":1}' "")"
 reading --token-file /var/run/secrets/envoy/nats-token/token --inbox-prefix _INBOX_envoy_listener_gke
 expect_status 4
-jq -e '.spec.template.spec.containers[0].env == [{name: "NATS_URL", value: "nats://envoy-hub.envoy.svc.cluster.local:4222"}, {name: "NATS_TOKEN_FILE", value: "/var/run/secrets/envoy/nats-token/token"}, {name: "WORK_DIR", value: "/work"}, {name: "NATS_INBOX_PREFIX", value: "_INBOX_envoy_listener_gke"}]
+jq -e --rawfile forms "$here/lib/legacy-subjects-gate-forms.jq" '.spec.template.spec.containers[0].env == [{name: "NATS_URL", value: "nats://envoy-hub.envoy.svc.cluster.local:4222"}, {name: "NATS_TOKEN_FILE", value: "/var/run/secrets/envoy/nats-token/token"}, {name: "WORK_DIR", value: "/work"}, {name: "FORMS_JQ", value: $forms}, {name: "NATS_INBOX_PREFIX", value: "_INBOX_envoy_listener_gke"}]
   and .spec.template.spec.containers[0].volumeMounts[0] == {name: "nats-token", mountPath: "/var/run/secrets/envoy/nats-token", readOnly: true}
   and .spec.template.spec.volumes[0].projected.sources[0].serviceAccountToken.audience == "nats"' "$FAKE/created-job.json" >/dev/null ||
   fail "the Job does not connect with the projected token and the prefix: $(jq -c .spec.template.spec "$FAKE/created-job.json")"
@@ -520,7 +529,27 @@ expect_status 0
 expect_last "GATE OPEN"
 expect_line "PASS: listener pod envoy/envoy-listener-7f9c container envoy-listener counted no old-form name between the readings"
 expect_line "PASS: listener envoy-hub at https://envoy-hub.example-tailnet.ts.net:9020 counted no old-form name between the readings"
-[ "$(jq -r .verdict "$FAKE/record.json")" = clean ] || fail "an open reading's record is $(jq -r .verdict "$FAKE/record.json"), want clean, a first reading for the next window"
+[ "$(jq -r .verdict "$FAKE/record.json")" = complete ] || fail "an open reading's record is $(jq -r .verdict "$FAKE/record.json"), want complete, a first reading for the next window"
+done_case
+
+# The time a first reading names must open a clean fleet however old each listener's counter line
+# is at the second reading: the first reading read each line at or before its own end, and the
+# second takes a line up to three minutes old, so the time named is the window after the first
+# reading's end and those three minutes besides. Read at the window alone, a listener whose line
+# is 150 s old at the second reading was read less than the window apart, and the gate shut.
+new_case "a second reading at the time the first reading names opens a clean fleet, its counter lines however old"
+reading
+expect_status 4
+again=$(sed -n 's/.*read again at or after \([^ ]*\) with --since.*/\1/p' <<<"$output")
+again_s=$(jq -rn --arg t "$again" '$t | fromdateiso8601')
+now=$(date -u +%s)
+jq --argjson s "$((again_s - now))" '.started_at -= $s | .finished_at -= $s | .read_at = (.started_at | todate) | .listeners |= map(.read_at -= $s)' \
+  "$FAKE/record.json" >"$FAKE/earlier.json"
+rm -f "$FAKE/record.json"
+echo "$((now - 150))" >"$FAKE/log_at"
+reading --since "$FAKE/earlier.json"
+expect_status 0
+expect_last "GATE OPEN"
 done_case
 
 # --- each reason the gate shuts or cannot say -----------------------------------------------------
@@ -544,11 +573,36 @@ expect_last "GATE SHUT"
 done_case
 
 new_case "a Legion daemon's consumer still on an old filter shuts the gate"
+first_reading_of 73
 replace_row consumers 0 "$(line consumers 0 0 "$(consumers_page "$(clean_consumers)" "$(consumer legion-go-ZED-dispatch '["notifications.dispatch.issue.ZED-7.>"]')")" "")"
-reading
+reading --since "$FAKE/earlier.json"
 expect_status 1
 expect_line "GATE SHUT: consumer legion-go-ZED-dispatch filters notifications.dispatch.issue.ZED-7.>, which only an old-form name matches"
 expect_no_line "consumer ses_twin"
+done_case
+
+# The bus a first reading takes once every producer has moved: the stream still holds old-form
+# messages from before the move, and an interest record and a daemon's consumer filter are still in
+# an old form. Under the rule that shut a first reading on any of them, no first reading could be
+# taken on this bus until the stream's retention had passed and every reader had moved.
+new_case "a first reading with old-form messages, interests and consumer filters prints FIRST READING, naming each"
+replace_row consumers 0 "$(line consumers 0 0 "$(consumers_page "$(clean_consumers)" "$(consumer legion-go-ZED-dispatch '["notifications.dispatch.issue.ZED-7.>"]')")" "")"
+replace_row subjects "notifications.dispatch.issue.> 0" \
+  "$(line subjects "notifications.dispatch.issue.> 0" 0 "$(subjects_page notifications.dispatch.issue.ACME.ACME-12.comment.created notifications.dispatch.issue.ACME-13.comment.created notifications.dispatch.issue.ZED-7.status.changed)" "")" \
+  "$(last_message notifications.dispatch.issue.ACME-13.comment.created 812)" \
+  "$(last_message notifications.dispatch.issue.ZED-7.status.changed 640)"
+replace_row interest ses_b "$(line interest ses_b 0 "$(interest ses_b notifications.agent.ses_b notifications.role.lead-reviewer)" "")"
+reading
+expect_status 4
+expect_line "FOUND: the stream holds 2 old-form subject(s) under notifications.dispatch.issue.>: notifications.dispatch.issue.ACME-13.comment.created, notifications.dispatch.issue.ZED-7.status.changed"
+expect_line "FOUND: the newest old-form message on the stream is notifications.dispatch.issue.ACME-13.comment.created, stream sequence 812 at 2026-11-20T10:00:00Z; the stream's last sequence is 900"
+expect_line "FOUND: consumer legion-go-ZED-dispatch filters notifications.dispatch.issue.ZED-7.>, which only an old-form name matches"
+expect_line "FOUND: the interest record of session ses_b holds notifications.role.lead-reviewer, in an old form"
+expect_line "with 4 FOUND line(s) naming old-form names still in use"
+expect_line "no old-form message follows stream sequence 900"
+expect_no_line "GATE SHUT"
+[ "$(jq -r '.verdict, .stream.last_seq, .stream.newest_old.seq' "$FAKE/record.json" | paste -sd, -)" = "complete,900,812" ] ||
+  fail "the record holds $(jq -c '{verdict, stream}' "$FAKE/record.json"), want a complete reading at last sequence 900 whose newest old-form message is 812"
 done_case
 
 new_case "a consumer list that cannot be read is UNKNOWN, naming the refused request"
@@ -561,11 +615,16 @@ done_case
 
 # The Job's own script, run under sh behind a fake nats that answers as the hub does. The fake
 # records every call, refuses the consumer list the way nats-server refuses a publish the grant
-# lacks (status 0, no output, the violation on standard error), and answers every other read.
+# lacks (status 0, no output, the violation on standard error), and answers every other read: the
+# agent family lists one old-form subject, whose last message it answers whole, content and
+# headers with it, as the server does.
 mkdir -p "$root/natsbin"
 cat >"$root/natsbin/nats" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$CALLS"
+# The credential each call carries, as the nats CLI reads it from its environment: the user, and
+# whether a password or a token is set, never their values.
+printf 'user=%s password=%s token=%s\n' "${NATS_USER:-}" "${NATS_PASSWORD:+set}" "${NATS_TOKEN:+set}" >>"$CALLS.credentials"
 case "$1 $2" in
   "req --raw")
     case "$3" in
@@ -579,7 +638,13 @@ case "$1 $2" in
           | {type: "io.nats.jetstream.api.v1.consumer_list_response", total: 5, offset: $o, limit: 2,
              consumers: [$all[$o:$o + 2][] | {name: ., config: {}}]}' ;;
       '$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS')
-        echo '{"type":"io.nats.jetstream.api.v1.stream_info_response","total":0,"offset":0,"limit":0,"config":{"name":"ENVOY_NOTIFICATIONS"},"state":{"messages":0}}' ;;
+        if [ "$(printf '%s' "$4" | jq -r '.subjects_filter // ""' 2>/dev/null)" = 'notifications.agent.>' ]; then
+          echo '{"type":"io.nats.jetstream.api.v1.stream_info_response","total":2,"offset":0,"limit":100000,"config":{"name":"ENVOY_NOTIFICATIONS"},"state":{"messages":3,"subjects":{"notifications.agent.ses_old":2,"notifications.agent.ACME.ses_a":1}}}'
+        else
+          echo '{"type":"io.nats.jetstream.api.v1.stream_info_response","total":0,"offset":0,"limit":0,"config":{"name":"ENVOY_NOTIFICATIONS"},"state":{"messages":0}}'
+        fi ;;
+      '$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS')
+        jq -cn --argjson q "$4" '{type: "io.nats.jetstream.api.v1.stream_msg_get_response", message: {subject: $q.last_by_subj, seq: 77, time: "2026-11-20T10:00:00Z", hdrs: "TkFUUy8xLjANCg0K", data: "eyJtZXNzYWdlIjoiYSBwcml2YXRlIG1lc3NhZ2UifQ=="}}' ;;
       '$SYS.REQ.USER.INFO')
         echo 'nats: permissions violation: Permissions Violation for Publish to "$SYS.REQ.USER.INFO"' >&2 ;;
       *) echo "fake nats: no answer for $*" >&2; exit 99 ;;
@@ -596,8 +661,9 @@ chmod +x "$root/natsbin/nats"
 # $FAKE/reads.out, its calls in $FAKE/reads.calls and its exit status in $status.
 run_reads() {
   : >"$FAKE/reads.calls"
+  : >"$FAKE/reads.calls.credentials"
   set +e
-  env "$@" CALLS="$FAKE/reads.calls" WORK_DIR="$FAKE" PATH="$root/natsbin:$PATH" timeout 20 sh -c "$(cat "$here/lib/legacy-subjects-gate-nats.sh")" >"$FAKE/reads.out" 2>"$FAKE/reads.err"
+  env -u NATS_USER -u NATS_PASSWORD -u NATS_TOKEN "$@" FORMS_JQ="$(cat "$here/lib/legacy-subjects-gate-forms.jq")" CALLS="$FAKE/reads.calls" WORK_DIR="$FAKE" PATH="$root/natsbin:$PATH" timeout 20 sh -c "$(cat "$here/lib/legacy-subjects-gate-nats.sh")" >"$FAKE/reads.out" 2>"$FAKE/reads.err"
   status=$?
   set -e
 }
@@ -619,30 +685,76 @@ expect_status 3
 expect_line "UNKNOWN: the stream's consumers: the request \$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS at offset 0 was answered with nothing: nats: permissions violation"
 done_case
 
-new_case "the NATS reads page a list from the last item of the page before, print a record's session and topics alone, and pass the inbox prefix to every call"
+new_case "the NATS reads page a list from the last item of the page before, print a record's session and topics and a message's sequence alone, and pass the inbox prefix to every call"
 run_reads NATS_INBOX_PREFIX=_INBOX_envoy_listener_gke
 [ "$status" = 0 ] || fail "the NATS reads exited $status: $(cat "$FAKE/reads.err")"
 offsets=$(awk -F'\t' '$1 == "consumers" {print $2}' "$FAKE/reads.out" | paste -sd, -)
 [ "$offsets" = "0,1,2,3" ] || fail "the consumer list was read at offsets $offsets, want 0,1,2,3: each page from the last item of the one before"
 record=$(awk -F'\t' '$1 == "interest" {print $4}' "$FAKE/reads.out" | base64 -d)
 [ "$record" = '{"session_id":"ses_a","topics":["notifications.agent.ses_a"]}' ] || fail "the Job printed the record $record, want its session id and topics alone"
+old=$(awk -F'\t' '$1 == "old_last" {print $2 "|" $4}' "$FAKE/reads.out")
+[ "${old%%|*}" = notifications.agent.ses_old ] && [ "$(wc -l <<<"$old")" = 1 ] ||
+  fail "the Job read the last message of $old, want of notifications.agent.ses_old alone, the one old-form subject listed"
+message=$(base64 -d <<<"${old#*|}")
+[ "$message" = '{"type":"io.nats.jetstream.api.v1.stream_msg_get_response","error":null,"message":{"subject":"notifications.agent.ses_old","seq":77,"time":"2026-11-20T10:00:00Z"}}' ] ||
+  fail "the Job printed the message $message, want its subject, sequence and time alone"
 while IFS=$'\t' read -r _ _ _ out _; do printf '%s' "$out" | base64 -d; echo; done <"$FAKE/reads.out" >"$FAKE/reads.decoded"
 ! grep -q -- "private-work" "$FAKE/reads.decoded" || fail "the Job's log holds the record's directory"
+! grep -q -- "eyJtZXNzYWdl\|TkFUUy8x" "$FAKE/reads.decoded" || fail "the Job's log holds a message's content or headers"
 [ "$(grep -c -v -- '--inbox-prefix _INBOX_envoy_listener_gke' "$FAKE/reads.calls")" = 0 ] || fail "a nats call took no inbox prefix: $(grep -v -- '--inbox-prefix' "$FAKE/reads.calls" | head -n 1)"
 done_case
 
-new_case "a stream still holding an old-form subject shuts the gate"
-replace_row subjects "notifications.dispatch.issue.> 0" "$(line subjects "notifications.dispatch.issue.> 0" 0 "$(subjects_page notifications.dispatch.issue.ACME.ACME-12.comment.created notifications.dispatch.issue.ACME-13.comment.created)" "")"
-reading
+# A hub behind the auth service admits a service by CONNECT's user `service` and the token as its
+# password (natscred.Service; natscallout's credentialKind), and reads a bare token as no
+# credential at all.
+new_case "with a projected token the NATS reads connect as the auth service's service user"
+printf '%s' "eyJhbGciOiJSUzI1NiJ9.$(printf '{"sub":"system:serviceaccount:envoy:envoy-listener","aud":["nats"]}' | base64 -w 0 | tr '+/' '-_' | tr -d '=').c2ln" >"$FAKE/token"
+run_reads NATS_TOKEN_FILE="$FAKE/token"
+[ "$status" = 0 ] || fail "the NATS reads exited $status: $(cat "$FAKE/reads.err")"
+shapes=$(sort -u "$FAKE/reads.calls.credentials")
+[ "$shapes" = "user=service password=set token=" ] ||
+  fail "the nats calls carried the credentials $(paste -sd'|' <<<"$shapes"), want user service with the token as its password on every call"
+credential=$(awk -F'\t' '$1 == "credential" {print $2 "|" $3 "|" $4}' "$FAKE/reads.out")
+[ "${credential%%|*}" = token ] && [ "$(cut -d'|' -f3 <<<"$credential" | base64 -d)" = '{"sub":"system:serviceaccount:envoy:envoy-listener","aud":["nats"],"iss":null,"exp":null}' ] ||
+  fail "the Job named its credential $credential, want the token's claims"
+done_case
+
+new_case "an old-form message published after the first reading shuts the second"
+first_reading_of 73
+replace_row subjects "notifications.dispatch.issue.> 0" \
+  "$(line subjects "notifications.dispatch.issue.> 0" 0 "$(subjects_page notifications.dispatch.issue.ACME.ACME-12.comment.created notifications.dispatch.issue.ACME-13.comment.created)" "")" \
+  "$(last_message notifications.dispatch.issue.ACME-13.comment.created 950)"
+reading --since "$FAKE/earlier.json"
 expect_status 1
-expect_line "GATE SHUT: the stream holds 1 old-form subject(s) under notifications.dispatch.issue.>: notifications.dispatch.issue.ACME-13.comment.created"
+expect_line "GATE SHUT: the stream holds 1 old-form subject(s) under notifications.dispatch.issue.> with a message published after the first reading's last stream sequence 900: notifications.dispatch.issue.ACME-13.comment.created (sequence 950 at 2026-11-20T10:00:00Z)"
 [ "$(jq -c .subjects_old "$FAKE/record.json")" = '["notifications.dispatch.issue.ACME-13.comment.created"]' ] ||
   fail "the record names $(jq -c .subjects_old "$FAKE/record.json") as old subjects"
 done_case
 
-new_case "an interest record holding an old-form topic shuts the gate; its own agent subject does not"
+new_case "an old-form message from before the first reading, still on the stream, does not shut the second"
+first_reading_of 73
+replace_row subjects "notifications.dispatch.issue.> 0" \
+  "$(line subjects "notifications.dispatch.issue.> 0" 0 "$(subjects_page notifications.dispatch.issue.ACME.ACME-12.comment.created notifications.dispatch.issue.ACME-13.comment.created)" "")" \
+  "$(last_message notifications.dispatch.issue.ACME-13.comment.created 850)"
+reading --since "$FAKE/earlier.json"
+expect_status 0
+expect_line "PASS: the stream holds no old-form message under notifications.dispatch.issue.> published after the first reading's last stream sequence 900; 1 old-form subject(s) hold only messages from before it"
+expect_last "GATE OPEN"
+done_case
+
+new_case "an old-form subject whose last message was not read is UNKNOWN"
+first_reading_of 73
+replace_row subjects "notifications.dispatch.issue.> 0" \
+  "$(line subjects "notifications.dispatch.issue.> 0" 0 "$(subjects_page notifications.dispatch.issue.ACME.ACME-12.comment.created notifications.dispatch.issue.ACME-13.comment.created)" "")"
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: the stream's subjects under notifications.dispatch.issue.>: the last message of 1 old-form subject(s) could not be read: notifications.dispatch.issue.ACME-13.comment.created (the Job printed no read of it)"
+done_case
+
+new_case "an interest record holding an old-form topic at the second reading shuts the gate; its own agent subject does not"
+first_reading_of 73
 replace_row interest ses_a "$(line interest ses_a 0 "$(interest ses_a notifications.agent.ses_a notifications.role.lead-reviewer)" "")"
-reading
+reading --since "$FAKE/earlier.json"
 expect_status 1
 expect_line "GATE SHUT: the interest record of session ses_a holds notifications.role.lead-reviewer, in an old form"
 expect_no_line "notifications.agent.ses_a, in an old form"
@@ -766,18 +878,18 @@ expect_status 3
 expect_line "UNKNOWN: the stream's info: its configuration carries no metadata envoy_stream_id"
 done_case
 
-new_case "a first reading that was not clean cannot open the gate"
-replace_row subjects "notifications.dispatch.issue.> 0" "$(line subjects "notifications.dispatch.issue.> 0" 0 "$(subjects_page notifications.dispatch.issue.ACME-13.comment.created)" "")"
-: >"$FAKE/calls"
-reading
-expect_status 1
-jq '.started_at -= 262800 | .finished_at -= 262800 | .listeners |= map(.read_at -= 262800)' "$FAKE/record.json" >"$FAKE/earlier.json"
-rm -f "$FAKE/record.json"
-cp "$base/job.log" "$FAKE/job.log"
+new_case "a reading that shut the gate is no first reading"
+first_reading_of 146
+replace_row interest ses_a "$(line interest ses_a 0 "$(interest ses_a notifications.agent.ses_a notifications.role.lead-reviewer)" "")"
 reading --since "$FAKE/earlier.json"
 expect_status 1
-expect_line "GATE SHUT: the first reading, taken"
-expect_line "was not clean: it held an old-form name"
+jq '.started_at -= 262800 | .finished_at -= 262800 | .listeners |= map(.read_at -= 262800)' "$FAKE/record.json" >"$FAKE/shut.json"
+rm -f "$FAKE/record.json"
+cp "$base/job.log" "$FAKE/job.log"
+reading --since "$FAKE/shut.json"
+expect_status 1
+expect_line "GATE SHUT: the reading named with --since, taken"
+expect_line "shut the gate, so it is no first reading"
 done_case
 
 new_case "a listener that is not running is UNKNOWN"
@@ -883,6 +995,17 @@ replace_row stream_info - "$(line stream_info - 0 '{"type":"io.nats.jetstream.ap
 reading
 expect_status 3
 expect_line "UNKNOWN: the stream's info: the request \$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS: the server answered 404: stream not found"
+done_case
+
+# A consumer list answer that carries the server's error is no list, whatever else it holds: read
+# as one, it would be an empty list. jq binds a function parameter's name as a filter too, so a
+# judge whose parameter were named `type` would read `.error | type` as that parameter and take
+# this answer for a list (jq 1.7.1, as CI runs it; jaq does not bind it so).
+new_case "a consumer list answer carrying the server's error is UNKNOWN, naming the error"
+replace_row consumers 0 "$(line consumers 0 0 '{"type":"io.nats.jetstream.api.v1.consumer_list_response","total":0,"offset":0,"limit":256,"consumers":[],"error":{"code":503,"err_code":10039,"description":"jetstream not enabled for account"}}' "")"
+reading
+expect_status 3
+expect_line "UNKNOWN: the stream's consumers: the request \$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS at offset 0: the server answered 503: jetstream not enabled for account"
 done_case
 
 new_case "a judgement that fails is UNKNOWN, with its verdict and a record"

@@ -914,21 +914,29 @@ What it reads, all of it read-only:
   consumer of the stream (`$JS.API.CONSUMER.LIST`, which the listener's grant holds, where `nats
   consumer ls` asks `CONSUMER.NAMES`, which it does not); the stream's subjects under
   `notifications.dispatch.issue.>`, `notifications.agent.>`,
-  `notifications.envoy.exceptions.notifications.agent.>` and `notifications.envoy.kept.>`; and
-  every record of the interest store `envoy_interests`. A list longer than one answer is read
-  page by page, each page from the last item of the page before, and a refused or empty answer
-  ends that list's reads at once.
+  `notifications.envoy.exceptions.notifications.agent.>` and `notifications.envoy.kept.>`; the
+  last message of each of those subjects in an old form (`$JS.API.STREAM.MSG.GET` by
+  `last_by_subj`: its subject, stream sequence and time alone, never its content); and every
+  record of the interest store `envoy_interests`. A list longer than one answer is read page by
+  page, each page from the last item of the page before, and a refused or empty answer ends that
+  list's reads at once.
 
-It shuts on a consumer one of whose filters only an old-form name matches and whose new form the
-same consumer does not also filter (a Legion daemon's `legion-go-<project>-<kind>` or any other;
-a session consumer filters both forms of its topics until the old form is refused, so its old
-filter loses nothing); an old-form subject the stream still holds; an interest record holding an
-old-form topic other than its session's own agent subject, which the listener writes into every
-record itself until the old form is refused; and, at the second reading, a listener whose count
-rose under any kind, a first reading that was not clean, or less than the retention between the
-two, the readings' and each listener's own two reads of its counter. The old form is the gate's
-own rule (`lib/legacy-subjects-gate-forms.jq`, `old_form`), so the gate stays right once the code
-that reads both forms is deleted.
+The first reading shuts on no old-form name. The stream keeps the old-form messages published
+before every producer moved for its whole retention, and interest records and consumer filters may
+still be in an old form, so the first reading names each it finds (`FOUND`) and records the
+stream's last sequence, the newest old-form message and every old-form counter. The second reading,
+at least the retention later, shuts on an old-form message published after the first reading's
+last stream sequence (an old-form subject whose last message is later); a listener whose count rose
+under any kind; a consumer one of whose filters only an old-form name matches and whose new form
+the same consumer does not also filter (a Legion daemon's `legion-go-<project>-<kind>` or any
+other; a session consumer filters both forms of its topics until the old form is refused, so its
+old filter loses nothing); an interest record holding an old-form topic other than its session's
+own agent subject, which the listener writes into every record itself until the old form is
+refused; a reading named with `--since` that shut the gate; and less than the retention between the
+two, the readings' and each listener's own two reads of its counter. The old form is the gate's own
+rule (`lib/legacy-subjects-gate-forms.jq`, `old_form`, which the gate also hands the Job to choose
+the subjects whose last message it reads), so the gate stays right once the code that reads both
+forms is deleted.
 
 What it cannot see prints `UNKNOWN`, never `GATE OPEN`: a surface it could not read or that
 answered nothing (no listener, no Legion daemon consumer, no issue or agent subject on the stream,
@@ -954,21 +962,23 @@ with every capability dropped and a scratch directory in memory, with `backoffLi
 legacy-subjects-gate` and `owner: <your login>`. The gate reads the Job's log, deletes it and
 reads back that no Job or pod of its name is left; one it could not delete prints `UNKNOWN` with
 the command that deletes it. The Job's log holds what the gate judges and no more: of an interest
-record, its session id and its topics, never its directory, machine or title. The cluster keeps
-that log in its logging backend after the Job is deleted, as it keeps the listener's own, which
-already logs every topic it delivers, so the Job adds no kind of text the namespace does not log.
+record, its session id and its topics, never its directory, machine or title; of a stored message,
+its subject, stream sequence and time. The cluster keeps that log in its logging backend after the
+Job is deleted, as it keeps the listener's own, which already logs every topic it delivers, so the
+Job adds no kind of text the namespace does not log.
 
-It prints `IDENTITY` (whom the NATS reads ran as), `READ`, `PASS`, `GATE SHUT` or `UNKNOWN` per
-surface, the Job's creation and deletion, and the verdict alone on the last line: `GATE OPEN`
-(exit 0) at a clean second reading, `GATE SHUT` (exit 1), `UNKNOWN` (exit 3), and at a clean first
-reading `FIRST READING` naming when to read again (exit 4). It writes the reading to `--record` in
-every case, a file that must not exist yet; a clean second reading's record is a clean first
-reading for the next window. A usage error exits 2 and reads nothing. It needs `kubectl` signed in
-to the cluster as an account that may list pods in every namespace, read the logs of the listener
-pods in each namespace that runs one, read the listener Deployment, and create, read, read the
-logs of and delete Jobs and pods in `envoy` (a developer box's account: list through its
-`container.viewer` role, the rest through its `edit` role in `envoy` and its `pods/log` read in
-`dispatch`), plus `jq`, `curl` and `base64`.
+It prints `IDENTITY` (whom the NATS reads ran as), `READ`, `PASS`, `FOUND` (an old-form name a
+first reading found), `GATE SHUT` or `UNKNOWN` per surface, the Job's creation and deletion, and the
+verdict alone on the last line: `GATE OPEN` (exit 0) at a clean second reading, `GATE SHUT` (exit
+1), `UNKNOWN` (exit 3), and at a first reading that read every surface `FIRST READING`, naming its
+`FOUND` count, the stream sequence the second reading reads after, and when to read again (exit 4).
+It writes the reading to `--record` in every case, a file that must not exist yet; a second reading
+that opened is a first reading for the next window. A usage error exits 2 and reads nothing. It
+needs `kubectl` signed in to the cluster as an account that may list pods in every namespace, read
+the logs of the listener pods in each namespace that runs one, read the listener Deployment, and
+create, read, read the logs of and delete Jobs and pods in `envoy` (a developer box's account: list
+through its `container.viewer` role, the rest through its `edit` role in `envoy` and its `pods/log`
+read in `dispatch`), plus `jq`, `curl` and `base64`.
 
 `legacy-subjects-gate.test.sh` proves every verdict behind a fake `kubectl` and a fake `curl`,
 with the Job's log written in its own format, runs the Job's own script under `sh` behind a fake
