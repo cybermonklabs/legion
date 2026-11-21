@@ -51,8 +51,8 @@ var shared struct {
 }
 
 // Clone is the URL of a database carrying every migration, cloned from this process's template and
-// dropped at the test's end. Without LEGION_TEST_PG_DSN the test is skipped, as testdb.Database's
-// is.
+// dropped at the test's end, with every pool opened on it held to testdb.PoolConns connections
+// (testdb.PoolBounded). Without LEGION_TEST_PG_DSN the test is skipped, as testdb.Database's is.
 func Clone(t testing.TB, prefix string) string {
 	t.Helper()
 	if !shared.main {
@@ -72,6 +72,9 @@ func Clone(t testing.TB, prefix string) string {
 	}
 	clone, err := testdb.DatabaseURL(shared.server, name)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if clone, err = testdb.PoolBounded("LEGION_TEST_PG_DSN", clone); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := shared.admin.Exec(context.Background(), cloneStatement(name)); err != nil {

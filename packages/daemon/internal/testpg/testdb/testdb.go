@@ -183,9 +183,10 @@ func RandomName(prefix string) (string, error) {
 // URL keeps dsn's query. Every database a test binary of this module names from
 // LEGION_TEST_PG_DSN is named here — create above, internal/testpg's prepare and Clone, and the
 // live proofs' takeOwnDatabase (internal/daemon/live_agent_proof_test.go) — so one place reads
-// each rewrite back, and no caller checks itself. Delayed's proxy URL is the one other rewrite
-// of a DSN this package makes, and it takes the same check (rewriteDSN below). dsn is what
-// LEGION_TEST_PG_DSN holds, which every caller read from that variable, and a refusal names it.
+// each rewrite back, and no caller checks itself. Delayed's proxy URL and PoolBounded's pool size
+// are the other rewrites of a DSN this package makes, and they take the same check (rewriteDSN
+// below). dsn is what LEGION_TEST_PG_DSN holds, which every caller read from that variable, and a
+// refusal names it.
 //
 // A rewrite pgx reads another host, port or user from than dsn is refused, and so is one pgx
 // reads another database from than database. Go's net/url ends the user name at the last `@` and
@@ -212,13 +213,35 @@ func DatabaseURL(dsn, database string) (string, error) {
 	return rewriteDSN("LEGION_TEST_PG_DSN", dsn, rewrite{database: database})
 }
 
+// PoolConns is the most connections a pool a test opens on a URL PoolBounded made may hold. A pool
+// that is not told its size is sized by pgx at the greater of 4 and the machine's CPU count
+// (pgxpool.ParseConfig), so on a box with 288 CPUs one test that runs 100 statements at once asks
+// for 100 connections, which is all PostgreSQL's default max_connections allows, and fails with
+// "too many clients" there while it passes on a small machine. 4 is pgx's own floor: the size
+// every pool has on a machine with 4 CPUs or fewer.
+const PoolConns = 4
+
+// poolMaxConns is the key of a DSN's query that pgxpool reads as its pool's size.
+const poolMaxConns = "pool_max_conns"
+
+// PoolBounded is dsn with its pools held to PoolConns connections (pool_max_conns), unless dsn sets
+// a size of its own, which it keeps. name is what the caller read dsn from, and it starts a
+// refusal, as DatabaseURL's does. Only pgxpool reads that key: pgx.Connect sends it to the server
+// as a setting the server does not know, and libpq refuses the URL. So it is on the URLs that
+// only pools open, internal/testpg's Clone and internal/daemon's testDSN, and not on DatabaseURL's
+// or Database's, which an admin connection, a scratch Dispatch and a shell can be given.
+func PoolBounded(name, dsn string) (string, error) {
+	return rewriteDSN(name, dsn, rewrite{pooled: true})
+}
+
 // rewrite is what a caller of rewriteDSN changes about the DSN it was given: the database the
-// rewrite must name (DatabaseURL), or the address it must send the connection to (Delayed). A
-// field left empty is one the rewrite keeps.
+// rewrite must name (DatabaseURL), the address it must send the connection to (Delayed), or the
+// size of the pools opened on it (PoolBounded). A field left empty is one the rewrite keeps.
 type rewrite struct {
 	database string
 	host     string
 	port     uint16
+	pooled   bool
 }
 
 // applied is read with this rewrite in it, which is what pgx must read from the rewritten DSN.
@@ -297,6 +320,10 @@ func rewriteDSN(name, dsn string, want rewrite) (string, error) {
 	}
 	if want.host != "" {
 		parsed.Host = net.JoinHostPort(want.host, strconv.Itoa(int(want.port)))
+	}
+	if query := parsed.Query(); want.pooled && !query.Has(poolMaxConns) {
+		query.Set(poolMaxConns, strconv.Itoa(PoolConns))
+		parsed.RawQuery = query.Encode()
 	}
 	rewritten := parsed.String()
 	before, err := pgconn.ParseConfig(dsn)
