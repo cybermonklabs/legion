@@ -177,6 +177,10 @@
         "test": "print-projectaccess.refusalCode"
       },
       {
+        "holder": "(*github.com/sjawhar/envoy/internal/cipher/projectaccess.Client).MemberKind struct{MemberKind redact.RemoteText \"json:\\\"member_kind\\\"\"}",
+        "test": "print-projectaccess.Client.MemberKind.answer"
+      },
+      {
         "holder": "github.com/sjawhar/envoy/cmd/cipher-devrelay.cmdMachineApprove struct{RecordID string \"json:\\\"record_id\\\"\"; State redact.RemoteText \"json:\\\"state\\\"\"}",
         "test": "print-devrelay.cmdMachineApprove.lookup"
       },
@@ -4315,6 +4319,27 @@
       "production": "github.com/sjawhar/envoy/internal/cipher/projectaccess.refusalCode struct{Code redact.RemoteText \"json:\\\"code\\\"\"}: every printer at every placement"
     },
     {
+      "id": "print-projectaccess.Client.MemberKind.answer",
+      "requirement": "r2-held",
+      "package": "./internal/cipher/projectaccess",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/projectaccess.Client.MemberKind.answer",
+      "production": "(*github.com/sjawhar/envoy/internal/cipher/projectaccess.Client).MemberKind struct{MemberKind redact.RemoteText \"json:\\\"member_kind\\\"\"}: every printer at every placement"
+    },
+    {
+      "id": "projectaccess-answer-words-member-kind",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/projectaccess",
+      "test": "TestAnUnknownMemberKindNamesDispatchsWordsAsTheRuleReadsThem/echo",
+      "production": "projectaccess Client.MemberKind: an unknown member_kind held as redact.RemoteText, decoded with the question's record, so ErrUnknownMemberKind names it as the rule reads it"
+    },
+    {
+      "id": "projectaccess-answer-words-member-kind-plain",
+      "requirement": "r4-unchanged",
+      "package": "./internal/cipher/projectaccess",
+      "test": "TestAnUnknownMemberKindNamesDispatchsWordsAsTheRuleReadsThem/plain",
+      "production": "projectaccess Client.MemberKind: an unknown member_kind of plain words still prints as it came, quoted"
+    },
+    {
       "id": "print-devrelay.cmdMachineApprove.lookup",
       "requirement": "r2-held",
       "package": "./cmd/cipher-devrelay",
@@ -6556,6 +6581,11 @@
       "site": "a commit's sha with no date, printed raw by the delivery fetch",
       "source": "the class search of the retried-trade finding",
       "guard": "delivery-answer-words-not-a-sha"
+    },
+    {
+      "site": "Dispatch's member_kind, decoded into a plain string and printed raw by the project access client's ErrUnknownMemberKind",
+      "source": "round 5's deep review",
+      "guard": "projectaccess-answer-words-member-kind"
     },
     {
       "site": "a note blob's encoding, printed raw by the GitHub App client",

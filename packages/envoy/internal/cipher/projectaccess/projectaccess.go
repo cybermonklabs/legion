@@ -223,7 +223,10 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 
 // MemberKind is the person's member kind, from the cache while it is younger than CacheTTL: one of
 // MemberFull, MemberRestricted and MemberNone. Any other answer, an empty one included, is
-// ErrUnknownMemberKind naming it, never kept and never a failure to ask.
+// ErrUnknownMemberKind naming it, never kept and never a failure to ask. The kind is Dispatch's
+// word, or a stand-in's, held as redact.RemoteText with the question's record: it is told apart as
+// it came (RemoteText.Equal), and an unknown one prints only as the rule reads it, with the account
+// token the question carried redacted.
 func (c *Client) MemberKind(ctx context.Context, person string) (string, error) {
 	person = record.CanonicalLogin(person)
 	if person == "" {
@@ -237,7 +240,7 @@ func (c *Client) MemberKind(ctx context.Context, person string) (string, error) 
 	}
 	asked := c.now()
 	var answer struct {
-		MemberKind string `json:"member_kind"`
+		MemberKind redact.RemoteText `json:"member_kind"`
 	}
 	status, err := c.get(ctx, personPath, url.Values{"person": {person}}, &answer)
 	if err != nil {
@@ -246,9 +249,8 @@ func (c *Client) MemberKind(ctx context.Context, person string) (string, error) 
 	if status == http.StatusNotFound {
 		return "", fmt.Errorf("projectaccess: dispatch answered %d with no member kind for %s", status, person)
 	}
-	switch answer.MemberKind {
-	case MemberFull, MemberRestricted, MemberNone:
-	default:
+	kind := knownKind(answer.MemberKind)
+	if kind == "" {
 		return "", fmt.Errorf("%w: %q for %s", ErrUnknownMemberKind, answer.MemberKind, person)
 	}
 	c.mu.Lock()
@@ -256,10 +258,21 @@ func (c *Client) MemberKind(ctx context.Context, person string) (string, error) 
 		c.sweepLocked()
 	}
 	if held, ok := c.kinds[person]; (!ok || held.at.Before(asked)) && len(c.kinds) < maxCached {
-		c.kinds[person] = cachedKind{kind: answer.MemberKind, at: asked}
+		c.kinds[person] = cachedKind{kind: kind, at: asked}
 	}
 	c.mu.Unlock()
-	return answer.MemberKind, nil
+	return kind, nil
+}
+
+// knownKind is the one of MemberFull, MemberRestricted and MemberNone that kind is, compared as it
+// came, and "" for any other kind.
+func knownKind(kind redact.RemoteText) string {
+	for _, known := range []string{MemberFull, MemberRestricted, MemberNone} {
+		if kind.Equal(known) {
+			return known
+		}
+	}
+	return ""
 }
 
 // States answers each of projects Dispatch holds, as it is to a question naming no person, and
