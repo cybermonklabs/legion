@@ -92,7 +92,6 @@ case "$args" in
   [ -f "$dir/kuberc-strict" ] && [ "$KUBERC" != off ] && { echo "error: error executing jsonpath: certificate-authority-data is not found. object given to jsonpath engine was: $(cat "$dir/kuberc-strict")" >&2; exit 1; }
   exit 0 ;;
 *" get statefulset envoy-nats --output json") [ -f "$dir/get-stderr" ] && { cat "$dir/get-stderr" >&2; exit 1; }
-  [ -f "$dir/get-fails" ] && { echo "error: Get \"$(cat "$dir/get-fails")/apis/apps/v1/namespaces/envoy/statefulsets/envoy-nats\": dial tcp: connection refused" >&2; exit 1; }
   exec cat "$dir/statefulset.json" ;;
 *" get pod "*" --output json") pod=${args#* get pod }; pod=${pod%% *}; exec cat "$dir/pod-$pod.json" ;;
 *" port-forward pod/"*) [ -f "$dir/forward-stderr" ] && { cat "$dir/forward-stderr" >&2; exit 1; }
@@ -675,8 +674,10 @@ func TestKubectlRefusesAServerWithACredential(t *testing.T) {
 				"clusters": []any{map[string]any{"name": "example", "cluster": map[string]any{"server": row.server}}}})
 			require.NoError(t, err)
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), config, 0o600))
+			// The failing read, as kubectl prints a refused connection, which names the server whole.
+			getFails := fmt.Sprintf("error: Get \"%s/apis/apps/v1/namespaces/envoy/statefulsets/envoy-nats\": dial tcp: connection refused\n", row.server)
 			if row.getFails {
-				require.NoError(t, os.WriteFile(filepath.Join(dir, "get-fails"), []byte(row.server), 0o600))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "get-stderr"), []byte(getFails), 0o600))
 			}
 			run := func(args ...string) (int, string) {
 				t.Helper()
@@ -712,14 +713,14 @@ func TestKubectlRefusesAServerWithACredential(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), clean, 0o600))
 			require.NoError(t, os.Remove(filepath.Join(dir, "calls")))
-			_ = os.Remove(filepath.Join(dir, "get-fails"))
+			_ = os.Remove(filepath.Join(dir, "get-stderr"))
 			back = h.atEnv()
 			code, output = run("record", "--out", out)
 			back()
 			require.Equal(t, 0, code, output)
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), config, 0o600))
 			if row.getFails {
-				require.NoError(t, os.WriteFile(filepath.Join(dir, "get-fails"), []byte(row.server), 0o600))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "get-stderr"), []byte(getFails), 0o600))
 			}
 			require.NoError(t, os.Remove(filepath.Join(dir, "calls")))
 			code, output = run("check", "--record", out)
