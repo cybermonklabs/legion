@@ -168,6 +168,7 @@ var referenceDispositions = map[string]referenceDisposition{
 	"messages.target":                           {filteredReference, "a `session:<id>` or `role:<name>` target, on an issue any session: leaveOutHiddenMessageSessions; on no issue a party of the conversation (MessageClause)"},
 	"near_copy_checks.issue_key":                {ownColumn, "the issue its create wrote, of the row's project, whose candidates are issues of that project too (duplicateGate)"},
 	"near_copy_checks.project_key":              {ownColumn, "the create's project (nearCopyChecksPageQuery and getNearCopyCheck bind its project clause)"},
+	"outside_invitations.project_key":           {internalColumn, "the link's project, which the enrollment holds the person to (NamedDirectly) and logs; no read answers it"},
 	"project_access.project_key":                {ownColumn, "the access list's project"},
 	"projects.default_assignee":                 {filteredReference, "a person the writer sees, read as an ask's waiting_on_person: leaveOutHiddenAskPersons"},
 	"pull_request_heads.issue_key":              {internalColumn, "the attribution pass's record, answered through delivery_pull_requests"},
