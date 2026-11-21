@@ -1,16 +1,88 @@
-// The attributes of a typed block's opening line, the text between its `{` and the `}` that ends
-// the line, read as the Dispatch server reads them: pmdoc's parseDirectiveAttributes and
-// quotedTypedBlockID (packages/envoy/internal/dispatch/pmdoc/directive.go). The server keeps one
-// reader of this grammar, and this module is this package's one copy of it. The one reader of the
-// frame around them, askgate-typed-opener.ts, reads them with it, for the ask gate
-// (askgate-new-asks.ts) and the stored-spelling check (dispatch-commands/stored-spelling.ts)
-// alike, so the two read a line alike, and alike with the server.
+// A typed block's opening line, read as the Dispatch server reads it: pmdoc's
+// ParseTypedDirectiveOpen, parseDirectiveAttributes, quotedTypedBlockID and
+// unsupportedDirectiveReason (packages/envoy/internal/dispatch/pmdoc/directive.go). The server
+// keeps one reader of this grammar, and this module is this package's one copy of it: the reader
+// of the frame of that line (the fence, the name, the `{` and the `}` that ends the line), and the
+// reader of the attributes between the two braces. The ask gate (askgate-new-asks.ts) reads a line
+// here to open an ask block only where the server opens one, and to name it by the id the server
+// reads. The stored-spelling check (dispatch-commands/stored-spelling.ts) reads a line here to
+// find each attribute as written. So the two read a line alike, and alike with the server: each
+// rule here is the server's, and a line the server refuses opens nothing.
 
 import { TYPED_BLOCK_ID_SHORTCUT_EXCLUDED } from "@legion/contracts";
 
+/** How many times `char` stands in a row in `text` from `index`. */
+export function runOf(text: string, index: number, char: string): number {
+  let end = index;
+  while (text.charAt(end) === char) end++;
+  return end - index;
+}
+
 /** directive.go's `directiveNameByte`: a letter, a digit, `_` or `-`. */
-export function directiveNameChar(char: string): boolean {
+function directiveNameChar(char: string): boolean {
   return /^[A-Za-z0-9_-]$/.test(char);
+}
+
+/** One attribute as it is written (`#id`, `.class`, `name` or `name="value"`), under the name
+ *  Dispatch reads it by: `id` for `#…` and `id="…"`, `class` for `.…`, and its key otherwise. */
+export interface DirectiveAttribute {
+  readonly name: string;
+  readonly text: string;
+}
+
+/** The attributes of a typed block's opening line, as directiveAttributes reads them. */
+interface DirectiveAttributes {
+  /** Each attribute as written, in the order the line writes them. */
+  readonly attributes: readonly DirectiveAttribute[];
+  /** The whitespace around the attributes, as written: one more than the attributes, the first
+   *  before the first attribute and the last after the last one. */
+  readonly gaps: readonly string[];
+  /** The block's id: what follows `#`, or the value of `id="…"` decoded (decodedId). Undefined
+   *  when the line names no id, and when this reader cannot tell what Go decodes. */
+  readonly id: string | undefined;
+}
+
+/** A typed block's opening line as the server reads it (typedOpenerAt): the count of its fence's
+ *  colons, the block's name, and the attributes between its `{` and the `}` that ends the line. */
+export interface TypedOpener extends DirectiveAttributes {
+  readonly name: string;
+  readonly colons: number;
+}
+
+/**
+ * The index of the `{` of a typed block's fence that stands at index `at` of `text`: three colons
+ * or more, a name of directive.go's name characters (directiveNameChar), then `{` at once. -1
+ * where no such fence stands at `at`. It reads no more than the colons and the name.
+ */
+export function typedFenceBrace(text: string, at: number): number {
+  const nameStart = at + runOf(text, at, ":");
+  if (nameStart - at < 3) return -1;
+  let brace = nameStart;
+  while (directiveNameChar(text.charAt(brace))) brace++;
+  return brace > nameStart && text.charAt(brace) === "{" ? brace : -1;
+}
+
+/**
+ * directive.go's `ParseTypedDirectiveOpen`, read from index `at` of `text`: the fence there
+ * (typedFenceBrace), and the line ends with `}`, the attributes between the `{` and that `}` read
+ * as the server reads them (directiveAttributes). Undefined where no fence stands at `at`, where
+ * the line does not end with `}`, and where the server refuses the attributes.
+ */
+export function typedOpenerAt(text: string, at: number): TypedOpener | undefined {
+  const brace = typedFenceBrace(text, at);
+  // The `{` is no `}`, so the `}` that ends the line stands after it.
+  if (brace === -1 || !text.endsWith("}")) return undefined;
+  const attributes = directiveAttributes(text.slice(brace + 1, -1));
+  if (attributes === undefined) return undefined;
+  const colons = runOf(text, at, ":");
+  return { ...attributes, name: text.slice(at + colons, brace), colons };
+}
+
+/** directive.go's `unsupportedDirectiveReason`: a line of directive syntax the server refuses. */
+export function refusedDirective(text: string): boolean {
+  if (text.startsWith(":::")) return text !== ":::" && typedOpenerAt(text, 0) === undefined;
+  if (text.startsWith("::")) return text.length > 2 && directiveNameChar(text.charAt(2));
+  return text.length > 1 && directiveNameChar(text.charAt(1)) && text.includes("{");
 }
 
 /**
@@ -24,25 +96,6 @@ function attributeSpace(char: string): boolean {
 
 /** The key that holds a block's id among a directive's attributes (pmdoc's `BlockIDAttr`). */
 const BLOCK_ID_ATTRIBUTE = "blockId";
-
-/** One attribute as it is written (`#id`, `.class`, `name` or `name="value"`), under the name
- *  Dispatch reads it by: `id` for `#…` and `id="…"`, `class` for `.…`, and its key otherwise. */
-export interface DirectiveAttribute {
-  readonly name: string;
-  readonly text: string;
-}
-
-/** The attributes of a typed block's opening line, as directiveAttributes reads them. */
-export interface DirectiveAttributes {
-  /** Each attribute as written, in the order the line writes them. */
-  readonly attributes: readonly DirectiveAttribute[];
-  /** The whitespace around the attributes, as written: one more than the attributes, the first
-   *  before the first attribute and the last after the last one. */
-  readonly gaps: readonly string[];
-  /** The block's id: what follows `#`, or the value of `id="…"` decoded (decodedId). Undefined
-   *  when the line names no id, and when this reader cannot tell what Go decodes. */
-  readonly id: string | undefined;
-}
 
 /**
  * directive.go's `parseDirectiveAttributes`: the text between a typed block's `{` and the `}` that
@@ -59,7 +112,7 @@ export interface DirectiveAttributes {
  * whitespace or at the end of the text. One pass reads the text, so no text costs more than its
  * length.
  */
-export function directiveAttributes(value: string): DirectiveAttributes | undefined {
+function directiveAttributes(value: string): DirectiveAttributes | undefined {
   const attributes: DirectiveAttribute[] = [];
   const gaps: string[] = [];
   const named = new Set<string>();

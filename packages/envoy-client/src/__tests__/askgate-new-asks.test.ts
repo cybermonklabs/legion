@@ -343,7 +343,7 @@ describe("an id is read as the server reads attributes", () => {
   });
 
   // Of the named references, the reader decodes amp, lt, gt, quot, apos and nbsp alone, so an
-  // id holding any other is read as no id, and its ask is still reported (askgate-typed-opener.ts).
+  // id holding any other is read as no id, and its ask is still reported (typed-block-opener.ts).
   test("an id holding another named reference reads as no id", () => {
     expect(askBlocks(':::ask{id="&eacute;t&eacute;"}\nWhich?\n:::')).toEqual([
       { kind: "block", text: "Which?", opening: "Which?" },

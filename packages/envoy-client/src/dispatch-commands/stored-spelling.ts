@@ -1,6 +1,11 @@
 import { PATH_KEEPS_BYTES, pathKeepsBytesOf } from "@legion/contracts";
-import { runOf, type TypedOpener, typedFenceBrace, typedOpenerAt } from "../askgate-typed-opener";
-import type { DirectiveAttribute } from "../directive-attributes";
+import {
+  type DirectiveAttribute,
+  runOf,
+  type TypedOpener,
+  typedFenceBrace,
+  typedOpenerAt,
+} from "../typed-block-opener";
 
 /**
  * A typed block's opening line as Dispatch reads it (TypedOpener), cut where the attribute-order
@@ -19,7 +24,7 @@ interface HeadedOpener extends TypedOpener {
  *  line that ends in such a fence. Undefined for a line that holds no fence, and for one that is
  *  no opener from its first fence: the scan does not go on to a later one. A run of colons is
  *  passed whole and any other character once, so no line costs more than its length. */
-function typedOpener(line: string): HeadedOpener | undefined {
+function headedOpener(line: string): HeadedOpener | undefined {
   for (let at = 0; at < line.length; at += Math.max(1, runOf(line, at, ":"))) {
     const brace = typedFenceBrace(line, at);
     if (brace === -1) continue;
@@ -64,7 +69,7 @@ function inStoredOrder(given: HeadedOpener, stored: HeadedOpener): string | unde
 
 /** Whether the written opening line `given` differs from the stored line `held`, read as the
  *  opener `stored`, only in the order of its attributes: `given` with them put in `stored`'s
- *  order is `held`. False when either line is no typed block's opening line (typedOpener, which
+ *  order is `held`. False when either line is no typed block's opening line (headedOpener, which
  *  gives undefined). The upload and the refusal both pass over such a line by this rule. */
 function onlyReordered(
   given: HeadedOpener | undefined,
@@ -101,11 +106,11 @@ function attributesReordered(given: string, stored: string): string[] | undefine
   for (const [index, held] of holds.entries()) {
     const wrote = written[index];
     if (wrote === held) continue;
-    const opener = typedOpener(held);
+    const opener = headedOpener(held);
     if (
       wrote === undefined ||
       opener === undefined ||
-      !onlyReordered(typedOpener(wrote), held, opener)
+      !onlyReordered(headedOpener(wrote), held, opener)
     ) {
       return undefined;
     }
@@ -144,7 +149,7 @@ interface LineWord {
 }
 
 /** `line` cut into its words, `opener` being that line read as a typed block's opening line
- *  (typedOpener), undefined for any other line. The words joined are the line. */
+ *  (headedOpener), undefined for any other line. The words joined are the line. */
 function lineWords(line: string, opener: HeadedOpener | undefined): LineWord[] {
   const plain = (text: string): LineWord[] =>
     (text.match(/\s+|\S+/g) ?? []).map((word) => ({ text: word, attribute: false }));
@@ -241,7 +246,7 @@ function attributeDifference(
 }
 
 /** How the line `wrote` and the stored line `held` first differ, `given` and `stored` being each
- *  read as a typed block's opening line (typedOpener), undefined for any other line. A typed
+ *  read as a typed block's opening line (headedOpener), undefined for any other line. A typed
  *  block's opening line is read by its attributes first, then, with its attributes in the stored
  *  order, word by word. When only one of the two lines reads as an opener, both are cut as plain
  *  words: cut in two ways, the two lines would differ at a word the cuts made, not the text. */
@@ -259,7 +264,7 @@ function lineDifference(
   if (attribute !== undefined) return attribute;
   const reordered = inStoredOrder(given, stored);
   if (reordered !== undefined && reordered !== wrote) {
-    const words = lineWords(reordered, typedOpener(reordered));
+    const words = lineWords(reordered, headedOpener(reordered));
     return `line ${line}, with its attributes put in the order Dispatch stores, ${wordDifference(words, lineWords(held, stored))}`;
   }
   return `line ${line} ${wordDifference(lineWords(wrote, given), lineWords(held, stored))}`;
@@ -292,8 +297,8 @@ function firstStoredDifference(given: string, stored: string): string {
       return `the store drops line ${line + 1}, ${quotedStoredLine(Array.from(wrote), 0)}`;
     }
     if (wrote !== undefined && held !== undefined) {
-      const givenOpener = typedOpener(wrote);
-      const storedOpener = typedOpener(held);
+      const givenOpener = headedOpener(wrote);
+      const storedOpener = headedOpener(held);
       if (onlyReordered(givenOpener, held, storedOpener)) continue;
       return lineDifference(line + 1, wrote, givenOpener, held, storedOpener);
     }
