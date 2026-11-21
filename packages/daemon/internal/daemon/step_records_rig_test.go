@@ -89,7 +89,7 @@ func newStepRecordsRig(t *testing.T, issues int) *stepRecordsRig {
 }
 
 // newStepRecordsRigWith sets up dispatch, a running Dispatch, with the run's project, its
-// repository mapping and issues issues, seeds the daemon's store of proof with each issue at
+// default repository and issues issues, seeds the daemon's store of proof with each issue at
 // admitted, its gate approved, on an open pull request of its own GitHub reports clean, boots the
 // daemon at Dispatch and registers each tree's architect. The admission pass then starts planning,
 // the first step of each walk. The walk's steps act on the first issue until on moves them.

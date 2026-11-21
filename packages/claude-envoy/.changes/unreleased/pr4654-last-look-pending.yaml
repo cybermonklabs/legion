@@ -1,0 +1,8 @@
+kind: Changed
+custom:
+  Issue: pr4654
+body: |-
+  The `legion` tool's description limits the `pending` of a production check report on the
+  check's last look to an issue with no requirement that only the deploy can show. A requirement
+  of that kind that is still unobserved at the last look is a `fail`, whether or not production
+  carries the merge.

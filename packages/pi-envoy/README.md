@@ -369,15 +369,18 @@ dispatch ship in `@sjawhar/pi-legion`; a link from one of its skills into `dispa
 `skill://dispatch/...`, which resolves by name once both are installed.
 
 `scripts/pi-plugin-prepack.sh` at the repository root is both plugins' `prepack` and the one place
-that says which skills each ships: it builds this package's one entry, writes the notices and
-stages this package's partition into `dist/skills`. The published manifest exposes `dist/envoy.js`
-for `omp.extensions` (only `omp.skills` ships as committed, since `dist/skills` is its path in both
-a repo checkout after the prepack and the published tarball), while the committed manifest keeps
-the TypeScript entry for repo checkouts. In `.github/workflows/release.yaml`, the `pi_envoy_build`
-job rewrites the manifest before `bun pm pack` and uploads the tarball (its tree is discarded,
-nothing is restored); the `publish` job publishes that tarball, and nothing commits a version: the
-committed manifest's `.version` stays where it last was, and the `pi-envoy-v` tag the release makes
-is what records the release, with this release's changelog entries in its GitHub release notes.
+that says which skills each ships: it builds this package's one entry, writes the notices,
+stages this package's partition into `dist/skills`, and takes group and other write from every
+path the pack ships (each `files` entry, the manifest and the root's README and licence files),
+so the tarball's modes do not depend on the packer's umask. The published manifest exposes
+`dist/envoy.js` for `omp.extensions` (only `omp.skills` ships as committed, since `dist/skills` is
+its path in both a repo checkout after the prepack and the published tarball), while the committed
+manifest keeps the TypeScript entry for repo checkouts. In `.github/workflows/release.yaml`, the
+`pi_envoy_build` job rewrites the manifest before `bun pm pack` and uploads the tarball (its tree
+is discarded, nothing is restored); the `publish` job publishes that tarball, and nothing commits
+a version: the committed manifest's `.version` stays where it last was, and the `pi-envoy-v` tag
+the release makes is what records the release, with this release's changelog entries in its
+GitHub release notes.
 Packing with the committed source manifest is refused by the prepack, because such a tarball would
 point OMP at an extension file it does not contain.
 

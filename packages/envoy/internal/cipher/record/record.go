@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-jose/go-jose/v4"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/fold"
 )
@@ -697,6 +699,46 @@ var issueKeyPattern = regexp.MustCompile(`\b[A-Z][A-Z0-9]+-[0-9]+\b`)
 // reason the record signs, so the log line and the judge read one definition of an issue key.
 func IssueKeyInReason(reason string) string {
 	return issueKeyPattern.FindString(reason)
+}
+
+// IssueKeysInReason is every Dispatch issue key in a request's own signed reason, in the order the
+// reason names them, and nil when it names none. A reader deciding whose text the reason is reads
+// them all, not the first alone: the pattern also matches words that are no issue key, such as
+// "SHA-256", so a reason naming one before a project's issue would otherwise hide that project.
+func IssueKeysInReason(reason string) []string {
+	return issueKeyPattern.FindAllString(reason, -1)
+}
+
+// MaxReasonProjects is the most projects the issue keys of one new request's reason may name: as
+// many as one credential may name (oauthwire.MaxProjects). Each is one Dispatch read for every
+// reader that decides whose text the reason is (requests.Machine.HideUnseen), so the bound on the
+// reads is a bound on the reason.
+const MaxReasonProjects = oauthwire.MaxProjects
+
+// ReasonProjects is the distinct projects the issue keys of reason name (IssueKeysInReason, each
+// key's project the part before its hyphen), in the order the reason first names them. A word of
+// a key's form that is no project ("SHA-256") counts as one.
+func ReasonProjects(reason string) []string {
+	var projects []string
+	for _, key := range IssueKeysInReason(reason) {
+		project, _, _ := strings.Cut(key, "-")
+		if !slices.Contains(projects, project) {
+			projects = append(projects, project)
+		}
+	}
+	return projects
+}
+
+// CheckReasonProjects refuses, as ErrRequestInvalid, the reason of a request being created whose
+// issue keys name more than MaxReasonProjects projects (ReasonProjects). It is a rule for a new
+// request alone — requests.Machine.Create and the machine login's creation call it — and never
+// part of VerifyRequestObject, so a request stored before the rule keeps verifying wherever it is
+// read again.
+func CheckReasonProjects(reason string) error {
+	if n := len(ReasonProjects(reason)); n > MaxReasonProjects {
+		return fmt.Errorf("%w: the reason names issue keys of %d projects; a request may name at most %d", ErrRequestInvalid, n, MaxReasonProjects)
+	}
+	return nil
 }
 
 // askRefPattern is a reference to one ask of a Dispatch issue, in the one form Dispatch writes:
