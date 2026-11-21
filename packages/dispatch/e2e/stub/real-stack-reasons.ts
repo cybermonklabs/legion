@@ -179,6 +179,7 @@ export const realStackReasons: Record<string, string> = {
   "issue-page-switch.e2e.ts":
     "the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold",
   "issue-page-i.e2e.ts": "the server's reads fold the outline; read marks and typed words persist",
+  "issue-page-k.e2e.ts": "the view orders the plan's blocks and needs the server stored",
   "issue-page-v.e2e.ts":
     "the rows record and withdraw results and file a child through the server, and the view draws its coverage and results reads",
   "issues-table.e2e.ts":
