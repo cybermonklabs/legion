@@ -797,8 +797,10 @@ function begin(client: QueryClient, writes: Writes): Watch {
   return watch;
 }
 
-/** The client's watch: the one its store began as it was made (`opened`), or, for a store made
- *  before this kind was defined, one begun now. */
+/** The client's watch, which its store began as it opened this kind (`opened`): as the store was
+ *  made, or as this kind was defined after it (`defineWriteKind`). The fallback is for a client
+ *  with no store yet: `writesOf` makes its store, whose constructor opens this kind and so begins
+ *  the watch, and `begin` then answers with that one. */
 function watchOf(client: QueryClient): Watch {
   return watches.get(client) ?? begin(client, writesOf(client));
 }

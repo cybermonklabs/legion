@@ -11,7 +11,8 @@ import {
 } from "../../theme/classes";
 import { retryNote, SendInterruptedError, SendStoppedError } from "./keyed-write";
 import { StopTrying } from "./StopTrying";
-import { useWriteSelection, useWrites, type Write } from "./write-store";
+import { heldForSignOut, indicatorWrites, uploadedPercent, waitingToSend } from "./shown-writes";
+import { useWriteSelection, useWrites } from "./write-store";
 
 /** Why `refusal` left a write unsaved, in the reader's words. One that ended without Dispatch's
  *  verdict - stopped, its key run out, or interrupted by a reload - may have landed, and what its
@@ -25,32 +26,6 @@ function refusalReason(keyed: boolean, refusal: Error): string {
   return refusal instanceof SendInterruptedError
     ? `this page was closed before Dispatch confirmed it. ${retry}`
     : `Dispatch has not confirmed it. ${retry}`;
-}
-
-/** The writes the indicator shows: every one shown there that Dispatch has not yet made. */
-function shown(rows: readonly Write[]): readonly Write[] {
-  return rows.filter((row) => row.presentation === "indicator" && row.status !== "made");
-}
-
-/** Whether `row` waits its turn behind an earlier write to its target and was never sent. */
-export function waitingToSend(row: Write): boolean {
-  return row.status === "queued" && !row.sent;
-}
-
-/** Whether `row` waits for its person's sign-out in another tab of this browser: none of its
- *  attempts starts until that tab says how it ended (`Writes.holdFor`). A refused one waits for
- *  nothing. */
-export function heldForSignOut(row: Write): boolean {
-  return row.signingOutElsewhere && row.status !== "refused";
-}
-
-/** How much of `row`'s upload has gone up, while its body is still going up on its first try;
- *  `undefined` for any other write. Until an attempt of it has failed, it is uploading, not being
- *  tried again. */
-export function uploadedPercent(row: Write): number | undefined {
-  return (row.status === "sending" || row.status === "late") && !row.retried
-    ? row.uploaded
-    : undefined;
 }
 
 /**
@@ -67,7 +42,7 @@ export function uploadedPercent(row: Write): number | undefined {
  */
 export function PendingWritesIndicator(): ReactNode {
   const writes = useWrites();
-  const rows = useWriteSelection("indicator", shown);
+  const rows = useWriteSelection("indicator", indicatorWrites);
   if (rows.length === 0) return null;
   const out = rows.filter(
     (row) => row.status !== "refused" && !waitingToSend(row) && !heldForSignOut(row)

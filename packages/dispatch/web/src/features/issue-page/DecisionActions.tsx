@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createContext, type ReactNode, useContext, useId, useMemo, useState } from "react";
 
 import { api } from "../../api/client";
+import { issueDecisionsQuery } from "../../api/queries";
 import type { Artifact, Decision, IssueDecisions } from "../../api/types";
 import { useTooltips } from "../../components/tooltips";
 import {
@@ -15,7 +16,6 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { issueDecisionsQuery } from "../doc/spec-marks";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
 import { authorText, pageChrome } from "./page-structure";
@@ -131,7 +131,7 @@ export function DecisionActions({
   tabStops?: boolean;
 }): ReactNode {
   const issueKey = document?.issue_key ?? "";
-  const decisions = useQuery(issueDecisionsQuery(issueKey, issueKey !== ""));
+  const decisions = useQuery({ ...issueDecisionsQuery(issueKey), enabled: issueKey !== "" });
   const decision = (decisions.data?.decisions ?? []).find((row) => row.ref === nodeReference);
   if (decision === undefined || document === undefined || isClosed) return null;
   return (
@@ -363,7 +363,7 @@ function ChangeComposer({
             setReading(false);
             const anchor = changeAnchor(
               decision,
-              queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
+              queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey).queryKey)
                 ?.decisions,
               tree
             );

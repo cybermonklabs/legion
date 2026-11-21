@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { DISPATCH_TEXT_REFERENCES, isIdPrefix } from "@legion/contracts";
+import { DISPATCH_TEXT_REFERENCES } from "@legion/contracts/dispatch-text-references";
+import { isIdPrefix } from "@legion/contracts/dispatch-text-rules";
 
 import { readTextReferences } from "./text-references";
 

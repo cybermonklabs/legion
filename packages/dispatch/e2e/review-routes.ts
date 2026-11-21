@@ -80,14 +80,33 @@ export type ReviewRoute =
 const bothLayers: readonly ReviewLayer[] = ["scan", "shoot"];
 
 /** The width from which the shell draws its wide layout - the Inbox's reading pane beside the
- *  list, the document margin as a column rather than a bottom sheet. Two rows below branch on
- *  it, so the number lives here and a change to the breakpoint is one edit. */
+ *  list, the document margin as a column rather than a bottom sheet. Every wait below that
+ *  differs by width reads it through `wideLayout`: the Inbox row, `heldMargin` and
+ *  `waitForInboxCountSettled`. So the number lives here and a change to the breakpoint is one
+ *  edit. */
 const WIDE_LAYOUT_MIN_PX = 1280;
 
 /** Whether `page`'s viewport is wide enough for that layout, which decides what a row has to
  *  wait for: the phone projects draw neither of the two elements above. */
 function wideLayout(page: Page): boolean {
   return (page.viewportSize()?.width ?? 0) >= WIDE_LAYOUT_MIN_PX;
+}
+
+/** The margin's last part to draw, at either width: where the margin is a column beside the
+ *  page, the card that holds `cardText`, which waits on the margin's own reads; where it is a
+ *  sheet shut at the foot of the page, the sheet's toggle, which counts the open asks. The margin
+ *  is a chunk of its own, fetched after the first paint on a page with no document and once the
+ *  document has drawn on a page with one (`web/src/features/shell/content-drawn.ts`), so every
+ *  shot of a page that has a margin waits for it: a page read without it was shot with no
+ *  margin at all, once on the Plan tab (run 43367787934), once on a project document (run
+ *  43395925903), and once on the phone's issue page with no sheet (run 43430182487).
+ *  `cardText` is the text of a margin card: an ask's question, by default the open ask of the
+ *  issue the review corpus opens, which is its only one, or a decision card's preview of a
+ *  block. */
+function heldMargin(page: Page, cardText = "Which sign-in path?"): Locator[] {
+  return wideLayout(page)
+    ? [page.locator("[data-margin-item]").getByText(cardText)]
+    : [page.getByTestId("margin-sheet").getByText("Review (1)")];
 }
 
 export const reviewRoutes: readonly ReviewRoute[] = [
@@ -174,20 +193,12 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     //
     // The margin is a column beside the document at the wide layout's width and a bottom sheet
     // below it, shut until a button opens it (`web/src/features/margin/MarginSheet.tsx`), so the
-    // card is on the screen at a desktop width and nowhere narrower. The phone row of this page
-    // waits on the dot alone, as the Inbox row waits on its heading alone.
-    ready: (page) => {
-      const connected = page.getByRole("status", { name: "connected" });
-      const wideEnoughForMargin = wideLayout(page);
-      return wideEnoughForMargin
-        ? [
-            connected,
-            page
-              .locator("[data-margin-item]")
-              .getByText("One command, a seeded corpus, a signed-in browser."),
-          ]
-        : [connected];
-    },
+    // card is on the screen at a desktop width and only the sheet's toggle narrower;
+    // `heldMargin` waits on whichever of the two the width draws.
+    ready: (page) => [
+      page.getByRole("status", { name: "connected" }),
+      ...heldMargin(page, "One command, a seeded corpus, a signed-in browser."),
+    ],
   },
   {
     kind: "reviewed",
@@ -198,7 +209,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // difference no pixel bound can absorb. It is the same race the phone copy of this page
     // was taken out of the shot set for. The binding the shots of it carried - the docked
     // composer's `SURFACE`, in both schemes - is read off the live element by the kept row of
-    // `e2e/theme.e2e.ts` instead, which is a stronger claim than a snapshot made. A scan
+    // `e2e/theme.stub.e2e.ts` instead, which is a stronger claim than a snapshot made. A scan
     // reads the DOM and does not care which turns have landed, so this page keeps that layer.
     layers: ["scan"],
     name: "issue-conversation",
@@ -213,7 +224,10 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     path: (seed) => `/issues/${seed.issue}/children`,
     pattern: "/issues/:key/*",
     // The child's own row, not the panel: the panel is in the DOM while another tab is open.
-    ready: (page) => [page.locator("#issue-children-panel").getByRole("listitem").first()],
+    ready: (page) => [
+      page.locator("#issue-children-panel").getByRole("listitem").first(),
+      ...heldMargin(page),
+    ],
   },
   {
     kind: "reviewed",
@@ -223,7 +237,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     pattern: "/issues/:key/*",
     // The primary document's row. An issue's spec is `spec.md` under the slug `spec`
     // (`issue_create.go`), so the row's test id is `artifact-spec`.
-    ready: (page) => [page.getByTestId("artifact-spec")],
+    ready: (page) => [page.getByTestId("artifact-spec"), ...heldMargin(page)],
   },
   {
     kind: "reviewed",
@@ -231,7 +245,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "issue-activity",
     path: (seed) => `/issues/${seed.issue}/activity`,
     pattern: "/issues/:key/*",
-    ready: (page) => [page.getByRole("list", { name: "Issue activity" })],
+    ready: (page) => [page.getByRole("list", { name: "Issue activity" }), ...heldMargin(page)],
   },
   {
     kind: "reviewed",
@@ -245,8 +259,15 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // tab's own test id is drawn before that answer, which is why the probe read the chip in
     // one run and the title in the other. The words are the plan task `e2e/review-seed.ts`
     // writes, so a change to that corpus fails this row rather than a baseline.
+    //
+    // And the margin's card for the issue's open ask, at the width where the margin is a
+    // column. The shell holds the margin until the tab's own content has drawn
+    // (`web/src/features/shell/content-drawn.ts`), so the margin comes in after the plan's
+    // document, and the pointer above can be drawn before either. Without this wait the shot
+    // was once taken of the page with no margin at all (run 43367787934).
     ready: (page) => [
       page.getByTestId("plan-task-needs").getByRole("link", { name: "Write the route table." }),
+      ...heldMargin(page),
     ],
   },
   {
@@ -261,7 +282,10 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // `reference-decorations.ts`, `web/src/features/doc/document-references.tsx`). The tab's
     // own test id is drawn with the empty document, so the probe read the bare key in one run
     // and the title in the other; this waits for the document and that answer together.
-    ready: (page) => [page.getByTestId("verification-tab").locator("a.dispatch-reference")],
+    ready: (page) => [
+      page.getByTestId("verification-tab").locator("a.dispatch-reference"),
+      ...heldMargin(page),
+    ],
   },
   {
     kind: "reviewed",
@@ -297,7 +321,10 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // The document's connection dot, as the issue-spec row reads it and for the same reason:
     // `artifact-header` is drawn while the editor still says "Connecting to the document…",
     // and `ArtifactHeader.tsx` draws the dot inside that header.
-    ready: (page) => [page.getByRole("status", { name: "connected" })],
+    //
+    // And the margin's card for the issue's open ask, for the reason the issue-plan row gives:
+    // the margin comes in after the document, and the dot is drawn before it.
+    ready: (page) => [page.getByRole("status", { name: "connected" }), ...heldMargin(page)],
   },
   {
     kind: "reviewed",
@@ -379,7 +406,13 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // same `ArtifactHeader` over the same editor. It did not drift in the probe's two runs,
     // which says its socket was up both times, not that it must be - the race is the one the
     // other two rows lost, so the row is held to the same proof rather than to its luck.
-    ready: (page) => [page.getByRole("status", { name: "connected" })],
+    //
+    // And the margin's card for the project's open ask, which a project document's margin
+    // draws under Comments; see `heldMargin`.
+    ready: (page) => [
+      page.getByRole("status", { name: "connected" }),
+      ...heldMargin(page, "Keep the runbook in the repository?"),
+    ],
   },
   {
     kind: "reviewed",

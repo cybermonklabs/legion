@@ -22,8 +22,8 @@
 #
 # It reads $RUNNER_TEMP/selected-blobs, which holds one blob report and one row count per leg,
 # and $RUNNER_TEMP/report.json, the merged report; it writes $RUNNER_TEMP/jobs.json, which
-# reading three reads, and the table and the figures it adds to $GITHUB_STEP_SUMMARY. The step
-# keeps its own `timeout-minutes`, which
+# readings three and five read, and the table and the figures it adds to $GITHUB_STEP_SUMMARY.
+# The step keeps its own `timeout-minutes`, which
 # .github/ci-notes/dispatch-browser.md#the-merge-jobs-measured-steps-and-its-budget sizes against
 # the ladder the read goes through.
 #
@@ -61,12 +61,15 @@ downloaded=$1
 # The run's own token is GH_TOKEN, a key of the step's `env:` and never an argument, for the
 # reason this script's head gives. `actions: read` is the caller's, and ci.yaml's job that calls
 # this workflow already holds it.
-# This run's attempt's jobs, read once here and read again by reading three below.
-# The call writes $RUNNER_TEMP/jobs.json: the array of {id, name, conclusion, leg}
-# that both readings take. The jobs API lists the caller's jobs too, so the script
-# holds the name to this workflow's seven - binaries, shard, alone, multiprocess,
-# embedder, visual and merge; a called workflow's job is named
-# `<the caller's job> / <this job>`, with a matrix leg in brackets after it.
+# This run's attempt's jobs, read once here and read again by readings three and
+# five below. The call writes $RUNNER_TEMP/jobs.json: the array of
+# {id, name, conclusion, started_at, completed_at, leg} that the three readings take
+# - the two timestamps are what reading five sums, and the jobs API answers them
+# whether or not anything asks, so they cost this read nothing. The jobs API lists
+# the caller's jobs too, so the script holds the name to this workflow's seven -
+# binaries, shard, alone, multiprocess, embedder, visual and merge; a called
+# workflow's job is named
+# `<the caller's job> / <this job>`, with a shard leg's number in brackets after it.
 #
 # The route is `.../runs/<id>/attempts/<n>/jobs?per_page=100` and not `filter=all`.
 # `filter=all` lists every attempt's jobs, so each re-run made the read heavier:

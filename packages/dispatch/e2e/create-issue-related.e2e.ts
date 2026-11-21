@@ -297,10 +297,18 @@ test("an answer that arrives after the title changed is not shown for the new ti
     const second = checkFor(page, "Zeppelin");
     await page.clock.runFor(RELATED_DEBOUNCE_MS);
     await second;
-    await page.clock.runFor(1);
-    await expect(
-      related.getByRole("link", { name: `${seeded.zeppelin} ${zeppelinTitle}` })
-    ).toBeVisible();
+    // react-query hands the answer to the dialog on a zero-delay timer of this page's clock, which
+    // the test holds, and the page sets that timer only once it has read the answer, which can be
+    // after Node saw the response arrive: a single millisecond moved before then fires nothing,
+    // and the link never draws. So the clock moves a millisecond at a time until it does; the
+    // title stands, so no time moved here can start another check.
+    const answer = related.getByRole("link", { name: `${seeded.zeppelin} ${zeppelinTitle}` });
+    await expect
+      .poll(async () => {
+        await page.clock.runFor(1);
+        return answer.isVisible();
+      })
+      .toBe(true);
     await expect(related.getByRole("link", { name: new RegExp(seeded.astrolabe) })).toHaveCount(0);
     await expect(related).toHaveAttribute("aria-busy", "false");
   } finally {

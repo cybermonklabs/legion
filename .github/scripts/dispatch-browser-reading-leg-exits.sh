@@ -27,11 +27,12 @@ blobs="$RUNNER_TEMP/selected-blobs/blob-report"
 jobs="$RUNNER_TEMP/jobs.json"
 unhappy="$RUNNER_TEMP/unhappy-jobs.tsv"
 # The jobs reading one read: this attempt's snapshot of each job of this workflow,
-# with its id, its name, its conclusion and its leg. A job id in it is this attempt's
-# id for that leg, because the attempt endpoint gives a leg carried forward from an
-# earlier attempt an id of its own - job 128737742824 for `shard (1)` at attempt 6 of
-# run 42468236584. That step says why the route is this attempt's. It is read here
-# rather than read again so the two readings cannot disagree about which attempt ran.
+# with its id, its name, its conclusion, its two timestamps and its leg. A job id in
+# it is this attempt's id for that leg, because the attempt endpoint gives a leg
+# carried forward from an earlier attempt an id of its own - job 128737742824 for
+# `shard (1)` at attempt 6 of run 42468236584. That step says why the route is this
+# attempt's. It is read here rather than read again so the readings cannot disagree
+# about which attempt ran; reading five reads the same file for its seconds.
 if [ ! -f "$jobs" ]; then
   echo "::warning::no jobs list, so no leg exits; reading one above says why"
   exit 0

@@ -2,7 +2,8 @@
  *  each with the page component it renders, and the lazily loaded pieces that are no route of
  *  their own. A page whose chunk no walked route loads is a chunk the walk never asks the other
  *  build's process for, so `e2e/__tests__/two-builds-routes.test.ts` holds this list to the
- *  router: every `lazy()` page and every `<Route>` of `app.tsx` must be here, and nothing else.
+ *  router: every `lazyChunk()` page and every `<Route>` of `app.tsx` must be here, and nothing
+ *  else.
  *
  *  This module holds data only, so the bun test can import it without Playwright. */
 
@@ -44,14 +45,47 @@ export type WalkRoutePath = (typeof walkRoutes)[number]["path"];
 
 /** The chunks a page loads only once it needs them, each named by what shows it has run. */
 export const lazyPieces = {
+  "ask-card":
+    "the ask card (features/doc/AskBlockCard.tsx): the read-only card the shell gives every " +
+    "text body for a decision block in it (features/doc/TextAskCardHost.tsx), and the card a " +
+    "document's own decision block draws (features/doc/AskBlockCardHost.tsx), which is what a " +
+    "walked document page that holds a decision block loads it as",
+  "change-view":
+    "a document's changes against a past version (features/doc/ChangeView.tsx), which a " +
+    "document page draws on an address that names a version (features/doc/ProofDocument.tsx), " +
+    "and which the Inbox's chunk (features/inbox/inbox-chunk.ts) imports for an earlier " +
+    "approval's card, so the Inbox's list is what shows it ran",
+  "create-issue":
+    "the Create issue dialog (features/issue/CreateIssueDialogHost.tsx), which `c` opens",
   echarts: "the delivery timeline's chart, echarts (features/delivery/Timeline.tsx)",
   editor:
-    "the document editor, @legion/proof-editor and its stylesheet (features/doc/editor.ts), " +
-    "and the document's Yjs stack: yjs, @hocuspocus/provider, pending-edits and pending-sync " +
-    "(features/doc/connection.ts)",
+    "the document editor, @legion/proof-editor and its stylesheet, and the document's Yjs " +
+    "stack: yjs, @hocuspocus/provider, pending-edits and pending-sync, both lists imported in " +
+    "features/doc/document-chunks.ts",
+  "event-refresh":
+    "the map from a live event to the reads it refreshes (api/event-refresh.ts), which the live " +
+    "feed asks for once the page it landed on has drawn (api/event-refresh-load.ts)",
+  "frame-shell":
+    "the new issue page's frame shell (features/issue-page/frame-shell.tsx, named once in " +
+    "features/issue-page/frame-chunk.ts): its providers, its state, its fallback and the icon " +
+    "rail, which the shell is drawn through only for a reader whose stored issue-page choice is " +
+    "`outline`, and which the entry starts beside the landing read on every address once a " +
+    "stored choice reads `outline` (app.tsx, preloadRouteChunk); the rail it draws from `md` up " +
+    "is what shows it ran",
   "headless-markdown":
     "the headless Markdown renderer, @legion/proof-editor/headless, which every page warms at " +
     "boot (features/refs/markdown-engine.ts)",
+  inbox:
+    "the Inbox list, its cards and the peek drawer (features/inbox/inbox-chunk.ts), which the " +
+    "entry starts where the Inbox is the page and the drawer loads anywhere else",
+  "issue-tab":
+    "an issue tab's panel other than the Spec's (features/issue/tab-chunks.ts), each a chunk " +
+    "fetched when its tab first opens",
+  "kept-writes":
+    "what a lapsed session keeps, on the sign-in page (features/writes/KeptWrites.tsx), which " +
+    "the writes host (features/writes/write-hosts.tsx) fetches once the page has drawn, beside " +
+    "the pending-writes indicator, and draws only while the page keeps a write, so the fetch is " +
+    "what shows it ran",
   "markdown-worker":
     "the Markdown parse worker (features/refs/markdown-parse.worker.ts), which a body longer " +
     "than markdownWorkerThreshold is parsed in rather than on the page's own thread " +
@@ -59,6 +93,28 @@ export const lazyPieces = {
   mermaid:
     "the Mermaid renderer's Web Worker (features/refs/mermaid-render.worker.ts), which a body " +
     "holding a fenced `mermaid` block starts (features/refs/mermaid-diagrams.ts)",
+  "pending-writes":
+    "the pending-writes indicator (features/writes/PendingWritesIndicator.tsx), which the " +
+    "writes host (features/writes/write-hosts.tsx) fetches once the page has drawn and draws " +
+    "only while a write is pending, so the fetch is what shows it ran",
+  "ref-preview":
+    "the reference-preview layer (features/refs/RefPreviewLayer.tsx), which the shell asks for " +
+    "in its first effect, after the page it landed on has drawn",
+  "search-bar":
+    "the search and actions bar (features/search/SearchPaletteHost.tsx), which `$mod+k` opens",
+  "shortcut-help":
+    "the keyboard-shortcut sheet (features/shell/ShortcutHelpHost.tsx), which `?` opens",
+  "version-view":
+    "a past version of a document (features/doc/VersionView.tsx), which a document page draws " +
+    "on an address that names a version (features/doc/ProofDocument.tsx), and which the " +
+    "Inbox's chunk (features/inbox/inbox-chunk.ts) imports for its reading pane, so the Inbox's " +
+    "list is what shows it ran",
+  "write-kinds":
+    "every kind of write the page makes (features/writes/kinds.ts), which the store's take-up " +
+    "of what a reload kept waits for (features/writes/write-store.ts, Writes.resume): the app " +
+    "asks for it as the person signs in (app.tsx) and the writes host once the page has drawn " +
+    "(features/writes/write-hosts.tsx), on every page, and nothing on the page draws from it, " +
+    "so the fetch is what shows it ran",
 } as const;
 
 export type LazyPiece = keyof typeof lazyPieces;

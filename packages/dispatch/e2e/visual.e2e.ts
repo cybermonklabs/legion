@@ -39,6 +39,8 @@
  *    by rows that drive time themselves. Here each row installs it a minute after the moment
  *    `e2e/visual-seed.ts` wrote the corpus (`seededAt`), so every relative label reads the same
  *    gap on every run - a fixed literal would drift against a corpus written at wall-clock time.
+ *    The day headings ("Today", "Yesterday") read that same clock, so the seed is written on one
+ *    UTC day with the rows' reach after it (`e2e/visual-day.ts`) and the rows draw in UTC.
  *    The `<time>` elements (`web/src/features/refs/Timestamp.tsx`, `web/src/features/inbox/
  *    Inbox.tsx`, `web/src/features/inbox/EarlierApproval.tsx`) are masked as well. The cost is
  *    that the text of a timestamp is in no baseline; its place, its size and the layout around
@@ -84,6 +86,7 @@ import {
   waitForRouteSettled,
 } from "./review-routes";
 import { withAlice } from "./users";
+import { CLOCK_AFTER_SEED_MS } from "./visual-day";
 import { inVisualOrder, visualOrder } from "./visual-order";
 import { workspaceSessions } from "./workspace";
 
@@ -155,7 +158,7 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
     //
     // Pinned from the corpus rather than from a fixed literal, because what the label reads
     // is the gap between the two: a literal would drift against a corpus written now.
-    await page.clock.install({ time: new Date(Date.parse(seed.seededAt) + 60_000) });
+    await page.clock.install({ time: new Date(Date.parse(seed.seededAt) + CLOCK_AFTER_SEED_MS) });
     await page.goto(route.path(seed));
     for (const colorScheme of SCHEMES) {
       await page.emulateMedia({ colorScheme });
@@ -286,7 +289,7 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
         // So the honest picture is drift 7 < bound 20 < nearest measured real change 79: a
         // factor of 3.95, not the 22,572 the canvas alone suggests. A token drawn over less
         // than about 20 pixels of a page is outside this gate, and the kept row of
-        // `e2e/theme.e2e.ts` is what binds an element to its swatch there.
+        // `e2e/theme.stub.e2e.ts` is what binds an element to its swatch there.
         //
         // Eleven sources of difference were measured on the way here and nine removed rather
         // than tolerated - two races in the seeded corpus, a reconcile tick jittered across

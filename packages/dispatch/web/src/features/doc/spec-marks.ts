@@ -3,8 +3,15 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 
 import { api, documentReadRequest } from "../../api/client";
+import { artifactBlocksQuery, documentReadQuery, issueDecisionsQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
-import type { Artifact, ArtifactBlock, GraphReferences, IssueDecisions } from "../../api/types";
+import type {
+  Artifact,
+  ArtifactBlock,
+  DocumentRead,
+  GraphReferences,
+  IssueDecisions,
+} from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 
@@ -26,13 +33,6 @@ export interface ChangedSinceRead {
   readonly headings: readonly string[];
   readonly version: number;
 }
-
-/** The decisions view, which the margin's decision cards read under the same key. */
-export const issueDecisionsQuery = (issueKey: string, enabled: boolean) => ({
-  enabled,
-  queryFn: () => api.getIssueDecisions(issueKey),
-  queryKey: ["decisions", issueKey] as const,
-});
 
 /** Every spec block a stale link of any decision names, each once, in the order the view names
  *  them. A link is stale when its decision changed after it first linked the block and the block
@@ -129,13 +129,8 @@ export function useSpecMarks({
   shownVersion: number | undefined;
 }): { changed: ChangedSinceRead | undefined; marks: readonly BlockMark[] } {
   const queryClient = useQueryClient();
-  const decisions = useQuery(issueDecisionsQuery(issueKey, enabled));
-  const readKey = ["document-read", artifact.id] as const;
-  const read = useQuery({
-    enabled,
-    queryFn: () => api.getDocumentRead(artifact.id),
-    queryKey: readKey,
-  });
+  const decisions = useQuery({ ...issueDecisionsQuery(issueKey), enabled });
+  const read = useQuery({ ...documentReadQuery(artifact.id), enabled });
   // The read version this visit opened on, set during render from the first answer (React's
   // pattern for state derived from props) so the render that has it already marks the blocks.
   const [opened, setOpened] = useState<{ artifactId: string; version: number | null }>();
@@ -151,9 +146,8 @@ export function useSpecMarks({
     queryKey: ["references", "to", specReference, "part_of"],
   });
   const blocks = useQuery({
+    ...artifactBlocksQuery(artifact.id),
     enabled: enabled && readVersion !== null,
-    queryFn: () => api.getArtifactBlocks(artifact.id),
-    queryKey: ["artifact", artifact.id, "blocks"],
   });
   const changed = useMemo(
     () =>
@@ -175,10 +169,13 @@ export function useSpecMarks({
       enabled && readAtOpen !== undefined && shownVersion !== undefined
         ? { key: `${artifact.id}@${shownVersion}`, value: shownVersion }
         : undefined,
-    // Over any read of the mark still out, which was asked before it and would put back the
-    // version read before (`replaceQueryData`).
-    onSuccess: (result) => replaceQueryData(queryClient, readKey, result),
+    // `request` comes first: `onSuccess` reads its answer, and the answer's type is the
+    // request's. The answer goes over any read of the mark still out, which was asked before it
+    // and would put back the version read before (`replaceQueryData`), as the type the read of
+    // this key answers (`DocumentRead`), which is what holds the request's answer to that type.
     request: (version) => documentReadRequest(artifact.id, version),
+    onSuccess: (result) =>
+      replaceQueryData<DocumentRead>(queryClient, documentReadQuery(artifact.id).queryKey, result),
     shouldSend: true,
     target: `read:document:${artifact.id}`,
   });

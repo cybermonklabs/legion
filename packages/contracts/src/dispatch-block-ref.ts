@@ -1,6 +1,6 @@
 import { hasControlCharacter } from "./dispatch-href";
 import { referenceTargetFits, utf8Bytes } from "./dispatch-text-rules";
-import { PROJECT_KEY_PATTERN } from "./dispatch-tools";
+import { PROJECT_KEY_PATTERN } from "./dispatch-tools-constants";
 
 const encoder = new TextEncoder();
 

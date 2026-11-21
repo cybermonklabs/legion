@@ -40,14 +40,14 @@ jobs:
       # (every job of dispatch-browser.yaml that runs the suite needs contracts built for the
       # same reason and carries a `Build contracts for dispatch e2e` step of its own, which that
       # file's shard job explains).
-      # `build:dispatch` bundles only the contracts entries Dispatch imports - the package itself,
-      # ./repo, ./dispatch-snippet and ./dispatch-tools (web/vite.config.ts:117-126 aliases the
-      # same four) - so the build compiles no module outside the set the dashboard's tsc
-      # programs compile, which is what this job's filter lists, and not ./legion-api, which
-      # Dispatch never imports. package.json allows no comment, so this is where the list is
-      # explained: a new import of a contracts subpath by packages/dispatch adds its entry to
-      # that script, or Playwright's Node resolution fails on the missing dist/ file. The
-      # package's own `bun run test` below runs the same script again (build:contracts).
+      # `build:dispatch` bundles only the contracts entries Dispatch imports - the package itself
+      # and the fourteen subpaths packages/dispatch names (web/vite.config.ts:117-176 aliases each
+      # of them, and ./dispatch-api beside them) - so the build compiles no module outside the set
+      # the dashboard's tsc programs compile, which is what this job's filter lists, and not
+      # ./legion-api, which Dispatch never imports. package.json allows no comment, so this is
+      # where the list is explained: a new import of a contracts subpath by packages/dispatch adds
+      # its entry to that script, or Playwright's Node resolution fails on the missing dist/ file.
+      # The package's own `bun run test` below runs the same script again (build:contracts).
       - name: Build contracts for the suites that spawn Playwright
         run: bun run build:dispatch
         working-directory: packages/contracts
@@ -93,8 +93,13 @@ jobs:
       - name: Check dispatch dashboard CSS classes
         run: bun run check:classes
         working-directory: packages/dispatch
-      # The server refuses to boot on a build holding an asset over 8 MiB (it publishes every
-      # asset to its database at boot), which would stall a roll; refuse the build here instead.
+      # Two budgets, both read from the dist/ the Build step above wrote. The server refuses to
+      # boot on a build holding an asset over 8 MiB (it publishes every asset to its database at
+      # boot), which would stall a roll, so the build is refused here instead. And the entry
+      # chunk - the one dist/index.html names, which every page parses before it draws anything
+      # and no cache spares a new browser context - is held to 500,000 bytes, Vite's own default
+      # warning limit, because nothing else in this tree refused that number as it grew
+      # (packages/dispatch/web/src/asset-sizes-in-build.ts carries both and the measurements).
       - name: Check dispatch dashboard asset sizes
         run: bun run check:asset-sizes
         working-directory: packages/dispatch

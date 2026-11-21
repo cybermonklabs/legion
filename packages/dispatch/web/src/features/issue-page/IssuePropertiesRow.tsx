@@ -6,6 +6,7 @@ import { api } from "../../api/client";
 import {
   artifactBlocksQuery,
   issueCoverageQuery,
+  issueDecisionsQuery,
   projectsQuery,
   whoAmIQuery,
 } from "../../api/queries";
@@ -26,7 +27,6 @@ import {
   pageWaitingChip,
 } from "../../theme/classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
-import { issueDecisionsQuery } from "../doc/spec-marks";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl } from "../issue/AssigneeControl";
@@ -97,7 +97,7 @@ export function IssuePropertiesRow({
   // those blocks answer the count reads the Changes by their quotes, as `decision-review.ts` does
   // with no blocks read.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
-  const decisions = useQuery({ ...issueDecisionsQuery(issue.key, true), ...EVENT_FRESH });
+  const decisions = useQuery({ ...issueDecisionsQuery(issue.key), ...EVENT_FRESH });
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
   const comments = useQuery({
     queryFn: () => api.listComments(issue.key),

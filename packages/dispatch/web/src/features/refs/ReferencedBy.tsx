@@ -12,8 +12,8 @@ import {
 } from "../../theme/classes";
 import { compiledBlockSchema } from "../doc/schema";
 import { blockFragment, isBlockItemKind } from "./block-reference";
-import { referenceTriggerProps } from "./RefPreview";
 import { referencesQuery } from "./reference-target";
+import { referenceTriggerProps } from "./reference-trigger";
 import type { DispatchReferenceRoute } from "./routes";
 import { buildReferencePath, parseNodeReference } from "./routes";
 import { Timestamp } from "./Timestamp";

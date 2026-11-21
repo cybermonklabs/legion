@@ -21,7 +21,7 @@ const REASONS = {
   9: "9. An Agent row's box is drawn only while its session is in the live list; a session that leaves it and comes back unmounts and draws the box again at the same thread, as the move to another row and back does.",
   10: "10. A thread in a document is drawn inside the document's page where its block is found and beside it where the document fails or the block is gone (`ThreadPane`, `DocumentPane`, `ProofDocument`, keyed by the document); moving between the two draws the box afresh at the same thread, as the move to another row and back does, and a version or an admission that hides the document's page keeps the box mounted at its thread.",
   11: "11. A box answers its thread's root; a read that no longer holds the root draws no box, since there is no message left to answer, and a read that holds it again draws the box at the same thread, as the move to another row and back does.",
-  12: "12. The Inbox draws a thread's box in the reading column above the column's width and in the row's card below it (`paneShown`), in a drawer that closing takes away (`InboxDrawer`), and on its own page (`app.tsx`'s `/` and `/credentials/*`); a resize across that width, closing the drawer, leaving the page, a column with no row selected or an empty list, and the Inbox's loading line or error unmount the box as the move to another row does, and the box drawn on return is the one that row draws, at the same thread's send name.",
+  12: "12. The Inbox draws a thread's box in the reading column above the column's width and in the row's card below it (`paneShown`), in a drawer that closing takes away (`InboxDrawer`), and on its own page (`app.tsx`'s `/` and `/credentials/*`); a resize across that width, closing the drawer, leaving the page, a column with no row selected or an empty list, and the Inbox's loading line or error unmount the box as the move to another row does, and the box drawn on return is the one that row draws, at the same thread's send name. The page draws the Inbox through `InboxHost`, which hands it what the page hands the host, nothing; the shell draws the drawer through `InboxDrawerHost`, which hands it the shell's `open` as it is, draws no drawer until the reader first opens it, and keeps it drawn from then on (`asked` only ever turns true), so that return starts the drawer's mount and never ends one.",
   13: "13. Below the reading column's width, a phone's included, the Inbox draws no column: each thread row is a card that draws its thread's own box (`ThreadRowCard`, `renderRow`'s `paneShown`), so no move takes a box from one row to another there, and each box stays at its thread while its row is listed. What ends a card's box is (12)'s: leaving the page, closing the drawer the compact header's Peek opens (`inboxDrawerOpen`), the row leaving the list. The box's own moves are the same `ThreadBody`'s as the rows above. The layout's other branches in `Inbox` and `usePaneSelection` pick, focus and scroll the column's row and draw the list beside the column, and move no box; the app shell's forms are the sign-in file's.",
 } as const;
 
@@ -347,16 +347,23 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers('AppShell | InboxPage | route | <Route path="/credentials/*">', {
     reason: REASONS[12],
   }),
-  ...answers("AppShell | InboxDrawer | address prop | open={inboxDrawerOpen}", {
+  ...answers("AppShell | InboxDrawerHost | address prop | open={inboxDrawerOpen}", {
     reason: REASONS[12],
   }),
+  ...answers("InboxDrawerHost | InboxDrawer | address prop | open={open}", {
+    reason: REASONS[12],
+  }),
+  ...answers("InboxDrawerHost | InboxDrawer | early return | if (!asked.current) return …", {
+    reason: REASONS[12],
+  }),
+  ...answers("InboxHost | Inbox | address prop | <Inbox {...props}>", { reason: REASONS[12] }),
   ...answers("Inbox | ReadingPane | form | (paneShown) ? …", { reason: REASONS[13] }),
   ...answers("Inbox | ReadingPane | form | <div className>", { reason: REASONS[13] }),
   ...answers("Inbox | ThreadCardRow | form | if (paneShown) return …", { reason: REASONS[13] }),
   ...answers("Inbox | ThreadCardRow | form | (paneShown) ? …", { reason: REASONS[13] }),
   ...answers("Inbox | ThreadCardRow | form | <div className>", { reason: REASONS[13] }),
-  ...answers("InboxPage | Inbox | form | <section className>", { reason: REASONS[13] }),
-  ...answers("AppShell | InboxDrawer | form | open={inboxDrawerOpen}", { reason: REASONS[13] }),
+  ...answers("InboxPage | InboxHost | form | <section className>", { reason: REASONS[13] }),
+  ...answers("AppShell | InboxDrawerHost | form | open={inboxDrawerOpen}", { reason: REASONS[13] }),
   ...answers("Inbox | - | form | if (paneShown && paneSelection.selectedNow.current === id)", {
     reason: REASONS[13],
   }),

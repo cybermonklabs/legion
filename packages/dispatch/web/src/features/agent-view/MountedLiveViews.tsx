@@ -18,12 +18,18 @@
  * the top, which is the place this change exists to keep. It is taken out of the flow so the
  * page in front is the only thing on screen.
  */
-import { lazy, type ReactNode, Suspense, useLayoutEffect } from "react";
+import { type ReactNode, Suspense, useLayoutEffect } from "react";
 
+import { lazyChunk } from "../shell/chunk-loads";
 import { ErrorBoundary } from "../shell/ErrorBoundary";
 import { useLiveViews, useMountedLiveViews } from "./live-views";
 
-const AgentConversationPage = lazy(() =>
+// Through `lazyChunk`, like every chunk a `Suspense` waits on: a reader who opened the live view
+// is in front of a view that cannot draw until this arrives, so a download that fails must spend
+// one of the tab's recovery reloads. Imported bare, its failure while a prefetch the shell
+// started at its first paint is still out would be read as that prefetch's and reload nothing
+// (`features/shell/DeploymentResilience.tsx`, dispatch://INFRA-1109).
+const AgentConversationPage = lazyChunk(() =>
   import("./AgentConversationPage").then((module) => ({
     default: module.AgentConversationPage,
   }))

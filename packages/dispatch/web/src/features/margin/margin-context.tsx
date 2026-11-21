@@ -11,10 +11,10 @@ import {
 } from "react";
 import { isAnchorMissing } from "../../api/client";
 import type { AnchorRefusal, ComposerAnchor, ComposerKind } from "../conversation/composer-model";
-import type { HeldSend } from "../conversation/held-sends";
+import { composerNameOf } from "../conversation/composer-names";
+import type { HeldSend, HeldSends } from "../conversation/held-sends";
 import { heldSends } from "../conversation/held-sends";
-import { unsentDraftsOf } from "../conversation/unsent-drafts";
-import { composerNameOf, giveWay } from "../conversation/useKeptDrafts";
+import { awayDraftOf, type UnsentDrafts, unsentDraftsOf } from "../conversation/unsent-drafts";
 import type {
   RecordMarkPlacement,
   RemarkOutcome,
@@ -23,6 +23,7 @@ import type {
   RetypeOutcome,
   RetypeRefusal,
 } from "../doc/editor";
+import { SendStoppedError } from "../writes/keyed-write";
 import type { MarkPlacement } from "./useMarginItems";
 
 export interface DocumentBridge {
@@ -326,6 +327,29 @@ const ComposerRegistry = createContext<(composer: ComposerBridge) => () => void>
   // keeps it.
   () => () => {}
 );
+
+/**
+ * What a margin compose's refusal becomes once a newer compose on its document takes its place,
+ * which is the host's move for it and carries nothing. A send the reader stopped may have been
+ * delivered, so it is not reduced to a draft: it waits under `aside` unchanged, its mark with it
+ * (`HeldSends.setAside`), for the newer compose to offer (`stoppedOfferOf`). Any other refusal
+ * goes, its mark with it, and its draft is kept under the compose's name for the words it was
+ * written about and in the kind it was written as (`awayDraftOf`), where the compose keeps a draft
+ * by address (`keptNames`' `awayName`) and the newer compose offers it (`keptForOtherWords`).
+ */
+function giveWay(
+  refused: HeldSend & { readonly status: "refused" },
+  aside: MutationKey,
+  store: HeldSends,
+  unsent: UnsentDrafts
+): void {
+  if (refused.refusal instanceof SendStoppedError) {
+    store.setAside(refused.mutationKey, aside);
+    return;
+  }
+  unsent.keepAway(composerNameOf(refused.mutationKey), awayDraftOf(refused));
+  store.discard(refused.mutationKey);
+}
 
 export function MarginProvider({ children }: { children: ReactNode }): ReactNode {
   const queryClient = useQueryClient();

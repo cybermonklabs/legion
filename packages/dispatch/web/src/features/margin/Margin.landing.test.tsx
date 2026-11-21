@@ -424,8 +424,8 @@ function ListOfKeys(): ReactNode {
 }
 
 // R14: Escape closes the innermost layer. With the list of keys open over Details, Escape closes
-// the list alone, wherever the focus is: still on Details' Close in the frame before the list
-// takes it, or on the page after a press on the list's own text.
+// the list alone, wherever the focus is: on Details' Close under the list, or on the page after a
+// press on the list's own text.
 test("with the list of keys over Details, Escape closes the list alone, the focus outside it", async () => {
   const user = userEvent.setup();
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
@@ -449,18 +449,21 @@ test("with the list of keys over Details, Escape closes the list alone, the focu
     act(() => close.focus());
     const list = () => screen.queryByRole("dialog", { name: "Keyboard shortcuts" });
 
-    // The list moves the focus into itself a frame after it opens; with that frame held, the
-    // Escape lands on Details' Close.
+    // The list takes the focus in the commit that opens it, with no frame run. The focus is then
+    // put back on Details' Close, under the list, so the Escape lands there.
     const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
     try {
       await user.keyboard("?");
       expect(list(), "? drew no list of keys").not.toBeNull();
-      expect(document.activeElement, "the list took the focus in its first frame").toBe(close);
+      expect(document.activeElement, "the list did not take the focus as it opened").toBe(
+        screen.getByRole("searchbox", { name: "Filter shortcuts" })
+      );
+      act(() => close.focus());
       await user.keyboard("{Escape}");
     } finally {
       frames.mockRestore();
     }
-    expect(list(), "Escape before the list took the focus left the list open").toBeNull();
+    expect(list(), "Escape with the focus on Details' Close left the list open").toBeNull();
     expect(details.hasAttribute("hidden"), "that Escape closed Details under the list").toBe(false);
 
     await user.keyboard("?");

@@ -1,6 +1,7 @@
 name: Dispatch browser suite
 
 # why: .github/ci-notes/dispatch-browser.md#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows
+# why: .github/ci-notes/dispatch-browser.md#what-the-job-set-costs-and-the-machine-time-ceiling-the-run-holds-it-to
 on:
   workflow_call:
     inputs:
@@ -8,7 +9,8 @@ on:
         description: >-
           Which projects run, and over which rows: `pull-request` for `chromium`, `iphone`
           and the two stubbed projects, held to the rows tagged `@pr`, or `full` for every
-          project, the `-alone` ones and the two-process job among them, over every row. The shard job reads it for the projects it runs; no job reads it for a
+          project, the `-alone` ones and the two-process job among them, over every row. The shard job reads it for the projects it runs, and the binaries job reads it for
+          whether to build the second rollout bundle, which the full lane alone needs; no job reads it for a
           browser to install any more, since the image the shard and alone jobs run in carries
           all three engines. Any other value fails the shard job's browser step by name, before
           it starts a row.
@@ -43,28 +45,35 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # why: .github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-envoy-test
+      # why: .github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-dispatch-browser
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+          key: go-dispatch-browser-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-dispatch-browser-{0}-{1}-', runner.os, runner.arch) }}
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
       # why: .github/ci-notes/dispatch-browser.md#what-the-binaries-build-writes-and-why-it-is-static
-      - name: Build the binaries the browser suite runs
+      - name: Build the binaries and the dashboard the browser suite runs
         run: |
+          set -euo pipefail
           mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
-          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
-          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd
-        working-directory: packages/envoy
-      # The shard and alone jobs' containers have no Go, so e2e/harness-postgres.ts reads the
-      # stacks' connection limit from this output (DISPATCH_E2E_PG_CONNECTIONS) instead.
+          (cd packages/envoy && CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed && CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd) &
+          commands=$!
+          .github/scripts/dispatch-browser-build-dashboards.sh "${{ inputs.lane }}" &
+          dashboards=$!
+          status=0
+          wait "$commands" || { echo "::error::the Go commands the browser suite runs did not build"; status=1; }
+          wait "$dashboards" || status=1
+          exit "$status"
+      # why: .github/ci-notes/dispatch-browser.md#why-the-binaries-job-reads-the-stacks-connection-limit-for-the-whole-run
       - name: Read the connections each stack's Postgres must allow
         id: connections
         run: |
-          connections=$(go run ./internal/dispatch/store/cmd/connections)
+          connections=$(CGO_ENABLED=0 go run ./internal/dispatch/store/cmd/connections)
           [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
           echo "connections=$connections" >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy
@@ -73,6 +82,12 @@ jobs:
         with:
           name: dispatch-e2e-binaries
           path: ${{ runner.temp }}/dispatch-e2e-bin
+          if-no-files-found: error
+      # why: .github/ci-notes/dispatch-browser.md#why-the-dashboard-artifact-is-one-for-the-run-and-where-it-lands
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dispatch-e2e-dashboard
+          path: ${{ runner.temp }}/dispatch-e2e-web
           if-no-files-found: error
 
   shard:
@@ -83,17 +98,24 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
-    # 540 + 120 + 120 + 524 = 1,304 s, 21 min 44 s, rounded up to the 22 minutes below.
-    timeout-minutes: 22
+    # 1,020 + 120 + 120 + 425 = 1,685 s, 28 min 5 s, rounded up to the 29 minutes below.
+    timeout-minutes: 29
     strategy:
       fail-fast: false
-      # why: .github/ci-notes/dispatch-browser.md#why-the-leg-count-stands-in-two-places
+      # why: .github/ci-notes/dispatch-browser.md#why-the-leg-count-stands-in-three-places
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # why: .github/ci-notes/dispatch-browser.md#the-file-store-the-shard-job-starts-and-the-flags-it-needs
+      - name: Start an S3-compatible server for uploaded files
+        run: |
+          mkdir -p "$RUNNER_TEMP/weed"
+          nohup weed server -s3 -dir="$RUNNER_TEMP/weed" -ip=127.0.0.1 -s3.port=18333 \
+            -volume.max=0 -master.volumePreallocate -master.volumeSizeLimitMB=1024 \
+            > "$RUNNER_TEMP/weed.log" 2>&1 &
       # why: .github/ci-notes/dispatch-browser.md#what-the-shard-job-downloads-in-place-of-a-go-build
       - id: binaries
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -127,30 +149,21 @@ jobs:
       - name: Build contracts for dispatch e2e
         run: bun run build:dispatch
         working-directory: packages/contracts
-      # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
-      # cannot be determined; the listing shows the build shipped it.
-      - name: Build dispatch dashboard
-        run: |
-          bun run build:web
-          ls -l web/dist/THIRD_PARTY_NOTICES.txt
-        working-directory: packages/dispatch
+      # why: .github/ci-notes/dispatch-browser.md#what-the-shard-job-downloads-in-place-of-its-dashboard-build
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dispatch-e2e-dashboard
+          path: packages/dispatch/web
       # why: .github/ci-notes/dispatch-browser.md#what-the-shard-jobs-postgresql-reading-records-and-why-it-is-a-script
       - name: Read the lanes' PostgreSQL and time its provider
         run: .github/scripts/dispatch-browser-postgres.sh 4
-      # why: .github/ci-notes/dispatch-browser.md#the-file-store-the-shard-job-starts-and-the-flags-it-needs
-      - name: Start an S3-compatible server for uploaded files
-        run: |
-          mkdir -p "$RUNNER_TEMP/weed"
-          nohup weed server -s3 -dir="$RUNNER_TEMP/weed" -ip=127.0.0.1 -s3.port=18333 \
-            -volume.max=0 -master.volumePreallocate -master.volumeSizeLimitMB=1024 \
-            > "$RUNNER_TEMP/weed.log" 2>&1 &
       - name: Wait for the S3-compatible server
         # why: .github/ci-notes/dispatch-browser.md#why-the-stores-readiness-wait-writes-reads-and-deletes-an-object
         run: .github/scripts/dispatch-browser-wait-for-store.sh
-      - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)
+      - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 2)
         # why: .github/ci-notes/dispatch-browser.md#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is
-        # 419 x 1.15 = 482 s -> 9 min.
-        timeout-minutes: 9
+        # 835 x 1.15 = 960.25 s -> 17 min.
+        timeout-minutes: 17
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-shard-suite.sh" "${{ matrix.shard }}" "${{ inputs.lane }}" \
             "${{ needs.binaries.outputs.connections }}"
@@ -191,12 +204,8 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-alone-jobs-measured-steps-and-its-budget
-    # 180 + 120 + 120 + 442 = 862 s, 14 min 22 s, rounded up to the 15 minutes below.
+    # 240 + 120 + 120 + 401 = 881 s, 14 min 41 s, rounded up to the 15 minutes below.
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        project: [chromium-alone, firefox-alone, webkit-alone]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -233,29 +242,26 @@ jobs:
       - name: Build contracts for dispatch e2e
         run: bun run build:dispatch
         working-directory: packages/contracts
-      # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
-      # cannot be determined; the listing shows the build shipped it.
-      - name: Build dispatch dashboard
-        run: |
-          bun run build:web
-          ls -l web/dist/THIRD_PARTY_NOTICES.txt
-        working-directory: packages/dispatch
+      # why: .github/ci-notes/dispatch-browser.md#what-the-alone-job-downloads-in-place-of-its-dashboard-build
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dispatch-e2e-dashboard
+          path: packages/dispatch/web
       # why: .github/ci-notes/dispatch-browser.md#what-the-alone-jobs-postgresql-reading-records
       - name: Read the lanes' PostgreSQL and time its provider
         run: .github/scripts/dispatch-browser-postgres.sh 1
-      - name: Browser-test dispatch dashboard (${{ matrix.project }})
+      - name: Browser-test dispatch dashboard (the three wall-clock projects)
         # why: .github/ci-notes/dispatch-browser.md#why-the-alone-job-runs-one-stack-and-no-file-store-and-what-its-browser-steps-budget-is
-        # 141 x 1.15 = 162 s -> 3 min.
-        timeout-minutes: 3
+        # 170 x 1.15 = 196 s -> 4 min.
+        timeout-minutes: 4
         run: |
-          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-alone-suite.sh" "${{ matrix.project }}" \
-            "${{ needs.binaries.outputs.connections }}"
+          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-alone-suite.sh" "${{ needs.binaries.outputs.connections }}"
         working-directory: packages/dispatch
       # why: .github/ci-notes/dispatch-browser.md#why-the-alone-jobs-blob-upload-is-always
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: dispatch-browser-blob-alone-${{ matrix.project }}-${{ github.run_attempt }}
+          name: dispatch-browser-blob-alone-${{ github.run_attempt }}
           path: ${{ runner.temp }}/leg-report
       # why: .github/ci-notes/dispatch-browser.md#what-the-alone-job-collects-after-a-run
       - name: What the run left behind
@@ -264,51 +270,48 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: dispatch-browser-record-alone-${{ matrix.project }}-${{ github.run_attempt }}
+          name: dispatch-browser-record-alone-${{ github.run_attempt }}
           path: ${{ runner.temp }}/dispatch-e2e-record
       # why: .github/ci-notes/dispatch-browser.md#why-the-alone-job-uploads-the-failed-rows-traces
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: dispatch-browser-test-results-alone-${{ matrix.project }}-${{ github.run_attempt }}
+          name: dispatch-browser-test-results-alone-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
           if-no-files-found: ignore
 
   # why: .github/ci-notes/dispatch-browser.md#what-the-two-process-job-runs
   multiprocess:
+    needs: binaries
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/dispatch-browser.md#the-two-process-jobs-measured-steps-and-its-budgets
-    # 4 + 4 + 2 + 2 min plus 135 s and 120 s = 16 min 15 s -> 17 min.
-    timeout-minutes: 17
+    # 4 + 4 + 2 min plus 94 s and 120 s = 13 min 34 s -> 14 min.
+    timeout-minutes: 14
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - id: setup-go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      # why: .github/ci-notes/dispatch-browser.md#what-the-two-process-job-downloads-in-place-of-its-builds
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          go-version-file: packages/envoy/go.mod
-          cache: false
-      # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-restores-go-envoy-test
-      - id: go-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-broker
+      # why: .github/ci-notes/dispatch-browser.md#why-the-shard-job-makes-the-downloaded-binaries-executable
+      - name: Make the downloaded binaries executable
+        run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
+      # why: .github/ci-notes/dispatch-browser.md#the-two-dashboards-the-two-process-job-serves
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) || '' }}
+          name: dispatch-e2e-dashboard
+          path: packages/dispatch/web
+      # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-sets-up-no-go
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-builds-contracts
       - name: Build contracts for dispatch e2e
         run: bun run build:dispatch
         working-directory: packages/contracts
-      - name: Build the Dispatch server
-        # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-builds-the-dispatch-server-itself
-        run: go build -o ./dispatch-e2e ./cmd/dispatch
-        working-directory: packages/envoy
       - name: Install Playwright Chromium
         # why: .github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is
         timeout-minutes: 4
@@ -317,24 +320,19 @@ jobs:
       - name: Pull the multiprocess stack's Postgres image
         # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-pulls-its-stacks-postgres-image
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-      - name: Read the connections the multiprocess stack's Postgres must allow
-        # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-reads-its-stacks-connection-limit-in-a-step-of-its-own
-        id: connections
-        timeout-minutes: 2
-        run: |
-          connections=$(go run ./internal/dispatch/store/cmd/connections)
-          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
-          echo "connections=$connections" >> "$GITHUB_OUTPUT"
-        working-directory: packages/envoy
       - name: Browser-test dispatch dashboard against two server processes
         # why: .github/ci-notes/dispatch-browser.md#what-the-two-process-dashboard-step-runs-against
         # 202 s x 1.15 = 232 s -> 4 min.
         timeout-minutes: 4
         run: |
+          # A literal, the pgvector copy of .github/ci-images.yaml, for the reason
+          # .github/ci-notes/dispatch-browser.md#what-the-two-process-dashboard-step-runs-against gives.
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
+          export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
+          # Read in the binaries job, since this job sets up no Go (e2e/harness-postgres.ts).
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ needs.binaries.outputs.connections }}
           export DISPATCH_E2E_PG_STALL_DIR="$RUNNER_TEMP/pg-stall"
-          bun run e2e:multiprocess
+          bun run e2e:multiprocess:run
         working-directory: packages/dispatch
       - name: Browser-test a sign-in across two server processes
         # why: .github/ci-notes/dispatch-browser.md#what-the-sign-in-row-across-two-processes-reads
@@ -342,7 +340,10 @@ jobs:
         timeout-minutes: 2
         run: |
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
+          export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
+          # Read in the binaries job, since this job sets up no Go (e2e/harness-postgres.ts).
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ needs.binaries.outputs.connections }}
+          export DISPATCH_E2E_SIGNIN_ISSUER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dev-oidc-issuer"
           DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_SIGNIN=oidc bunx playwright test --config e2e/playwright.config.ts
         working-directory: packages/dispatch
       # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-jobs-upload-runs-on-failure-alone
@@ -353,39 +354,34 @@ jobs:
           path: packages/dispatch/e2e/test-results
 
   # why: .github/ci-notes/dispatch-browser.md#the-embedder-job-the-lanes-it-runs-on-and-its-budgets
-  # 4 + 4 + 2 min plus 135 s and 120 s = 14 min 15 s -> 15 min.
+  # 8 min plus 94 s and 120 s = 11 min 34 s -> 12 min.
   embedder:
+    needs: binaries
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - id: setup-go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      # why: .github/ci-notes/dispatch-browser.md#what-the-embedder-job-downloads-in-place-of-its-builds
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          go-version-file: packages/envoy/go.mod
-          cache: false
-      # go-envoy, restored only, as the multiprocess job restores it and for the same reason:
-      # run-server.sh builds the Dispatch server, which the family's saving jobs do not.
-      - id: go-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-broker
+      # why: .github/ci-notes/dispatch-browser.md#why-the-shard-job-makes-the-downloaded-binaries-executable
+      - name: Make the downloaded binaries executable
+        run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
+      # why: .github/ci-notes/dispatch-browser.md#the-dashboard-the-embedder-job-serves
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-{1}-', runner.os, runner.arch) || '' }}
+          name: dispatch-e2e-dashboard
+          path: packages/dispatch/web
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
+      # why: .github/ci-notes/dispatch-browser.md#why-the-embedder-job-builds-contracts
       - name: Build contracts for dispatch e2e
-        # why: .github/ci-notes/dispatch-browser.md#why-the-embedder-job-builds-contracts
         run: bun run build:dispatch
         working-directory: packages/contracts
-      - name: Build the Dispatch server for the embedder lane
-        # why: .github/ci-notes/dispatch-browser.md#why-the-embedder-jobs-server-build-carries-the-lane-in-its-name
-        run: go build -o ./dispatch-e2e ./cmd/dispatch
-        working-directory: packages/envoy
       - name: Install Playwright Chromium
         # Browsers only, no apt: .github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is
         # says why that list is not needed and what the 4 minutes are.
@@ -395,21 +391,18 @@ jobs:
       - name: Pull the embedder stack's Postgres image
         # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-pulls-its-stacks-postgres-image
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-      - name: Read the connections the embedder stack's Postgres must allow
-        # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-reads-its-stacks-connection-limit-in-a-step-of-its-own
-        id: connections
-        timeout-minutes: 2
-        run: |
-          connections=$(go run ./internal/dispatch/store/cmd/connections)
-          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
-          echo "connections=$connections" >> "$GITHUB_OUTPUT"
-        working-directory: packages/envoy
       - name: Browser-test the bar's two tiers against a counting embedder
+        # why: .github/ci-notes/dispatch-browser.md#what-the-embedders-browser-step-runs-against
         timeout-minutes: 4
         run: |
+          # A literal, the pgvector copy of .github/ci-images.yaml, for the reason
+          # .github/ci-notes/dispatch-browser.md#what-the-two-process-dashboard-step-runs-against gives.
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
-          bun run e2e:embedder
+          export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
+          export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker"
+          # Read in the binaries job, since this job sets up no Go (e2e/harness-postgres.ts).
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ needs.binaries.outputs.connections }}
+          bun run e2e:embedder:run
         working-directory: packages/dispatch
       # `if: failure()`, as the multiprocess job's upload is: the chromium project retries a
       # failed row, but a row that fails after its retries fails this job and this upload runs.
@@ -420,8 +413,9 @@ jobs:
           path: packages/dispatch/e2e/test-results
 
   # why: .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets
-  # 240 + 333 + 120 = 693 s -> 12 min; 12 + 4 = 16 min with the reverse-order step.
+  # 240 + 320 + 120 = 680 s -> 12 min; 12 + 4 = 16 min with the reverse-order step.
   visual:
+    needs: binaries
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 16
@@ -429,31 +423,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - id: setup-go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      # why: .github/ci-notes/dispatch-browser.md#what-the-visual-job-downloads-in-place-of-its-builds
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          go-version-file: packages/envoy/go.mod
-          cache: false
-      # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-restores-go-envoy-test
-      - id: go-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-broker
+      # why: .github/ci-notes/dispatch-browser.md#why-the-shard-job-makes-the-downloaded-binaries-executable
+      - name: Make the downloaded binaries executable
+        run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
+      # why: .github/ci-notes/dispatch-browser.md#the-dashboard-the-visual-job-serves
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) || '' }}
+          name: dispatch-e2e-dashboard
+          path: packages/dispatch/web
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
         # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-builds-contracts
         run: bun run build:dispatch
         working-directory: packages/contracts
-      - name: Build dispatch dashboard
-        run: |
-          bun run build:web
-          ls -l web/dist/THIRD_PARTY_NOTICES.txt
-        working-directory: packages/dispatch
       # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-installs-no-browser
       - name: Pull the pinned Playwright copy
         # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-pulls-the-pinned-playwright-copy-first
@@ -461,21 +449,13 @@ jobs:
       - name: Pull the stack's Postgres image
         # why: .github/ci-notes/dispatch-browser.md#the-stacks-postgres-image-pulled-here-for-the-same-reason
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-      # The stack's connection limit, read outside the browser step's budget, where
-      # e2e/harness-postgres.ts would otherwise compile it (DISPATCH_E2E_PG_CONNECTIONS).
-      - name: Read the connections the visual stack's Postgres must allow
-        id: connections
-        run: |
-          connections=$(go run ./internal/dispatch/store/cmd/connections)
-          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
-          echo "connections=$connections" >> "$GITHUB_OUTPUT"
-        working-directory: packages/envoy
       - name: Browser-test dispatch dashboard against its baselines
+        # why: .github/ci-notes/dispatch-browser.md#why-a-seed-near-a-utc-midnight-waits-for-it-and-what-that-costs-the-budget
         id: visual-normal
         # 183 x 1.15 = 211 s -> 4 min.
         timeout-minutes: 4
         run: |
-          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-visual-suite.sh" "${{ steps.connections.outputs.connections }}"
+          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-visual-suite.sh" "${{ needs.binaries.outputs.connections }}"
         working-directory: packages/dispatch
       - name: Browser-test dispatch dashboard against its baselines, rows in reverse order
         # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-runs-its-rows-again-in-reverse-order
@@ -486,7 +466,9 @@ jobs:
           # .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets gives.
           export TMPDIR="$RUNNER_TEMP"
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
+          export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
+          export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker"
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ needs.binaries.outputs.connections }}
           export DISPATCH_E2E_VISUAL_ORDER=reverse
           e2e/visual-run.sh --output=e2e/test-results-reverse
         working-directory: packages/dispatch
@@ -511,7 +493,7 @@ jobs:
     # why: .github/ci-notes/dispatch-browser.md#why-the-merge-job-runs-on-arm64
     runs-on: ubuntu-24.04-arm
     # why: .github/ci-notes/dispatch-browser.md#the-merge-jobs-measured-steps-and-its-budget
-    # 180 + 37 = 217 s, which is 3 min 37 s, so 4 min.
+    # 180 + 39 = 219 s, which is 3 min 39 s, so 4 min.
     timeout-minutes: 4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -568,13 +550,18 @@ jobs:
       - name: Reading four, the row durations
         if: always()
         run: .github/scripts/dispatch-browser-reading-row-durations.sh
+      # why: .github/ci-notes/dispatch-browser.md#what-reading-five-sums-and-why-it-fails-the-job
+      - name: Reading five, the lane's machine time
+        if: always()
+        run: .github/scripts/dispatch-browser-run-reads.sh machine-time "$RUNNER_TEMP/jobs.json" "${{ inputs.lane }}"
       # why: .github/ci-notes/dispatch-browser.md#what-the-verdict-step-fails-on
       - name: Fail when a leg failed or the merged report holds a failed row
         if: always()
         run: >-
           .github/scripts/dispatch-browser-verdict.sh "${{ needs.binaries.result }}"
           "${{ needs.shard.result }}" "${{ needs.alone.result }}"
-          "${{ needs.multiprocess.result }}" "${{ needs.visual.result }}"
+          "${{ needs.multiprocess.result }}" "${{ needs.embedder.result }}"
+          "${{ needs.visual.result }}"
       # why: .github/ci-notes/dispatch-browser.md#when-the-merge-job-posts-ci-ok
       - name: Report ci-ok when this job decides a merge-group run
         if: always() && inputs.ci-ok-changes != ''

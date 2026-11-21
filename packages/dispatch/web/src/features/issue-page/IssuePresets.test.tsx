@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -199,10 +199,10 @@ function DialogOverTheRow(): ReactNode {
   ) : null;
 }
 
-// Escape closes the innermost layer. A dialog open over the menu takes it even before its focus
-// has moved in, the frame after it opens. Whether a dialog is open is `useDialog`'s registry's
-// answer (`dialogOpen()`, decision 318), the one that decides which dialog the key closes and
-// that Details' drawer asks too, so a dialog's markup does not change it.
+// Escape closes the innermost layer. A dialog open over the menu takes it wherever the focus is,
+// in the dialog or outside it. Whether a dialog is open is `useDialog`'s registry's answer
+// (`dialogOpen()`, decision 318), the one that decides which dialog the key closes and that
+// Details' drawer asks too, so a dialog's markup does not change it.
 test("below 1280 px, Escape with a dialog open over the menu closes the dialog alone, the focus outside it", async () => {
   const user = userEvent.setup();
   const restoreMatchMedia = stubViewport(PHONE_WIDTH);
@@ -223,20 +223,21 @@ test("below 1280 px, Escape with a dialog open over the menu closes the dialog a
     );
     const dialog = () => screen.queryByRole("dialog", { name: "Over the row" });
 
-    // The dialog moves the focus into itself a frame after it opens; with that frame held, the
-    // Escape lands on the menu's item.
+    // The dialog takes the focus in the commit that opens it, with no frame run. The focus is
+    // then put back on the menu's item, outside the dialog, so the Escape lands there.
     const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
     try {
       await user.keyboard("?");
       expect(dialog(), "? drew no dialog").not.toBeNull();
-      expect(document.activeElement, "the dialog took the focus in its first frame").toBe(
-        menuItem("spec")
+      expect(document.activeElement, "the dialog did not take the focus as it opened").toBe(
+        screen.getByRole("button", { name: "in the dialog" })
       );
+      act(() => menuItem("spec").focus());
       await user.keyboard("{Escape}");
     } finally {
       frames.mockRestore();
     }
-    expect(dialog(), "Escape before the dialog took the focus left it open").toBeNull();
+    expect(dialog(), "Escape with the focus on the menu's item left the dialog open").toBeNull();
     expect(
       screen.queryByRole("menu"),
       "that Escape closed the menu under the dialog"

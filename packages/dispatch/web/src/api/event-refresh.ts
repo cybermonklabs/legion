@@ -31,6 +31,7 @@ import type {
   MyRepliesResponse,
   MyReplyRow,
 } from "./types";
+import { isViewer } from "./write-events";
 
 /**
  * Which cached reads one event of the feed can change, and nothing else: `eventRefreshTargets` is
@@ -65,15 +66,6 @@ function payloadStrings(event: DispatchEvent, key: string): readonly string[] | 
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : undefined;
-}
-
-/** Whether `login` is the signed-in viewer's, compared as the server compares logins. */
-export function isViewer(login: string | undefined, viewer: string | undefined): boolean {
-  return (
-    login !== undefined &&
-    viewer !== undefined &&
-    login.trim().toLowerCase() === viewer.trim().toLowerCase()
-  );
 }
 
 /** A list read's rows, as the reader that holds the query wrote them; none for a query with no

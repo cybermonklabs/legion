@@ -1,5 +1,6 @@
 import { createComment, createIssue, createProject, patchIssue } from "./api";
 import { usesFakeEmbedder } from "./harness-embedder";
+import { pressOnceTheShellListens } from "./keyboard";
 import { sql } from "./psql";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -21,10 +22,11 @@ const operatorTitles = [
 ];
 
 /** Opens the bar with `/`. The queries below name no action and no project, so every row the
- *  list holds for them is a hit. */
+ *  list holds for them is a hit. Each caller opens it straight after a navigation, so the key
+ *  waits for the shell's keymap (`e2e/keyboard.ts`): pressed before the landing has answered, it
+ *  reaches no listener and the bar never opens. */
 async function openSearch(page: Page): Promise<void> {
-  await page.locator("body").focus();
-  await page.keyboard.press("/");
+  await pressOnceTheShellListens(page, "/");
   await expect(page.getByRole("dialog", { name: "Search" })).toBeVisible();
 }
 

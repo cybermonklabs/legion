@@ -1,4 +1,3 @@
-import { hashKey, type MutationKey } from "@tanstack/react-query";
 import {
   type Ref,
   type RefObject,
@@ -12,7 +11,6 @@ import {
 
 import type { ArtifactOwner } from "../../api/client";
 import type { AskUrgency } from "../../api/types";
-import { SendStoppedError } from "../writes/keyed-write";
 import { textareaValue } from "./block-spans";
 import {
   type AskOptionDraft,
@@ -29,7 +27,7 @@ import {
   hasUnsavedInput,
   type ReplyTarget,
 } from "./composer-model";
-import type { HeldSend, HeldSends } from "./held-sends";
+import type { HeldSend } from "./held-sends";
 import {
   type Address,
   addressWords,
@@ -80,36 +78,6 @@ function keptNames({ composerName, inline, standing }: KeptUnder) {
      *  draft is that thread's until the reader sends or drops it. */
     unsentName: standing || inline ? composerName : undefined,
   };
-}
-
-/** The name of the composer that sends under `mutationKey` (`KeptUnder.composerName`): its send's
- *  own name, which is what it keeps the reader's drafts under (`keptNames`). The margin keeps and
- *  reads a compose's drafts under it from outside the composer (`giveWay`, `useMarginSheet`). */
-export function composerNameOf(mutationKey: MutationKey): string {
-  return hashKey(mutationKey);
-}
-
-/**
- * What a margin compose's refusal becomes once a newer compose on its document takes its place,
- * which is the host's move for it and carries nothing. A send the reader stopped may have been
- * delivered, so it is not reduced to a draft: it waits under `aside` unchanged, its mark with it
- * (`HeldSends.setAside`), for the newer compose to offer (`stoppedOfferOf`). Any other refusal
- * goes, its mark with it, and its draft is kept under the compose's name for the words it was
- * written about and in the kind it was written as (`awayDraftOf`), where the compose keeps a draft
- * by address (`keptNames`' `awayName`) and the newer compose offers it (`keptForOtherWords`).
- */
-export function giveWay(
-  refused: HeldSend & { readonly status: "refused" },
-  aside: MutationKey,
-  store: HeldSends,
-  unsent: UnsentDrafts
-): void {
-  if (refused.refusal instanceof SendStoppedError) {
-    store.setAside(refused.mutationKey, aside);
-    return;
-  }
-  unsent.keepAway(composerNameOf(refused.mutationKey), awayDraftOf(refused));
-  store.discard(refused.mutationKey);
 }
 
 /** What Send says while the refusal the composer holds lives at another address than the one it

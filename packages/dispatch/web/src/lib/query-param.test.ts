@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools-constants";
 
 import { capSearchQuery } from "./query-param";
 

@@ -1,11 +1,11 @@
-import { inboxThreadRow } from "@legion/contracts";
+import { inboxThreadRow } from "@legion/contracts/dispatch-api-constants";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type { InboxRow, MyReplyRow, OpenAskOwner } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { linkHoverText, linkText, textMutedOnCanvas } from "../../theme/classes";
-import { referenceTriggerProps } from "../refs/RefPreview";
+import { referenceTriggerProps } from "../refs/reference-trigger";
 import { buildIssuePath, buildProjectPath } from "../refs/routes";
 import { askIssueKey } from "./ask-name";
 import { threadOwner } from "./list-row";

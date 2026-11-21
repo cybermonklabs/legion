@@ -1,15 +1,8 @@
 import type { ReactNode } from "react";
 
 import { dangerText, secondaryButtonCompact, textSecondaryOnSurface } from "../../theme/classes";
-import { useWriteSelection, useWrites, type Write } from "./write-store";
-
-/** The writes a signed-out page still keeps for their person: every one they can see that
- *  Dispatch has not made. A read mark is never shown. */
-function keptWrites(rows: readonly Write[]): readonly Write[] {
-  return rows.filter(
-    (row) => row.login !== undefined && row.presentation !== "quiet" && row.status !== "made"
-  );
-}
+import { keptWrites } from "./shown-writes";
+import { useWriteSelection, useWrites } from "./write-store";
 
 /**
  * What a lapsed session keeps, on the sign-in page: the person's writes by name, under the login

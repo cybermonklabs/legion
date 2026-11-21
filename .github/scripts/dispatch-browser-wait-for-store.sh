@@ -7,7 +7,7 @@
 # .github/workflows/dispatch-browser.yaml's shard job;
 # .github/ci-notes/dispatch-browser.md#why-the-stores-readiness-wait-writes-reads-and-deletes-an-object
 # says why a bucket alone is not enough to wait for. It takes no argument. $RUNNER_TEMP is where
-# the step before it
+# the step "Start an S3-compatible server for uploaded files", the first after the checkout,
 # redirected the server's log, which is what a job in a container has in place of `docker logs`.
 # The runner sets $RUNNER_TEMP for every step.
 #

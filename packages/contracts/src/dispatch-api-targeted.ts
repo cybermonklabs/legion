@@ -4,7 +4,7 @@ import {
   CommentEventPayloadSchema,
   CommentMentionSchema,
 } from "./dispatch-api-comments";
-import { DELIVERY_CAPABILITIES } from "./dispatch-api-limits";
+import { DELIVERY_CAPABILITIES } from "./dispatch-api-constants";
 import { MessageEventPayloadSchema } from "./dispatch-api-messages";
 
 /**

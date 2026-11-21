@@ -40,17 +40,26 @@ test("sidebar shows Inbox, Pinned, one row per project with its open-ask badge, 
   // The sidebar must never fan out per issue. The one sanctioned per-issue request on the
   // Inbox is each ask card's `GET /issues/{key}/subscribers` (`AskRecipients`, for `Reaches N`),
   // which is the card's, not the navigation's, so the recorder leaves it out.
+  //
+  // The navigation's own read is its pinned list, and the request that carries it on a cold
+  // page is the landing: that one answer carries the pinned issues beside the rest of the shell
+  // and seeds them under the key the sidebar reads them by (`web/src/api/queries.ts`,
+  // `seedShell`), so the page asks `/issues?pinned=true` not at all. Either request is one read
+  // of that list and both are recorded, so a page that sent the landing AND the list's own
+  // route would record two and fail here, as a page that fanned out per issue always has.
   const issueRequests: string[] = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (request.method() === "GET" && url.pathname === "/api/v1/issues") {
+    if (request.method() !== "GET") {
+      return;
+    }
+    if (url.pathname === "/api/v1/landing") {
+      issueRequests.push(url.pathname);
+    }
+    if (url.pathname === "/api/v1/issues") {
       issueRequests.push(url.search);
     }
-    if (
-      request.method() === "GET" &&
-      url.pathname.startsWith("/api/v1/issues/") &&
-      !url.pathname.endsWith("/subscribers")
-    ) {
+    if (url.pathname.startsWith("/api/v1/issues/") && !url.pathname.endsWith("/subscribers")) {
       issueRequests.push(url.pathname);
     }
   });
@@ -67,13 +76,13 @@ test("sidebar shows Inbox, Pinned, one row per project with its open-ask badge, 
     await expect(navigation.locator('a[href="/projects/OPS"]')).toContainText("1");
     await expect(navigation.getByRole("link", { name: "Settings" })).toBeVisible();
     await expect(navigation.getByRole("link", { name: /^(CORE|OPS)-\d+/ })).toHaveCount(0);
-    // The Inbox makes no per-issue read of its own either: the list is one `GET /inbox`, and
-    // the reading pane (INFRA-575) draws the selected question from the row it already holds.
-    // Only a question written as a decision block has its issue read, for the one field the
-    // live document is handed - whether the issue is closed (`DecisionBody` in
-    // `ReadingPane.tsx`). These three are ordinary questions, so the pane reads no issue and
-    // the navigation's one read stands alone.
-    await expect.poll(() => issueRequests).toEqual(["?pinned=true"]);
+    // The Inbox makes no per-issue read of its own either: the list is one read of the Inbox -
+    // carried, on this page, by the same landing - and the reading pane (INFRA-575) draws the
+    // selected question from the row it already holds. Only a question written as a decision
+    // block has its issue read, for the one field the live document is handed - whether the
+    // issue is closed (`DecisionBody` in `ReadingPane.tsx`). These three are ordinary
+    // questions, so the pane reads no issue and the navigation's one read stands alone.
+    await expect.poll(() => issueRequests).toEqual(["/api/v1/landing"]);
     await page.screenshot({ path: testInfo.outputPath("projects-sidebar.png"), fullPage: true });
   } finally {
     await context.close();

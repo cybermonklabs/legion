@@ -32,12 +32,6 @@ export const runningIssueStatuses: readonly IssueStatus[] = [
  *  the server would hand over (`claimIsTakeable`). The `?unclaimed=1` link sets it. */
 export const UNCLAIMED_FACET = "Nobody or lapsed";
 
-/** How many of one action's writes are in flight at once, whether it is sending them for the
- *  first time or Finish is retrying what a refusal left behind. A selection is as large as the
- *  project, and "Select all N matching" is two clicks away, so the table sends a bounded
- *  stream rather than every request at once; each write is still independent in the store. */
-export const WRITES_IN_FLIGHT = 8;
-
 /** How a column filters, and everything a filter of its kind needs: a column that filters by
  *  picking values cannot exist without the values a row files under, nor one that filters by
  *  typed text without the text it reads. Matching, the URL parameter and the options a filter

@@ -1,4 +1,4 @@
-import { parseBlockPointerValue } from "@legion/contracts";
+import { parseBlockPointerValue } from "@legion/contracts/dispatch-block-ref";
 
 import { primarySpec, roleDocument } from "../../api/issue-cache";
 import type {

@@ -1,4 +1,4 @@
-import { itemFromSearch } from "@legion/contracts";
+import { itemFromSearch } from "@legion/contracts/dispatch-href";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
@@ -8,10 +8,11 @@ import { primarySpec } from "../../api/issue-cache";
 import { issueQuery, whoAmIQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
+import { composerNameOf } from "../conversation/composer-names";
 import { useHeldSend, useHeldSends, useHeldSendsUnder } from "../conversation/held-sends";
 import type { CarriedBlockIds } from "../conversation/send-request";
 import { type AwayDraft, useUnsentDrafts } from "../conversation/unsent-drafts";
-import { composerNameOf, keptForOtherWords, stoppedOfferOf } from "../conversation/useKeptDrafts";
+import { keptForOtherWords, stoppedOfferOf } from "../conversation/useKeptDrafts";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { writePin } from "../issue/pin-write";
 import { eventItemId } from "../issue/pins";
@@ -168,7 +169,18 @@ export function useMarginSheet(): MarginSheetModel {
     setSheetThreadKey(undefined);
   }, [sheetReplySendingNow]);
   const marginRef = useRef<HTMLElement>(null);
-  const issue = useQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
+  // The margin is the issue page's second reader of `["issue", key]`, and it can mount after the
+  // page has already given that read up: on a landing that draws a live document the shell
+  // mounts the margin only once the hold on it ends (`features/shell/content-drawn.ts`), and an
+  // issue that answers 404 ends it after the read's retries are spent. A mount with the default
+  // `retryOnMount` would ask once more for an issue the page already says is missing
+  // (`e2e/nav.stub.e2e.ts`, which counts the read and its two retries and no fourth). The page's
+  // own reader, mounted with the page, is the one that retries.
+  const issue = useQuery({
+    ...issueQuery(issueKey),
+    enabled: issueKey !== undefined,
+    retryOnMount: false,
+  });
   const viewer = useQuery(whoAmIQuery());
   const visibleArtifact =
     documentRoute === undefined

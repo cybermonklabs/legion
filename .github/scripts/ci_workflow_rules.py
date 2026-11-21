@@ -230,12 +230,11 @@ def cache_steps(document: dict, action: str) -> list:
 def restores_of(documents: dict) -> dict:
     """Every restore of the given workflows, as family -> [(where it is, its with:)]. Given the
     document set the engine loads - ci.yaml, and each local workflow one of its jobs calls:
-    dispatch-browser.yaml's binaries, multiprocess, embedder and visual jobs restore go-envoy and
-    go-envoy-test for ci.yaml's dispatch-browser job - it is every restore of ci.yaml's run;
-    paired against ci.yaml alone, a save that only a called workflow restores would read as a fill
-    nobody wants. Given the rest of the directory, it is the restores of the release builds and
-    the other workflows. The set holds each file once however many of ci.yaml's jobs name it, so
-    each restore is taken once."""
+    dispatch-browser.yaml's binaries job restores go-dispatch-browser for ci.yaml's dispatch-browser
+    job - it is every restore of ci.yaml's run; paired against ci.yaml alone, a save that only a
+    called workflow restores would read as a fill nobody wants. Given the rest of the directory,
+    it is the restores of the release builds and the other workflows. The set holds each file once
+    however many of ci.yaml's jobs name it, so each restore is taken once."""
     restores = defaultdict(list)
     for path, document in documents.items():
         for job_id, family, given in cache_steps(document, "restore"):
@@ -264,7 +263,7 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
 
     The key and the paths are held for every other workflow of the directory too: a release
     build (release.yaml's go-daemon, release-envoy-infra.yaml's go-envoy-infra), the nightly
-    browser re-record (go-envoy) and this workflow's own lookups restore the entries it fills,
+    browser re-record (go-envoy-test) and this workflow's own lookups restore the entries it fills,
     and a restore there that drifts from the save misses as silently as one of ci.yaml's. Only
     the existence check above stays ci.yaml's: a fill is for ci.yaml's run, so a family only
     another workflow restores is still a fill ci.yaml does not read."""

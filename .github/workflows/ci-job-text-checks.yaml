@@ -29,9 +29,10 @@ name: CI job text-checks
 # docs/, a skill under skills/, the committed extract beside the code it pins - and Go's test
 # cache keys on neither, so a cached pass would say nothing about the text as it now stands.
 #
-# The job restores no Actions cache. Each of the six Go cache families
+# The job restores no Actions cache. Each of the seven Go cache families
 # .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs lists is
-# filled for a job that builds a whole module's binaries or test binaries, and this job builds
+# filled for another job's build - a module's binaries or test binaries, the release targets, or
+# the browser suite's four commands - and none of them is this job's build of
 # five packages: measured here, the four calls this job ran before the supervise pins joined it
 # take 4 minutes 4 seconds with an empty build cache and 34 seconds with a warm one, which is
 # less than the download and extraction of any of those families would cost it. The fifth call

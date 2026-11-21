@@ -8,16 +8,20 @@
  * placement problem, and the same pane.
  */
 
-import { queryOptions, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
-import { api } from "../../api/client";
-import { issueQuery, whoAmIQuery } from "../../api/queries";
+import {
+  artifactQueryOptions,
+  issueQuery,
+  liveTextQueryOptions,
+  whoAmIQuery,
+} from "../../api/queries";
 import type { Artifact, AuthenticatedUser } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { focusVisibleRing, quoteAccentBorder } from "../../theme/classes";
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
-import { liveTextQueryOptions, ProofDocument, type ProofDocumentProps } from "../doc/ProofDocument";
+import { ProofDocument, type ProofDocumentProps } from "../doc/ProofDocument";
 import { cancelBlockScroll, scrollBlockToTop, scrollElementToTop } from "../doc/scroll-block";
 import { holdSection, type SectionHold } from "./pane-placement";
 
@@ -27,13 +31,6 @@ import { holdSection, type SectionHold } from "./pane-placement";
  * holding `j` down a list of thirty questions opens one room, not thirty.
  */
 const DOCUMENT_SETTLE_MS = 200;
-
-/** The document the column shows, under the document page's own key. */
-export const artifactQueryOptions = (artifactId: string) =>
-  queryOptions({
-    queryFn: () => api.getArtifact(artifactId),
-    queryKey: ["artifact", artifactId],
-  });
 
 /** Where the section bar stands in the column's own scrolled content, in pixels. */
 interface SectionBar {

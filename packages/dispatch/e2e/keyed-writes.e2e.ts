@@ -17,6 +17,7 @@ import {
   slowWrites,
   userHeaders,
 } from "./api";
+import { holdFirstRequest } from "./editor";
 import {
   cutFirstAnswerBody,
   dropFirstAnswer,
@@ -30,6 +31,13 @@ import {
 } from "./keyed-writes";
 import { httpsTarget, plainHttpSkipReason } from "./plain-http-origin";
 import { sql } from "./psql";
+import {
+  fetchedChunk,
+  KEPT_WRITES_CHUNK,
+  shellLoads,
+  tabReloads,
+  WRITE_KINDS_CHUNK,
+} from "./shell";
 import { expect, type Page, test } from "./test";
 import { asPlainHttpUser, asUser } from "./users";
 
@@ -283,11 +291,14 @@ test("a write whose key has expired stops and offers a new write @webkit @firefo
 
 // The status change is the one kept through a reload: the page keeps an unconfirmed write in the
 // tab's storage, asks before the tab is left, and the reloaded page sends it again under the same
-// key. The shell's pending-writes indicator names it while it is out and clears once Dispatch
-// answers it.
+// key. The shell's pending-writes indicator names it while it is out, on the page that pressed it
+// and on the reloaded one, and clears once Dispatch answers it. The reloaded page is a cold load
+// that holds the write before it has drawn, and the indicator is a chunk of its own
+// (`web/src/features/writes/write-hosts.tsx`) that such a page has not fetched yet, so the row
+// reads the indicator there as well as on the page that pressed it.
 // @webkit @firefox: the keyed write path's storage of a tab's unconfirmed write across a reload,
 // and the ask before the tab unloads.
-test("a status change whose answer is lost survives a reload, lands once, and the pending-writes indicator shows and clears @webkit @firefox", async ({
+test("a status change whose answer is lost survives a reload, lands once, and the pending-writes indicator shows it before and after the reload and clears @webkit @firefox", async ({
   browser,
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
@@ -305,6 +316,17 @@ test("a status change whose answer is lost survives a reload, lands once, and th
     // The first PATCH reaches Dispatch, which writes the status; its answer is held until the
     // page that asked is gone.
     const reloaded = Promise.withResolvers<void>();
+    // The replay the reloaded page sends is held before it reaches Dispatch until this row has
+    // read the indicator on that page: an answer back first would clear the indicator before it
+    // could be seen. This route is added before `dropFirstAnswer`'s, and Playwright runs the
+    // routes of one request last-added first, so the first PATCH is that one's and every PATCH
+    // it lets through comes here.
+    const indicatorRead = Promise.withResolvers<void>();
+    await page.route(`**${path}`, async (route) => {
+      if (route.request().method() !== "PATCH") return route.fallback();
+      await indicatorRead.promise;
+      return route.fallback();
+    });
     const reached = dropFirstAnswer(page, `**${path}`, "PATCH", reloaded.promise);
     const resumed = replayed(page, "PATCH", path);
     await page.goto(`/issues/${issue.key}`);
@@ -315,6 +337,11 @@ test("a status change whose answer is lost survives a reload, lands once, and th
 
     await page.reload();
     reloaded.resolve();
+    await expect(
+      indicator.getByRole("status"),
+      "the reloaded page does not show the write it sends again"
+    ).toHaveText("Saving 1 change…");
+    indicatorRead.resolve();
     expect((await resumed).status()).toBe(200);
     expect(prompts).toEqual(["beforeunload"]);
     expect(patches).toHaveLength(2);
@@ -1132,17 +1159,37 @@ test("alice's write queued behind her held one sends nothing once bob signs in f
 // shell's pending-writes indicator names it, and the reloaded page sends it again once the network
 // is back. The Conversation's pin on a turn goes through the pin queue; the issue header's pin is
 // a `PUT` of the issue's own state, which a reload resumes as it resumes a `POST` or a `PATCH`.
-test("a pin on a turn pressed during an outage survives a reload and lands once the network is back", async ({
+//
+// A pick of the issue's priority pressed in the same outage is kept the same way, and the reload
+// is of Settings, a page that imports neither the pin's kind nor the pick's: a reloaded page
+// makes a kept write again by its kind, the kinds are a chunk of their own, and the store's
+// take-up of what the tab kept waits until that chunk is in (`web/src/features/writes/kinds.ts`,
+// `Writes.resume`), so neither write is dropped for want of its kind.
+//
+// A write pressed while that chunk is still coming down waits for the take-up, kept in the tab
+// from its press. Where the download then fails, the take-up's ask is one a reader waits on
+// (`loadWriteKinds`, under `renderChunk`), so the chunk-failure recovery reloads the page from the
+// tab's budget (`web/src/features/shell/DeploymentResilience.tsx`), although the writes host's
+// prefetch of the same chunk is out beside it; and the reloaded page takes the write up and sends
+// it.
+// SLOW(>=2s): the kept writes are only observable across real reloads, so the row pays four page
+// loads - the issue, Settings and its reload, the issue again and the recovery's reload of it -
+// and the resumed writes' round trips.
+test("a pin on a turn and a priority pick pressed during an outage survive a reload on another page, and a write pressed while the kinds of write fail to download survives the reload that failure makes", async ({
   browser,
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "A pin through a reload" });
   await createMessage(issue.key, { body: "Pinned through the outage" });
+  const path = `/api/v1/issues/${issue.key}`;
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
     page.on("dialog", (dialog) => void dialog.accept());
+    const patches = watchWrites(page, "PATCH", path);
+    const answers = watchAnswers(page, "PATCH", path);
     const network = await outage(page, "**/api/v1/me/issues/*/state", "PUT");
+    const pickNetwork = await outage(page, `**${path}`, "PATCH");
     await page.goto(`/issues/${issue.key}/conversation`);
     await page
       .getByRole("list", { name: "Conversation turns" })
@@ -1150,15 +1197,69 @@ test("a pin on a turn pressed during an outage survives a reload and lands once 
       .filter({ has: page.getByText("Pinned through the outage", { exact: true }) })
       .getByRole("button", { name: "Pin" })
       .click();
+    await page.getByRole("combobox", { name: `Priority of ${issue.key}` }).selectOption("1");
     await expect(pendingWrites(page)).toBeVisible();
-    await expect.poll(() => keptWrites(page)).toBe(1);
+    await expect.poll(() => keptWrites(page)).toBe(2);
+    await expect.poll(() => patches.length).toBeGreaterThan(0);
+    const pick = patches[0];
+    expect(pick?.input).toEqual({ priority: 1 });
     expect((await getMyState())[issue.key]?.dismissed ?? []).toEqual([]);
 
+    await page
+      .getByRole("navigation", { name: "Navigation" })
+      .getByRole("link", { name: "Settings" })
+      .click();
+    await expect(page.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible();
     await page.reload();
     network.end();
+    pickNetwork.end();
+    // Answered, so made by the reloaded page: every attempt the page before it made was failed at
+    // the connection, and that page is gone before the outage ends.
+    await expect
+      .poll(() => answers.filter((answer) => answer.status === 200).map((answer) => answer.key), {
+        message:
+          "the reloaded page sends the priority pick again, under the key it was pressed under",
+        timeout: 30_000,
+      })
+      .toContain(pick?.key);
+    await expect.poll(async () => (await getIssue(issue.key)).priority).toBe(1);
     await expect
       .poll(async () => (await getMyState())[issue.key]?.dismissed ?? [], { timeout: 30_000 })
       .toHaveLength(1);
+    await expect(pendingWrites(page)).toHaveCount(0);
+    await expect.poll(() => keptWrites(page)).toBe(0);
+
+    // The kinds' chunk is held on the wire for the next document, and failed once a write is
+    // pressed behind it, the writes host has asked for the same download as a prefetch - it asks
+    // in the effect that asks for what a lapsed session keeps, whose fetch is what shows it ran
+    // (`write-hosts.tsx`) - and the margin and the preview layer have rendered from their own
+    // chunks: the take-up's ask is then the one download out that a reader waits on. Every later
+    // document gets the chunk.
+    const load = await shellLoads(page);
+    const kindsCode = await holdFirstRequest(page, WRITE_KINDS_CHUNK);
+    const statuses = watchWrites(page, "PATCH", path);
+    await page.goto(`/issues/${issue.key}`);
+    const kinds = await kindsCode.held;
+    await page.getByLabel("Status").selectOption("todo");
+    await expect(pendingWrites(page)).toContainText("Waiting to send");
+    expect(statuses, "a write pressed before the take-up is held").toEqual([]);
+    await fetchedChunk(page, KEPT_WRITES_CHUNK);
+    await load().settled();
+    await kinds.abort();
+    await expect
+      .poll(() => tabReloads(page).catch(() => null), {
+        message: "the kinds' failed download spent one of the tab's recovery reloads",
+      })
+      .toHaveLength(1);
+    await expect
+      .poll(async () => (await getIssue(issue.key)).status, {
+        message: "the reloaded page sends the write the failed take-up held",
+        timeout: 30_000,
+      })
+      .toBe("todo");
+    // One press, one key, however many attempts the reloaded page made of it.
+    expect(new Set(statuses.map((status) => status.key)).size).toBe(1);
+    for (const status of statuses) expect(status.input).toEqual({ status: "todo" });
     await expect(pendingWrites(page)).toHaveCount(0);
     await expect.poll(() => keptWrites(page)).toBe(0);
   } finally {

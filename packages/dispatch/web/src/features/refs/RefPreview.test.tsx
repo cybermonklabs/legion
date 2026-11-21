@@ -17,9 +17,10 @@ import type {
   IssueDetails,
   IssueReferenceSummary,
 } from "../../api/types";
-import { closeRefPreview, RefPreviewHost, referenceTriggerProps } from "./RefPreview";
+import { closeRefPreview, RefPreviewHost } from "./RefPreview";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./ref-preview-card";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
+import { referenceTriggerProps } from "./reference-trigger";
 import { shortForm } from "./routes";
 
 function issue(key: string, title: string): IssueDetails {

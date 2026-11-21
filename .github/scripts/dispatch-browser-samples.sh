@@ -22,7 +22,7 @@
 # would hand the caller a pid it did not start.
 #
 # `report` prints the two `::notice::` lines, titled with the leg the caller names (`shard 1`,
-# `webkit-alone`), and changes nothing else: the browser steps run it after the suite and before
+# `alone`), and changes nothing else: the browser steps run it after the suite and before
 # their own `exit`, so a step still ends on the suite's status and not on this reading's.
 # <dir> is $RUNNER_TEMP in both jobs, beside the stacks' own run directory and under what the
 # steps upload: a file written into the checkout would leave it dirty afterwards.
@@ -110,14 +110,16 @@ case "$mode" in
     # command section at the next `::`, splits the properties on `,` and each pair on its first
     # `=`, then unescapes each value (actions/runner, src/Runner.Common/ActionCommand.cs: the
     # property table is `\r` %0D, `\n` %0A, `:` %3A, `,` %2C, `%` %25). So a `,` is what would cut
-    # a title short - an alone leg's title is its project name (the `$project` that
-    # dispatch-browser-alone-suite.sh passes to `report`), and
-    # `a,b-alone` would be read as a title of `a` and a second property - while a single `:` ends
-    # nothing, and is encoded because the table holds it. `%` is replaced first, matching the
-    # runner's unescape, which takes `%25` last; the other way round would double-encode. `\r` and
-    # `\n` are left out: a matrix value written in YAML flow form cannot hold either. No name of
-    # today's matrix holds any of them - the install step refuses an engine name a comma or a space
-    # would produce - so this keeps a title true rather than fixing a fault anyone has seen.
+    # a title short - a shard leg's title carries its matrix value (the `shard $shard` that
+    # dispatch-browser-shard-suite.sh passes to `report`, $shard being the shard job's
+    # `${{ matrix.shard }}`), and a value `1,2` would be read as a title of `shard 1` and a
+    # second property - while a single `:` ends nothing, and is encoded because the table holds
+    # it. `%` is replaced first, matching the runner's unescape, which takes `%25` last; the other
+    # way round would double-encode. `\r` and `\n` are left out: a matrix value written in YAML
+    # flow form cannot hold either. No title of today's callers holds any of them - the shard
+    # job's matrix holds numbers alone (.github/workflows/dispatch-browser.yaml), and
+    # dispatch-browser-alone-suite.sh passes the literal `alone` - so this keeps a title true
+    # rather than fixing a fault anyone has seen.
     title=${title//%/%25}
     title=${title//,/%2C}
     title=${title//:/%3A}

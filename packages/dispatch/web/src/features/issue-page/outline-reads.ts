@@ -3,9 +3,14 @@ import { useMemo } from "react";
 
 import { api } from "../../api/client";
 import { primarySpec, roleDocument } from "../../api/issue-cache";
-import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../api/queries";
+import {
+  artifactBlocksQuery,
+  issueCoverageQuery,
+  issueDecisionsQuery,
+  issueResultsQuery,
+  ownerCommentsQuery,
+} from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
-import { issueDecisionsQuery } from "../doc/spec-marks";
 import type { IssueTreeReads, TreeNode } from "./issue-tree";
 import { STATE_LINES } from "./page-words";
 import {
@@ -107,7 +112,7 @@ function sixReads(key: string) {
       bringsQuestions: false,
       line: "decisions",
       message: STATE_LINES.issue_decisions_unreadable,
-      query: { ...issueDecisionsQuery(key, true), ...EVENT_FRESH },
+      query: { ...issueDecisionsQuery(key), ...EVENT_FRESH },
     },
     {
       bringsQuestions: false,
@@ -125,7 +130,7 @@ function sixReads(key: string) {
       bringsQuestions: false,
       line: "comments",
       message: STATE_LINES.comments_unreadable,
-      query: { queryFn: () => api.listComments(key), queryKey: ["comments", key], ...EVENT_FRESH },
+      query: { ...ownerCommentsQuery({ issue: key }), ...EVENT_FRESH },
     },
     {
       bringsQuestions: false,

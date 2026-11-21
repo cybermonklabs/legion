@@ -6,12 +6,13 @@ import { primarySpec, roleDocument } from "../../api/issue-cache";
 import {
   artifactBlocksQuery,
   issueCoverageQuery,
+  issueDecisionsQuery,
   issueResultsQuery,
+  ownerCommentsQuery,
   referenceTargetsQuery,
   whoAmIQuery,
 } from "../../api/queries";
 import type { IssueDetails, ReferenceTarget } from "../../api/types";
-import { issueDecisionsQuery } from "../doc/spec-marks";
 import { refetchFailedOnFocus } from "../refs/reference-target";
 import {
   buildIssueTree,
@@ -320,16 +321,12 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // Every read here takes `EVENT_FRESH`: events refresh it, and a slot mounted again reads
   // nothing.
   const coverage = useQuery({ ...issueCoverageQuery(key), ...EVENT_FRESH });
-  const decisions = useQuery({ ...issueDecisionsQuery(key, true), ...EVENT_FRESH });
+  const decisions = useQuery({ ...issueDecisionsQuery(key), ...EVENT_FRESH });
   const results = useQuery({ ...issueResultsQuery(key), ...EVENT_FRESH });
   const asks = useQuery({ ...issueAsksQuery(key), ...EVENT_FRESH });
   // Under the keys the margin, the history and the focused row's facts read too, so a reader
   // opening the panel after the tree finds them answered rather than read a second time.
-  const comments = useQuery({
-    queryKey: ["comments", key],
-    queryFn: () => api.listComments(key),
-    ...EVENT_FRESH,
-  });
+  const comments = useQuery({ ...ownerCommentsQuery({ issue: key }), ...EVENT_FRESH });
   const messages = useQuery({
     queryKey: ["issue-messages", key],
     queryFn: () => api.listIssueMessages(key),

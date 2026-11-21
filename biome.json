@@ -114,6 +114,16 @@
                     ],
                     "message": "An agent is shown only through features/refs/AgentName.tsx (AgentName, or useAgentText for an attribute or other plain string)."
                   },
+                  "@legion/contracts/actor-label": {
+                    "importNames": [
+                      "actorAttribution",
+                      "actorLabel",
+                      "actorName",
+                      "sessionLabel",
+                      "shortSessionId"
+                    ],
+                    "message": "An agent is shown only through features/refs/AgentName.tsx (AgentName, or useAgentText for an attribute or other plain string). This key is the module's own subpath, which the dashboard reads it through; the key above is the package index, and a rule keyed on one does not catch the other."
+                  },
                   "@testing-library/dom": {
                     "importNames": ["fireEvent"],
                     "message": "An interaction is performed with user-event (userEvent.setup(), or userOnFakeClock() from __tests__/user.ts under a held clock): fireEvent dispatches one DOM event, so it neither focuses what it clicks nor refuses a disabled control. Where user-event has no form for it, keep fireEvent behind a biome-ignore comment on the line above, stating why."
@@ -121,6 +131,10 @@
                   "@testing-library/react": {
                     "importNames": ["fireEvent"],
                     "message": "An interaction is performed with user-event (userEvent.setup(), or userOnFakeClock() from __tests__/user.ts under a held clock): fireEvent dispatches one DOM event, so it neither focuses what it clicks nor refuses a disabled control. Where user-event has no form for it, keep fireEvent behind a biome-ignore comment on the line above, stating why."
+                  },
+                  "react": {
+                    "importNames": ["lazy", "*", "default"],
+                    "message": "A component whose chunk a Suspense waits on is made with lazyChunk (features/shell/chunk-loads.ts), which starts the download under renderChunk. A bare lazy() starts it where the chunk-failure recovery sees no reader waiting, so its failure reloads nothing while any prefetch is out (features/shell/DeploymentResilience.tsx). React is imported by name, never as a namespace or a default, so lazy cannot arrive as React.lazy either."
                   }
                 },
                 "patterns": [
@@ -154,6 +168,20 @@
                       "shortSessionId"
                     ],
                     "message": "An agent is shown only through features/refs/AgentName.tsx (AgentName, or useAgentText for an attribute or other plain string)."
+                  },
+                  "@legion/contracts/actor-label": {
+                    "importNames": [
+                      "actorAttribution",
+                      "actorLabel",
+                      "actorName",
+                      "sessionLabel",
+                      "shortSessionId"
+                    ],
+                    "message": "An agent is shown only through features/refs/AgentName.tsx (AgentName, or useAgentText for an attribute or other plain string). This key is the module's own subpath, which the dashboard reads it through; the key above is the package index, and a rule keyed on one does not catch the other."
+                  },
+                  "react": {
+                    "importNames": ["lazy", "*", "default"],
+                    "message": "A component whose chunk a Suspense waits on is made with lazyChunk (features/shell/chunk-loads.ts), which starts the download under renderChunk. A bare lazy() starts it where the chunk-failure recovery sees no reader waiting, so its failure reloads nothing while any prefetch is out (features/shell/DeploymentResilience.tsx). React is imported by name, never as a namespace or a default, so lazy cannot arrive as React.lazy either."
                   }
                 }
               }
@@ -167,6 +195,26 @@
         "packages/dispatch/web/src/features/refs/AgentName.tsx",
         "packages/dispatch/web/src/features/refs/routes.ts"
       ],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "react": {
+                    "importNames": ["lazy", "*", "default"],
+                    "message": "A component whose chunk a Suspense waits on is made with lazyChunk (features/shell/chunk-loads.ts), which starts the download under renderChunk. A bare lazy() starts it where the chunk-failure recovery sees no reader waiting, so its failure reloads nothing while any prefetch is out (features/shell/DeploymentResilience.tsx). React is imported by name, never as a namespace or a default, so lazy cannot arrive as React.lazy either."
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["packages/dispatch/web/src/features/shell/chunk-loads.ts"],
       "linter": { "rules": { "style": { "noRestrictedImports": "off" } } }
     }
   ]

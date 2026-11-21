@@ -1,4 +1,4 @@
-import { ISSUE_TITLE_MAX } from "@legion/contracts";
+import { ISSUE_TITLE_MAX } from "@legion/contracts/dispatch-api-constants";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type FormEvent,
@@ -21,7 +21,12 @@ import {
   removedEvenIfGone,
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { projectsQuery, userStateQuery } from "../../api/queries";
+import {
+  ownerSubscribersQuery,
+  pinnedIssuesQuery,
+  projectsQuery,
+  userStateQuery,
+} from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
@@ -146,10 +151,7 @@ export function IssueHeader({
   const [subscribersOpen, setSubscribersOpen] = useState(false);
   const [referencesOpen, setReferencesOpen] = useState(false);
   const agentText = useAgentText();
-  const subscribers = useQuery({
-    queryKey: ["subscribers", issue.key],
-    queryFn: () => api.getIssueSubscribers(issue.key),
-  });
+  const subscribers = useQuery(ownerSubscribersQuery({ issue: issue.key }));
   const subscriberList = subscribers.isError ? [] : (subscribers.data ?? []);
   // The count is a claim about who is subscribed, so only a read that answered makes it.
   const subscribersCounted = !subscribers.isError && subscribers.data !== undefined;
@@ -168,7 +170,9 @@ export function IssueHeader({
     label: (sessionId) =>
       `${agentText.sessionText(sessionId, subscriberList.find((row) => row.session_id === sessionId)?.title)} unsubscribed from ${issue.key}`,
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["subscribers", issue.key] });
+      void queryClient.invalidateQueries({
+        queryKey: ownerSubscribersQuery({ issue: issue.key }).queryKey,
+      });
     },
   });
   const releaseClaim = useKeyedWrite({
@@ -294,7 +298,7 @@ export function IssueHeader({
       void queryClient.invalidateQueries({ queryKey: userStateQuery().queryKey });
       // The sidebar lists the pinned issues from their own read, which follows the pin however
       // its write settled: with an answer, landed with none (`null`), or refused.
-      void queryClient.invalidateQueries({ exact: true, queryKey: ["issues", "pinned"] });
+      void queryClient.invalidateQueries({ exact: true, queryKey: pinnedIssuesQuery().queryKey });
     },
     onMutate: async (pinned) => {
       await queryClient.cancelQueries({ queryKey: userStateQuery().queryKey });

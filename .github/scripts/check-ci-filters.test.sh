@@ -1371,7 +1371,7 @@ check "names the step, its job and the file that does not have it" \
 # A job that calls a reusable workflow gives it its steps, so the go commands, the `env:` blocks
 # and the shells that decide what that job compiles are in the called file. The check reads them
 # there, exactly as it reads a job's own steps: ci.yaml's dispatch-browser job does this with
-# dispatch-browser.yaml, whose multiprocess job builds the Dispatch server.
+# dispatch-browser.yaml, whose binaries job builds the Dispatch server.
 
 # calls_workflow <root>: a `suite` job that calls .github/workflows/suite.yaml, whose `rows` job
 # builds ./cmd/app, with the filter, the ci-ok map entry and the gate that go with it.
@@ -2450,10 +2450,9 @@ check "names the job and the family" \
   "$(contains "$out" "job fill's actions/cache/restore of family go-app has restore-keys")"
 
 # A job of ci.yaml that calls a local workflow gives it its steps, cache steps among them: the
-# real dispatch-browser job restores go-envoy and go-envoy-test in the binaries, multiprocess,
-# embedder and visual jobs of dispatch-browser.yaml. So the rule reads those jobs' restores as it
-# reads ci.yaml's own, and names the file that holds them. Read over ci.yaml alone, the fill below
-# would be a family nothing restores.
+# real dispatch-browser job restores go-dispatch-browser in the binaries job of dispatch-browser.yaml.
+# So the rule reads that workflow's restores as it reads ci.yaml's own, and names the file that
+# holds them. Read over ci.yaml alone, the fill below would be a family nothing restores.
 #
 # suite_cache <root>: a second family, go-suite, that ci-caches.yaml's fill job saves and only
 # the called workflow's `rows` job restores. Call it after cache_workflow and calls_workflow.

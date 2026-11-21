@@ -26,9 +26,11 @@
  *
  * - from its sibling `page-structure.ts`, the property and section names and help lines
  *   `DECLARED_WORDS` is derived from as well, and `freeze`, which its tables are made with;
- * - from `@legion/contracts`, the most issues one issue may wait on, the most priorities it may
- *   advance, and the types of how a result's commit stands, of when a check runs and of how a
- *   delivery stands;
+ * - from `@legion/contracts/dispatch-api-constants`, the most issues one issue may wait on and
+ *   the most priorities it may advance, and from `@legion/contracts` the types of how a result's
+ *   commit stands, of when a check runs and of how a delivery stands. The two values come from
+ *   the subpath, because a value import of the package index carries every module of that
+ *   package into the chunk that imports it; the types leave nothing in the build;
  * - from `../../api/types`, the type of an actor;
  * - from `../project/board-model`, the issue statuses and `statusLabel` and `statusText`, the
  *   board's word for a status, which `ISSUE_STATUS_WORDS` and `issueStatusWord` say;
@@ -40,13 +42,8 @@
  * A test, a browser spec and a component therefore all read the same list.
  */
 
-import {
-  type CheckWhen,
-  type DeliveryAttemptState,
-  MAX_ISSUE_ADVANCES,
-  MAX_ISSUE_BLOCKERS,
-  type ResultCommitStands,
-} from "@legion/contracts";
+import type { CheckWhen, DeliveryAttemptState, ResultCommitStands } from "@legion/contracts";
+import { MAX_ISSUE_ADVANCES, MAX_ISSUE_BLOCKERS } from "@legion/contracts/dispatch-api-constants";
 
 import type { Actor } from "../../api/types";
 import { issueStatuses, statusLabel, statusText } from "../project/board-model";

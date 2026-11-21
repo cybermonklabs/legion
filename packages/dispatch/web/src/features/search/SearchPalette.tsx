@@ -1,5 +1,5 @@
 import { snippetSegments } from "@legion/contracts/dispatch-snippet";
-import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools-constants";
 import { useQuery } from "@tanstack/react-query";
 import {
   Fragment,
@@ -36,7 +36,7 @@ import {
 } from "../../theme/classes";
 import { statusText } from "../project/board-model";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
-import { referenceTriggerProps } from "../refs/RefPreview";
+import { referenceTriggerProps } from "../refs/reference-trigger";
 import {
   buildIssuePath,
   buildProjectPath,
@@ -423,9 +423,9 @@ function PaletteDialog({
   const whoAmI = useQuery(whoAmIQuery());
   const [recents] = useState(() => readRecents(whoAmI.data?.login));
   // The rows this open offers, decided on its first render, while focus is still on whatever
-  // opened the bar, since `useDialog` moves it into the input after that commit. Read any
-  // later and a `when()` that asks what is focused would answer "the bar", withdrawing every
-  // row bound to the card, row or control the reader was actually on.
+  // opened the bar, since `useDialog` moves it into the input in the commit that render makes.
+  // Read any later and a `when()` that asks what is focused would answer "the bar", withdrawing
+  // every row bound to the card, row or control the reader was actually on.
   const [actions] = useState(() => appKeymap.actions());
   const dialog = useDialog<HTMLDivElement>({ initialFocusRef: inputRef, onClose, open: true });
   // Every global key is masked while any dialog is open; the palette keeps `$mod+k` as its own

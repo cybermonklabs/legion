@@ -89,6 +89,7 @@ import {
 } from "../../__tests__/draft-matrix-fixture";
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
+import { ownerCommentsQuery } from "../../api/queries";
 import { PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
 import type { ReplyTarget } from "./composer-model";
 
@@ -151,7 +152,11 @@ async function openPhone(stopped: boolean, signedIn = false): Promise<Page> {
     createComment,
     dropCommentA: async () => {
       reads.lists.comments = [commentB];
-      await act(() => queryClient.invalidateQueries({ queryKey: ["comments", "CORE-1"] }));
+      await act(() =>
+        queryClient.invalidateQueries({
+          queryKey: ownerCommentsQuery({ issue: "CORE-1" }).queryKey,
+        })
+      );
       await waitFor(() =>
         expect(document.querySelector('[data-turn="comment:comment-a"]')).toBe(null)
       );

@@ -329,6 +329,33 @@ test("with the setting on, an issue's loading, failure, absence and refused addr
     return route.fallback();
   });
 
+  // The landing carries the issue as well: its one answer seeds the issue under the key the new
+  // page reads it by (`web/src/api/queries.ts`, `seedIssuePage`), so a cold load given that part
+  // would never ask the read held above, and the page would draw no loading state and no
+  // failure of its own. This row is about the new page's own states while that read is held,
+  // refused or answered, so the landing answers the issue as it answers an issue it could not
+  // read - null (`issue.detail` in `packages/envoy/internal/dispatch/api/landing.go`) - which the
+  // seed leaves alone, and the page reads the issue from its own route. Every other part of the
+  // answer stays as the server gave it. Each of the four loads below is a cold load and asks the
+  // landing again, so this holds for each of them; the Retry asks the route, not the landing,
+  // since the page does not reload. It stays past `page.unroute(issueRead)` and changes nothing
+  // there: the landing of the missing key has no issue to remove, and the address of the unknown
+  // tab is no issue page, so its landing is the Inbox's and carries no issue page at all.
+  await page.route("**/api/v1/landing*", async (route) => {
+    const response = await route.fetch();
+    const body = (await response.json()) as {
+      page: { issue: Record<string, unknown> | null };
+    };
+    const landed = body.page.issue;
+    await route.fulfill({
+      json:
+        landed === null
+          ? body
+          : { ...body, page: { ...body.page, issue: { ...landed, issue: null } } },
+      response,
+    });
+  });
+
   // Each state below is the first draw of an address the reader opens, so each is a load.
   await page.goto(`/issues/${issue.key}`);
   await expect(newPage.getByText("Loading issue…", { exact: true })).toBeVisible();

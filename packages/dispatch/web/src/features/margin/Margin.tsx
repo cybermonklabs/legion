@@ -30,8 +30,10 @@ import { useMargin } from "./margin-context";
 import {
   clampMarginWidth,
   DEFAULT_MARGIN_WIDTH,
+  MARGIN_COLUMN_CLASS,
   MARGIN_WIDTH_STEP,
   MIN_MARGIN_WIDTH,
+  marginColumnWidth,
   maxMarginWidth,
 } from "./margin-width";
 import { useMarginSheet } from "./useMarginSheet";
@@ -58,7 +60,7 @@ export function Margin({
   const resizePointer = useRef<
     { pointerId: number; startWidth: number; startX: number } | undefined
   >(undefined);
-  const marginWidth = clampMarginWidth(width ?? DEFAULT_MARGIN_WIDTH);
+  const marginWidth = marginColumnWidth(width);
   const maxWidth = maxMarginWidth();
   const setClampedMarginWidth = (nextWidth: number) => {
     onWidthChange?.(clampMarginWidth(nextWidth));
@@ -142,7 +144,7 @@ export function Margin({
         </aside>
       ) : null}
       <div
-        className={isCompactViewport ? "contents" : "relative order-3 shrink-0"}
+        className={isCompactViewport ? "contents" : MARGIN_COLUMN_CLASS}
         data-testid={isCompactViewport ? undefined : "desktop-margin-shell"}
         hidden={railShown || (!isCompactViewport && !hasMargin)}
         style={isCompactViewport ? undefined : { width: `${marginWidth}px` }}
@@ -308,9 +310,9 @@ function DetailsDrawer({
     // drawer's alone. A field keeps its own Escape, which leaves the field, wherever it is -
     // inside the drawer or beside it. So does a layer over the drawer or inside it: an open
     // dialog - the navigation's sheet, the list of keys - closes on its own Escape and leaves the
-    // drawer open under it, with the focus in it or not yet in it (the list of keys takes the
-    // focus a frame after it opens) or gone to the page (a press on the list's text), and a menu
-    // open in the drawer closes before the drawer does, since Escape closes the innermost layer.
+    // drawer open under it, with the focus in it or gone to the page (a press on the list's
+    // text), and a menu open in the drawer closes before the drawer does, since Escape closes the
+    // innermost layer.
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       const target = event.target;

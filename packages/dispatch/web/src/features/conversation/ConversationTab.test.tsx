@@ -1,4 +1,13 @@
-import { afterEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  expect,
+  jest,
+  type Mock,
+  setSystemTime,
+  spyOn,
+  test,
+} from "bun:test";
 import { type MutationKey, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the two clicks of one same-tick double press, which user-event cannot fire inside a single task
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -55,7 +64,16 @@ const alice: Actor = { id: "alice", kind: "user" };
 // Delivery attempts are dated relative to the run: the dashboard only offers a
 // same-mode Retry while an attempt is inside the stream's duplicate window, so a
 // fixture frozen at an absolute date would age out of every retry assertion.
-const recentAttemptAt = new Date(Date.now() - 60_000).toISOString();
+const now = Date.now();
+const recentAttemptAt = new Date(now - 60_000).toISOString();
+
+// That date is taken once, when the module loads, and the Retry offer reads it against the
+// clock, so each test runs on a clock held at `now` and a row's age is the one written here
+// however long after the module loaded the row runs. A row's own `jest.useFakeTimers()` starts
+// from it, and the afterEach below lets the clock run again.
+beforeEach(() => {
+  setSystemTime(new Date(now));
+});
 
 function issueState(dismissed: string[] = [], lastReadSeq = 0): UserIssueState {
   return { dismissed, last_read_seq: lastReadSeq, pinned: false, seq: 0 };
@@ -295,6 +313,7 @@ function stubScrollIntoView() {
 
 afterEach(() => {
   jest.useRealTimers();
+  setSystemTime();
 });
 
 test("the read mark watches the newest conversation alone, and only while the tab is visible", async () => {

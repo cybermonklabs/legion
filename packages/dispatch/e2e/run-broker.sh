@@ -32,9 +32,9 @@ set -euo pipefail
 # DISPATCH_E2E_BROKER_BIN_DIR names a directory holding broker, dev-oidc-issuer and requestseed
 # that the caller built, which this run execs instead of building them from this checkout (the
 # build below; run-server.sh's DISPATCH_E2E_SERVER_BIN is the precedent). Unset, this script
-# builds them, which is what a developer's machine and an issue pod do. Its one caller is CI:
-# the shard and alone jobs of .github/workflows/dispatch-browser.yaml run in a container with
-# no Go toolchain, and that file's binaries job builds the three for them.
+# builds them, which is what a developer's machine and an issue pod do. Its callers are CI's:
+# the shard, alone, embedder and visual jobs of .github/workflows/dispatch-browser.yaml run in
+# a container with no Go toolchain, and that file's binaries job builds the three for them.
 #
 # It serves one directory only, packages/envoy/out/dispatch-e2e-broker under this checkout, and
 # the check below refuses every other one: e2e/real-broker.ts runs requestseed out of that path

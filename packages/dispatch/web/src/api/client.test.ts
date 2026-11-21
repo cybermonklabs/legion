@@ -155,3 +155,22 @@ test("a request aborted during a no-route wait rejects at once with the abort an
   await expect(api.githubRest("user", { signal: controller.signal })).rejects.toBe(reason);
   expect(stub.requests).toHaveLength(1);
 });
+
+// The landing has a fallback of its own (`api/queries.ts`, `readLanding`): a Dispatch older than
+// the route answers it with no route, and the page then reads as it read before the route. Sent
+// again through the no-route waits, the read only held a cold page's skeleton through those waits
+// before that fallback began, during exactly the rolling deploy that puts such a Dispatch in front
+// of the browser.
+test("a landing answered with no route rejects at once with that answer, sent once and never waited on", async () => {
+  const stub = scriptedFetch([() => noRoute("GET", "/api/v1/landing")]);
+  const wait = recordedSleep();
+  const api = createApiClient(stub.fetch, undefined, wait.sleep);
+
+  const refusal = await api.getLanding({ page: "inbox" }).then(
+    () => undefined,
+    (error: unknown) => error
+  );
+  expect(stub.requests.map((request) => request.path)).toEqual(["/api/v1/landing?page=inbox"]);
+  expect(wait.waits).toEqual([]);
+  expect(isNoRoute(refusal)).toBe(true);
+});

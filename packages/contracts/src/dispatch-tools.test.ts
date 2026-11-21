@@ -435,7 +435,8 @@ describe("dispatchToolSpecs", () => {
 
     // The key's length limits, and anchors that hold at the ends of the whole value rather than
     // of a line, are what keep the search URL short (the URL budget in `SEARCH_QUERY_MAX`'s doc
-    // comment, src/dispatch-tools.ts), and this copy of the pattern changes without a migration.
+    // comment, src/dispatch-tools-constants.ts), and this copy of the pattern changes without a
+    // migration.
     for (const project of [undefined, "", "AB", "K8S", "LEGION", "LEGSMOKE", "ABCDEFGHIJ"]) {
       expect(schema.safeParse({ query: "ok", project }).success).toBe(true);
     }

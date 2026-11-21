@@ -70,7 +70,7 @@ export async function holdIssuePatches(page: Page, issueKey: string): Promise<He
     try {
       // The hold is the row's whole point: the save stays out at least this long, and until the
       // row lets it go, so the next pick, reload or read happens while it is out.
-      await Promise.all([sleep(PICK_HOLD_MS), released.promise]);
+      await Promise.all([heldSince(patch.arrivedAt), released.promise]);
       await route.fallback();
       forwarded.push(patch.body);
     } catch {
@@ -81,6 +81,18 @@ export async function holdIssuePatches(page: Page, issueKey: string): Promise<He
     }
   });
   return { forwarded, holding: () => holding, release: () => released.resolve(), sent };
+}
+
+/** Resolves once `Date.now()` reads at least `PICK_HOLD_MS` past `since`, the clock each
+ *  `HeldPatch`'s window is read on. A timer can fire a millisecond short of its delay by that
+ *  clock - a save held with `sleep(PICK_HOLD_MS)` read 2,999 ms, which the board row's own check of
+ *  every hold refused - so whatever the clock says is still left is waited again. */
+async function heldSince(since: number): Promise<void> {
+  for (let left = PICK_HOLD_MS; left > 0; left = since + PICK_HOLD_MS - Date.now()) {
+    // The hold itself: the save stays out what is left of PICK_HOLD_MS, so the row's next pick,
+    // reload or read happens while it is out, which is what each pick row is about.
+    await sleep(left);
+  }
 }
 
 /** Waits until no save of `held` is held and the tab keeps no write for a reload to send: every

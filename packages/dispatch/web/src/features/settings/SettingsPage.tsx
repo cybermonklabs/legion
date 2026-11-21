@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
-import { projectsQuery } from "../../api/queries";
+import { projectsQuery, repoProjectsQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { RepoProject } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -74,7 +74,10 @@ export function SettingsPage(): ReactNode {
   const [repository, setRepository] = useState("");
   const [project, setProject] = useState("");
   const [failedAction, setFailedAction] = useState<FailedAction>();
-  const mappings = useQuery({ queryKey: ["repo-projects"], queryFn: () => api.listRepoProjects() });
+  // The mappings, under the one key the issue header's repository control reads them by too
+  // (`repoProjectsQuery`): every optimistic write below is to that key.
+  const mappingsKey = repoProjectsQuery().queryKey;
+  const mappings = useQuery(repoProjectsQuery());
   const projects = useQuery(projectsQuery());
   // `null` is a Dispatch with no secrets broker, where Live grants has nothing to list.
   const credentialsAvailable = useQuery(credentialPendingQuery());
@@ -94,7 +97,7 @@ export function SettingsPage(): ReactNode {
     inline: true,
     label: ({ repo, project: mapped }) => `${repo} mapped to ${mapped}`,
     onError: (error, variables, context) => {
-      queryClient.setQueryData(["repo-projects"], context?.previous);
+      queryClient.setQueryData(mappingsKey, context?.previous);
       setFailedAction({
         kind: "put",
         message:
@@ -109,10 +112,10 @@ export function SettingsPage(): ReactNode {
       });
     },
     onMutate: (variables) => {
-      void queryClient.cancelQueries({ exact: true, queryKey: ["repo-projects"] });
-      const previous = queryClient.getQueryData<RepoProject[]>(["repo-projects"]);
+      void queryClient.cancelQueries({ exact: true, queryKey: mappingsKey });
+      const previous = queryClient.getQueryData(mappingsKey);
       const existing = previous?.find((mapping) => mapping.repo === variables.repo);
-      queryClient.setQueryData<RepoProject[]>(["repo-projects"], (current = []) =>
+      queryClient.setQueryData(mappingsKey, (current = []) =>
         withMapping(current, {
           created_at: new Date().toISOString(),
           created_by: { id: "you", kind: "user" },
@@ -133,7 +136,7 @@ export function SettingsPage(): ReactNode {
     // answer goes over any read of the mappings still out, asked before it (`replaceQueryData`).
     onSuccess: (mapping, variables) => {
       if (mapping !== null) {
-        replaceQueryData<RepoProject[]>(queryClient, ["repo-projects"], (current = []) =>
+        replaceQueryData<RepoProject[]>(queryClient, mappingsKey, (current = []) =>
           withMapping(current, mapping)
         );
       }
@@ -148,7 +151,7 @@ export function SettingsPage(): ReactNode {
     // while this one was on the way) may have changed them since. Reading them again once the
     // write settles leaves the page on the server's state, as issueFieldWrite does an issue's once
     // no newer live write of the field is left.
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ["repo-projects"] }),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: mappingsKey }),
   });
   const deleteMapping = useKeyedWrite<void, string, { previous: RepoProject[] | undefined }>({
     method: "DELETE",
@@ -156,7 +159,7 @@ export function SettingsPage(): ReactNode {
     inline: true,
     label: (repo) => `${repo}'s mapping removed`,
     onError: (error, repo, context) => {
-      queryClient.setQueryData(["repo-projects"], context?.previous);
+      queryClient.setQueryData(mappingsKey, context?.previous);
       setFailedAction({
         kind: "delete",
         message:
@@ -171,15 +174,15 @@ export function SettingsPage(): ReactNode {
       });
     },
     onMutate: (repo) => {
-      void queryClient.cancelQueries({ exact: true, queryKey: ["repo-projects"] });
-      const previous = queryClient.getQueryData<RepoProject[]>(["repo-projects"]);
-      queryClient.setQueryData<RepoProject[]>(["repo-projects"], (current = []) =>
+      void queryClient.cancelQueries({ exact: true, queryKey: mappingsKey });
+      const previous = queryClient.getQueryData(mappingsKey);
+      queryClient.setQueryData(mappingsKey, (current = []) =>
         current.filter((mapping) => mapping.repo !== repo)
       );
       return { previous };
     },
     onSuccess: () => setFailedAction(undefined),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ["repo-projects"] }),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: mappingsKey }),
   });
 
   // The refusal on screen is the newest press of its write: a later press of either write that

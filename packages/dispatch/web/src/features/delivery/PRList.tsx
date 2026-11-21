@@ -400,7 +400,13 @@ export function PRList({
                     return;
                   }
                   // Only the row itself: Enter on a link or button inside it is that control's.
-                  if (event.key === "Enter" && event.target === event.currentTarget) select();
+                  // The Enter that opens the drill-down is spent opening it: the drill-down takes
+                  // the focus in the same commit, so the key's default would otherwise press the
+                  // button its focus starts on, its Close, and shut it again at once.
+                  if (event.key === "Enter" && event.target === event.currentTarget) {
+                    event.preventDefault();
+                    select();
+                  }
                 }}
                 style={{ transform: `translateY(${index * ROW_HEIGHT_PX}px)` }}
                 tabIndex={index === activeIndex ? 0 : -1}

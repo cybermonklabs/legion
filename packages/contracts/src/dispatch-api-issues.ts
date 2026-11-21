@@ -54,22 +54,6 @@ export const IssueClaimSchema = z
   .readonly();
 
 /**
- * How long an issue claim is held for a holder the Envoy registry calls `unresponsive`: a
- * session past the listener's live window but inside its gone horizon has missed heartbeats, not
- * ended, and under box load that is ordinary. Dispatch refuses another agent's claim or release
- * while the holder was last seen no longer ago than this, so a stalled session keeps the issue
- * it is working and two sessions never write the same branch; a person still forces the claim
- * (`force`), which is the escape this grace leaves open.
- *
- * Twenty minutes is four times the listener's live window (`ENVOY_SESSION_LIVE_WINDOW`, 5m) and
- * well inside its gone horizon (`ENVOY_SESSION_GONE_HORIZON`, 1h), so a session that is merely
- * slow keeps its work while a box that really lost one frees it long before the horizon.
- * `scripts/gen-go.ts` emits it as `contracts.IssueClaimUnresponsiveGrace`, so the refusal the
- * server writes and the wait a client predicts are one number.
- */
-export const ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS = 20 * 60 * 1000;
-
-/**
  * The state of the session holding an issue's claim, as an issue read reports it beside the
  * claim: `live`, `unresponsive` (past the live window, inside the gone horizon - stalled, not
  * gone, and still the holder), `gone` (past the horizon, or no registration at all), or

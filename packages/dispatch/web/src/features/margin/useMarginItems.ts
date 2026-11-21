@@ -3,7 +3,12 @@ import { useCallback, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 
 import { api, type WriteBounds } from "../../api/client";
-import { inboxQuery, userStateQuery } from "../../api/queries";
+import {
+  inboxQuery,
+  issueDecisionsQuery,
+  ownerCommentsQuery,
+  userStateQuery,
+} from "../../api/queries";
 import type {
   Actor,
   Anchor,
@@ -20,7 +25,6 @@ import { compareTimestamps } from "../../lib/timestamps";
 import type { ComposerOwner } from "../conversation/composer-model";
 import { rootOf } from "../conversation/conversation-model";
 import type { CarriedBlockIds } from "../conversation/send-request";
-import { issueDecisionsQuery } from "../doc/spec-marks";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import {
   type ConversationPinKind,
@@ -324,12 +328,17 @@ export function useMarginItems(
 ) {
   const queryClient = useQueryClient();
   const issueKey = owner?.kind === "issue" ? owner.key : undefined;
-  const commentsQueryKey =
-    owner?.kind === "issue"
-      ? ["comments", owner.key]
-      : owner?.kind === "document"
-        ? ["artifact", owner.artifactId, "comments"]
-        : ["comments", undefined];
+  // The owner's comment list, under the key every other reader of it reads it by: the issue's
+  // whole list, or the project document's own. With no owner yet there is no list to read, and
+  // `enabled` below holds the read.
+  const commentsQuery = ownerCommentsQuery(
+    owner === undefined
+      ? undefined
+      : owner.kind === "document"
+        ? { artifact: owner.artifactId }
+        : { issue: owner.key }
+  );
+  const commentsQueryKey = commentsQuery.queryKey;
   const asks = useQuery(inboxQuery());
   const inboxOpenAsks = useMemo(
     () =>
@@ -344,18 +353,7 @@ export function useMarginItems(
       ),
     [asks.data, owner]
   );
-  const comments = useQuery({
-    enabled: owner !== undefined,
-    queryKey: commentsQueryKey,
-    queryFn: () => {
-      if (owner === undefined) {
-        throw new Error("Margin comments require an owner.");
-      }
-      return owner.kind === "document"
-        ? api.listArtifactComments(owner.artifactId)
-        : api.listComments(owner.key);
-    },
-  });
+  const comments = useQuery({ ...commentsQuery, enabled: owner !== undefined });
   const userState = useQuery({ ...userStateQuery(), enabled: owner?.kind === "issue" });
   const dismissed =
     owner?.kind === "issue" ? (userState.data?.[owner.key]?.dismissed ?? NO_PINS) : NO_PINS;
@@ -487,7 +485,10 @@ export function useMarginItems(
   // once that spec is on screen, since the issue page keeps it mounted under the Conversation.
   const showsDecisions =
     owner?.kind === "issue" && visibleArtifact?.primary === true && documentShown;
-  const decisionsView = useQuery(issueDecisionsQuery(issueKey ?? "", showsDecisions));
+  const decisionsView = useQuery({
+    ...issueDecisionsQuery(issueKey ?? ""),
+    enabled: showsDecisions,
+  });
   const decisions = useMemo<DecisionMarginItem[]>(() => {
     if (!showsDecisions) return [];
     const decisionItems = (decisionsView.data?.decisions ?? []).flatMap((decision) => {

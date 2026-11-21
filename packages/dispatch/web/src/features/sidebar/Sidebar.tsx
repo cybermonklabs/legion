@@ -2,9 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
-import { api } from "../../api/client";
 import {
   inboxQuery,
+  pinnedIssuesQuery,
   prioritySummaryQuery,
   projectsQuery,
   userAgentStateQuery,
@@ -154,10 +154,7 @@ export function Sidebar({
 }): ReactNode {
   const location = useLocation();
   const inbox = useQuery(inboxQuery());
-  const pinned = useQuery({
-    queryKey: ["issues", "pinned"],
-    queryFn: () => api.listIssues({ pinned: true }),
-  });
+  const pinned = useQuery(pinnedIssuesQuery());
   const projects = useQuery(projectsQuery());
   // The number beside Priorities (INFRA-2947, R8): the two faults added - the work in flight
   // under no priority and the priority work parked in `backlog` or `icebox` - read from the

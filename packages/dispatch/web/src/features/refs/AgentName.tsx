@@ -4,7 +4,7 @@ import {
   actorName,
   sessionLabel,
   shortSessionId,
-} from "@legion/contracts";
+} from "@legion/contracts/actor-label";
 import { Fragment, type ReactNode, useMemo } from "react";
 import { generatePath, Link } from "react-router-dom";
 
@@ -37,7 +37,11 @@ import { relativeTimeLabel, Timestamp } from "./Timestamp";
  * is the one other reader, and it does not show an agent. The root `biome.json` bans importing
  * them anywhere else in `web/src` (and `AGENT_LIVE_PATH` outside `app.tsx`, which mounts the
  * route), but not through a namespace import (`import * as contracts from "@legion/contracts"`):
- * lint misses that member use, so a review looks for it.
+ * lint misses that member use, so a review looks for it. This search from the repository root
+ * lists each use whatever it was imported from, and the review reads every hit that comes
+ * through a namespace member:
+ *
+ *     rg -n --glob '!*.test.*' 'liveDotBg|offlineDotBorder|stalledDotBorder|unknownDotBorder|/live`|AGENT_LIVE_PATH|actorAttribution|actorLabel|actorName|sessionLabel|shortSessionId|session_title' packages/dispatch/web/src
  */
 
 type SessionActor = Actor & { kind: "session" };

@@ -1,4 +1,5 @@
 import { createIssue, createProject } from "./api";
+import { pressOnceTheShellListens } from "./keyboard";
 import { sql } from "./psql";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -26,10 +27,10 @@ async function seedProject(project: string): Promise<string> {
 }
 
 /** Opens the bar with `/`. Its rows are this page's actions and the person's recent items as
- *  well as the hits, so the checks below count the hits by their own ids. */
+ *  well as the hits, so the checks below count the hits by their own ids. Each caller opens it
+ *  straight after a navigation, so the key waits for the shell's keymap (`e2e/keyboard.ts`). */
 async function openSearch(page: Page): Promise<void> {
-  await page.locator("body").focus();
-  await page.keyboard.press("/");
+  await pressOnceTheShellListens(page, "/");
   await expect(page.getByRole("dialog", { name: "Search" })).toBeVisible();
 }
 

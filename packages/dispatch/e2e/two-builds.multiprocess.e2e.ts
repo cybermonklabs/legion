@@ -33,6 +33,7 @@ import {
 } from "./harness-processes";
 import { withIssuePage } from "./issue-page-option";
 import { sql } from "./psql";
+import { fetchedChunk, writesChunks } from "./shell";
 import { type Browser, expect, type Locator, type Page, type Request, test } from "./test";
 import { type LazyPiece, lazyPieces, type WalkRoutePath, walkRoutes } from "./two-builds-routes";
 import { signIn } from "./users";
@@ -137,6 +138,10 @@ const shown = {
   spec: "Both builds serve every page.",
 };
 
+/** The decision block the handbook holds, which the document page draws with its ask card. */
+const handbookDecisionId = "first-build";
+const handbookDecision = `:::ask{#${handbookDecisionId} urgency="med" multiple="false"}\nWhich build serves first?\n\n- A\n- B\n:::\n`;
+
 /** The list the issue message carries under its diagram, drawn from the tree the server read the
  *  message into: a stored text is parsed nowhere, however long it is
  *  (features/refs/markdown-engine.ts), and the walk's point here is that the whole of it is drawn
@@ -234,7 +239,7 @@ async function seedEveryRoute(): Promise<Seeded> {
     name: "rollout-notes.md",
   });
   const document = await createProjectDocument("CORE", {
-    content: `# Handbook\n\n${shown.document}\n`,
+    content: `# Handbook\n\n${shown.document}\n\n${handbookDecision}`,
     name: "handbook.md",
   });
   // The priorities page draws its table only where a priority is written, and a priority's own
@@ -299,12 +304,20 @@ async function seedEveryRoute(): Promise<Seeded> {
 }
 
 /** One page load of the walk: the route of `walkRoutes` it opens, the address, what on the page
- *  shows the route rendered its own content, and the lazy pieces that content needed. */
+ *  shows the route rendered its own content, and the lazy pieces that content needed.
+ *
+ *  `opens` is for a surface no address reaches: the search bar, the Create issue dialog and the
+ *  shortcut sheet are chunks of their own (dispatch://INFRA-1109), and a reader's keystroke is
+ *  the only thing that asks for one. It is also where a visit waits for a chunk the page fetches
+ *  of its own accord and draws nothing from (`fetchedChunk`), which no landmark can show. It runs
+ *  once the page has loaded, before `shows` is waited for, and its own asset requests are awaited
+ *  with the visit's. */
 interface Visit {
   readonly route: WalkRoutePath;
   readonly url: string;
   readonly shows: (page: Page) => readonly Locator[];
   readonly loads?: readonly LazyPiece[];
+  readonly opens?: (page: Page) => Promise<void>;
   /** Runs before the visit's `goto`, and what it sets stays on the walk's one context. */
   readonly prepare?: (page: Page) => Promise<void>;
 }
@@ -333,7 +346,66 @@ function visits(seed: Seeded): readonly Visit[] {
   const issue = `/issues/${seed.issue}`;
   const agent = `/agents/${session.session_id}`;
   return [
-    { route: "/", shows: (page) => [heading(page, "Inbox")], url: "/" },
+    {
+      // The Inbox's list is a chunk of its own, which the entry starts with the landing read
+      // (`web/src/app.tsx`, `preloadRouteChunk`), and the heading above it is the entry's. The
+      // list is what shows that chunk ran, and with it the two chunks it imports, a past
+      // version's and a version's changes, which a document page asks for only on an address
+      // that names a version. The reference-preview layer is the shell's own chunk, asked for in
+      // its first effect, on this page as on every other, and the live feed asks for its map from
+      // an event to the reads it refreshes as it starts, once the page has drawn. Three surfaces
+      // no address reaches are opened here too, each its own chunk and each opened by its key: the
+      // search bar, the Create issue dialog and the shortcut sheet. A walk that never opened them
+      // would leave three of this build's scripts unasked for, which is what the last assertion
+      // of `walk` refuses, and they are opened on this visit rather than on a second landing at
+      // the same address, which would cost the walk another cold navigation, landing read and
+      // shell render for nothing. The shell's two lists of writes, the pending-writes indicator
+      // and what a lapsed session keeps, are chunks the writes host fetches once the page has
+      // drawn, on this page as on every other, and draws only while it holds a write, which no
+      // visit of this walk makes; every kind of write is a chunk the app fetches as the person
+      // signs in, for the take-up of what a reload kept, and nothing on a page draws from it. No
+      // landmark shows the three, so this visit waits for their fetches first, and they are this
+      // visit's rather than whichever visit happened to outlast them.
+      loads: [
+        "inbox",
+        "change-view",
+        "version-view",
+        "ref-preview",
+        "event-refresh",
+        "search-bar",
+        "create-issue",
+        "shortcut-help",
+        "pending-writes",
+        "kept-writes",
+        "write-kinds",
+      ],
+      opens: async (page) => {
+        for (const chunk of writesChunks) await fetchedChunk(page, chunk);
+        // Each dialog is waited out of the way before the next key: these keys reach the
+        // shell's global scope, and a dialog still on the stack consults its own scope alone,
+        // so a press sent while the one before it is closing reaches nothing and the chunk it
+        // would have asked for is never asked for.
+        await expect(page.getByTestId("inbox-list")).toBeVisible();
+        const bar = page.getByRole("dialog", { name: "Search" });
+        await page.keyboard.press("ControlOrMeta+k");
+        await expect(bar).toBeVisible();
+        await page.keyboard.press("Escape");
+        await expect(bar).toBeHidden();
+        const create = page.getByRole("dialog", { name: "Create issue" });
+        await page.keyboard.press("c");
+        await expect(create).toBeVisible();
+        await page.keyboard.press("Escape");
+        await expect(create).toBeHidden();
+        await page.keyboard.press("?");
+      },
+      route: "/",
+      shows: (page) => [
+        heading(page, "Inbox"),
+        page.getByTestId("inbox-list"),
+        page.getByRole("dialog", { name: "Keyboard shortcuts" }),
+      ],
+      url: "/",
+    },
     {
       route: "/answers",
       shows: (page) => [
@@ -447,6 +519,53 @@ function visits(seed: Seeded): readonly Visit[] {
       shows: (page) => [page.getByTestId(`artifact-${seed.issueArtifact}`)],
       url: `${issue}/artifacts`,
     },
+    // Every tab but the Spec draws from a chunk of its own (`web/src/features/issue/tab-chunks.ts`),
+    // so each tab the walk has no other visit for is opened here: the chunk it loads is one no
+    // other address asks for. A tab with no document of its own draws its empty state.
+    {
+      loads: ["issue-tab"],
+      route: "/issues/:key/*",
+      shows: (page) => [page.locator("#issue-decisions-panel").getByText("No open questions.")],
+      url: `${issue}/decisions`,
+    },
+    {
+      loads: ["issue-tab"],
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page
+          .locator("#issue-collaborators-panel")
+          .getByRole("region", { name: /^(People|Collaborators empty state)$/u }),
+      ],
+      url: `${issue}/collaborators`,
+    },
+    {
+      loads: ["issue-tab"],
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page
+          .locator("#issue-verification-panel")
+          .locator('[data-testid="verification-empty"], [data-testid="verification-tab"]'),
+      ],
+      url: `${issue}/verification`,
+    },
+    {
+      loads: ["issue-tab"],
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page
+          .locator("#issue-plan-panel")
+          .locator('[data-testid="plan-empty"], [data-testid="plan-tab"]'),
+      ],
+      url: `${issue}/plan`,
+    },
+    {
+      loads: ["issue-tab"],
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page.locator("#issue-steps-panel").getByText("No step of this issue has run in Legion."),
+      ],
+      url: `${issue}/steps`,
+    },
     {
       loads: ["editor"],
       route: "/issues/:key/*",
@@ -514,9 +633,19 @@ function visits(seed: Seeded): readonly Visit[] {
       url: "/projects/CORE/documents",
     },
     {
-      loads: ["editor"],
+      // The handbook holds a decision block, so its editor reports one and the document's own
+      // ask card comes down (`web/src/features/doc/AskBlockCardHost.tsx`): no other page of the
+      // walk holds one, and the card loads for nothing else.
+      loads: ["editor", "ask-card"],
       route: "/projects/:key/documents/:slug",
-      shows: (page) => openDocument(page, shown.document),
+      shows: (page) => [
+        ...openDocument(page, shown.document),
+        // The urgency pill is the card's own: the editor's node view draws the block, and the
+        // card portals its header, pill and all, into the block's slot.
+        documentEditor(page).locator(
+          `[data-dispatch-ask-block="${handbookDecisionId}"] [data-dispatch-ask-pill]`
+        ),
+      ],
       url: `/projects/CORE/documents/${seed.document}`,
     },
     {
@@ -543,15 +672,21 @@ function visits(seed: Seeded): readonly Visit[] {
     { route: "/pipeline", shows: (page) => [heading(page, "Pipeline")], url: "/pipeline" },
     { route: "*", shows: (page) => [heading(page, "Page not found")], url: "/no-such-page" },
     {
-      // Only a reader with the new issue page turned on loads its chunk (`IssueOutlinePage`), so
-      // no visit above loads it. This visit is last because the init script stays on the walk's
-      // one context: an issue visit after it would draw the new page rather than today's.
+      // Only a reader with the new issue page turned on loads its chunk (`IssueOutlinePage`), and
+      // only that reader's shell is drawn through the frame shell's chunk
+      // (`web/src/features/issue-page/frame-chunk.ts`), so no visit above loads either. The frame
+      // shell holds the icon rail, which it draws from Tailwind's `md` up: the window here is the
+      // project's Desktop Chrome one, 1280 px wide, and the rail among the landmarks is what
+      // shows that chunk ran. This visit is last because the init script stays on the walk's one
+      // context: an issue visit after it would draw the new page rather than today's.
+      loads: ["frame-shell"],
       prepare: (page) => withIssuePage(page.context(), "alice"),
       route: "/issues/:key/*",
       shows: (page) => [
         page
           .locator("[data-issue-page]")
           .getByRole("heading", { exact: true, level: 1, name: shown.issue }),
+        page.getByTestId("icon-rail"),
       ],
       url: issue,
     },
@@ -646,6 +781,13 @@ async function walk(
         await visit.prepare?.(page);
         awaitingCommit = true;
         await page.goto(visit.url);
+        // The surfaces a keystroke opens, each asking for its own chunk, before the landmark
+        // below is waited for. A press that finds no page would throw, and a visit with no
+        // `opens` waits for nothing more than it did.
+        if (visit.opens !== undefined) {
+          await expect(page.locator("#root")).not.toBeEmpty();
+          await visit.opens(page);
+        }
         // A failed asset ends the visit at once: the landmark it keeps from rendering would
         // only add a timeout.
         await expect

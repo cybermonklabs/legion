@@ -14,7 +14,7 @@ const REASONS = {
   2: "2. The margin's card draws no collapse of its own: the desktop list closes it only by opening another thread (the second row), and the phone only by Back (the first row).",
   3: "3. The issue picker is an Agents row's (`AgentMessageComposer`), and the margin draws no Agents row's composer.",
   4: "4. The Pinned tab, and above the compact layout the rail the margin collapses to, hide the compose (`MarginComposerSlot`'s `hidden`, `MarginSheet`'s `covered`, `Margin`'s `railShown`, which also opens the rail for each compose the margin shows) and keep it mounted at its address, so nothing it holds moves; a phone thread hides it the same way, the third phone row.",
-  5: "5. On a page with no margin above the compact layout `Margin` draws nothing, which unmounts the compose and every card as leaving the document does; below it `Margin` stays drawn there with no document, and so with no compose, which is the shown document's (`useMarginSheet`). The compose is the provider's (`MarginProvider`) and a reply's draft is held under its name, as the document-left rows' and the another-thread row's returns show.",
+  5: "5. On a page with no margin above the compact layout `Margin` draws nothing, which unmounts the compose and every card as leaving the document does; below it `Margin` stays drawn there with no document, and so with no compose, which is the shown document's (`useMarginSheet`). The compose is the provider's (`MarginProvider`) and a reply's draft is held under its name, as the document-left rows' and the another-thread row's returns show. On a landing whose page draws a live document, `MarginColumn` draws the margin's empty frame in its place until that document draws (`useContentDrawn`): the hold is taken once, before the first render, and only ever let go (`features/shell/content-drawn.ts`), so it puts off the margin's first draw and never takes a drawn margin away.",
   6: "6. The Comments tab's list is not drawn on the Pinned tab, under a phone margin thread, or while the comments read failed (`MarginSheet`, `CommentsTab`), which unmounts a thread's reply and its editor as opening another thread does (the second row, and the edit file's margin card).",
   7: "7. A thread's card is drawn per thread of the open document, keyed by it (`ThreadList`): a thread that leaves the list, by its resolution or another document's list, unmounts its card as opening another thread does, and a resolved thread folded away under Show resolved is the same; its reply is held by its thread's name.",
   8: "8. Which end of a margin thread its reply sits at (`composerFirst`, from `useThreadOrder` in `ThreadCard`) is read when the card is drawn and again only when who is signed in changes (`useUserPreference`), so it never moves a reply that is on screen.",
@@ -153,6 +153,7 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · document left, then back (the margin's compose)`)
   ),
   ...answers("MarginColumn | Margin | address prop | <Margin {...props}>", { reason: REASONS[5] }),
+  ...answers("MarginColumn | Margin | early return | if (!drawn) return …", { reason: REASONS[5] }),
   ...answers("ErrorBoundary | MarginColumn | conditional | if (message === undefined)", {
     reason: REASONS[14],
   }),
@@ -318,6 +319,7 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("Margin | - | form | railShown || …", { reason: REASONS[4] }),
   ...answers("useDialog | - | form | (open) ? …", { reason: REASONS[12] }),
   ...answers("useDialog | - | form | if (!open) return …", { reason: REASONS[12] }),
+  ...answers("useDialog | - | form | if (open)", { reason: REASONS[12] }),
   ...answers(
     "useMarginSheet | - | form | if (ownerId !== undefined && window.matchMedia(COMPACT_VIEWPORT_QUERY).matches)",
     { reason: REASONS[9] }

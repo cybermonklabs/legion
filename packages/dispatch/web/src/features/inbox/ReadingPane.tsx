@@ -3,7 +3,7 @@ import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useStat
 
 import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
-import { whoAmIQuery } from "../../api/queries";
+import { artifactQueryOptions, whoAmIQuery } from "../../api/queries";
 import type { AskApproval, InboxRow } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { borderDefault } from "../../theme/classes";
@@ -15,7 +15,7 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { AskCard } from "./AskCard";
 import { isDecisionAsk } from "./ask-decision";
 import type { InboxListRow } from "./list-row";
-import { artifactQueryOptions, DocumentPane, PaneFrame, useSettled } from "./PaneDocument";
+import { DocumentPane, PaneFrame, useSettled } from "./PaneDocument";
 import { holdSection, type SectionHold } from "./pane-placement";
 import { ReadingPaneHead } from "./ReadingPaneHead";
 import { ThreadPane } from "./ThreadPane";

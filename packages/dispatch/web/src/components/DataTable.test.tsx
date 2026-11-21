@@ -10,8 +10,8 @@ import {
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
+import { tableStorageKey } from "../features/project/issues-table-action-storage";
 import { type LayoutColumns, useTableLayout } from "../features/project/issues-table-layout";
-import { tableStorageKey } from "../features/project/issues-table-storage";
 import { DataTable, DataTableGroupRow, useDataTable } from "./DataTable";
 
 /** A row that is not an issue: the core knows nothing of what its rows are. */

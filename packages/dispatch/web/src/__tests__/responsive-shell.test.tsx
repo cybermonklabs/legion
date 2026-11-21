@@ -18,6 +18,12 @@ import { answerAgentStates } from "./send-answers";
 import "../features/agent-view/AgentConversationPage";
 import "../features/issue-page/IssuePage";
 import "../features/margin/Margin";
+// Every kind of write is a chunk of its own (`features/writes/kinds.ts`), which the store's take-up
+// of what a reload kept waits for from the sign-in on, and every write a row presses waits for that
+// take-up (`Writes.resume`, `Writes.run`). The rows here are about the shell, not about that
+// download, and a row on a held clock runs its waits out in a few real milliseconds while
+// `test:web:cold` holds the chunk for a real second. So the kinds are loaded here too.
+import "../features/writes/kinds";
 
 const issue: IssueDetails = {
   route_status: null,

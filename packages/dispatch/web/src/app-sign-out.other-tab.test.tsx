@@ -6,6 +6,21 @@ import { ApiError } from "./api/client";
 import { aliceWrite, keptWrites, otherTab, renderApp } from "./app-sign-out-fixture";
 import { SIGN_OUT_SETTLE_MS } from "./features/shell/sign-in-channel";
 import { writesOf } from "./features/writes/write-store";
+// The Inbox the app draws at `/` is a chunk of its own (`features/inbox/InboxHost.tsx`), and the
+// margin a lazy part of the shell (`MarginColumn.tsx`), which loads it at `/` too. No row here
+// reads either, and a load that lands between two `act` scopes of a row is React's report of a
+// suspended resource outside `act`. So both modules are loaded here, with the test file, and no
+// row starts or waits for them.
+import "./features/inbox/inbox-chunk";
+import "./features/margin/Margin";
+// The pending-writes indicator and the list a lapsed session keeps are each a chunk of their own
+// (`features/writes/write-hosts.tsx`), and the rows read what the two lists draw. The rows here
+// are about the writes, not about those downloads, and a row on a held clock runs its waits out
+// in a few real milliseconds while `test:web:cold` holds each chunk for a real second. So the two
+// are loaded here, with the test file, and no row waits for them; the kinds of write come with
+// the fixture (`app-sign-out-fixture.tsx`).
+import "./features/writes/KeptWrites";
+import "./features/writes/PendingWritesIndicator";
 
 // The sign-out rows of another tab's sign-out, which holds this tab's writes for the person it
 // signs out until that tab says how it ended, or goes: the writes are discarded once Dispatch has

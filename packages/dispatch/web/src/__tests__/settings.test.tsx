@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { PROJECT_NAME_MAX } from "@legion/contracts";
+import { PROJECT_NAME_MAX } from "@legion/contracts/dispatch-api-constants";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the focus sites below reach the picker's people list without a press, which user-event has no form for
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -12,6 +12,11 @@ import { App } from "../app";
 // The Settings page is a lazy route of the app. Its module's first compile is not what a wait is
 // for, so the module is loaded here, with the test file, and no wait measures that load.
 import "../features/settings/SettingsPage";
+// Every kind of write is a chunk of its own (`features/writes/kinds.ts`), which the store's take-up
+// of what a reload kept waits for from the sign-in on, and every write a row presses waits for that
+// take-up (`Writes.resume`, `Writes.run`). The rows here are about the Settings page's writes, not
+// about that download, so the kinds are loaded here too, and no row waits for that load.
+import "../features/writes/kinds";
 import { keyedAttempt } from "./keyed-attempt";
 
 /** The mapping routes' server state as the Settings page reaches it: a read answers what the writes

@@ -1,12 +1,10 @@
 import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  lazy,
   type ReactNode,
   type RefObject,
   Suspense,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
@@ -15,7 +13,7 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-r
 import { api, isNoIdentity, isUnauthorized } from "./api/client";
 import { useEventFeed } from "./api/event-feed";
 import { useLiveSocketPill } from "./api/live-socket";
-import { userAgentStateQuery, whoAmIQuery } from "./api/queries";
+import { landingReadOf, userAgentStateQuery, whoAmIQuery } from "./api/queries";
 import { askSignInAgain } from "./api/query-client";
 import type { AuthenticatedUser } from "./api/types";
 import { useLiveViews } from "./features/agent-view/live-views";
@@ -24,39 +22,35 @@ import { legacyPinnedIds, useAgentPinWrite, usePinnedAgents } from "./features/a
 import { totalUnreadReplies, unreadRepliesLabel } from "./features/agents/unread";
 import { draftStoresSignedIn, draftStoresSignedOut } from "./features/conversation/unsent-drafts";
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
-import { TextAskBlockCard } from "./features/doc/AskBlockCard";
+import { loadEditorLibrary, loadTransportModules } from "./features/doc/document-chunks";
+import { TextAskCardHost } from "./features/doc/TextAskCardHost";
 import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
-import { Inbox } from "./features/inbox/Inbox";
-import { InboxDrawer } from "./features/inbox/InboxDrawer";
+import { InboxDrawerHost, InboxHost, loadInboxChunk } from "./features/inbox/InboxHost";
 import { useInboxCount } from "./features/inbox/useInboxCount";
-import { CreateIssueDialog } from "./features/issue/CreateIssueDialog";
+import { CreateIssueDialogHost } from "./features/issue/CreateIssueDialogHost";
 import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
-import { useIssuePageChoice } from "./features/issue-page/choice";
-import { IconRail } from "./features/issue-page/IconRail";
+import { issueTabChunk } from "./features/issue/tab-chunks";
+import { frameShellChunk } from "./features/issue-page/frame-chunk";
+import type { FrameProviders, ShellFrame } from "./features/issue-page/frame-shell";
 import {
-  type MarginDrawer,
-  type MarginDrawerPage,
-  MarginSlotProvider,
-} from "./features/issue-page/margin-slot";
-import { ReferenceNamesProvider } from "./features/issue-page/reference-names";
-import {
-  type ShellNavigation,
-  ShellNavigationContext,
-} from "./features/issue-page/shell-navigation";
-import { ShortcutHelpOpener } from "./features/issue-page/shortcut-help-opener";
+  outlineChosenInThisBrowser,
+  useStoredIssuePageChoice,
+} from "./features/issue-page/stored-choice";
 import { MarginColumn } from "./features/margin/MarginColumn";
 import { MarginProvider } from "./features/margin/margin-context";
 import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
 import { AgentRegistryPoller } from "./features/refs/agent-registry";
 import { TextAskCard } from "./features/refs/markdown-cards";
-import { RefPreviewHost } from "./features/refs/RefPreview";
-import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./features/refs/ref-preview-card";
+import { RefPreviewLayer } from "./features/refs/RefPreviewLayer";
 import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
   ANSWERS_PATH,
   buildInboxPath,
   buildProjectPath,
+  type IssueRoute,
+  type IssueTab,
+  issueTabForRoute,
   liveViewSessionOf,
   parseIssuePath,
   parseProjectPath,
@@ -66,7 +60,10 @@ import {
   routeProjectOf,
 } from "./features/refs/routes";
 import { useRecordRecents } from "./features/search/recents";
-import { SearchPalette } from "./features/search/SearchPalette";
+import { SearchPaletteHost } from "./features/search/SearchPaletteHost";
+import { chunkComponent } from "./features/shell/chunk-component";
+import { lazyChunk, prefetchChunk } from "./features/shell/chunk-loads";
+import { holdUntilContentDraws } from "./features/shell/content-drawn";
 import { ErrorBoundary } from "./features/shell/ErrorBoundary";
 import { KeymapProvider } from "./features/shell/KeymapProvider";
 import {
@@ -77,7 +74,7 @@ import {
 } from "./features/shell/keymap";
 import { NotFoundPage } from "./features/shell/NotFoundPage";
 import { RailButton } from "./features/shell/RailButton";
-import { ShortcutHelp } from "./features/shell/ShortcutHelp";
+import { ShortcutHelpHost } from "./features/shell/ShortcutHelpHost";
 import {
   SIGN_OUT_SETTLE_MS,
   SignInChannel,
@@ -85,7 +82,6 @@ import {
 } from "./features/shell/sign-in-channel";
 import {
   COMPACT_VIEWPORT_QUERY,
-  MD_VIEWPORT_QUERY,
   READING_PANE_QUERY,
   useDialog,
   useMediaQuery,
@@ -94,11 +90,9 @@ import { useDocumentTitle } from "./features/shell/useDocumentTitle";
 import { useKeyboardFit } from "./features/shell/useKeyboardFit";
 import { legacyPinnedAgentsKey, useUserPreference } from "./features/shell/userPreference";
 import { Sidebar } from "./features/sidebar/Sidebar";
-import "./features/writes/kinds";
-import { KeptWrites } from "./features/writes/KeptWrites";
 import { SendStoppedError, stoppedWriteNote } from "./features/writes/keyed-write";
-import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator";
 import { useKeyedWrite, useRefusalOfSubject } from "./features/writes/useKeyedWrite";
+import { KeptWritesHost, loadWriteKinds, PendingWritesHost } from "./features/writes/write-hosts";
 import { type Write, writesOf } from "./features/writes/write-store";
 import { FOOT_STATUS_INSET_PROPERTY, useFootInset } from "./hooks/useFootInset";
 import {
@@ -114,7 +108,6 @@ import {
   card,
   linkHoverText,
   linkText,
-  pagePaperBg,
   primaryButtonBg,
   primaryButtonHoverBg,
   railAccentHoverText,
@@ -137,62 +130,210 @@ import {
   textTransparent,
 } from "./theme/classes";
 
-const IssuePage = lazy(() =>
-  import("./features/issue-page/IssuePage").then((module) => ({ default: module.IssuePage }))
-);
+/** The three route chunks a cold landing can need, each named once: the router's `lazyChunk`
+ *  below and the entry's preload (`preloadRouteChunk`) call the same import, so the chunk the
+ *  entry starts cannot be another than the one the router renders. The Inbox's chunk is the
+ *  fourth, started wherever the Inbox is the page rather than the peek, and its import is named
+ *  once in the same way, in the module that owns it (`features/inbox/InboxHost.tsx`,
+ *  `loadInboxChunk`). */
+const loadIssuePage = () =>
+  import("./features/issue-page/IssuePage").then((module) => ({ default: module.IssuePage }));
+const loadProjectPage = () =>
+  import("./features/project/ProjectPage").then((module) => ({ default: module.ProjectPage }));
+const loadDocumentPage = () =>
+  import("./features/document/DocumentPage").then((module) => ({ default: module.DocumentPage }));
 
-const ProjectPage = lazy(() =>
-  import("./features/project/ProjectPage").then((module) => ({ default: module.ProjectPage }))
-);
-const DocumentPage = lazy(() =>
-  import("./features/document/DocumentPage").then((module) => ({ default: module.DocumentPage }))
-);
-const PrioritiesPage = lazy(() =>
+// The three the entry can prefetch, through `lazyChunk` like every route of this file: the
+// router's ask is under `renderChunk`, which is what tells the chunk-failure recovery that a
+// reader is waiting on this download rather than the entry having prefetched it
+// (`features/shell/DeploymentResilience.tsx`). These three are only the ones named twice, here
+// and in the preload.
+const IssuePage = lazyChunk(loadIssuePage);
+const ProjectPage = lazyChunk(loadProjectPage);
+const DocumentPage = lazyChunk(loadDocumentPage);
+
+/** The chunks the live document pulls as it renders, which the route chunk does not carry: the
+ *  editor's own library and the Yjs transport it connects over, each the list
+ *  `features/doc/document-chunks.ts` names for `ProofDocument`'s two modules (`editor.ts`,
+ *  `connection.ts`), started here rather than named again, so the preload and the render cannot
+ *  pull different chunks. This module imports that list directly, so the chunks are asked for
+ *  at once, beside the landing read, and not after the two modules' own chunks have come down
+ *  and run. A landing that draws a document always reaches both, so this fetches no byte such a
+ *  landing does not fetch anyway. */
+const loadDocumentChunks = () => Promise.all([loadEditorLibrary(), loadTransportModules()]);
+
+/** The issue tabs whose panel draws a live document, and so the tabs that reach the chunks
+ *  above: the Spec, which is the tab a bare `/issues/<key>` opens on, and the two role
+ *  documents, Verification and Plan - each panel renders `ArtifactDocument`
+ *  (`features/issue/IssuePage.tsx`). The Conversation, Children, Activity, Decisions and
+ *  Collaborators panels render none, and a reader who opens one of them must download no
+ *  editor and no transport at all (`e2e/doc.e2e.ts`, "the Conversation tab downloads no editor
+ *  transport; the Spec tab loads it on demand"). */
+const DOCUMENT_TABS: readonly IssueTab[] = ["spec", "verification", "plan"];
+
+/** Whether the issue page at this address draws a live document, read from the address by the
+ *  router's own parse of it (`features/refs/routes.ts`, `issueTabForRoute`) rather than by a
+ *  second rule kept here, which could say one thing while the page drew another.
+ *
+ *  An address naming an artifact - `/issues/<key>/artifact/<slug>` - draws that artifact as a
+ *  document when it is one, and whether it is one is not known until the issue has been read.
+ *  `issueTabForRoute` reads such an address as the Artifacts tab while the artifact is unknown,
+ *  so it is taken here by its own kind instead: the chunks come down for every named artifact,
+ *  which is what the page needs for the documents among them and a prefetch the others do not
+ *  use. */
+function issueDrawsDocument(route: IssueRoute): boolean {
+  return route.kind === "artifact" || DOCUMENT_TABS.includes(issueTabForRoute(route, undefined));
+}
+
+/**
+ * Starts the chunks the address needs, beside the landing read rather than after it.
+ *
+ * `AuthGate` holds the whole tree behind the landing read, so a chunk is asked for only once
+ * that read has answered and the shell has rendered. The page's own reads then wait for those
+ * chunks to arrive and parse - the live editor's admission read of the document's text most of
+ * all (`features/doc/ProofDocument.tsx`) - which puts them in a wave of their own, after the
+ * reads that needed no chunk. Started here, they come down while the landing read is out, and
+ * the page's reads go out in the wave that follows the landing's answer.
+ *
+ * The address is read exactly as the landing read reads it (`landingReadOf`), so one parse
+ * decides which page is coming. The document chunks go to the addresses whose page draws a
+ * document and to no others: a project's document page always draws one, and an issue page
+ * draws one on the tabs `issueDrawsDocument` names and on no other, so the Conversation of an
+ * issue downloads no editor. The board draws no document and takes neither chunk, and an
+ * address that is no page of a cold landing starts no page's chunk (the new issue page's shell,
+ * below, is no page's). The Inbox's own chunk holds to the same rule - a chunk is started where
+ * the landed page draws it - and needs a second question to hold it: the landing read takes
+ * every address that is neither an issue nor a project as the Inbox, while the Inbox is the page
+ * at the addresses `InboxPage` is mounted at and a peek drawer over every other, so the arm below
+ * asks `routeIsInbox` as well. A chunk that fails here is left to the router: `lazyChunk` asks
+ * for the same import again, and that failure - a reader in front of a page that cannot draw - is
+ * the one `DeploymentResilience` reloads for (`prefetchChunk`).
+ *
+ * `pathname` is the caller's and has no default: the one call site is `main.tsx`, which passes
+ * `window.location.pathname` - the address the browser is loading, read before React renders
+ * anything - and the landing read beside it defaults to that same address of its own accord
+ * (`readLanding`).
+ */
+export function preloadRouteChunk(pathname: string): void {
+  // A reader who turned the new issue page on draws the whole shell, on every page, through a
+  // chunk of its own (`features/issue-page/frame-chunk.ts`), so it is started here on every
+  // address, beside the landing read, for the reason the page's chunk is. This runs before the
+  // sign-in check has answered, so the login whose choice the shell will read is not known yet:
+  // any login's choice stored in this browser that reads `outline` starts it. A browser where
+  // nobody chose the new page fetches none of it.
+  if (outlineChosenInThisBrowser()) prefetchChunk(frameShellChunk.load);
+  switch (landingReadOf(pathname).page) {
+    case "issue": {
+      prefetchChunk(loadIssuePage);
+      // The tab decides the document chunks, not the issue: see `issueDrawsDocument`. The parse
+      // answers for every address this arm is reached by, since that is the arm's own test.
+      const route = parseIssuePath(pathname);
+      if (route !== undefined && issueDrawsDocument(route)) {
+        prefetchChunk(loadDocumentChunks);
+        // The page's content is its document, so the shell's code that draws none of it waits
+        // for the document to draw (`features/shell/content-drawn.ts`).
+        holdUntilContentDraws();
+      }
+      // Every tab but the Spec draws from a chunk of its own (`features/issue/tab-chunks.ts`).
+      // A landing on such a tab starts that chunk here, beside the landing read, for the same
+      // reason the page's chunk is started here: else it would come down only once the page
+      // has rendered, a wave after the reads that needed no chunk. A Spec landing starts none.
+      // An address that names an artifact starts none either: the page draws the issue's
+      // primary document there as the Spec, and the address alone does not say whether the
+      // artifact is that one (`issueDrawsDocument`). Any other artifact's Artifacts tab gets its
+      // chunk when the page renders it.
+      const tabChunk =
+        route === undefined || route.kind === "artifact"
+          ? undefined
+          : issueTabChunk(issueTabForRoute(route, undefined));
+      if (tabChunk !== undefined) prefetchChunk(tabChunk);
+      break;
+    }
+    case "document":
+      prefetchChunk(loadDocumentPage);
+      prefetchChunk(loadDocumentChunks);
+      holdUntilContentDraws();
+      break;
+    case "board":
+      prefetchChunk(loadProjectPage);
+      break;
+    case "inbox":
+      // The Inbox is a chunk of its own now (`features/inbox/InboxHost.tsx`), and this arm is
+      // every address that is neither an issue nor a project, so the chunk is started only
+      // where the page draws the list (`routeIsInbox`, which is the router's own ranking of
+      // `InboxPage`'s routes): beside the landing read rather than after it, which is what
+      // keeps the list's own reads in the wave that follows the landing's answer. Where the
+      // Inbox is the peek drawer instead, this is not the chunk the reader is waiting for, so
+      // the shell starts it after that page's first paint rather than beside its landing read
+      // (`features/inbox/InboxHost.tsx`, `usePeekChunkAfterFirstPaint`).
+      if (routeIsInbox(pathname)) prefetchChunk(loadInboxChunk);
+      break;
+  }
+}
+
+// Every other route of the shell, each through `lazyChunk` as the three above are, and for the
+// same reason: a reader is waiting on this download the moment the router renders the route, so
+// its failure is one the chunk-failure recovery must reload for. Only a chunk nothing is waiting
+// on may be passed over, which is what every `prefetchChunk` call is: the preload above, the
+// Inbox peek's chunk after a page's first paint (`features/inbox/InboxHost.tsx`), the search
+// bar's after the same paint (`features/search/SearchPaletteHost.tsx`), the two lists of writes'
+// and the kinds of write's once the page has drawn (`features/writes/write-hosts.tsx`) and the
+// boot warm of the Markdown engine (`features/shell/DeploymentResilience.tsx`). Left bare, a
+// route chunk that failed while one of those prefetches was still out would be read as that
+// prefetch's and reload nothing, leaving the reader in front of a page that cannot draw
+// (dispatch://INFRA-1109); `lazy` itself is refused here by the repository's `biome.json`.
+
+const PrioritiesPage = lazyChunk(() =>
   import("./features/priorities/PrioritiesPage").then((module) => ({
     default: module.PrioritiesPage,
   }))
 );
-const PriorityPage = lazy(() =>
-  import("./features/priorities/PriorityPage").then((module) => ({ default: module.PriorityPage }))
+
+const PriorityPage = lazyChunk(() =>
+  import("./features/priorities/PriorityPage").then((module) => ({
+    default: module.PriorityPage,
+  }))
 );
 
-const AgentsPage = lazy(() =>
+const AgentsPage = lazyChunk(() =>
   import("./features/agents/AgentsPage").then((module) => ({ default: module.AgentsPage }))
 );
 
-const MachinesPage = lazy(() =>
+const MachinesPage = lazyChunk(() =>
   import("./features/machines/MachinesPage").then((module) => ({ default: module.MachinesPage }))
 );
 
-const MachinePage = lazy(() =>
+const MachinePage = lazyChunk(() =>
   import("./features/machines/MachinePage").then((module) => ({ default: module.MachinePage }))
 );
 
-const AgentArtifactPage = lazy(() =>
+const AgentArtifactPage = lazyChunk(() =>
   import("./features/artifacts/AgentArtifactPage").then((module) => ({
     default: module.AgentArtifactPage,
   }))
 );
 
-const BroadcastsPage = lazy(() =>
-  import("./features/agents/BroadcastsPage").then((module) => ({ default: module.BroadcastsPage }))
+const BroadcastsPage = lazyChunk(() =>
+  import("./features/agents/BroadcastsPage").then((module) => ({
+    default: module.BroadcastsPage,
+  }))
 );
 
-const BroadcastPage = lazy(() =>
+const BroadcastPage = lazyChunk(() =>
   import("./features/agents/BroadcastPage").then((module) => ({ default: module.BroadcastPage }))
 );
 
-const DeliveryPage = lazy(() =>
+const DeliveryPage = lazyChunk(() =>
   import("./features/delivery/DeliveryPage").then((module) => ({ default: module.DeliveryPage }))
 );
-const PipelinePage = lazy(() =>
+const PipelinePage = lazyChunk(() =>
   import("./features/delivery/PipelinePage").then((module) => ({ default: module.PipelinePage }))
 );
 
-const AnswersPage = lazy(() =>
+const AnswersPage = lazyChunk(() =>
   import("./features/answers/AnswersPage").then((module) => ({ default: module.AnswersPage }))
 );
-const SettingsPage = lazy(() =>
+const SettingsPage = lazyChunk(() =>
   import("./features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage }))
 );
 
@@ -244,37 +385,6 @@ function IssuePageFallback(): ReactNode {
   );
 }
 
-/**
- * What the new issue page's frame holds while the page's code loads (R10):
- * the header's two lines, the view row's five controls and the first rows, as boxes with no word
- * in them, so no name of a control flashes on screen and none of today's nine tab names does.
- * It takes the inset the page's own column takes, since the frame gives `<main>` no padding.
- * `min-w-0` and `overflow-hidden`: the row of boxes neither wraps nor scrolls, so a chunk's load
- * never makes the page wider than a phone's window. Every other reader keeps
- * `IssuePageFallback`.
- */
-function IssueFrameFallback(): ReactNode {
-  return (
-    <div aria-busy="true" className="px-3.5 pt-2 md:px-7">
-      <div className={`h-4 w-16 animate-pulse rounded ${skeletonBg}`} />
-      <div className={`mt-2 h-7 w-2/3 animate-pulse rounded ${skeletonBg}`} />
-      <div
-        className={`mt-4 mb-4 flex min-w-0 gap-2 overflow-hidden border-b pb-2 ${borderDefault}`}
-        role="toolbar"
-      >
-        {[0, 1, 2, 3, 4].map((box) => (
-          <span className={`h-5 w-16 shrink-0 animate-pulse rounded ${skeletonBg}`} key={box} />
-        ))}
-      </div>
-      <div className="space-y-3">
-        {[0, 1, 2, 3].map((row) => (
-          <div className={`h-4 w-full animate-pulse rounded ${skeletonBg}`} key={row} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function ShellMessagePage({ children, title }: { children?: ReactNode; title: string }): ReactNode {
   return (
     <main className={`grid min-h-dvh place-items-center px-6 ${canvasText}`}>
@@ -303,14 +413,14 @@ function InboxPage(): ReactNode {
           Answered by you
         </Link>
       </div>
-      <Inbox />
+      <InboxHost />
     </section>
   );
 }
 
-/** The sign-in page. A session that lapsed shows what it keeps for its person (`KeptWrites`), and
- *  its sign-in link asks nothing on leaving: the page comes back to this tab, where every kept
- *  write resumes (`Writes.leavingToSignIn`). */
+/** The sign-in page. A session that lapsed shows what it keeps for its person
+ *  (`KeptWritesHost`), and its sign-in link asks nothing on leaving: the page comes back to this
+ *  tab, where every kept write resumes (`Writes.leavingToSignIn`). */
 function SignInPage(): ReactNode {
   const queryClient = useQueryClient();
   return (
@@ -329,7 +439,7 @@ function SignInPage(): ReactNode {
       >
         Sign in with Google
       </a>
-      <KeptWrites />
+      <KeptWritesHost />
     </ShellMessagePage>
   );
 }
@@ -489,39 +599,42 @@ function NavigationContents({
   );
 }
 
-/**
- * The providers the shell mounts around everything it draws: the margin's own, and the four the
- * new issue page's frame reads (R12, R14). `drawer` is Details, which only
- * the frame passes: with it undefined the margin is the column it has always been, and no page
- * fills its slot. `navigation` is what the page's header draws its `☰` from, and `openHelp` what
- * its Keys control opens. A page publishes the names it read for its references to everything
- * under the shell, the margin beside the router among it (`ReferenceNamesProvider`).
- */
-function ShellProviders({
+/** Everything the shell draws, inside the new issue page's providers where the reader's shell
+ *  has them (`providers`, from the frame-shell chunk), and as it is everywhere else. The state
+ *  those providers read, the navigation's sheet and what `?` opens, is the shell's own. */
+function WithFrameProviders({
   children,
-  drawer,
-  navigation,
+  navigationOpen,
   openHelp,
+  providers,
+  setNavigationOpen,
 }: {
   children: ReactNode;
-  drawer: MarginDrawer | undefined;
-  navigation: ShellNavigation | undefined;
+  navigationOpen: boolean;
   openHelp: () => void;
+  providers: FrameProviders | undefined;
+  setNavigationOpen: (open: boolean) => void;
 }): ReactNode {
-  return (
-    <MarginProvider>
-      <ReferenceNamesProvider>
-        <MarginSlotProvider drawer={drawer} drawsSlot={drawer !== undefined}>
-          <ShellNavigationContext.Provider value={navigation}>
-            <ShortcutHelpOpener.Provider value={openHelp}>{children}</ShortcutHelpOpener.Provider>
-          </ShellNavigationContext.Provider>
-        </MarginSlotProvider>
-      </ReferenceNamesProvider>
-    </MarginProvider>
-  );
+  if (providers === undefined) return children;
+  return providers(children, { navigationOpen, openHelp, setNavigationOpen });
 }
 
-function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
+/**
+ * The shell every signed-in page is drawn in. `frame` is what the new issue page's frame changes
+ * in it, on an issue's address for a reader who chose that page, and `providers` are what that
+ * reader's shell mounts around everything it draws, on every page; both come from the
+ * frame-shell chunk (`features/issue-page/frame-shell.tsx`) and are undefined for every other
+ * reader, whose shell is exactly what this draws without them.
+ */
+function AppShell({
+  frame,
+  providers,
+  user,
+}: {
+  frame: ShellFrame | undefined;
+  providers?: FrameProviders;
+  user: AuthenticatedUser;
+}): ReactNode {
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [inboxDrawerOpen, setInboxDrawerOpen] = useState(false);
@@ -554,41 +667,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     String
   );
   const location = useLocation();
-  // The new issue page's frame (R1, R14), computed here once: an issue's
-  // address, for a reader who chose the new page. In it an icon rail of 56 px stands where the
-  // sidebar stands, from Tailwind's `md` up, and below that the page's header draws the control
-  // that opens the navigation (`ShellNavigationContext`); the margin is Details, a drawer over
-  // the page. The rail is drawn by the query that is `md` itself, in `rem`, because the room the
-  // page makes for it is `md:pl-14`: a pixel query draws the rail over the page wherever the two
-  // disagree, which is every width from 768 to 959 px at a 20 px default font. Every other page,
-  // and every other reader's issue page, keeps the shell below exactly as it was.
-  const [issuePageChoice] = useIssuePageChoice();
-  const issueFrame =
-    issuePageChoice === "outline" &&
-    parseIssuePath(location.pathname, location.search) !== undefined;
-  const railFits = useMediaQuery(MD_VIEWPORT_QUERY);
-  const iconRailShown = issueFrame && railFits;
-  // Whether Details is open, held for the issue it was opened on: every load opens it closed, and
-  // so does every move to another issue. Leaving the issue forgets it in the same render, so
-  // coming back to it - by a link or by Back - finds it closed, as a load does.
-  const detailsIssue = parseIssuePath(location.pathname)?.key;
-  const [detailsFor, setDetailsFor] = useState<string | undefined>(undefined);
-  if (detailsFor !== undefined && detailsFor !== detailsIssue) setDetailsFor(undefined);
-  // What the new page's root hands Details: its words and its address rule
-  // (`features/issue-page/drawer-page.ts`), so that this file imports neither.
-  const [drawerPage, setDrawerPage] = useState<MarginDrawerPage | undefined>(undefined);
-  const detailsDrawer = useMemo<MarginDrawer | undefined>(
-    () =>
-      issueFrame
-        ? {
-            open: detailsFor !== undefined && detailsFor === detailsIssue,
-            page: drawerPage,
-            setOpen: (open: boolean) => setDetailsFor(open ? detailsIssue : undefined),
-            setPage: setDrawerPage,
-          }
-        : undefined,
-    [detailsFor, detailsIssue, drawerPage, issueFrame]
-  );
+  // Whether the shell draws the new issue page's frame: an issue's address, for a reader who
+  // chose the new page (`frame`). Every other page, and every other reader's issue page, keeps
+  // the shell below exactly as it was.
+  const issueFrame = frame !== undefined;
   // The shell reserves a gutter for a rail only where that rail exists. The collapsed-margin
   // rail exists only where the route has a margin, so it is reserved from exactly the answer
   // `features/margin/Margin.tsx` renders from; two answers that disagree leave 80 px of
@@ -682,20 +764,11 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     onClose: () => setNavigationOpen(false),
     open: navigationOpen && (isCompactViewport || issueFrame),
   });
-  // What the page's header draws its `☰` from below `md`, where the frame draws neither the
-  // shell's bar nor the rail; undefined wherever the shell draws a control of its own.
-  const shellNavigation = useMemo<ShellNavigation | undefined>(
-    () =>
-      issueFrame && !railFits
-        ? { onOpen: () => setNavigationOpen(true), open: navigationOpen }
-        : undefined,
-    [issueFrame, navigationOpen, railFits]
-  );
   const navigate = useNavigate();
   // The registry as described when `?` fired (focus still on the caller); `null` while closed.
   const [helpSnapshot, setHelpSnapshot] = useState<readonly KeyBindingDescription[] | null>(null);
-  // What a page's own Keys control does (`features/issue-page/shortcut-help-opener.tsx`): what
-  // `?` does.
+  // What a page's own Keys control does (the frame's providers hand it to the page): what `?`
+  // does.
   const openHelp = useCallback(() => setHelpSnapshot(appKeymap.describe()), []);
   const [createOpen, setCreateOpen] = useState(false);
   const routeProject = routeProjectOf(location.pathname);
@@ -770,18 +843,15 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     },
     {
       // In the new issue page's frame the margin is Details, which this key opens and closes at
-      // every width. Its id follows the gate, so that crossing it registers the binding again
-      // and the list of keys reads the label of the shell it is in.
-      id: detailsDrawer === undefined ? "toggle-margin" : "toggle-details",
+      // every width (`frame.toggleDetails`). Its id follows the gate, so that crossing it
+      // registers the binding again and the list of keys reads the label of the shell it is in.
+      id: frame === undefined ? "toggle-margin" : "toggle-details",
       keys: "Shift+M",
-      label: detailsDrawer === undefined ? "Toggle margin" : "Open or close Details",
-      run: () =>
-        detailsDrawer === undefined
-          ? setMarginHidden(!marginHidden)
-          : detailsDrawer.setOpen(!detailsDrawer.open),
+      label: frame === undefined ? "Toggle margin" : "Open or close Details",
+      run: () => (frame === undefined ? setMarginHidden(!marginHidden) : frame.toggleDetails()),
       // Below `xl` the margin is a sheet the route opens itself: `Margin` reads the preference
       // only from `xl`, so a toggle there would change nothing on screen and flip it for later.
-      when: () => detailsDrawer !== undefined || (!isCompactViewport && hasMargin),
+      when: () => frame !== undefined || (!isCompactViewport && hasMargin),
     },
   ]);
   const login = user.login;
@@ -906,7 +976,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   }`;
 
   return (
-    <ShellProviders drawer={detailsDrawer} navigation={shellNavigation} openHelp={openHelp}>
+    <WithFrameProviders
+      navigationOpen={navigationOpen}
+      openHelp={openHelp}
+      providers={providers}
+      setNavigationOpen={setNavigationOpen}
+    >
       <div
         className={`${fillsViewport ? "flex h-screen flex-col supports-[height:100dvh]:h-dvh xl:flex-row" : "xl:flex"} ${canvasText}`}
         data-testid="app-shell"
@@ -928,7 +1003,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           className="pointer-events-none fixed right-4 bottom-[max(5rem,calc(var(--foot-composer-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 xl:bottom-[calc(var(--foot-composer-inset,0px)_+_1rem)] *:pointer-events-auto"
           ref={statusCornerRef}
         >
-          <PendingWritesIndicator />
+          <PendingWritesHost />
           <DraftsNotKept />
           {connection === "stuck" ? (
             <p
@@ -1016,15 +1091,15 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             </aside>
           </>
         ) : null}
-        {iconRailShown ? (
-          <IconRail
-            inboxCount={inboxCount}
-            navigationOpen={navigationOpen}
-            onOpenNavigation={() => setNavigationOpen(true)}
-            project={routeProject}
-            user={user}
-          />
-        ) : isCompactViewport || issueFrame ? null : sidebarHidden ? (
+        {frame !== undefined ? (
+          frame.rail({
+            inboxCount,
+            navigationOpen,
+            onOpenNavigation: () => setNavigationOpen(true),
+            project: routeProject,
+            user,
+          })
+        ) : isCompactViewport ? null : sidebarHidden ? (
           <aside
             aria-label="Collapsed sidebar"
             className={`fixed inset-y-0 left-0 z-10 flex w-14 justify-center border-r p-2 ${railBorder} ${railBg} ${railText}`}
@@ -1056,25 +1131,22 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             <div className="sticky top-0 flex h-dvh flex-col overflow-y-auto p-5">{navigation}</div>
           </aside>
         )}
-        {/* In the frame `<main>` has no padding of its own: the page's header, its view row, its
-            Contents pane and its column each keep the inset the prototype gives them, the pane
-            against the rail, which `md:pl-14` makes room for. Its references open no card on
-            hover (R6). */}
+        {/* In the frame `<main>` is drawn as the frame says (`frame.mainClass`,
+            `frame.mainAttributes`): no padding of its own, and no card on a reference's hover. */}
         <main
           className={
-            issueFrame
-              ? `min-h-dvh min-w-0 flex-1 outline-none md:pl-14 ${pagePaperBg}`
-              : `min-w-0 flex-1 p-6 outline-none xl:order-2 ${fillsViewport ? "flex min-h-0 flex-col" : "pb-32 xl:pb-6"} ${mainLayoutClass}`
+            frame?.mainClass ??
+            `min-w-0 flex-1 p-6 outline-none xl:order-2 ${fillsViewport ? "flex min-h-0 flex-col" : "pb-32 xl:pb-6"} ${mainLayoutClass}`
           }
           data-shell-layout={issueFrame || fullWidth ? "full-width" : "standard"}
-          {...(issueFrame ? { [NO_HOVER_PREVIEW_ATTRIBUTE]: "" } : {})}
+          {...frame?.mainAttributes}
           data-testid="main-content"
           id="main-content"
           ref={mainRef}
           tabIndex={-1}
         >
           <ErrorBoundary region="this page" resetKey={location.pathname}>
-            <Suspense fallback={issueFrame ? <IssueFrameFallback /> : <IssuePageFallback />}>
+            <Suspense fallback={frame?.fallback ?? <IssuePageFallback />}>
               <Routes>
                 <Route element={<InboxPage />} path="/" />
                 <Route element={<AnswersPage />} path={ANSWERS_PATH} />
@@ -1119,40 +1191,57 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         <ErrorBoundary region="the margin" resetKey={location.pathname}>
           <MarginColumn
             collapsed={marginHidden}
+            drawer={issueFrame}
             onCollapsedChange={setMarginHidden}
             onWidthChange={setMarginWidth}
             width={marginWidth}
           />
         </ErrorBoundary>
-        <SearchPalette onClose={() => setBarOpen(false)} open={barOpen} />
-        <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
-        <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
-        {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
-        <RefPreviewHost />
+        <SearchPaletteHost onClose={() => setBarOpen(false)} open={barOpen} />
+        <InboxDrawerHost onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
+        <ShortcutHelpHost onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
+        {createOpen ? <CreateIssueDialogHost onClose={() => setCreateOpen(false)} /> : null}
+        <RefPreviewLayer />
       </div>
-    </ShellProviders>
+    </WithFrameProviders>
+  );
+}
+
+/** The shell of a reader who turned the new issue page on, drawn as the sign-in check's skeleton
+ *  while its chunk is on its way. */
+const FrameShell = chunkComponent(frameShellChunk, <ShellSkeleton />);
+
+/**
+ * The shell the reader's choice of issue page draws: today's for `tabs`, with the margin's
+ * provider around it, and for `outline` the frame-shell chunk, which draws the same shell inside
+ * the new page's providers and with its frame on an issue's address. Only the choice is read
+ * here, never the address, so a move between an issue and another page keeps the shell mounted;
+ * a change of the choice mounts the other shell.
+ */
+function ChosenShell({ user }: { user: AuthenticatedUser }): ReactNode {
+  if (useStoredIssuePageChoice(user.login) === "tabs") {
+    return (
+      <MarginProvider>
+        <AppShell frame={undefined} user={user} />
+      </MarginProvider>
+    );
+  }
+  return (
+    <FrameShell
+      shell={(frame, providers) => <AppShell frame={frame} providers={providers} user={user} />}
+    />
   );
 }
 
 function AuthenticatedApp({ user }: { user: AuthenticatedUser }): ReactNode {
-  // Signed in, and before any page's own write, the writes this person's reload interrupted go
-  // on under their keys, and their refusals show again (`write-store.ts`): a composer's send, a
-  // broadcast, a pin, a read mark and every other write. In an effect, not in the render: a
-  // resume sends requests and writes to the store, which a render must not do, and React runs the
-  // render twice under StrictMode. The store takes them up once, so a later effect does nothing.
-  const queryClient = useQueryClient();
-  const login = user.login;
-  useEffect(() => {
-    writesOf(queryClient).resume(login);
-  }, [login, queryClient]);
   useEventFeed();
   // Every Markdown body the shell renders - routes, the margin, the inbox drawer, previews and
   // dialogs - draws a decision block in its text as the read-only card (`TextAskCard`).
   return (
     <KeymapProvider>
       <AgentRegistryPoller />
-      <TextAskCard.Provider value={TextAskBlockCard}>
-        <AppShell user={user} />
+      <TextAskCard.Provider value={TextAskCardHost}>
+        <ChosenShell user={user} />
       </TextAskCard.Provider>
     </KeymapProvider>
   );
@@ -1276,7 +1365,14 @@ export function AuthGate(): ReactNode {
   const [shellFor, setShellFor] = useState<string>();
   useEffect(() => {
     if (!known) return;
-    writesOf(queryClient).signedIn(login);
+    const writes = writesOf(queryClient);
+    writes.signedIn(login);
+    // Signed in, the writes this person's reload interrupted go on under their keys, and their
+    // refusals show again. The take-up waits for the kinds of write, a chunk of their own
+    // (`loadWriteKinds`), and every write pressed meanwhile waits for the take-up; so the take-up
+    // begins here, a commit before the shell is drawn (`shellFor`, below), before any page exists
+    // to press a write (`Writes.resume`, `Writes.run`).
+    if (login !== undefined) writes.resume(login, loadWriteKinds);
     draftStoresSignedIn(queryClient, login);
     signIns.signedIn(login ?? null);
     if (login !== undefined) setShellFor(login);

@@ -1,7 +1,8 @@
 /** The accessibility layer: every page of `e2e/review-routes.ts`'s scanned set, in light and in
  *  dark, read by axe at WCAG 2.0 and 2.1 level A and AA. The rows are untagged, so only the
- *  `chromium` project runs them and the pass reaches every pull request
- *  (e2e/playwright.config.ts).
+ *  `chromium` project runs them, on the full lane: the pull-request lane runs only `@pr` rows, so
+ *  a pull request meets the pass in the merge queue (e2e/playwright.config.ts,
+ *  .github/workflows/dispatch-browser.yaml).
  *
  *  A row fails on any serious or critical violation `e2e/accessibility-exclusions.ts` does not
  *  cover, and each (route, scheme) prints one `A11Y …` line to stdout, so the shard legs' own job
@@ -33,8 +34,8 @@ type Impact = "critical" | "serious" | "moderate" | "minor";
  *  both: an entry whose route this process scanned, and which nothing matched, is stale, and a
  *  stale entry would hide the regression it once accepted.
  *
- *  The check is a hook and not a final row because no row can see the run. `--shard=N/4` splits
- *  this file's rows over four machines (.github/workflows/dispatch-browser.yaml's shard job) and
+ *  The check is a hook and not a final row because no row can see the run. `--shard=N/2` splits
+ *  this file's rows over two machines (.github/workflows/dispatch-browser.yaml's shard job) and
  *  the run's four workers split each shard again, so a final row would sit in one process and
  *  judge entries whose routes another process ran. `afterAll` runs once in each worker, after
  *  the rows that worker ran, which is exactly the set it can judge - and judging only the routes
@@ -79,7 +80,7 @@ for (const route of scannedRoutes) {
       // `toHaveScreenshot`'s own `animations: "disabled"` (`e2e/visual.e2e.ts`). Waiting for
       // `document.getAnimations()` to empty was the other way, and is not this one: it pays
       // the full ease on every scheme of every route, and it never empties on a page holding
-      // an `animate-pulse` skeleton, which runs forever. `e2e/theme.e2e.ts` polls the one
+      // an `animate-pulse` skeleton, which runs forever. `e2e/theme.stub.e2e.ts` polls the one
       // colour it asserts, which a scan of every colour on the page cannot do.
       await page.addStyleTag({
         content: "*, *::before, *::after { transition: none !important; }",

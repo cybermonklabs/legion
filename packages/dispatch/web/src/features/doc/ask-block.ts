@@ -19,8 +19,8 @@ import {
 
 /** The node view of a host-owned typed block other than `ask`: `renderTypedBlock`'s drawing,
  * under the block's id. It stamps `data-block-id` the way `AskBlockView` does, from the node's
- * attribute, since a value import from the editor library would pull the library out of
- * `editor.ts`'s lazy chunk into every page that loads this module. */
+ * attribute, since a value import from the editor library would pull the library out of the
+ * chunk `document-chunks.ts`'s `loadEditorLibrary` loads into every page that loads this module. */
 function typedBlockView(
   node: ProseMirrorNode,
   document: Document,

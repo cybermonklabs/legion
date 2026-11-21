@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# One `-alone` leg of the Dispatch browser suite: the stack's binaries, the Playwright run of
-# one unsharded project one row at a time, the row count the merge job reads, and the memory and
-# CPU sampler this leg starts and reads back.
+# The alone leg of the Dispatch browser suite: the stack's binaries, the Playwright run of the
+# three unsharded wall-clock projects one after another, one row at a time, the row count the
+# merge job reads, and the memory and CPU sampler this leg starts and reads back.
 #
 # Who runs it, and what it takes:
 #
-#   .github/scripts/dispatch-browser-alone-suite.sh <project> <connections>
+#   .github/scripts/dispatch-browser-alone-suite.sh <connections>
 #
-# <project> is this leg's Playwright project, the alone job's `${{ matrix.project }}`, one of
-# the three `-alone` ones: it is the `--project` the run takes, and it names the blob report
-# this leg writes, the row count file beside it and the title of the sampler's readings.
 # <connections> is the connection limit the stack's Postgres must allow, which the binaries job
 # reads and hands on as `${{ needs.binaries.outputs.connections }}`, because this job's container
-# has no Go to compute it with; it becomes DISPATCH_E2E_PG_CONNECTIONS below.
+# has no Go to compute it with; it becomes DISPATCH_E2E_PG_CONNECTIONS below. The three projects
+# are named below rather than taken as an argument: they are the whole of what this job runs,
+# and the job has no matrix to hand one in since dispatch://INFRA-1109 put the three on one
+# machine.
 #
-# Both are arguments rather than keys of the step's `env:`, for the reason
+# It is an argument rather than a key of the step's `env:`, for the reason
 # .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
 # gives: a step `env:` key outside ci_filter_coverage.py's ENV_ALLOWED drops that job out of
 # check-ci-filters.sh's reduction of what a go command compiles.
@@ -27,21 +27,19 @@
 # and the stack's binaries are read from.
 #
 # Run from packages/dispatch, with $RUNNER_TEMP and $GITHUB_WORKSPACE set:
-#   ../../.github/scripts/dispatch-browser-alone-suite.sh webkit-alone 100
+#   ../../.github/scripts/dispatch-browser-alone-suite.sh 100
 # CI runs it in dispatch-browser.yaml's alone job, at the step "Browser-test dispatch dashboard
-# (${{ matrix.project }})".
+# (the three wall-clock projects)".
 set -euo pipefail
 
 usage() {
-  echo "::error::dispatch-browser-alone-suite.sh takes this leg's Playwright project and the" \
-    "stack's connection limit: .github/scripts/dispatch-browser-alone-suite.sh <project>" \
-    "<connections>. It was given: $*"
+  echo "::error::dispatch-browser-alone-suite.sh takes the stack's connection limit:" \
+    ".github/scripts/dispatch-browser-alone-suite.sh <connections>. It was given: $*"
   exit 1
 }
 
-[ "$#" -eq 2 ] || usage "$@"
-project=$1
-connections=$2
+[ "$#" -eq 1 ] || usage "$@"
+connections=$1
 
 # $RUNNER_TEMP holds everything this step writes, the run directory the stack pool
 # makes (mkdtempSync in os.tmpdir(), in e2e/harness-pool.ts's startPool) among it, which is what
@@ -74,23 +72,24 @@ export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatc
 # The blob report this leg hands the merge job. Its name carries the leg, so the legs'
 # reports keep their own names when the merge job downloads them into one directory.
 export PLAYWRIGHT_BLOB_OUTPUT_DIR="$RUNNER_TEMP/leg-report/blob-report"
-export PLAYWRIGHT_BLOB_OUTPUT_NAME="report-alone-$project.zip"
-# `--project` and `--workers=1` are the whole selection, and the first of them selects
-# this leg's rows and nothing else. Until dispatch://INFRA-1280 it did not: each
-# `-alone` project named every parallel project in its `dependencies`, so this command
-# carried `--no-deps`, without which Playwright would have run the whole suite here
-# before this leg's own rows, and the shard jobs had run it already. Those
-# `dependencies` are gone, and that flag with them.
+export PLAYWRIGHT_BLOB_OUTPUT_NAME="report-alone.zip"
+# The three `--project` and `--workers=1` are the whole selection, and the first of
+# them selects these projects' rows and nothing else. Until dispatch://INFRA-1280 it
+# did not: each `-alone` project named every parallel project in its `dependencies`,
+# so this command carried `--no-deps`, without which Playwright would have run the
+# whole suite here before this job's own rows, and the shard jobs had run it already.
+# Those `dependencies` are gone, and that flag with them.
 #
 # `--workers=1` says the thing the measurement rests on instead of leaning on a
 # default. The configuration's own default is the same one worker (the top-level
-# `workers: 1` of e2e/playwright.config.ts), so this leg is green with or without the
-# flag today; what the flag adds is that the leg stays one worker wide if that default
-# ever moves. A wider count is refused rather than measured: `refuseASharedRun` in
-# e2e/main-thread-hold.ts fails every row that calls `measureDraw` when
-# `config.workers` is above one, printing the one-worker command that fixes it. So the
-# guard is what makes the reading honest, and this line is what says what the run is:
-# one project, one row at a time, on a machine with nothing else on it.
+# `workers: 1` of e2e/playwright.config.ts), so this job is green with or without the
+# flag today; what the flag adds is that this machine stays one worker wide if that
+# default ever moves. A wider count is refused rather than measured:
+# `refuseASharedRun` in e2e/main-thread-hold.ts fails every row that calls
+# `measureDraw` when `config.workers` is above one, printing the one-worker command
+# that fixes it. So the guard is what makes the reading honest, and this line is what
+# says what the run is: these three projects and nothing else, one row at a time, in
+# the order they are named, on a machine with nothing else on it.
 #
 # `list` beside `blob`: the blob reporter prints nothing, and this leg's row count is
 # read from the list reporter's `Running N tests using M workers` line, which the merge
@@ -104,7 +103,7 @@ export PLAYWRIGHT_BLOB_OUTPUT_NAME="report-alone-$project.zip"
 # The suite's own status is carried in a file rather than in `$?` or in PIPESTATUS,
 # for the reason dispatch-browser-shard-suite.sh gives at length.
 rm -f "$RUNNER_TEMP/suite-status"
-{ bunx playwright test --config e2e/playwright.config.ts --project="$project" --workers=1 --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
+{ bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1 --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
     echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
 status=0
 [ ! -f "$RUNNER_TEMP/suite-status" ] || status=$(cat "$RUNNER_TEMP/suite-status")
@@ -112,9 +111,9 @@ kill "$sampler" 2>/dev/null || true
 # The row count this leg printed, for the merge job's first reading. It travels beside
 # the blob report, in a directory of its own so that `merge-reports` sees zips alone.
 sed -n 's/^Running \([0-9][0-9]*\) tests\? using .*/\1/p' "$RUNNER_TEMP/playwright-log.txt" |
-  tail -n 1 > "$RUNNER_TEMP/leg-report/rows/alone-$project.txt"
+  tail -n 1 > "$RUNNER_TEMP/leg-report/rows/alone.txt"
 # The sampler's two readings, titled with this leg so a run's notices say which
 # machine each is from. After the suite and before the exit below, so this step still
 # ends on the suite's own status.
-"$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-samples.sh" report "$RUNNER_TEMP/dispatch-e2e-record" "$project"
+"$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-samples.sh" report "$RUNNER_TEMP/dispatch-e2e-record" alone
 exit "$status"

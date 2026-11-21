@@ -1,12 +1,8 @@
-import {
-  ASK_URGENCIES,
-  decodeBlockId,
-  hasControlCharacter,
-  isSessionId,
-  itemFromSearch,
-  SESSION_ID_PATTERN,
-  shortSessionId,
-} from "@legion/contracts";
+import { shortSessionId } from "@legion/contracts/actor-label";
+import { decodeBlockId } from "@legion/contracts/dispatch-block-ref";
+import { hasControlCharacter, itemFromSearch } from "@legion/contracts/dispatch-href";
+import { isSessionId, SESSION_ID_PATTERN } from "@legion/contracts/dispatch-text-rules";
+import { ASK_URGENCIES } from "@legion/contracts/dispatch-tools-constants";
 import { matchPath } from "react-router-dom";
 
 import type { ArtifactOwner } from "../../api/client";

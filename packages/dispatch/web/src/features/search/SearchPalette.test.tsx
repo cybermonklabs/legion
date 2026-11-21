@@ -3,8 +3,8 @@ import {
   SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
   SEARCH_OPERATOR_EXCLUDE,
   SEARCH_OPERATOR_PHRASE,
-} from "@legion/contracts";
-import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
+} from "@legion/contracts/dispatch-api-constants";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools-constants";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
@@ -424,9 +424,10 @@ test("a hit in a long-named document previews that document", async () => {
   // offer a project row for every project the words name. This row's page has an origin of its
   // own - the hrefs are read against it - and it is not the suite's, so the shell's own answers
   // to those two routes do not resolve against it: both are answered here at the api client, as
-  // the shell answers them, signed out and with no project. Neither adds a row, so the two
+  // the shell answers them, signed out and with no project. The viewer read is the landing,
+  // which every page makes for its viewer (`api/queries.ts`). Neither adds a row, so the two
   // document hits below are the whole list.
-  const whoAmI = spyOn(api, "whoAmI").mockRejectedValue(
+  const landing = spyOn(api, "getLanding").mockRejectedValue(
     new ApiError(401, { code: "NO_IDENTITY", error: "no identity" })
   );
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
@@ -442,7 +443,7 @@ test("a hit in a long-named document previews that document", async () => {
     ).toEqual([`dispatch://LEGION-2/artifact/${slug}`, `dispatch://CORE/artifact/${slug}`]);
   } finally {
     search.mockRestore();
-    whoAmI.mockRestore();
+    landing.mockRestore();
     listProjects.mockRestore();
     view.unmount();
     view.queryClient.clear();
@@ -1073,7 +1074,7 @@ test("Escape calls onClose", async () => {
   }
 });
 
-test("Escape closes the palette even when pressed before focus has moved into it", async () => {
+test("Escape closes the palette with the focus outside it", async () => {
   const user = userOnFakeClock();
   let closed = 0;
   const view = renderPalette({
@@ -1083,10 +1084,10 @@ test("Escape closes the palette even when pressed before focus has moved into it
   });
 
   try {
-    // The dialog moves focus inside itself one animation frame after opening; a key pressed
-    // in that frame lands on whatever was focused before (the document editor, the body).
-    // user-event sends its key to whatever holds focus, so the focus the dialog took is given
-    // up here: the press has to reach the dialog from outside it, as a press in that frame does.
+    // The palette takes the focus in the commit that opens it, and a press on its own text gives
+    // the focus to the page; a key pressed then lands outside the palette. user-event sends its
+    // key to whatever holds focus, so the focus the palette took is given up here: the press has
+    // to reach the dialog from outside it, as a press after one on the palette's text does.
     (document.activeElement as HTMLElement | null)?.blur();
     await user.keyboard("{Escape}");
     expect(closed).toBe(1);

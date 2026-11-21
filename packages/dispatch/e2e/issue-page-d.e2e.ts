@@ -34,6 +34,7 @@ import {
   presetToolbar,
 } from "./issue-page";
 import { withIssuePage } from "./issue-page-option";
+import { holdMarginChunk } from "./shell";
 import { expect, type Locator, type Page, type Route, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
@@ -462,6 +463,32 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
         await expect(outlineSheet(page)).toHaveCount(0);
       }
     }
+  });
+});
+
+// The frame's side of `doc.e2e.ts`'s "a document drawn before the margin keeps its width when the
+// margin arrives". Until the margin's own chunk is in, the shell holds the margin's place empty
+// (`MarginFrame`, `web/src/features/margin/MarginColumn.tsx`); in the frame the margin is Details,
+// a drawer over the page that takes no column, so that place is no column either. The row holds
+// the margin's chunk on the wire, the moment between the page's first draw and the margin, where
+// a column held there would narrow the stage by the margin's width, which a row above that
+// measures the stage after a load would read on a machine slow enough to still be in that moment.
+test("the frame's stage drawn before the margin keeps its width when the margin arrives", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    const releaseMargin = await holdMarginChunk(page);
+    await gotoIssue(page, `/issues/${key}`);
+    await expect(contentsPane(page), "the page draws no Contents pane").toHaveCount(1);
+    const held = await stageWidth(page);
+    expect(held, "the stage beside the pane is not 1068 px while the margin is held").toBe(1068);
+
+    releaseMargin();
+    // Details is the margin, so it opens only once the margin's chunk is in.
+    await focusNothing(page);
+    await openDetails(page);
+    await closeDetails(page);
+    expect(await stageWidth(page), "the stage changed width when the margin arrived").toBe(held);
   });
 });
 

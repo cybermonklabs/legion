@@ -1,4 +1,4 @@
-import { TMUX_LAYOUT_MAX } from "@legion/contracts";
+import { TMUX_LAYOUT_MAX } from "@legion/contracts/dispatch-api-constants";
 
 /**
  * tmux's `window_layout` string, read into the boxes it names.

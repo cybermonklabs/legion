@@ -1,4 +1,5 @@
-import { type DispatchHrefItem, decodeBlockId, itemFromSearch } from "@legion/contracts";
+import { decodeBlockId } from "@legion/contracts/dispatch-block-ref";
+import { type DispatchHrefItem, itemFromSearch } from "@legion/contracts/dispatch-href";
 
 import type { Ask, Comment, MessageRead } from "../../api/types";
 import { buildIssuePath, type IssueRoute } from "../refs/routes";

@@ -1,4 +1,4 @@
-import { ISSUE_TITLE_MAX } from "@legion/contracts";
+import { ISSUE_TITLE_MAX } from "@legion/contracts/dispatch-api-constants";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {

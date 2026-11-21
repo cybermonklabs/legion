@@ -21,7 +21,7 @@ const pathConstants: Record<string, string> = {
   ANSWERS_PATH,
 };
 
-const lazyPages = [...app.matchAll(/^const (\w+) = lazy\(/gm)].map((match) => match[1]);
+const lazyPages = [...app.matchAll(/^const (\w+) = lazyChunk\(/gm)].map((match) => match[1]);
 
 const routerRoutes = [
   ...app.matchAll(/<Route element=\{<(\w+) \/>\} path=(?:"([^"]+)"|\{(\w+)\}) \/>/g),
@@ -41,7 +41,7 @@ describe("the two-builds walk's route list", () => {
     expect(routerRoutes.length).toBeGreaterThan(0);
   });
 
-  test("covers every page app.tsx loads with lazy()", () => {
+  test("covers every page app.tsx loads with lazyChunk()", () => {
     const walkedPages = new Set<string>(walkRoutes.map((route) => route.page));
     expect(lazyPages.filter((page) => page !== undefined && !walkedPages.has(page))).toEqual([]);
   });

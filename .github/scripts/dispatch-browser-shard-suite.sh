@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # One shard leg of the Dispatch browser suite: the stacks' binaries, the lane's projects, the
-# Playwright run over this leg's quarter of their rows, the row count the merge job reads, and
+# Playwright run over this leg's half of their rows, the row count the merge job reads, and
 # the memory and CPU sampler this leg starts and reads back.
 #
 # Who runs it, and what it takes:
 #
 #   .github/scripts/dispatch-browser-shard-suite.sh <shard> <lane> <connections>
 #
-# <shard> is this leg's number out of the job's four, the shard job's `${{ matrix.shard }}`: it
+# <shard> is this leg's number out of the job's two, the shard job's `${{ matrix.shard }}`: it
 # is the `--shard` numerator below, and it names the blob report this leg writes, the row count
 # file beside it and the title of the sampler's readings. <lane> is the run's lane, the
 # workflow's own `${{ inputs.lane }}`, `pull-request` or `full`: it decides which projects run
@@ -31,7 +31,7 @@
 # Run from packages/dispatch, with $RUNNER_TEMP and $GITHUB_WORKSPACE set:
 #   ../../.github/scripts/dispatch-browser-shard-suite.sh 1 full 100
 # CI runs it in dispatch-browser.yaml's shard job, at the step "Browser-test dispatch dashboard
-# (shard ${{ matrix.shard }} of 4)".
+# (shard ${{ matrix.shard }} of 2)".
 set -euo pipefail
 
 usage() {
@@ -97,11 +97,12 @@ export PLAYWRIGHT_BLOB_OUTPUT_NAME="report-shard-$shard.zip"
 # pull request is answered by: every stubbed row carries the tag, and so do the
 # real-stack rows of the journeys that must be seen on a pull request. Playwright
 # applies a command-line grep **on top of** a project's own, never in place of it -
-# measured at this branch's base, 475d7609, where `iphone` listed 109 rows and 4 of
-# them under `--grep '@pr'`, and `webkit` 40 rows and 7 of them, and again at this
+# measured at pull request #2902's base, 475d7609, where `iphone` listed 109 rows and 4 of
+# them under `--grep '@pr'`, and `webkit` 40 rows and 7 of them, at that pull request's
 # head, 23f2d137, where `iphone` listed 119 and the same 4, and `webkit` 40 and the
-# same 7 - so the two tagged projects keep their own axis and the command's grep
-# selects the rows that carry both tags.
+# same 7, and again at pull request #3513's 58a10646, where `iphone` lists 123 and the
+# same 4, and `webkit` 46 and the same 7 - so the two tagged projects keep their own axis
+# and the command's grep selects the rows that carry both tags.
 # Every row without the tag runs on the full lane, which `ci.yaml` runs for every
 # merge group and the nightly runs daily, so `main` is gated exactly as it was and what
 # a displaced row loses is feedback on the pull request itself
@@ -129,7 +130,7 @@ case "$lane" in
 esac
 # Why the projects are named at all: a shard splits the rows of every project the run
 # selects, so a project this leg does not name is a project it would spread over these
-# four machines. `visual` and `visual-phone` are in the default selection, and their
+# two machines. `visual` and `visual-phone` are in the default selection, and their
 # image comparisons belong to the `visual` job, which runs them one row at a time, so
 # naming the projects above is what keeps them off these machines. The three `-alone`
 # projects stay out because this list does not name them, and for no other reason:
@@ -140,7 +141,7 @@ esac
 # the pull-request lane and ten in the full one. The `default: false` each `-alone`
 # project carries (the three entries of `aloneProjects` in e2e/playwright.config.ts) is
 # what keeps them out of a run that names no project, which this is not. The alone job
-# names them, one machine each.
+# names them, all three on one machine.
 #
 # `list` beside `blob`: the blob reporter prints nothing, and this leg's row count is
 # read from the list reporter's `Running N tests using M workers` line, which the merge
@@ -162,7 +163,7 @@ esac
 # of a pipeline is its own subshell, so a variable set in the left-hand one does not
 # survive it, which is why the status goes into a file; the script exits on it at the end.
 rm -f "$RUNNER_TEMP/suite-status"
-{ bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --shard=$shard/4 --workers 4 --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
+{ bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --shard=$shard/2 --workers 4 --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
     echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
 status=0
 [ ! -f "$RUNNER_TEMP/suite-status" ] || status=$(cat "$RUNNER_TEMP/suite-status")

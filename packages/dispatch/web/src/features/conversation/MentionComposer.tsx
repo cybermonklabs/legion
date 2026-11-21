@@ -101,6 +101,7 @@ import {
   type ListedReplies,
   type ReplyTarget,
 } from "./composer-model";
+import { composerNameOf } from "./composer-names";
 import { deliveryModesOf, MODE_LABELS, noDeliveryReasons, plainDelivery } from "./delivery";
 import type { HeldSend } from "./held-sends";
 import { KeptDraftOffers } from "./KeptDraftOffers";
@@ -125,7 +126,7 @@ import { useUnsentDrafts } from "./unsent-drafts";
 import { useAgents } from "./useAgents";
 import { useComposerSend } from "./useComposerSend";
 import { useDraftHomes } from "./useDraftHomes";
-import { composerNameOf, mountDraft, type OfferedDraft, useKeptDrafts } from "./useKeptDrafts";
+import { mountDraft, type OfferedDraft, useKeptDrafts } from "./useKeptDrafts";
 
 interface MentionOption {
   readonly capabilities: readonly string[];

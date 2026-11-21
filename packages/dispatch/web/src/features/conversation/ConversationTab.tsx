@@ -3,7 +3,7 @@ import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useStat
 import { Link } from "react-router-dom";
 
 import { api, issueStateRequest, type WriteBounds } from "../../api/client";
-import { whoAmIQuery } from "../../api/queries";
+import { ownerCommentsQuery, whoAmIQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type {
   Agent,
@@ -704,7 +704,9 @@ function CommentTurn({
       setSavingCommentEditId(id);
       try {
         const comment = await api.editComment(id, { body, ...carried }, bounds);
-        await queryClient.invalidateQueries({ queryKey: ["comments", issueKey] });
+        await queryClient.invalidateQueries({
+          queryKey: ownerCommentsQuery({ issue: issueKey }).queryKey,
+        });
         return comment;
       } finally {
         setSavingCommentEditId(undefined);
@@ -726,7 +728,10 @@ function CommentTurn({
     label: (delivery: CommentDeliveryAttempt) =>
       `Delivery of the comment to ${agentText.part(targetPart(delivery.target))} again, as ${MODE_LABELS[delivery.delivery]}`,
     onSettled: () => retryGuard.release(),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] }),
+    onSuccess: () =>
+      void queryClient.invalidateQueries({
+        queryKey: ownerCommentsQuery({ issue: issueKey }).queryKey,
+      }),
     method: "POST",
     write: (delivery, bounds) =>
       api.createCommentDelivery(delivery.comment_id, delivery.target, delivery.delivery, bounds),
@@ -946,20 +951,17 @@ export function ConversationTab({
   const viewer = useQuery(whoAmIQuery());
   // The four reads the list is built from, each the issue's whole set: a conversation is listed
   // however old it is, which no window of the event log could promise.
-  // The comments are the read the margin already holds for this issue, under the key it owns
-  // (`features/margin/useMarginItems.ts`): the same request, shared rather than fetched and
-  // stored a second time. The asks are not: this tab draws each ask's thread and asks the list
-  // for it, where the margin and a document's decision blocks render the ask alone and read
-  // `["asks", issueKey]` without one. Hence a key of its own - beneath that prefix, so every
+  // The comments are the read the margin already holds for this issue, under the one key both
+  // take from `ownerCommentsQuery`: the same request, shared rather than fetched and stored a
+  // second time. The asks are not: this tab draws each ask's thread and asks the list for it,
+  // where the margin and a document's decision blocks render the ask alone and read
+  // `ownerAsksQuery` without one. Hence a key of its own - beneath the issue's there, so every
   // `invalidateQueries({ queryKey: ["asks", key] })` already written reaches this read too.
   const asks = useQuery({
     queryKey: ["asks", issueKey, "thread"],
     queryFn: () => api.listIssueAskThreads(issueKey, "all"),
   });
-  const comments = useQuery({
-    queryKey: ["comments", issueKey],
-    queryFn: () => api.listComments(issueKey),
-  });
+  const comments = useQuery(ownerCommentsQuery({ issue: issueKey }));
   const messages = useQuery({
     queryKey: ["issue-messages", issueKey],
     queryFn: () => api.listIssueMessages(issueKey),
@@ -1095,7 +1097,9 @@ export function ConversationTab({
     // reply the reader was writing as they were, and a thread whose own reply is out stays open,
     // which closing would unmount.
     onSuccess: ({ id, kind }) => {
-      void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] });
+      void queryClient.invalidateQueries({
+        queryKey: ownerCommentsQuery({ issue: issueKey }).queryKey,
+      });
       if (kind === "reopen") return;
       if (queryClient.isMutating({ mutationKey: threadReplySendKey(sendKey, id) }) > 0) return;
       setThreadOpen(id, false);

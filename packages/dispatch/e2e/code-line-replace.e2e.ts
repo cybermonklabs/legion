@@ -6,7 +6,9 @@ import { asUser } from "./users";
 // Both rows carry `@firefox`, the tag the `firefox` project selects by (`playwright.config.ts`):
 // Firefox's own editing mishandles text typed over whatever follows a block's last line break.
 // The typed text reaches the server inside the live write, so the markdown below is true within a
-// round trip of the keystroke; the default ladder would not look again until 350 ms.
+// round trip of the keystroke: Playwright's default intervals, `[100, 250, 500, 1000]`, look again
+// at 100, 350 and 850 ms and then every second, and this ladder at 50, 100, 200 and 400 ms and
+// then every half second.
 const PROBE = { intervals: [50, 50, 100, 200, 500] };
 
 // @firefox: native editing over what follows a block's last line break.

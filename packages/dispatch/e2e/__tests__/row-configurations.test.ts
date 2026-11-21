@@ -129,12 +129,12 @@ test(
 
     // Every project of the configuration owns at least one row of those listings. The question
     // is asked of the rows and never of `listedProjects(report)`: Playwright reports every
-    // project of the resolved configuration whatever the command selected - this head's
-    // wall-clock listing names three projects and reports all fifteen - so an assertion over
+    // project of the resolved configuration whatever the command selected - the wall-clock
+    // listing of `61e5c402` names three projects and reports all fifteen - so an assertion over
     // the project list could not fail, and would pass with the wall-clock listing missing
-    // altogether. Measured at this head, the two listings hold 1,427 rows and every project
-    // owns some: the smallest is `firefox-download-navigation` with one, and the wall-clock
-    // three hold 23, 14 and 17.
+    // altogether. Measured at `61e5c402` on 2026-11-16, the two listings hold 1,503 rows (1,452
+    // and 51) and every project owns some: the smallest is `firefox-download-navigation` with
+    // one, and the wall-clock three hold 22, 13 and 16.
     const projectsWithRows = new Set(rows.map((row) => row.project));
     const namedProjects = (realConfig.projects ?? [])
       .map((project) => project.name)
@@ -249,19 +249,51 @@ test("the wall-clock projects are the one list, in its order, and run their rows
 // every assertion of this file. This reads the script with the config's own reader of
 // `--project` (`projectsOnCommandLine`, e2e/configurations.ts), so both spellings of the option
 // are read as Playwright reads them.
+//
+// It reads what the script runs and not its one line: the e2e scripts a CI job runs over the
+// run's artefacts - `e2e:clock`, `e2e:embedder` and `e2e:multiprocess` - are split in two since
+// dispatch://INFRA-1109. `e2e:clock` builds the contracts and the dashboard and then calls
+// `e2e:clock:run`, which is the Playwright command, so that a CI job which took both builds from
+// the run's artefacts can run the second half alone. The projects are named in that half, so a
+// `bun run <script>` naming a script of this same manifest is followed to it and read in its
+// place, `build:contracts` and `build:web` included, and a `bun run` naming anything else is
+// left as the words it is: `build:contracts` runs `bun run --filter @legion/contracts build`,
+// whose `--filter` is no script of this manifest, so the follow stops there.
+function scriptCommandLine(
+  scripts: Record<string, string>,
+  name: string,
+  chain: readonly string[] = []
+): string[] {
+  if (chain.includes(name)) {
+    throw new Error(
+      `packages/dispatch/package.json's \`${[...chain, name].join("` runs `")}\`, which is a cycle`
+    );
+  }
+  const line = scripts[name];
+  if (line === undefined) {
+    throw new Error(`packages/dispatch/package.json holds no \`${name}\` script`);
+  }
+  const words = line.split(" ");
+  return words.flatMap((word, index) =>
+    words[index - 2] === "bun" && words[index - 1] === "run" && scripts[word] !== undefined
+      ? scriptCommandLine(scripts, word, [...chain, name])
+      : [word]
+  );
+}
+
 test("`bun run e2e:clock` names every wall-clock project, in the list's order", () => {
   const manifestPath = fileURLToPath(new URL("../../package.json", import.meta.url));
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
     scripts: Record<string, string>;
   };
-  const named = projectsOnCommandLine(manifest.scripts["e2e:clock"]?.split(" ") ?? []);
+  const named = projectsOnCommandLine(scriptCommandLine(manifest.scripts, "e2e:clock"));
   expect(
     named,
     `\`e2e:clock\` names ${JSON.stringify(named)} and \`clockProjectNames\` ` +
       `(e2e/configurations.ts) holds ${JSON.stringify([...clockProjectNames])}. That script is ` +
       "the whole wall-clock run, so a project the list and the config hold and it does not is " +
       "a project whose rows nothing measures, under a command that reports a green wall-clock " +
-      "run. Write each name of the list in packages/dispatch/package.json as " +
+      "run. Write each name of the list in packages/dispatch/package.json's `e2e:clock:run` as " +
       "`--project=<name>`, in the list's order."
   ).toEqual([...clockProjectNames]);
 });

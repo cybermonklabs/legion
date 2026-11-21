@@ -3,6 +3,7 @@ import { type ReactNode, useId, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
+import { issueDecisionsQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type {
   Artifact,
@@ -405,26 +406,32 @@ function WaitingDecision({
       api.keepDecision(id, decision.block_id, decision.text_sha256, bounds),
     onSuccess: (kept) => {
       if (kept === null) {
-        void queryClient.invalidateQueries({ exact: true, queryKey: ["decisions", issueKey] });
+        void queryClient.invalidateQueries({
+          exact: true,
+          queryKey: issueDecisionsQuery(issueKey).queryKey,
+        });
         return;
       }
       // Over any read of the decisions still out, which was asked before the Keep and would put
       // the decision back as waiting (`replaceQueryData`).
-      replaceQueryData<IssueDecisions>(queryClient, ["decisions", issueKey], (view) =>
-        view === undefined
-          ? view
-          : {
-              ...view,
-              // The Keep is of the text this card showed, which the server took, so it applies
-              // to the row that still holds that text. A decision's changed version is the
-              // greatest of the blocks it holds now and does not move when a block leaves it, so
-              // a row whose text changed since can carry the version the Keep was taken at.
-              decisions: (view.decisions ?? []).map((row) =>
-                row.block_id === kept.block_id && row.text_sha256 === decision.text_sha256
-                  ? { ...row, kept, waiting_review: false }
-                  : row
-              ),
-            }
+      replaceQueryData<IssueDecisions>(
+        queryClient,
+        issueDecisionsQuery(issueKey).queryKey,
+        (view) =>
+          view === undefined
+            ? view
+            : {
+                ...view,
+                // The Keep is of the text this card showed, which the server took, so it applies
+                // to the row that still holds that text. A decision's changed version is the
+                // greatest of the blocks it holds now and does not move when a block leaves it,
+                // so a row whose text changed since can carry the version the Keep was taken at.
+                decisions: (view.decisions ?? []).map((row) =>
+                  row.block_id === kept.block_id && row.text_sha256 === decision.text_sha256
+                    ? { ...row, kept, waiting_review: false }
+                    : row
+                ),
+              }
       );
     },
   });
@@ -520,10 +527,7 @@ export function DecisionsPanel({
   isClosed: boolean;
   issueKey: string;
 }): ReactNode {
-  const view = useQuery({
-    queryFn: () => api.getIssueDecisions(issueKey),
-    queryKey: ["decisions", issueKey],
-  });
+  const view = useQuery(issueDecisionsQuery(issueKey));
   // Each decision beside the blocks of its text, read once per answer: a card draws them and
   // the Change composer quotes the first of them, so a block is a new object only when the
   // decisions were read again and a repaint of the tab repaints no body it already drew. The

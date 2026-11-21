@@ -101,8 +101,11 @@ check "the output holds attempt 10's blob" "$(is "$(held "$root" blob-report/rep
 check "says it passed over attempt 9" "$(contains "$out" '^shard-1: attempt 10, passing over attempt(s) 9$')"
 
 echo "case: every leg shape reads"
-# A shard leg's name ends with its number and an alone leg's with its project, so the digits at
-# the end of the artifact name are the attempt in both.
+# A shard leg's name ends with its number, and an alone leg named for its project, as each was
+# while the alone job ran a matrix leg per project, ends with the project, so the digits at the
+# end of the artifact name are the attempt in both. The alone job's one leg is the bare word
+# `alone` now (dispatch-browser.yaml uploads dispatch-browser-blob-alone-<attempt>), which every
+# full run's merge job reads as a leg of its own beside the two shards.
 root=$(fixture leg-shapes)
 leg "$root" shard-3 1 shard-3-blob
 leg "$root" alone-webkit-alone 1 webkit-blob
@@ -172,11 +175,16 @@ check "and the output holds one file per leg per directory" \
   "$(is "$(find "$root/out" -type f | wc -l)" 4)"
 
 echo "case: a leg name holding a space is one leg"
-# This script never sees the merge job's capture: a leg reaches it as the tail of an artifact
-# directory name, which dispatch-browser.yaml builds from the project alone
-# (`dispatch-browser-blob-alone-<project>-<attempt>`). So a project named with a space arrives
-# here as one leg holding a space. Read with word splitting, as this loop was, that name becomes
-# two legs, neither with a blob or a row count of its own.
+# A defensive row, and no longer a live case. The alone job had a matrix leg per project and its
+# artifact carried the project in its name (`dispatch-browser-blob-alone-<project>-<attempt>`),
+# so a project named with a space would have arrived here as a leg holding one. The alone job
+# runs the three projects on one machine now and uploads `dispatch-browser-blob-alone-<attempt>`,
+# and the only other leg names are `shard-<N>`, so no name this workflow uploads holds a space
+# (dispatch://INFRA-1109). The row stays because what a split name costs is silent: this script
+# never sees the merge job's capture - a leg reaches it as the tail of an artifact directory
+# name - and read with word splitting, as this loop once was, such a name becomes two legs,
+# neither with a blob or a row count of its own, and the merged report comes out a leg short
+# rather than red.
 root=$(fixture leg-with-space)
 leg "$root" "alone-chromium hidpi" 1 spaced
 leg "$root" shard-1 1 plain

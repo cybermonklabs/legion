@@ -6,8 +6,11 @@ import {
   markPendingAskThreadInvalidation,
   markPendingAskThreadsOnIssue,
 } from "../features/inbox/ask-thread-freshness";
+import { keptUntilRejected } from "../features/shell/chunk-loads";
+import { whenContentDrawn } from "../features/shell/content-drawn";
+import { signedInLogin } from "../features/writes/write-store";
 
-import { askThreadsIssue, eventRefreshTargets } from "./event-refresh";
+import { loadEventRefresh } from "./event-refresh-load";
 import { liveSocketFor } from "./live-socket";
 import { inboxQuery } from "./queries";
 import { hearLiveEvent } from "./query-client";
@@ -143,21 +146,33 @@ export const BATCH_WINDOW_MS = 100;
 export const WHOLE_CACHE_REFRESH_MS = 5_000;
 
 /**
- * An ask event that arrives while the Inbox is fetching, for a thread the cache does not hold
- * yet, is invisible to the flush: its `["ask-thread", id]` key matches nothing, and a card that
- * mounts from the landing rows seeds that thread from a body composed before the event. The
- * Inbox's own refetch once its load settles does not reach this - a card can mount from the
- * landing rows first - so the marker makes the card read the ask endpoint instead of trusting
- * the row it mounted from. An event that moves every thread on an issue (`askThreadsIssue`: a
- * claim, a release, a route change) marks the issue the same way, since its refresh reaches only
- * the threads already cached. Exported for the tests, which hold an Inbox fetch open around it.
+ * An ask event for a thread the cache does not hold yet is invisible to the flush: its
+ * `["ask-thread", id]` key matches nothing, and a card that mounts later seeds that thread from
+ * the Inbox body the cache already holds, which was composed before the event. The Inbox's own
+ * next read does not reach this either - the card can mount before it - so the marker makes
+ * that card read the ask endpoint instead of trusting the row it mounted from. An event that
+ * moves every thread on an issue (`askThreadsIssue`: a claim, a release, a route change) marks
+ * the issue the same way, since its refresh reaches only the threads already cached.
+ *
+ * The test is that the cache holds an Inbox body at all, whether a read of it is in flight or
+ * its last read has landed. Both bodies are older than this event, and a card that mounts from
+ * either of them shows the claimant and the route of the moment it was composed. The landing
+ * makes the two cases one: it carries the Inbox rows of the first page in its own answer
+ * (`api/queries.ts`, `seedShell`), so that page asks `/inbox` not at all, and its cards mount
+ * one chunk later than the body they mount from (`features/inbox/InboxHost.tsx`). An event
+ * that arrives in between - after the landing has answered and the socket is open, before the
+ * cards are on screen - finds no Inbox read in flight and still needs its marker. The marker
+ * carries the generation of the newest Inbox read, so the next read, which is composed after
+ * this event, clears it (`features/inbox/ask-thread-freshness.ts`).
+ *
+ * Exported for the tests, which hold an Inbox fetch open around it.
  */
-export function markAskThreadsSeededByAnInFlightInbox(
+export function markAskThreadsSeededByAnOlderInbox(
   queryClient: QueryClient,
   targets: readonly RefreshTarget[],
   issue: string | null
 ): void {
-  if (queryClient.getQueryState(inboxQueryKey)?.fetchStatus !== "fetching") {
+  if (queryClient.getQueryState(inboxQueryKey) === undefined) {
     return;
   }
   for (const { queryKey } of targets) {
@@ -233,9 +248,31 @@ export function useEventFeed({
     let lastWholeCacheRefresh = Number.NEGATIVE_INFINITY;
     let wholeCacheTrailing: number | undefined;
     let pending: RefreshTarget[] = [];
+    // Set first thing when the feed stops. An event's refresh can still be waiting on the map's
+    // chunk then (below), and nothing can take that wait back: run after the feed is gone, it would
+    // start a timer no cleanup clears and refresh a client the feed has left - under the next
+    // person's login, where another person's sign-in mounts the app again on the same client.
+    let stopped = false;
     // Record when each query's fetches begin from now on, so the scheduler's one-a-second rule
     // holds for the first batch after the page's own loads too.
     trackQueryFetches(queryClient);
+    // The map from an event to the queries it changes, started with the feed - or, on a landing
+    // whose page draws a live document, once that document has drawn (`whenContentDrawn`) - and
+    // awaited by each event below. One promise at a time, which every event waits on, so the
+    // events are read in order (`event-refresh-load.ts`).
+    //
+    // A download that fails is not kept (`keptUntilRejected`), and the next event starts the
+    // import again. The failure does not always reload the tab: nothing reloads while the browser
+    // is offline, once the tab's recovery reloads are spent, or while the page is being left
+    // (`features/shell/DeploymentResilience.tsx`, `reloadForChunkFailure`). A feed that kept the
+    // one failed promise would read every later event against it, refreshing nothing for as long
+    // as the tab stays open. The events waiting on the failed download refresh everything
+    // instead, below, as an event this page cannot map does; a later event asks for the chunk
+    // again, which Chromium can answer with the same failure from its module map
+    // (`features/shell/chunk-loads.ts`, `importWhenOnline`), and that event too then
+    // refreshes everything, under that refresh's own throttle, rather than nothing.
+    const awaitRefreshMap = keptUntilRejected(() => whenContentDrawn().then(loadEventRefresh));
+    void awaitRefreshMap();
 
     const scheduleFlush = () => {
       if (flush !== undefined) {
@@ -335,22 +372,50 @@ export function useEventFeed({
         const event = raw as DispatchEvent;
         try {
           prependEventToLog(queryClient, event);
-          const viewer = queryClient.getQueryData<AuthenticatedUser>(["whoami"])?.login;
           // A write's own event ends its hold on its queries' reads, so the refresh this event asks
-          // for, and every read after it, is asked past the hold (`hearLiveEvent`).
-          hearLiveEvent(queryClient, event, viewer);
-          const targets = eventRefreshTargets(event, viewer);
-          markAskThreadsSeededByAnInFlightInbox(queryClient, targets, askThreadsIssue(event));
-          queueRefresh(targets);
+          // for, and every read after it, is asked past the hold (`hearLiveEvent`). It is heard
+          // here, at once, rather than once the map's chunk below is in: the holds name their
+          // own queries and need nothing of the map, so a read asked while that chunk is still
+          // downloading is not held back for a write Dispatch has already taken, and a chunk
+          // that fails to download does not leave the hold to wait out its deadline.
+          hearLiveEvent(queryClient, event, signedInLogin(queryClient));
         } catch (error) {
-          // A known type whose payload this page cannot map: no target can be derived from it.
           console.error("event feed: an event this page cannot read", raw, error);
           refreshEverything();
+          return;
         }
+        // The refresh the event asks for waits on the map's chunk, and every event waits on the
+        // same promise, so they are read in the order they arrived (`event-refresh-load.ts`).
+        // The chunk is in after the first round trip, so this is a promise already settled for
+        // all but the first few events of a page. A feed that stopped meanwhile refreshes nothing
+        // (`stopped`), whether the chunk lands or fails.
+        void awaitRefreshMap().then(
+          ({ askThreadsIssue, eventRefreshTargets }) => {
+            if (stopped) return;
+            try {
+              const targets = eventRefreshTargets(event, signedInLogin(queryClient));
+              markAskThreadsSeededByAnOlderInbox(queryClient, targets, askThreadsIssue(event));
+              queueRefresh(targets);
+            } catch (error) {
+              // A known type whose payload this page cannot map: no target can be derived from
+              // it.
+              console.error("event feed: an event this page cannot read", raw, error);
+              refreshEverything();
+            }
+          },
+          () => {
+            if (stopped) return;
+            // The map's chunk did not download, so nothing here can say which queries the event
+            // changed. The chunk-failure recovery reloads the tab where it can; where it cannot,
+            // this refresh is what keeps the page from showing the change as never made.
+            refreshEverything();
+          }
+        );
       },
     });
 
     return () => {
+      stopped = true;
       stop();
       window.clearTimeout(flush);
       window.clearTimeout(wholeCacheTrailing);

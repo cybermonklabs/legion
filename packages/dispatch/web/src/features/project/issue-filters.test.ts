@@ -1,13 +1,14 @@
 import { expect, spyOn, test } from "bun:test";
-import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS } from "@legion/contracts";
+import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS } from "@legion/contracts/dispatch-api-constants";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
+import { projectIssuesQueryKey } from "../../api/queries";
 import type { Agent, IssueClaim, IssueSummary } from "../../api/types";
-import { projectIssuesQueryKey, useIssueFilters } from "./issue-filters";
+import { useIssueFilters } from "./issue-filters";
 
 function agent(sessionID: string): Agent {
   return {

@@ -1,4 +1,4 @@
-import { DISPATCH_LOGIN_CHANGED } from "@legion/contracts";
+import { DISPATCH_LOGIN_CHANGED } from "@legion/contracts/dispatch-api-constants";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useRef, useSyncExternalStore } from "react";
 
@@ -158,8 +158,9 @@ export interface WriteKind<D, K = D> {
    *  remembered of their answers, which the next person's writes must not build on. The writes
    *  that change drops are undone first (`undone`), from what the kind still remembers. */
   readonly reset?: () => void;
-  /** Told once of each store as it is made, with the client it lives with: what a kind keeps of
-   *  that client for its whole life, from before the first write of the kind. */
+  /** Told once of each store, with the client it lives with - as the store is made, or as the
+   *  kind is defined where the store came first (`defineWriteKind`): what a kind keeps of that
+   *  client for its whole life, from before the first write of the kind. */
   readonly opened?: (client: QueryClient, writes: Writes) => void;
   /** Whether a write of this kind Dispatch made and answered stays, `made`, until its surface lets
    *  it go (`letGo`); one made with no answer to give has nothing to show, and goes. */
@@ -179,9 +180,25 @@ type AnyKind = WriteKind<any, any>;
 
 const kinds = new Map<string, AnyKind>();
 
-/** Defines a kind of write, once, so a reload finds it by name. */
+/** Every store made so far, held weakly so a store its app let go of can still be collected: a
+ *  kind defined after a store was made is opened on it here (`defineWriteKind`). */
+const madeStores = new Set<WeakRef<Writes>>();
+
+/** Defines a kind of write, once, so a reload finds it by name, and opens it (`opened`) on every
+ *  store already made, as each store opens the kinds defined before it. The app's kinds come in a
+ *  chunk of their own, after its store was made (`kinds.ts`), and a kind opened only on the
+ *  stores made after it would miss the app's one store: the issue-field kind's watch, which keeps
+ *  what Dispatch last confirmed from every read since the store was made, would begin only at the
+ *  first pick (`issue-field-writes.ts`). */
 export function defineWriteKind<D, K = D>(kind: WriteKind<D, K>): WriteKind<D, K> {
+  const known = kinds.has(kind.name);
   kinds.set(kind.name, kind);
+  if (known || kind.opened === undefined) return kind;
+  for (const made of madeStores) {
+    const store = made.deref();
+    if (store === undefined) madeStores.delete(made);
+    else store.open(kind);
+  }
   return kind;
 }
 
@@ -316,6 +333,40 @@ interface Entry {
   readonly endsWithSession: boolean;
 }
 
+/** A take-up of the writes a reload kept that waits for the kinds of write to be in (`resume`):
+ *  the person signed in as it began, what asks for the kinds, and every write pressed meanwhile,
+ *  in press order, none of them in its line until the take-up is done. */
+interface TakeUp {
+  readonly login: string;
+  readonly ask: () => void;
+  readonly pressedMeanwhile: Entry[];
+  /** Every person whose writes were dropped while the take-up waited: by another person's sign-in
+   *  (`signedIn`), or by their sign-out landing in another tab or under a lapse (`dropLogin`).
+   *  What the reload kept of theirs is not in the store yet for that drop to reach, so the take-up
+   *  drops it in turn, unsent, rather than take it up for the next sign-in to send
+   *  (`#dropKept`). */
+  readonly dropped: Set<string>;
+}
+
+/** What ends each take-up still waiting for the kinds of write (`kindsRegistered`). */
+const takeUpsWaiting = new Set<() => void>();
+
+/**
+ * Ends every take-up of what a reload kept still waiting for the kinds of write (`Writes.resume`),
+ * since they are in: `kinds.ts` calls this once its imports have defined every kind, whichever
+ * load evaluated it. So a take-up whose own ask failed with no reload to follow - the page was
+ * being left, the reader chose to stay at the leave prompt a write pressed meanwhile opens, or the
+ * tab's recovery reloads are spent - still ends once another load brings the kinds in, such as
+ * the writes host's (`write-hosts.tsx`), and the kept writes go out, every write pressed
+ * meanwhile behind them, with no reload by hand. Letting the writes pressed meanwhile into their
+ * lines while the take-up waits would not do: a kept write taken up after a newer press on its
+ * line would land after it.
+ */
+export function kindsRegistered(): void {
+  for (const end of takeUpsWaiting) end();
+  takeUpsWaiting.clear();
+}
+
 const NO_WRITES: readonly Write[] = Object.freeze([]);
 
 /** The login of the person `client`'s app is signed in as (`["whoami"]`), which every write is
@@ -370,6 +421,9 @@ export class Writes {
   #ids = 0;
   #joins = 0;
   #resumed = false;
+  /** The take-up of the writes a reload kept while it waits for the kinds of write (`resume`);
+   *  none before the app asks for one, and none once it is done. */
+  #takingUp: TakeUp | undefined;
   /** Whether the session of the person signed in has lapsed: no write starts until someone signs
    *  in again. */
   #lapsed = false;
@@ -401,7 +455,14 @@ export class Writes {
     this.#kept = kept;
     this.#files = files;
     watcher?.(this);
-    for (const kind of kinds.values()) kind.opened?.(client, this);
+    madeStores.add(new WeakRef(this));
+    for (const kind of kinds.values()) this.open(kind);
+  }
+
+  /** Tells `kind` of this store and its client (`WriteKind.opened`): as the store is made, for
+   *  every kind defined before it, and as a kind is defined after it (`defineWriteKind`). */
+  open(kind: AnyKind): void {
+    kind.opened?.(this.#client, this);
   }
 
   /** Every write held, in press order: one array until a write changes. */
@@ -442,7 +503,10 @@ export class Writes {
    *  running an attempt, and the request kept could differ from the one sent. A sign-out
    *  (`endsWithSession`) holds every other write of its person until Dispatch answers it, as
    *  another tab's does (`holdFor`): refused, they go on; landed, they wait for the page to let
-   *  them go (`signedOut`). */
+   *  them go (`signedOut`). A write pressed meanwhile - while the take-up of what a reload kept
+   *  waits for the kinds of write (`resume`) - is kept and shown from its press, and joins its
+   *  line only once the take-up is done; a quiet one is let go five minutes after its press all
+   *  the same (`#expire`). */
   run<T, D, K>(spec: WriteSpec<T, D, K>): Promise<T | null> {
     const { request } = spec;
     if (spec.target !== undefined && request === undefined && spec.kind.resume === undefined) {
@@ -491,15 +555,28 @@ export class Writes {
         uploaded: undefined,
       },
     };
-    // The entry joins at once, whatever its file is doing: every lifecycle method works over
-    // `#entries`, so a write that joined late would outlive a sign-out, a lapse or another
-    // tab's sign-in and then go out under a login nobody is signed in as. What waits for the
-    // file is the record of the write and its first attempt (`#keep`, `#start`), so nothing
-    // ever names a key IndexedDB holds no file under.
+    // The entry is in the store at once, whatever its file is doing - in its line, or pressed
+    // meanwhile while the take-up waits: every lifecycle method works over `#entries`, so a write
+    // that came in late would outlive a sign-out, a lapse or another tab's sign-in and then go
+    // out under a login nobody is signed in as. What waits for the file is the record of the
+    // write and its first attempt (`#keep`, `#start`), so nothing ever names a key IndexedDB
+    // holds no file under.
     if (spec.file !== undefined && login !== undefined) {
       this.#keepFile(entry, key, login, spec.file, () => this.#keep(entry));
     }
-    this.#join(entry, "sending");
+    const takingUp = this.#takingUp;
+    if (takingUp === undefined) {
+      this.#join(entry, "sending");
+    } else {
+      // Kept from its press, so a reload before the take-up is done takes it up as a kept write.
+      // A reader now waits on the kinds, so the press asks for them too: a load that failed is
+      // asked for again, under the chunk-failure recovery (`resume`).
+      this.#entries.set(entry.write.id, entry);
+      this.#update(entry, entry.write);
+      this.#expire(entry);
+      takingUp.pressedMeanwhile.push(entry);
+      takingUp.ask();
+    }
     return press.promise as Promise<T | null>;
   }
 
@@ -647,16 +724,18 @@ export class Writes {
    * 401). A lapse keeps every write, in memory and in storage, a refused one's draft and an
    * upload's file with it: each one out stops trying after the attempt in flight, and none starts,
    * until someone signs in. The same person's sign-in takes them up again where they stood, each in
-   * its line; anyone else's drops every write not theirs, its trying stopped and its press refused.
-   * A sign-out still out (`endsWithSession`) has done what it was for once the session lapses, and
-   * lands; so has another tab's sign-out of the person whose session lapsed, while it still holds
-   * their writes here (`holdFor`): the lapse is that sign-out landing, whether it reaches this
-   * page before or after that tab's hold ends, so their writes go (`dropLogin`) rather than wait
-   * for a sign-in they were discarded before. A lapse with no such hold keeps them. Whenever who
-   * is signed in changes, every hold this page's sign-out put on writes ends, and each kind lets
-   * go of what it remembered of the person before (`reset`) - once the writes the change drops
-   * are gone, so each of those is undone (`undone`) from what its kind still remembers of that
-   * person's answers. Another tab's hold is that tab's to end (`holdFor`), or this lapse's.
+   * its line; anyone else's drops every write not theirs, its trying stopped and its press refused,
+   * and every write a reload kept of the people before, which a take-up still waiting would take
+   * up otherwise (`TakeUp.dropped`). A sign-out still out (`endsWithSession`) has done what it was
+   * for once the session lapses, and lands; so has another tab's sign-out of the person whose
+   * session lapsed, while it still holds their writes here (`holdFor`): the lapse is that sign-out
+   * landing, whether it reaches this page before or after that tab's hold ends, so their writes go
+   * (`dropLogin`) rather than wait for a sign-in they were discarded before. A lapse with no such
+   * hold keeps them. Whenever who is signed in changes, every hold this page's sign-out put on
+   * writes ends, and each kind lets go of what it remembered of the person before (`reset`) - once
+   * the writes the change drops are gone, so each of those is undone (`undone`) from what its kind
+   * still remembers of that person's answers. Another tab's hold is that tab's to end (`holdFor`),
+   * or this lapse's.
    */
   signedIn(login: string | undefined): void {
     const before = this.#login;
@@ -679,6 +758,14 @@ export class Writes {
     // Dispatch names someone, so no sign-out of this browser's is still unaccounted for.
     this.#unsettledSignOuts.clear();
     this.#lapsed = false;
+    const takingUp = this.#takingUp;
+    if (takingUp !== undefined) {
+      // Whoever the take-up could still take up writes for once the kinds are in - the person it
+      // began for, after a lapse, or the person signed in until now - but this one.
+      for (const person of [takingUp.login, before]) {
+        if (person !== undefined && person !== login) takingUp.dropped.add(person);
+      }
+    }
     this.#take([...this.#entries.values()].filter((entry) => entry.write.login !== login));
     if (changed) this.#resetKinds();
     void this.#files.keepOnly(login);
@@ -706,10 +793,12 @@ export class Writes {
   /** Drops every write `login` pressed, out or refused, its trying stopped and everything kept
    *  of it, its file included, and tells every listener (`onSignedOut`): that person's sign-out
    *  landed in another tab of this browser, which discards their writes in every tab
-   *  (`app.tsx`), or under a lapse here (`signedIn`). */
+   *  (`app.tsx`), or under a lapse here (`signedIn`). So does every write a reload kept of
+   *  theirs that a take-up still waiting would take up otherwise (`TakeUp.dropped`). */
   dropLogin(login: string): void {
     this.#signingOut.delete(login);
     this.#signingOutElsewhere.delete(login);
+    this.#takingUp?.dropped.add(login);
     this.#drop([...this.#entries.values()].filter((entry) => entry.write.login === login));
     for (const listener of this.#signedOut) listener(login);
   }
@@ -807,17 +896,81 @@ export class Writes {
    * repeat with what the first did; one the reader was stopping is asked once more and lands or
    * ends stopped. One pressed longer ago is not made again on its own: it shows refused
    * (`SendInterruptedError`), for a Retry under its key or Discard. A refusal shows again. A quiet
-   * write is let go rather than shown. The app calls this once signed in.
+   * write is let go rather than shown. The app calls this as the person signs in, before it draws
+   * any page (`app.tsx`).
+   *
+   * A kept write is made again by its kind, found by the name it was kept under, and one whose
+   * kind no module has registered is dropped. The app's kinds are a chunk of their own
+   * (`kinds.ts`), so the app passes what loads them (`loadKinds`), and the take-up waits until
+   * they are in, whichever load brought them (`kindsRegistered`). Every write pressed meanwhile
+   * (`run`) joins its line once the take-up is done, behind every write the take-up put there, in
+   * press order, whatever order the page's effects pressed it in. A drop meanwhile of a person's
+   * writes - another person's sign-in, or their sign-out landing - drops what the reload kept of
+   * theirs too, once the kinds are in (`TakeUp.dropped`). A load that fails ends nothing here: the
+   * next press asks again, and the failure of a load a reader waits on reloads the page while the
+   * tab's reload budget lasts (`loadWriteKinds`), whose own take-up finds every write pressed
+   * meanwhile here kept in the tab. Without `loadKinds` - every unit test's store - the take-up
+   * runs at once.
    */
-  resume(login: string): void {
+  resume(login: string, loadKinds?: () => Promise<unknown>): void {
     if (this.#resumed) return;
     this.#resumed = true;
+    if (loadKinds === undefined) {
+      void this.#takeUp(login);
+      return;
+    }
+    const registered = Promise.withResolvers<void>();
+    takeUpsWaiting.add(registered.resolve);
+    // One load out at a time: a press asks again only once the load before it has failed, so a
+    // reader pressing while the kinds come down - or while a load waits offline for the network
+    // (`importWhenOnline`) - starts no second load beside it.
+    let asking = false;
+    const takingUp: TakeUp = {
+      ask: () => {
+        if (asking) return;
+        asking = true;
+        void loadKinds().then(
+          // Answered, the kinds are in: this load registered them, which has ended the take-up
+          // already, or a load before this take-up began did, which told no take-up of this one.
+          () => registered.resolve(),
+          () => {
+            asking = false;
+          }
+        );
+      },
+      dropped: new Set(),
+      login,
+      pressedMeanwhile: [],
+    };
+    this.#takingUp = takingUp;
+    takingUp.ask();
+    void registered.promise.then(async () => {
+      takeUpsWaiting.delete(registered.resolve);
+      // Whoever is signed in by now: a person signed in from another tab meanwhile has their own
+      // taken up and the first person's dropped, as that sign-in would have dropped them; a lapse
+      // meanwhile takes up the first person's, to wait for the sign-in that follows (`signedIn`),
+      // unless a drop meanwhile took that person's writes (`TakeUp.dropped`).
+      const person = this.#login ?? login;
+      if (takingUp.dropped.has(person)) this.#dropKept(person);
+      else await this.#takeUp(person);
+      this.#takingUp = undefined;
+      for (const entry of takingUp.pressedMeanwhile) {
+        if (this.#entries.get(entry.write.id) !== entry) continue;
+        entry.write = { ...entry.write, joined: this.#nextJoin() };
+        this.#join(entry, "sending");
+      }
+    });
+  }
+
+  /** The take-up `resume` describes, with every kind in: answers once each write it takes up has
+   *  joined its line, an upload once its file has been read. */
+  #takeUp(login: string): Promise<unknown> {
     const now = Date.now();
     // A write pressed in this page before this take-up is kept in the tab from its press, so the
-    // tab holds it too: it is already in its line here, and is not taken up beside itself. The app
-    // resumes in the shell's effect, which React runs after every effect of the shell's children,
-    // so a write a child makes as it mounts is pressed first.
+    // tab holds it too: it is already in the store - pressed meanwhile, or in its line where the
+    // store waited for no take-up - and is not taken up beside itself.
     const held = new Set([...this.#entries.values()].map((entry) => entry.write.key));
+    const files: Promise<void>[] = [];
     for (const kept of this.#kept.load(login)) {
       if (held.has(kept.key)) continue;
       // What the key has carried is the entry's own record of it (`KeptWrite.carried`): the
@@ -835,10 +988,29 @@ export class Writes {
       }
       const detail = kind.restore === undefined ? kept.detail : kind.restore(kept.detail);
       if (kept.request !== null && "form" in kept.request) {
-        void this.#files.get(kept.key).then((file) => this.#resume(kept, kind, detail, now, file));
+        files.push(
+          this.#files.get(kept.key).then((file) => this.#resume(kept, kind, detail, now, file))
+        );
       } else {
         this.#resume(kept, kind, detail, now, undefined);
       }
+    }
+    void this.#files.keepOnly(login);
+    // Settled rather than all: a write pressed meanwhile goes on whatever a read made.
+    return Promise.allSettled(files);
+  }
+
+  /** What a take-up does instead once a drop took `login`'s writes while it waited
+   *  (`TakeUp.dropped`): every write the reload kept of theirs goes, unsent, its file with it. */
+  #dropKept(login: string): void {
+    // A write the store holds is this page's own, kept in the tab from its press - one pressed
+    // since the drop, by the person signed in again - and no write of the reload's, as `#takeUp`
+    // reads it too: it goes on as its press asked.
+    const held = new Set([...this.#entries.values()].map((entry) => entry.write.key));
+    for (const kept of this.#kept.load(login)) {
+      if (held.has(kept.key)) continue;
+      this.#kept.forget(kept.key);
+      if (kept.request !== null && "form" in kept.request) void this.#files.delete(kept.key);
     }
     void this.#files.keepOnly(login);
   }
@@ -914,10 +1086,7 @@ export class Writes {
     // The press settles its own surface; this one only tells the kind (`started`).
     settled.promise.catch(() => {});
     entry.turn = { from, settled };
-    if (entry.write.presentation === "quiet" && entry.expiry === undefined) {
-      const left = entry.write.pressedAt + KEPT_SEND_RESUME_MS - Date.now();
-      entry.expiry = setTimeout(() => this.#drop([entry]), Math.max(0, left));
-    }
+    this.#expire(entry);
     this.#update(entry, entry.write);
     kinds
       .get(entry.write.kind)
@@ -925,15 +1094,27 @@ export class Writes {
     this.#advance(entry.write.target);
   }
 
+  /** Lets the quiet `entry` go once five minutes have passed since its press without Dispatch
+   *  confirming it, as a reload lets one that old go unmade (`#resume`): armed once, as it joins
+   *  its line, or at its press while the take-up waits (`run`), so a take-up that ends later than
+   *  that sends nothing of it. */
+  #expire(entry: Entry): void {
+    if (entry.write.presentation !== "quiet" || entry.expiry !== undefined) return;
+    const left = entry.write.pressedAt + KEPT_SEND_RESUME_MS - Date.now();
+    entry.expiry = setTimeout(() => this.#drop([entry]), Math.max(0, left));
+  }
+
   /** Starts every write of `target` whose turn has come: in join order, each queued one that no
    *  earlier one is still being tried ahead of. A write with no target starts at once. None starts
    *  while the session is lapsed, and none of a person whose sign-out is out - this page's
    *  (`#signingOut`) or another tab's (`#signingOutElsewhere`) - but that sign-out: it waits,
-   *  holding its place in its line. */
+   *  holding its place in its line. A write pressed meanwhile, while the take-up waits, is in no
+   *  line yet (`resume`). */
   #advance(target: string | undefined): void {
     if (this.#lapsed) return;
+    const pressedMeanwhile = this.#takingUp?.pressedMeanwhile;
     const line = [...this.#entries.values()]
-      .filter((entry) => entry.write.target === target)
+      .filter((entry) => entry.write.target === target && !pressedMeanwhile?.includes(entry))
       .sort((a, b) => a.write.joined - b.write.joined);
     for (const entry of line) {
       const { status } = entry.write;

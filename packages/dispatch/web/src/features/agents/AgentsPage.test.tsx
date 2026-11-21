@@ -1,5 +1,14 @@
-import { expect, jest, type Mock, spyOn, test } from "bun:test";
-import { RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts";
+import {
+  afterEach,
+  beforeEach,
+  expect,
+  jest,
+  type Mock,
+  setSystemTime,
+  spyOn,
+  test,
+} from "bun:test";
+import { RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts/dispatch-api-constants";
 import {
   focusManager,
   onlineManager,
@@ -46,6 +55,13 @@ import { messageDeliveryFields } from "./delivery-fixture";
 import "../agent-view/AgentConversationPage";
 import "../margin/Margin";
 import "./BroadcastPage";
+// Every kind of write is a chunk of its own (`features/writes/kinds.ts`), which the store's take-up
+// of what a reload kept waits for from the sign-in on, and every send a row presses waits for that
+// take-up (`Writes.resume`, `Writes.run`). The rows here are about the sends, not about that
+// download, and a row on a held clock runs its waits out in a few real milliseconds while
+// `test:web:cold` holds the chunk for a real second: a send pressed then would not have gone out
+// when the row counts its attempts. So the kinds are loaded here too.
+import "../writes/kinds";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import type { AgentPart } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -99,6 +115,20 @@ const now = Date.now();
 function ago(ms: number): number {
   return Date.now() - ms;
 }
+
+// Most fixtures of this file are dated from `now` (and `recentAttemptAt`), taken once when the
+// module loads, and the groups read a session's age against the clock: Active within two
+// minutes, Quiet past ten (`agent-groups.ts`). A row that ran minutes after the module loaded,
+// as one can in a long parallel run or in random order, read those ages older than written -
+// the Reviewer, seen five minutes before `now`, went Quiet six minutes in. So each test runs on
+// a clock held at `now`, a row's own `jest.useFakeTimers()` starts from it, and a time `ago`
+// dates is that far before `now` too.
+beforeEach(() => {
+  setSystemTime(new Date(now));
+});
+afterEach(() => {
+  setSystemTime();
+});
 
 const agents = [
   {
@@ -4450,7 +4480,10 @@ test("/ falls through to the Dispatch-wide search dialog when no agents are conn
 
     await user.keyboard("/");
 
-    expect(screen.getByRole("dialog", { name: "Search" })).toBeTruthy();
+    // `find`, not `get`: the bar is a chunk of its own now and the keystroke is what asks for
+    // it (`features/search/SearchPaletteHost.tsx`), so it arrives a microtask later than it
+    // did. The assertion is the same one: this dialog, by this name.
+    expect(await screen.findByRole("dialog", { name: "Search" })).toBeTruthy();
   } finally {
     page.view.unmount();
     page.restore();

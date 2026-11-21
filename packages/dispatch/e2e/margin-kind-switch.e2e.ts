@@ -22,7 +22,9 @@ import { asUser } from "./users";
 // same document in his own browser.
 const initialMarkdown = "The quick brown fox";
 // Every poll here reads the server or the two editors from Node, so the ladder is this file's
-// own: the default one first looks again 350 ms after a write the server answered in 30.
+// own: Playwright's default intervals, `[100, 250, 500, 1000]`, look again at 100, 350 and 850 ms
+// and then every second, so a write the server answered in 30 ms is read at 100 ms, and this
+// ladder looks again at 50, 100, 200 and 400 ms and then every half second.
 const PROBE = { intervals: [50, 50, 100, 200, 500] };
 
 interface Readers {

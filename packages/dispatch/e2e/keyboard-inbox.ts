@@ -28,8 +28,9 @@ export async function seedInbox(): Promise<void> {
   }
 }
 
-// The keymap binds only once sign-in resolves (`AuthGate` renders a skeleton until
-// `/auth/whoami` answers), so a key pressed before the page renders reaches no handler.
+// The keymap binds only once sign-in resolves (`AuthGate` renders a skeleton until the
+// `["whoami"]` query answers, whose cold read is `GET /api/v1/landing`), so a key pressed before
+// the page renders reaches no handler.
 export async function openInbox(page: Page, rows = 3): Promise<void> {
   await page.goto("/");
   await expect(page.locator("[data-inbox-row]")).toHaveCount(rows);

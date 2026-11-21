@@ -1,4 +1,4 @@
-import { awaitsDecision } from "@legion/contracts";
+import { awaitsDecision } from "@legion/contracts/dispatch-api-constants";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";

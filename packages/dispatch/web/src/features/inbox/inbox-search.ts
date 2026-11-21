@@ -5,7 +5,7 @@
  * - each against the fields its own shape carries.
  */
 
-import { inboxThreadRow } from "@legion/contracts";
+import { inboxThreadRow } from "@legion/contracts/dispatch-api-constants";
 
 import type { InboxRow, MyReplyRow } from "../../api/types";
 import { askIssueKey } from "./ask-name";

@@ -8,6 +8,7 @@ import type {
   DeliverySessionGroup,
 } from "../../api/types";
 import { borderDefault, brushBand, surfaceBg, textMutedOnCanvas } from "../../theme/classes";
+import { renderChunk } from "../shell/chunk-loads";
 import { useMediaQuery } from "../shell/useDialog";
 import { type ColorFacet, colorKeyFor, PLACEHOLDER_COLOR } from "./lib/colorScale";
 import type { Filters } from "./lib/facets";
@@ -193,11 +194,17 @@ export function Timeline({
 
   // ECharts instance lifecycle: init once, resize on container changes, and dispose on unmount.
   // Options (series/axes) are pushed by a separate effect below, keyed on the actual data.
+  //
+  // The import is under `renderChunk`: the chart draws nothing until the library is in, so a
+  // reader on the page is waiting on the download, and a failure must spend one of the tab's
+  // recovery reloads. Imported bare, its failure while a prefetch the shell started at its first
+  // paint is still out would be read as that prefetch's and reload nothing
+  // (`features/shell/DeploymentResilience.tsx`, dispatch://INFRA-1109).
   useEffect(() => {
     let disposed = false;
     let cleanup: (() => void) | undefined;
 
-    void import("echarts").then((echarts) => {
+    void renderChunk(() => import("echarts")).then((echarts) => {
       const el = containerRef.current;
       if (disposed || el === null) return;
       const instance = echarts.init(el, undefined, { renderer: "canvas" });

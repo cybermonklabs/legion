@@ -1,4 +1,4 @@
-import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
+import { MAX_ISSUE_ADVANCES } from "@legion/contracts/dispatch-api-constants";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";

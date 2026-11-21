@@ -3,8 +3,9 @@ import type { Doc } from "yjs";
 
 import type { BlockSchema } from "../../api/types";
 import { requestMermaidDrawing } from "../refs/mermaid-diagrams";
-import { importWhenOnline } from "../shell/DeploymentResilience";
+import { importWhenOnline, renderChunk } from "../shell/chunk-loads";
 import type { AnchoredBlock } from "./ask-block";
+import { loadEditorLibrary } from "./document-chunks";
 import type { WatchPicture } from "./picture-view";
 import { MARKS_MAP_NAME } from "./roots";
 import type { AskBlockHost } from "./typed-block-drawing";
@@ -44,22 +45,25 @@ export const editorAttributes = {
 } as const;
 
 // The editor library sits behind `import()` so the issue route ships none of it until a
-// document mounts; `importWhenOnline` holds the retry policy for a chunk that fails offline.
-// Every editor's mermaid blocks (the live document, a read-only one, a past version) draw through
-// `requestMermaidDrawing`, in the Mermaid worker comments use, never on the page's thread.
+// document mounts; `importWhenOnline` holds the retry policy for a chunk that fails offline, and
+// `document-chunks.ts` names its chunks once, for this module and for the entry's start of them
+// beside a landing read. Every editor's mermaid blocks (the live document, a read-only one, a
+// past version) draw through `requestMermaidDrawing`, in the Mermaid worker comments use, never on
+// the page's thread.
 //
 // Dispatch's own node views travel with it (`ask-block.ts`): they are written against
 // ProseMirror's `DOMSerializer`, `Plugin` and `PluginKey`, so a page that imported them to call
 // them after the editor existed would parse a quarter of a megabyte of the editor's library
-// before its first paint - which is the very thing this `import()` is here to prevent.
+// before its first paint - which is the very thing the `import()` in `document-chunks.ts` is
+// there to prevent.
+
 export const createEditor: CreateEditor = async (root, options) => {
-  const [{ createProofEditor }, { installTypedBlocks }] = await importWhenOnline(() =>
-    Promise.all([
-      import("@legion/proof-editor"),
-      import("./ask-block"),
-      import("@legion/proof-editor/style.css"),
-    ])
-  );
+  // `renderChunk` and not a bare call: this runs when a document mounts, so a reader is waiting
+  // on the download and its failure must spend one of the tab's recovery reloads. The entry
+  // starts the same import as a prefetch (`app.tsx`, `preloadRouteChunk`), and that one is
+  // nobody waiting; the two are told apart here, at the call, because the import itself is
+  // shared (`features/shell/DeploymentResilience.tsx`).
+  const [{ createProofEditor }, { installTypedBlocks }] = await renderChunk(loadEditorLibrary);
   const handle = await createProofEditor(root, { ...options, drawMermaid: requestMermaidDrawing });
   for (const [name, value] of Object.entries(editorAttributes)) {
     handle.view.dom.setAttribute(name, value);
@@ -107,7 +111,10 @@ export function bindRemoteMarks(doc: Doc, handle: EditorHandle): () => void {
 }
 
 // A standalone Yjs document for an editor with no live connection (a historical version).
+// `renderChunk`, as `createEditor`'s library above: the past version that calls this draws
+// nothing until Yjs is in, so a reader is waiting on the download and its failure must spend one
+// of the tab's recovery reloads (`features/shell/chunk-loads.ts`).
 export async function createDoc(): Promise<Doc> {
-  const { Doc } = await importWhenOnline(() => import("yjs"));
+  const { Doc } = await renderChunk(() => importWhenOnline(() => import("yjs")));
   return new Doc();
 }

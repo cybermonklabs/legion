@@ -1,4 +1,5 @@
-import { isIdPrefix, itemFromSearch } from "@legion/contracts";
+import { itemFromSearch } from "@legion/contracts/dispatch-href";
+import { isIdPrefix } from "@legion/contracts/dispatch-text-rules";
 import { notifyManager, type QueryKey, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
 import { useLocation } from "react-router-dom";

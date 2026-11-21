@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
+import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts/dispatch-tools-constants";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";

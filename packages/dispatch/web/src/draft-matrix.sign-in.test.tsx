@@ -48,12 +48,15 @@
  * (`app.tsx`): which person's shell is drawn (`shellFor`, once the stores were told), the rows
  * above; the check not yet answered (`whoAmI.isPending`), before which no shell, and so no
  * composer, is drawn, which the first row's check still out makes; and the page signed out
- * (`signedOut`), which reason 3 answers.
+ * (`signedOut`), which reason 3 answers. Below them it finds the person the shell is handed
+ * (`user`), whom the rows above hold to the check's answer, and the shell the person's choice of
+ * issue page draws (`ChosenShell`), which reason 6 answers.
  *
  * The numbered reasons - the first row's two clients, the cell another file makes, the page
- * signed out, and the forms of the layout the composer census found that the rows above do not
- * make - are `REASONS` in `draft-matrix.sign-in.coverage.ts`, which holds each census item this
- * file answers for to a test above or to one of them.
+ * signed out, the forms of the layout the composer census found that the rows above do not
+ * make, and the shell the choice of issue page draws - are `REASONS` in
+ * `draft-matrix.sign-in.coverage.ts`, which holds each census item this file answers for to a
+ * test above or to one of them.
  */
 import { expect, jest, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClient } from "@tanstack/react-query";
@@ -76,7 +79,7 @@ import { userOnFakeClock } from "./__tests__/user";
 import { ApiError, api } from "./api/client";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "./api/query-client";
 import { otherTab, renderApp } from "./app-sign-out-fixture";
-import { composerNameOf } from "./features/conversation/useKeptDrafts";
+import { composerNameOf } from "./features/conversation/composer-names";
 import { threadReplySendKey } from "./features/conversation/usePhoneThread";
 import { issue } from "./features/margin/margin-fixture";
 import { buildIssuePath } from "./features/refs/routes";

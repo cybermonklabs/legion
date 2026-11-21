@@ -479,17 +479,16 @@ so that read is this gate's (ci_job_reads.py's dispatch_ui).
 ## dispatch_browser: The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
 
 The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
-holds: the shards, the three `-alone` projects, the two-process job, the
-fake-embedder job, the visual review and the merge job. Every entry is something a
-browser row reads: the dashboard and its contracts, the Dispatch server its harness
-builds, and the two workflow files that hold the steps. The retired `dispatch` job's
-filter also held three fixture sets whose only readers are the dashboard's and the
-proof editor's unit tests, and they are not here: dispatch-ui's filter names all
-three, and with this output ungated on a pull request they would start four shard
-machines and the merge job for a fixture-only change. The dispatch_browser gate in
-.github/scripts/ci_job_reads.py says what this suite reads, and check-ci-filters.sh
-holds this filter to that gate - it refuses a filter that misses a read, never one
-that is too wide, so a path is in this list because a browser row reads it and for
+holds, the jobs that file's notes name (.github/ci-notes/dispatch-browser.md's first
+section). Every entry is something a browser row reads: the dashboard and its contracts, the
+Dispatch server the binaries job builds and the rows execute, and the two workflow files that
+hold the steps. The retired `dispatch` job's filter also held three fixture sets whose only
+readers are the dashboard's and the proof editor's unit tests, and they are not here:
+dispatch-ui's filter names all three, and with this output ungated on a pull request they
+would start every job of the pull-request lane for a fixture-only change. The
+dispatch_browser gate in .github/scripts/ci_job_reads.py says what this suite reads, and
+check-ci-filters.sh holds this filter to that gate - it refuses a filter that misses a read,
+never one that is too wide, so a path is in this list because a browser row reads it and for
 no other reason.
 
 ## dispatch_browser: dispatch_ui's set, which the SPA and the e2e helpers load,
@@ -504,16 +503,16 @@ set (ci_ts_programs.py, LISTED, says why). Its jobs' contracts build
 The workflow that holds every browser step, which this job reads as its own
 definition - the place every other job of this file gives to its own
 `ci-job-<id>.yaml`, so a change to it selects this job alone. An unlabelled pull
-request runs the pull-request lane, the two projects a change is held to; a pull
-request carrying `full-ci`, the merge group and a dispatch run the full lane,
-every project and the two-process job, which is the lane the nightly
+request runs the pull-request lane, the projects a change is held to; a pull request
+carrying `full-ci`, the merge group and a dispatch run the full lane, every project
+and the two-process job, which is the lane the nightly
 (.github/workflows/dispatch-browser-nightly.yaml) calls. So a worker can put the
 whole suite on a pull request with the label, and the group is where a change to
-that file meets it before main anyway. The nightly itself is not in this list:
-no step of this suite reads it, which rule 9's second direction refuses, since
-four shard machines and the merge job would start over a change no row sees. It
-is a read of the ci_filters gate instead, so a change to it re-runs this check,
-which holds this filter and that gate together.
+that file meets it before main anyway. The nightly itself is not in this list: no
+step of this suite reads it, which rule 9's second direction refuses, since every
+job of the pull-request lane would start over a change no row sees. It is a read of
+the ci_filters gate instead, so a change to it re-runs this check, which holds this
+filter and that gate together.
 
 ## dispatch_browser: The memory and CPU sampler the shard and alone jobs'
 
@@ -522,8 +521,9 @@ back, the reading of the lanes' PostgreSQL those two jobs run before the suite,
 the script the merge job runs to take each leg's newest attempt, and the script
 that makes the merge job's two reads of its own run, which reads this run's own
 attempt's jobs and says a refused blob download was a refused read. Beside them,
-the twelve scripts that hold the bodies of the shard, the alone, the visual and the
-merge jobs' steps: the shard job's wait for the file store it starts, its
+the thirteen scripts that hold the bodies of the binaries, the shard, the alone, the
+visual and the merge jobs' steps: the binaries job's build of the dashboard bundles beside
+its go build, the shard job's wait for the file store it starts, its
 browser step and the record of what that run left behind, the alone job's
 browser step and its own record step, whose text differs from the shard job's
 because no file store runs on that machine, the visual job's run against the
@@ -666,12 +666,12 @@ to nothing of the browser half, which the dispatch_two_builds filter names.
 ## dispatch_two_builds: The two-build job: its Go step's reads, named again
 
 The two-build job: its Go step's reads, the dispatch_two_builds_go filter's, named again so the job runs for the
-change that starts the step, and the browser half,
-`bun run e2e:multiprocess -- cross-build.multiprocess` in packages/dispatch: the
-harness and spec under e2e/, the two SPA builds (web/, the editor package and the
-patches it takes, the notices script the build runs), the Dispatch server
+change that starts the step, and the browser half, `bun run build:web` and
+`bun run e2e:multiprocess:run -- cross-build.multiprocess` in packages/dispatch: the
+harness and spec under e2e/, the SPA build (web/, the editor package and the patches
+it takes, the notices script the build runs), the Dispatch server
 e2e/run-server.sh builds (dispatch_command_tests holds its packages) and the script
-that holds each server's socket (run-server.sh:37, e2e/harness-start.ts). Of
+that holds each server's socket (run-server.sh's `held_port` lines, e2e/harness-start.ts). Of
 packages/contracts it reads the manifest whose build:dispatch its contracts build runs
 (*bun_install holds it) and the modules of the dispatch_two_builds filter's `BEGIN listed` block.
 
@@ -1062,20 +1062,22 @@ the build of the previous commit that job compares against; three actions its jo
 save one too, and only in a dispatched run (setup-bun, and architecture-check and spec-check at
 this paragraph's end).
 setup-go caches nothing here (`cache: false` on every step, the two check actions'
-included). The jobs that cache Go restore, in steps of their own, one of six families with
+included). The jobs that cache Go restore, in steps of their own, one of seven families with
 actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same
 internal/daemon test binary daemon-go's race step does — and pi-legion; the test job restored
 it while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job
 of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
 listener, and envoy-go-race-docs and envoy-go-docs-finalizers), go-envoy-test (envoy-go, which
-builds the test binary of every package of the envoy module, envoy-go-claim-model, which builds
-the API's of that set, and the binaries, multiprocess
-and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
-broker's commands out of that same set), go-envoy-infra
-(envoy-infra-go) and go-notices (lint's notices step). Every family but go-docs is filled by
-.github/workflows/ci-caches.yaml, which builds those sets on a push to main and saves them;
-go-docs stays with docs-pages.yaml, which saves it on that same push. Each family keeps one
+builds the test binary of every package of the envoy module, and envoy-go-claim-model, which
+builds the test binary of internal/dispatch/api out of that set), go-dispatch-browser (the
+binaries job of dispatch-browser.yaml, which builds the Dispatch server, the real broker's
+commands and the dev OIDC issuer for the whole run with CGO_ENABLED=0, almost none of whose
+objects an entry filled with cgo on holds:
+.github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-dispatch-browser),
+go-envoy-infra (envoy-infra-go) and go-notices (lint's notices step). Every family but go-docs
+is filled by .github/workflows/ci-caches.yaml, which builds those sets on a push to main and
+saves them; go-docs stays with docs-pages.yaml, which saves it on that same push. Each family keeps one
 entry per runner architecture, keyed on the runner's architecture and on the Go version its
 job's setup-go installed: a build cache holds the objects of the architecture that compiled
 them, so an entry an x86_64 runner filled would give a job on ubuntu-24.04-arm its modules and
@@ -1104,9 +1106,9 @@ ci-caches.yaml's browsers job, the only writer of that entry, is gone with the r
 (.github/actions/setup-bun), which of this workflow's events is the dispatched run alone, and
 not in the tool-fallback and tool-fallback-arm jobs at all: that action reads the id of the
 job that called it and passes no-cache for those two on every ref, so a restored Bun cannot
-stand in for the install each of their cases is a reading of. A seventh family,
+stand in for the install each of their cases is a reading of. An eighth family,
 `architecture-check-<os>-<arch>-go<version>-<hash>`, is the composite action
-.github/actions/architecture-check's own, and an eighth,
+.github/actions/architecture-check's own, and a ninth,
 `spec-check-<os>-<arch>-go<version>-<hash>`, is .github/actions/spec-check's; envoy-go-checks runs
 both. Each action restores its family and saves it itself, from $RUNNER_TEMP/architecture-check
 or $RUNNER_TEMP/spec-check and not from the Go caches above, keyed on the Go version its own
@@ -1303,10 +1305,10 @@ ci-images job then refuses.
 
 ## Why the browser suite is ungated, and what the label decides
 
-The browser suite, ungated: a pull request that changes what it reads runs it, because
-the dispatch-browser job then runs the cheap `pull-request` lane, the two projects
-a pull request is held to. The `full-ci` label no longer decides whether this suite runs,
-only which lane it runs: that job's `lane:` input reads the label, and
+The browser suite, ungated: a pull request that changes what it reads runs it, because the
+dispatch-browser job then runs the cheap `pull-request` lane, the projects a pull
+request is held to. The `full-ci` label no longer decides whether this suite runs, only
+which lane it runs: that job's `lane:` input reads the label, and
 .github/ci-notes/ci.md#what-the-lane-input-reads says what each event gets.
 
 ## The ten slow suites, whose runner time dwarfs every other job's. The
@@ -1634,7 +1636,7 @@ service on a job whose other thirty-odd steps would start it for nothing.
 
 ## The dashboard's and the proof editor's lint, typecheck, unit tests, build and
 
-The dashboard's and the proof editor's lint, typecheck, unit tests, build and asset checks.
+The dashboard's and the proof editor's typecheck, unit tests, build and asset checks.
 They were split out of the browser suite (the dispatch-browser job), whose full lane - the one
 the merge queue, the nightly and a pull request labelled `full-ci` run - is as slow as the
 ten suites that label holds back, while these checks must come back on every push.
@@ -1648,20 +1650,21 @@ Vite build aliases its sources, so that spawn is the whole of what the build is 
 
 ## The browser suite job: its lanes, its one input, and why the matrix is in the called file
 
-Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml
-holds: the binaries job that builds the Go commands the lanes run, the shard legs, the three
-`-alone` projects a machine each, the two-process job, the fake-embedder job that runs on both
-lanes, the containerised visual review, and the merge job that joins the shard and alone
-reports into one and posts this job's ci-ok report.
+Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml holds:
+the binaries job that builds the Go commands the lanes run and the dashboard bundles they serve,
+the shard legs, the `-alone` projects on a machine of their own, the two-process job, the
+fake-embedder job that runs on both lanes, the containerised visual review, and the merge job
+that joins the shard and alone reports into one and posts this job's ci-ok report.
 
 Two lanes, and which run pays for which. A pull request without the label `full-ci` runs
-`pull-request`, the two projects a change is held to (chromium and iphone), so such a run
-proves those two rows and no more - it is not the run that proves the suite before main.
-Every other run - the merge group, a workflow_dispatch and a pull request carrying `full-ci`
-- runs `full`: every project, the three `-alone` ones and the two-process job. So the merge
-group is where a change meets the whole suite before it lands, and the nightly
-(.github/workflows/dispatch-browser-nightly.yaml, which calls the same file with the full
-lane, from main) runs it again on main's tip.
+`pull-request`, the projects a change is held to, which dispatch-browser.yaml's shard job names
+for that lane (.github/scripts/dispatch-browser-shard-suite.sh), over the rows tagged `@pr`, so
+such a run proves those rows and no more - it is not the run that proves the suite before main.
+Every other run - the merge group, a workflow_dispatch and a pull request carrying `full-ci` -
+runs `full`: every project, the three `-alone` ones and the two-process job. So the merge group
+is where a change meets the whole suite before it lands, and the nightly
+(.github/workflows/dispatch-browser-nightly.yaml, which calls the same file with the full lane,
+from main) runs it again on main's tip.
 
 One input decides that: the called workflow reads `lane` for the projects each job runs, so
 nothing here chooses them a second time. It picks no browser to install any more: the shard
@@ -1689,10 +1692,10 @@ that job's last step, the ci-ok report.
 
 ## What the lane input reads
 
-An unlabelled pull request gets the two-project `pull-request` lane; a pull request
-carrying `full-ci`, and every other event, gets the full lane. That is what lets a worker
-recheck a slow-suite failure on a pull request: the label picks the lane, while the
-`dispatch_browser` output of `changes` runs the suite either way.
+An unlabelled pull request gets the `pull-request` lane; a pull request carrying `full-ci`,
+and every other event, gets the full lane. That is what lets a worker recheck a slow-suite
+failure on a pull request: the label picks the lane, while the `dispatch_browser` output of
+`changes` runs the suite either way.
 
 ## envoy-go's fast half: the Go format check, the two generated-code checks, the
 
@@ -1709,9 +1712,8 @@ container-backed NATS matrix and the integration suite), is one of the ten slow 
 which run in the merge queue and on a pull request labelled `full-ci`, while these checks
 must come back on every push. No Postgres service: nothing here opens a database. It
 restores go-envoy rather than go-envoy-test, the family of the slow half (the test binary of
-every package of the envoy module) and of dispatch-browser.yaml's Go-building jobs. It also
-runs the guard that no CI file of this repository compares the spec files with the approved
-spec.
+every package of the envoy module) and of envoy-go-claim-model. It also runs the guard that
+no CI file of this repository compares the spec files with the approved spec.
 
 ## What the envoy-go job runs
 

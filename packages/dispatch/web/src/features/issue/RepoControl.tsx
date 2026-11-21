@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
-import { api, apiErrorMessage } from "../../api/client";
+import { apiErrorMessage } from "../../api/client";
+import { repoProjectsQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { usePageWords, useTooltips } from "../../components/tooltips";
 import {
@@ -193,9 +194,8 @@ export function RepoControl({
       : (pickLook({ field: "repo", issueKey, value: repo }).fields.resolved_repo ??
         hostResolvedRepo);
   const mappings = useQuery({
+    ...repoProjectsQuery(),
     enabled: wanted || resolvedRepo === null,
-    queryKey: ["repo-projects"],
-    queryFn: () => api.listRepoProjects(),
   });
   const want = () => setWanted(true);
   const descriptionId = useId();

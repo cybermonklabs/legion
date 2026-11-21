@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
-import { api } from "../../api/client";
+import { ownerAsksQuery } from "../../api/queries";
 import type { MarginOwner } from "./useMarginItems";
 
 /**
@@ -10,19 +10,14 @@ import type { MarginOwner } from "./useMarginItems";
  */
 export function useAnsweredAsks(owner: MarginOwner | undefined, artifactID: string | undefined) {
   const query = useQuery({
+    ...ownerAsksQuery(
+      owner === undefined
+        ? undefined
+        : owner.kind === "document"
+          ? { artifact: owner.artifactId }
+          : { issue: owner.key }
+    ),
     enabled: owner !== undefined,
-    queryFn: () => {
-      if (owner === undefined) {
-        throw new Error("Answered asks require a margin owner.");
-      }
-      return owner.kind === "document"
-        ? api.listArtifactAsks(owner.artifactId, "all")
-        : api.listIssueAsks(owner.key, "all");
-    },
-    queryKey:
-      owner?.kind === "document"
-        ? ["artifact", owner.artifactId, "asks"]
-        : ["asks", owner?.kind === "issue" ? owner.key : undefined],
   });
   const asks = useMemo(
     () =>

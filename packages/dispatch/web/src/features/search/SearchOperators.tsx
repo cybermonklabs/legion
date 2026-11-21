@@ -2,7 +2,7 @@ import {
   SEARCH_OPERATOR_EXCLUDE,
   SEARCH_OPERATOR_OR,
   SEARCH_OPERATOR_PHRASE,
-} from "@legion/contracts";
+} from "@legion/contracts/dispatch-api-constants";
 import type { ReactNode } from "react";
 
 import type { SearchOperator } from "../../api/types";

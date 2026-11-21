@@ -1,12 +1,12 @@
+import type { MessageDeliveryMode } from "@legion/contracts";
 import {
   DELIVERY_ATTEMPT_STATES,
   DELIVERY_CAPABILITIES,
   DELIVERY_DUPLICATE_WINDOW_HOURS,
   DELIVERY_DUPLICATE_WINDOW_MS,
   type DeliveryAttemptState,
-  type MessageDeliveryMode,
   POSSIBLY_DELIVERED_CAUSES,
-} from "@legion/contracts";
+} from "@legion/contracts/dispatch-api-constants";
 
 import type { AgentPart } from "../refs/AgentName";
 

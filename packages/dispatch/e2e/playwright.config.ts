@@ -178,11 +178,11 @@ if (clockFile !== undefined) {
 // The population is the one this number governs, and the filter is the point of it: the results
 // that passed, in that window, on rows of the spec files this tree has that ran under the
 // inherited budget rather than one of their own. The filter is per row, not per file, because
-// 29 of the tree's 32 `test.setTimeout`/`test.slow()` calls sit inside a single row: a file is
+// 29 of the tree's 32 `test.setTimeout`/`test.slow()` calls sat inside a single row: a file is
 // not out of the population, a row is, and the other rows of `keyed-writes`, `live-socket`,
 // `phone`, `refetch-budget`, `claim-refilling`, `composer-body-cap`, `machine-login` and
-// `threads-order` are governed by this budget whatever their one slow neighbour asks for. Only
-// `prefix-links`, `reference-cards` and `reference-titles` set a timeout for every row they hold.
+// `threads-order` were governed by this budget whatever their one slow neighbour asked for. Only
+// `prefix-links`, `reference-cards` and `reference-titles` set a timeout for every row they held.
 //
 // Derive it from the measurement rather than from the sources: a report carries, per row, the
 // timeout that row ran under, so a result taken at its project's own timeout is one this budget
@@ -204,7 +204,7 @@ if (clockFile !== undefined) {
 // in deep-links.e2e.ts's "emitted document item hrefs select and scroll their anchored thread" on
 // WebKit. Over the whole of what this tree has, rows with their own timeout included, the
 // maximum is 126,560 ms, and the 21 results above this budget are all in three rows of
-// agent-list-refilling.e2e.ts, whose rows ask for 150 s to 300 s themselves.
+// agent-list-refilling.e2e.ts, whose rows asked for 150 s to 300 s themselves that day.
 //
 // What the window bounds, and what it does not. The population is passing results, and every
 // governed row of the window ran under Playwright's 30 s default, so a row that wanted longer was
@@ -602,7 +602,14 @@ const visualProjects = [
     // would say the same thing on every file and in the name of each the route and the scheme
     // are what a reader is looking for.
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
-    use: { ...devices["Desktop Chrome"], viewport: { height: 800, width: 1280 } },
+    // UTC: the zone the pinned image's Chromium drew every baseline in, named so that the day
+    // the page heads its events with is the day `e2e/visual-seed.ts` keeps the corpus on
+    // (e2e/visual-day.ts). Every context a row makes takes it, as it takes the viewport.
+    use: {
+      ...devices["Desktop Chrome"],
+      timezoneId: "UTC",
+      viewport: { height: 800, width: 1280 },
+    },
     workers: 1,
     retries: 0,
   },
@@ -611,7 +618,7 @@ const visualProjects = [
     testMatch: visualSpecs,
     grep: phoneRowTagged,
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
-    use: { ...devices["iPhone 13"], browserName: "chromium" as const },
+    use: { ...devices["iPhone 13"], browserName: "chromium" as const, timezoneId: "UTC" },
     workers: 1,
     retries: 0,
   },
