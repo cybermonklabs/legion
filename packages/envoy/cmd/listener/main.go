@@ -1132,7 +1132,12 @@ func main() {
 	sessionStoredAfterLastSeen := met.NewCounter("envoy_session_messages_stored_after_last_seen_total", "Messages the stream held for a reaped session, stored after its last registration; not a count of unread messages, since the listener keeps no read receipt")
 	sendsToUnresponsive := met.NewCounter("envoy_sends_unresponsive_total", "Sends accepted and stored for a recipient past the live window")
 	legacySubjects := met.NewCounter(legacySubjectsMetric, "Names a caller gave in their old form, without the project the rename put into them, by kind: an interest a registration named, a role a claim named, a role a publish, the role lane or a holder lookup named (role_read)")
-	met.NewGauge(startTimeMetric, "When this listener process started, in Unix seconds: every counter on this page counts from that moment").Set(processStart.Unix())
+	// The start-time gauge names this listener's machine (ENVOY_MACHINE_ID) in its one label, so a
+	// reader holds the page it read to the machine it meant to read: legacy-subjects-gate.sh takes
+	// an outside listener's machine from the operator's --listener <machine>=<url>, and a URL
+	// serving another listener would otherwise answer for it.
+	startSample := []metrics.GaugeSample{{Labels: [][2]string{{"machine", cfg.MachineID}}, Value: processStart.Unix()}}
+	met.NewGaugeSetFunc(startTimeMetric, "When this listener process started, in Unix seconds, under its machine: every counter on this page counts from that moment", func() []metrics.GaugeSample { return startSample })
 	fanoutUnresponsiveSkips := met.NewCounter("envoy_fanout_unresponsive_skipped_total", "Topic deliveries to a session past the live window that were not made: a push not sent, or an ad-hoc topic send's receipt not waited for; the message is stored for the session either way")
 	// The kept role lanes' outcomes, none labelled by role: a deployment sees unboundedly many
 	// role tokens, and each would be a series of its own for the process's life.

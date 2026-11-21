@@ -82,9 +82,10 @@ var oldOnlyIssueFilters = map[string]string{
 // (notifications.dispatch.issue.*.comment.created), hears old-form names alone, so a registration
 // naming it is counted and named with its new form, any project first, and a stored row holding it
 // is counted each time it is read, as every old form is; so is one that reaches the issue family
-// through a wildcard in the family's own tokens (notifications.dispatch.*.*.comment.created). A
-// filter that hears both forms or the new form alone is neither, and a failed-delivery report of
-// one follows the filter it carries.
+// through a wildcard in the family's own tokens (notifications.dispatch.*.*.comment.created), named
+// with the issue family's own new form, since its tokens widened by a project token would hear
+// other families' names too. A filter that hears both forms or the new form alone is neither, and a
+// failed-delivery report of one follows the filter it carries.
 func TestAnOldOnlyWildcardIssueFilterIsCountedAndNamed(t *testing.T) {
 	const issue = contracts.DispatchIssueTopicPrefix
 	const exceptions = "notifications.envoy.exceptions."
@@ -94,10 +95,10 @@ func TestAnOldOnlyWildcardIssueFilterIsCountedAndNamed(t *testing.T) {
 		issue + "*.*.created":                     issue + "*.*.*.created",
 		issue + "*.comment.>":                     issue + "*.*.comment.>",
 		exceptions + issue + "*.comment.created":  exceptions + issue + "*.*.comment.created",
-		family + "*.comment.created":              family + "*.*.comment.created",
-		family + "ACME-12.>":                      family + "*.ACME-12.>",
-		"*.*.*.*.comment.created":                 "*.*.*.*.*.comment.created",
-		exceptions + family + "*.comment.created": exceptions + family + "*.*.comment.created",
+		family + "*.comment.created":              issue + "*.*.comment.created",
+		family + "ACME-12.>":                      issue + "*.ACME-12.>",
+		"*.*.*.*.comment.created":                 issue + "*.*.comment.created",
+		exceptions + family + "*.comment.created": exceptions + issue + "*.*.comment.created",
 		issue + "*.*.comment.created":             "",
 		issue + "*.*.>":                           "",
 		issue + "*.>":                             "",

@@ -342,6 +342,44 @@ func TestARoleNamedInTheOldFormIsCountedWhereverItIsRead(t *testing.T) {
 	}
 }
 
+// A name that is no role (roles.Valid: lower-case letters, digits, `_` and `-`), read where the
+// listener reads a role - a publish to its lane, the role lane and GET /v1/roles/<name> - is not
+// counted as an old form, and the publish names no new form of it: a mistyped name is no reader
+// the old form's refusal would stop, and the claim route refuses such a name outright.
+func TestANameThatIsNoRoleIsNotCountedAsAnOldForm(t *testing.T) {
+	const name = "Lead-Reviewer"
+	harness := newListenerDeliveryHarness(t)
+	counter := &legacyKinds{}
+	counting, err := store.Open(t.Context(), harness.client.Conn, store.WithReplicas(1), store.WithLegacySubjectCounter(counter))
+	if err != nil {
+		t.Fatalf("open a counting registry: %v", err)
+	}
+	waitForRegistry(t, counting)
+	state := withPublishRoute(t, &listenerDeps{client: harness.client, registry: counting, sessions: harness.sessions})
+
+	recorder := httptest.NewRecorder()
+	publishHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/messages/publish",
+		strings.NewReader(`{"topic":"`+contracts.RoleTopicPrefix+name+`","message":"please review","source":"agent","keep":false}`)))
+	var answer struct {
+		Warnings *[]string `json:"warnings"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decode the publish to %s: %v (%d %s)", name, err, recorder.Code, recorder.Body.String())
+	}
+	if answer.Warnings != nil {
+		t.Fatalf("the publish to %s warns %q, want no old-form warning for a name that is no role", name, *answer.Warnings)
+	}
+	roleGetHandler(state).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/v1/roles/"+name, nil))
+	laneConfig := harness.config
+	laneConfig.registry = counting
+	laneConfig = wireTestRoleForwarder(t, laneConfig)
+	coreNATSDeliveryHandler(laneConfig)(&natsgo.Msg{Data: marshalListenerEnvelope(t, listenerTestEnvelope(contracts.RoleTopicPrefix+name, "role-read-no-role"))})
+	laneConfig.roleForwards.settled(t)
+	if got := counter.counted(); len(got) != 0 {
+		t.Fatalf("%s, which is no role, read by the publish route, GET /v1/roles/<name> and the role lane, was counted %q, want nothing", name, got)
+	}
+}
+
 // legacyKinds is a store.LegacySubjectCounter that records the kind label of each count.
 type legacyKinds struct {
 	mu    sync.Mutex

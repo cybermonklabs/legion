@@ -95,13 +95,14 @@ func (r *Registry) ClaimedRole(role string) (name, warning string) {
 // (GET /v1/roles/<role>) names, in either form (contracts.CanonicalRole), and answers the role's
 // name, which its claim record is keyed by, with a warning for the old form, "<old> is the old form
 // of <project>.<name>; name <project>.<name>", counted (kind="role_read"). A role in the new form
-// answers its name and no warning, and an empty name, which names no role, is not counted. It is
-// ClaimedRole's count for every other reader of a role name: a publisher that only sends to a
-// role, never claims one, is still on the old form, and its sends stop resolving once the old form
-// is refused.
-func (r *Registry) ReadRole(role string) (name, warning string) {
+// answers its name and no warning, and a name valid says is no role (roles.Valid, which the claim
+// route holds a claim to; store cannot import package roles, which imports it) is neither counted
+// nor named: a mistyped name is no reader of the old form. It is ClaimedRole's count for every
+// other reader of a role name: a publisher that only sends to a role, never claims one, is still
+// on the old form, and its sends stop resolving once the old form is refused.
+func (r *Registry) ReadRole(role string, valid func(name string) bool) (name, warning string) {
 	project, name, legacy := contracts.CanonicalRole(role)
-	if !legacy || name == "" {
+	if !legacy || !valid(name) {
 		return name, ""
 	}
 	r.countLegacy("role_read")

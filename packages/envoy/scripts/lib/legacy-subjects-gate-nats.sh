@@ -113,8 +113,10 @@ else
     HOME="$work" nsc import keys --all-dirs "$work/nsc" --dir "$work/key" >"$work/nsc.out" 2>&1
   status=$?
   grep -oE 'U[A-Z2-7]{55}' "$work/nsc.out" 2>/dev/null | head -n 1 >"$work/out"
-  [ "$status" = 0 ] || cat "$work/nsc.out" >>"$work/err" 2>/dev/null
-  rm -rf "$work/key" "$work/nsc"
+  # nsc's own output is not logged: it may echo what it read of the seed. A fixed line says the
+  # read failed, and the gate names no public key.
+  [ "$status" = 0 ] || echo "the nkey seed's public key could not be read (exit $status)" >>"$work/err"
+  rm -rf "$work/key" "$work/nsc" "$work/nsc.out"
   emit credential nkey "$status"
 fi
 

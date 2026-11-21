@@ -21,21 +21,26 @@ def log_line_bound: 180;
 def first_message_slack: 3600;
 
 # metrics reads a listener's metrics text: whether it declares the old-form counter, the counter's
-# sample per label set, the start-time gauge's one sample (null when absent), and the lines that
-# name the counter or the gauge and could not be read, which make the text unreadable.
+# sample per label set, the start-time gauge's samples with the machine each names (its one label,
+# machine, unescaped; null where it has none), the one start and its machine (null when there is no
+# one sample), and the lines that name the counter or the gauge and could not be read, which make
+# the text unreadable.
 def metrics:
   split("\n") as $lines
+  | "^envoy_listener_start_time_seconds(\\{machine=\"(?<m>([^\"\\\\]|\\\\.)*)\"\\})? (?<n>[0-9]+)$" as $start
   | {
       counter: any($lines[]; . == "# TYPE envoy_listener_legacy_subjects_total counter"),
       counts: ([$lines[]
         | capture("^envoy_listener_legacy_subjects_total(?<labels>\\{[^}]*\\})? (?<n>[0-9]+)$")
         | {key: (.labels // "{}"), value: (.n | tonumber)}] | from_entries),
-      starts: [$lines[] | capture("^envoy_listener_start_time_seconds (?<n>[0-9]+)$") | .n | tonumber],
+      starts: [$lines[] | capture($start)
+        | {value: (.n | tonumber), machine: (.m | if . == null then null else gsub("\\\\(?<c>.)"; if .c == "n" then "\n" else .c end) end)}],
       bad: [$lines[]
         | select(test("^envoy_listener_(legacy_subjects_total|start_time_seconds)"))
-        | select(test("^envoy_listener_legacy_subjects_total(\\{[^}]*\\})? [0-9]+$") or test("^envoy_listener_start_time_seconds [0-9]+$") | not)]
+        | select(test("^envoy_listener_legacy_subjects_total(\\{[^}]*\\})? [0-9]+$") or test($start) | not)]
     }
-  | .start = (if (.starts | length) == 1 then .starts[0] else null end);
+  | .start = (if (.starts | length) == 1 then .starts[0].value else null end)
+  | .machine = (if (.starts | length) == 1 then .starts[0].machine else null end);
 
 # hours is a number of seconds as hours, one decimal.
 def hours: (. / 360 | floor) / 10;
@@ -123,14 +128,20 @@ def paging_problem(names):
     end;
 
 # read_listener judges one listener's reading, the listener named $id: {id, unknown} when the read
-# or its counter cannot be judged, else {id} with $fields, its start and its counts.
+# or its counter cannot be judged, else {id} with $fields, its start, its counts and its machine.
+# A listener's start-time gauge names its machine (label machine, its ENVOY_MACHINE_ID): a listener
+# outside the cluster must name the machine the operator gave it, since only that shows the URL
+# serves that machine and not another listener, and a pod that names one must name its container's
+# ENVOY_MACHINE_ID; a pod that names none is held to its container's.
 def read_listener($id; $fields):
   if (.read.ok | not) then {id: $id, unknown: "\($id): \(.read.error // "no answer" | printable)"}
   else (.read.text | metrics) as $m
     | if ($m.counter | not) then {id: $id, unknown: "\($id) serves no envoy_listener_legacy_subjects_total: its build predates the old-form counter, so what it was given cannot be read"}
       elif ($m.bad | length) > 0 then {id: $id, unknown: "\($id): the line \($m.bad[0] | printable) cannot be read"}
       elif ($m.starts | length) > 1 then {id: $id, unknown: "\($id) serves \($m.starts | length) start-time samples"}
-      else {id: $id} + $fields + {start: $m.start, counts: $m.counts}
+      elif $fields.kind == "outside" and $m.machine == null then {id: $id, unknown: "\($id) names no machine on its start-time gauge (label machine), so its URL is not shown to serve machine \($fields.machine | printable)"}
+      elif $m.machine != null and $fields.machine != null and $m.machine != $fields.machine then {id: $id, unknown: "\($id) serves machine \($m.machine | printable), not \($fields.machine | printable): it reads another listener than the one named"}
+      else {id: $id} + $fields + {start: $m.start, counts: $m.counts, machine: ($m.machine // $fields.machine)}
       end
   end;
 
@@ -405,7 +416,6 @@ def rfc3339: if type == "string" then (sub("\\.[0-9]+"; "") | try fromdateiso860
              elif $now.kind == "pod" and $then.restarts != $now.restarts then {unknown: "\($now.id) restarted between the readings (restart count \($then.restarts) then \($now.restarts)): its counter covers only the time since"}
              elif $now.start != null and $then.start != null and $now.start != $then.start then {unknown: "\($now.id) restarted between the readings: its start-time gauge read \($then.start) then \($now.start), so its counter covers only the time since \($now.start | todate)"}
              elif ($now.start == null) != ($then.start == null) then {unknown: "\($now.id) served a start-time gauge at one reading and not the other, so the two counts are not shown to be one process's"}
-             elif $now.kind == "outside" and $now.start == null then {unknown: "\($now.id) runs in no pod and serves no start-time gauge (envoy_listener_start_time_seconds), so a restart between the readings, which resets its counter, cannot be seen"}
              elif ($now.read_at | type) == "number" and ($then.read_at | type) == "number" and $now.read_at - $then.read_at < $window then {shut: "\($now.id)'s counter was read \(($now.read_at - $then.read_at) | hours) h apart, at \($then.read_at | todate) and \($now.read_at | todate), less than the \($window | hours) h window; read again at or after \(($then.read_at + $window) | todate)"}
              else
                ((($now.counts | keys) + ($then.counts | keys)) | unique) as $labels
@@ -432,6 +442,10 @@ def rfc3339: if type == "string" then (sub("\\.[0-9]+"; "") | try fromdateiso860
     lines: (
       [if $identity then "IDENTITY: " + $identity else empty end]
       + [$listeners[] | select(.unknown | not) | "READ: \(.id): \(if .counts == {} then "no old-form name counted" else (.counts | to_entries | map("\(.key | printable) \(.value)") | join(", ")) end) since its start \(if .start then (.start | todate) else "(no start-time gauge)" end)"]
+      # A listener container on another bus than the listener Deployment's (a load-test stack's,
+      # on its own NATS) is no listener of the bus this reading is about; one on this bus that
+      # is missed leaves its durable unread, which the census names.
+      + [($in.other_bus // [])[] | "SKIP: listener pod \(.ns)/\(.pod) container \(.container) is on another bus (NATS_URLS \(.urls // "unset")), not the listener Deployment's \($in.bus // ""), and is not read" | printable]
       + [$all[] | select(.pass) | "PASS: " + .pass]
       + [$foundlines[] | "FOUND: " + .]
       + [$shut[] | "GATE SHUT: " + .shut]

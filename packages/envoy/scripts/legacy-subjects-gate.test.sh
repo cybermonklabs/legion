@@ -72,6 +72,8 @@ case "$*" in
   "-n envoy create -f "*" -o name")
     [ ! -e "$FAKE/create.fail" ] || { echo "Error from server (Forbidden): jobs.batch is forbidden" >&2; exit 1; }
     cp "$5" "$FAKE/created-job.json"
+    # A file made at the record's path while the gate runs, the path named in record.racer.
+    [ ! -e "$FAKE/record.racer" ] || echo '{"made":"while the gate ran"}' >"$(cat "$FAKE/record.racer")"
     echo "job.batch/$(jq -r .metadata.name "$5")" ;;
   "-n envoy get job "*" -o json") cat "$FAKE/job-status.json" ;;
   "-n envoy delete job "*) : ;;
@@ -112,20 +114,25 @@ readonly hub_start=1794800000
 readonly listener_nkey=UDAW25FEZ57VZNGE6FKAMUACIAK3LZRQHNVGUGPJS6L4INOXAQTX4AFQ
 readonly durable_lapse_ns=604800000000000
 
-# pod NS NAME UID CONTAINER IMAGE COMMAND(JSON) RESTARTS STATE MACHINE prints one pod.
+readonly bus_url="nats://envoy-hub.envoy.svc.cluster.local:4222"
+
+# pod NS NAME UID CONTAINER IMAGE COMMAND(JSON) RESTARTS STATE MACHINE [NATS_URLS] prints one pod,
+# its container on the listener Deployment's bus unless NATS_URLS names another.
 pod() {
   jq -n --arg ns "$1" --arg name "$2" --arg uid "$3" --arg container "$4" --arg image "$5" \
-    --argjson command "$6" --argjson restarts "$7" --arg state "$8" --arg machine "$9" '
+    --argjson command "$6" --argjson restarts "$7" --arg state "$8" --arg machine "$9" --arg urls "${10-$bus_url}" '
     {metadata: {namespace: $ns, name: $name, uid: $uid},
      spec: {containers: [{name: $container, image: $image}
        + (if $command == null then {} else {command: $command} end)
-       + {env: [if $machine == "" then empty else {name: "ENVOY_MACHINE_ID", value: $machine} end]}]},
+       + {env: ([if $machine == "" then empty else {name: "ENVOY_MACHINE_ID", value: $machine} end]
+           + [{name: "NATS_URLS", value: $urls}])}]},
      status: {phase: "Running", containerStatuses: [{name: $container, restartCount: $restarts,
        state: {($state): {}}}]}}'
 }
 
-# metrics INTEREST ROLE [START [ROLE_READ]] prints a listener's metrics text: the counter's kinds,
-# each when above zero, and the start-time gauge when START is given.
+# metrics INTEREST ROLE [START [ROLE_READ [MACHINE]]] prints a listener's metrics text: the
+# counter's kinds, each when above zero, and the start-time gauge when START is given, under label
+# machine when MACHINE is given.
 metrics() {
   echo "# HELP envoy_listener_legacy_subjects_total Names a caller gave in their old form"
   echo "# TYPE envoy_listener_legacy_subjects_total counter"
@@ -135,7 +142,11 @@ metrics() {
   if [ -n "${3:-}" ]; then
     echo "# HELP envoy_listener_start_time_seconds When this listener process started"
     echo "# TYPE envoy_listener_start_time_seconds gauge"
-    echo "envoy_listener_start_time_seconds $3"
+    if [ -n "${5:-}" ]; then
+      echo "envoy_listener_start_time_seconds{machine=\"$5\"} $3"
+    else
+      echo "envoy_listener_start_time_seconds $3"
+    fi
   fi
 }
 
@@ -247,9 +258,9 @@ mkdir -p "$base/metrics" "$base/outside"
   # Another program called envoy, from another image path: no listener.
   pod lean-build front-door-1 front-door-uid envoy "us-west1-docker.pkg.dev/example/lean-build/envoy@sha256:2222" '["envoy"]' 0 running ""
 } | jq -s '{items: .}' >"$base/pods.json"
-metrics 4 1 "$listener_start" >"$base/metrics/envoy.envoy-listener-7f9c"
-metrics 2 0 "$listener_start" >"$base/metrics/dispatch.dispatch-listener-55d1"
-metrics 7 0 "$hub_start" >"$base/outside/envoy-hub.example-tailnet.ts.net"
+metrics 4 1 "$listener_start" 0 gke >"$base/metrics/envoy.envoy-listener-7f9c"
+metrics 2 0 "$listener_start" 0 dispatch >"$base/metrics/dispatch.dispatch-listener-55d1"
+metrics 7 0 "$hub_start" 0 envoy-hub >"$base/outside/envoy-hub.example-tailnet.ts.net"
 jq -n '{spec: {template: {spec: {
   serviceAccountName: "envoy-listener",
   containers: [{name: "envoy-listener", image: "ghcr.io/cybermonklabs/legion/envoy@sha256:1111",
@@ -395,6 +406,17 @@ true	notifications.envoy.kept.role.lead-reviewer
 true	notifications.envoy.kept.cursor.legion-priv-controller
 false	notifications.envoy.kept.role._.lead-reviewer
 false	notifications.envoy.kept.role.>
+true	notifications.*.reviewer
+true	*.role.reviewer
+true	notifications.*.SES
+true	notifications.envoy.*.role.x
+true	notifications.envoy.kept.*.x
+true	*.envoy.kept.role.x
+true	notifications.envoy.exceptions.notifications.*.ses_a
+false	notifications.*.PRIV.reviewer
+false	notifications.*.>
+false	notifications.envoy.kept.*.PRIV.x
+false	notifications.envoy.*.>
 false	notifications.legion.wake
 false	notifications.legion.infra.wake
 false	notifications.dispatch.document.PRIV.spec.>
@@ -423,6 +445,9 @@ true	notifications.envoy.kept.role.lead-reviewer	["notifications.envoy.kept.role
 false	notifications.role.lead-reviewer	["notifications.role.lead-reviewer","notifications.role._.lead-reviewer"]
 true	notifications.envoy.kept.role.legion-priv-priv-1-architect	["notifications.envoy.kept.role.legion-priv-priv-1-architect","notifications.envoy.kept.role.PRIV.legion-priv-priv-1-architect"]
 true	notifications.envoy.exceptions.notifications.agent.ses_a	["notifications.envoy.exceptions.notifications.agent.ses_a","notifications.envoy.exceptions.notifications.agent.*.ses_a"]
+true	notifications.*.reviewer	["notifications.*.reviewer","notifications.*.*.reviewer"]
+false	notifications.*.reviewer	["notifications.*.reviewer","notifications.*._.reviewer"]
+true	notifications.envoy.kept.*.x	["notifications.envoy.kept.*.x","notifications.envoy.kept.*.*.x"]
 ROWS
 [ "$(jq -n -L "$here/lib" 'include "legacy-subjects-gate-forms"; "a\u0007b\nc" | printable')" = '"a\\x07b\\x0ac"' ] ||
   fail "printable does not write control characters as \\x<hh>"
@@ -440,6 +465,20 @@ echo '{}' >"$FAKE/record.json"
 run_gate --context example-cluster --record "$FAKE/record.json"
 expect_status 2
 [ "$(cat "$FAKE/record.json")" = '{}' ] || fail "the record was overwritten"
+[ ! -s "$FAKE/calls" ] || fail "the gate called $(head -n 1 "$FAKE/calls")"
+done_case
+
+new_case "a --record in a directory that does not exist is refused before anything is read"
+run_gate --context example-cluster --record "$FAKE/no-such-dir/record.json"
+expect_status 2
+expect_line "is no directory the gate can write"
+[ ! -s "$FAKE/calls" ] || fail "the gate called $(head -n 1 "$FAKE/calls")"
+done_case
+
+new_case "a --token-file with a .. segment is refused"
+run_gate --context example-cluster --record "$FAKE/record.json" --token-file /var/run/secrets/envoy/../../etc/token
+expect_status 2
+expect_line "holds a . or .. segment"
 [ ! -s "$FAKE/calls" ] || fail "the gate called $(head -n 1 "$FAKE/calls")"
 done_case
 
@@ -508,7 +547,7 @@ else
     .metadata.namespace == "envoy" and (.metadata.name | startswith("legacy-subjects-gate-"))
     and .metadata.labels["created-by"] == "legacy-subjects-gate" and (.metadata.labels.owner | length) > 0
     and .spec.backoffLimit == 0 and .spec.activeDeadlineSeconds == 300 and .spec.ttlSecondsAfterFinished == 600
-    and .spec.template.spec.serviceAccountName == "envoy-listener"
+    and .spec.template.spec.serviceAccountName == "envoy-listener" and .spec.template.spec.automountServiceAccountToken == false
     and .spec.template.spec.securityContext.runAsUser == 65534 and .spec.template.spec.securityContext.runAsNonRoot == true
     and .spec.template.spec.containers[0].image == $image
     and .spec.template.spec.containers[0].securityContext.capabilities.drop == ["ALL"]
@@ -693,6 +732,22 @@ case "$1 $2" in
 esac
 EOF
 chmod +x "$root/natsbin/nats"
+# A fake nsc that fails as nsc can, after echoing what it read: the seed in the key directory the
+# Job's script gave it.
+cat >"$root/natsbin/nsc" <<'EOF'
+#!/usr/bin/env bash
+dir=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dir) dir=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cat "$dir"/* 2>/dev/null
+echo "nsc: could not import the keys above"
+exit 1
+EOF
+chmod +x "$root/natsbin/nsc"
 
 # run_reads [ENV...] runs lib/legacy-subjects-gate-nats.sh as the gate's Job runs it (sh -c with the
 # script's text), with the fake nats first on PATH, for at most 20 seconds, keeping its output in
@@ -937,12 +992,29 @@ expect_status 3
 expect_line "restarted between the readings (restart count 0 then 1)"
 done_case
 
-new_case "a listener outside the cluster with no start-time gauge cannot be compared"
+# A listener's start-time gauge names its machine (label machine). An outside listener is named by
+# the operator (--listener <machine>=<url>), and only its gauge shows the URL serves that machine:
+# one that names none, or names another, leaves the named machine's counter unread.
+new_case "a listener outside the cluster that names no machine on its start-time gauge is UNKNOWN"
 metrics 7 0 >"$FAKE/outside/envoy-hub.example-tailnet.ts.net"
-first_reading_of 73
-reading --since "$FAKE/earlier.json"
+reading
 expect_status 3
-expect_line "UNKNOWN: listener envoy-hub at https://envoy-hub.example-tailnet.ts.net:9020 runs in no pod and serves no start-time gauge"
+expect_line "UNKNOWN: listener envoy-hub at https://envoy-hub.example-tailnet.ts.net:9020 names no machine on its start-time gauge (label machine), so its URL is not shown to serve machine envoy-hub"
+done_case
+
+new_case "a listener outside the cluster whose start-time gauge names another machine is UNKNOWN, and its durable stays unread"
+metrics 7 0 "$hub_start" 0 laptop >"$FAKE/outside/envoy-hub.example-tailnet.ts.net"
+reading
+expect_status 3
+expect_line "UNKNOWN: listener envoy-hub at https://envoy-hub.example-tailnet.ts.net:9020 serves machine laptop, not envoy-hub: it reads another listener than the one named"
+expect_line "UNKNOWN: listener machine envoy-hub is bound to its durable listener-envoy-hub on the bus, and no listener this reading read serves as that machine"
+done_case
+
+new_case "a listener pod whose start-time gauge names a machine other than its ENVOY_MACHINE_ID is UNKNOWN"
+metrics 2 0 "$listener_start" 0 gke >"$FAKE/metrics/dispatch.dispatch-listener-55d1"
+reading
+expect_status 3
+expect_line "UNKNOWN: listener pod dispatch/dispatch-listener-55d1 container envoy-listener serves machine gke, not dispatch: it reads another listener than the one named"
 done_case
 
 new_case "a listener bound on the bus that nobody named is UNKNOWN"
@@ -1220,6 +1292,151 @@ reading
 expect_status 3
 expect_line "was not shown deleted; delete it: kubectl --context example-cluster -n envoy delete job legacy-subjects-gate-"
 expect_last "UNKNOWN"
+done_case
+
+# --- the operator's environment -------------------------------------------------------------------
+# A uid with no passwd entry (a container run as an arbitrary uid) has no name for `id -un`: the
+# reading goes on with the Job's owner `unknown`, and ends in a verdict and a record.
+mkdir -p "$root/idbin"
+cat >"$root/idbin/id" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = -un ]; then
+  echo "id: cannot find name for user ID 4242" >&2
+  exit 1
+fi
+exec /usr/bin/id "$@"
+EOF
+chmod +x "$root/idbin/id"
+
+new_case "a uid with no name reads all the same, its Job's owner unknown"
+set +e
+output=$(PATH="$root/idbin:$root/bin:$PATH" bash "$gate" --context example-cluster --record "$FAKE/record.json" --listener envoy-hub=https://envoy-hub.example-tailnet.ts.net:9020 2>&1)
+status=$?
+set -e
+expect_status 4
+[ "$(jq -r .metadata.labels.owner "$FAKE/created-job.json" 2>/dev/null)" = unknown ] || fail "the Job's owner label is $(jq -r .metadata.labels.owner "$FAKE/created-job.json" 2>/dev/null), want unknown"
+[ "$(jq -r .verdict "$FAKE/record.json" 2>/dev/null)" = complete ] || fail "no complete record was written"
+done_case
+
+# The gate deletes only a Job it made: one whose create was refused is never reported deleted.
+new_case "a Job that could not be created is named so, and never reported deleted"
+touch "$FAKE/create.fail"
+reading
+expect_status 3
+expect_line "UNKNOWN: the NATS reads: the Job could not be created: Error from server (Forbidden): jobs.batch is forbidden"
+expect_no_line "JOB: deleted"
+expect_no_line "was not shown deleted"
+! grep -qF -- "delete job" "$FAKE/calls" || fail "the gate deleted a Job it never made"
+done_case
+
+# The record is a new file: one made at its path while the gate ran is left as it is, and the
+# reading, which cannot be kept, is UNKNOWN.
+new_case "a record made at --record while the gate runs is left as it is, and the reading is UNKNOWN"
+echo "$FAKE/record.json" >"$FAKE/record.racer"
+reading
+expect_status 3
+expect_line "UNKNOWN: the record $FAKE/record.json could not be written, so this reading cannot be compared"
+expect_last "UNKNOWN"
+[ "$(jq -r .made "$FAKE/record.json" 2>/dev/null)" = "while the gate ran" ] || fail "the record made meanwhile was overwritten: $(cat "$FAKE/record.json")"
+done_case
+
+# A listener container on another bus than the listener Deployment's (a load-test stack on its own
+# NATS) is no listener of the bus the reading is about: named, and not read.
+new_case "a listener on another bus than the listener Deployment's is named and not read"
+jq --argjson p "$(pod loadtest envoy-listener-lt1 lt-uid-1 envoy-listener "$envoy_image" null 0 running lt-1 nats://loadtest-nats.loadtest.svc.cluster.local:4222)" \
+  '.items += [$p]' "$base/pods.json" >"$FAKE/pods.json"
+reading
+expect_status 4
+expect_line "SKIP: listener pod loadtest/envoy-listener-lt1 container envoy-listener is on another bus (NATS_URLS nats://loadtest-nats.loadtest.svc.cluster.local:4222), not the listener Deployment's $bus_url, and is not read"
+! grep -qF -- "-n loadtest logs" "$FAKE/calls" || fail "the listener on another bus was read"
+done_case
+
+# nsc's output on a failure may echo the seed it read: the Job logs a fixed line instead.
+new_case "a failed nkey read logs a fixed line, never nsc's own output"
+printf 'SUFAKESEEDFORTHEGATETESTONLY\n' >"$FAKE/seed"
+run_reads NATS_NKEY="$FAKE/seed"
+[ "$status" = 0 ] || fail "the NATS reads exited $status: $(cat "$FAKE/reads.err")"
+[ "$(awk -F'\t' '$1 == "credential" {print $3}' "$FAKE/reads.out")" = 1 ] || fail "the credential read did not exit 1"
+[ "$(awk -F'\t' '$1 == "credential" {print $5}' "$FAKE/reads.out" | base64 -d)" = "the nkey seed's public key could not be read (exit 1)" ] ||
+  fail "the credential read's error is $(awk -F'\t' '$1 == "credential" {print $5}' "$FAKE/reads.out" | base64 -d), want the fixed line"
+while IFS=$'\t' read -r _ _ _ out err; do { printf '%s' "$out" | base64 -d; echo; printf '%s' "$err" | base64 -d; echo; } 2>/dev/null; done <"$FAKE/reads.out" >"$FAKE/reads.decoded"
+! grep -q -- "SUFAKESEED" "$FAKE/reads.decoded" || fail "the Job's log holds the seed"
+done_case
+
+# --- each UNKNOWN rule of the judge, on its own ---------------------------------------------------
+new_case "subjects read fewer than the server counts are UNKNOWN"
+replace_row subjects "notifications.dispatch.issue.> 0" "$(line subjects "notifications.dispatch.issue.> 0" 0 "$(clean_issue_subjects | jq -c '.total = 3')" "")"
+reading
+expect_status 3
+expect_line "UNKNOWN: the stream's subjects under notifications.dispatch.issue.>: the read holds 2 of the 3 the server counts"
+done_case
+
+new_case "consumers the server could not read are UNKNOWN"
+replace_row consumers 0 "$(line consumers 0 0 "$(consumers_page "$(clean_consumers)" | jq -c '.missing = ["ses_lost"]')" "")"
+reading
+expect_status 3
+expect_line "UNKNOWN: the stream's consumers: the server could not read ses_lost"
+done_case
+
+new_case "a key list that exits 0 with a violation is UNKNOWN"
+replace_row interest_keys - "$(line interest_keys - 0 $'ses_a\nses_b\n' "nats: permissions violation: Permissions Violation for Subscribe to \"\$KV.envoy_interests.>\"")"
+reading
+expect_status 3
+expect_line "UNKNOWN: the interest store's keys: nats kv ls envoy_interests: the nats CLI exited 0: nats: permissions violation: Permissions Violation for Subscribe to \"\$KV.envoy_interests.>\""
+done_case
+
+new_case "a listed name that is no key, and was not read, is UNKNOWN"
+replace_row interest_keys - "$(line interest_keys - 0 $'ses_a\nses_b\nbad key\n' "")" "$(line interest_unread - 1 'bad key' "")"
+reading
+expect_status 3
+expect_line "UNKNOWN: the interest store listed bad key, which is no key, and it was not read"
+done_case
+
+new_case "a record read that failed is UNKNOWN"
+replace_row interest ses_b "$(line interest ses_b 1 "" "nats: error: nats: timeout")"
+reading
+expect_status 3
+expect_line "UNKNOWN: the interest store's record ses_b: the nats CLI exited 1: nats: error: nats: timeout"
+done_case
+
+new_case "a first reading that did not read every surface is no first reading"
+first_reading_of 73
+jq '.verdict = "unknown"' "$FAKE/earlier.json" >"$FAKE/earlier.tmp"
+mv "$FAKE/earlier.tmp" "$FAKE/earlier.json"
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "did not read every surface; take a new first reading"
+done_case
+
+new_case "a first reading with no last stream sequence is no first reading"
+first_reading_of 73
+jq '.stream.last_seq = null' "$FAKE/earlier.json" >"$FAKE/earlier.tmp"
+mv "$FAKE/earlier.tmp" "$FAKE/earlier.json"
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: the first reading recorded no last stream sequence"
+done_case
+
+new_case "a counter line that cannot be read is UNKNOWN"
+{ grep -v 'kind="interest"' "$base/metrics/envoy.envoy-listener-7f9c"; echo 'envoy_listener_legacy_subjects_total{kind="interest"} 4.5'; } >"$FAKE/metrics/envoy.envoy-listener-7f9c"
+reading
+expect_status 3
+expect_line "UNKNOWN: listener pod envoy/envoy-listener-7f9c container envoy-listener: the line envoy_listener_legacy_subjects_total{kind=\"interest\"} 4.5 cannot be read"
+done_case
+
+new_case "two start-time samples are UNKNOWN"
+{ cat "$base/metrics/envoy.envoy-listener-7f9c"; echo "envoy_listener_start_time_seconds{machine=\"gke\"} $((listener_start + 1))"; } >"$FAKE/metrics/envoy.envoy-listener-7f9c"
+reading
+expect_status 3
+expect_line "UNKNOWN: listener pod envoy/envoy-listener-7f9c container envoy-listener serves 2 start-time samples"
+done_case
+
+new_case "a start-time gauge served at one reading only is UNKNOWN"
+first_reading_of 73
+metrics 4 1 >"$FAKE/metrics/envoy.envoy-listener-7f9c"
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: listener pod envoy/envoy-listener-7f9c container envoy-listener served a start-time gauge at one reading and not the other"
 done_case
 
 echo "legacy-subjects-gate.test.sh: $passed cases passed, $failed failed"

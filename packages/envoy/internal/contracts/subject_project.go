@@ -10,7 +10,9 @@ import (
 // an issue's events, an agent's messages and a role's lane each gained the project as a token of
 // their own (DispatchIssueSubject, AgentSubject, RoleSubject). Every reader takes both forms
 // until the old one is refused. These are the hand-written twins of packages/contracts'
-// subject-project.ts, and packages/contracts/fixtures/subject-project.json is one table both run.
+// subject-project.ts, and packages/contracts/fixtures/subject-project.json is one table both run,
+// save LegacyIssueFilter, which only the listener's count of old-form names reads and which has no
+// twin there.
 
 const (
 	exceptionPrefix = "notifications.envoy.exceptions."
@@ -251,12 +253,15 @@ func CanonicalTopic(topic string) (canonical string, legacy bool) {
 // LegacyIssueFilter reads a filter that reaches the issue family, which CanonicalTopic reads as its
 // own new form, and reports it old when its first token after the family's names an issue key, or
 // when it matches some old-form issue event's name (the key, then the event's type) and no new-form
-// one (the key's project, the key, then the type), with its new form, any project first. So
-// notifications.dispatch.issue.*.comment.created hears old-form names alone, since the new form of
-// an event has one token more, and its new form is notifications.dispatch.issue.*.*.comment.created.
-// A filter reaches the family when each of its first three tokens is the family's (notifications,
-// dispatch, issue) or a wildcard, none of them `>`: notifications.dispatch.*.*.comment.created is
-// such a filter, and old as surely. A failed-delivery report of one follows the filter it carries.
+// one (the key's project, the key, then the type), with its new form: the issue family's own, any
+// project first. So notifications.dispatch.issue.*.comment.created hears old-form names alone,
+// since the new form of an event has one token more, and its new form is
+// notifications.dispatch.issue.*.*.comment.created. A filter reaches the family when each of its
+// first three tokens is the family's (notifications, dispatch, issue) or a wildcard, none of them
+// `>`: notifications.dispatch.*.*.comment.created is such a filter, and old as surely, and its new
+// form is the issue family's notifications.dispatch.issue.*.*.comment.created, since its own
+// tokens widened by a project token would hear other families' names too (a document event has
+// seven tokens). A failed-delivery report of one follows the filter it carries.
 // A filter that hears both forms (notifications.dispatch.issue.*.*.>, notifications.dispatch.*.>)
 // is not old, nor is one that hears the new form alone (notifications.dispatch.issue.*.INFRA-12.>).
 // An event's type is read as two tokens or more: every Dispatch event type is a noun and a verb
@@ -279,7 +284,7 @@ func LegacyIssueFilter(topic string) (canonical string, legacy bool) {
 	}
 	rest := tokens[3:]
 	if issueKeyToken(rest[0]) || (issueFilterMatches(rest, issueKeyToken) && !issueFilterMatches(rest, projectKey.MatchString, issueKeyToken)) {
-		return strings.Join(tokens[:3], ".") + ".*." + strings.Join(rest, "."), true
+		return DispatchIssueTopicPrefix + "*." + strings.Join(rest, "."), true
 	}
 	return "", false
 }

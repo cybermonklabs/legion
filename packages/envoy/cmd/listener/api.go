@@ -1200,10 +1200,10 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// and then the role, or the role alone. A claim is keyed by the bare role name
 			// whichever form claimed it (store.Registry.ClaimedRole), so the role this send
 			// resolves is the name CanonicalRole reads, never the lane's tokens as they stand. A
-			// lane in the old form is counted and named back in the answer's warnings with its
-			// new form (store.Registry.ReadRole): this publisher is one the old form's refusal
-			// would stop.
-			role, roleWarning := d.registry.ReadRole(lane)
+			// lane naming a valid role in the old form is counted and named back in the answer's
+			// warnings with its new form (store.Registry.ReadRole): this publisher is one the old
+			// form's refusal would stop.
+			role, roleWarning := d.registry.ReadRole(lane, roles.Valid)
 			var warnings []string
 			if roleWarning != "" {
 				warnings = []string{roleWarning}
@@ -2269,10 +2269,10 @@ func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 		}
 		// The path names the role in either form, its project first or its name alone, and a
 		// claim is keyed by the bare name either way (store.Registry.ClaimedRole), so the holder
-		// is read under that name. A path in the old form is counted (store.Registry.ReadRole): a
-		// caller that looks a role up by its name alone is still on the old form, though this
-		// answer, a holder's record, carries no warning of it.
-		role, _ := d.registry.ReadRole(name)
+		// is read under that name. A path naming a valid role in the old form is counted
+		// (store.Registry.ReadRole): a caller that looks a role up by its name alone is still on
+		// the old form, though this answer, a holder's record, carries no warning of it.
+		role, _ := d.registry.ReadRole(name, roles.Valid)
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
 		result, err := roles.ResolveHolder(ctx, d.registry, roleHolderSessions{d.sessions}, role)
