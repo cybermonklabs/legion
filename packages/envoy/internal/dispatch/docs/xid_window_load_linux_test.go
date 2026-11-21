@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -80,6 +81,9 @@ const xidCrowdedTurns = 4
 // xidCrowdingProcesses is how many processes crowd the CPU.
 const xidCrowdingProcesses = 8
 
+// xidCrowdingStart is the longest crowdACPU waits for its shells to spin on the crowded CPU.
+const xidCrowdingStart = 10 * time.Second
+
 // crowdedCPU is one CPU that xidCrowdingProcesses processes spin on until stop.
 type crowdedCPU struct {
 	cpu      unix.CPUSet
@@ -97,7 +101,10 @@ type crowdedCPU struct {
 // loop tests the test's pid with kill -0, a builtin, so a test process that dies, killed or
 // panicking past its cleanups, leaves no busy loop pinned to a CPU of a shared machine. All of it
 // is done before the measured transaction begins, and stop undoes it after, so none of it is
-// inside a window.
+// inside a window. crowdACPU returns only once each shell has run on the crowded CPU since its pin
+// and is runnable there (spinningOn), at most xidCrowdingStart: a shell not yet spinning leaves a
+// gap that gives up its turn no one to give it to, and in 1,000 forced runs one such gap took
+// 15.877 us on the clock, a run that proved nothing.
 func crowdACPU(t *testing.T) *crowdedCPU {
 	t.Helper()
 	var own unix.CPUSet
@@ -105,16 +112,19 @@ func crowdACPU(t *testing.T) *crowdedCPU {
 		t.Fatalf("read this thread's CPUs: %v", err)
 	}
 	crowded := &crowdedCPU{}
-	for cpu := range len(own) * 64 {
-		if own.IsSet(cpu) {
-			crowded.cpu.Set(cpu)
+	cpu := -1
+	for c := range len(own) * 64 {
+		if own.IsSet(c) {
+			cpu = c
+			crowded.cpu.Set(c)
 			break
 		}
 	}
-	if crowded.cpu.Count() == 0 {
+	if cpu < 0 {
 		t.Fatalf("this thread may run on no CPU of %v", own)
 	}
 	t.Cleanup(crowded.stop)
+	pinned := make([]time.Duration, 0, xidCrowdingProcesses)
 	for range xidCrowdingProcesses {
 		spinner := exec.Command("sh", "-c", fmt.Sprintf("while kill -0 %d 2>/dev/null; do :; done", os.Getpid()))
 		if err := spinner.Start(); err != nil {
@@ -124,8 +134,53 @@ func crowdACPU(t *testing.T) *crowdedCPU {
 		if err := unix.SchedSetaffinity(spinner.Process.Pid, &crowded.cpu); err != nil {
 			t.Fatalf("pin a crowding process: %v", err)
 		}
+		ran, _, _, _ := procRunState(spinner.Process.Pid)
+		pinned = append(pinned, ran)
+	}
+	deadline := time.Now().Add(xidCrowdingStart)
+	for i, spinner := range crowded.spinners {
+		for !spinningOn(spinner.Process.Pid, cpu, pinned[i]) {
+			if time.Now().After(deadline) {
+				ran, state, on, _ := procRunState(spinner.Process.Pid)
+				t.Fatalf("crowding process %d is not spinning on CPU %d %s after it was started (it has run %s, is in state %c, on CPU %d), so a gap would not be crowded",
+					spinner.Process.Pid, cpu, xidCrowdingStart, ran, state, on)
+			}
+			time.Sleep(time.Millisecond)
+		}
 	}
 	return crowded
+}
+
+// spinningOn reports whether process pid has run more than pinned, the CPU time it had run when it
+// was pinned to cpu - so it has run on cpu since - and is runnable on cpu now.
+func spinningOn(pid, cpu int, pinned time.Duration) bool {
+	ran, state, on, ok := procRunState(pid)
+	return ok && ran > pinned && state == 'R' && on == cpu
+}
+
+// procRunState is the CPU time process pid has run (the first field of its schedstat), its state
+// and the CPU it is on (the third and 39th fields of its stat); ok is false when either is unread.
+func procRunState(pid int) (ran time.Duration, state byte, cpu int, ok bool) {
+	schedstat, err := os.ReadFile(fmt.Sprintf("/proc/%d/schedstat", pid))
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	runNs, _, _ := strings.Cut(string(schedstat), " ")
+	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	_, rest, found := strings.Cut(string(stat), ") ")
+	fields := strings.Fields(rest)
+	if !found || len(fields) < 37 || len(fields[0]) != 1 {
+		return 0, 0, 0, false
+	}
+	ns, err1 := strconv.ParseInt(runNs, 10, 64)
+	on, err2 := strconv.Atoi(fields[36])
+	if err1 != nil || err2 != nil {
+		return 0, 0, 0, false
+	}
+	return time.Duration(ns), fields[0][0], on, true
 }
 
 // pin pins this thread to the crowded CPU, and answers what gives it back its own CPUs.
