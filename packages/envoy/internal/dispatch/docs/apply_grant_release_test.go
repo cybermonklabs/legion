@@ -117,11 +117,13 @@ func holdNextAppend(t *testing.T, service *Service, artifactID string) (reached 
 }
 
 // roomCommitter commits margin keys to a room's document as a remote peer's updates, each a
-// commit the room's persistence observer hands to the room's worker.
+// commit the room's persistence observer hands to the room's worker. made is how many keys it
+// has set, and commits how many commits it has made.
 type roomCommitter struct {
-	live   *crdt.Doc
-	writer *crdt.Doc
-	made   int
+	live    *crdt.Doc
+	writer  *crdt.Doc
+	made    int
+	commits int
 }
 
 func newRoomCommitter(t *testing.T, live *crdt.Doc) *roomCommitter {
@@ -133,18 +135,29 @@ func newRoomCommitter(t *testing.T, live *crdt.Doc) *roomCommitter {
 	return &roomCommitter{live: live, writer: writer}
 }
 
-// commit makes one commit on a goroutine of its own and answers the apply's error once its
-// observers have run, the persistence observer's hand-over to the worker among them.
+// commit makes one commit of one margin key (commitKeys).
 func (c *roomCommitter) commit() <-chan error {
+	_, applied := c.commitKeys(1)
+	return applied
+}
+
+// commitKeys makes one commit setting keys margin keys on a goroutine of its own, and answers
+// its update and, once its observers have run, the persistence observer's hand-over to the worker
+// among them, the apply's error. Each key is a struct of its own, which no other merges into.
+func (c *roomCommitter) commitKeys(keys int) (update []byte, applied <-chan error) {
 	held := c.writer.StateVector()
 	margin := c.writer.GetMap(marksMapName)
-	key := fmt.Sprintf("queued-%d", c.made)
-	c.made++
-	c.writer.Transact(func(txn *crdt.Transaction) { margin.Set(txn, key, crdt.NewTextPrelim()) })
-	update := crdt.EncodeStateAsUpdateV1(c.writer, held)
-	applied := make(chan error, 1)
-	go func() { applied <- crdt.ApplyUpdateV1(c.live, update, "peer") }()
-	return applied
+	c.writer.Transact(func(txn *crdt.Transaction) {
+		for range keys {
+			margin.Set(txn, fmt.Sprintf("queued-%d", c.made), crdt.NewTextPrelim())
+			c.made++
+		}
+	})
+	update = crdt.EncodeStateAsUpdateV1(c.writer, held)
+	c.commits++
+	answered := make(chan error, 1)
+	go func() { answered <- crdt.ApplyUpdateV1(c.live, update, "peer") }()
+	return update, answered
 }
 
 // queueFullWait is how long one commit's persistence observer may take to hand its update to the
@@ -168,10 +181,10 @@ func (c *roomCommitter) fill(t *testing.T) {
 		select {
 		case err := <-c.commit():
 			if err != nil {
-				t.Fatalf("commit %d to the room: %v", c.made, err)
+				t.Fatalf("commit %d to the room: %v", c.commits, err)
 			}
 		case <-time.After(queueFullWait):
-			t.Logf("commit %d waited %s to hand its update to the room's worker: the room's queue of updates to store is full", c.made, queueFullWait)
+			t.Logf("commit %d waited %s to hand its update to the room's worker: the room's queue of updates to store is full", c.commits, queueFullWait)
 			return
 		}
 	}
@@ -237,24 +250,25 @@ func poolOfOneSlot(t *testing.T, waiting func()) (*loadSlots, *atomic.Bool) {
 }
 
 // holdWorkerBehindAFullQueue holds artifactID's persistence worker at its store of a commit made
-// to live, the room's document, before that store decodes or takes anything (holdNextAppend), and
-// fills the room's queue of updates to store behind it (roomCommitter.fill), so the next commit's
-// hand-over to the worker waits until release lets the worker go on.
-func holdWorkerBehindAFullQueue(t *testing.T, service *Service, artifactID string, live *crdt.Doc) (release func()) {
+// to live, the room's document, setting firstKeys margin keys (roomCommitter.commitKeys), before
+// that store decodes or takes anything (holdNextAppend), and fills the room's queue of updates to
+// store behind it (roomCommitter.fill), so the next commit's hand-over to the worker waits until
+// release lets the worker go on. It answers the held commit's update too.
+func holdWorkerBehindAFullQueue(t *testing.T, service *Service, artifactID string, live *crdt.Doc, firstKeys int) (first []byte, release func()) {
 	t.Helper()
 	appending, release := holdNextAppend(t, service, artifactID)
 	queue := newRoomCommitter(t, live)
-	first := queue.commit()
+	first, applied := queue.commitKeys(firstKeys)
 	select {
 	case <-appending:
 	case <-time.After(roomWait(t)):
 		t.Fatal("the room's worker never came to store the first commit")
 	}
-	if err := <-first; err != nil {
+	if err := <-applied; err != nil {
 		t.Fatalf("the first commit: %v", err)
 	}
 	queue.fill(t)
-	return release
+	return first, release
 }
 
 // heapGivenBackTolerance is how far the live heap a heavy apply leaves behind it as its commit's
@@ -335,16 +349,23 @@ func TestAHeavyApplysGrantGoesBackBeforeItsCommitsObserversAndWhatItLeavesIsTheR
 	}
 }
 
-// Cycle (i). The room's persistence worker decodes each update it stores into a fresh copy before
-// it stores it (StoreUpdateStored, holdServerLoad), waiting for its bytes of the pod's load
-// concurrency. A heavy apply's commit hands its update to that worker through the room's queue of
-// updates to store and waits while the queue is full. With the queue full and the pool full but
-// for the apply's own grant, the worker's decode of the next update it stores waits for the pool,
-// and the room stores it, and the apply returns, because the apply gave its grant back before its
-// commit's observers ran. Held through the commit, the grant is what the decode waited for while
-// the apply waited for the decode's worker. The decode took only free bytes before
-// (holdFreeLoad), which held no apply and worker against each other but let it run beside a full
-// pool counted by nothing.
+// heldCommitKeys is how many margin keys the commit cycle (i)'s worker is held at sets: each key a
+// struct of its own, so the commit declares more structs than an update may and still be stored
+// with no grant (heavyUpdateWeight), and its read-back waits for the pool, while what it takes
+// stays within the heavy apply's grant, which declares chainStructs.
+const heldCommitKeys = 2 * unslottedApplyStructs
+
+// Cycle (i). The room's persistence worker decodes each heavy update it stores into a fresh copy
+// before it stores it (StoreUpdateStored, holdServerLoad, heavyUpdateWeight), waiting for its bytes
+// of the pod's load concurrency. A heavy apply's commit hands its update to that worker through the
+// room's queue of updates to store and waits while the queue is full. With the queue full behind a
+// heavy commit the worker holds, and the pool full but for the apply's own grant, the worker's
+// decode of that commit waits for the pool, and the room stores it, and the apply returns, because
+// the apply gave its grant back before its commit's observers ran. Held through the commit, the
+// grant is what the decode waited for while the apply waited for the decode's worker. The decode
+// took only free bytes before (holdFreeLoad), which held no apply and worker against each other
+// but let it run beside a full pool counted by nothing. A lighter commit's decode takes nothing,
+// so the worker the test holds holds a heavy one.
 func TestTheWorkersReadBackWaitsForAPoolAHeavyApplyGaveBack(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -352,7 +373,11 @@ func TestTheWorkersReadBackWaitsForAPoolAHeavyApplyGaveBack(t *testing.T) {
 	pool, waited := poolOfOneSlot(t, nil)
 	fillPoolBut(t, pool, grant)
 	before := storedHead(t, service.store, artifactID)
-	releaseWorker := holdWorkerBehindAFullQueue(t, service, artifactID, live)
+	first, releaseWorker := holdWorkerBehindAFullQueue(t, service, artifactID, live, heldCommitKeys)
+	if weight, heavy := heavyUpdateWeight(first); !heavy || weight > grant {
+		t.Fatalf("the commit the worker holds is %d bytes declaring %d structs, weighed at %d (heavy: %t), want a heavy update weighed within the apply's %d-byte grant",
+			len(first), declaredStructs(first), weight, heavy, grant)
+	}
 	observer := holdNextObserver(t, service, artifactID, false)
 	heavy := applyHeavy(service, artifactID, live, update)
 	awaitHeavyApply(t, observer, heavy)
@@ -385,7 +410,7 @@ func TestTheWorkersWaitForTheDocumentsLockEndsOnceAHeavyApplyGaveItsGrantBack(t 
 	pool, waited := poolOfOneSlot(t, sync.OnceFunc(func() { close(forkWaits) }))
 	fillPoolBut(t, pool, grant+grant/2)
 	before := storedHead(t, service.store, artifactID)
-	releaseWorker := holdWorkerBehindAFullQueue(t, service, artifactID, live)
+	_, releaseWorker := holdWorkerBehindAFullQueue(t, service, artifactID, live, 1)
 	observer := holdNextObserver(t, service, artifactID, false)
 	heavy := applyHeavy(service, artifactID, live, update)
 	awaitHeavyApply(t, observer, heavy)

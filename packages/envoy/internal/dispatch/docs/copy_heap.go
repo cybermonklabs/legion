@@ -29,15 +29,16 @@ import (
 // bootstrapLoadedState), the fold of a cold read, a version read or a compaction (foldRead), the
 // replica's build from a base (renderedReplica.start), the copy a server write's decode-cap count
 // takes (structsAfter), a rebuild's decodes (its check of a resident room and of the stored
-// history, nearACap, rebuildSource, RebuildTx), the read-back of each update a room's
-// persistence worker stores (StoreUpdateStored, AppendUpdatesWithCredit) and the append gate's
-// fold of a history replaced under a room and its decode of the run onto the document that fold
-// makes (storedHistoryHolds), which share one grant holding that document from its first row until
-// the run has been judged against it. The replica's build may not wait, so it takes its bytes only
-// where they are free at once and otherwise decodes beside the pool's holders (holdFreeLoad); every
-// other decode waits for its bytes. What each leaves behind is its owner's: a room's two copies are
-// charged by the room budget, a fold's state goes back to its caller, and a read-back's copy and
-// the gate's document are dropped once their decodes are done.
+// history, nearACap, rebuildSource, RebuildTx), the read-back of each heavy update a room's
+// persistence worker stores (StoreUpdateStored, AppendUpdatesWithCredit, heavyUpdateWeight) and
+// the append gate's fold of a history replaced under a room and its decode of the run onto the
+// document that fold makes (storedHistoryHolds), which share one grant holding that document from
+// its first row until the run has been judged against it. The replica's build may not wait, so it
+// takes its bytes only where they are free at once and otherwise decodes beside the pool's holders
+// (holdFreeLoad); the read-back of a lighter update takes nothing, as its apply takes nothing
+// (heavyUpdateWeight); every other decode waits for its bytes. What each leaves behind is its
+// owner's: a room's two copies are charged by the room budget, a fold's state goes back to its
+// caller, and a read-back's copy and the gate's document are dropped once their decodes are done.
 //
 // The second is a live write's fork, held for the fork's whole life rather than for a decode
 // alone: from the moment before the fork is built - cloned from the room's replica (warmFork,
@@ -52,7 +53,7 @@ import (
 // integrated and passed its check, or until a refused apply returns (Service.weighPeerUpdate,
 // crdt.ApplyBudget.Integrated): a reconnect storm's whole-state handoffs then decode as many at a
 // time as the pool holds rather than all at once, while a keystroke, far under both, never waits
-// for the pool.
+// for the pool, at its apply or at its store (heavyUpdateWeight).
 //
 // The fourth is the answer to one browser's first sync, held from before that answer is built
 // until its frames are in the browser's write queue (Service.weighStateAnswer): answering a
@@ -88,6 +89,30 @@ const unslottedApplyBytes = 2 << 20
 // the page nothing: it keeps its saved rows, as for any answer not applied. A keystroke declares
 // a struct or two.
 const unslottedApplyStructs = unslottedApplyBytes / bytesOfHeapAStruct
+
+// heavyUpdateWeight is what a decode of a browser's update takes of the pod's load concurrency,
+// and whether it takes anything. An update is heavy past unslottedApplyBytes or past
+// unslottedApplyStructs declared structs, since a frame of a million GC structs is 2 MB and
+// allocated 102.5 times that to apply; a heavy one takes what its copy costs, its bytes and the
+// structs it declares (copyWeight, declaredStructs, which reads each group's header and passes the
+// structs of every group but the last, building nothing). A lighter one, a keystroke or a paste,
+// takes nothing. A frame of at most twice unslottedApplyStructs bytes cannot declare more structs
+// than that, so a keystroke is not read for them.
+//
+// Both decodes a browser's update gets make this judgement: its apply's, on the frame
+// (Service.weighPeerUpdate), and the room's persistence worker's, on the commit it reads back as
+// it stores it (StoreUpdateStored, AppendUpdatesWithCredit). A keystroke takes nothing at either,
+// so its store never waits behind the heavy takers queued for the pool, as its apply never does.
+func heavyUpdateWeight(update []byte) (weight int64, heavy bool) {
+	var declared uint64
+	if len(update) > 2*unslottedApplyStructs {
+		declared = declaredStructs(update)
+	}
+	if len(update) <= unslottedApplyBytes && declared <= unslottedApplyStructs {
+		return 0, false
+	}
+	return copyWeight(int64(len(update)), int64(declared)), true
+}
 
 // loadSlotsName is what the slots are logged as (logLoadSlot).
 const loadSlotsName = "load"
@@ -137,7 +162,7 @@ const loadSlotsName = "load"
 // (ygo's persistence observer), and once the worker has begun to exit waits for it to finish, the
 // compaction it runs as it exits included (ygo's persistStranded, which a socket still committing
 // at ygo's shutdown reaches). So the worker waits for its bytes as every other decode does - its
-// read-back of each update it stores (StoreUpdateStored, AppendUpdatesWithCredit), its gate's
+// read-back of each heavy update it stores (StoreUpdateStored, AppendUpdatesWithCredit), its gate's
 // decodes of a history replaced under the room (storedHistoryHolds) and its compaction as it exits
 // (servicePersistenceAdapter.Compact) - and no holder waits on it: an apply holds no grant by the
 // time its commit reaches that queue, a live write publishes once its transaction has given its
@@ -412,8 +437,8 @@ func loadDecodedHistory(ctx context.Context, load VersionedStore, artifactID str
 // holdServerLoad is holdLoad for a decode of the server's own that no request waits on: a write's
 // fork read outside a transaction, a server write's decode-cap copy, the copy of a room loaded
 // without this service's persistence, and the decode a room's persistence worker makes of each
-// update it stores (StoreUpdateStored, AppendUpdatesWithCredit). Its wait has no deadline, and
-// ends, since every holder gives its bytes back (loadSlots).
+// heavy update it stores (StoreUpdateStored, AppendUpdatesWithCredit, heavyUpdateWeight). Its wait
+// has no deadline, and ends, since every holder gives its bytes back (loadSlots).
 //
 // It takes ctx for the grant ctx carries alone, never for its deadline: a decode made inside a
 // live write - its fork's own (buildForkHeld) and the decode-cap copy of the room it was read

@@ -3146,9 +3146,11 @@ func TestABurstOfStructDenseDocumentsStaysUnderThePodsMemory(t *testing.T) {
 //
 // Through the cache's fill and the heavy step a person types in the small document's room, a
 // keystroke every 200 ms, each sent once the room has answered the last applied (startTyping).
-// No slot holds a keystroke - a one-character insert is far under unslottedApplyBytesForTest and
-// loads nothing - so every keystroke applies, in each step answered within 2 s at the 99th
-// percentile and none past 5 s: the person does not wait behind the heavy work.
+// No slot holds a keystroke - a one-character insert is far under unslottedApplyBytesForTest, so
+// neither its apply nor the room's read-back of it as it is stored takes anything of the pool
+// (docs' heavyUpdateWeight), and it loads nothing - so every keystroke applies, in each step
+// answered within 2 s at the 99th percentile and none past 5 s: the person does not wait behind
+// the heavy work.
 //
 // The server logs each slot a holder waited a tenth of a second or more for (loadSlotLine), from
 // which the drive reads that the handoffs and the folds did queue for the pod's one slot, so the
@@ -3484,24 +3486,24 @@ const (
 // larger of its state at one price and its structs at the other, in the one copy, at least a byte
 // and at most a slot. A step 2's apply is granted it on the frame's bytes and the structs its
 // headers declare (docs' weighPeerUpdate), and a room's persistence worker weighs its read-back of
-// the commit the same way (docs' storedCopyWeight), so the server's grant lines name it
+// the commit the same way (docs' heavyUpdateWeight), so the server's grant lines name it
 // (loadSlotLine), which is where the store-decode drive holds the mirror to it.
 func copyWeightForTest(stateBytes, structs int64) int64 {
 	return min(max(max(stateBytes*bytesOfHeapAStateByteForTest, structs*bytesOfHeapAStructForTest), 1), loadSlotBytesForTest)
 }
 
-// A room's persistence worker reads back each commit it stores (docs' StoreUpdateStored): a whole
-// decode of the commit's update, made after the apply that took the update has given its grant
-// back. That decode may not wait for the pod's load concurrency - the worker is the one reader
-// of the queue a heavy apply's commit hands its update over by, and the apply holds its grant
-// until the commit is handed over - so it takes what its copy costs where the pool has that much
-// free at once, and otherwise decodes beside the pool's holders with nothing counting it (docs'
-// holdFreeLoad). This drive weighs that second case at its heaviest against the pod. Under the Go
-// limit a 4 GiB pod gives the server, with the pool held full by the heavy writers and the folds
-// of TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory, as many rooms of A3's
-// mebibyte of prose (TestTheRoomBudgetRefusesWhereItsOwnArithmeticSays) as the budget holds each
-// send, all at once, the heaviest step 2 the hook applies with a slot, so every room's worker reads
-// back the heaviest commit a step 2 under 2 MiB makes while the pool has no room for it.
+// A room's persistence worker reads back each heavy commit it stores (docs' StoreUpdateStored,
+// heavyUpdateWeight): a whole decode of the commit's update, made after the apply that took the
+// update has given its own grant back (docs' weighPeerUpdate, crdt.ApplyBudget.Integrated). That
+// decode takes what its copy costs out of the pod's load concurrency and waits for it as every
+// other decode does (docs' holdServerLoad), so a step 2's apply and its read-back are each counted
+// in the pool, one after the other. This drive weighs those read-backs at their heaviest against
+// the pod. Under the Go limit a 4 GiB pod gives the server, with the pool held full by the heavy
+// writers and the folds of TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory, as
+// many rooms of A3's mebibyte of prose (TestTheRoomBudgetRefusesWhereItsOwnArithmeticSays) as the
+// budget holds each send, all at once, the heaviest step 2 the hook applies with a slot, so every
+// room's worker reads back the heaviest commit a step 2 under 2 MiB makes, and waits for the pool
+// to do it.
 //
 // The step 2 (heaviestStepTwo) is a chain of items under one client, each typed at the head of a
 // text nested under the margin, ahead of the one before it, and then deleted: as many as fit
@@ -3528,12 +3530,24 @@ func copyWeightForTest(stateBytes, structs int64) int64 {
 // its whole state back with a few words typed, each apply granted its 16 MiB state's weight, and
 // four cold reads of documents at the decode cap each fold under a whole slot. They go first, and
 // the step 2s go, all at once, as soon as the server has given back a grant one of them waited for
-// (loadSlotLine), so the step 2s queue behind those still waiting. The pool serves its waiters in
-// the order they came and a taker that does not wait finds no room while any waits (docs'
-// loadSlots), so for as long as any of them queues, no read-back takes anything and each decodes
-// beside what the pool holds. The drive fails unless the server logged the step 2s' own waits,
-// at the weight this package mirrors (copyWeightForTest): the step 2s did queue for a full pool,
-// and the worst case did happen.
+// (loadSlotLine), so the step 2s' applies queue behind those still waiting. The pool serves its
+// waiters in the order they came, and a taker finds no room while any waits (docs' loadSlots).
+//
+// The drive fails unless every step 2 is applied and stored: its room answers it applied within
+// browserAnswerWithin, and the row the room's worker stored for it decodes to the step 2's
+// structs. It reads each read-back's grant off the server's grants log (loadSlotLine), which names
+// a grant only where it waited a tenth of a second or more. A step 2's apply asks for its grant as
+// its frame arrives, before any step 2's grant can be given back, and its read-back only once that
+// apply has given its own back, so a grant of a read-back's weight whose wait began once the first
+// grant of the step 2s' weight had been given back is a read-back's, and the drive gives each
+// room's read-back such a grant of its own, given back before the room answered (matchGrants). A
+// room whose read-back has none took its grant at once, once the pool had room. The drive fails
+// where it could not have: where, through the whole of the time from the step 2s' send to that
+// room's answer, the server logged a holder queued ahead of any new taker for a tenth of a second
+// or more (poolQueuedThrough), so a read-back that asked then waited and left a line. It fails too
+// where the server logged more grants of the step 2s' weight than two a room, the apply's and the
+// read-back's, which is the mirror of that weight gone wrong; and it logs how many read-backs
+// waited and how many found room.
 //
 // The window runs from the first of those requests to the last step 2's answer, and a room
 // answers a step 2 applied only once its commit is stored (docs' Server.AnswerOnceStored), so
@@ -3546,8 +3560,8 @@ func copyWeightForTest(stateBytes, structs int64) int64 {
 //
 // No run is recorded here yet: the pod it was written in cannot run it. Its Job runs
 //
-//	go test -tags memory -count=1 -timeout 90m -run '^TestStoreDecodesBesideAFullPoolStayUnderThePodsMemory$' ./cmd/dispatch
-func TestStoreDecodesBesideAFullPoolStayUnderThePodsMemory(t *testing.T) {
+//	go test -tags memory -count=1 -timeout 90m -run '^TestStoreDecodesWaitForAFullPoolAndStayUnderThePodsMemory$' ./cmd/dispatch
+func TestStoreDecodesWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 	const folds, handoffs = 4, 3
 	building := time.Now()
 	memory := newMemoryHarness(t)
@@ -3658,6 +3672,7 @@ func TestStoreDecodesBesideAFullPoolStayUnderThePodsMemory(t *testing.T) {
 	read := make([]outcome, len(folded))
 	stepped := make([]outcome, len(stepping))
 	mark := len(server.output.String())
+	var sent time.Time
 	step = time.Now()
 	peak := server.peakResident(t, func() {
 		var group sync.WaitGroup
@@ -3689,7 +3704,7 @@ func TestStoreDecodesBesideAFullPoolStayUnderThePodsMemory(t *testing.T) {
 				t.Fatalf("no holder of the pool waited for it within %s of the heavy writers and the folds starting: the pool was never full", poolQueuedWithin)
 			}
 		}
-		sent := time.Now()
+		sent = time.Now()
 		t.Logf("a holder of the pool had waited for it %s after the heavy writers and the folds started; the step 2s go now", sent.Sub(step).Round(time.Millisecond))
 		for index, sending := range stepping {
 			group.Go(func() {
@@ -3706,7 +3721,8 @@ func TestStoreDecodesBesideAFullPoolStayUnderThePodsMemory(t *testing.T) {
 	for index, result := range stepped {
 		t.Logf("the step 2 into room %d: applied %v, closed %v, answered in %s", index, result.applied, result.closed, result.took.Round(time.Millisecond))
 		if result.err != nil || !result.applied || result.closed != nil {
-			t.Errorf("the step 2 into room %d: applied %v, closed %v, %v; want it applied and stored, and the socket open", index, result.applied, result.closed, result.err)
+			t.Errorf("the step 2 into room %d: applied %v, closed %v, %v; want it applied and stored within %s (browserAnswerWithin), and the socket open",
+				index, result.applied, result.closed, result.err, browserAnswerWithin)
 		}
 	}
 	for index, result := range handedBack {
@@ -3734,21 +3750,12 @@ func TestStoreDecodesBesideAFullPoolStayUnderThePodsMemory(t *testing.T) {
 		coldRead, len(read), coldBusy, loadSlotsForTest)
 
 	holds := loadSlotHolds(t, window)
-	logLoadSlots(t, "the store decodes beside the full pool", holds)
-	queuedStepTwos := 0
-	for _, hold := range holds {
-		if hold.bytes == decodeWeight {
-			queuedStepTwos++
-		}
-	}
-	t.Logf("in %s, %d of the %d step 2s waited a tenth of a second or more for the pool before their apply", took.Round(time.Second), queuedStepTwos, len(stepping))
-	if queuedStepTwos == 0 {
-		t.Errorf("the server logged no grant of the %d bytes a step 2's apply is weighed at that waited a tenth of a second or more (%d grants logged): the step 2s did not queue for a full pool, or the mirror of their weight is wrong, so their read-backs were not weighed beside a full pool",
-			decodeWeight, len(holds))
-	}
+	logLoadSlots(t, "the store decodes waiting for the full pool", holds)
 	// What each room's worker read back is the row it stored for the step 2: the first version
 	// past the head the room loaded, since the step 2 is the room's first commit, weighed as the
 	// server weighs it (copyWeightForTest).
+	readWeights := make([]int64, rooms)
+	stepWeights := map[int64]bool{decodeWeight: true}
 	var lightest, heaviestRead int64
 	for index, room := range fleet.copies[:rooms] {
 		var row []byte
@@ -3763,18 +3770,86 @@ func TestStoreDecodesBesideAFullPoolStayUnderThePodsMemory(t *testing.T) {
 			continue
 		}
 		weight := copyWeightForTest(int64(len(row)), structs)
+		readWeights[index], stepWeights[weight] = weight, true
 		if lightest == 0 || weight < lightest {
 			lightest = weight
 		}
 		heaviestRead = max(heaviestRead, weight)
 	}
-	t.Logf("each of the %d rooms' workers read back a commit of %d structs weighed at %d to %d bytes, %d in all where every one decoded beside a full pool of %d",
+	t.Logf("each of the %d rooms' workers read back a commit of %d structs weighed at %d to %d bytes, %d in all, taken out of the pool's %d",
 		rooms, chained, lightest, heaviestRead, int64(rooms)*heaviestRead, int64(worstCaseLoadSlotBytesForTest))
 
+	// Every grant of the step 2s' weights is an apply's or a read-back's, two a room at most. A
+	// read-back asks only once its own apply has given its grant back, so the read-back of a room
+	// whose apply waited began its wait no earlier than the first grant of the apply's weight the
+	// server logged as given back (firstGiven); where none was logged, the step 2s' send stands for
+	// it.
+	stepGrants := 0
+	var firstGiven time.Time
+	for _, hold := range holds {
+		if !stepWeights[hold.bytes] {
+			continue
+		}
+		stepGrants++
+		if hold.bytes == decodeWeight && (firstGiven.IsZero() || hold.to.Before(firstGiven)) {
+			firstGiven = hold.to
+		}
+	}
+	if firstGiven.IsZero() {
+		firstGiven = sent
+	}
+	if stepGrants > 2*rooms {
+		t.Errorf("the server logged %d grants of the step 2s' weights (%d to apply, %d to %d to read back), more than an apply's and a read-back's for each of the %d rooms: the mirror of their weight is wrong",
+			stepGrants, decodeWeight, lightest, heaviestRead, rooms)
+	}
+	// Each room's read-back is given a logged grant of its own of its weight, whose wait began once
+	// the first step 2's grant was given back and whose bytes were given back before the room
+	// answered. The rooms whose read-back must have left one - every taker that asked from the
+	// step 2s' send to the room's answer queued a tenth of a second or more - go first, so each of
+	// them is given one wherever the log holds one for each (matchGrants).
+	var order []int
+	queued := make([]bool, rooms)
+	for index := range rooms {
+		queued[index] = poolQueuedThrough(holds, sent, sent.Add(stepped[index].took))
+		if queued[index] && readWeights[index] > 0 {
+			order = append(order, index)
+		}
+	}
+	for index := range rooms {
+		if !queued[index] && readWeights[index] > 0 {
+			order = append(order, index)
+		}
+	}
+	windows := make([]grantWindow, len(order))
+	for position, index := range order {
+		windows[position] = grantWindow{bytes: readWeights[index], from: firstGiven.Add(-logTimeGrain), to: sent.Add(stepped[index].took)}
+	}
+	waitedReads, roomyReads := 0, 0
+	for position, matched := range matchGrants(windows, holds) {
+		index := order[position]
+		answeredAfter := stepped[index].took
+		switch {
+		case matched >= 0:
+			waitedReads++
+			grant := holds[matched]
+			t.Logf("room %d's read-back waited %s for its %d bytes of the pool and held them %s; the room answered its step 2 %s after the step 2s were sent",
+				index, grant.waited.Round(time.Millisecond), grant.bytes, grant.held.Round(time.Millisecond), answeredAfter.Round(time.Millisecond))
+		case queued[index]:
+			t.Errorf("room %d's read-back left no grant of its %d bytes that the server logged as having waited, though every taker that asked from the step 2s' send to the room's answer %s later queued a tenth of a second or more behind a holder the server logged: the read-back took nothing of the pool",
+				index, readWeights[index], answeredAfter.Round(time.Millisecond))
+		default:
+			roomyReads++
+			t.Logf("room %d's read-back left no grant of its %d bytes that the server logged as having waited: it found room in the pool, whose queue stood empty at some moment from the step 2s' send to the room's answer %s later",
+				index, readWeights[index], answeredAfter.Round(time.Millisecond))
+		}
+	}
+	t.Logf("in %s, %d of the %d rooms' read-backs waited a tenth of a second or more for the pool and %d found room in it; the server logged %d grants of the step 2s' weights in all",
+		took.Round(time.Second), waitedReads, rooms, roomyReads, stepGrants)
+
 	requireUnderThePod(t, filledPeak, "the rooms opened")
-	requireUnderThePod(t, peak, "the store decodes beside the full pool")
+	requireUnderThePod(t, peak, "the store decodes waiting for the full pool")
 	if peak.samples > 0 {
-		t.Logf("the store decodes beside the full pool: a pod's kernel would charge %d MiB, %d MiB under the pod's %d; the runtime held %d bytes, %d under the %d-byte limit and its %d-byte margin",
+		t.Logf("the store decodes waiting for the full pool: a pod's kernel would charge %d MiB, %d MiB under the pod's %d; the runtime held %d bytes, %d under the %d-byte limit and its %d-byte margin",
 			peak.charged>>20, (podMemory-peak.charged)>>20, podMemory>>20, peak.held, peak.limit+podGoMemoryLimitMargin-peak.held, peak.limit, podGoMemoryLimitMargin)
 	}
 }
@@ -3864,7 +3939,8 @@ const (
 	// replacedCloseWithin bounds the drive's wait, once its keystrokes are answered, for the
 	// server to log each room's close (replacedCloseLine). A close returns once the room's
 	// persistence worker has exited, and the worker compacts the room as it exits, after a wait
-	// for one of the process's buffered folds where the cold reads hold them all.
+	// for one of the process's buffered folds where the cold reads hold them all, and for its
+	// grant of the pool.
 	replacedCloseWithin = 5 * time.Minute
 )
 
@@ -3879,16 +3955,16 @@ var replacedCloseLine = regexp.MustCompile(`time=(\S+) level=INFO msg="dispatch:
 // A room's persistence worker checks each browser update it stores against the stored history
 // when that history was replaced past the room's cursor (docs' gateAppend, storedHistoryHolds): it
 // folds the history the store holds now and decodes the update onto the document that fold
-// leaves. Neither may wait for the pod's load concurrency - the worker holds the document's lock
-// there, and is the one reader of the queue a heavy apply's commit hands its update over by - so
-// each takes its bytes where the pool has them free at once and otherwise runs beside the pool's
-// holders with nothing counting it (withFreeLoadOnly). So does the compaction the same worker
-// runs as its room closes (servicePersistenceAdapter.Compact). This drive weighs both at their
-// heaviest against the pod. Under the Go limit a 4 GiB pod gives the server, with the pool held
-// full by the heavy writers and the folds of TestStoreDecodesBesideAFullPoolStayUnderThePodsMemory,
-// as many rooms of the heaviest state measured as the budget holds, each on a history replaced
-// past its cursor, type one keystroke each at once, so every room's worker folds that history
-// beside the full pool, and then compacts it as the server closes the room.
+// leaves, under one grant of the pod's load concurrency, which it waits for as every other decode
+// does: no holder of the pool waits on the worker, since a heavy apply gives its grant back before
+// its commit reaches the worker's queue (docs' weighPeerUpdate, crdt.ApplyBudget.Integrated). So
+// does the compaction the same worker runs as its room closes (servicePersistenceAdapter.Compact).
+// This drive weighs both at their heaviest against the pod. Under the Go limit a 4 GiB pod gives
+// the server, with the pool held full by the heavy writers and the folds of
+// TestStoreDecodesWaitForAFullPoolAndStayUnderThePodsMemory, as many rooms of the heaviest state
+// measured as the budget holds, each on a history replaced past its cursor, type one keystroke
+// each at once, so every room's worker waits for the full pool to fold that history, and then
+// again to compact it as the server closes the room.
 //
 // The state is the docs package's run of a million keystrokes (keystrokeRunStates): a paragraph
 // typed into 1,000,006 times, each keystroke after the one before it, which that package's
@@ -3930,24 +4006,28 @@ var replacedCloseLine = regexp.MustCompile(`time=(\S+) level=INFO msg="dispatch:
 // state cap hand its whole state back with a few words typed, each apply granted its state's
 // weight, and four cold reads of documents at the decode cap each fold under a whole slot. The
 // keystrokes go, all at once, as soon as the server has given back a grant one of those waited
-// for (loadSlotLine). A keystroke is a one-character insert, which takes no grant, and its room
-// answers it applied only once its worker has stored it (docs' Server.AnswerOnceStored), past the
-// gate's fold. That fold is weighed at the whole pool - its rows declare a million structs
-// (copyWeightForTest) - so while any holder holds bytes of the pool or waits for them it takes
-// nothing and folds beside them. The drive fails unless, for every room, the server logged a grant
-// waited for or held through the whole of that room's keystroke's store (poolBusyThrough): every
-// room's gate folded beside a full pool.
+// for (loadSlotLine). A keystroke is a one-character insert, which takes no grant at its apply or
+// at its store (docs' heavyUpdateWeight), and its room answers it applied only once its worker has
+// stored it (docs' Server.AnswerOnceStored), past the gate's fold. That fold is weighed at the
+// whole pool - its rows declare a million structs (copyWeightForTest) - so while any holder holds
+// bytes of the pool or waits for them it waits, and the rooms' folds take the pool one at a time.
+// The drive fails unless each room's gate fold shows in the server's grants log as a grant of the
+// whole pool that waited a tenth of a second or more, its wait begun once the room's keystroke was
+// sent and its bytes given back before the room answered the keystroke: the drive gives each room
+// such a grant of its own (matchGrants).
 //
 // A keystroke stored on a replaced history closes its room (Service.closeRoomOnReplacedHistory);
 // the close returns once the room's worker has exited, and the worker compacts the room as it
-// exits, taking only free bytes as its gate did: a fold of the two replaced rows, which are older
-// than the tail by then, the same history its gate folded. Rows of this size are read into memory
-// (foldBufferBytes), so each of those folds first takes one of the process's bufferedFolds, which
-// the cold reads hold while they wait for the pool. So every room's close is a closing compaction
-// in the same window, and the window runs until the server has logged every room's close
-// (replacedCloseLine). The drive fails unless every room closed, and logs how many did and how
-// many of them closed while the pool was busy. They are as many as the rooms: no room loads while
-// the pool is full, so no more can close in the window than the budget holds at this state, and no
+// exits, waiting for the pool as its gate did: a fold of the two replaced rows, which are older
+// than the tail by then, the same history its gate folded, weighed at the whole pool as well. Rows
+// of this size are read into memory (foldBufferBytes), so each of those folds first takes one of
+// the process's bufferedFolds, which the cold reads hold while they wait for the pool. So every
+// room's close is a closing compaction in the same window, and the window runs until the server
+// has logged every room's close (replacedCloseLine). The drive fails unless every room closed, and
+// unless each room's closing compaction shows in the grants log as the gate fold does: a grant of
+// the whole pool that waited, of its own, its wait begun once the room's keystroke was sent and its
+// bytes given back by the room's close. They are as many as the rooms: no room loads while the
+// pool is full, so no more can close in the window than the budget holds at this state, and no
 // more of them fold at once than the bufferedFolds.
 //
 // E's heaviest step 2 (heaviestStepTwo) runs in no room of the window. Another room of A3's prose
@@ -3963,15 +4043,16 @@ var replacedCloseLine = regexp.MustCompile(`time=(\S+) level=INFO msg="dispatch:
 // its peak both ways A3 reads one (requireUnderThePod) - what a pod's kernel would charge, under
 // the pod's 4,096 MiB, and what the runtime held of what its Go limit bounds, within
 // podGoMemoryLimitMargin of that limit - and fails where either passes its bound. It fails too
-// unless every keystroke is stored past the replaced history's head, which only the gate's check
-// of that history admits, and reads as typed. It logs the rooms, the history each room's gate
-// folded and the weight that fold took none of, the measured figure for one such fold, the peak,
-// and how far each reading stood under its bound.
+// unless every keystroke is answered applied within browserAnswerWithin and stored past the
+// replaced history's head, which only the gate's check of that history admits, and reads as
+// typed. It logs the rooms, the history each room's gate folded, how long each fold and each
+// closing compaction waited for the pool and held it, the measured figure for one such fold, the
+// peak, and how far each reading stood under its bound.
 //
 // No run is recorded here yet: the pod it was written in cannot run it. Its Job runs
 //
-//	go test -tags memory -count=1 -timeout 90m -run '^TestGateFoldsBesideAFullPoolStayUnderThePodsMemory$' ./cmd/dispatch
-func TestGateFoldsBesideAFullPoolStayUnderThePodsMemory(t *testing.T) {
+//	go test -tags memory -count=1 -timeout 90m -run '^TestGateFoldsWaitForAFullPoolAndStayUnderThePodsMemory$' ./cmd/dispatch
+func TestGateFoldsWaitForAFullPoolAndStayUnderThePodsMemory(t *testing.T) {
 	const folds, handoffs = 4, 3
 	ctx := context.Background()
 	building := time.Now()
@@ -4004,7 +4085,7 @@ func TestGateFoldsBesideAFullPoolStayUnderThePodsMemory(t *testing.T) {
 			run.stateBytes, gateFoldMeasuredState)
 	}
 	if foldWeight := copyWeightForTest(int64(run.stateBytes), gateFoldRun); foldWeight != worstCaseLoadSlotBytesForTest {
-		t.Fatalf("a fold of the run's state is weighed at %d bytes of the pod's %d-byte load pool, want the whole pool: only then does a holder of any of it leave the fold nothing (poolBusyThrough)",
+		t.Fatalf("a fold of the run's state is weighed at %d bytes of the pod's %d-byte load pool, want the whole pool: only then does each room's fold wait while any holder holds bytes of it, the rooms' folds taking the pool one at a time (matchGrants)",
 			foldWeight, int64(worstCaseLoadSlotBytesForTest))
 	}
 
@@ -4220,21 +4301,27 @@ func TestGateFoldsBesideAFullPoolStayUnderThePodsMemory(t *testing.T) {
 		coldRead, len(read), coldBusy, loadSlotsForTest)
 
 	holds := loadSlotHolds(t, window)
-	logLoadSlots(t, "the gate folds and the closing compactions beside the full pool", holds)
-	besideFolds, closed, besideCloses := 0, 0, 0
+	logLoadSlots(t, "the gate folds and the closing compactions waiting for the full pool", holds)
+	// Each room's gate fold, and each closed room's closing compaction, is given a grant of the
+	// whole pool of its own that the server logged as having waited (matchGrants): the fold's wait
+	// begun once the room's keystroke was sent and its bytes given back before the room answered
+	// the keystroke, and the compaction's begun once the keystroke was sent and given back by the
+	// room's close, whose logged time stands up to logTimeGrain before the close.
+	type foldGrant struct {
+		room     int
+		what, by string
+	}
+	whole := int64(worstCaseLoadSlotBytesForTest)
+	var windows []grantWindow
+	var named []foldGrant
+	closed := 0
 	for index, room := range foldRooms {
 		result := typed[index]
-		busy := poolBusyThrough(holds, result.sent, result.answered)
-		t.Logf("room %d's keystroke: applied %v, closed %v, stored in %s, the pool busy throughout %v; its gate folded a %d-byte row declaring at least %d structs and the record after it, weighed at %d bytes of the pool, of which it took none where the pool was busy",
-			index, result.applied, result.closed, result.answered.Sub(result.sent).Round(time.Millisecond), busy, foldedRows[index], gateFoldRun, copyWeightForTest(int64(foldedRows[index]), gateFoldRun))
+		t.Logf("room %d's keystroke: applied %v, closed %v, stored in %s; its gate folded a %d-byte row declaring at least %d structs and the record after it, weighed at %d bytes of the pool",
+			index, result.applied, result.closed, result.answered.Sub(result.sent).Round(time.Millisecond), foldedRows[index], gateFoldRun, copyWeightForTest(int64(foldedRows[index]), gateFoldRun))
 		if result.err != nil || !result.applied || result.closed != nil {
-			t.Errorf("room %d's keystroke: applied %v, closed %v, %v; want it applied, which its room answers once it is stored", index, result.applied, result.closed, result.err)
-		}
-		if busy {
-			besideFolds++
-		} else {
-			t.Errorf("room %d's keystroke was stored from %s to %s into the window, and no grant the server logged was waited for or held throughout: its gate's fold of the replaced history may have found the pool free, so it was not weighed beside a full pool",
-				index, result.sent.Sub(step).Round(time.Millisecond), result.answered.Sub(step).Round(time.Millisecond))
+			t.Errorf("room %d's keystroke: applied %v, closed %v, %v; want it applied within %s (browserAnswerWithin), which its room answers once it is stored",
+				index, result.applied, result.closed, result.err, browserAnswerWithin)
 		}
 		var past int64
 		if err := memory.database.Pool.QueryRow(ctx,
@@ -4251,6 +4338,8 @@ func TestGateFoldsBesideAFullPoolStayUnderThePodsMemory(t *testing.T) {
 			t.Errorf("room %d's document holds %d rows past the replaced history's head %d and its first text reads %q, want the keystroke stored there and the text reading %q",
 				index, past, replacedHeads[index], got, wantHeading)
 		}
+		windows = append(windows, grantWindow{bytes: whole, from: result.sent.Add(-logTimeGrain), to: result.answered})
+		named = append(named, foldGrant{room: index, what: "gate fold", by: "before the room answered the keystroke"})
 		closedAt, logged := closes[room]
 		if !logged {
 			t.Errorf("the server logged no close of room %d within %s of its keystroke's answer: its persistence worker's compaction as it exits did not run in the window:\n%s",
@@ -4258,20 +4347,29 @@ func TestGateFoldsBesideAFullPoolStayUnderThePodsMemory(t *testing.T) {
 			continue
 		}
 		closed++
-		closingBusy := poolBusyThrough(holds, result.answered, closedAt)
-		if closingBusy {
-			besideCloses++
-		}
-		t.Logf("room %d was closed %s after its keystroke was stored, its compaction as it exits included, the pool busy throughout %v",
-			index, closedAt.Sub(result.answered).Round(time.Millisecond), closingBusy)
+		t.Logf("room %d was closed %s after its keystroke was stored, its compaction as it exits included",
+			index, closedAt.Sub(result.answered).Round(time.Millisecond))
+		windows = append(windows, grantWindow{bytes: whole, from: result.sent.Add(-logTimeGrain), to: closedAt.Add(logTimeGrain)})
+		named = append(named, foldGrant{room: index, what: "closing compaction", by: "by the room's close"})
 	}
-	t.Logf("in %s: %d gate folds of the run's state beside a full pool and %d closing compactions of it, %d of them while the pool was busy throughout, in the %d rooms the budget holds; one such fold was measured holding %d bytes above the document it leaves, %d for every room at once",
-		took.Round(time.Second), besideFolds, closed, besideCloses, rooms, int64(gateFoldMeasuredFold), int64(rooms)*gateFoldMeasuredFold)
+	waited := map[string]int{}
+	for position, matched := range matchGrants(windows, holds) {
+		fold := named[position]
+		if matched < 0 {
+			t.Errorf("room %d's %s shows in the server's grants log as no grant of the whole %d-byte pool of its own that waited a tenth of a second or more, begun once the room's keystroke was sent and given back %s: it did not wait for the pool",
+				fold.room, fold.what, whole, fold.by)
+			continue
+		}
+		waited[fold.what]++
+		t.Logf("room %d's %s waited %s for the whole pool and held it %s", fold.room, fold.what, holds[matched].waited.Round(time.Millisecond), holds[matched].held.Round(time.Millisecond))
+	}
+	t.Logf("in %s: %d gate folds of the run's state and %d closing compactions of it waited for the whole pool, in the %d rooms the budget holds, %d of them closed; one such fold was measured holding %d bytes above the document it leaves, %d for every room at once",
+		took.Round(time.Second), waited["gate fold"], waited["closing compaction"], rooms, closed, int64(gateFoldMeasuredFold), int64(rooms)*gateFoldMeasuredFold)
 
 	requireUnderThePod(t, filledPeak, "the rooms opened")
-	requireUnderThePod(t, peak, "the gate folds and the closing compactions beside the full pool")
+	requireUnderThePod(t, peak, "the gate folds and the closing compactions waiting for the full pool")
 	if peak.samples > 0 {
-		t.Logf("the gate folds and the closing compactions beside the full pool: a pod's kernel would charge %d MiB, %d MiB under the pod's %d; the runtime held %d bytes, %d under the %d-byte limit and its %d-byte margin",
+		t.Logf("the gate folds and the closing compactions waiting for the full pool: a pod's kernel would charge %d MiB, %d MiB under the pod's %d; the runtime held %d bytes, %d under the %d-byte limit and its %d-byte margin",
 			peak.charged>>20, (podMemory-peak.charged)>>20, podMemory>>20, peak.held, peak.limit+podGoMemoryLimitMargin-peak.held, peak.limit, podGoMemoryLimitMargin)
 	}
 }
@@ -4376,26 +4474,84 @@ func replacedCloses(t *testing.T, server *memoryServer, from int, rooms []string
 	}
 }
 
-// poolBusyThrough reports whether, at every moment from from to to, a holder the server logged
-// (loadSlotHolds) was waiting for bytes of the pod's load pool or holding them: from the moment
-// it began to wait to the moment it gave them back. While one waits the pool admits no taker that
-// does not wait (semaphore.Weighted), and while one holds, a taker weighed at the whole pool finds
-// nothing free, so a decode that takes only free bytes at that weight takes none and runs beside
-// them. A holder that waited less than a tenth of a second leaves no line (loadSlotLine), so this
-// reads the pool busy for no longer than it was.
-func poolBusyThrough(holds []loadSlotHold, from, to time.Time) bool {
-	began := func(hold loadSlotHold) time.Time { return hold.from.Add(-hold.waited) }
-	spans := slices.SortedFunc(slices.Values(holds), func(a, b loadSlotHold) int { return began(a).Compare(began(b)) })
+// loadSlotLoggedForTest mirrors docs' loadSlotLogged: a holder that waited less than this for its
+// grant of the pod's load pool leaves no line (loadSlotLine).
+const loadSlotLoggedForTest = 100 * time.Millisecond
+
+// logTimeGrain is how much of a moment the server's log leaves out of a line's time: slog's text
+// handler writes it truncated to the millisecond, so a time read off a line - loadSlotLine's and
+// what a loadSlotHold derives from it, replacedCloseLine's - stands up to this much before the
+// moment it names.
+const logTimeGrain = time.Millisecond
+
+// began is when the holder began to wait for its grant.
+func (h loadSlotHold) began() time.Time { return h.from.Add(-h.waited) }
+
+// poolQueuedThrough reports whether, at every moment from from to to, a holder the server logged
+// (loadSlotHolds) stood waiting for bytes of the pod's load pool and went on waiting
+// loadSlotLoggedForTest or more past that moment. The pool serves its waiters in the order they
+// came and gives no taker room while any waits (semaphore.Weighted), so a taker that asked at any
+// such moment waited behind that holder at least as long, and its grant left a line too. Each
+// holder's wait is read only as far as its line's truncated time vouches for (logTimeGrain), so
+// this reads the queue standing for no longer than it stood.
+func poolQueuedThrough(holds []loadSlotHold, from, to time.Time) bool {
+	type wait struct{ from, to time.Time }
+	var waits []wait
+	for _, hold := range holds {
+		if start, end := hold.began().Add(logTimeGrain), hold.from.Add(-loadSlotLoggedForTest); end.After(start) {
+			waits = append(waits, wait{start, end})
+		}
+	}
+	slices.SortFunc(waits, func(a, b wait) int { return a.from.Compare(b.from) })
 	reached := from
-	for _, hold := range spans {
-		if !reached.Before(to) || began(hold).After(reached) {
+	for _, standing := range waits {
+		if !reached.Before(to) || standing.from.After(reached) {
 			break
 		}
-		if hold.to.After(reached) {
-			reached = hold.to
+		if standing.to.After(reached) {
+			reached = standing.to
 		}
 	}
 	return !reached.Before(to)
+}
+
+// grantWindow is a grant a drive requires of the server's grants log (loadSlotLine): one of bytes,
+// whose holder began to wait no earlier than from and gave the bytes back no later than to.
+type grantWindow struct {
+	bytes    int64
+	from, to time.Time
+}
+
+// fits reports whether hold is a grant w could name.
+func (w grantWindow) fits(hold loadSlotHold) bool {
+	return hold.bytes == w.bytes && !hold.began().Before(w.from) && !hold.to.After(w.to)
+}
+
+// matchGrants gives as many of windows as it can a logged grant each, no grant to two of them -
+// a maximum matching, built window by window in their order along augmenting paths, so a window
+// given a grant keeps one, and every one of the first windows is given one wherever the log holds
+// a grant for each of them - and answers, for each window, the index in holds of its grant, or -1
+// where it has none.
+func matchGrants(windows []grantWindow, holds []loadSlotHold) []int {
+	given, owner := slices.Repeat([]int{-1}, len(windows)), slices.Repeat([]int{-1}, len(holds))
+	var give func(window int, tried []bool) bool
+	give = func(window int, tried []bool) bool {
+		for index, hold := range holds {
+			if tried[index] || !windows[window].fits(hold) {
+				continue
+			}
+			tried[index] = true
+			if owner[index] < 0 || give(owner[index], tried) {
+				owner[index], given[window] = window, index
+				return true
+			}
+		}
+		return false
+	}
+	for window := range windows {
+		give(window, make([]bool, len(holds)))
+	}
+	return given
 }
 
 // liveWriteDeadline is the deadline each write of the drive below runs under, which is the one a
@@ -4699,14 +4855,14 @@ func TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory(t *testing.T) {
 	}
 	// Every keystroke is answered as promptly as an unloaded room answers them, the worst of
 	// them included, because the keystroke's path meets none of the pod's bounds and nothing
-	// the burst holds: no part of the copy bound (the two holders on it, the replica's build
-	// from a base and the room's persistence worker's read-back of the keystroke it stores,
-	// take only what is free at once and never wait, docs' holdFreeLoad), no
-	// slot of the pod's load concurrency (an insert of one character is far under docs'
-	// unslottedApplyBytes, so it is never held, docs' weighPeerUpdate), no wait on the room
-	// budget's sweep (the pressure refuses at once and the editor retries, docs'
-	// underPressure) and no pooled connection (its durable append is the room's own
-	// persistence worker's, handed over a buffered channel, and that worker takes its
+	// the burst holds: no part of the copy bound (the replica's build from a base takes only
+	// what is free at once and never waits, docs' holdFreeLoad, and the room's persistence
+	// worker's read-back of the keystroke it stores takes nothing, as the keystroke's apply
+	// takes nothing, docs' heavyUpdateWeight), no slot of the pod's load concurrency (an insert
+	// of one character is far under docs' unslottedApplyBytes, so it is never held, docs'
+	// weighPeerUpdate), no wait on the room budget's sweep (the pressure refuses at once and the
+	// editor retries, docs' underPressure) and no pooled connection (its durable append is the
+	// room's own persistence worker's, handed over a buffered channel, and that worker takes its
 	// connection off this goroutine, docs' withRoomLock).
 	//
 	// That last one is what the worst keystroke used to wait on, and it is why this holds the

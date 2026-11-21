@@ -160,9 +160,11 @@ body: |-
     its turn rather than being refused: a stored document always loads and no honest handoff is
     turned away. A browser's apply gives its bytes back once its update has integrated and the
     room's checks have passed it, before the room hands the commit to its store, so what a room's
-    persistence worker decodes as it stores, checks and compacts waits for its turn too. The second
-    copy a room builds from a stored state takes its bytes only where the pool has them free at
-    once, and otherwise runs beside its holders.
+    persistence worker decodes as it stores, checks and compacts waits for its turn too. The store's
+    read of an update whose apply takes nothing, such as a keystroke, takes nothing either, so typing
+    waits on the pool neither as it is applied nor as it is saved. The second copy a room builds
+    from a stored state takes its bytes only where the pool has them free at once, and otherwise
+    runs beside its holders.
 
     What the server holds for one browser's socket is bounded as well, at 70 MiB of frames queued
     for it and not yet written. ygo bounded that queue in frames alone, 512 of them whatever their
@@ -215,7 +217,10 @@ body: |-
     check is told which of its runs judges a drain, the room keeps no record of a server write
     as the sender of what that write parked, an unsubscribed callback keeps nothing it captured
     reachable, and an apply's owner can give back what it holds for the apply before the commit's
-    observers run.
+    observers run. It carries the three fixes of `v1.55.1-theorem.14` as well: the record of who
+    parked each struct holds only what the room's queue holds, a parked string a merge cuts at its
+    front keeps only its own part, and a sync reply carrying a sync step 1 is dropped, rather than
+    answered outside the bound on a first sync's answer and relayed to every other browser.
 time: 2026-10-30T06:00:01.000000000Z
 custom:
     Issue: pr2544

@@ -168,3 +168,57 @@ func TestAnAppendedUpdateHeavyInStructsIsCountedInThePoolWhileItIsChecked(t *tes
 		t.Fatalf("%d bytes of the pool are held once the update is appended, want none", held)
 	}
 }
+
+// keystrokeStoredWithin is how long the test below gives a room to store and answer one keystroke
+// while every byte of the pool is held: the keystroke's apply and its store take milliseconds,
+// and a wait for the pool, which nothing in the test gives back, never ends.
+const keystrokeStoredWithin = 5 * time.Second
+
+// A keystroke is far under what makes a browser's update heavy (heavyUpdateWeight), so its apply
+// takes nothing of the pod's load concurrency (weighPeerUpdate), and neither does the room's
+// persistence worker's read-back of it as the worker stores it (StoreUpdateStored). The room
+// answers a keystroke only once it is stored (Server.AnswerOnceStored), and the pool serves its
+// waiters in the order they came, so a read-back that waited for its few hundred bytes held the
+// keystroke's answer behind every heavy taker queued before it: a reconnect storm's handoffs, a
+// burst of live writes' forks, cold reads' folds. With every byte of the pool held by a grant that
+// is never given back, a keystroke is stored and answered applied within keystrokeStoredWithin,
+// and the pool records no grant taken and no taker waiting while it is.
+func TestAKeystrokeIsStoredAndAnsweredWhileThePoolIsFull(t *testing.T) {
+	service, artifactID, serverURL := clientIDRoom(t)
+	service.settle = time.Hour // no settlement takes a grant beside the store's
+	page := openPage(t, serverURL, artifactID, "alice")
+	awaitAnswer(t, page, "the document")
+	waitForLandedAppends(t, service, artifactID)
+
+	pool, waited := poolOfOneSlot(t, nil)
+	var taken slotsHeld
+	var typing atomic.Bool
+	pool.taken = func(held int64) {
+		if typing.Load() {
+			taken.record(held)
+		}
+	}
+	fillPoolBut(t, pool, 0)
+	keystroke := typeAt(t, page.Doc, 0, "k")
+	if weight, heavy := heavyUpdateWeight(keystroke); heavy {
+		t.Fatalf("the keystroke is %d bytes declaring %d structs, weighed at %d: want it light", len(keystroke), declaredStructs(keystroke), weight)
+	}
+	before := storedHead(t, service.store, artifactID)
+	page.Hear()
+	typing.Store(true)
+	if err := page.Write(ygsync.EncodeUpdate(keystroke)); err != nil {
+		t.Fatalf("send the keystroke: %v", err)
+	}
+	if err := page.AwaitAnswered(keystrokeStoredWithin); err != nil {
+		t.Fatalf("%v, with every byte of the pool held (a taker began to wait for the pool: %t; grants taken: %v)", err, waited.Load(), taken.all())
+	}
+	if heard := page.Heard(); len(heard) != 1 || heard[0].What != "SyncStatus 1 (applied: true)" {
+		t.Fatalf("the page heard %v, want the keystroke answered applied", heard)
+	}
+	if head := storedHead(t, service.store, artifactID); head <= before {
+		t.Fatalf("the document stands at update %d once the keystroke was answered, want past %d", head, before)
+	}
+	if grants := taken.all(); len(grants) != 0 || waited.Load() {
+		t.Fatalf("the keystroke's apply and store took grants leaving %v held, and a taker began to wait for the pool: %t; want neither", grants, waited.Load())
+	}
+}

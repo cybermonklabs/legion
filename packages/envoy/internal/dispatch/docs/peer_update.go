@@ -1321,7 +1321,7 @@ func (a *roomApplies) splitsUnderPressure(structs uint64, full bool) int {
 //
 // An update over unslottedApplyBytes, or declaring more than unslottedApplyStructs structs, takes
 // what its apply costs out of the pod's load concurrency before the hook decodes any of it
-// (loadSlots, copyWeight, declaredStructs), so a reconnect storm's whole-state handoffs are read
+// (loadSlots, heavyUpdateWeight), so a reconnect storm's whole-state handoffs are read
 // and decode as many at a time as the pool holds rather than all at once, and a frame small in
 // bytes and heavy in structs decodes inside the pool too; typing never waits on it. The grant is
 // given back as soon as the apply has integrated and its check has passed, before its commit's
@@ -1361,23 +1361,14 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 	// A heavy update takes its bytes before anything decodes it, so every read of the frame that
 	// builds anything - the retired clients' scan of its header and its delete set
 	// (refusedBeforeApply), the client ids' judgement (judgeClients) and the apply's decode - runs
-	// inside one grant; a keystroke takes none. An update is heavy past unslottedApplyBytes or past
-	// unslottedApplyStructs declared structs, since a frame of a million GC structs is 2 MB and
-	// allocated 102.5 times that to apply. What it takes is what its own apply builds, its bytes and
-	// the structs it declares at copyWeight (declaredStructs, which reads each group's header and
-	// passes the structs of every group but the last, building nothing), rather than a whole slot,
-	// so a reconnect storm's handoffs decode as many at a time as the pool holds. A frame of at most
-	// twice unslottedApplyStructs bytes cannot declare more structs than that, so a keystroke is not
-	// read for them. The wait has no deadline, since the peer's read loop carries none and every
-	// holder gives its bytes back (loadSlots), so it cannot fail.
-	var declared uint64
-	if len(info.Update) > 2*unslottedApplyStructs {
-		declared = declaredStructs(info.Update)
-	}
+	// inside one grant; a keystroke takes none. What makes an update heavy, and what it takes, is
+	// heavyUpdateWeight's: what its own apply builds rather than a whole slot, so a reconnect storm's
+	// handoffs decode as many at a time as the pool holds. The wait has no deadline, since the peer's
+	// read loop carries none and every holder gives its bytes back (loadSlots), so it cannot fail.
 	var grant *loadSlot
-	if len(info.Update) > unslottedApplyBytes || declared > unslottedApplyStructs {
+	if weight, heavy := heavyUpdateWeight(info.Update); heavy {
 		grant = newLoadSlot()
-		_ = grant.take(context.Background(), copyWeight(int64(len(info.Update)), int64(declared)))
+		_ = grant.take(context.Background(), weight)
 		defer grant.release()
 	}
 	if refusal := s.refusedBeforeApply(info, weighing); refusal != nil {

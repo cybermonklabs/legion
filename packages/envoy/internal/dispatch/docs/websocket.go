@@ -317,11 +317,14 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 // not.
 //
 // It runs on the room's persistence worker, the one reader of the room's queue of updates to
-// store. Its decodes wait for their bytes of the pod's load concurrency as every other decode
-// does - the decode of the update itself (holdServerLoad, AppendUpdatesWithCredit) and the ones
-// its gate makes of a history replaced under the room (storedHistoryHolds) - since no holder of
-// that pool waits on this worker: a heavy apply gives its grant back before its commit hands the
-// update to the worker's queue (weighPeerUpdate, crdt.ApplyBudget.Integrated).
+// store. Its decodes of a heavy update wait for their bytes of the pod's load concurrency as every
+// other decode does - the decode of the update itself (holdServerLoad, AppendUpdatesWithCredit)
+// and the ones its gate makes of a history replaced under the room (storedHistoryHolds) - since no
+// holder of that pool waits on this worker: a heavy apply gives its grant back before its commit
+// hands the update to the worker's queue (weighPeerUpdate, crdt.ApplyBudget.Integrated). Its
+// decode of a lighter update, a keystroke or a paste, takes nothing, as that update's apply took
+// nothing (heavyUpdateWeight), so a keystroke is stored, and answered, without waiting behind the
+// heavy takers queued for the pool.
 func (a *servicePersistenceAdapter) StoreUpdateStored(ctx context.Context, room string, update []byte) (stored bool, err error) {
 	if a.service.roomFailed(room) {
 		// The failed room's update is dropped and its browser resends it to the room that
@@ -384,11 +387,16 @@ func (a *servicePersistenceAdapter) StoreUpdateStored(ctx context.Context, room 
 	// of the room stores them (AppendRoomUpdatesTx); a later call of an update the batch stored
 	// finds its class stored and decodes nothing.
 	//
-	// The read-back is a whole decode of the update, as heavy as the apply that made it, so it
-	// takes what its copy costs out of the pod's load concurrency, waiting for it without a
-	// deadline (holdServerLoad): the apply that made the update gave its own grant back before
-	// its commit reached this worker's queue (weighPeerUpdate).
-	release := holdServerLoad(ctx, storedCopyWeight(update))
+	// The read-back is a whole decode of the update, as heavy as the apply that made it. A heavy
+	// update's takes what its copy costs out of the pod's load concurrency, waiting for it without a
+	// deadline (holdServerLoad): the apply that made the update gave its own grant back before its
+	// commit reached this worker's queue (weighPeerUpdate). A lighter update's takes nothing, as its
+	// apply took nothing (heavyUpdateWeight): a keystroke's store, which the room answers the
+	// keystroke after, never queues behind the pool's heavy takers.
+	release := func() {}
+	if weight, heavy := heavyUpdateWeight(update); heavy {
+		release = holdServerLoad(ctx, weight)
+	}
 	err = crdt.ApplyUpdateV1(newDocumentCopy(), update, nil)
 	release()
 	if err != nil {
@@ -486,7 +494,8 @@ func (s *Service) failRoomLoad(room string, load *roomLoad, cause error) {
 //
 // It takes nothing of the pod's load concurrency itself: each caller covers the decode, the
 // rebuild on the grant it took for its seed (RebuildTx) and an append of the updates it is handed
-// on one of its own, which it waits for (AppendUpdatesWithCredit, holdServerLoad).
+// on one of its own for each heavy update, which it waits for (AppendUpdatesWithCredit,
+// holdServerLoad, heavyUpdateWeight).
 func validateUpdate(update []byte, maxPending int) error {
 	if len(update) == 0 {
 		return nil
