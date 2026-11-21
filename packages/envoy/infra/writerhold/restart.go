@@ -18,16 +18,25 @@ import (
 )
 
 // PodRestartLimit is how long one hub pod's restart may take, from its eviction until it has
-// passed step 4 and $JS.API.INFO answers. A pod that has not stops the hold as UNKNOWN, with the
-// row still held: the hold is never released early, and the operator decides.
+// passed step 4, $JS.API.INFO answers and each present protected stream's group is led with every
+// copy current. A pod that has not stops the hold as UNKNOWN, with the row still held: the hold is
+// never released early, and the operator decides.
 const PodRestartLimit = 10 * time.Minute
 
 // evictRetry is the pause between two evictions the disruption budget refused.
 const evictRetry = 5 * time.Second
 
 // restartPoll is the pause between two readings of a condition the restart waits for: the new
-// pod Ready, the proof passed, $JS.API.INFO answered.
+// pod Ready, the proof passed, $JS.API.INFO answered, a stream's group led.
 const restartPoll = 250 * time.Millisecond
+
+// streamRead is the limit of one read of a protected stream's info while the restart waits for its
+// group (awaitStreamLed). nats-server answers a clustered stream's info from the group's leader
+// alone, and a member whose JetStream started under 10 s ago answers nothing while its group has no
+// leader (isGroupLeaderless, jetstream_cluster.go), so a read during the group's election after a
+// restart draws no answer at all. A read with no answer within streamRead is sent again, rather
+// than waited on for jsRequest's 10 s, which an election under load outlasts.
+const streamRead = 2 * time.Second
 
 // Restart is step 3, the restart of every declared server, one at a time, each proved by step 4
 // before the next is stopped.
@@ -94,13 +103,17 @@ func (e Exit) String() string {
 }
 
 // Run restarts every declared server in turn, as Restart says, on nc, the operator's connection,
-// which asks $JS.API.INFO after each. Each pod is evicted through the Eviction API (policy/v1,
-// never a delete, which ignores the disruption budget), with its UID as the precondition; an
-// eviction the budget refuses (429) is sent again every Retry until the pod's limit. Then the old
-// pod's exit is recorded as it goes, the new pod is awaited Ready, step 4 proves the server, and
-// $JS.API.INFO must answer, all within the pod's limit, before the next pod is evicted. A pod past
-// its limit is UNKNOWN, with the row still held. It returns the servers restarted so far, with
-// the error that stopped it.
+// which asks $JS.API.INFO after each and reads each protected stream's info. Before the first
+// eviction it reads which protected streams are present, each once led with every copy current.
+// Each pod is evicted through the Eviction API (policy/v1, never a delete, which ignores the
+// disruption budget), with its UID as the precondition; an eviction the budget refuses (429) is
+// sent again every Retry until the pod's limit. Then the old pod's exit is recorded as it goes,
+// the new pod is awaited Ready, step 4 proves the server, $JS.API.INFO must answer, and each
+// present protected stream's group must name a leader with every copy current
+// (awaitStreamLed), all within the pod's limit, before the next pod is evicted: so no eviction
+// takes a group's quorum, and the held command's first read after the last restart is answered. A
+// pod past its limit is UNKNOWN, with the row still held. It returns the servers restarted so far,
+// with the error that stopped it.
 func (r Restart) Run(ctx context.Context, nc *nats.Conn) ([]Restarted, error) {
 	switch {
 	case len(r.Declared) == 0:
@@ -116,11 +129,15 @@ func (r Restart) Run(ctx context.Context, nc *nats.Conn) ([]Restarted, error) {
 	if err != nil {
 		return nil, unknownf(StepRestart, err, "the operator's JetStream context")
 	}
+	present, err := r.presentStreams(ctx, nc)
+	if err != nil {
+		return nil, err
+	}
 	before := map[string]string{}
 	var restarted []Restarted
 	for _, server := range r.Declared {
 		before[server.Varz.ServerID] = server.Pod
-		one, err := r.restart(ctx, js, server, before)
+		one, err := r.restart(ctx, nc, js, server, before, present)
 		if err != nil {
 			return restarted, err
 		}
@@ -129,13 +146,92 @@ func (r Restart) Run(ctx context.Context, nc *nats.Conn) ([]Restarted, error) {
 	return restarted, nil
 }
 
-// restart is one pod's eviction, exit, return, proof and $JS.API.INFO, within its limit. before
-// maps the step-1 id of every server restarted so far, this one's included, to its pod.
-func (r Restart) restart(ctx context.Context, js jetstream.JetStream, server DeclaredServer, before map[string]string) (Restarted, error) {
-	limit := r.Limit
-	if limit == 0 {
-		limit = PodRestartLimit
+// limit is each pod's limit: Limit, or PodRestartLimit when zero.
+func (r Restart) limit() time.Duration {
+	if r.Limit == 0 {
+		return PodRestartLimit
 	}
+	return r.Limit
+}
+
+// presentStreams are the protected streams present before the first eviction, in
+// ProtectedStreams' order, each read until its group is led with every copy current, within one
+// pod's limit; an absent one is left out.
+func (r Restart) presentStreams(ctx context.Context, nc *nats.Conn) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.limit())
+	defer cancel()
+	var present []string
+	for _, name := range ProtectedStreams() {
+		found, err := awaitStreamLed(ctx, nc, "before the first eviction", name, streamRead, true)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			present = append(present, name)
+		}
+	}
+	return present, nil
+}
+
+// awaitStreamLed reads stream name's info on nc until its group names a leader and every copy is
+// current and online (unled), each read limited to read and the next sent restartPoll later, and
+// reports whether the stream is present. A read with no answer, or with an error, is read again:
+// the group may be electing. With absentOK, `stream not found` is the stream absent (before the
+// first eviction); otherwise it too is read again, since the stream was present before the
+// restart. The end of ctx is UNKNOWN, naming the stream, when (after) and its last reading.
+func awaitStreamLed(ctx context.Context, nc *nats.Conn, after, name string, read time.Duration, absentOK bool) (bool, error) {
+	behind := "no read of it answered"
+	for {
+		attempt, cancel := context.WithTimeout(ctx, read)
+		info, found, err := streamInfo(attempt, nc, name)
+		cancel()
+		switch {
+		case err != nil:
+			behind = "its last read: " + err.Error()
+		case !found && absentOK:
+			return false, nil
+		case !found:
+			behind = "it reads stream not found"
+		default:
+			if behind = unled(info); behind == "" {
+				return true, nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return false, unknownf(StepRestart, ctx.Err(), "%s's group was not led with every copy current %s within its limit: %s; the row stays held", name, after, behind)
+		case <-time.After(restartPoll):
+		}
+	}
+}
+
+// unled is what keeps info's group from serving and from keeping its quorum through the next
+// eviction: no leader, or a copy offline or not current, named; empty when the group is led with
+// every copy current. A stream of one copy needs no election.
+func unled(info *jetstream.StreamInfo) string {
+	if info.Config.Replicas <= 1 {
+		return ""
+	}
+	if info.Cluster == nil || info.Cluster.Leader == "" {
+		return "it has no leader yet"
+	}
+	for _, peer := range info.Cluster.Replicas {
+		switch {
+		case peer == nil:
+		case peer.Offline:
+			return fmt.Sprintf("its copy on %s is offline", peer.Name)
+		case !peer.Current:
+			return fmt.Sprintf("its copy on %s is not current, %d behind", peer.Name, peer.Lag)
+		}
+	}
+	return ""
+}
+
+// restart is one pod's eviction, exit, return, proof, $JS.API.INFO and present streams' groups,
+// within its limit. before maps the step-1 id of every server restarted so far, this one's
+// included, to its pod.
+func (r Restart) restart(ctx context.Context, nc *nats.Conn, js jetstream.JetStream, server DeclaredServer, before map[string]string, present []string) (Restarted, error) {
+	limit := r.limit()
 	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	pod := server.Pod
@@ -169,6 +265,11 @@ func (r Restart) restart(ctx context.Context, js jetstream.JetStream, server Dec
 	}
 	if err := awaitJetStream(ctx, js, pod, limit); err != nil {
 		return Restarted{}, err
+	}
+	for _, name := range present {
+		if _, err := awaitStreamLed(ctx, nc, "after pod "+pod+"'s restart", name, streamRead, false); err != nil {
+			return Restarted{}, err
+		}
 	}
 	return Restarted{Pod: pod, Exit: exit, Varz: varz}, nil
 }

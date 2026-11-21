@@ -3332,8 +3332,9 @@ writes the hold takes `--signing-key-secret`; `set` and `prove` take `--nats` (r
 configuration or KUBECONFIG's. `hold set` runs §3a's steps: the preflight (the render, the minter
 report against `envoy-operator/envoy-operator-accepted-minters`, each server's monitoring reads,
 each protected stream), the row moved to held, the probe refused, the writer census, the restart of
-every declared server by eviction with its proof, the meta barrier and the report that only the
-operator and the auth service remain. Every held command that fails after its intent writes a
+every declared server by eviction with its proof, the next eviction only once each present
+protected stream's group is led with every copy current, the meta barrier and the report that only
+the operator and the auth service remain. Every held command that fails after its intent writes a
 stop entry recording what it left; `hold release` ends a hold whose stops all left nothing
 changed, and `hold abort` is every workflow's way out once a command has stopped and no intent is
 pending (in hub-restore, not after a done `hold prove`), printing what each stop left. Once

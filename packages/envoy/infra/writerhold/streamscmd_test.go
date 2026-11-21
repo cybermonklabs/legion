@@ -173,6 +173,53 @@ func TestHoldTheStreamsCommands(t *testing.T) {
 	require.Zero(t, code)
 }
 
+// t-10's `streams update` makes no copied bucket (#4687's rule, streams.Update): in a set
+// streams-update hold with KV_envoy_roles gone, the update reports the bucket missing, naming
+// `envoy-infra buckets create`, the one command that makes a copied bucket, and exits 1, its stop
+// recorded; the bucket stays absent. The control is the same update once the bucket is back, as
+// envoy-infra buckets create makes it (bus.CreateCopiedBucket): it is done. At 415f831b9a, before
+// #4687's a1d6c726ea, the update made no bucket either, but only because #4296's open-only ensure
+// refused it through a failed STREAM.INFO ("bucket is missing; only `envoy-infra buckets` creates
+// it"), and this row fails there at the finding's text.
+func TestHoldTheUpdateMakesNoCopiedBucket(t *testing.T) {
+	h := newHeldStack(t)
+	h.seedProtectedStreams()
+	ctx := context.Background()
+	roles := kvStreamPrefix + bus.RoleClaimBucket
+	id := h.s.Prepare(t, holdrecord.WorkflowStreamsUpdate)
+	h.s.HoldWithoutTheSteps(t, id)
+	operator := func(do func(nc *nats.Conn, js jetstream.JetStream)) {
+		t.Helper()
+		nc, err := h.s.ConnectOperator(ctx)
+		require.NoError(t, err)
+		defer nc.Close()
+		js, err := jetstream.New(nc)
+		require.NoError(t, err)
+		do(nc, js)
+	}
+	operator(func(_ *nats.Conn, js jetstream.JetStream) { require.NoError(t, js.DeleteStream(ctx, roles)) })
+
+	code, stdout, stderr := h.streamsRun(nil, "update", "--hold", id)
+	require.Equal(t, 1, code, "an update with a copied bucket missing")
+	require.Contains(t, stdout+stderr, roles)
+	require.Contains(t, stdout+stderr, "only `envoy-infra buckets create` makes")
+	h.requireStreamAbsent(roles)
+	ops := h.journal(id).Ops
+	last := ops[len(ops)-1]
+	require.Equal(t, CommandStreamsUpdate+" stop", last.Command+" "+last.State, "the update's last entry")
+
+	operator(func(nc *nats.Conn, _ jetstream.JetStream) {
+		legacy, err := nc.JetStream(nats.MaxWait(time.Minute))
+		require.NoError(t, err)
+		_, err = bus.CreateCopiedBucket(ctx, nc, legacy, bus.RoleClaimBucket, 3)
+		require.NoError(t, err, "make %s again as envoy-infra buckets create makes it", roles)
+	})
+	h.awaitStreamLeaders()
+	code, stdout, _ = h.streamsRun(nil, "update", "--hold", id)
+	require.Zero(t, code, "control: the update with every copied bucket there")
+	require.Contains(t, stdout, "streams update done in hold")
+}
+
 // Each streams word runs only in a hold whose workflow names it: `streams update --hold` of a
 // buckets-create hold is refused naming the workflow, and so is `streams census --hold` of a
 // streams-update hold, the table admitting it in none but streams-census, the cutover and
