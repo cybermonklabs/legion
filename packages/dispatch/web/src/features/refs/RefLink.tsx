@@ -17,6 +17,7 @@ import { useReferenceHref, useReferenceTarget } from "./reference-target";
 import {
   buildDispatchReference,
   type DispatchReferenceRoute,
+  issueOfRoute,
   nodeRouteFromHref,
   referenceHref,
   referenceRouteFromHref,
@@ -143,18 +144,19 @@ export function RefLink({
   // uploaded since gets its own load instead of inheriting the last one's failure.
   const [failedPicture, setFailedPicture] = useState<string>();
   // Until the target answers, for an issue the reader cannot read, for a target that does not
-  // exist and for a link whose words its author wrote, the words the author wrote stand.
-  const issueStatus =
-    route.kind === "issue" && !missing && title !== undefined ? status : undefined;
+  // exist and for a link whose words its author wrote, the words the author wrote stand. An
+  // issue is the issue's own address or a tab of its page (`issueOfRoute`).
+  const issueKey = issueOfRoute(route);
+  const issueStatus = issueKey !== undefined && !missing && title !== undefined ? status : undefined;
   const named =
     reads === "words" || missing
       ? undefined
       : reads === "mention"
         ? mentionDrawn({ known, title }, shortForm(route))
-        : route.kind === "issue"
+        : issueKey !== undefined
           ? issueStatus === undefined
             ? undefined
-            : route.key
+            : issueKey
           : title;
   // A bare issue reference draws its title nowhere, so its element carries it in its name.
   const label =

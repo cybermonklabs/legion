@@ -29,6 +29,7 @@ import { keyMayNameIssue } from "./project-keys";
 import {
   buildDispatchReference,
   type DispatchReferenceRoute,
+  issueOfRoute,
   nodeRouteFromHref,
   referenceHref,
   referenceRouteFromHref,
@@ -558,15 +559,16 @@ export interface ReferenceNameLookup {
   get(reference: string): ReferenceName | undefined;
 }
 
-/** The words `answer` names a reference to `route` by standing on its own: an issue's key alone,
- *  once its issue is read, with no status and no title, as a link to an issue reads in plain
- *  words (INFRA-4009 R6), and any other target's name. Undefined where it names none. */
+/** The words `answer` names a reference to `route` by standing on its own: an issue - its own
+ *  address or a tab of its page (`issueOfRoute`) - by its key alone, once its issue is read, with
+ *  no status and no title, as a link to an issue reads in plain words (INFRA-4009 R6), and any
+ *  other target by its name. Undefined where it names none. */
 function standingName(
   route: DispatchReferenceRoute,
   answer: ReferenceName | undefined
 ): string | undefined {
   const name = answer?.name;
-  return name === undefined || route.kind !== "issue" ? name : route.key;
+  return name === undefined ? undefined : (issueOfRoute(route) ?? name);
 }
 
 /** What a caller knows of the references a projected text writes: what each one resolved to

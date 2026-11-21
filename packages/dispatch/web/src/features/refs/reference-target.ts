@@ -45,6 +45,7 @@ import {
   buildDispatchReference,
   type DispatchReferenceRoute,
   type IssueRoute,
+  issueOfRoute,
   type ReferencedArtifact,
   referencedArtifact,
   referenceHref,
@@ -81,10 +82,11 @@ export { refetchFailedOnFocus };
 
 export interface ReferenceTarget {
   readonly title: string | undefined;
-  /** An issue's status, for a reference to the issue itself (an `issue` route), from the same
-   *  summary read its title comes from (`issueSummaryQuery`), which an event moving the title or
-   *  the status reads again: what its status mark draws. Undefined while loading and for every
-   *  other target, a document of the issue among them. */
+  /** An issue's status, for a reference to the issue itself - its own address or a tab of its
+   *  page (`issueOfRoute`) - from the same summary read its title comes from
+   *  (`issueSummaryQuery`), which an event moving the title or the status reads again: what its
+   *  status mark draws. Undefined while loading and for every other target, a document of the
+   *  issue among them. */
   readonly status: string | undefined;
   /** What the target says, as its author wrote it (Markdown): a message's body, a document's
    *  text. `undefined` while loading or for a target with nothing to say. */
@@ -955,12 +957,12 @@ export function useReferenceTarget(
     };
   }
   // Only a session can exist with no title of its own: every other target's title says it does.
-  // Only an issue has a status of its own.
+  // Only the issue itself, by its own address or a tab of its page, has a status of its own.
   return {
     ...shown,
     missing,
     known: kind === "session" && sessionKnown && sessionTitle === undefined,
-    status: route?.kind === "issue" ? issue?.status : undefined,
+    status: route !== undefined && issueOfRoute(route) !== undefined ? issue?.status : undefined,
   };
 }
 
