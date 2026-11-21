@@ -303,18 +303,20 @@ func mergeForwardReviewOwed(pr record.PullRequest) bool {
 // the head the pull request stands at and complete again at it.
 //
 // Neither refusal sends the role to the head the pull request stands at while the record's ask of
-// that head has not landed and its hold was sent to that role - the head an earlier merge left
-// conflicts in its turn, its merge forward is asked in the phase the completion reports, and the
-// hold reaches the role that completes it (record.MergeForwardReaches) - since that hold tells
+// that head holds that role (record.MergeForwardHolds) - the head an earlier merge left conflicts
+// in its turn, its merge forward is asked in the phase the completion reports and has not landed,
+// and its hold reaches the role that works that phase and completes it - since that hold tells
 // the role not to complete at that head (record.MergeForwardHold). Then the refusal names the
 // head the pull request stands at, says its merge forward is asked and has not landed, and tells
 // the role to wait for the daemon's landed message (record.MergeForwardLanded) and do the phase's
 // work at the head that message names (awaitedMergeForward). That wait is told only to a role the
-// ask's hold was sent to: every other completion is answered as above, at the head the pull
-// request stands at, since no hold told its role not to complete there. The implementer, whose
-// completion of retro is fenced, is sent no hold, the merge being its own to make; and an ask made
-// in implementing sends none, and stands into the next phase when the move there does not ask
-// again (mergeForwardOnEntry), as at a head the record no longer holds in a confirmed conflict.
+// ask holds: every other completion is answered as above, at the head the pull request stands at,
+// since no hold told its role not to complete there. The implementer, whose completion of retro
+// is fenced, is sent no hold, the merge being its own to make; and an ask made in implementing
+// sends none, and stands into the next phase when the move there does not ask again
+// (mergeForwardOnEntry), as at a head the record no longer holds in a confirmed conflict. The owed
+// route reads the same rule (api's owedBy), so a role this answers with the wait is one that route
+// tells it owes no completion.
 //
 // A phase that ends with a handoff record is told to write it again, with its `head` set to the
 // head the role is told to complete at, since a completion naming the record it already named is
@@ -367,9 +369,8 @@ func mergedForwardRefusal(issue record.Issue, role claim.Role, reported phase.Ph
 		again = fmt.Sprintf("write this phase's handoff again with `dispatch handoff-write --issue %s --phase %s --body-file <file>`, its `head` set to that head, and complete again naming it",
 			issue.Key, word)
 	}
-	pending := asked.Landed == "" && asked.Head == pr.HeadSHA && asked.Phase == reported && record.MergeForwardReaches(record.MergeForwardHold, role)
 	var next string
-	if pending {
+	if record.MergeForwardHolds(pr, reported, role) {
 		next = awaitedMergeForward(pr, again)
 	} else {
 		next = fmt.Sprintf("Pull request #%d stands at head %s now. Read what the merge changed with `git show --remerge-diff %s`, do the phase's work at head %s, then %s; this completion changed nothing",

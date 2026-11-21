@@ -108,42 +108,78 @@ const TOOL_CALL_SHAPED = /<(?:[\w-]+:)?(?:function_calls\b|invoke\s+name\s*=|par
 
 /** What a worker whose turn ended with `work` owed is told, `work` being the daemon's own name for
  * it (`LegionOwed.work`: "the testing phase of LEGION-208", "the production check of
- * LEGION-208"). Both are finished by the `legion` tool's `handoff_complete`. This is the one copy,
- * read by both hosts: the Claude Code bridge kept its own (`packages/daemon/internal/claudebridge/
- * stall.go`, deleted with INFRA-220) until the bridge became pure transport. */
+ * LEGION-208"). It is sent only to a role whose answer says that it owes `work`
+ * (`src/phase-reminder.ts`): an answer that the claim owes nothing, and a read that fails
+ * (`UNREAD_CHECK`), send no reminder. So every sentence of it is true of a role that owes work.
+ *
+ * Both kinds of work are finished by the `legion` tool's `handoff_complete`, and the two sentences
+ * on a refusal cover both. A phase's completion is refused `HANDOFF_NOT_CURRENT_PHASE` when the
+ * role no longer works that phase (`packages/daemon/internal/api/handoff.go`). A report on a
+ * production check is refused `CHECK_NOT_OPEN` once the check is closed (`checkReport`,
+ * `packages/daemon/internal/api/handoff.go`), and `CHECK_LOOK_NOT_OPEN` once the look it names
+ * has ended (`checkReported`, `packages/daemon/internal/workflow/check.go`). Each of these three
+ * records nothing, and the daemon sends any next task itself, so the role does nothing more for
+ * that work.
+ *
+ * `HANDOFF_ALREADY_RECORDED` answers a completion or a report under a key the daemon has already
+ * processed (`if result.Duplicate`, `packages/daemon/internal/api/handoff.go`). For a phase's
+ * completion, the daemon keeps one the workflow refused marked as processed (`ApplyFact`,
+ * `packages/daemon/internal/intake/facts.go`), all but one refused for the plan's rating
+ * (`Result.Unspent`), so a retry under the same key gets this answer while no completion is
+ * recorded and the phase stays owed. The reminder comes only while the daemon's record holds the
+ * work owed, so in a reminded turn this answer to a phase's completion always means that case,
+ * and doing nothing more would leave the phase owed for ever. `ApplyFact` forgets a refused report
+ * on a production check (its `(report && result.Refusal != nil) || result.Unspent` line), so for
+ * a check's report this answer means that the report on that look was taken. A taken report ends
+ * the look (`checkReported`, `packages/daemon/internal/workflow/check.go`), and the owed answer
+ * then says that the claim owes nothing (`owedBy`, `packages/daemon/internal/api/owed.go`), so
+ * "while this reminder still comes" does not occur for a check.
+ *
+ * A completion's key holds the handoff record it names (`reported`, `eventID` in
+ * `answerCompletion`), and each `dispatch handoff-write` makes a record with a new id, so a new
+ * version of the handoff is a new key: the role reads its record with `read_record` and the
+ * refusal its first completion got, writes a new version of its handoff and completes naming it.
+ * A call that names no handoff record has a commit in its key instead (retro, the merger), or a
+ * look and its verdict (a check's report, `eventID` in `checkReport`), so no new handoff makes it
+ * a new key, and the reminder's last instruction tells such a role to tell its architect. That
+ * instruction rests on the key holding a commit or a look and on the cases above, not on a kept
+ * refusal of a check's report: for retro and the merger it follows a kept refusal of their
+ * completion, and for a check's report the case does not occur (dispatch://INFRA-2746 R4).
+ *
+ * The opening names the work, and the last sentence is the needle the live proofs match
+ * (`scripts/e2e/stage3-4b13b-acceptance.sh`, `scripts/e2e/stage4b-sandbox-tree.sh`,
+ * `scripts/e2e/lib/claude-transcript.sh`): keep both word for word. The sentence about a wait is
+ * dispatch://INFRA-2040's to change. This is the one copy, read by both hosts: the Claude Code
+ * bridge kept its own (`packages/daemon/internal/claudebridge/stall.go`, deleted with INFRA-220)
+ * until the bridge became pure transport. */
 export function owedReminder(work: string): string {
   return (
     `Your turn ended with ${work} still owed: the Legion daemon's record holds it open for your ` +
     "role. If that work is done, call the `legion` tool now with op `handoff_complete` and the " +
     "fields your role's instructions give. If you are waiting on something (CI, a review, a " +
     "person), reply with a line starting WAITING that names what you are waiting on: that buys a " +
-    "quiet wait, and then this reminder comes again. This reminder repeats at the end of every " +
-    "turn for as long as the daemon's record holds that work open."
+    "quiet wait, and then this reminder comes again. If the daemon refuses your " +
+    "`handoff_complete` `HANDOFF_NOT_CURRENT_PHASE`, `CHECK_NOT_OPEN` or " +
+    "`CHECK_LOOK_NOT_OPEN`, do nothing more for that work: the daemon sends you any next task " +
+    "itself. If it answers `HANDOFF_ALREADY_RECORDED` while this reminder still comes, it keeps " +
+    "the refusal of an earlier completion under that key and took none: read your record with " +
+    "the `legion` tool's `read_record` and the refusal your first completion got, write a new " +
+    "version of your handoff and complete naming it, or, if your phase writes no handoff, tell " +
+    "your architect. This reminder repeats at the end of every turn for as long as the daemon's " +
+    "record holds that work open."
   );
 }
-
-/** What a worker is told when the daemon's answer did not arrive: an error, a timeout, a refusal,
- * or an answer the contract does not describe. It still nudges, since an unreachable daemon is
- * exactly when a stalled worker must still be nudged, and it says that it could not read the
- * record. It names no phase and no operation, because it read neither. */
-export const UNREAD_REMINDER =
-  "Your turn ended, and this reminder could not read the Legion daemon's record of what your " +
-  "role owes, so it cannot say whether any work is still yours. If your role's instructions " +
-  "leave work of yours unfinished, finish it now with a real tool call. If you are waiting on " +
-  "something (CI, a review, a person), reply with a line starting WAITING that names what you " +
-  "are waiting on: that buys a quiet wait, and then this reminder comes again. This reminder " +
-  "repeats at the end of every turn for as long as the record cannot be read.";
 
 const TEXT_TOOL_CALL =
   "Your last message holds a tool call written as text, so it did not run: make it a real tool call. ";
 
-/** The reminder a settling message earns, given what the daemon answered: `owedReminder` for the
- * `work` it named, or `UNREAD_REMINDER` when `work` is undefined because no answer arrived. Either
- * is led by `TEXT_TOOL_CALL` when that message holds a tool call written as text, which is the
- * step the worker failed to take. A reminder no settling message decided (the resume timer's)
- * passes `""` for the text. */
-export function reminderText(lastAssistantText: string, work: string | undefined): string {
-  const reminder = work === undefined ? UNREAD_REMINDER : owedReminder(work);
+/** The reminder a settling message earns: `owedReminder` for the `work` the daemon answered the
+ * claim owes, which is the only answer a reminder is sent on (`UNREAD_CHECK` in
+ * `src/phase-reminder.ts`). It is led by `TEXT_TOOL_CALL` when that message holds a tool call
+ * written as text, which is the step the worker failed to take. A reminder no settling message
+ * decided (the resume timer's) passes `""` for the text. */
+export function reminderText(lastAssistantText: string, work: string): string {
+  const reminder = owedReminder(work);
   return TOOL_CALL_SHAPED.test(lastAssistantText) ? TEXT_TOOL_CALL + reminder : reminder;
 }
 

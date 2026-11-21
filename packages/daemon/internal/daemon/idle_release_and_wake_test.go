@@ -3,12 +3,14 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/roleholder"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -815,6 +817,56 @@ func (r *idleWakeRig) dueBackstop(issue idleRigIssue) {
 	}
 }
 
+// armedADayAgo moves the issue's open backstop's arm time more than workflow.WaitSilenceBound
+// into the past, which is the clock the backstop of an issue waiting on another issue is
+// measured on (fireDueBackstops, workflow's podBackstopDue).
+func (r *idleWakeRig) armedADayAgo(issue idleRigIssue) {
+	r.t.Helper()
+	if _, err := r.pool.Exec(context.Background(),
+		fmt.Sprintf(`update pod_wake_backstops set armed_at = now() - interval '%d seconds' where project = $1 and issue = $2 and not fired`,
+			int((workflow.WaitSilenceBound+time.Hour).Seconds())),
+		r.project, issue.key); err != nil {
+		r.t.Fatalf("move the arm time of the backstop of %s a day back: %v", issue.key, err)
+	}
+}
+
+// backstopOf is the issue's newest backstop row: when it was armed, whether it was fired, and
+// whether there is one.
+func (r *idleWakeRig) backstopOf(issue idleRigIssue) (armed time.Time, fired, found bool) {
+	r.t.Helper()
+	err := r.pool.QueryRow(context.Background(), `select armed_at, fired from pod_wake_backstops
+		where project = $1 and issue = $2 order by id desc limit 1`, r.project, issue.key).Scan(&armed, &fired)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, false, false
+	}
+	if err != nil {
+		r.t.Fatalf("read the backstop of %s: %v", issue.key, err)
+	}
+	return armed.UTC(), fired, true
+}
+
+// newestReleaseAt is the moment the issue's newest release was recorded (pod_releases.at), which
+// the release writes just before it arms its backstop (outbox.recordPodRelease, armBackstops).
+func (r *idleWakeRig) newestReleaseAt(issue idleRigIssue) time.Time {
+	r.t.Helper()
+	var at time.Time
+	if err := r.pool.QueryRow(context.Background(), `select at from pod_releases
+		where project = $1 and issue = $2 order by id desc limit 1`, r.project, issue.key).Scan(&at); err != nil {
+		r.t.Fatalf("read the newest release of %s: %v", issue.key, err)
+	}
+	return at.UTC()
+}
+
+// waitsOnAnother records the issue as an issue the daemon started that waits on blocker
+// (recordWaitingOn), with Dispatch showing blocker in progress. Without the unfinished blocker,
+// an admission pass of the booted daemon gives the issue its slot back and clears the mark
+// (admit's promoteHolds) before any wake tick reads it.
+func (r *idleWakeRig) waitsOnAnother(issue idleRigIssue, blocker string) {
+	r.t.Helper()
+	r.board.place(blocker, "in_progress", "", false)
+	recordWaitingOn(context.Background(), r.t, r.pool, r.cfg.Project, issue.key, blocker, time.Now().UTC())
+}
+
 // ageResume moves the issue's recorded wakes, and the stuck clock each starts, into the past. The
 // stuck pass reads the resume's stuck clock against the daemon's clock and nothing else
 // (warnStuckResumes, store's clock_at), so this row is the clock the ten minutes of R5 is measured
@@ -827,4 +879,71 @@ func (r *idleWakeRig) ageResume(issue idleRigIssue, by time.Duration) {
 		r.project, issue.key); err != nil {
 		r.t.Fatalf("age the resumes of %s: %v", issue.key, err)
 	}
+}
+
+// idleRigWaitsOnAnother is the issue of the rig below: its pod is released while it is at work,
+// and then the daemon records it as waiting on another issue.
+const idleRigWaitsOnAnother = "waits-on-another"
+
+// R9 of dispatch://INFRA-2746, on the acceptance rig of INFRA-945 (idle_rig_test.go says where
+// each part comes from). The rig's real idle release of the issue arms its open phase's backstop
+// through armBackstops, and the row's armed_at is the moment of that release, within a second of
+// the release record. The issue is then recorded as waiting on another issue, its slot given back
+// for an unfinished Dispatch blocker (record.Issue.ReleasedForWaitAt), and its backstop brought
+// due: the daemon's own wake tick (fireDueBackstops) wakes nothing, pass after pass, and leaves the
+// row unfired, since a waiting issue's backstop wakes its pod only workflow.WaitSilenceBound after
+// the release armed it. With the arm time moved more than a day back, the next tick wakes the pod,
+// and the woken role's task names the backstop.
+//
+// INFRA-2753 is the case: its released pod was woken by the backstop seven times in a night while
+// it waited on LINUX-1478.
+func TestSilentPhaseWorkerOfAnIssueWaitingOnAnotherIsNotWokenByItsBackstopUnderADay(t *testing.T) {
+	rig := newIdleWakeRig(t, nil, idleRigWaitsOnAnother)
+	issue := rig.issue(idleRigWaitsOnAnother)
+	token := rig.token(issue)
+	rig.quiet()
+	rig.awaitReleased(issue)
+	rig.markPrompts()
+
+	var armed time.Time
+	idleRigEventually(t, idleRigRecordWait, "the backstop the release of "+issue.key+" armed", func() bool {
+		var found bool
+		armed, _, found = rig.backstopOf(issue)
+		return found
+	})
+	if released := rig.newestReleaseAt(issue); armed.Sub(released).Abs() > time.Second {
+		t.Fatalf("the backstop of %s was armed at %s, %s from its release at %s, want the moment of the release, within a second",
+			issue.key, armed, armed.Sub(released), released)
+	}
+
+	rig.waitsOnAnother(issue, rig.cfg.Project+"-90")
+	started := rig.pods.starts(issue.pod)
+	rig.dueBackstop(issue)
+
+	// Every wake tick of this span reads the row due and passes over it.
+	idleRigSettle(t, 12*idleRigTick, func() {
+		state := rig.api.claim(token)
+		if state.State != string(supervise.StateSuspended) || state.SuspendedBy != string(supervise.SuspendedByReleased) {
+			t.Fatalf("%s is %s (suspended by %q) with its backstop due, want it still released: its issue waits on another issue and the backstop was armed under a day ago",
+				issue.key, state.State, state.SuspendedBy)
+		}
+		if _, fired, _ := rig.backstopOf(issue); fired {
+			t.Fatalf("the backstop of %s is fired, want it open: a fired row is never read again, and the pod would not come back after the day", issue.key)
+		}
+		if rig.kube.pod(issue.pod) {
+			t.Fatalf("a pod came back for %s while its issue waits and its backstop was armed under a day ago", issue.key)
+		}
+	})
+	if got := rig.pods.starts(issue.pod); got != started {
+		t.Fatalf("%s's pod was started %d times, want the %d it had: the backstop woke nothing", issue.key, got, started)
+	}
+
+	rig.armedADayAgo(issue)
+	rig.awaitResumed(issue, 2)
+	rig.awaitTask(issue, "The wake is the release's backstop running out")
+	idleRigEventually(t, idleRigRecordWait, "the backstop's resume of "+issue.key+" recorded", func() bool {
+		resumes := rig.resumesOf(issue)
+		return len(resumes) == 1 && resumes[0].Kind == pods.WakeBackstop
+	})
+	rig.kube.requireServed(t)
 }

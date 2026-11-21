@@ -72,6 +72,10 @@ type Pods interface {
 	ClosePodGoneResume(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (int64, error)
 	// FirePodBackstop marks the backstop fired and answers whether this call fired it.
 	FirePodBackstop(ctx context.Context, tx pgx.Tx, id int64) (bool, error)
+	// PodBackstopArmedAt is when the open backstop id was armed, and whether it is open. The
+	// backstop of an issue the daemon records as waiting on another issue is measured from it
+	// (podBackstopDue, WaitSilenceBound).
+	PodBackstopArmedAt(ctx context.Context, tx pgx.Tx, id int64) (time.Time, bool, error)
 	// VolumeNoticeCounts and RecordVolumeNotice are the bounds on what an issue's architect is
 	// told about its pod's volume filling, counted in the store rather than in this process:
 	// a daemon that restarts in the middle of a filling pod's episode must not start the count
@@ -351,12 +355,33 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 }
 
 // podBackstopDue wakes a released pod on its backstop, which is R5: backstop_minutes after the
-// release, whatever else did or did not happen. The row is fired under a conditional update, so a
-// backstop two passes read fires once, and the row survives a restart, so one that came due while
-// the daemon was down fires at the first pass after it starts.
+// release, whatever else did or did not happen. That is for a claim that owes its phase work: a
+// claim that owes it nothing — its completion recorded while the issue stays in the phase, a
+// merge forward holding it, its merging finished by a merged pull request, or behind its entry
+// (record.PhaseOwed) — is armed no backstop (internal/daemon's armBackstops, dispatch://INFRA-2746
+// R1), since its later work comes as a daemon task or message, which wakes the pod. The one
+// exception is a claim behind its entry that holds a task of the issue's run and phase the daemon
+// has not delivered, of that entry, of an earlier one or of no entry: that delivery waits for the
+// claim to come back and admission's owed-entry repair passes over such a claim, so it keeps its
+// backstop (internal/daemon's holdsUndeliveredEntryTask). The row is fired under a conditional
+// update, so a backstop two passes read fires once, and the row survives a restart, so one that
+// came due while the daemon was down fires at the first pass after it starts.
+//
+// The backstop of an issue the daemon records as waiting on another issue
+// (record.Issue.ReleasedForWaitAt) wakes its pod only WaitSilenceBound after the release armed
+// it (backstopWaits), in place of backstop_minutes (dispatch://INFRA-2746 R9). Inside that bound
+// the fact leaves the row unfired and is not spent (intake.Result.Unspent), so the next wake tick
+// reads the same row again: past the bound it wakes the pod, and once the mark clears, at the
+// issue's next slot, it wakes the pod at the first tick after. The wake tick passes over such a
+// row itself (internal/daemon's fireDueBackstops), so this is the rule for a tick whose read of
+// the mark was older than this transaction.
 func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodBackstopDue) (intake.Result, error) {
 	if e.cfg.Pods == nil {
 		return intake.Result{}, nil
+	}
+	waits, err := e.backstopWaits(ctx, tx, fact)
+	if err != nil || waits {
+		return intake.Result{Unspent: waits}, err
 	}
 	fired, err := e.cfg.Pods.FirePodBackstop(ctx, tx, fact.ID)
 	if err != nil || !fired {
@@ -369,6 +394,22 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 	detail := fmt.Sprintf("the backstop armed for %s's %s came due", fact.Issue, fact.Role)
 	_, err = e.wakeReleased(ctx, tx, released, pods.WakeBackstop, detail, e.now())
 	return intake.Result{}, err
+}
+
+// backstopWaits is whether the backstop fact names a row of an issue the daemon records as
+// waiting on another issue that was armed less than WaitSilenceBound ago. The mark is read first,
+// so the backstop of every other issue reads one record and no arm time. A row that is no longer
+// open waits for nothing: FirePodBackstop then fires nothing.
+func (e *Engine) backstopWaits(ctx context.Context, tx pgx.Tx, fact intake.PodBackstopDue) (bool, error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || issue == nil || issue.ReleasedForWaitAt == nil {
+		return false, err
+	}
+	armed, open, err := e.cfg.Pods.PodBackstopArmedAt(ctx, tx, fact.ID)
+	if err != nil || !open {
+		return false, err
+	}
+	return !PastBound(armed, WaitSilenceBound, e.now()), nil
 }
 
 // wakeReleased is the one act every wake of this file performs, and the one place the gates are
@@ -452,10 +493,10 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 // OpenPhaseRole is the phase worker of an open phase, and "" where there is none: a phase no role
 // works, and the architect, whose phases (admitted and accepting) are the architect's own turn
 // rather than a worker's. It is the one statement of "the worker of the open phase" the release
-// reads: which role a release arms a backstop for — an architect gets none, because nothing of
-// its own is due and a sub-architect woken for nothing would hold a pod open for the backstop
-// period — which role a CI settlement wakes, and which live claim of a pod has a phase reminder
-// armed in it.
+// reads: the role a release may arm a backstop for, which armBackstops then asks getsBackstop
+// about (internal/daemon) — an architect gets none, because nothing of its own is due and a
+// sub-architect woken for nothing would hold a pod open for the backstop period — which role a
+// CI settlement wakes, and which live claim of a pod has a phase reminder armed in it.
 func OpenPhaseRole(p phase.Phase) claim.Role {
 	if role := phase.RoleFor(p); role != claim.RoleArchitect {
 		return role

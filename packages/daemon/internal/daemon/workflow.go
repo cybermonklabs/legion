@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -1756,6 +1757,11 @@ func idleRelease(cfg config.Config) (config.IdleReleaseConfig, bool) {
 // (podRepositoryDrifted), which reads the pod through the runtime and the record through the
 // plan's own reader (plan.recordedRepository), set before supervision was built, so the hold is
 // never left reading an issue whose record nothing can answer for.
+//
+// The idle view's record half — what the record holds of each claim's role, which the reminder
+// hold asks of a claim that works the open phase (record.PhaseOwed) — is the workflow's record
+// read in the view's own transaction (record.FillIdleClaims), handed to the store here since the
+// store cannot import record (store.IdleRecords).
 func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 	release, ok := idleRelease(supervision.cfg)
 	if !ok {
@@ -1767,6 +1773,9 @@ func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 		return
 	}
 	w.idlePeriod, w.idleStore, w.idleRuntime = release.Idle(), supervision.supervisor.store, podRuntime
+	w.idleStore.ReadIdleRecordsWith(func(ctx context.Context, tx pgx.Tx, issue string, at phase.Phase, claims []pods.IdleClaim) error {
+		return record.FillIdleClaims(ctx, w.records, tx, issue, at, claims)
+	})
 	w.idleRepositoryDrifted = supervision.podRepositoryDrifted
 	w.outbox.backstop = releaseBackstop(supervision.cfg)
 }

@@ -231,8 +231,10 @@ func (w BackgroundWork) KnownKinds() []string {
 }
 
 // PhaseActivity is when the reminder armed in the session is due; NextReminderAt is null when no
-// armed reminder is still live. The session keeps no model of the phase: whether the phase is open
-// is the daemon's own reading of the record (workflow's idlePhaseOpen), and the reminder asks the
+// armed reminder is still live. The session keeps no model of the phase: whether a past-due wake
+// holds the pod is the daemon's own reading of the record, whose idle release holds a pod for it
+// only of a claim whose phase is open (workflow's idlePhaseOpen) and that owes that phase by the
+// owed answer's rule (record.PhaseOwed, read in workflow's IdleRelease), and the reminder asks the
 // daemon what the claim owes when its timer is due.
 type PhaseActivity struct {
 	NextReminderAt *time.Time `json:"nextReminderAt"`

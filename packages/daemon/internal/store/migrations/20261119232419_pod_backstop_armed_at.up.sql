@@ -1,0 +1,35 @@
+-- 20261119232419_pod_backstop_armed_at.up.sql — the moment each idle backstop was armed
+-- (dispatch://INFRA-2746 R9).
+--
+-- pod_wake_backstops.armed_at is store.PodWakeBackstop.ArmedAt: the instant the release that
+-- armed the backstop computed its due_at from (internal/daemon's armBackstops, through
+-- store.Store.ArmPodBackstop, which refuses a backstop with no arm time). Two readers read it.
+-- The wake tick passes over a due row of an issue the daemon records as waiting on another issue
+-- (issues.released_for_wait_at) while the row was armed less than workflow.WaitSilenceBound, 24
+-- hours, ago (internal/daemon's fireDueBackstops, which reads it with each due row through
+-- store.Store.DuePodBackstops). The backstop's handler reads it for such an issue inside its
+-- fact's transaction, before it fires the row (workflow's podBackstopDue, through
+-- store.PodRecords.PodBackstopArmedAt). So the pod of such an issue is woken a day after its
+-- release rather than backstop_minutes after it. Nothing reads it for any other issue.
+--
+-- The table recorded no arm time before this migration. due_at minus backstop_minutes would read a
+-- setting that can change between the arming and the firing, and the issue's newest release is
+-- no sure stand-in for the release that armed the row, since a failed write of a release record
+-- is only logged and a release that suspends no role is recorded without arming a backstop.
+--
+-- Every row the migration finds, open or fired, reads armed_at = due_at. Such a row is read as
+-- armed at its due time, so it holds the pod of an issue waiting on another issue at most
+-- backstop_minutes past a day. Then the column takes the default now() and not null, so a writer
+-- that names no armed_at still writes a row whose arm time is its own insert, which is when the
+-- release arms it: the release before this one, after a rollback, and the tests that insert a
+-- backstop row by hand.
+--
+-- There is no down file: migrations here are forward-only. Rolling the image back needs no
+-- statement. The release before this one names its own columns in each statement on this table,
+-- so it never reads armed_at, and every row it inserts takes the default. Dropping the column by
+-- hand, with the daemon stopped, is `alter table pod_wake_backstops drop column armed_at;` and
+-- `delete from schema_version where version = 20261119232419;`, after which the roll-forward
+-- runs this file again.
+alter table pod_wake_backstops add column armed_at timestamptz;
+update pod_wake_backstops set armed_at = due_at;
+alter table pod_wake_backstops alter column armed_at set default now(), alter column armed_at set not null;

@@ -112,12 +112,15 @@ import (
 // its own.
 // cybermonklabs/legion#4464's kind list with the conflict's second read and the merge forward
 // (20261119003157, dispatch://INFRA-4374) stands above every other version of this list but
-// cybermonklabs/legion#4581's 20261120042902 and cybermonklabs/legion#4598's 20261120055717, and
-// it is still the last of them to rewrite outbox_kind_check: it is now that constraint's last
-// word, and it names every kind the plan-record list names and its own two, phase_ended among
-// them. The same migration deletes the queued phase_ended rows, the seeded one below among them,
-// and adds pull_requests.conflict_read and pull_requests.merge_forward, both null on every row it
-// finds.
+// dispatch://INFRA-2746's 20261119232419, cybermonklabs/legion#4581's 20261120042902 and
+// cybermonklabs/legion#4598's 20261120055717, and it is still the last of them to rewrite
+// outbox_kind_check: it is now that constraint's last word, and it names every kind the
+// plan-record list names and its own two, phase_ended among them. The same migration deletes the
+// queued phase_ended rows, the seeded one below among them, and adds pull_requests.conflict_read
+// and pull_requests.merge_forward, both null on every row it finds.
+// dispatch://INFRA-2746's backstop arm time (20261119232419) stands above it and touches no
+// outbox_kind_check: it adds pod_wake_backstops.armed_at, filled with each row's due_at, and this
+// test seeds no backstop row.
 // cybermonklabs/legion#4581's mark of a launch that had Oh My Pi resume a claim's session by its
 // id (20261120042902, dispatch://INFRA-4108) stands above every other version of this list but
 // cybermonklabs/legion#4598's 20261120055717; it adds claims.agent_resume_generation at its
@@ -179,6 +182,8 @@ var thisBranchsMigrations = []int{
 	// read and the merge forward, which deletes the queued phase_ended rows and adds the pull
 	// request's two merge-forward columns.
 	20261119003157,
+	// dispatch://INFRA-2746: the moment each idle backstop was armed.
+	20261119232419,
 	// cybermonklabs/legion#4581 (dispatch://INFRA-4108): the mark of a launch that had Oh My Pi
 	// resume a claim's session by its id, claims.agent_resume_generation.
 	20261120042902,
@@ -203,10 +208,11 @@ var thisBranchsMigrations = []int{
 // 20261117064152, the kind list with the plan record (cybermonklabs/legion#4488's
 // 20261117023932), dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
 // 20261117200337, dispatch://INFRA-3136's 20261118073048 and 20261118172458,
-// cybermonklabs/legion#4464's 20261119003157, cybermonklabs/legion#4581's 20261120042902
-// (dispatch://INFRA-4108) and cybermonklabs/legion#4598's 20261120055717 (dispatch://INFRA-4729),
-// which is why the loop below holds the list rather than counting it, so that a version added
-// above any of them is named here rather than read as main's.
+// cybermonklabs/legion#4464's 20261119003157, dispatch://INFRA-2746's 20261119232419,
+// cybermonklabs/legion#4581's 20261120042902 (dispatch://INFRA-4108) and
+// cybermonklabs/legion#4598's 20261120055717 (dispatch://INFRA-4729), which is why the loop below
+// holds the list rather than counting it, so that a version added above any of them is named here
+// rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

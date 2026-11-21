@@ -237,19 +237,24 @@ func (s *Store) ClaimStatesIn(ctx context.Context, project, issue string) (Claim
 	return states, nil
 }
 
-// PodWakeBackstop is one armed backstop: the phase worker it wakes and when it comes due.
+// PodWakeBackstop is one armed backstop: the phase worker it wakes, when it was armed and when it
+// comes due. ArmedAt is the instant the release that armed it computed DueAt from
+// (internal/daemon's armBackstops). The backstop of an issue the daemon records as waiting on
+// another issue is measured from it in place of DueAt (workflow.WaitSilenceBound).
 type PodWakeBackstop struct {
 	ID      int64
 	Project string
 	Issue   string
 	Role    claim.Role
 	Release int64
+	ArmedAt time.Time
 	DueAt   time.Time
 }
 
 // ArmPodBackstop arms the backstop of issue's role at due, over the release release names. A role
 // that already has an open backstop keeps the one it has, so a release retried after a failure
-// arms one backstop and not two.
+// arms one backstop and not two. A backstop with no arm time is refused as one with no due time
+// is, so no caller writes the year 1 by leaving it out.
 func (s *Store) ArmPodBackstop(ctx context.Context, b PodWakeBackstop) error {
 	return armPodBackstop(ctx, s.pool, b)
 }
@@ -263,12 +268,12 @@ func ArmPodBackstopTx(ctx context.Context, tx pgx.Tx, b PodWakeBackstop) error {
 }
 
 func armPodBackstop(ctx context.Context, db execer, b PodWakeBackstop) error {
-	if b.Project == "" || b.Issue == "" || b.Role == "" || b.DueAt.IsZero() {
-		return errors.New("a pod wake backstop needs its project, issue, role and due time")
+	if b.Project == "" || b.Issue == "" || b.Role == "" || b.ArmedAt.IsZero() || b.DueAt.IsZero() {
+		return errors.New("a pod wake backstop needs its project, issue, role, arm time and due time")
 	}
-	_, err := db.Exec(ctx, `insert into pod_wake_backstops (project, issue, role, release_id, due_at)
-		values ($1, $2, $3, $4, $5) on conflict do nothing`,
-		b.Project, b.Issue, string(b.Role), b.Release, b.DueAt)
+	_, err := db.Exec(ctx, `insert into pod_wake_backstops (project, issue, role, release_id, armed_at, due_at)
+		values ($1, $2, $3, $4, $5, $6) on conflict do nothing`,
+		b.Project, b.Issue, string(b.Role), b.Release, b.ArmedAt, b.DueAt)
 	if err != nil {
 		return fmt.Errorf("arm the backstop of %s's %s: %w", b.Issue, b.Role, err)
 	}
@@ -277,9 +282,11 @@ func armPodBackstop(ctx context.Context, db execer, b PodWakeBackstop) error {
 
 // DuePodBackstops are project's open backstops due at or before now, oldest first: the ones this
 // pass fires. One that came due while the daemon was down is in this read at the next pass after
-// the daemon starts, which is what makes the backstop a stored row rather than a timer.
+// the daemon starts, which is what makes the backstop a stored row rather than a timer. Each
+// carries its arm time, which the pass reads for a row of an issue the daemon records as waiting
+// on another issue (internal/daemon's fireDueBackstops).
 func (s *Store) DuePodBackstops(ctx context.Context, project string, now time.Time) ([]PodWakeBackstop, error) {
-	rows, err := s.pool.Query(ctx, `select id, project, issue, role, release_id, due_at
+	rows, err := s.pool.Query(ctx, `select id, project, issue, role, release_id, armed_at, due_at
 		from pod_wake_backstops where project = $1 and not fired and due_at <= $2 order by due_at, id`,
 		project, now)
 	if err != nil {
@@ -290,13 +297,50 @@ func (s *Store) DuePodBackstops(ctx context.Context, project string, now time.Ti
 	for rows.Next() {
 		var b PodWakeBackstop
 		var role string
-		if err := rows.Scan(&b.ID, &b.Project, &b.Issue, &role, &b.Release, &b.DueAt); err != nil {
+		if err := rows.Scan(&b.ID, &b.Project, &b.Issue, &role, &b.Release, &b.ArmedAt, &b.DueAt); err != nil {
 			return nil, fmt.Errorf("read the due backstops of %s: %w", project, err)
 		}
 		b.Role = claim.Role(role)
 		out = append(out, b)
 	}
 	return out, rows.Err()
+}
+
+// IssuesReleasedForWait is the set of those of keys whose issue the daemon records as waiting on
+// another issue: the mark admission writes when it takes a started issue's admission slot back
+// for that wait, and clears when it gives the issue a slot again (issues.released_for_wait_at,
+// record.Store.ReleaseSlotForWait and ClearReleasedForWait). keys are Dispatch issue keys, the
+// issues table's primary key, which is unique across projects: so the read names no project, and
+// the primary key's index serves it however many issues the table holds. No keys make no query.
+//
+// Two passes read it, once each, for the issues they judge: the silence sweep passes the issues of
+// its silent claims (internal/daemon's tellSilentPhaseWorkers) and the wake tick the issues of its
+// due rows (fireDueBackstops). Each passes over a quiet worker or a backstop of such an issue
+// inside workflow.WaitSilenceBound, so a worker that waits costs neither pass a fact transaction a
+// minute. The handlers stay the rule: each reads the mark again inside its fact's own transaction,
+// the silence handler through workflow.SilenceBound and the backstop handler in workflow's
+// backstopWaits.
+func (s *Store) IssuesReleasedForWait(ctx context.Context, keys []string) (map[string]bool, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `select key from issues where key = any($1) and released_for_wait_at is not null`, keys)
+	if err != nil {
+		return nil, fmt.Errorf("read which of %d issues wait on another issue: %w", len(keys), err)
+	}
+	defer rows.Close()
+	waiting := map[string]bool{}
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, fmt.Errorf("read which of %d issues wait on another issue: %w", len(keys), err)
+		}
+		waiting[key] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read which of %d issues wait on another issue: %w", len(keys), err)
+	}
+	return waiting, nil
 }
 
 // RecordPodWakeTx is RecordPodWake inside a caller's transaction: a wake decided by an intake
@@ -704,6 +748,23 @@ func (p *PodRecords) FirePodBackstop(ctx context.Context, tx pgx.Tx, id int64) (
 		return false, fmt.Errorf("fire backstop %d: %w", id, err)
 	}
 	return tag.RowsAffected() > 0, nil
+}
+
+// PodBackstopArmedAt is when open backstop id was armed (pod_wake_backstops.armed_at), and
+// whether such a row is open: one fired, or cancelled by a wake or a take-over, answers false.
+// The backstop's handler reads it inside its fact's transaction, before FirePodBackstop, for an
+// issue the daemon records as waiting on another issue, whose backstop wakes its pod only
+// workflow.WaitSilenceBound after it was armed (workflow's podBackstopDue).
+func (p *PodRecords) PodBackstopArmedAt(ctx context.Context, tx pgx.Tx, id int64) (time.Time, bool, error) {
+	var at time.Time
+	err := tx.QueryRow(ctx, `select armed_at from pod_wake_backstops where id = $1 and not fired`, id).Scan(&at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("read the arm time of backstop %d: %w", id, err)
+	}
+	return at.UTC(), true, nil
 }
 
 // OpenPodBackstop is whether issue's role has a backstop armed and not yet fired

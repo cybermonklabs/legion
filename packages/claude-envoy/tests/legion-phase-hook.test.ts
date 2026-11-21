@@ -9,7 +9,10 @@ import {
 } from "@legion/envoy-client/transport"
 import { type ActivityInput, createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
-import { owedReminder, UNREAD_REMINDER } from "@legion/pi-shared/phase-stall"
+import { OWED_READ_BOUND_MS } from "@legion/pi-shared/phase-reminder"
+import { owedReminder } from "@legion/pi-shared/phase-stall"
+import { ACTIVITY_REPORT_BOUND_MS } from "@legion/pi-shared/session-activity"
+import { answersNever } from "@legion/pi-shared/test/daemon-state"
 import { legion } from "../package.json" with { type: "json" }
 import {
   createPhaseHookEndpoint,
@@ -111,7 +114,9 @@ async function harness(
     /** Whether the daemon refuses every activity report: the hook still answers its worker. */
     readonly reportActivityFails?: boolean
     /** What the daemon answers `claims/owed`: that the claim owes `WORK`, unless given. */
-    readonly owed?: () => Response
+    readonly owed?: (init: RequestInit | undefined) => Response | Promise<Response>
+    /** What the daemon answers `claims/activity`: the empty 204, unless given. */
+    readonly activity?: (init: RequestInit | undefined) => Response | Promise<Response>
   } = {},
 ): Promise<Harness> {
   const directory = await mkdtemp(join(tmpdir(), "claude-envoy-phase-hook-"))
@@ -127,12 +132,15 @@ async function harness(
   const paths: string[] = []
   // The reminder's owed check asks one route, never the whole project (dispatch://INFRA-2694).
   const fetchStub = (async (input, init) => {
-    const path = new URL(input.toString()).pathname
-    paths.push(path)
-    if (path === "/legion/v1/claims/owed") {
+    const { pathname } = new URL(input.toString())
+    paths.push(pathname)
+    if (pathname === "/legion/v1/claims/owed") {
       atRead = await record()
       asked.push(JSON.parse(String(init?.body)))
-      return owed()
+      return owed(init)
+    }
+    if (pathname === "/legion/v1/claims/activity") {
+      return options.activity?.(init) ?? new Response(null, { status: 204 })
     }
     return Response.json({ error: "no stand-in route" }, { status: 404 })
   }) as typeof fetch
@@ -154,9 +162,12 @@ async function harness(
       turnsStarted += 1
     },
     readOwed: (question, signal) => daemon.owed(question, { signal }),
-    reportActivity: async (input) => {
+    // Through the daemon client, as the channel server sends it, so the signal the bound aborts
+    // reaches the stand-in daemon's request.
+    reportActivity: async (input, signal) => {
       reports.push(input)
       if (options.reportActivityFails === true) throw new Error("the daemon refused the report")
+      await daemon.activity(input, { signal })
     },
     inbox:
       options.inbox === false
@@ -228,8 +239,12 @@ test("a turn settling while the daemon says the claim owes work is blocked once,
     expect(recordAtDaemonRead()).toEqual({ state: "active", count: 0, ...said })
     expect(await record()).toEqual({ state: "active", count: 1, ...said })
     // The check asks what this claim owes and never reads the whole project
-    // (dispatch://INFRA-2694), which is what the channel server wires it to.
-    expect(daemonPaths).toEqual(["/legion/v1/claims/owed"])
+    // (dispatch://INFRA-2694), which is what the channel server wires it to. The other route the
+    // Stop asks is its own activity report, which every Stop sends (dispatch://INFRA-2746).
+    expect([...daemonPaths].sort()).toEqual([
+      "/legion/v1/claims/activity",
+      "/legion/v1/claims/owed",
+    ])
 
     // The second settle of the run lets the turn end and carries its reminder from the timer, so
     // the daemon sees the turn end and can deliver a queued task.
@@ -283,15 +298,15 @@ test("a turn the daemon says owes nothing is blocked by nothing, from the Stop o
   }
 })
 
-// A daemon that does not answer — unreachable, refusing, or answering what the contract does
-// not describe — still has the worker nudged, and the nudge says it could not read the record:
-// it names no phase and no operation, because it read neither.
-test("a daemon that does not say what the claim owes still blocks the Stop, with a reminder that names no phase and no operation", async () => {
+// A daemon that does not answer — refusing, or answering what the contract does not describe —
+// has the worker reminded of nothing: the `Stop` is blocked by nothing, and the resume timer's own
+// read writes nothing into the session. The pane's log says why, once for the claim in the hour.
+test("a daemon that does not say what the claim owes blocks no Stop and sends no reminder", async () => {
   for (const [failure, answer] of [
     ["a refusal", () => Response.json({ error: "the daemon is restarting" }, { status: 503 })],
     ["an answer the contract refuses", () => Response.json({ owes: true, work: "" })],
   ] as const) {
-    const { endpoint, close } = await harness({
+    const { endpoint, inbox, asked, boot, lines, close } = await harness({
       record: recorded("active", 0),
       claim: implementer,
       owed: answer,
@@ -300,16 +315,261 @@ test("a daemon that does not say what the claim owes still blocks the Stop, with
       expect(
         await endpoint.handle({ event: "Stop", lastAssistantMessage: "Pushed." }),
         failure,
-      ).toEqual({ decision: "block", reason: UNREAD_REMINDER })
+      ).toEqual({})
+      boot()
+      await waitFor(async () => asked.length === 2, "the resume timer to ask the daemon")
+      // A case asserting that nothing happens has no condition to wait for: one of the file's
+      // fixed waits, three times the reminder interval.
+      await Bun.sleep(60)
+      expect(inbox, failure).toEqual([])
+      expect(
+        lines.filter((line) =>
+          line.startsWith(
+            "warn: legion: the daemon did not say what this claim owes; no reminder is sent",
+          ),
+        ),
+        failure,
+      ).toHaveLength(1)
     } finally {
       await close()
     }
   }
-  expect(UNREAD_REMINDER).toContain("could not read the Legion daemon's record")
-  for (const named of ["phase", "handoff_complete", "implementing", WORK]) {
-    expect(UNREAD_REMINDER).not.toContain(named)
+})
+
+// A timer whose check decides not to remind clears the wake it armed, and this host, which
+// otherwise reports only at `Stop`, reports that at once: a reported wake that is due and past
+// holds the pod from its idle release.
+test("a timer that decides not to remind clears the wake and sends a report", async () => {
+  for (const [label, answer] of [
+    ["an answer that the claim owes nothing", owesNothing],
+    ["a refusal", () => Response.json({ error: "the daemon is restarting" }, { status: 503 })],
+  ] as const) {
+    // The restored count makes the settle's reminder a timer's.
+    const { endpoint, inbox, reports, close } = await harness({
+      record: recorded("active", 1),
+      claim: implementer,
+      owed: answer,
+    })
+    try {
+      expect(
+        await endpoint.handle({ event: "Stop", lastAssistantMessage: "Pushed." }),
+        label,
+      ).toEqual({})
+      expect(reports, label).toHaveLength(1)
+      expect(
+        Date.parse(String(reports[0]?.activity.phase.nextReminderAt)),
+        "the settle's report carries the wake its timer is due at",
+      ).not.toBeNaN()
+
+      await waitFor(async () => reports.length === 2, "the timer's report")
+      expect(reports[1]?.activity.phase, label).toEqual({ nextReminderAt: null })
+      expect(reports[1]?.activity.backgroundWork, label).toEqual({ running: false, kinds: [] })
+      expect(inbox, label).toEqual([])
+    } finally {
+      await close()
+    }
   }
 })
+
+// The report a timer sends after it clears the wake says what this launch's own background work
+// is, from the reading the record keeps of it (`backgroundReading`). A launch moves the claim's
+// generation and clears the daemon's stored report, and no task of the process it replaced
+// outlives that process, so a fresh launch reports no background work, and reports it even when
+// its first turn ended in a `StopFailure`, which reports nothing itself: a claim never reported
+// holds its pod. A server Claude Code restarts inside one `claude` process keeps the claim's
+// generation and repeats that generation's reading, since a task the last `Stop` saw may still be
+// running. `StopFailure` carries no `${background_tasks}`, so a refused turn that ran a tool
+// counts as leaving background work. Every case here ends on a timer whose check finds nothing
+// owed.
+
+/** A launch's background reading as the record holds it: the claim's own launch unless
+ * `generation` names another. */
+function backgroundReading(
+  backgroundWork: boolean,
+  toolSince: boolean,
+  generation = implementer.generation,
+): Record<string, unknown> {
+  return { backgroundReading: { generation, backgroundWork, toolSince } }
+}
+
+test("a fresh launch whose first turn ends in StopFailure is reported by the timer that follows, with no background work", async () => {
+  const { endpoint, record, reports, asked, boot, close } = await harness({
+    record: recorded("active", 0),
+    claim: implementer,
+    owed: owesNothing,
+  })
+  try {
+    boot()
+    // The claim's task starts the launch's first turn, which the provider refuses before it ran
+    // any tool.
+    await endpoint.handle({ event: "UserPromptSubmit", prompt: "Implement LEGION-208." })
+    expect(
+      await endpoint.handle({
+        event: "StopFailure",
+        lastAssistantMessage: "API Error: Overloaded",
+      }),
+    ).toEqual({})
+    expect(reports).toEqual([])
+    expect(await record()).toEqual({ state: "active", count: 0, reported: false })
+
+    await waitFor(async () => reports.length === 1, "the refused turn's timer's report")
+    expect(asked).toHaveLength(1)
+    expect(reports[0]?.activity.phase).toEqual({ nextReminderAt: null })
+    expect(reports[0]?.activity.backgroundWork).toEqual({ running: false, kinds: [] })
+  } finally {
+    await close()
+  }
+})
+
+test("a fresh launch whose refused turn ran a tool is reported by the timer as background work", async () => {
+  const { endpoint, record, reports, boot, close } = await harness({
+    record: recorded("active", 0),
+    claim: implementer,
+    owed: owesNothing,
+  })
+  try {
+    boot()
+    await endpoint.handle({ event: "UserPromptSubmit", prompt: "Implement LEGION-208." })
+    // The tool may have started a background task, and the `StopFailure` that ends the turn
+    // cannot say whether it did.
+    await endpoint.handle({ event: "PostToolUse", toolName: "Bash", agentId: "" })
+    expect(await record()).toMatchObject(backgroundReading(false, true))
+    expect(
+      await endpoint.handle({
+        event: "StopFailure",
+        lastAssistantMessage: "API Error: Overloaded",
+      }),
+    ).toEqual({})
+    await waitFor(async () => reports.length === 1, "the refused turn's timer's report")
+    expect(reports[0]?.activity.phase).toEqual({ nextReminderAt: null })
+    expect(reports[0]?.activity.backgroundWork).toEqual({
+      running: true,
+      kinds: ["claude-background-task"],
+    })
+    // The record keeps it, so a server restarted before the next `Stop` reports it too.
+    expect(await record()).toMatchObject(backgroundReading(true, false))
+  } finally {
+    await close()
+  }
+})
+
+test("a server restarted inside its launch repeats that launch's background work from its first timer", async () => {
+  const { reports, boot, close } = await harness({
+    record: recorded("active", 0, backgroundReading(true, false)),
+    claim: implementer,
+    owed: owesNothing,
+  })
+  try {
+    // No `Stop` has reached this server: the resume timer's report is all it sends.
+    boot()
+    await waitFor(async () => reports.length === 1, "the resume timer's report")
+    expect(reports[0]?.activity.phase).toEqual({ nextReminderAt: null })
+    expect(reports[0]?.activity.backgroundWork).toEqual({
+      running: true,
+      kinds: ["claude-background-task"],
+    })
+  } finally {
+    await close()
+  }
+})
+
+test("a relaunch whose record holds the background work of the launch before it reports none", async () => {
+  const relaunched: ClaimCapability = { ...implementer, generation: implementer.generation + 1 }
+  const { reports, boot, close } = await harness({
+    record: recorded("active", 0, backgroundReading(true, false, implementer.generation)),
+    claim: relaunched,
+    owed: owesNothing,
+  })
+  try {
+    boot()
+    await waitFor(async () => reports.length === 1, "the resume timer's report")
+    expect(reports[0]?.activity.phase).toEqual({ nextReminderAt: null })
+    expect(reports[0]?.activity.backgroundWork).toEqual({ running: false, kinds: [] })
+  } finally {
+    await close()
+  }
+})
+
+test("a timer that clears the wake after a Stop repeats the background work that Stop saw", async () => {
+  const { endpoint, record, reports, close } = await harness({
+    record: recorded("active", 0),
+    claim: implementer,
+    owed: owesNothing,
+  })
+  try {
+    // The running task puts the worker in its quiet wait, whose timer the daemon answers that the
+    // claim owes nothing: that timer clears the wake and reports the task the `Stop` saw.
+    await endpoint.handle({
+      event: "Stop",
+      lastAssistantMessage: "Waiting for the build.",
+      backgroundTasks: JSON.stringify([{ id: "bg_1", status: "running" }]),
+    })
+    expect(reports).toHaveLength(1)
+    expect(reports[0]?.activity.backgroundWork).toEqual({
+      running: true,
+      kinds: ["claude-background-task"],
+    })
+    // The reading a server restarted after this `Stop` repeats.
+    expect(await record()).toMatchObject(backgroundReading(true, false))
+    await waitFor(async () => reports.length === 2, "the timer's report")
+    expect(reports[1]?.activity.phase).toEqual({ nextReminderAt: null })
+    expect(reports[1]?.activity.backgroundWork).toEqual({
+      running: true,
+      kinds: ["claude-background-task"],
+    })
+  } finally {
+    await close()
+  }
+})
+
+// No handler waits for the report a timer sends after it clears the wake, so the `Stop`'s 3 s
+// bound does not cut it off: a daemon slower than that still takes it.
+test(
+  "the report a timer sends after clearing the wake is not cut off at the turn-end bound",
+  async () => {
+    // The `Stop`'s report is answered at once. The timer's is held until the case releases it,
+    // and fails as `fetch` does if its caller aborts it.
+    const signals: (AbortSignal | undefined)[] = []
+    let release: ((answer: Response) => void) | undefined
+    const activity = (init: RequestInit | undefined): Response | Promise<Response> => {
+      const signal = init?.signal ?? undefined
+      signals.push(signal)
+      if (signals.length === 1) return new Response(null, { status: 204 })
+      const answer = Promise.withResolvers<Response>()
+      signal?.addEventListener("abort", () => answer.reject(signal.reason), { once: true })
+      release = answer.resolve
+      return answer.promise
+    }
+    // The restored count makes the settle's reminder a timer's.
+    const { endpoint, reports, lines, close } = await harness({
+      record: recorded("active", 1),
+      claim: implementer,
+      owed: owesNothing,
+      activity,
+    })
+    try {
+      expect(await endpoint.handle({ event: "Stop", lastAssistantMessage: "Pushed." })).toEqual({})
+      await waitFor(async () => reports.length === 2, "the timer's report")
+      expect(reports[1]?.activity.phase).toEqual({ nextReminderAt: null })
+
+      // A real wait past the turn-end bound: the bound is a real `setTimeout` inside
+      // `withBound`, and a bound that does not fire gives nothing to await.
+      await Bun.sleep(ACTIVITY_REPORT_BOUND_MS + 300)
+      expect(signals).toHaveLength(2)
+      expect(signals[1]?.aborted).toBe(false)
+
+      release?.(new Response(null, { status: 204 }))
+      // A report that lands writes nothing, so this is one of the file's fixed waits.
+      await Bun.sleep(20)
+      expect(
+        lines.filter((line) => line.includes("activity report did not reach the daemon")),
+      ).toEqual([])
+    } finally {
+      await close()
+    }
+  },
+  ACTIVITY_REPORT_BOUND_MS + 10_000,
+)
 
 // INFRA-945: every settle tells the daemon what this session is doing, so the idle rule can
 // decide whether the pane's pod may be released. A turn ending with a background task of the
@@ -369,6 +629,58 @@ test("a report the daemon refuses still leaves the worker its reminder", async (
     await close()
   }
 })
+
+// INFRA-2746 R7: the `Stop` hook awaits the owed read and then the activity report, and Claude
+// Code ends the hook at 30 s. Each wait has its bound, so a daemon that answers neither route costs
+// the turn end the two bounds, about 6 s, and is left no open request.
+test(
+  "a Stop finishes inside its bound when the daemon answers no route",
+  async () => {
+    const owed = answersNever()
+    const activity = answersNever()
+    const { endpoint, inbox, lines, close } = await harness({
+      record: recorded("active", 0),
+      claim: implementer,
+      owed: owed.route,
+      activity: activity.route,
+    })
+    try {
+      const started = performance.now()
+      const answer = await endpoint.handle({ event: "Stop", lastAssistantMessage: "Pushed." })
+      const elapsed = performance.now() - started
+
+      expect(elapsed).toBeLessThan(OWED_READ_BOUND_MS + ACTIVITY_REPORT_BOUND_MS + 1_000)
+      // The read failed, so the turn ends with no reminder.
+      expect(answer).toEqual({})
+      expect(inbox).toEqual([])
+      // Each bound aborted the request it cut off, rather than only ending the wait for it.
+      expect(owed.signals).toHaveLength(1)
+      expect(owed.signals[0]?.aborted).toBe(true)
+      expect(activity.signals).toHaveLength(1)
+      expect(activity.signals[0]?.aborted).toBe(true)
+      // Each failure is logged with its bound as its cause.
+      expect(
+        lines.filter(
+          (line) =>
+            line.startsWith(
+              "warn: legion: the daemon did not say what this claim owes; no reminder is sent",
+            ) && line.includes(`"cause":"no answer within ${OWED_READ_BOUND_MS}ms"`),
+        ),
+      ).toHaveLength(1)
+      expect(
+        lines.filter(
+          (line) =>
+            line.startsWith(
+              "warn: legion: this session's activity report did not reach the daemon",
+            ) && line.includes(`"error":"no answer within ${ACTIVITY_REPORT_BOUND_MS}ms"`),
+        ),
+      ).toHaveLength(1)
+    } finally {
+      await close()
+    }
+  },
+  OWED_READ_BOUND_MS + ACTIVITY_REPORT_BOUND_MS + 10_000,
+)
 
 test("a session holding no claim reports nothing", async () => {
   const { endpoint, reports, close } = await harness({ record: recorded("active", 0) })
@@ -509,7 +821,13 @@ test("a ready_for_update answer blocks no Stop: the answering turn ends, and not
     // Claude Code's own `PostToolUse` for the call that answered: the worker ran a real tool
     // call, which does not take the wait back.
     expect(await endpoint.handle({ event: "PostToolUse" })).toEqual({})
-    expect(await record()).toEqual({ state: "waiting", count: 0, reported: false })
+    // It may have started a background task, so the launch's reading notes a tool since.
+    expect(await record()).toEqual({
+      state: "waiting",
+      count: 0,
+      reported: false,
+      ...backgroundReading(false, true),
+    })
 
     const answered = "Pushed everything and answered; waiting for the new pod."
     expect(await endpoint.handle({ event: "Stop", lastAssistantMessage: answered })).toEqual({})
@@ -654,14 +972,26 @@ test("a helper agent's tool call is not the worker working, and does not reset t
     claim: implementer,
   })
   try {
+    // A helper's call is noted in the launch's background reading all the same: it may have
+    // started a background task too.
     for (const event of ["PostToolUse", "PostToolUseFailure"]) {
       expect(await endpoint.handle({ event, toolName: "Bash", agentId: "agent-7" })).toEqual({})
-      expect(await record()).toEqual({ state: "active", count: 2, reported: false })
+      expect(await record()).toEqual({
+        state: "active",
+        count: 2,
+        reported: false,
+        ...backgroundReading(false, true),
+      })
     }
     expect(await endpoint.handle({ event: "PostToolUse", toolName: "Bash", agentId: "" })).toEqual(
       {},
     )
-    expect(await record()).toEqual({ state: "active", count: 0, reported: false })
+    expect(await record()).toEqual({
+      state: "active",
+      count: 0,
+      reported: false,
+      ...backgroundReading(false, true),
+    })
   } finally {
     await close()
   }
@@ -676,7 +1006,12 @@ test("a tool call that failed is work too, and resets the count", async () => {
     expect(
       await endpoint.handle({ event: "PostToolUseFailure", toolName: "Bash", agentId: "" }),
     ).toEqual({})
-    expect(await record()).toEqual({ state: "active", count: 0, reported: false })
+    expect(await record()).toEqual({
+      state: "active",
+      count: 0,
+      reported: false,
+      ...backgroundReading(false, true),
+    })
   } finally {
     await close()
   }

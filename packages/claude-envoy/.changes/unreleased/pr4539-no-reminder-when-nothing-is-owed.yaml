@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  The Claude Code phase hook blocks no `Stop` and sends no reminder when its read of what the claim
+  owes fails or runs past its 3 s bound. A reminder timer whose check decides not to remind clears
+  the session's reminder wake and sends the activity report at once, on a fresh launch too. That
+  report says the session runs background work when the launch's last `Stop` showed a background
+  task, or when a turn since then ran a tool and ended in `StopFailure`, which shows no background
+  tasks; a fresh launch starts from no background work, and a server Claude Code restarts inside
+  the same `claude` process repeats its launch's reading. The `Stop` activity report is bounded at
+  3 s, so a `Stop` returns within about 6 s when the daemon does not answer, and the report a timer
+  sends after it clears the wake is bounded at 60 s (`ACTIVITY_BETWEEN_TURNS_BOUND_MS`); each
+  request is aborted at its bound.

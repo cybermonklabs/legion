@@ -30,16 +30,30 @@ const workerSilentNotice record.NoticeKind = "worker-silent"
 // fact unspent (intake.Result.Unspent): the report can move between the sweep's read and this
 // transaction, and can clear — the reminder comes due and starts no turn — while the last step
 // and the launch the id is keyed on stand still. Spent, that id would be skipped at every later
-// sweep and the worker never repaired. Every other refusal spends it.
+// sweep and the worker never repaired.
+//
+// A claim unpromptedPhaseWorker holds whose issue the daemon records as waiting on another issue
+// (record.Issue.ReleasedForWaitAt) leaves the repair fact unspent too, at any length of quiet,
+// and writes nothing. The repair's start cannot be delivered before the issue holds a slot
+// again (startOrOwe marks it NeedsSlot), and while it waits it holds the pod from its idle
+// release (IdleHoldDelivery). The mark clears when admission gives the issue a slot again
+// (ClearReleasedForWait), and the first sweep after that applies this same fact under the same id,
+// which then writes the start row and the notice, since SilenceBound reads the configured bound
+// again. Such a worker's architect is told of the silence by the wait notice instead
+// (workerSilentWaiting), once it is past WaitSilenceBound. Every other refusal spends the fact.
 func (e *Engine) workerSilent(ctx context.Context, tx pgx.Tx, fact intake.WorkerSilent) (intake.Result, error) {
 	read, err := e.phaseWorkerRecord(ctx, tx, fact.Issue, fact.Generation, fact.Role)
 	if err != nil || read == nil {
 		return intake.Result{}, err
 	}
 	issue, now := read.issue, e.now()
-	if unpromptedPhaseWorker(issue, read.root, read.gate, fact.Role, read.run) &&
-		ReportExplainsQuiet(read.run.Claim.ActivityBackground, read.run.Claim.ActivityNextReminderAt, now) {
-		return intake.Result{Unspent: true}, nil
+	if unpromptedPhaseWorker(issue, read.root, read.gate, fact.Role, read.run) {
+		if ReportExplainsQuiet(read.run.Claim.ActivityBackground, read.run.Claim.ActivityNextReminderAt, now) {
+			return intake.Result{Unspent: true}, nil
+		}
+		if issue.ReleasedForWaitAt != nil && !fact.Waiting {
+			return intake.Result{Unspent: true}, nil
+		}
 	}
 	if !SilentPhaseWorker(issue, read.root, read.gate, fact.Role, read.run, fact.Bound, now) {
 		return intake.Result{}, nil
@@ -49,8 +63,39 @@ func (e *Engine) workerSilent(ctx context.Context, tx pgx.Tx, fact intake.Worker
 	if read.run.Claim.Step.LastStep().After(fact.LastStep) {
 		return intake.Result{}, nil
 	}
+	if fact.Waiting {
+		return intake.Result{}, e.workerSilentWaiting(ctx, tx, issue, fact, now)
+	}
 	return intake.Result{}, e.repairSilence(ctx, tx, issue, read.root, read.run, read.row, fact, now)
 }
+
+// workerSilentWaiting writes the wait notice of a silent worker whose issue the daemon records as
+// waiting on another issue: one `worker-silent` notice to its architect that names
+// WaitSilenceBound, and no start row. workerSilent has already judged the worker silent against
+// that bound (SilentPhaseWorker, SilenceBound). The fact is spent once the notice is written, so
+// the next minute's sweep, which skips an applied id (internal/daemon's applySweepFacts), writes
+// no second notice of the same silence. One fact cannot both wait for the day and tell, because
+// a fact left unspent is applied again at every sweep and Engine.notice writes a notice at every
+// application.
+//
+// It writes nothing once the mark has cleared: the issue holds a slot again, and the repair fact
+// of the same silence writes the start row and the notice at the next sweep.
+func (e *Engine) workerSilentWaiting(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.WorkerSilent, now time.Time) error {
+	if issue.ReleasedForWaitAt == nil {
+		return nil
+	}
+	found := workerSilentRecord(issue, fact.Role, fact.LastStep, now.Sub(fact.LastStep), waitSilence, workerSilentWaitDid)
+	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: workerSilentNotice, Role: fact.Role, Phase: issue.Phase, Reason: found}); err != nil {
+		return err
+	}
+	e.warnOnCommit(ctx, "workflow: a phase worker of an issue waiting on another issue was found silent past the day; its architect is told",
+		"issue", issue.Key, "role", fact.Role, "phase", issue.Phase, "record", found)
+	return nil
+}
+
+// workerSilentWaitDid is what the wait notice says the daemon did: nothing, and when it does.
+const workerSilentWaitDid = "the daemon wrote no start row: the issue gave its admission slot back to wait on another issue, and a start would wait for that slot and hold the pod meanwhile. " +
+	"The first sweep after the issue holds a slot again sends the worker its phase's task if it is still quiet; to reach it before then, message it"
 
 // phaseWorkerRecord reads what both silence facts are decided from: the issue, its tree root, the
 // tree's design gate, the role's run and its phase row. It answers nil where there is nothing to
@@ -153,7 +198,7 @@ func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root recor
 	} else if err := e.started(ctx, tx, issue, fact.Role, ResumePhaseTask(issue), 0, startMarks{resumeTask: true, reasserts: true}); err != nil {
 		return err
 	}
-	found := workerSilentRecord(issue, fact.Role, fact.LastStep, now.Sub(fact.LastStep), workerSilentDid(behind, row.Entry, given))
+	found := workerSilentRecord(issue, fact.Role, fact.LastStep, now.Sub(fact.LastStep), configuredSilence, workerSilentDid(behind, row.Entry, given))
 	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: workerSilentNotice, Role: fact.Role, Phase: issue.Phase, Reason: found}); err != nil {
 		return err
 	}
@@ -179,11 +224,21 @@ func workerSilentDid(behind bool, entry, given int64) string {
 	return did + ". A suspension an operator holds over the claim refuses that start when the outbox runs it"
 }
 
-// workerSilentRecord is the notice's and the log line's text: what the daemon read, then did,
-// which workerSilentDid composes.
-func workerSilentRecord(issue record.Issue, role claim.Role, lastStep time.Time, silent time.Duration, did string) string {
-	return fmt.Sprintf("%s's %s is a phase worker nothing will prompt: its process is up and between turns, it holds no task of %s, and its agent last stepped at %s, %s ago, past the bound this deployment gives a phase worker (worker_silence_minutes), so %s.",
-		issue.Key, role, issue.Phase, lastStep.UTC().Format(time.RFC3339), silent.Round(time.Minute), did)
+// configuredSilence is the bound the repair's notice says the silence passed: this deployment's
+// `worker_silence_minutes`, named by its setting alone.
+const configuredSilence = "this deployment gives a phase worker (worker_silence_minutes)"
+
+// waitSilence is the bound the wait notice says the silence passed: WaitSilenceBound, which a
+// worker of an issue the daemon records as waiting on another issue is judged by (SilenceBound),
+// named with its length in hours.
+var waitSilence = fmt.Sprintf("the daemon gives a phase worker of an issue it records as waiting on another issue (WaitSilenceBound, %d hours)",
+	int(WaitSilenceBound.Hours()))
+
+// workerSilentRecord is the notice's and the log line's text: what the daemon read, the bound the
+// silence passed, then what the daemon did, which workerSilentDid or workerSilentWaitDid composes.
+func workerSilentRecord(issue record.Issue, role claim.Role, lastStep time.Time, silent time.Duration, bound, did string) string {
+	return fmt.Sprintf("%s's %s is a phase worker nothing will prompt: its process is up and between turns, it holds no task of %s, and its agent last stepped at %s, %s ago, past the bound %s, so %s.",
+		issue.Key, role, issue.Phase, lastStep.UTC().Format(time.RFC3339), silent.Round(time.Minute), bound, did)
 }
 
 // workerBackgroundNotice is the notice of a worker waiting on background work of its own that

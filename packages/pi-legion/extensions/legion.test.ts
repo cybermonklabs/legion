@@ -40,12 +40,12 @@ import {
   LOCAL_ENVOY_NOTICE,
   resetEnvoyPluginInterfaceForTests,
 } from "@legion/pi-shared/interface";
+import { OWED_READ_BOUND_MS } from "@legion/pi-shared/phase-reminder";
 import {
   owedReminder,
   PHASE_STALL_ENTRY,
   reminderText,
   restorePhaseStallEntry,
-  UNREAD_REMINDER,
 } from "@legion/pi-shared/phase-stall";
 import type {
   AsyncJobSnapshot,
@@ -56,6 +56,7 @@ import type {
   SessionContext,
   ZodNumberProperty,
 } from "@legion/pi-shared/pi-types";
+import { ACTIVITY_REPORT_BOUND_MS } from "@legion/pi-shared/session-activity";
 import { DEFAULT_STALL_LIMITS } from "@legion/pi-shared/stall-limits";
 import {
   STALL_EXIT_CODE,
@@ -63,6 +64,7 @@ import {
   type StallProcessTree,
   type StallWatchdogProcesses,
 } from "@legion/pi-shared/stall-watchdog";
+import { answersNever } from "@legion/pi-shared/test/daemon-state";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { deliveryFor } from "@legion/pi-shared/test/omp-harness";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
@@ -941,12 +943,12 @@ async function claimPane(options: {
   readonly roleHolder?: () => string | undefined;
   /** A route the stub answers ahead of the daemon's own. `init` is the request as the caller
    * made it, so a test can read what never reaches `requests`: the `AbortSignal` a bounded call
-   * carries. */
+   * carries. A promise that never settles is a daemon that takes the request and never answers. */
   readonly extraRoutes?: (
     url: URL,
     body: unknown,
     init: RequestInit | undefined
-  ) => Response | undefined;
+  ) => Response | Promise<Response> | undefined;
   readonly ensureOnDisk?: () => Promise<void>;
   readonly branch?: readonly unknown[];
   readonly title?: { readonly name: string; readonly source: "auto" | "user" };
@@ -1987,7 +1989,9 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       /** The daemon's answer to `POST /legion/v1/claims/owed` until the case changes it
        * (`answersOwed`): that the claim owes `STALL_WORK`, unless given. This answer alone
        * decides whether a reminder goes out. */
-      readonly owed?: () => Response;
+      readonly owed?: (init: RequestInit | undefined) => Response | Promise<Response>;
+      /** The daemon's answer to `POST /legion/v1/claims/activity`: the empty 204, unless given. */
+      readonly activity?: (init: RequestInit | undefined) => Response | Promise<Response>;
       /** What `ctx.getAsyncJobSnapshot()` answers this pane. */
       readonly asyncJobs?: () => AsyncJobSnapshot | null;
     }) => {
@@ -2040,11 +2044,11 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         workspace,
         branch: options.branch,
         asyncJobs: options.asyncJobs,
-        extraRoutes: (url) => {
+        extraRoutes: (url, _body, init) => {
           if (url.pathname === "/legion/v1/issues/REPO-43/record") {
             return Response.json(state.issues["REPO-43"]);
           }
-          if (url.pathname === "/legion/v1/claims/owed") return owed();
+          if (url.pathname === "/legion/v1/claims/owed") return owed(init);
           if (url.pathname === "/legion/v1/grants") {
             return Response.json({ grantId: "grant-stall", expiresAt: "2099-01-01T00:00:00Z" });
           }
@@ -2053,7 +2057,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           }
           if (url.pathname === "/legion/v1/phase/backward") return Response.json({});
           if (url.pathname === "/legion/v1/claims/activity") {
-            return new Response(null, { status: 204 });
+            return options.activity?.(init) ?? new Response(null, { status: 204 });
           }
           if (url.pathname === "/legion/v1/claims/ready-for-update") {
             return new Response(null, { status: 204 });
@@ -2574,22 +2578,197 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       ]);
     });
 
-    test("a daemon that does not answer what the claim owes still nudges, and says it could not read the record", async () => {
-      // An unreachable daemon is exactly when a stalled worker must still be nudged; the nudge
-      // names no phase and no operation, since it read neither.
+    test("a daemon that does not answer what the claim owes sends no reminder, and the timer whose read fails reports no wake", async () => {
+      // A read that fails reminds no one (`UNREAD_CHECK`, @legion/pi-shared/phase-reminder): a
+      // stalled worker is sent its task again by the daemon's own silence sweep.
       const worker = await bootStalling({
         owed: () => Response.json({ error: "the daemon is restarting" }, { status: 503 }),
       });
       await worker.arrives(assignment);
 
-      const result = await worker.settles("Pushed.");
-      expect(result).toEqual({ continue: true, additionalContext: UNREAD_REMINDER });
+      expect(await worker.settles("Pushed.")).toBeUndefined();
       expect(recorded(worker).at(-1)).toEqual({
         state: "active",
-        count: 1,
+        count: 0,
         reported: false,
         lastMessage: "Pushed.",
       });
+
+      // A WAITING reply arms a timer, and the settle's report carries its wake.
+      expect(await worker.settles("WAITING: CI on the pull request")).toBeUndefined();
+      expect(activityReports(worker).at(-1)).toMatchObject({
+        activity: { phase: { nextReminderAt: expect.any(String) } },
+      });
+      const reportsBefore = activityReports(worker).length;
+
+      // The timer's read fails too: nothing is steered, nothing more is armed, and the pane reports
+      // at once that no reminder is due.
+      const armed = worker.timers.length;
+      await fires(worker);
+      const reported = Promise.withResolvers<void>();
+      setImmediate(reported.resolve);
+      await reported.promise;
+      expect(steered(worker)).toEqual([]);
+      expect(worker.timers).toHaveLength(armed);
+      expect(activityReports(worker)).toHaveLength(reportsBefore + 1);
+      expect(activityReports(worker).at(-1)).toMatchObject({
+        activity: { phase: { nextReminderAt: null } },
+      });
+    });
+
+    // INFRA-2746 R7: `session_stop` awaits the owed read and then the activity report, and Oh My
+    // Pi ends a handler at 30 s. Each wait has its bound, so a daemon that answers neither route
+    // costs the turn end the two bounds, about 6 s, and is left no open request.
+    test(
+      "a phase worker's session_stop finishes inside its bound when the daemon answers no route",
+      async () => {
+        const owed = answersNever();
+        const activity = answersNever();
+        const worker = await bootStalling({ owed: owed.route, activity: activity.route });
+        await worker.arrives(assignment);
+
+        const started = performance.now();
+        const { value: result, warnings } = await loggedWarnings(async () =>
+          worker.settles("Pushed.")
+        );
+        const elapsed = performance.now() - started;
+
+        expect(elapsed).toBeLessThan(OWED_READ_BOUND_MS + ACTIVITY_REPORT_BOUND_MS + 1_000);
+        // The read failed, so the turn ends with no reminder.
+        expect(result).toBeUndefined();
+        // Each bound aborted the request it cut off, rather than only ending the wait for it.
+        expect(owed.signals).toHaveLength(1);
+        expect(owed.signals[0]?.aborted).toBe(true);
+        expect(activity.signals).toHaveLength(1);
+        expect(activity.signals[0]?.aborted).toBe(true);
+        // Each failure is logged with its bound as its cause.
+        expect(
+          warnings
+            .filter(
+              (warning) =>
+                warning.message ===
+                "legion: the daemon did not say what this claim owes; no reminder is sent"
+            )
+            .map((warning) => warning.context?.cause)
+        ).toEqual([`no answer within ${OWED_READ_BOUND_MS}ms`]);
+        expect(
+          warnings
+            .filter(
+              (warning) =>
+                warning.message ===
+                "legion: this session's activity report did not reach the daemon"
+            )
+            .map((warning) => warning.context?.error)
+        ).toEqual([`no answer within ${ACTIVITY_REPORT_BOUND_MS}ms`]);
+      },
+      OWED_READ_BOUND_MS + ACTIVITY_REPORT_BOUND_MS + 10_000
+    );
+
+    // No handler waits for a report sent between turns, so the turn-end bound does not cut it
+    // off: a daemon slower than 3 s still takes it. One is open at a time, so a slow daemon gets
+    // one request rather than one at every 5 s reading, and the first reading after its answer
+    // sends what has changed since.
+    test(
+      "a phase worker's report between turns is not cut off at the turn-end bound, and no second one is sent while it is open",
+      async () => {
+        const jobsRunning = (...types: string[]): AsyncJobSnapshot => ({
+          running: types.map((type, i) => ({
+            id: `job_${i}`,
+            type,
+            status: "running",
+            label: type,
+            startTime: i,
+          })),
+          recent: [],
+          delivery: { queued: 0, delivering: false, pendingJobIds: [] },
+        });
+        let jobs = jobsRunning();
+        // The daemon answers at once until `holding`; from then on it holds each report until the
+        // case releases it, and fails it as `fetch` does if its caller aborts it.
+        const signals: (AbortSignal | undefined)[] = [];
+        let holding = false;
+        let release: ((answer: Response) => void) | undefined;
+        const activity = (init: RequestInit | undefined): Response | Promise<Response> => {
+          const signal = init?.signal ?? undefined;
+          signals.push(signal);
+          if (!holding) return new Response(null, { status: 204 });
+          const answer = Promise.withResolvers<Response>();
+          signal?.addEventListener("abort", () => answer.reject(signal.reason), { once: true });
+          release = answer.resolve;
+          return answer.promise;
+        };
+        const worker = await bootStalling({ activity, asyncJobs: () => jobs });
+        await worker.arrives(assignment);
+        const answered = async (): Promise<void> => {
+          const drained = Promise.withResolvers<void>();
+          setImmediate(drained.resolve);
+          await drained.promise;
+        };
+
+        const { warnings } = await loggedWarnings(async () => {
+          await worker.settles("Pushed.");
+          expect(activityReports(worker)).toHaveLength(1);
+
+          holding = true;
+          jobs = jobsRunning("bash");
+          await ticks(worker);
+          expect(activityReports(worker)).toHaveLength(2);
+
+          // Past the turn-end bound, the report is still open, and a reading that sees a newer
+          // change sends nothing beside it. The wait is real on purpose, as the bound case above
+          // is: each bound is a real `setTimeout` inside `withBound`, and a bound that does not
+          // fire gives nothing to await.
+          await Bun.sleep(ACTIVITY_REPORT_BOUND_MS + 300);
+          expect(signals).toHaveLength(2);
+          expect(signals[1]?.aborted).toBe(false);
+          jobs = jobsRunning("bash", "task");
+          await ticks(worker);
+          expect(activityReports(worker)).toHaveLength(2);
+
+          holding = false;
+          release?.(new Response(null, { status: 204 }));
+          await answered();
+          await ticks(worker);
+          expect(activityReports(worker)).toHaveLength(3);
+          expect(activityReports(worker).at(-1)).toMatchObject({
+            activity: { backgroundWork: { running: true, kinds: ["async-job", "subagent"] } },
+          });
+        });
+
+        expect(
+          warnings.filter(
+            (warning) =>
+              warning.message === "legion: this session's activity report did not reach the daemon"
+          )
+        ).toEqual([]);
+      },
+      ACTIVITY_REPORT_BOUND_MS + 10_000
+    );
+
+    // A failed activity report is sent again at the next reading, so a daemon that refuses every
+    // report fails one every 5 s. The pane writes the warn line of a failed report once per claim
+    // per hour, counted from the line it wrote, through the gate the owed check's failed reads use
+    // too; the clock is moved rather than waited on, and handed back after.
+    test("a phase worker's failed activity reports write one warn line per claim per hour", async () => {
+      const worker = await bootStalling({ activity: () => new Response("down", { status: 503 }) });
+      await worker.arrives(assignment);
+      const failedReports = async (): Promise<number> => {
+        const { warnings } = await loggedWarnings(async () => worker.settles("Pushed."));
+        return warnings.filter(
+          (warning) =>
+            warning.message === "legion: this session's activity report did not reach the daemon"
+        ).length;
+      };
+      try {
+        expect(await failedReports()).toBe(1);
+        expect(await failedReports()).toBe(0);
+        setSystemTime(new Date(Date.now() + 59 * 60_000));
+        expect(await failedReports()).toBe(0);
+        setSystemTime(new Date(Date.now() + 2 * 60_000));
+        expect(await failedReports()).toBe(1);
+      } finally {
+        setSystemTime();
+      }
     });
 
     // R5: the check asks the daemon what this claim owes, and never reads the whole project

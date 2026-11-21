@@ -158,7 +158,7 @@ func TestABackstopThatCameDueWhileTheDaemonWasDownFiresAfterItStarts(t *testing.
 	ctx := context.Background()
 	due := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
 	if err := w.idleStore.ArmPodBackstop(ctx, store.PodWakeBackstop{Project: "legion", Issue: "LEGION-208",
-		Role: claim.RoleImplementer, DueAt: due}); err != nil {
+		Role: claim.RoleImplementer, ArmedAt: due.Add(-10 * time.Minute), DueAt: due}); err != nil {
 		t.Fatalf("arm the backstop: %v", err)
 	}
 

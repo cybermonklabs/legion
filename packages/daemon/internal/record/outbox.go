@@ -1823,6 +1823,34 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 	return slices.Contains(mergeForwardRoles[step], role)
 }
 
+// MergeForwardHolds says whether the merge forward pr records (PullRequest.MergeForward) holds
+// role while the issue stands at at: the ask is of the head pr stands at, it was made in at, it
+// has not landed (MergeForward.Landed), role is the role that works at (phase.RoleFor), and the
+// ask's hold reaches role (MergeForwardReaches, MergeForwardHold). So it answers true only for
+// the tester in testing, the reviewer in reviewing and the merger in merging: the hold told that
+// role to stop, not to complete at the head pr stands at, and to wait for the daemon's landed
+// message (MergeForwardLanded). The implementer is never held. The merge is its own open work, in
+// implementing and in retro alike, so the ask goes to it and no hold does. A nil pr, or one that
+// records no ask, holds nothing.
+//
+// Whether pr is open is not read, on purpose. A close that does not merge keeps the ask and the
+// head (workflow's Engine.closed), the issue stays in its phase, and its architect decides
+// whether the work goes on; a reopen at the same head brings the same hold back. A close that
+// carries a new head ends the hold by the head clause.
+//
+// It is the one rule two readers hold a role to (dispatch://INFRA-2746 R1): the owed route (api's
+// owedBy), which tells a held role that it owes no completion, and the completion fence of a merge
+// forward (workflow's mergedForwardRefusal), which tells a held role that completes to wait for
+// the landed message rather than to complete at the head pr stands at.
+func MergeForwardHolds(pr *PullRequest, at phase.Phase, role claim.Role) bool {
+	if pr == nil || pr.MergeForward == nil {
+		return false
+	}
+	asked := pr.MergeForward
+	return asked.Landed == "" && asked.Head == pr.HeadSHA && asked.Phase == at &&
+		phase.RoleFor(at) == role && MergeForwardReaches(MergeForwardHold, role)
+}
+
 // MergeForwardMessage is one message of a merge forward (PullRequest.MergeForward,
 // dispatch://INFRA-4374 R1) to one role of the issue, on that role's own Envoy topic. The daemon
 // acts on a confirmed conflict without moving the issue out of its phase: it asks the implementer

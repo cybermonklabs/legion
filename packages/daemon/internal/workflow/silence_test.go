@@ -652,3 +652,221 @@ func TestANoticeTheStoreRefusesLeavesTheBackgroundFactUnapplied(t *testing.T) {
 		t.Errorf("the fact is recorded as applied, so the next sweep's identical fact would be skipped and this architect would never be told")
 	}
 }
+
+// releaseSlotForAWait is admission's release of key's admission slot for a wait on another issue
+// (admit's releaseSlotsForWaits): the slot row deleted and the mark written in one statement
+// (record.Store.ReleaseSlotForWait). The issue holds its slot first, as every issue a wait takes
+// one from does.
+func releaseSlotForAWait(t *testing.T, pool *pgxpool.Pool, key string, at time.Time) {
+	t.Helper()
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		records := record.NewStore()
+		if err := records.PutSlot(t.Context(), tx, record.Slot{Issue: key, Index: 0, AdmittedAt: at}); err != nil {
+			return err
+		}
+		return records.ReleaseSlotForWait(t.Context(), tx, key, at)
+	})
+}
+
+// giveTheSlotBack is admission's grant of a slot to key once its wait ended (admit's
+// promoteHolds): the slot row put back and the mark cleared (record.Store.ClearReleasedForWait),
+// in one transaction.
+func giveTheSlotBack(t *testing.T, pool *pgxpool.Pool, key string, at time.Time) {
+	t.Helper()
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		records := record.NewStore()
+		if err := records.PutSlot(t.Context(), tx, record.Slot{Issue: key, Index: 0, AdmittedAt: at}); err != nil {
+			return err
+		}
+		return records.ClearReleasedForWait(t.Context(), tx, key)
+	})
+}
+
+// applyWaitNotice applies the wait notice of one silence, as the sweep writes it for a claim of an
+// issue waiting on another issue (internal/daemon's workerSilentWaitEventID): the claim token and
+// the moment of the last step are its identity, under an id of its own beside the repair's.
+func applyWaitNotice(t *testing.T, pool *pgxpool.Pool, engine *Engine, fact intake.WorkerSilent) error {
+	t.Helper()
+	_, err := intake.ApplyFact(t.Context(), pool, "supervise", waitNoticeEventID(t, fact), fact, engine)
+	return err
+}
+
+func waitNoticeEventID(t *testing.T, fact intake.WorkerSilent) string {
+	t.Helper()
+	return fmt.Sprintf("worker-silent-wait:%s:%s", silenceToken(t, fact.Role), fact.LastStep.UTC().Format(time.RFC3339Nano))
+}
+
+// silenceSpent is whether the fact under id is recorded as applied: a spent fact is skipped by
+// every later sweep, and one left unspent applies again at the next.
+func silenceSpent(t *testing.T, pool *pgxpool.Pool, id string) bool {
+	t.Helper()
+	applied, err := intake.Applied(context.Background(), pool, "supervise", []string{id})
+	if err != nil {
+		t.Fatalf("read which facts are applied: %v", err)
+	}
+	return applied[id]
+}
+
+// R9 of dispatch://INFRA-2746, the silence handler's half. While the daemon records the issue as
+// waiting on another issue (record.Issue.ReleasedForWaitAt), the repair fact of its quiet worker
+// writes nothing at any length of quiet and is left unspent, since the start it would write
+// cannot be delivered before the issue holds a slot and holds the pod while it waits. Past
+// WaitSilenceBound the wait notice fact, an id of its own, tells the architect once, naming that
+// bound, and writes no start row; the next minute's sweep applies both facts again under their
+// ids and writes nothing more. Once admission gives the issue its slot back, which clears the
+// mark, the same repair fact writes the start row and the notice that names
+// `worker_silence_minutes`, and a wait notice applied after that writes nothing.
+//
+// The control is the same worker of an issue with no mark, which gets the start row and the
+// notice at the configured bound.
+func TestSilentPhaseWorkerOfAnIssueWaitingOnAnotherGetsNothingUntilADayOrTheWaitsEnd(t *testing.T) {
+	quietPastADay := silenceStep().Add(WaitSilenceBound + time.Hour)
+	// nothingWritten fails the test unless the record holds no supervise row and no notice.
+	nothingWritten := func(t *testing.T, pool *pgxpool.Pool, when string) {
+		t.Helper()
+		if got := silenceSuperviseRows(t, pool); len(got) != 0 {
+			t.Fatalf("%s: the supervise rows of %s = %+v, want none: the start would wait for a slot the issue gave back and hold its pod meanwhile",
+				when, silenceIssue, got)
+		}
+		if rows := noticeRows(t, pool); len(rows) != 0 {
+			t.Fatalf("%s: the notice rows = %+v, want none", when, rows)
+		}
+	}
+	// repaired fails the test unless the repair wrote the worker's start row and a notice naming
+	// the configured bound as the last notice of the issue.
+	repaired := func(t *testing.T, pool *pgxpool.Pool, issue record.Issue, notices int) {
+		t.Helper()
+		want := []silenceSuperviseRow{{op: "start", role: claim.RoleTester, task: ResumePhaseTask(issue),
+			stands: phase.Testing, entry: 0, resumeTask: true}}
+		if got := silenceSuperviseRows(t, pool); !reflect.DeepEqual(got, want) {
+			t.Fatalf("the supervise rows of %s = %+v, want %+v: the repair sends the worker its phase's task again", silenceIssue, got, want)
+		}
+		told := noticesOfKind(t, pool, silenceIssue, workerSilentNotice)
+		if len(told) != notices {
+			t.Fatalf("the %s notices of %s = %+v, want %d", workerSilentNotice, silenceIssue, told, notices)
+		}
+		if reason := told[len(told)-1].Reason; !strings.Contains(reason, "worker_silence_minutes") ||
+			!strings.Contains(reason, "wrote the start row") {
+			t.Errorf("the repair's notice %q names no worker_silence_minutes and no start row", reason)
+		}
+	}
+
+	t.Run("an issue waiting on another", func(t *testing.T) {
+		pool := migratedPool(t)
+		issue := seedSilence(t, pool, aSilentTester())
+		releaseSlotForAWait(t, pool, silenceIssue, silenceStep())
+		clock := &checkClock{now: silenceClock()}
+		engine := testEngine(config.DesignGateRootIssues, nil)
+		engine.cfg.Clock = clock.Now
+		repair := aSilenceOf(claim.RoleTester, 1)
+		wait := repair
+		wait.Waiting = true
+
+		// Quiet two hours: past the configured half hour, under a day.
+		if err := applySilence(t, pool, engine, repair); err != nil {
+			t.Fatalf("apply the repair fact under a day: %v", err)
+		}
+		nothingWritten(t, pool, "under a day")
+		if silenceSpent(t, pool, silenceEventID(t, repair)) {
+			t.Fatalf("the repair fact is spent under a day, want it unspent: spent, no later sweep applies it, and the worker is never sent its task once the wait ends")
+		}
+
+		// Quiet past a day: the repair still writes nothing, at any length of quiet.
+		clock.now = quietPastADay
+		if err := applySilence(t, pool, engine, repair); err != nil {
+			t.Fatalf("apply the repair fact past a day: %v", err)
+		}
+		nothingWritten(t, pool, "the repair past a day")
+		if silenceSpent(t, pool, silenceEventID(t, repair)) {
+			t.Fatalf("the repair fact is spent past a day, want it unspent while the issue waits")
+		}
+
+		// The wait notice tells the architect once, naming the day, and starts nothing.
+		if err := applyWaitNotice(t, pool, engine, wait); err != nil {
+			t.Fatalf("apply the wait notice: %v", err)
+		}
+		if got := silenceSuperviseRows(t, pool); len(got) != 0 {
+			t.Fatalf("the supervise rows of %s after the wait notice = %+v, want none", silenceIssue, got)
+		}
+		told := noticesOfKind(t, pool, silenceIssue, workerSilentNotice)
+		if len(told) != 1 {
+			t.Fatalf("the %s notices of %s = %+v, want the one the wait notice writes", workerSilentNotice, silenceIssue, told)
+		}
+		if told[0].Role != claim.RoleTester || told[0].Phase != phase.Testing {
+			t.Errorf("the wait notice names role %q and phase %q, want the tester of testing", told[0].Role, told[0].Phase)
+		}
+		if strings.Contains(told[0].Reason, "wrote the start row") {
+			t.Errorf("the wait notice %q says the daemon wrote a start row, which it did not", told[0].Reason)
+		}
+		for _, part := range []string{silenceIssue, string(claim.RoleTester), string(phase.Testing),
+			silenceStep().Format(time.RFC3339), quietPastADay.Sub(silenceStep()).String(), "wrote no start row",
+			"WaitSilenceBound", "24 hours", "waiting on another issue"} {
+			if !strings.Contains(told[0].Reason, part) {
+				t.Errorf("the wait notice %q names no %q: it says which bound the silence passed", told[0].Reason, part)
+			}
+		}
+		if !silenceSpent(t, pool, waitNoticeEventID(t, wait)) {
+			t.Fatalf("the wait notice is unspent, want it spent: unspent, every later sweep would tell the architect again")
+		}
+
+		// The next minute's sweep applies both facts again, under their ids.
+		clock.now = quietPastADay.Add(time.Minute)
+		if err := applySilence(t, pool, engine, repair); err != nil {
+			t.Fatalf("apply the repair fact at the next sweep: %v", err)
+		}
+		if err := applyWaitNotice(t, pool, engine, wait); err != nil {
+			t.Fatalf("apply the wait notice at the next sweep: %v", err)
+		}
+		if got := silenceSuperviseRows(t, pool); len(got) != 0 {
+			t.Fatalf("the supervise rows of %s after the next sweep = %+v, want none", silenceIssue, got)
+		}
+		if told := noticesOfKind(t, pool, silenceIssue, workerSilentNotice); len(told) != 1 {
+			t.Fatalf("the %s notices of %s after the next sweep = %d, want the one: one silence is one notice", workerSilentNotice, silenceIssue, len(told))
+		}
+
+		// The wait ends: the issue takes its slot back, and the same repair fact sends the task.
+		giveTheSlotBack(t, pool, silenceIssue, clock.now)
+		if err := applySilence(t, pool, engine, repair); err != nil {
+			t.Fatalf("apply the repair fact once the wait ended: %v", err)
+		}
+		repaired(t, pool, issue, 2)
+		if !silenceSpent(t, pool, silenceEventID(t, repair)) {
+			t.Errorf("the repair fact is unspent once it wrote its start row, want it spent")
+		}
+	})
+
+	// The wait ended before the sweep read it: a wait notice of that silence applied after the
+	// issue took its slot back tells nobody, and the repair of the same silence is what writes.
+	t.Run("a wait notice after the wait ended", func(t *testing.T) {
+		pool := migratedPool(t)
+		issue := seedSilence(t, pool, aSilentTester())
+		releaseSlotForAWait(t, pool, silenceIssue, silenceStep())
+		engine := testEngine(config.DesignGateRootIssues, nil)
+		engine.cfg.Clock = func() time.Time { return quietPastADay }
+		repair := aSilenceOf(claim.RoleTester, 1)
+		wait := repair
+		wait.Waiting = true
+		giveTheSlotBack(t, pool, silenceIssue, quietPastADay)
+
+		if err := applyWaitNotice(t, pool, engine, wait); err != nil {
+			t.Fatalf("apply the wait notice: %v", err)
+		}
+		nothingWritten(t, pool, "a wait notice once the wait ended")
+
+		if err := applySilence(t, pool, engine, repair); err != nil {
+			t.Fatalf("apply the repair fact: %v", err)
+		}
+		repaired(t, pool, issue, 1)
+	})
+
+	t.Run("the control: an issue with no mark", func(t *testing.T) {
+		pool := migratedPool(t)
+		issue := seedSilence(t, pool, aSilentTester())
+		engine := testEngine(config.DesignGateRootIssues, nil)
+
+		if err := applySilence(t, pool, engine, aSilenceOf(claim.RoleTester, 1)); err != nil {
+			t.Fatalf("apply the repair fact: %v", err)
+		}
+		repaired(t, pool, issue, 1)
+	})
+}

@@ -12,7 +12,11 @@ import {
   sessionEnvoySettings,
 } from "@legion/envoy-client/session-settings";
 import { createEnvoyClient } from "@legion/envoy-client/transport";
-import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
+import {
+  createFailureLogGate,
+  createLegionDaemonClient,
+  type LegionDaemonClient,
+} from "@legion/pi-shared/daemon-client";
 import { currentSessionID } from "@legion/pi-shared/dispatch-session-id";
 import { nextFallbackModel } from "@legion/pi-shared/fallback-chain";
 import {
@@ -41,6 +45,8 @@ import type { CommandContext, PiApi, SessionContext } from "@legion/pi-shared/pi
 import { legionRoleClaimBridge } from "@legion/pi-shared/role-claim-bridge";
 import {
   asyncJobKinds,
+  reportActivityBetweenTurns,
+  reportActivityWithin,
   type SessionActivityReport,
   sameSessionActivity,
   sessionActivity,
@@ -272,6 +278,18 @@ export default function legionExtension(pi: PiApi): void {
     saveEntry: (entry) => pi.appendEntry(PHASE_STALL_ENTRY, entry),
     claim: paneClaim,
     readOwed: (input, signal) => roleDaemon().owed(input, { signal }),
+    // A timer whose check decided not to remind has cleared the wake, and no turn starts whose
+    // `session_stop` would report it, so the pane reports as the 5 s interval does: a report
+    // between turns, sent only when its content changed. It has changed from the wake the last
+    // report carried, so the report goes at once, unless a report between turns is still open:
+    // then `reportActivity` returns and nothing goes, and the change goes with the first 5 s
+    // reading after that report ends, or with a turn's `session_stop` report if one comes first.
+    // A report the daemon already holds is not sent twice. The rule that sends a report at every
+    // settle whatever it says is the daemon's, which releases no claim whose last report is older
+    // than its last turn, and a timer is no turn.
+    wakeChanged: () => {
+      if (paneContext !== undefined) void reportActivity(paneContext, { turnEnd: false });
+    },
     publisher,
     project: process.env.LEGION_PROJECT,
     limits,
@@ -331,13 +349,45 @@ export default function legionExtension(pi: PiApi): void {
    * that content changed, so the cost between turns is one object comparison, and five seconds
    * bounds how stale the daemon's view of a job that just started can be against a release rule
    * measured in minutes.
+   *
+   * The turn-end report is sent under `ACTIVITY_REPORT_BOUND_MS` (`reportActivityWithin`), because
+   * `session_stop` awaits it: a daemon that does not answer holds the turn end here for at most
+   * 3 s, so the handler stays inside Oh My Pi's 30 s limit. It goes whether or not a report sent
+   * between turns is still open: the store keeps the newest report by its `at`
+   * (`PutClaimActivity`, `packages/daemon/internal/store/claims.go`), so a report that lands late
+   * after a newer one changes nothing.
+   *
+   * No handler waits for a report sent between turns, the reading's or the one after a timer
+   * clears the reminder wake (`wakeChanged`), so it is sent under `ACTIVITY_BETWEEN_TURNS_BOUND_MS`
+   * (`reportActivityBetweenTurns`), and one at a time: while one is open, no other is sent. A
+   * report the 3 s bound cut off between turns would be cut off again at every 5 s reading while
+   * the daemon stays slow, so none would land, and the daemon would log one warn line for each
+   * write cut off (`logRequestFailure`, `packages/daemon/internal/api/server.go`). So a slow
+   * daemon gets one request, which lands late, and the first reading after it ends sends what has
+   * changed since.
+   *
+   * A failed report is not what the daemon holds, so the next reading sends again whether or not
+   * its content moved. The failure clears `lastActivity` only while it is still the report that
+   * failed: a newer report may have been sent since, and that one may have landed.
    */
   const SESSION_ACTIVITY_PERIOD_MS = 5_000;
+  /**
+   * Whether a warn line about the failed activity reports of one claim may be written now, keyed
+   * by its claim token: one line per claim per hour, counted from the line written, through the
+   * gate the owed check's failed reads use too (`createFailureLogGate` in
+   * `packages/pi-shared/src/daemon-client.ts`). A daemon that refuses every report fails the one
+   * each 5 s reading sends again: one line per failure would be about 720 lines an hour, and one
+   * line an hour names the cause.
+   */
+  const mayLogActivityFailure = createFailureLogGate(Date.now);
   let lastActivity: SessionActivityReport | undefined;
+  /** Whether a report sent between turns is still waiting for the daemon's answer. */
+  let betweenTurnsOpen = false;
   const reportActivity = async (
     context: SessionContext,
-    options: { readonly onlyWhenChanged: boolean }
+    options: { readonly turnEnd: boolean }
   ): Promise<void> => {
+    if (!options.turnEnd && betweenTurnsOpen) return;
     const claim = claimSession.capability(context.sessionManager.getSessionId());
     if (claim === undefined) return;
     // An architect arms no phase reminder, so it waits on no reminder of its own; what it
@@ -347,7 +397,7 @@ export default function legionExtension(pi: PiApi): void {
       phaseWorkerSession(context) ? phaseReminder.phaseWake() : { nextReminderAt: null }
     );
     if (
-      options.onlyWhenChanged &&
+      !options.turnEnd &&
       lastActivity !== undefined &&
       sameSessionActivity(lastActivity, report)
     ) {
@@ -360,16 +410,20 @@ export default function legionExtension(pi: PiApi): void {
     });
     if (request === undefined) return;
     lastActivity = report;
+    const bounded = options.turnEnd ? reportActivityWithin : reportActivityBetweenTurns;
+    if (!options.turnEnd) betweenTurnsOpen = true;
     try {
-      await roleDaemon().activity(request);
+      await bounded((body, signal) => roleDaemon().activity(body, { signal }), request);
     } catch (error) {
-      // The daemon did not take it, so it is not what the daemon holds: the next reading sends
-      // again whether or not its content moved.
-      lastActivity = undefined;
-      logger.warn("legion: this session's activity report did not reach the daemon", {
-        issue: claim.issue,
-        error: messageFor(error),
-      });
+      if (lastActivity === report) lastActivity = undefined;
+      if (mayLogActivityFailure(claim.claimToken)) {
+        logger.warn("legion: this session's activity report did not reach the daemon", {
+          issue: claim.issue,
+          error: messageFor(error),
+        });
+      }
+    } finally {
+      if (!options.turnEnd) betweenTurnsOpen = false;
     }
   };
 
@@ -723,7 +777,7 @@ export default function legionExtension(pi: PiApi): void {
       // own steps are minutes apart.
       context.setInterval(() => {
         if (paneContext !== undefined) {
-          void reportActivity(paneContext, { onlyWhenChanged: true });
+          void reportActivity(paneContext, { turnEnd: false });
         }
         // None of the three is awaited: a measurement that runs for up to 10 s, or a step of the
         // ladder that outlasts the tick, never delays the activity report the daemon reads to
@@ -898,13 +952,13 @@ export default function legionExtension(pi: PiApi): void {
     if (!phaseWorkerSession(context)) {
       // An architect has no phase of its own to settle, and its pod is released on the same rule
       // as a worker's, so its turn ends with a report of its own.
-      await reportActivity(context, { onlyWhenChanged: false });
+      await reportActivity(context, { turnEnd: true });
       return undefined;
     }
     const reminder = await phaseReminder.settle(turnEndOf(event.last_assistant_message));
     // After the settle, so the report carries the wake that settle armed: the daemon releases no
     // claim whose last report is older than its last turn, so this one goes whatever it says.
-    await reportActivity(context, { onlyWhenChanged: false });
+    await reportActivity(context, { turnEnd: true });
     return reminder === undefined ? undefined : { continue: true, additionalContext: reminder };
   });
 

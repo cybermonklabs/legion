@@ -65,7 +65,7 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 	// F's pod was released earlier, with its backstop due twenty minutes after the pause.
 	r.seed(r.root(U, phase.Implementing), r.released(U, claim.RoleImplementer))
 	if err := r.st.ArmPodBackstop(r.ctx, store.PodWakeBackstop{Project: r.project, Issue: U, Role: claim.RoleImplementer,
-		DueAt: now.Add(20 * time.Minute)}); err != nil {
+		ArmedAt: now, DueAt: now.Add(20 * time.Minute)}); err != nil {
 		t.Fatalf("arm F's backstop: %v", err)
 	}
 	// D is ready, and the daemon's boot hands it its phase's task once its shim says hello.

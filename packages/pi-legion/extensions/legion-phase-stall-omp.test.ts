@@ -1,6 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { symlink, writeFile } from "node:fs/promises";
 import * as path from "node:path";
+import { roleTopic } from "@legion/contracts";
+import { LEGION_PHASES, type LegionOwed, type LegionPhase } from "@legion/contracts/legion-api";
+import { OWED_READ_BOUND_MS } from "@legion/pi-shared/phase-reminder";
 import { PHASE_STALL_ENTRY } from "@legion/pi-shared/phase-stall";
 import {
   type Cleanup,
@@ -8,10 +12,15 @@ import {
   type LegionPane,
   type LegionPaneOptions,
   ompNatsGuard,
+  type PaneStep,
+  type RelayConnection,
   type Reply,
   type Request,
+  roleLaneEnvelope,
   runLegionPane,
+  sendRelayFrame,
 } from "@legion/pi-shared/test/omp-harness";
+import { connect, headers, StringCodec } from "nats";
 
 // The phase-stall follow-up on the real Oh My Pi (src/phase-stall.ts): only the real binary
 // shows when the host fires `session_stop`, how it turns the returned follow-up into the next turn,
@@ -29,9 +38,9 @@ import {
 // The WAITING self-check case below fails if that ever changes.
 const { skip, setup } = ompNatsGuard();
 
-/** The implementer pane the phase-stall cases run, with what its stand-in daemon recorded and
+/** The phase-worker pane the phase-stall cases run, with what its stand-in daemon recorded and
  * its transcript's phase-stall entries. */
-interface StallPane extends LegionPane {
+interface StallPane extends Omit<LegionPane, "resume"> {
   /** The body of each `POST /legion/v1/handoff/complete` the pane made, in order. */
   readonly completions: () => unknown[];
   /** The body of each `POST /v1/messages/publish` the pane made, in order: the architect notice
@@ -42,6 +51,16 @@ interface StallPane extends LegionPane {
   /** The commit `legion/STALL-2@origin` names in the pane's workspace: the pushed tip its
    * `handoff_complete` reports beside the record. */
   readonly pushedTip: string;
+  /** Each answer the stand-in's owed route gave from its record (`owedOf`), in order. An answer a
+   * case gives through its own `answer` is not among them. */
+  readonly owedAnswers: () => LegionOwed[];
+  /** How many times the pane read STALL-2's record (`GET /legion/v1/issues/STALL-2/record`). */
+  readonly recordReads: () => number;
+  /** `LegionPane.resume`, with this file's steps (`StallStep`) among the prompts. */
+  readonly resume: (
+    replies: readonly Reply[],
+    prompt: string | readonly (string | StallStep)[]
+  ) => Promise<void>;
 }
 
 /** `POST /legion/v1/claims/activity`, the session's own report of what it is doing
@@ -51,7 +70,7 @@ interface StallPane extends LegionPane {
 const ACTIVITY_ROUTE = "/legion/v1/claims/activity";
 
 /** Every daemon route the pane called, in order, the activity heartbeat left out. */
-function daemonRoutes(pane: LegionPane): string[] {
+function daemonRoutes(pane: Pick<LegionPane, "requests">): string[] {
   return pane.requests
     .map((request) => request.path)
     .filter((requested) => requested.startsWith("/legion/") && requested !== ACTIVITY_ROUTE);
@@ -94,10 +113,10 @@ function published(body: Record<string, unknown>): Response {
  * as. */
 const PANE_IDENTITY = { JJ_USER: "Legion Test", JJ_EMAIL: "legion-test@example.invalid" };
 
-/** The implement handoff the worker wrote to the stand-in Dispatch with `dispatch handoff-write`
- * before completing: the newest record of STALL-2's implement phase, which its `handoff_complete`
- * reads and names. Its body names the head the round pushed, which the workspace this file builds
- * decides, so the body is written once that push has happened. */
+/** The handoff the worker wrote to the stand-in Dispatch with `dispatch handoff-write` before
+ * completing: version 1 of the record of the phase its role works (`ROLE_PHASE`), the newest
+ * record its `handoff_complete` reads and names. Its body names the head the round pushed, which
+ * the workspace this file builds decides, so the body is written once that push has happened. */
 const STALL_RECORD = {
   id: "0c9e7d2a-41b6-4f58-9a3e-6d1b2c8f5e70",
   issue_key: "STALL-2",
@@ -107,10 +126,22 @@ const STALL_RECORD = {
   created_at: "2026-10-09T08:00:00Z",
 };
 
-/** Runs `jj` in `cwd` as the pane's identity, failing loudly on a non-zero exit, and answers its
- * stdout. */
-async function runJj(jj: string, cwd: string, args: readonly string[]): Promise<string> {
-  const child = Bun.spawn([jj, ...args], {
+/** One handoff record of STALL-2 as the stand-in Dispatch holds it: `phase` is the phase's word,
+ * and `body` the text the writer sent. */
+interface HandoffRecord {
+  readonly id: string;
+  readonly issue_key: string;
+  readonly phase: string;
+  readonly version: number;
+  readonly author: unknown;
+  readonly created_at: string;
+  readonly body: string;
+}
+
+/** Runs `argv` in `cwd` as the pane's identity, failing loudly on a non-zero exit, and answers
+ * its stdout. */
+async function runAsPane(argv: readonly string[], cwd: string): Promise<string> {
+  const child = Bun.spawn([...argv], {
     cwd,
     env: { ...process.env, ...PANE_IDENTITY },
     stdout: "pipe",
@@ -121,7 +152,7 @@ async function runJj(jj: string, cwd: string, args: readonly string[]): Promise<
     new Response(child.stderr).text(),
     child.exited,
   ]);
-  if (code !== 0) throw new Error(`jj ${args.join(" ")} exited ${code}:\n${stderr}`);
+  if (code !== 0) throw new Error(`${argv.join(" ")} exited ${code}:\n${stderr}`);
   return stdout.trim();
 }
 
@@ -129,8 +160,12 @@ async function runJj(jj: string, cwd: string, args: readonly string[]): Promise<
  * (`POST /legion/v1/claims/owed`), which the reminder and the architect notice name. */
 const STALL_WORK = "the implementing phase of STALL-2";
 
-/** The daemon's state as the pane's `handoff_complete` reads it: STALL-2 at implementing, the
- * phase whose handoff is the `implement` record. */
+/** The stand-in daemon's answer that the claim owes nothing: its record has moved on. */
+const OWES_NOTHING = { owes: false, work: "" };
+
+/** The daemon's state as the pane's `handoff_complete` reads it, with STALL-2 at the phase the
+ * stand-in's record holds: at implementing, the phase whose handoff is the `implement` record,
+ * unless a case moves it. */
 const STALL_STATE = {
   daemon: {
     project: "STALL",
@@ -164,6 +199,111 @@ const STALL_STATE = {
   settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
   consumers: [],
 };
+
+/** The roles a stall pane's claim holds in these cases. Each works one phase of STALL-2 and ends
+ * it with a handoff record of that phase's word: the daemon's `phase.Handoff` table, which
+ * `FILE_BACKED` in packages/pi-shared/src/handoff-record.ts mirrors. */
+const ROLE_PHASE = {
+  planner: { phase: "planning", word: "plan" },
+  implementer: { phase: "implementing", word: "implement" },
+  tester: { phase: "testing", word: "test" },
+  reviewer: { phase: "reviewing", word: "review" },
+} as const satisfies Readonly<
+  Record<string, { readonly phase: LegionPhase; readonly word: string }>
+>;
+
+type StallRole = keyof typeof ROLE_PHASE;
+
+/** The phase a completion the stand-in takes moves STALL-2 to: the one after the phase it took
+ * the completion of, as the workflow moves an issue on. */
+const NEXT_PHASE: Partial<Record<LegionPhase, LegionPhase>> = {
+  planning: "implementing",
+  implementing: "testing",
+  testing: "reviewing",
+  reviewing: "accepting",
+};
+
+/**
+ * The stand-in daemon's record of STALL-2. A case owns it and may change it while its pane runs:
+ * a change is the daemon moving the issue, and the next owed answer and state read follow it.
+ */
+interface StallRecord {
+  /** The phase STALL-2 stands in. */
+  phase: LegionPhase;
+}
+
+/**
+ * The stand-in's owed answer from its record, as `owedBy` (packages/daemon/internal/api/owed.go)
+ * answers in the shapes this file runs: the claim owes its phase while STALL-2 stands in the
+ * phase its role works, and owes nothing while the issue stands in a phase of another role.
+ */
+function owedOf(role: StallRole, record: StallRecord): LegionOwed {
+  return record.phase === ROLE_PHASE[role].phase
+    ? { owes: true, work: `the ${record.phase} phase of STALL-2` }
+    : OWES_NOTHING;
+}
+
+/** The stand-in's answer to a completion it takes, its default: the workflow takes the completion
+ * of the phase the issue stands in, and STALL-2 moves on to its next phase. */
+function takeCompletion(record: StallRecord): Response {
+  record.phase = NEXT_PHASE[record.phase] ?? record.phase;
+  return Response.json({});
+}
+
+/** The daemon's refusal of a completion of a phase the issue no longer stands in
+ * (`HANDOFF_NOT_CURRENT_PHASE`, packages/daemon/internal/api/handoff.go), which records nothing
+ * and moves nothing. */
+function refuseNotCurrentPhase(record: StallRecord): Response {
+  return Response.json(
+    {
+      error: `STALL-2 stands in ${record.phase}, a phase this claim's role does not work`,
+      code: "HANDOFF_NOT_CURRENT_PHASE",
+    },
+    { status: 409 }
+  );
+}
+
+/**
+ * How long the stand-in takes to answer STALL-2's record (`GET /legion/v1/issues/STALL-2/record`):
+ * past the owed read's bound, as INFRA's daemon answered the whole state the `legion` tool read
+ * before dispatch://INFRA-2694 in 9.2 s to 9.6 s (the measurement under `OWED_READ_BOUND_MS` in
+ * packages/pi-shared/src/phase-reminder.ts). Only the `legion` tool's own calls read it
+ * (`recordReadingCalls`), and the both-sides rows assert that nothing else did: a reminder that
+ * read the daemon's record of the issue, the whole state then, is what reminded every finished
+ * role on INFRA (D6 of dispatch://INFRA-2746/artifact/plan-md).
+ */
+const RECORD_ANSWER_MS = OWED_READ_BOUND_MS + 1_000;
+
+/** How long a pane whose runs make a `legion` call that reads the issue's record waits for the
+ * gateway to fall quiet: past that read and the tool's other requests after it, so the call is
+ * not taken for a run that has settled. */
+const QUIET_PAST_RECORD_MS = RECORD_ANSWER_MS + 4_000;
+
+/** What a step of a stall pane's life (`StallStep`) is handed. */
+interface StallScene {
+  /** The stand-in daemon's record of STALL-2, which the step may move. */
+  readonly record: StallRecord;
+  /** The bare repository the pane's workspace pushes to, which holds `legion/STALL-2`. */
+  readonly origin: string;
+  /** Sends the session one message published to its claim's role topic, as the listener's role
+   * lane forwards it to the session's own subject, and resolves once the session has taken it.
+   * The message starts a turn of an idle session. */
+  readonly roleMessage: (summary: string) => Promise<void>;
+}
+
+/** One thing a case does to its running stall pane in place of the daemon's prompt (`PaneStep`). */
+type StallStep = (scene: StallScene) => Promise<void>;
+
+/** The session id the pane registered with the listener: the one its newest registration names. */
+function sessionOf(requests: readonly Request[]): string {
+  const named = requests
+    .filter((request) => request.path === "/v1/interests/subscribe")
+    .map((request) => request.body.session_id)
+    .filter((id): id is string => typeof id === "string" && id !== "")
+    .at(-1);
+  if (named === undefined) throw new Error("the pane has not registered with the listener");
+  return named;
+}
 
 const cleanup: Cleanup = [];
 afterEach(async () => {
@@ -207,46 +347,108 @@ function legionToolDescription(request: Request): string {
 
 /** How one pane differs from the implementer pane the phase-stall cases run: the runner's
  * `legion`, `quietMs`, `selfCheck` and environment, what the stand-in answers ahead of this
- * file's own routes, and the stand-in's open-ask snapshot. */
+ * file's own routes, the stand-in's open-ask snapshot, the claim's role, the stand-in daemon's
+ * record and completion answer, and the prompts and steps of the pane's first life. */
 interface PaneOptions
   extends Pick<LegionPaneOptions, "legion" | "quietMs" | "selfCheck" | "env" | "answer"> {
   /** The count the stand-in Dispatch's open-ask snapshot answers with. */
   readonly openAsks?: number;
   /** The held ask questions the stand-in returns in the session's open-ask snapshot. */
   readonly openAskQuestions?: readonly string[];
+  /** The role the pane's claim holds; the implementer by default. */
+  readonly role?: StallRole;
+  /** The stand-in daemon's record of STALL-2, which the case may move while the pane runs;
+   * STALL-2 in the phase `role` works by default. */
+  readonly record?: StallRecord;
+  /** What the stand-in answers a completion (`POST /legion/v1/handoff/complete`), given its
+   * record; `takeCompletion` by default. */
+  readonly complete?: (record: StallRecord) => Response;
+  /** The daemon's prompts and the case's steps of the pane's first life, in order
+   * (`LegionPaneOptions.prompt`); the implementer's assignment by default. */
+  readonly prompt?: string | readonly (string | StallStep)[];
 }
 
 /**
- * Runs one implementer pane on the real Oh My Pi (`runLegionPane`), the stand-in answering the
- * daemon's state, owed and completion routes and, as Dispatch, the issue's handoff records and the
- * open-ask snapshot, until its run settles. The stand-in's record holds `STALL_WORK` owed until a
- * completion lands and nothing after it, as the daemon's own record does once the workflow takes a
- * completion (`owedBy` in `packages/daemon/internal/api/owed.go`); a case that answers
- * `claims/owed` itself decides otherwise. The pane's workspace is a jj repository whose change
- * is committed and pushed to a bare origin's `legion/STALL-2`, and the stand-in Dispatch holds the
- * implement record written to it, as a worker leaves both before completing, so the pane's
- * `handoff_complete` finds the record and the pushed tip.
+ * Runs one phase-worker pane on the real Oh My Pi (`runLegionPane`), the stand-in answering the
+ * daemon's state, owed, completion, backward-move and update-answer routes and, as Dispatch, the
+ * issue's handoff records and the open-ask snapshot, until its run settles.
+ *
+ * The stand-in daemon answers from one record of STALL-2 (`StallRecord`), which the case may
+ * own and move while the pane runs. Its owed route answers `owedOf` that record: `STALL_WORK` for
+ * the implementer while the issue stands in implementing, and nothing once a completion has
+ * moved it on, as the daemon's own record does once the workflow takes a completion (`owedBy` in
+ * `packages/daemon/internal/api/owed.go`); a case that answers `claims/owed` itself decides
+ * otherwise. Its record route for STALL-2 answers after `RECORD_ANSWER_MS`. A
+ * `request_backward_move` moves the record to the phase it names.
+ *
+ * The pane's workspace is a jj repository whose change is committed and pushed to a bare
+ * origin's `legion/STALL-2`, and the stand-in Dispatch holds the record of the role's phase
+ * written to it, as a worker leaves both before completing, so the pane's `handoff_complete`
+ * finds the record and the pushed tip. The Dispatch takes a `dispatch handoff-write` as the next
+ * version of the phase it names.
  */
 async function stallPane(
   run: { readonly binary: string; readonly nats: string },
   replies: readonly Reply[],
   options: PaneOptions = {}
 ): Promise<StallPane> {
+  const role = options.role ?? "implementer";
+  const record: StallRecord = options.record ?? { phase: ROLE_PHASE[role].phase };
+  const complete = options.complete ?? takeCompletion;
   let pushedTip = "";
-  /** The stand-in Dispatch's handoff records of STALL-2's implement phase, oldest first. */
-  const records: Array<typeof STALL_RECORD & { body: string }> = [];
-  /** Whether the stand-in's record still holds the implementer's work owed. */
-  let owes = true;
+  let origin = "";
+  /** The stand-in Dispatch's handoff records of STALL-2, oldest first. */
+  const records: HandoffRecord[] = [];
+  const owedAnswers: LegionOwed[] = [];
+  /** The connection the case's role messages are relayed on, opened by the first of them. */
+  let connection: RelayConnection | undefined;
+  /** The stream sequence of the last frame relayed: one stream for the whole case. */
+  let relayed = 0;
+  /** The claim's role topic: the harness names the claim `legion-<name>-<issue>-<role>`. */
+  const topic = roleTopic(`legion-stall-stall-2-${role}`);
+  /** Sends the session one message published to its claim's role topic
+   * (`StallScene.roleMessage`), relayed on the connection the first of them opens. `requests`
+   * are the pane's requests so far, which name the session the listener relays to. */
+  const roleMessage = async (requests: readonly Request[], summary: string): Promise<void> => {
+    if (connection === undefined) {
+      const opened = await connect({ servers: run.nats });
+      cleanup.push(() => opened.close());
+      connection = opened;
+    }
+    relayed += 1;
+    const sessionID = sessionOf(requests);
+    await sendRelayFrame({
+      connection,
+      newHeaders: headers,
+      sessionID,
+      subject: `notifications.agent.${sessionID}`,
+      seq: relayed,
+      payload: StringCodec().encode(
+        roleLaneEnvelope(topic, summary, `stall-${relayed}-${randomUUID()}`)
+      ),
+    });
+  };
+  const stepsOf = (
+    prompt: string | readonly (string | StallStep)[]
+  ): string | readonly (string | PaneStep)[] =>
+    typeof prompt === "string"
+      ? prompt
+      : prompt.map((step) =>
+          typeof step === "string"
+            ? step
+            : (requests) =>
+                step({ record, origin, roleMessage: (summary) => roleMessage(requests, summary) })
+        );
   const pane = await runLegionPane(
     run.binary,
     replies,
     {
       name: "stall",
       nats: run.nats,
-      role: "implementer",
+      role,
       tree: "STALL-1",
       issue: "STALL-2",
-      prompt: "Implement STALL-2.",
+      prompt: stepsOf(options.prompt ?? "Implement STALL-2."),
       dispatch: true,
       legion: options.legion,
       quietMs: options.quietMs,
@@ -264,13 +466,13 @@ async function stallPane(
         const jj = Bun.which("jj");
         if (jj === null) throw new Error("jj is not on PATH");
         await symlink(jj, path.join(bin, "jj"));
-        const origin = path.join(path.dirname(workspace), "origin.git");
+        origin = path.join(path.dirname(workspace), "origin.git");
         if ((await Bun.spawn(["git", "init", "--bare", "--quiet", origin]).exited) !== 0) {
           throw new Error(`git init --bare ${origin} failed`);
         }
-        await runJj(jj, path.dirname(workspace), ["git", "init", workspace]);
+        await runAsPane([jj, "git", "init", workspace], path.dirname(workspace));
         // From here on, every command runs in the workspace, as the pane's own shell does.
-        const jjIn = (...args: string[]) => runJj(jj, workspace, args);
+        const jjIn = (...args: string[]) => runAsPane([jj, ...args], workspace);
         await jjIn("git", "remote", "add", "origin", origin);
         await writeFile(path.join(workspace, "main.py"), 'print("stall")\n');
         await jjIn("describe", "-m", "implement: the change");
@@ -278,13 +480,15 @@ async function stallPane(
         await jjIn("bookmark", "set", "legion/STALL-2", "-r", "@-");
         await jjIn("git", "push", "--bookmark", "legion/STALL-2");
         pushedTip = await jjIn("log", "-r", "@-", "--no-graph", "-T", "commit_id");
-        // The worker's `dispatch handoff-write --issue STALL-2 --phase implement`, whose body
-        // names the tip it just pushed.
+        // The worker's `dispatch handoff-write --issue STALL-2 --phase <word>`, whose body names
+        // the tip it just pushed.
+        const { word } = ROLE_PHASE[role];
         records.push({
           ...STALL_RECORD,
+          phase: word,
           body: JSON.stringify({
             schemaVersion: 1,
-            phase: "implement",
+            phase: word,
             issue: "STALL-2",
             head: pushedTip,
           }),
@@ -293,23 +497,62 @@ async function stallPane(
       answer: (url, body) => {
         const own = options.answer?.(url, body);
         if (own !== undefined) return own;
-        // `handoff_complete` reads one issue's record (dispatch://INFRA-2694), and the reminder
-        // asks what the claim owes; nothing of this pane asks for the whole project body.
+        // `handoff_complete` and `read_record` read one issue's record (dispatch://INFRA-2694), here
+        // STALL-2's as the stand-in's record holds it now; nothing of this pane asks for the whole
+        // project body.
         if (url.pathname === "/legion/v1/issues/STALL-2/record") {
-          return Response.json(STALL_STATE.issues["STALL-2"]);
+          const issue = { ...STALL_STATE.issues["STALL-2"], phase: record.phase };
+          // A real clock, deliberately: the reader is a real Oh My Pi process, whose own clock
+          // decides whether an answer this late is inside any bound it reads with.
+          return Bun.sleep(RECORD_ANSWER_MS).then(() => Response.json(issue));
         }
         if (url.pathname === "/legion/v1/claims/owed") {
-          return Response.json(owes ? { owes: true, work: STALL_WORK } : { owes: false, work: "" });
+          const owed = owedOf(role, record);
+          owedAnswers.push(owed);
+          return Response.json(owed);
         }
-        if (url.pathname === "/legion/v1/handoff/complete") {
-          owes = false;
+        if (url.pathname === "/legion/v1/handoff/complete") return complete(record);
+        // A phase worker's own `request_backward_move`, which the daemon takes: STALL-2 goes back
+        // to the phase it names.
+        if (url.pathname === "/legion/v1/phase/backward") {
+          const to = LEGION_PHASES.find((phase) => phase === body.to);
+          if (to === undefined) {
+            return Response.json({ error: `no phase ${String(body.to)}` }, { status: 400 });
+          }
+          record.phase = to;
           return Response.json({});
         }
-        if (url.pathname === "/api/v1/issues/STALL-2/handoffs/implement/latest") {
-          const newest = records.at(-1);
+        // The worker's answer to an update round (`ready_for_update`), which the daemon
+        // acknowledges with no body.
+        if (url.pathname === "/legion/v1/claims/ready-for-update") {
+          return new Response(null, { status: 204 });
+        }
+        const handoff = /^\/api\/v1\/issues\/STALL-2\/handoffs\/([a-z]+)(\/latest)?$/.exec(
+          url.pathname
+        );
+        if (handoff !== null) {
+          const word = handoff[1] ?? "";
+          const ofWord = records.filter((written) => written.phase === word);
+          if (handoff[2] === undefined) {
+            // A `dispatch handoff-write`: the next version of the phase it names, written by the
+            // actor it names.
+            const written = {
+              id: randomUUID(),
+              issue_key: "STALL-2",
+              phase: word,
+              version: ofWord.length + 1,
+              author: body.actor,
+              created_at: new Date().toISOString(),
+              body: String(body.body),
+            };
+            records.push(written);
+            const { body: _, ...summary } = written;
+            return Response.json(summary, { status: 201 });
+          }
+          const newest = ofWord.at(-1);
           return newest === undefined
             ? Response.json(
-                { error: "no implement handoff on STALL-2", code: "HANDOFF_NOT_FOUND" },
+                { error: `no ${word} handoff on STALL-2`, code: "HANDOFF_NOT_FOUND" },
                 { status: 404 }
               )
             : Response.json(newest);
@@ -356,7 +599,58 @@ async function stallPane(
         .map((request) => request.body),
     phaseEntries: () => pane.transcriptEntries(PHASE_STALL_ENTRY),
     pushedTip,
+    owedAnswers: () => [...owedAnswers],
+    recordReads: () =>
+      pane.requests.filter((request) => request.path === "/legion/v1/issues/STALL-2/record").length,
+    resume: (more, prompt) => pane.resume(more, stepsOf(prompt)),
   };
+}
+
+/**
+ * How many `legion` calls the pane's conversation holds that read the issue's record:
+ * `handoff_complete` and `read_record` read it once each (`executePhaseOp`,
+ * packages/pi-shared/src/legion-phase-ops.ts), and nothing else a pane runs reads it. A pane that
+ * read it more often than this read it for something else.
+ */
+function recordReadingCalls(pane: StallPane): number {
+  // Every turn carries the whole conversation so far, the lives before a resume included, so a
+  // call is counted once by its id.
+  const calls = new Set<string>();
+  for (const turn of pane.turns()) {
+    const messages: unknown[] = Array.isArray(turn.body.messages) ? turn.body.messages : [];
+    for (const message of messages) {
+      if (typeof message !== "object" || message === null || !("content" in message)) continue;
+      if (!Array.isArray(message.content)) continue;
+      for (const block of message.content as unknown[]) {
+        if (typeof block !== "object" || block === null) continue;
+        if (!("type" in block) || block.type !== "tool_use") continue;
+        if (!("name" in block) || block.name !== "legion" || !("id" in block)) continue;
+        const input = "input" in block ? block.input : undefined;
+        const op = typeof input === "object" && input !== null && "op" in input ? input.op : "";
+        if (op === "handoff_complete" || op === "read_record") calls.add(String(block.id));
+      }
+    }
+  }
+  return calls.size;
+}
+
+/**
+ * What every both-sides row asserts of a role that owes nothing
+ * (dispatch://INFRA-2746/spec#b-r3 and #b-r5): no reminder reached it, as a turn's text, as a
+ * timer's message or as a count its transcript records; its architect was told nothing; and the
+ * pane read the issue's record only for its own `legion` calls, never for the reminder
+ * (`RECORD_ANSWER_MS`).
+ */
+async function expectRemindedOfNothing(pane: StallPane): Promise<void> {
+  for (const turn of pane.turns()) {
+    expect(JSON.stringify(turn.body.messages ?? null)).not.toContain(
+      "repeats at the end of every turn"
+    );
+  }
+  expect(await pane.transcriptEntries("legion-phase-reminder")).toEqual([]);
+  expect(stallCounts(await pane.phaseEntries()).filter((count) => count !== 0)).toEqual([]);
+  expect(pane.publishes()).toEqual([]);
+  expect(pane.recordReads()).toBe(recordReadingCalls(pane));
 }
 
 test.skipIf(skip)(
@@ -443,7 +737,7 @@ test.skipIf(skip)(
 );
 
 test.skipIf(skip)(
-  "a worker the daemon says owes work is reminded at the end of every turn, past the architect threshold, and of nothing once the daemon answers that the claim owes nothing",
+  "a worker the daemon says owes work and that keeps settling is reminded at the end of every turn, past the architect threshold, and of nothing once the daemon answers that the claim owes nothing",
   async () => {
     const pane = await stallPane(
       setup(),
@@ -462,7 +756,7 @@ test.skipIf(skip)(
       ],
       {
         env: { LEGION_STALL_REMINDER_MS: "500", LEGION_STALL_ARCHITECT_AFTER: "2" },
-        quietMs: 6_000,
+        quietMs: QUIET_PAST_RECORD_MS,
       }
     );
 
@@ -524,7 +818,7 @@ test.skipIf(skip)(
       ],
       {
         env: { LEGION_STALL_WAITING_MS: String(waitMs) },
-        quietMs: 4_000,
+        quietMs: QUIET_PAST_RECORD_MS,
         answer: (url) => {
           seen.push({ path: url.pathname, at: Date.now() });
           return undefined;
@@ -605,7 +899,7 @@ test.skipIf(skip)(
       ],
       {
         env: { LEGION_STALL_REMINDER_MS: "500", LEGION_STALL_ARCHITECT_AFTER: "2" },
-        quietMs: 6_000,
+        quietMs: QUIET_PAST_RECORD_MS,
         // No live session holds the architect's role the first time, as the listener answers
         // while that architect is between sessions; the second is taken.
         answer: (url) => {
@@ -682,9 +976,6 @@ test.skipIf(skip)(
   120_000
 );
 
-/** The stand-in daemon's answer that the claim owes nothing: its record has moved on. */
-const OWES_NOTHING = { owes: false, work: "" };
-
 test.skipIf(skip)(
   "a worker the daemon says owes nothing is reminded of nothing: its run settles where it is",
   async () => {
@@ -753,23 +1044,25 @@ test.skipIf(skip)(
   120_000
 );
 
-// Where the daemon's answer does not arrive the worker is still nudged, and the nudge says
-// it could not read the record. It names no phase and no operation, because it read neither. The
-// stand-in answers `claims/owed` as a proxy does for a daemon it cannot reach: a 503 whose body is
-// not the daemon's (`daemonUnreachable` in packages/pi-shared/src/daemon-client.ts).
+// Where the daemon's answer does not arrive the worker is reminded of nothing (`UNREAD_CHECK` in
+// packages/pi-shared/src/phase-reminder.ts): a stalled worker is sent its task again by the
+// daemon's own silence sweep. The stand-in answers `claims/owed` as a proxy does for a daemon it
+// cannot reach: a 503 whose body is not the daemon's (`daemonUnreachable` in
+// packages/pi-shared/src/daemon-client.ts). The worker's WAITING reply arms a timer, whose read
+// fails as well: the timer clears the wake it armed, and the session reports at once that no
+// reminder is due, so no wake past its time holds the pod from its idle release.
 test.skipIf(skip)(
-  "with the daemon unreachable the worker is still nudged, by a reminder that names no phase and no operation",
+  "with the daemon unreachable the worker is reminded of nothing, and its session reports no reminder wake",
   async () => {
     const run = setup();
     const pane = await stallPane(
       run,
       [
-        [{ type: "text", text: "Pushed the change." }],
-        [{ type: "text", text: "Still pushing." }],
         [{ type: "text", text: "WAITING: the daemon to come back." }],
+        [{ type: "text", text: "A turn that should never start." }],
       ],
       {
-        env: { LEGION_STALL_REMINDER_MS: "500" },
+        env: { LEGION_STALL_WAITING_MS: "500" },
         quietMs: 4_000,
         answer: (url) =>
           url.pathname === "/legion/v1/claims/owed"
@@ -778,22 +1071,570 @@ test.skipIf(skip)(
       }
     );
 
-    // Three turns: the prompt's, the continuation's and the timer's, each reminder the unread
-    // one. The assignment's own turn named no operation, so what the reminders' turns carry is
-    // theirs.
-    const turns = pane.turns();
-    expect(turns).toHaveLength(3);
-    expect(userText(turns[0] as Request)).not.toContain("handoff_complete");
-    for (const index of [1, 2]) {
-      const text = userText(turns[index] as Request);
-      expect(text).toContain("could not read the Legion daemon's record of what your role owes");
-      expect(text).not.toContain("handoff_complete");
-      expect(text).not.toContain(STALL_WORK);
-      expect(text).not.toContain("implementing");
-    }
-    expect(stallCounts(await pane.phaseEntries())).toEqual([0, 1, 2]);
+    // One turn, the prompt's own: the timer the WAITING reply armed asked the daemon, read no
+    // answer, and sent nothing.
+    expect(pane.turns()).toHaveLength(1);
+    expect(daemonRoutes(pane)).toContain("/legion/v1/claims/owed");
+    expect(pane.publishes()).toEqual([]);
+    expect(stallCounts(await pane.phaseEntries())).toEqual([0]);
+
+    // The settle reported the wake the WAITING reply armed, and the timer, once its read failed,
+    // reported that no reminder is due.
+    const reports = pane.requests
+      .filter((request) => request.path === ACTIVITY_ROUTE)
+      .map((request) => request.body);
+    expect(reports).toContainEqual(
+      expect.objectContaining({
+        activity: expect.objectContaining({ phase: { nextReminderAt: expect.any(String) } }),
+      })
+    );
+    expect(reports.at(-1)).toMatchObject({ activity: { phase: { nextReminderAt: null } } });
   },
   120_000
+);
+
+// Both sides on a real Oh My Pi (dispatch://INFRA-2746/spec#b-r3, #b-r5, #b-r8): a role that owes
+// nothing ends its turns with no reminder, and its architect is told nothing, in each shape in
+// which INFRA's finished roles were reminded at every turn end, while the control above, a role
+// whose phase is current and whose work is undone, is still reminded. In every row the stand-in
+// daemon answers what the claim owes from its record (`owedOf`), which the row sets and moves as
+// the daemon would, and it answers the issue's record late (`RECORD_ANSWER_MS`), so a reminder that
+// read the record would show as a record read that the pane's own calls do not explain.
+
+/** The limits the both-sides rows run on: the reminder after a reminder and the wait a WAITING
+ * reply buys each last half a second, and the architect is told at the second reminder of a run,
+ * the least the limit takes. So a reminder, a timer's reminder or an architect notice that a row
+ * earned would come inside its quiet wait. */
+const QUICK_LIMITS = {
+  LEGION_STALL_REMINDER_MS: "500",
+  LEGION_STALL_WAITING_MS: "500",
+  LEGION_STALL_ARCHITECT_AFTER: "2",
+};
+
+/** The worker's completion: the `legion` tool's `handoff_complete`. */
+const COMPLETE: Reply = [
+  {
+    type: "tool_use",
+    name: "legion",
+    input: { op: "handoff_complete", summary: "Stall proof done." },
+  },
+];
+
+/** Scripted after a row's last expected turn, so a turn that should not happen shows up as a turn
+ * rather than as the gateway's "no reply scripted" refusal. */
+const NEVER: Reply = [{ type: "text", text: "A turn that should never start." }];
+
+/** What the daemon tells a role's next process of the let-go that ended its last one while it was
+ * in no turn (`RelaunchSentence`, packages/daemon/internal/supervise/relaunch.go): the prompt a
+ * role relaunched with no task is given. */
+function relaunched(cause: string): string {
+  return (
+    `Your previous process ended because ${cause}. You were not in a turn then. ` +
+    "No result of that work will come to you. Your transcript does not say so. " +
+    "Before you start any of that work again, check what it already did."
+  );
+}
+
+/** The update round the daemon asks STALL-2's roles about: a pod round (`PodRound`,
+ * packages/daemon/internal/supervise/machine.go). */
+const UPDATE_ROUND = "pod:5b2e9d41-7c3a-4f0e-9a61-2d8c4b7e1f03";
+
+/** The daemon's ask of that round, as it publishes it to each role's topic (`UpdateTask`,
+ * packages/daemon/internal/supervise/table.go). */
+const UPDATE_ASK = [
+  "The daemon must replace the pod that runs this issue's roles. The reasons are: the worker image changed.",
+  "",
+  `The round is ${UPDATE_ROUND}. The round ends at 2026-11-19T20:30:00Z (UTC). When the round ends, the daemon deletes the pod and the disk. The disk holds your workspace. Only your own push keeps your work. Work that you do not push before the pod goes is lost.`,
+  "",
+  "If every role answers, the round can end before that moment. The round then ends when no role is in a turn. If a role does not answer, the round still ends at 2026-11-19T20:30:00Z. A turn in progress does not delay that moment.",
+  "",
+  "This message can arrive while you are in a turn. Do these four steps now:",
+  "",
+  "1. Push every commit that you want to keep to this issue's branch.",
+  "2. If you need a scratch file as evidence, put it on Dispatch.",
+  `3. Call the \`legion\` tool with op: "ready_for_update" and round: "${UPDATE_ROUND}".`,
+  "4. End your turn.",
+  "",
+  'If your `legion` tool has no "ready_for_update" operation, do step 1 and step 2 now. Then end your turn. The round ends at 2026-11-19T20:30:00Z whatever you do.',
+  "",
+  "These things go with the pod when the round ends:",
+  "",
+  "- The turn that is in progress.",
+  "- The background jobs of that turn.",
+  "- Each commit and each file that you did not push.",
+  "- The pod's test database.",
+  "- The pod's caches.",
+  "",
+  "The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.",
+].join("\n");
+
+/** The daemon's task for the implementer of STALL-2, released and woken by a message on its role
+ * topic (`WakeTask` with `pods.WakeRoleMessage`, packages/daemon/internal/workflow/wake.go, which
+ * names the role's claim): a start that names no phase, so it is no work of any phase. */
+const ROLE_MESSAGE_WAKE =
+  "Your issue's pod had been released while it was idle, and this wake brought it back. " +
+  "Your session, your workspace and any work you had not pushed are as you left them. " +
+  "The wake is a message somebody published to your role topic (legion-stall-stall-2-implementer) " +
+  "while your pod was gone. Envoy keeps a role message for one hour: a message kept for your role " +
+  "reaches this session as an Envoy card that shows kept_at, possibly before this task, unless its " +
+  "hour ended before you came back, and Envoy tells its sender when it drops one. " +
+  "A message sent with keep: false is not kept, and its sender sends it again.";
+
+/**
+ * Pushes one commit to `legion/STALL-2` at `origin` from a clone of its own, as another role of
+ * the issue pushes from its own checkout: a child of the branch's tip, made as the pane's
+ * identity. Answers the commit it pushed.
+ */
+async function pushAsAnotherRole(origin: string): Promise<string> {
+  const clone = path.join(path.dirname(origin), "another-role");
+  await runAsPane(
+    ["git", "clone", "--quiet", "--branch", "legion/STALL-2", origin, clone],
+    path.dirname(origin)
+  );
+  await writeFile(path.join(clone, "test_main.py"), "import main\n");
+  const git = [
+    "git",
+    "-c",
+    `user.name=${PANE_IDENTITY.JJ_USER}`,
+    "-c",
+    `user.email=${PANE_IDENTITY.JJ_EMAIL}`,
+  ];
+  await runAsPane([...git, "add", "test_main.py"], clone);
+  await runAsPane([...git, "commit", "--quiet", "-m", "test: the stall"], clone);
+  await runAsPane([...git, "push", "--quiet", "origin", "HEAD:legion/STALL-2"], clone);
+  return runAsPane(["git", "rev-parse", "HEAD"], clone);
+}
+
+/** The `dispatch` command's own source, which a pane runs with bun: the plugin's `bin/dispatch`
+ * runs the bundle a build makes, and a checkout holds none. */
+const DISPATCH_CLI = path.resolve(import.meta.dir, "../../envoy-client/bin/dispatch.ts");
+
+// INFRA-4567's implementer, whose second completion was refused: STALL-2 stands in testing, which
+// the implementer does not work, so the daemon refuses its completion HANDOFF_NOT_CURRENT_PHASE
+// and answers that it owes nothing. The turn after the refusal ends with a WAITING line, and so
+// does the turn an Envoy message starts: each buys a wait of half a second, and each wait ends
+// with the daemon asked again and nothing sent.
+test.skipIf(skip)(
+  "a role whose completion was refused HANDOFF_NOT_CURRENT_PHASE is reminded of nothing, and its WAITING lines after it change nothing",
+  async () => {
+    const pane = await stallPane(
+      setup(),
+      [
+        COMPLETE,
+        [
+          {
+            type: "text",
+            text: "The daemon refused the completion HANDOFF_NOT_CURRENT_PHASE.\nWAITING: the daemon to send my next task.",
+          },
+        ],
+        [{ type: "text", text: "WAITING: the daemon to send my next task." }],
+        NEVER,
+      ],
+      {
+        record: { phase: "testing" },
+        complete: refuseNotCurrentPhase,
+        env: QUICK_LIMITS,
+        quietMs: QUIET_PAST_RECORD_MS,
+        prompt: [
+          "Implement STALL-2.",
+          (scene) => scene.roleMessage("The tester has taken STALL-2 and runs its tests now."),
+        ],
+      }
+    );
+
+    // Three turns: the completion's, the reply to its refusal, and the Envoy message's.
+    expect(pane.turns()).toHaveLength(3);
+    expect(pane.completions()).toHaveLength(1);
+    expect(pane.toolResults()).toContainEqual(
+      expect.objectContaining({
+        is_error: true,
+        text: expect.stringContaining("HANDOFF_NOT_CURRENT_PHASE"),
+      })
+    );
+    // Each WAITING line's wait ended with the daemon asked what the claim owes, and both times it
+    // answered nothing.
+    expect(pane.owedAnswers()).toEqual([OWES_NOTHING, OWES_NOTHING]);
+    await expectRemindedOfNothing(pane);
+  },
+  240_000
+);
+
+// INFRA-3082's tester and reviewer: a role's completion was taken, STALL-2 moved on to testing,
+// and then the tester pushed to `legion/STALL-2` from its own checkout and told the implementer
+// so on its role topic. The implementer reads the new head and ends its turn.
+test.skipIf(skip)(
+  "a role whose completion is recorded while another role pushes the head is reminded of nothing and its architect is told nothing",
+  async () => {
+    let origin = "";
+    let pushed = "";
+    const pane = await stallPane(
+      setup(),
+      [
+        COMPLETE,
+        [{ type: "text", text: "Completed STALL-2." }],
+        [call("bash", { command: "jj git fetch" })],
+        [{ type: "text", text: "The tester's commit is on legion/STALL-2; it is the tester's." }],
+        NEVER,
+      ],
+      {
+        env: QUICK_LIMITS,
+        quietMs: QUIET_PAST_RECORD_MS,
+        prompt: [
+          "Implement STALL-2.",
+          async (scene) => {
+            origin = scene.origin;
+            pushed = await pushAsAnotherRole(scene.origin);
+            await scene.roleMessage("I pushed a test of the change to legion/STALL-2.");
+          },
+        ],
+      }
+    );
+
+    // Four turns: the completion's, the reply to it, and the two of the Envoy message's run.
+    expect(pane.turns()).toHaveLength(4);
+    expect(pane.completions()).toHaveLength(1);
+    // The head moved after the completion was taken: the branch at origin is the other role's
+    // commit, and not the one the completion named.
+    expect(pushed).not.toBe(pane.pushedTip);
+    expect(
+      await runAsPane(
+        ["git", "--git-dir", origin, "rev-parse", "refs/heads/legion/STALL-2"],
+        origin
+      )
+    ).toBe(pushed);
+    // Both runs ended with the daemon asked what the claim owes, and both times it answered
+    // nothing: the completion had moved STALL-2 on to testing.
+    expect(pane.owedAnswers()).toEqual([OWES_NOTHING, OWES_NOTHING]);
+    await expectRemindedOfNothing(pane);
+  },
+  240_000
+);
+
+// INFRA-4337's tester: the daemon moves STALL-2 back to implementing while the tester's turn runs
+// (the move a hold, an architect or a review makes), so the owed answer the tester's turn end reads
+// is nothing, though it owed its testing phase when the turn began. Then the daemon's card on the
+// tester's role topic starts one more turn.
+test.skipIf(skip)(
+  "a tester the daemon moves out of its phase while in a turn is reminded of nothing at its next turn end, with no handoff_complete call",
+  async () => {
+    const record: StallRecord = { phase: "testing" };
+    const pane = await stallPane(
+      setup(),
+      [
+        [call("bash", { command: "echo ran the suite" })],
+        // The move lands while the turn runs, between its two tool calls.
+        () => {
+          record.phase = "implementing";
+          return [call("bash", { command: "echo read the results" })];
+        },
+        [{ type: "text", text: "The suite passed; the test report comes next." }],
+        [
+          {
+            type: "text",
+            text: "STALL-2 is back in implementing: its testing waits for the change.",
+          },
+        ],
+        NEVER,
+      ],
+      {
+        role: "tester",
+        record,
+        env: QUICK_LIMITS,
+        quietMs: 4_000,
+        prompt: [
+          "Test STALL-2.",
+          (scene) =>
+            scene.roleMessage(
+              "STALL-2 went back to implementing: the architect asked for a change first."
+            ),
+        ],
+      }
+    );
+
+    // Four turns: the three of the task's run, and the card's.
+    expect(pane.turns()).toHaveLength(4);
+    expect(pane.completions()).toEqual([]);
+    // The task's run ended after the move, and so did the card's: the daemon was asked at each end,
+    // and both times it answered nothing.
+    expect(pane.owedAnswers()).toEqual([OWES_NOTHING, OWES_NOTHING]);
+    await expectRemindedOfNothing(pane);
+  },
+  240_000
+);
+
+// OSSV-732's reviewer: the reviewer reads the change, finds it wrong and sends STALL-2 back to
+// implementing with its own `request_backward_move`, which the daemon takes. It made no
+// completion call, and from the move on the daemon answers that it owes nothing.
+test.skipIf(skip)(
+  "a reviewer whose own request_backward_move moved the issue back is reminded of nothing",
+  async () => {
+    const record: StallRecord = { phase: "reviewing" };
+    const pane = await stallPane(
+      setup(),
+      [
+        [call("bash", { command: "cat main.py" })],
+        [
+          {
+            type: "tool_use",
+            name: "legion",
+            input: {
+              op: "request_backward_move",
+              to: "implementing",
+              reason: "main.py prints the wrong word.",
+            },
+          },
+        ],
+        [
+          {
+            type: "text",
+            text: "Sent STALL-2 back to implementing: main.py prints the wrong word.",
+          },
+        ],
+        NEVER,
+      ],
+      { role: "reviewer", record, env: QUICK_LIMITS, quietMs: 4_000, prompt: "Review STALL-2." }
+    );
+
+    expect(pane.turns()).toHaveLength(3);
+    expect(pane.completions()).toEqual([]);
+    expect(
+      pane.requests
+        .filter((request) => request.path === "/legion/v1/phase/backward")
+        .map((request) => request.body.to)
+    ).toEqual(["implementing"]);
+    expect(record.phase).toBe("implementing");
+    // The run's end asked the daemon once, after the move, and it answered nothing.
+    expect(pane.owedAnswers()).toEqual([OWES_NOTHING]);
+    await expectRemindedOfNothing(pane);
+  },
+  240_000
+);
+
+// INFRA-1253's planner, and INFRA-4567's implementer on the other side of the same cause: a role
+// whose completion was taken and moved its issue on is relaunched, and its new process ends turns
+// in which the issue stands in a phase of another role. The first life completes planning, which
+// moves STALL-2 on to implementing. The second is a fresh Oh My Pi over the same transcript
+// (`pane.resume`), its claim registered again, which holds the planner's claim while STALL-2
+// stands in implementing: the stand-in answers that it owes nothing from that fact alone.
+test.skipIf(skip)(
+  "a finished role relaunched over its transcript is reminded of nothing",
+  async () => {
+    const record: StallRecord = { phase: "planning" };
+    const pane = await stallPane(
+      setup(),
+      [COMPLETE, [{ type: "text", text: "Planned STALL-2." }]],
+      {
+        role: "planner",
+        record,
+        env: QUICK_LIMITS,
+        quietMs: QUIET_PAST_RECORD_MS,
+        prompt: "Plan STALL-2.",
+      }
+    );
+    expect(record.phase).toBe("implementing");
+
+    await pane.resume(
+      [
+        [call("bash", { command: "jj log -r @- --no-graph -T description" })],
+        [{ type: "text", text: "My plan stands, and nothing of planning is open." }],
+        NEVER,
+      ],
+      [relaunched("role planner reports generation 5 exited (code 1)")]
+    );
+
+    // Two processes, each of which registered its claim: the first life and the relaunch.
+    expect(
+      pane.requests.filter((request) => request.path === "/legion/v1/claims/register")
+    ).toHaveLength(2);
+    // Four turns: two in each life.
+    expect(pane.turns()).toHaveLength(4);
+    expect(pane.completions()).toHaveLength(1);
+    // Each life's run ended with the daemon asked what the claim owes, and the answer was nothing
+    // in both: the first after its completion moved STALL-2 on, the second in a process that had
+    // seen no completion at all.
+    expect(pane.owedAnswers()).toEqual([OWES_NOTHING, OWES_NOTHING]);
+    await expectRemindedOfNothing(pane);
+  },
+  360_000
+);
+
+// A role whose completion was taken answers the daemon's update round in testing, a phase it does
+// not work: it calls `ready_for_update` and ends its turn. The round replaces its process, and the
+// replacement, a fresh Oh My Pi over the same transcript, is told of the relaunch and ends its
+// turn with no reminder.
+test.skipIf(skip)(
+  "a role that answered an update round in a phase that is not current runs in the replacement process with no reminder, and its architect gets no notice",
+  async () => {
+    const pane = await stallPane(
+      setup(),
+      [
+        COMPLETE,
+        [{ type: "text", text: "Completed STALL-2." }],
+        [
+          {
+            type: "tool_use",
+            name: "legion",
+            input: { op: "ready_for_update", round: UPDATE_ROUND },
+          },
+        ],
+        [{ type: "text", text: "Everything of mine is pushed, and the daemon has my answer." }],
+      ],
+      {
+        env: QUICK_LIMITS,
+        quietMs: QUIET_PAST_RECORD_MS,
+        prompt: ["Implement STALL-2.", (scene) => scene.roleMessage(UPDATE_ASK)],
+      }
+    );
+    expect(
+      pane.requests
+        .filter((request) => request.path === "/legion/v1/claims/ready-for-update")
+        .map((request) => request.body.round)
+    ).toEqual([UPDATE_ROUND]);
+
+    await pane.resume(
+      [[{ type: "text", text: "STALL-2 stands in testing; nothing of it is mine to do." }], NEVER],
+      [relaunched(`the daemon replaced the pod in update round ${UPDATE_ROUND}`)]
+    );
+
+    expect(
+      pane.requests.filter((request) => request.path === "/legion/v1/claims/register")
+    ).toHaveLength(2);
+    // Five turns: the completion's run, the update ask's run, and the replacement's one turn.
+    expect(pane.turns()).toHaveLength(5);
+    expect(pane.completions()).toHaveLength(1);
+    // The answer to the round ended its turn in the wait the daemon ends, which asks nothing. The
+    // completion's run and the replacement's turn each ended with the daemon asked, and both
+    // times it answered nothing.
+    expect(pane.owedAnswers()).toEqual([OWES_NOTHING, OWES_NOTHING]);
+    await expectRemindedOfNothing(pane);
+  },
+  360_000
+);
+
+// INFRA-4567's implementer: its completion is taken and moves STALL-2 on to testing, and just
+// after it a message on its role topic wakes it, as a released role's pod is woken: the kept
+// message reaches the session as an Envoy card, and then the daemon's wake task arrives as a
+// user message, a task that names no phase.
+test.skipIf(skip)(
+  "a finished role woken by a role-topic message after its accepted completion, holding a task with no phase, is reminded of nothing and its architect is told nothing",
+  async () => {
+    const pane = await stallPane(
+      setup(),
+      [
+        COMPLETE,
+        [{ type: "text", text: "Completed STALL-2." }],
+        [{ type: "text", text: "Noted: the tester has STALL-2." }],
+        [{ type: "text", text: "Nothing of STALL-2 is mine to do now." }],
+        NEVER,
+      ],
+      {
+        env: QUICK_LIMITS,
+        quietMs: QUIET_PAST_RECORD_MS,
+        prompt: [
+          "Implement STALL-2.",
+          (scene) => scene.roleMessage("Thank you for the change: the tester has STALL-2 now."),
+          ROLE_MESSAGE_WAKE,
+        ],
+      }
+    );
+
+    // Four turns: the completion's run, the card's and the wake task's.
+    expect(pane.turns()).toHaveLength(4);
+    expect(pane.completions()).toHaveLength(1);
+    // Each of the three runs ended with the daemon asked, and each time it answered nothing.
+    expect(pane.owedAnswers()).toEqual([OWES_NOTHING, OWES_NOTHING, OWES_NOTHING]);
+    await expectRemindedOfNothing(pane);
+  },
+  240_000
+);
+
+// A role whose completion was taken writes a handoff record of its phase after it, with the
+// `dispatch handoff-write` command, in the same run: the record is newer than the completion, and
+// the daemon answers that the claim owes nothing all the same.
+test.skipIf(skip)(
+  "a finished role that writes a handoff record after its accepted completion is reminded of nothing",
+  async () => {
+    const body = JSON.stringify({
+      schemaVersion: 1,
+      phase: "implement",
+      issue: "STALL-2",
+      note: "the evidence the completion left out",
+    });
+    const pane = await stallPane(
+      setup(),
+      [
+        COMPLETE,
+        [
+          call("bash", {
+            command: `printf '%s' '${body}' | ${process.execPath} ${DISPATCH_CLI} handoff-write --issue STALL-2 --phase implement --body-file -`,
+          }),
+        ],
+        [{ type: "text", text: "Recorded version 2 of the implement handoff." }],
+        NEVER,
+      ],
+      { env: QUICK_LIMITS, quietMs: QUIET_PAST_RECORD_MS }
+    );
+
+    expect(pane.turns()).toHaveLength(3);
+    expect(pane.completions()).toHaveLength(1);
+    // The write reached the stand-in Dispatch after the completion, as version 2 of the phase.
+    const routes = pane.requests.map((request) => request.path);
+    expect(routes.indexOf("/api/v1/issues/STALL-2/handoffs/implement")).toBeGreaterThan(
+      routes.indexOf("/legion/v1/handoff/complete")
+    );
+    expect(pane.toolResults().map((result) => result.text)).toContainEqual(
+      expect.stringContaining("Recorded the implement handoff of STALL-2, version 2")
+    );
+    expect(pane.owedAnswers()).toEqual([OWES_NOTHING]);
+    await expectRemindedOfNothing(pane);
+  },
+  240_000
+);
+
+// INFRA-4011's planner: STALL-2 stands in implementing, long past its planning. The planner is
+// relaunched with no task, and then its architect asks it on its role topic for a piece of work:
+// it runs real tool calls and ends the turn.
+test.skipIf(skip)(
+  "a finished planner that ends a turn of work its architect asked for is reminded of nothing",
+  async () => {
+    const pane = await stallPane(
+      setup(),
+      [
+        [{ type: "text", text: "My plan stands, and nothing of planning is open." }],
+        [
+          call("bash", {
+            command: "printf '%s\\n' 'The parser change' 'The CI time' > plan-risks.md",
+          }),
+        ],
+        [call("bash", { command: "cat plan-risks.md" })],
+        [{ type: "text", text: "Wrote the plan's two open risks to plan-risks.md." }],
+        NEVER,
+      ],
+      {
+        role: "planner",
+        record: { phase: "implementing" },
+        env: QUICK_LIMITS,
+        quietMs: 4_000,
+        prompt: [
+          relaunched("role planner reports generation 5 exited (code 1)"),
+          (scene) =>
+            scene.roleMessage(
+              "From the architect: write the plan's two open risks to plan-risks.md for the implementer."
+            ),
+        ],
+      }
+    );
+
+    // Four turns: the relaunch's, and the three of the architect's request.
+    expect(pane.turns()).toHaveLength(4);
+    expect(pane.completions()).toEqual([]);
+    expect(pane.toolResults().map((result) => result.text)).toContainEqual(
+      expect.stringContaining("The CI time")
+    );
+    expect(pane.owedAnswers()).toEqual([OWES_NOTHING, OWES_NOTHING]);
+    await expectRemindedOfNothing(pane);
+  },
+  240_000
 );
 
 // The run-end ask nudge (extensions/envoy.ts) is a hidden side-turn self-check whose

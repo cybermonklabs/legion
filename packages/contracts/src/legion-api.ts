@@ -1539,14 +1539,20 @@ export type LegionOwedRequestBody = z.output<typeof LegionOwedRequest>;
 /** `api.OwedResponse`, the body `POST /legion/v1/claims/owed` answers: whether the claim owes work
  * now, and what that work is called as a person reads it in a reminder — `the testing phase of
  * LEGION-208`, `the production check of LEGION-208`. The daemon reads it from the issue's record,
- * so a role whose phase has finished owes nothing whatever its process remembers, and a role
- * whose phase is open owes it. `work` is empty exactly when `owes` is false; a reminder renders
- * the phrase it is given and names no work of its own. `architect` is the architect claim that
- * owns the claim now, the end of the owner walk the daemon's own notices of the issue take: the
- * issue's own architect while its claim holds its role, else the nearest one above it that does,
- * else the tree root's. It is named for a phase worker whose issue the daemon records, owed or
- * not, and absent for an architect, the controller, a failed claim and an unrecorded issue; the
- * reminder's architect notice and the stall watch's notice go to it. */
+ * so a role whose phase has finished owes nothing whatever its process remembers. `owes` is true
+ * only while the record holds the work open for the claim's role, and only where the completion
+ * route would take the claim's completion of it (`owedBy`, `packages/daemon/internal/api/
+ * owed.go`). So a role whose completion stands owes nothing, and so does a tester, reviewer or
+ * merger that a merge forward holds, and a claim behind its entry or serving no run of the issue's
+ * current generation. A reminder is sent only on `owes` true, and a read that fails sends none
+ * (`UNREAD_CHECK`, `packages/pi-shared/src/phase-reminder.ts`). `work` is empty exactly when
+ * `owes` is false; a reminder renders the phrase it is given and names no work of its own.
+ * `architect` is the architect claim that owns the claim now, the end of the owner walk the
+ * daemon's own notices of the issue take: the issue's own architect while its claim holds its
+ * role, else the nearest one above it that does, else the tree root's. It is named for a phase
+ * worker whose issue the daemon records, owed or not, and absent for an architect, the
+ * controller, a failed claim and an unrecorded issue; the reminder's architect notice and the
+ * stall watch's notice go to it. */
 export const LegionOwedResponse = z
   .object({
     owes: z.boolean(),

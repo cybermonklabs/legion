@@ -2738,8 +2738,8 @@ fixture_markers() {
 # and a worker resumed from such a session may report the phase again. The reminder comes at the
 # end of every turn for as long as the daemon answers that the claim owes work, and none at all once
 # the daemon has the completion, which is what the counts after a success read. The reminder is
-# found by a sentence that both of its texts carry (owedReminder and UNREAD_REMINDER in
-# packages/pi-shared/src/phase-stall.ts).
+# found by a sentence of its text (owedReminder in packages/pi-shared/src/phase-stall.ts), which is
+# the only reminder text: a check that cannot read the daemon's answer reminds no one.
 completion_verdict() {
   jq -R -s -c --arg followup "This reminder repeats at the end of every turn" '
     [split("\n")[] | fromjson?] | to_entries

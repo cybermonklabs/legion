@@ -3,10 +3,14 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -18,7 +22,8 @@ import (
 const (
 	// wakeTickInterval is how often the daemon fires the backstops that came due and warns about
 	// the resumes that are stuck. Both are measured in minutes, so a minute is often enough to
-	// act within a tick of a due time and rare enough to cost two small queries a minute.
+	// act within a tick of a due time and rare enough to cost two small queries a minute, and a
+	// third, by primary key, in a minute that has a due backstop (fireDueBackstops).
 	wakeTickInterval = time.Minute
 	// listenerReadyWindow is how fresh the Envoy listener's own `listener_ready` report must be
 	// for the daemon to release anything. The listener publishes one at its start and every five
@@ -108,15 +113,38 @@ func (w *workflowRuntime) tickWakes(ctx context.Context) {
 // the daemon was down is read by the first pass after it starts, and the row's conditional fire
 // (store.PodRecords.FirePodBackstop) is what makes two passes that read the same row wake its
 // pod once.
+//
+// A row of an issue the daemon records as waiting on another issue is passed over while it was
+// armed less than workflow.WaitSilenceBound ago, so such a pod is woken a day after its release
+// rather than backstop_minutes after it, and costs no fact transaction a tick meanwhile. The mark
+// is read once a pass, for the distinct issues of the due rows, and not at all for a pass with no
+// due row (store.Store.IssuesReleasedForWait). The backstop's handler reads the mark again inside
+// its own transaction and is the rule (workflow's podBackstopDue), so a failed read here is
+// logged and every due row is applied.
 func (w *workflowRuntime) fireDueBackstops(ctx context.Context, now time.Time) {
 	due, err := w.idleStore.DuePodBackstops(ctx, w.projectID, now)
 	if err != nil {
 		w.log.Warn("wake: could not read the backstops that came due", "error", err)
 		return
 	}
+	if len(due) == 0 {
+		return
+	}
+	issues := make([]string, 0, len(due))
+	for i := range due {
+		issues = append(issues, due[i].Issue)
+	}
+	slices.Sort(issues)
+	waiting, err := w.idleStore.IssuesReleasedForWait(ctx, slices.Compact(issues))
+	if err != nil {
+		w.log.Warn("wake: could not read the issues waiting on another issue; every due backstop is applied", "error", err)
+	}
 	for _, backstop := range due {
 		if ctx.Err() != nil {
 			return
+		}
+		if waiting[backstop.Issue] && !workflow.PastBound(backstop.ArmedAt, workflow.WaitSilenceBound, now) {
+			continue
 		}
 		fact := intake.PodBackstopDue{ID: backstop.ID, Issue: backstop.Issue, Role: backstop.Role}
 		id := fmt.Sprintf("pod-backstop:%d", backstop.ID)
@@ -422,12 +450,29 @@ func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role 
 }
 
 // armBackstops arms the backstop of a release that completed: backstop_minutes from now, for the
-// worker of the pod's open phase (workflow.OpenPhaseRole). An architect gets none — nothing of
-// its own is due, and a sub-architect woken for nothing would hold a pod open for the backstop
-// period — and neither does an issue whose phase no role works.
+// worker of the pod's open phase (workflow.OpenPhaseRole) while that worker gets one
+// (getsBackstop). An architect gets none — nothing of its own is due, and a sub-architect woken
+// for nothing would hold a pod open for the backstop period — and neither does an issue whose
+// phase no role works. The row records now as its arm time, the instant its due time is computed
+// from: the backstop of an issue the daemon records as waiting on another issue is measured from
+// it (workflow.WaitSilenceBound, fireDueBackstops).
 //
-// It also cancels the backstops the release before this one armed: that pod is gone, and its
-// backstop has nothing left to bring back.
+// A worker that owes its phase nothing gets none either (dispatch://INFRA-2746 R1): one whose
+// completion of the entry is recorded while the issue stays in the phase, as OSSV-732's reviewer's
+// approval stood while GitHub held the merge; one a merge forward holds; a merger whose merged
+// pull request finished merging; and one behind that entry that holds no task of the issue's run
+// and phase the daemon has yet to deliver. A backstop would wake such a worker every
+// backstop_minutes to do nothing, and each release after that wake would arm the next. The work
+// it gets later comes as a task or message of the daemon's — the task of the entry it is behind,
+// which admission's owed-entry repair sends a claim behind its entry that holds no such task, the
+// message of a landed merge forward, a new phase's start — and that delivery wakes the pod
+// itself. One worker that owes nothing still gets the backstop: a claim behind its entry that
+// holds a task of the issue's run and phase the daemon has not delivered, of that entry, of an
+// earlier one or of no entry, which admission's repair passes over (holdsUndeliveredEntryTask
+// says why). The release logs the facts it read in place of the row.
+//
+// It also cancels the backstops the release before this one armed, owed or not: that pod is gone,
+// and its backstop has nothing left to bring back.
 func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 	if err := r.trees.CancelPodBackstopsOf(ctx, r.project, issue.Key, ""); err != nil {
 		return err
@@ -447,13 +492,111 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 		if c.Role != role || c.ServingGeneration != issue.Generation {
 			continue
 		}
-		due := r.now().UTC().Add(r.backstop)
+		// The released-claim read carries no pending delivery, served entry or update round, which
+		// the entry the claim serves is read from (supervise.Claim.ServingEntry), so the claim is
+		// read whole in the transaction that reads its role's record.
+		var facts pods.IdleClaim
+		var gets bool
+		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+			whole, err := store.ClaimTx(ctx, tx, c.Token)
+			if err != nil {
+				return err
+			}
+			facts, gets, err = getsBackstop(ctx, r.records, tx, issue.Phase, issue.Generation, whole)
+			return err
+		}); err != nil {
+			return fmt.Errorf("read whether %s's %s gets a backstop before arming one: %w", issue.Key, role, err)
+		}
+		if !gets {
+			r.log.Info("wake: the release of an issue's pod arms no backstop for its open phase's role, which owes that phase nothing and holds no task of its run and phase, of its row's entry, of an earlier one or of no entry, that the daemon has yet to deliver",
+				"issue", issue.Key, "role", role, "completed", facts.RowCompleted, "merge_forward_held", facts.MergeForwardHeld,
+				"merged", facts.MergedInMerging, "entry", facts.ServingEntry, "row_entry", facts.RowEntry)
+			return nil
+		}
+		armed := r.now().UTC()
+		due := armed.Add(r.backstop)
 		r.log.Info("wake: the release of an issue's pod arms its open phase's backstop",
 			"issue", issue.Key, "role", role, "due", due.Format(time.RFC3339))
 		return r.trees.ArmPodBackstop(ctx, store.PodWakeBackstop{Project: r.project, Issue: issue.Key,
-			Role: role, DueAt: due})
+			Role: role, ArmedAt: armed, DueAt: due})
 	}
 	return nil
+}
+
+// getsBackstop is whether c, a claim of the role that works the phase its issue stands at (at,
+// at the issue's generation), gets a backstop when its pod is released or a pause stops it: it
+// owes that phase its completion, by the rule the owed answer and the idle release's reminder
+// hold read (record.PhaseOwed), or it is the one claim that owes nothing and still gets one, a
+// claim behind its entry that holds a task of the issue's run and phase the daemon has not
+// delivered, of that entry, of an earlier one or of no entry (holdsUndeliveredEntryTask). It
+// reads the run c serves and the entry it serves (supervise.Claim.ServingEntry), and, through tx
+// as the idle view reads them (record.FillIdleClaims), the entry its role's phases row stands on,
+// whether that row records its completion, whether a merge forward of the issue's pull request
+// holds its role and whether that pull request is merged while the issue stands in merging. It
+// answers those facts beside the verdict, for the line of a caller that arms nothing. c is the
+// whole claim (store.ClaimTx), since the entry it serves is read from its pending delivery, the
+// entry it last served and its update round, and the task it holds is that pending delivery.
+//
+// Each writer of an open phase's backstop asks it before it arms one, so all three hold the
+// worker to one rule: a release (armBackstops), a pause's stop (projectPause.stopTx) and a
+// cancel of a release while the project is paused (outbox.cancelRelease, through
+// store.ReleaseCancelPause.GetsBackstop).
+func getsBackstop(ctx context.Context, records record.Store, tx pgx.Tx, at phase.Phase, generation uint64,
+	c supervise.Claim) (pods.IdleClaim, bool, error) {
+	facts := []pods.IdleClaim{{Role: c.Role, ServingGeneration: c.ServingGeneration, ServingEntry: c.ServingEntry()}}
+	if err := record.FillIdleClaims(ctx, records, tx, c.Issue, at, facts); err != nil {
+		return pods.IdleClaim{}, false, err
+	}
+	f := facts[0]
+	owes := record.PhaseOwed(f.ServingGeneration, generation, f.ServingEntry, f.RowEntry, f.RowCompleted,
+		f.MergeForwardHeld, f.MergedInMerging)
+	return f, owes || holdsUndeliveredEntryTask(c, f, at, generation), nil
+}
+
+// holdsUndeliveredEntryTask is whether c is the one claim that owes its phase nothing and still
+// gets the backstop (dispatch://INFRA-2746 R1): "a claim behind its entry that holds a task of the
+// issue's run and phase that the daemon has not delivered, of that entry, of an earlier one or of
+// no entry, unless its completion is recorded, a merge forward holds its role or its merged pull
+// request is finishing its merge." A send can fail before any turn and then waits for the claim
+// to come back (supervise's delivery). A relaunch of a failed or retired worker keeps the task of
+// an earlier entry that it still holds, and does not deliver the new entry (keepsStartTask). A
+// task of no entry is a resume task (workflow.ResumePhaseTask) that the daemon sends with no
+// entry, to a ready worker that holds its issue's phase with nothing pending (workflow's
+// readyWorkerTask), to a silent phase worker (workflow's repairSilence) and to a
+// suspended owner that the boot resumes (workflow's startSuspendedOwner). Admission's
+// owed-entry repair passes over every claim that holds such a task (admit's owedOf, which reads
+// supervise.Delivery.StillWorked), so the backstop is then the one wake that brings the pod back
+// for that delivery. at is the phase the issue stands at, generation its run, and f what
+// getsBackstop read of c's role. The reminder hold takes no such exception (workflow's
+// IdleRelease): a claim behind its entry is reminded of nothing.
+//
+// c holds such a task while its pending delivery is one it still works as the task of the
+// issue's run in that phase, read as admission's repair reads it (supervise.Delivery.StillWorked),
+// while the entry c serves (f.ServingEntry) is behind the one c's role's phases row stands on
+// (f.RowEntry). Any such task counts, whatever entry it is of: the row's entry, an earlier one or
+// none. The rule names no bound on that entry, since no task stands above its row's entry:
+// entries only rise (record.PhaseRow.Entry). Every other term of the owed answer's rule still
+// holds such a claim to it, read at the row's entry (record.PhaseOwed): it serves the issue's
+// run, the row records no completion, no merge forward holds its role and no merged pull request
+// is finishing its merge. So a claim whose completion of the row's entry is recorded, or that a
+// merge forward holds, gets no backstop for the task it holds either, whatever entry that task is
+// of. A turn that takes a task of the row's entry levels the claim with its row, and from then on
+// it owes its phase by that rule; once a turn has taken a task of an earlier entry or of no
+// entry, the claim is behind its row and holds no such task, and admission's repair sends it the
+// row's entry's task.
+func holdsUndeliveredEntryTask(c supervise.Claim, f pods.IdleClaim, at phase.Phase, generation uint64) bool {
+	p := c.Pending
+	return p != nil && p.StillWorked(generation, at, c.State) &&
+		record.EntriesDiffer(f.ServingEntry, f.RowEntry) && f.ServingEntry < f.RowEntry &&
+		record.PhaseOwed(f.ServingGeneration, generation, f.RowEntry, f.RowEntry, f.RowCompleted, f.MergeForwardHeld,
+			f.MergedInMerging)
+}
+
+// getsBackstop is the package function of that name as the store asks it of a released role a
+// cancel stops for a pause (store.ReleaseCancelPause.GetsBackstop), through the outbox's records.
+func (r *outbox) getsBackstop(ctx context.Context, tx pgx.Tx, at phase.Phase, generation uint64, c supervise.Claim) (bool, error) {
+	_, gets, err := getsBackstop(ctx, r.records, tx, at, generation, c)
+	return gets, err
 }
 
 // takeOverRelease is what every path that suspends, stops or closes a claim does to a pod that

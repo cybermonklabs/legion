@@ -1,0 +1,26 @@
+kind: Fixed
+body: |-
+  `POST /legion/v1/claims/owed` answers that a claim owes a completion only where the completion
+  route would take it: the claim serves the issue's current run, is not behind its phase entry,
+  has no recorded completion of that entry, and no merge forward the daemon asked for holds its
+  role. A claim behind its entry, or serving no run of the issue's generation, is answered that it
+  owes nothing, and the daemon sends that entry's task itself. The idle release holds a pod for a
+  phase reminder that is due only while the claim owes its phase by the rule the owed answer reads,
+  so a past-due reminder wake of a claim whose completion is recorded, that a merge forward holds,
+  that is behind its entry, or of a merger in `merging` whose pull request is merged holds no pod.
+  By the same rule a released claim that owes its phase nothing gets no idle backstop: the release
+  of its pod, a project's pause that stops it, and the cancel of its release while the project is
+  paused arm none, since its later work comes as a daemon task or message, which wakes the pod.
+  One such claim still gets the backstop: a claim behind its entry that holds a task of the
+  issue's run and phase the daemon has not delivered, of that entry, of an earlier one or of no
+  entry, such as a task whose send failed before any turn, the task of an earlier entry a relaunch
+  kept or a resume task of no entry, unless its completion is recorded, a merge forward holds its
+  role or its merged pull request is finishing its merge. Admission's owed-entry repair passes
+  over such a claim, and nothing else brings its pod back. The daemon sends a resume task with no
+  entry to a ready worker that holds its issue's phase with nothing pending, to a silent phase
+  worker and to a suspended owner that the boot resumes. While the daemon records that a started
+  issue gave its admission slot back to wait on another issue, the silence sweep writes no start
+  row for its phase workers, tells the architect of a quiet worker once after 24 hours, and the
+  idle backstop wakes its released pod no earlier than 24 hours after the release; the normal
+  bounds apply again once the issue holds a slot. A migration adds `pod_wake_backstops.armed_at`.
+  The role prompt says when a reminder comes and what to do when a completion is refused.

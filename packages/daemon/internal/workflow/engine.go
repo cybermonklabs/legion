@@ -2162,8 +2162,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// closeMergedTelling's rather than a second transition's because a merged issue's close waits
 	// for the issues beneath it still in the workflow (for a root, the rest of its tree), and an
 	// issue that arrives there and waits must be told why: the notice its architect got at the
-	// merge could not say it, since the issue was elsewhere then.
-	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
+	// merge could not say it, since the issue was elsewhere then. The move reads that fact by the
+	// one statement of merging's rule (record.MergedInMerging), at the phase it enters.
+	mergedAlready := record.MergedInMerging(pr, row.To)
 	if !mergedAlready {
 		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), movedBack); err != nil {
 			return err

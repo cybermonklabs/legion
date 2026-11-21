@@ -1254,3 +1254,78 @@ func TestARowsBackoffDoublesFromOneSecondUpToSixtyFourSeconds(t *testing.T) {
 		t.Errorf("RetryBackoffMost = %s, want 64s, the backoff of every count past six", RetryBackoffMost)
 	}
 }
+
+// A merge forward holds a role while it waits to land (dispatch://INFRA-2746 R1, the fifth term
+// of what a claim owes): the ask is of the head the pull request stands at, it was made in the
+// phase the issue stands in, it has not landed, and its hold told the role that works that phase
+// to stop and wait for the new head (MergeForwardHold). The table runs every role against every
+// phase a merge forward is asked in (MergeForwardPhases), so a role or a phase added later joins
+// it: the ask holds the tester in testing, the reviewer in reviewing and the merger in merging,
+// and no other pairing. The implementer is held in neither implementing nor retro, where the
+// merge is its own open work, and the architect is held in accepting by nothing, its checks-red
+// notice being what tells it. Each held pairing is then held no more once the ask landed, for an
+// ask of another head and for an ask made in another phase, and nothing is held with no pull
+// request or no ask. A pull request closed with its ask standing still holds: a close that does
+// not merge keeps the ask and the head (workflow's Engine.closed), and a reopen at the same head
+// brings the same hold back.
+func TestMergeForwardHoldsOnlyTheRolesItsHoldReachesAtItsHeadAndPhaseUntilItLands(t *testing.T) {
+	const head, landed, older = "c0de", "d00d", "beef"
+	asked := func(of string, in phase.Phase) *PullRequest {
+		return &PullRequest{State: PullRequestOpen, Number: 42, HeadSHA: head,
+			MergeForward: &MergeForward{Head: of, Base: "main", Phase: in, Why: ConflictCheckNotGreen}}
+	}
+	held := map[phase.Phase]claim.Role{phase.Testing: claim.RoleTester, phase.Reviewing: claim.RoleReviewer, phase.Merging: claim.RoleMerger}
+	roles := append([]claim.Role{claim.RoleController}, claim.Roles...)
+	for _, at := range MergeForwardPhases {
+		for _, role := range roles {
+			if got, want := MergeForwardHolds(asked(head, at), at, role), held[at] == role; got != want {
+				t.Errorf("an ask of the head made in %s holds the %s in %s = %t, want %t", at, role, at, got, want)
+			}
+		}
+	}
+	for _, named := range []struct {
+		role claim.Role
+		at   phase.Phase
+	}{{claim.RoleImplementer, phase.Implementing}, {claim.RoleImplementer, phase.Retro}, {claim.RoleArchitect, phase.Accepting}} {
+		if MergeForwardHolds(asked(head, named.at), named.at, named.role) {
+			t.Errorf("an ask of the head made in %s holds the %s, want no hold: the hold does not reach it", named.at, named.role)
+		}
+	}
+	// Admitted is the phase phase.RoleFor answers the architect for, and no merge forward is asked
+	// there (MergeForwardPhases). An ask the record names at admitted holds no role, the architect
+	// included, since the hold reaches the tester, the reviewer and the merger alone.
+	for _, role := range roles {
+		if MergeForwardHolds(asked(head, phase.Admitted), phase.Admitted, role) {
+			t.Errorf("an ask of the head made in admitted holds the %s, want no hold: the hold reaches no role that works admitted", role)
+		}
+	}
+	if len(held) != 3 {
+		t.Fatalf("the table holds %d pairings, want the three the hold reaches", len(held))
+	}
+	for at, role := range held {
+		pullRequest := asked(head, at)
+		pullRequest.HeadSHA, pullRequest.MergeForward.Landed = landed, landed
+		if MergeForwardHolds(pullRequest, at, role) {
+			t.Errorf("an ask made in %s that landed at %s still holds the %s, want no hold", at, landed, role)
+		}
+		if MergeForwardHolds(asked(older, at), at, role) {
+			t.Errorf("an ask of head %s made in %s holds the %s while the pull request stands at %s, want no hold", older, at, role, head)
+		}
+		for _, other := range MergeForwardPhases {
+			if other != at && MergeForwardHolds(asked(head, other), at, role) {
+				t.Errorf("an ask made in %s holds the %s in %s, want no hold: no hold of %s reached it", other, role, at, at)
+			}
+		}
+		if MergeForwardHolds(nil, at, role) {
+			t.Errorf("no pull request holds the %s in %s, want no hold", role, at)
+		}
+		if MergeForwardHolds(&PullRequest{State: PullRequestOpen, Number: 42, HeadSHA: head}, at, role) {
+			t.Errorf("a pull request with no ask holds the %s in %s, want no hold", role, at)
+		}
+		closed := asked(head, at)
+		closed.State = PullRequestClosed
+		if !MergeForwardHolds(closed, at, role) {
+			t.Errorf("a pull request closed with its ask of %s standing holds the %s in %s = false, want the hold kept", at, role, at)
+		}
+	}
+}

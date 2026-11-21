@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,7 +14,10 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -53,6 +57,23 @@ func (c liveClaim) owesNothing(t *testing.T) {
 	if got := c.owed(t); got.Owes || got.Work != "" {
 		t.Fatalf("%s owes %+v, want nothing and no work named", c.token, got)
 	}
+}
+
+// claimNow is c's claim as its machine holds it now: the claim the owed route and the completion
+// route read (authenticated, supervise.Machine.Claim).
+func (c liveClaim) claimNow(t *testing.T) supervise.Claim {
+	t.Helper()
+	return machineOf(t, c).Claim()
+}
+
+// machineOf is the machine the daemon supervises c's claim with.
+func machineOf(t *testing.T, c liveClaim) *supervise.Machine {
+	t.Helper()
+	machine, ok := c.h.supervisor.Machine(c.token)
+	if !ok {
+		t.Fatalf("no machine for %s", c.token)
+	}
+	return machine
 }
 
 // The defect this route cures (dispatch://INFRA-2746): a reminder state kept per process nagged
@@ -113,15 +134,18 @@ func TestClaimOwedFollowsThePhaseAsTheWorkflowMovesTheIssue(t *testing.T) {
 	reviewer.owesNothing(t)
 }
 
-// Within the role's own phase the answer is read from the two numbers the daemon closes the
-// difference between (dispatch://INFRA-2800), so it never parts from the daemon's own sending of
-// an entry's work. A reviewer level with its row whose row records its completion owes nothing:
-// its round waits for a review, and the daemon sends a level claim no entry's work. The same row
-// raised to an entry the claim was not given leaves the claim behind it, which is what admission,
-// the entry sweep, a ready and the silence repair send that entry's work on (workflow.OwedEntry),
-// so the claim owes that work though the row still records the completion. Once the entry's task
-// is queued to the claim it stands level again, and it owes nothing.
-func TestClaimOwedIsTheEntrysWorkWhileTheClaimIsBehindIt(t *testing.T) {
+// Within the role's own phase the answer reads the entry the claim serves against the entry its
+// row stands on, as the completion route's entry fence reads the two (claimServes, entryFence), so
+// it never tells a claim it owes a completion that fence refuses (dispatch://INFRA-2746 R1). A
+// reviewer level with its row whose row records its completion owes nothing: its round waits for
+// a review, and the daemon sends a level claim no entry's work. The same row raised to an entry
+// the claim does not serve leaves the claim behind it, and it owes nothing there either, though
+// the row still records the completion: the route refuses a behind claim's completion
+// HANDOFF_STALE_ENTRY, and the daemon sends that entry's work itself (workflow.OwedEntry, which
+// admission, the entry sweep, a ready and the silence repair send it on). It still owes nothing
+// once that entry's task is queued to it and no turn has confirmed it, since the claim serves the
+// entry before it until a turn of the new task begins.
+func TestClaimOwedIsNothingWhileTheClaimIsBehindItsEntry(t *testing.T) {
 	h, _, _ := newEntryHarness(t)
 	ctx := context.Background()
 	seedIssueAt(t, h, "LEGION-208", phase.Reviewing)
@@ -140,13 +164,452 @@ func TestClaimOwedIsTheEntrysWorkWhileTheClaimIsBehindIt(t *testing.T) {
 		where issue = 'LEGION-208' and role = $1`, string(claim.RoleReviewer)); err != nil {
 		t.Fatalf("raise the reviewer's row to entry 2: %v", err)
 	}
-	if given := h.stored(reviewer.token).GivenEntry; given != 1 {
-		t.Fatalf("the reviewer was given entry %d, want 1: the case's own premise", given)
+	if serving := reviewer.claimNow(t).ServingEntry(); serving != 1 {
+		t.Fatalf("the reviewer serves entry %d, want 1: the case's own premise", serving)
 	}
-	reviewer.owes(t, "the reviewing phase of LEGION-208")
+	reviewer.owesNothing(t)
 
 	queueTask(t, h, reviewer.token, "outbox:entry-2", "review entry 2", 2, 1)
+	if now := reviewer.claimNow(t); now.GivenEntry != 2 || now.ServingEntry() != 1 {
+		t.Fatalf("the reviewer was given entry %d and serves entry %d, want given 2 and serving 1: the task of entry 2 is queued and unconfirmed",
+			now.GivenEntry, now.ServingEntry())
+	}
 	reviewer.owesNothing(t)
+}
+
+// The answer reads the record one way (dispatch://INFRA-2746 R1): every claim it tells it owes a
+// completion would have that completion taken at the head the pull request stands at, and in each
+// shape in which the end-of-turn reminder reminded a role that owed nothing, the role is told it
+// owes nothing. Each subtest builds its shape through the daemon's own workflow — completions the
+// route takes, a request_backward_move, the reviewer's own review, a conflict the daemon confirms
+// and the merge forward it asks, the synchronize that lands that merge, a hold, a park and a
+// close — then asks claims/owed, then posts that claim's completion and holds the route's answer
+// to it: taken, or the named refusal. An answer of nothing owed does not say the route refuses:
+// the route also records a completion of a phase the daemon moved the issue out of
+// (workflow's leftItsPhase), and that phase is not reminded (R8). An answer of work owed does say
+// the route takes the completion at the head the pull request stands at.
+func TestClaimOwedIsOwedOnlyWhereTheCompletionRouteTakesACompletion(t *testing.T) {
+	t.Run("moved on", func(t *testing.T) {
+		h, _, _ := newEntryHarness(t)
+		owedIssue(t, h)
+		implementer, _ := implemented(t, h)
+		implementer.owesNothing(t)
+		refused(t, h.complete(completionOf(t, implementer, "implement", headSHA, 1)), http.StatusConflict, "HANDOFF_NOT_CURRENT_PHASE")
+	})
+
+	// No review has decided the reviewer's round, so its completion leaves the issue in
+	// reviewing, the reviewer's own phase, and the row records that completion.
+	t.Run("completion recorded", func(t *testing.T) {
+		h, _, _ := newEntryHarness(t)
+		owedIssue(t, h)
+		_, tester := implemented(t, h)
+		reviewer := tested(t, h, tester)
+		completion(t, h.complete(completionOf(t, reviewer, "review", headSHA, 1)))
+		assertIssuePhase(t, h, phase.Reviewing)
+		reviewer.owesNothing(t)
+		refused(t, h.complete(completionOf(t, reviewer, "review", headSHA, 1)), http.StatusConflict, "HANDOFF_ALREADY_RECORDED")
+	})
+
+	// The hold told the tester to stop and wait for the merge to land, so the tester owes
+	// nothing while the ask stands. The hold is the daemon's word to the role and no fence: a
+	// completion at the head the pull request stands at is taken all the same.
+	t.Run("merge forward asked", func(t *testing.T) {
+		h, engine, _ := newEntryHarness(t)
+		owedIssue(t, h)
+		_, tester := implemented(t, h)
+		tester.owes(t, "the testing phase of LEGION-208")
+		mergeForwardAsked(t, h, engine, phase.Testing)
+		tester.owesNothing(t)
+		completion(t, h.complete(completionOf(t, tester, "test", headSHA, 1)))
+		assertIssuePhase(t, h, phase.Reviewing)
+	})
+
+	t.Run("implementer asked to merge forward", func(t *testing.T) {
+		h, engine, _ := newEntryHarness(t)
+		owedIssue(t, h)
+		implementer, _ := implemented(t, h)
+		mergeForwardAsked(t, h, engine, phase.Testing)
+		implementer.owesNothing(t)
+		refused(t, h.complete(completionOf(t, implementer, "implement", headSHA, 1)), http.StatusConflict, "HANDOFF_NOT_CURRENT_PHASE")
+	})
+
+	// An ask made in implementing sends no hold: the merge is part of the implementer's own open
+	// work there, and its assignment and its completion stand.
+	t.Run("merge forward asked in implementing", func(t *testing.T) {
+		h, engine, _ := newEntryHarness(t)
+		owedIssue(t, h)
+		implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+		mergeForwardAsked(t, h, engine, phase.Implementing)
+		implementer.owes(t, "the implementing phase of LEGION-208")
+		completion(t, h.complete(completionOf(t, implementer, "implement", headSHA, 1)))
+		assertIssuePhase(t, h, phase.Testing)
+	})
+
+	// Once the merge lands, the tester owes its phase at the head the merge left: a completion at
+	// the head the merge replaced is refused for that head (the merge forward's own fence), and
+	// one at the new head, naming a handoff of its own, is taken.
+	t.Run("merge forward landed", func(t *testing.T) {
+		h, engine, _ := newEntryHarness(t)
+		owedIssue(t, h)
+		_, tester := implemented(t, h)
+		mergeForwardAsked(t, h, engine, phase.Testing)
+		mergeForwardLands(t, h, engine)
+		tester.owes(t, "the testing phase of LEGION-208")
+		refused(t, h.complete(completionOf(t, tester, "test", headSHA, 1)), http.StatusConflict, "HANDOFF_HEAD_MERGED_FORWARD")
+		assertIssuePhase(t, h, phase.Testing)
+		completion(t, h.complete(completionOf(t, tester, "test", forwardSHA, 2)))
+		assertIssuePhase(t, h, phase.Reviewing)
+	})
+
+	// The tester's completion at the asked head moves the issue to reviewing, and no move from
+	// testing to reviewing asks again, so the record still holds the ask made in testing, not
+	// landed. No hold of it reached the reviewer, which owes its phase.
+	t.Run("merge forward asked in testing, issue now in reviewing", func(t *testing.T) {
+		h, engine, _ := newEntryHarness(t)
+		owedIssue(t, h)
+		_, tester := implemented(t, h)
+		mergeForwardAsked(t, h, engine, phase.Testing)
+		reviewer := tested(t, h, tester)
+		if asked := recordedMergeForward(t, h); asked == nil || asked.Head != headSHA || asked.Phase != phase.Testing || asked.Landed != "" {
+			t.Fatalf("the record's merge forward = %+v, want the ask of %s made in testing, not landed: the case's own premise", asked, headSHA)
+		}
+		reviewer.owes(t, "the reviewing phase of LEGION-208")
+		completion(t, h.complete(completionOf(t, reviewer, "review", headSHA, 1)))
+	})
+
+	t.Run("own backward move", func(t *testing.T) {
+		h, _, _ := newEntryHarness(t)
+		owedIssue(t, h)
+		_, tester := implemented(t, h)
+		reviewer := tested(t, h, tester)
+		reviewer.owes(t, "the reviewing phase of LEGION-208")
+		movesBack(t, h, reviewer, phase.Implementing)
+		assertIssuePhase(t, h, phase.Implementing)
+		reviewer.owesNothing(t)
+		completion(t, h.complete(completionOf(t, reviewer, "review", headSHA, 1)))
+	})
+
+	// The reviewer's own request for changes ends its round before its completion lands: the
+	// issue goes back to implementing, and the completion that follows is recorded on the
+	// reviewer's row as the report of the phase it left.
+	t.Run("round ended by its own review", func(t *testing.T) {
+		h, engine := newOwedHarness(t)
+		owedIssue(t, h)
+		_, tester := implemented(t, h)
+		reviewer := tested(t, h, tester)
+		reviewer.owes(t, "the reviewing phase of LEGION-208")
+		reviewersOwnReview(t, h, engine, reviewer, time.Now())
+		assertIssuePhase(t, h, phase.Implementing)
+		reviewer.owesNothing(t)
+		completion(t, h.complete(completionOf(t, reviewer, "review", headSHA, 1)))
+	})
+
+	// A finished planner's pod was released and woken: the wake's task names no phase, and it
+	// waits on the claim unconfirmed while the issue is in implementing.
+	t.Run("pending task with no phase", func(t *testing.T) {
+		h, _, _ := newEntryHarness(t)
+		planner := planned(t, h)
+		queueTask(t, h, planner.token, "outbox:wake", workflow.WakeTask(pods.WakeRoleMessage, "notifications.role.legion-legion-legion-208-planner", workflow.StoppedByRelease), 0, 1)
+		if pending := planner.claimNow(t).Pending; pending == nil || pending.Phase != "" || !pending.ConfirmedAt.IsZero() {
+			t.Fatalf("the planner holds %+v, want the wake's task of no phase, unconfirmed: the case's own premise", pending)
+		}
+		planner.owesNothing(t)
+		refused(t, h.complete(completionOf(t, planner, "plan", "", 1)), http.StatusConflict, "HANDOFF_NOT_CURRENT_PHASE")
+	})
+
+	// R1's first term alone: the tester works the issue's phase, its row records no completion
+	// and stands on an entry, and no merge forward holds it, but its claim has served no run and
+	// holds only a task that names no phase, which is none of the issue's current work.
+	t.Run("serves no run of this generation", func(t *testing.T) {
+		h, _, _ := newEntryHarness(t)
+		seedIssueAt(t, h, "LEGION-208", phase.Testing)
+		seedEntry(t, h, "LEGION-208", claim.RoleTester, 1)
+		tester := untaskedClaim(t, h, "LEGION-208", claim.RoleTester)
+		holdingTask(t, h, tester, supervise.RequestDeliver{Task: workflow.WakeTask(pods.WakeRoleMessage, "notifications.role.legion-legion-legion-208-tester", workflow.StoppedByRelease),
+			ID: "outbox:wake", Generation: 1})
+		tester.owesNothing(t)
+		refused(t, h.complete(completionOf(t, tester, "test", headSHA, 1)), http.StatusConflict, "HANDOFF_NO_RUN")
+	})
+
+	// The reviewer's completion of its review record version 1 is taken, its own review then
+	// asks for changes, and it writes version 2 after the issue went back to implementing.
+	t.Run("handoff record newer than the last completion", func(t *testing.T) {
+		h, engine := newOwedHarness(t)
+		owedIssue(t, h)
+		_, tester := implemented(t, h)
+		reviewer := tested(t, h, tester)
+		completion(t, h.complete(completionOf(t, reviewer, "review", headSHA, 1)))
+		reviewersOwnReview(t, h, engine, reviewer, time.Now().Add(time.Minute))
+		assertIssuePhase(t, h, phase.Implementing)
+		reviewer.writeHandoff("review", 2)
+		reviewer.owesNothing(t)
+		refused(t, h.complete(completionOf(t, reviewer, "review", headSHA, 2)), http.StatusConflict, "HANDOFF_NOT_CURRENT_PHASE")
+	})
+
+	// A finished planner ends a turn of work its architect asked for: a turn no task of the
+	// daemon's backs, started by the architect's message while the issue is in implementing.
+	t.Run("work outside the phase", func(t *testing.T) {
+		h, _, _ := newEntryHarness(t)
+		planner := planned(t, h)
+		turnOfItsOwn(t, planner)
+		planner.owesNothing(t)
+		refused(t, h.complete(completionOf(t, planner, "plan", "", 1)), http.StatusConflict, "HANDOFF_NOT_CURRENT_PHASE")
+	})
+
+	// The workflow holds the issue on the fact that its tester's claim failed, and phase.RoleFor
+	// names no role for held. The claim asked with is that tester's: the harness applies the fact
+	// and does not fail the claim, so the answer is read through the record's hold alone (a
+	// failed claim is answered nothing before the record is read,
+	// TestClaimOwedIsNothingOnceTheDaemonHasFailedTheClaim).
+	t.Run("a phase no role works", func(t *testing.T) {
+		h, engine, _ := newEntryHarness(t)
+		owedIssue(t, h)
+		_, tester := implemented(t, h)
+		applyEntryFact(t, h, engine, "tester-failed", intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleTester, Reason: "the process died"})
+		assertIssuePhase(t, h, phase.Held)
+		tester.owesNothing(t)
+		refused(t, h.complete(completionOf(t, tester, "test", headSHA, 1)), http.StatusConflict, "HANDOFF_NOT_CURRENT_PHASE")
+	})
+
+	// The reviewer's own move back to testing raises the tester's row to a second entry, marked
+	// as raised by a move back, while the tester's claim still serves the first: the work is to be
+	// done again at the same head, so the route refuses the first entry's completion whatever its
+	// commit reads (behindEntryClause), and the daemon sends the second entry's task itself.
+	t.Run("behind the entry", func(t *testing.T) {
+		h, _, _ := newEntryHarness(t)
+		owedIssue(t, h)
+		_, tester := implemented(t, h)
+		reviewer := tested(t, h, tester)
+		movesBack(t, h, reviewer, phase.Testing)
+		assertIssuePhase(t, h, phase.Testing)
+		if row := phaseRowOf(t, h, "LEGION-208", claim.RoleTester); row == nil || row.Entry != 2 || !row.EntryMovedBack {
+			t.Fatalf("the tester's row = %+v, want entry 2 raised by a move back: the case's own premise", row)
+		}
+		if serving := tester.claimNow(t).ServingEntry(); serving != 1 {
+			t.Fatalf("the tester serves entry %d, want 1: the case's own premise", serving)
+		}
+		tester.owesNothing(t)
+		refused(t, h.complete(completionOf(t, tester, "test", headSHA, 2)), http.StatusConflict, staleEntryCode)
+	})
+
+	t.Run("an open entry with no completion", func(t *testing.T) {
+		h, _, _ := newEntryHarness(t)
+		owedIssue(t, h)
+		_, tester := implemented(t, h)
+		tester.owes(t, "the testing phase of LEGION-208")
+		completion(t, h.complete(completionOf(t, tester, "test", headSHA, 1)))
+		assertIssuePhase(t, h, phase.Reviewing)
+	})
+
+	// A person parks the child in Dispatch's backlog: the child leaves the workflow, and the
+	// workflow parks its phase in done (workflow's leave), where phase.RoleFor names no role.
+	t.Run("parked", func(t *testing.T) {
+		h, engine, _ := newEntryHarness(t)
+		parent := "LEGION-208"
+		h.recordIssue(record.Issue{Key: parent, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: parent,
+			Project: testProject, Title: parent, Phase: phase.Planning, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress"})
+		h.recordIssue(record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: parent, Parent: &parent,
+			Project: testProject, Title: "LEGION-209", Phase: phase.Testing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress"})
+		tester := newLiveClaimIn(t, h, parent, "LEGION-209", claim.RoleTester)
+		tester.owes(t, "the testing phase of LEGION-209")
+		applyEntryFact(t, h, engine, "parked", intake.DispatchIssue{Key: "LEGION-209", Status: "backlog", Title: "LEGION-209", Parent: parent, ResolvedRepo: "acme/widgets"})
+		if child := readIssue(t, h, "LEGION-209"); child == nil || child.Phase != phase.Done {
+			t.Fatalf("the parked child = %+v, want it in done: the case's own premise", child)
+		}
+		tester.owesNothing(t)
+		refused(t, h.complete(completionOf(t, tester, "test", headSHA, 1)), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
+	})
+
+	// A person closes the root in Dispatch: its tree lingers (completionPosition.lingers), and
+	// the root's phase is done.
+	t.Run("tree closed", func(t *testing.T) {
+		h, engine, _ := newEntryHarness(t)
+		owedIssue(t, h)
+		_, tester := implemented(t, h)
+		applyEntryFact(t, h, engine, "closed", intake.DispatchIssue{Key: "LEGION-208", Status: "done", Title: "LEGION-208", ResolvedRepo: "acme/widgets"})
+		if root := readIssue(t, h, "LEGION-208"); root == nil || !root.Lingers() {
+			t.Fatalf("the closed root = %+v, want its tree lingering: the case's own premise", root)
+		}
+		tester.owesNothing(t)
+		refused(t, h.complete(completionOf(t, tester, "test", headSHA, 1)), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
+	})
+}
+
+// forwardSHA is the head the implementer's merge of main forward onto headSHA leaves on #42.
+const forwardSHA = "f0d0000000000000000000000000000000000aa1"
+
+// owedReviewApp is the review App's login in newOwedHarness, so a review the reviewer submits
+// through it from its own session is the reviewer's own (workflow's byReviewer).
+const owedReviewApp = "legion-review[bot]"
+
+// newOwedHarness is newEntryHarness's workflow with the review App named, as a deployment names
+// it, so the reviewer's own review decides its round (workflow's DecidesRound).
+func newOwedHarness(t *testing.T) (*harness, *workflow.Engine) {
+	t.Helper()
+	h, engine, _ := newWorkflowHarness(t, workflow.Config{Project: testProject, Repositories: testRepositories,
+		Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, ReviewAppLogin: owedReviewApp})
+	return h, engine
+}
+
+// owedIssue records LEGION-208 in implementing on run 1, with its open pull request #42 on
+// legion/LEGION-208 onto main at headSHA, the head GitHub's stand-in answers for it.
+func owedIssue(t *testing.T, h *harness) {
+	t.Helper()
+	ctx := context.Background()
+	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
+		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress"})
+	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
+			Number: 42, Branch: "legion/LEGION-208", Base: "main", HeadSHA: headSHA, CheckedHead: headSHA, Failing: []string{}})
+	}); err != nil {
+		t.Fatalf("record the pull request: %v", err)
+	}
+}
+
+// completionOf is c's completion of the phase whose handoff word is word, at commit, naming
+// version of that handoff, which c writes under its own session first; a tester's carries a pass.
+// Each call mints a grant of its own, as each handoff_complete of the legion tool does.
+func completionOf(t *testing.T, c liveClaim, word, commit string, version int) HandoffCompleteRequest {
+	t.Helper()
+	request := HandoffCompleteRequest{GrantID: c.grant(t), Summary: word + " done", Commit: commit,
+		HandoffID: c.writeHandoff(word, version), HandoffVersion: version}
+	if word == "test" {
+		request.Verdict = "pass"
+	}
+	return request
+}
+
+// implemented has the implementer's completion at headSHA taken, which moves LEGION-208 from
+// implementing to testing, and has the tester take the start that move queued. It answers both
+// claims.
+func implemented(t *testing.T, h *harness) (implementer, tester liveClaim) {
+	t.Helper()
+	implementer = newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	completion(t, h.complete(completionOf(t, implementer, "implement", headSHA, 1)))
+	assertIssuePhase(t, h, phase.Testing)
+	tester = newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+	takeStart(t, h, tester.token, "LEGION-208", claim.RoleTester)
+	return implementer, tester
+}
+
+// tested has tester's pass at headSHA taken, which moves LEGION-208 to reviewing, and has the
+// reviewer take the start that move queued. It answers the reviewer.
+func tested(t *testing.T, h *harness, tester liveClaim) liveClaim {
+	t.Helper()
+	completion(t, h.complete(completionOf(t, tester, "test", headSHA, 1)))
+	assertIssuePhase(t, h, phase.Reviewing)
+	reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
+	takeStart(t, h, reviewer.token, "LEGION-208", claim.RoleReviewer)
+	return reviewer
+}
+
+// planned records LEGION-208 in planning on run 1 and has its planner's completion taken, which
+// moves the issue to implementing. It answers the planner, whose turn goes on.
+func planned(t *testing.T, h *harness) liveClaim {
+	t.Helper()
+	seedIssueAt(t, h, "LEGION-208", phase.Planning)
+	planner := newLiveClaim(t, h, "LEGION-208", claim.RolePlanner)
+	planner.owes(t, "the planning phase of LEGION-208")
+	completion(t, h.complete(completionOf(t, planner, "plan", "", 1)))
+	assertIssuePhase(t, h, phase.Implementing)
+	return planner
+}
+
+// turnOfItsOwn ends c's turn, which retires the task it held, and starts a turn no task of the
+// daemon's backs, as an Envoy message to c's session starts one.
+func turnOfItsOwn(t *testing.T, c liveClaim) {
+	t.Helper()
+	machine := machineOf(t, c)
+	ctx := context.Background()
+	if err := machine.Handle(ctx, supervise.StreamTurnEnd{Claim: c.token}); err != nil {
+		t.Fatalf("end the turn of %s: %v", c.token, err)
+	}
+	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: c.token}); err != nil {
+		t.Fatalf("start a turn of %s's own: %v", c.token, err)
+	}
+}
+
+// movesBack is c's own request_backward_move of its issue to to, as the legion tool sends it.
+func movesBack(t *testing.T, h *harness, c liveClaim, to phase.Phase) {
+	t.Helper()
+	recorder := h.request(http.MethodPost, "/legion/v1/phase/backward",
+		PhaseBackwardRequest{GrantID: c.grant(t), To: to, Reason: "the fix does not cover the empty list"}, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("the move back of %s to %s = %d: %s", c.token, to, recorder.Code, recorder.Body)
+	}
+}
+
+// reviewersOwnReview is reviewer's own review of #42 at headSHA asking for changes, submitted at
+// submitted through the review App, with the Legion footer the reviewer's template has it write:
+// its own session, the head it read and the entry of its round.
+func reviewersOwnReview(t *testing.T, h *harness, engine *workflow.Engine, reviewer liveClaim, submitted time.Time) {
+	t.Helper()
+	footer := fmt.Sprintf(`<!-- legion: {"session":%q,"phase":"review","head":%q,"entry":"%d"} -->`,
+		reviewer.session, headSHA, rowEntry(t, h, "LEGION-208", claim.RoleReviewer))
+	applyEntryFact(t, h, engine, "review-changes-requested", intake.PullRequestReview{Repo: "acme/widgets", Number: 42, ID: 1, SubmittedAt: submitted,
+		State: "changes_requested", CommitID: headSHA, HeadSHA: headSHA, Author: owedReviewApp, Body: "The empty list is not covered.\n\n" + footer})
+}
+
+// mergeForwardAsked has the workflow confirm that #42's head conflicts with main, as the daemon
+// confirms it (dispatch://INFRA-4374): a first CONFLICTING read, and a second one a minute later.
+// The base's rules are left unread, which is a reason the daemon acts on a confirmed conflict
+// (record.ConflictRulesUnread). The issue keeps its phase, in; the implementer is asked to merge
+// main forward, the worker of in is held where the hold reaches it, and the record holds the ask
+// of headSHA made in in, not landed.
+func mergeForwardAsked(t *testing.T, h *harness, engine *workflow.Engine, in phase.Phase) {
+	t.Helper()
+	first := time.Now()
+	for i, at := range []time.Time{first, first.Add(time.Minute)} {
+		applyEntryFact(t, h, engine, fmt.Sprintf("conflict-read-%d", i), intake.PullRequestMergeability{Repo: "acme/widgets", Number: 42, Base: "main",
+			HeadSHA: headSHA, Mergeable: record.MergeabilityConflicting, MergeState: record.MergeStateDirty, ReadAt: at})
+	}
+	assertIssuePhase(t, h, in)
+	if asked := recordedMergeForward(t, h); asked == nil || asked.Head != headSHA || asked.Phase != in || asked.Landed != "" {
+		t.Fatalf("the record's merge forward = %+v, want the ask of %s made in %s, not landed", asked, headSHA, in)
+	}
+	if !queuedMergeForward(t, h, claim.RoleImplementer, record.MergeForwardAsk) {
+		t.Fatal("the implementer was not asked to merge main forward")
+	}
+	worker := phase.RoleFor(in)
+	if held, want := queuedMergeForward(t, h, worker, record.MergeForwardHold), in != phase.Implementing && record.MergeForwardReaches(record.MergeForwardHold, worker); held != want {
+		t.Fatalf("the %s of %s was held = %t, want %t", worker, in, held, want)
+	}
+}
+
+// mergeForwardLands is GitHub's synchronize of #42 from headSHA to forwardSHA, the implementer's
+// merge of main forward landing, which the workflow records as the head that merge left
+// (record.MergeForward.Landed).
+func mergeForwardLands(t *testing.T, h *harness, engine *workflow.Engine) {
+	t.Helper()
+	applyEntryFact(t, h, engine, "merge-forward-landed", intake.PullRequestSynchronized{Repo: "acme/widgets", Number: 42,
+		Branch: "legion/LEGION-208", Base: "main", HeadSHA: forwardSHA, Before: headSHA, Sender: "legion-implementer[bot]"})
+	if asked := recordedMergeForward(t, h); asked == nil || asked.Head != headSHA || asked.Landed != forwardSHA {
+		t.Fatalf("the record's merge forward = %+v, want the ask of %s landed at %s", asked, headSHA, forwardSHA)
+	}
+}
+
+// recordedMergeForward is the merge forward the record holds for LEGION-208's pull request now,
+// nil while none stands.
+func recordedMergeForward(t *testing.T, h *harness) *record.MergeForward {
+	t.Helper()
+	_, _, pr := handoffRecord(t, h, "LEGION-208")
+	if pr == nil {
+		t.Fatal("the record holds no pull request for LEGION-208")
+	}
+	return pr.MergeForward
+}
+
+// queuedMergeForward says whether the outbox holds a merge-forward message of step to role on
+// LEGION-208.
+func queuedMergeForward(t *testing.T, h *harness, role claim.Role, step record.MergeForwardStep) bool {
+	t.Helper()
+	var queued int
+	if err := h.store.Pool().QueryRow(context.Background(), `select count(*) from outbox
+		where kind = $1 and issue = 'LEGION-208' and payload->>'role' = $2 and payload->>'step' = $3`,
+		string(record.OutboxKindMergeForward), string(role), string(step)).Scan(&queued); err != nil {
+		t.Fatalf("count the merge-forward messages of step %s to the %s: %v", step, role, err)
+	}
+	return queued > 0
 }
 
 // A claim of a role whose phase another role works, or whose issue stands where no role works,
@@ -255,8 +718,9 @@ func TestClaimOwedIsNoLookItsTesterHasNotTaken(t *testing.T) {
 // dispatch://INFRA-3276): it carries the sentence of what the last let-go ended and no run, no
 // entry and no look, so a claim holding it is answered by the record and by what it was left
 // serving, as a claim holding nothing is, whether or not a turn has confirmed that delivery. A
-// tester left serving a look of a done issue's open check owes that look, and a tester in its
-// own open phase owes the phase.
+// tester left serving a look of a done issue's open check owes that look. A tester in its own open
+// phase that was left serving no run serves none (claimServes), so it owes nothing: the completion
+// route refuses its completion HANDOFF_NO_RUN (dispatch://INFRA-2746 R1).
 func TestClaimOwedReadsTheRelaunchDeliveryAsNoWork(t *testing.T) {
 	opened := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
 	for _, confirmed := range []time.Time{{}, opened.Add(time.Hour)} {
@@ -272,8 +736,11 @@ func TestClaimOwedReadsTheRelaunchDeliveryAsNoWork(t *testing.T) {
 		}
 		working := supervise.Claim{Role: claim.RoleTester, Pending: relaunch}
 		inPhase := completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Testing, Generation: 1}}
-		if got, want := owedBy(working, inPhase, "", workflow.RoleFor), (OwedResponse{Owes: true, Work: "the testing phase of LEGION-208"}); got != want {
-			t.Errorf("a tester in its open phase holding %s (confirmed %v) owes %+v, want %+v", relaunch.ID, !confirmed.IsZero(), got, want)
+		if serving := working.ServingRun(); serving != 0 {
+			t.Fatalf("a tester holding %s (confirmed %v) serves run %d, want none: the case's own premise", relaunch.ID, !confirmed.IsZero(), serving)
+		}
+		if got := owedBy(working, inPhase, "", workflow.RoleFor); got != (OwedResponse{}) {
+			t.Errorf("a tester in its open phase holding %s (confirmed %v) and serving no run owes %+v, want nothing", relaunch.ID, !confirmed.IsZero(), got)
 		}
 	}
 }
@@ -307,9 +774,10 @@ func TestClaimOwedRefusesACallerThatCannotProveItsClaim(t *testing.T) {
 	})
 }
 
-// A daemon that cannot say which role works a phase answers 500, not "nothing owed": the reminder
-// reading a failure still nudges and says it could not read the record, where an empty answer
-// would silence it on a guess.
+// A daemon that cannot say which role works a phase answers 500, not "nothing owed": the answer
+// says only what the record says, and an empty answer would give a guess as the record's word.
+// The reminder reads the 500 as a read that failed, which reminds no one (dispatch://INFRA-2746
+// R7); the daemon's silence sweep sends a quiet worker that owes its phase its task again.
 func TestClaimOwedIsAFailureWhereTheDaemonCannotReadWhoWorksThePhase(t *testing.T) {
 	h := newHarness(t)
 	seedIssueAt(t, h, "LEGION-208", phase.Testing)
@@ -328,9 +796,11 @@ func (unreadableIssues) Issue(context.Context, pgx.Tx, string) (*record.Issue, e
 	return nil, errors.New("the database refused the read")
 }
 
-// A daemon that cannot read the claim's issue record answers a failure, not "nothing owed": the
-// reminder reads the failure as an answer that did not arrive and still nudges, where an empty
-// answer on every failed read would silence every reminder for as long as the store fails.
+// A daemon that cannot read the claim's issue record answers a failure, not "nothing owed": an
+// empty answer on every failed read would give the store's failure as the record's word that the
+// claim owes nothing. The reminder reads the failure as a read that failed, which reminds no one
+// (dispatch://INFRA-2746 R7), and the daemon's silence sweep sends a quiet worker that owes its
+// phase its task again.
 func TestClaimOwedIsAFailureWhereTheDaemonCannotReadTheIssueRecord(t *testing.T) {
 	h := newHarness(t)
 	seedIssueAt(t, h, "LEGION-208", phase.Testing)
@@ -345,12 +815,12 @@ func TestClaimOwedIsAFailureWhereTheDaemonCannotReadTheIssueRecord(t *testing.T)
 	}
 }
 
-// The answer as the route writes it, built through owedBy from a tester's claim on an issue in
-// testing that its tree root's architect owns, so the fixture the contracts mirror is held to is
-// the handler's own body.
+// The answer as the route writes it, built through owedBy from a tester's claim serving run 1 of
+// an issue in testing on run 1, which its tree root's architect owns, so the fixture the contracts
+// mirror is held to is the handler's own body.
 func TestClaimOwedResponseGolden(t *testing.T) {
 	position := completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Testing, Generation: 1}}
-	golden(t, "owed.json", owedBy(supervise.Claim{Role: claim.RoleTester}, position, "legion-legion-legion-208-architect", workflow.RoleFor))
+	golden(t, "owed.json", owedBy(supervise.Claim{Role: claim.RoleTester, ServingGeneration: 1}, position, "legion-legion-legion-208-architect", workflow.RoleFor))
 }
 
 // The answer names the architect that owns the claim now, the end of the owner walk the daemon's
@@ -362,6 +832,12 @@ func TestClaimOwedResponseGolden(t *testing.T) {
 func TestClaimOwedNamesTheArchitectThatOwnsTheClaim(t *testing.T) {
 	h, _, _ := newEntryHarness(t)
 	seedTree(t, h, "LEGION-208", "LEGION-209")
+	// A worker owes its phase only while its claim serves the issue's current run (claimServes),
+	// and every task it is handed carries that run, so the tree stands on a run of its own, as
+	// admission's first start of it leaves it.
+	for _, key := range []string{"LEGION-208", "LEGION-209"} {
+		setIssue(t, h, key, func(issue *record.Issue) { issue.Generation = 1 })
+	}
 	rootArchitect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	childArchitect := newLiveClaimIn(t, h, "LEGION-208", "LEGION-209", claim.RoleArchitect)
 	planner := newLiveClaimIn(t, h, "LEGION-208", "LEGION-209", claim.RolePlanner)

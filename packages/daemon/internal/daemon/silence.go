@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -18,7 +19,23 @@ import (
 // would reuse the id its last process spent and be skipped for good. The bound is not in it, so
 // shortening the bound mid-silence tells nobody twice.
 func workerSilentEventID(token claim.Token, generation uint64, lastStep time.Time) string {
-	return fmt.Sprintf("worker-silent:%s:%d:%s", token, generation, lastStep.UTC().Format(time.RFC3339Nano))
+	return silenceEventID("worker-silent", token, generation, lastStep)
+}
+
+// workerSilentWaitEventID is the identity of the wait notice of one silence: the fact the sweep
+// mints for a claim of an issue the daemon records as waiting on another issue once its last
+// step is past workflow.WaitSilenceBound (intake.WorkerSilent.Waiting). It is keyed as
+// workerSilentEventID is, under a prefix of its own, so one silence has two facts: the repair,
+// which its handler leaves unspent while the mark stands and which writes the start row once the
+// mark clears, and this one, which writes the one notice of that silence and is spent.
+func workerSilentWaitEventID(token claim.Token, generation uint64, lastStep time.Time) string {
+	return silenceEventID("worker-silent-wait", token, generation, lastStep)
+}
+
+// silenceEventID is the one spelling of a silence's identity under prefix: the claim token, the
+// claim's launch and the moment of its last step, as workerSilentEventID gives the reasons for.
+func silenceEventID(prefix string, token claim.Token, generation uint64, lastStep time.Time) string {
+	return fmt.Sprintf("%s:%s:%d:%s", prefix, token, generation, lastStep.UTC().Format(time.RFC3339Nano))
 }
 
 // workerBackgroundEventID is the identity of one standing report of background work: the claim
@@ -50,6 +67,16 @@ func workerBackgroundEventID(token claim.Token, generation uint64, reported time
 // carries what the sweep read, the moment and the bound, so the handler judges against the bound
 // the sweep used rather than one an operator changed since.
 //
+// A claim of an issue the daemon records as waiting on another issue
+// (record.Issue.ReleasedForWaitAt) gets no repair fact, whose handler would leave it unspent
+// while that record stands, and gets the wait notice fact once its last step is past
+// workflow.WaitSilenceBound (silenceFact). The mark is read once a pass, for the distinct issues
+// of the claims past the bound whose report explains none of their quiet, and not at all for a
+// pass with no such claim (store.Store.IssuesReleasedForWait), so such a worker costs no fact
+// transaction a minute while it waits.
+//
+// Each claim's facts are minted in claim order, its silence fact before its background fact.
+//
 // A claim of no issue (the controller's) is skipped, since its fact would name no record. The
 // fact's run is the claim's ServingRun, the issue generation its task came from, and not its
 // Generation, which counts launches and goes into the id instead.
@@ -59,8 +86,19 @@ func (s *supervision) tellSilentPhaseWorkers(ctx context.Context, claims []super
 	}
 	bound := s.cfg.WorkerSilence
 	now := s.plan.clock.Now()
-	var facts []sweptFact
-	for _, c := range claims {
+	// judgedClaim is a claim past the bound, by its index in claims, and whether it is silent:
+	// whether its session's report explains none of its quiet. The handler refuses a claim whose
+	// report explains its quiet, so no silence fact is minted for one.
+	type judgedClaim struct {
+		index  int
+		silent bool
+	}
+	// judged is every claim past the bound, in claim order; silentIssues is the issue of each
+	// silent one, which the wait mark is read for.
+	var judged []judgedClaim
+	var silentIssues []string
+	for i := range claims {
+		c := &claims[i]
 		if c.Issue == "" || c.Role == "" || c.Role == claim.RoleArchitect {
 			continue
 		}
@@ -70,17 +108,23 @@ func (s *supervision) tellSilentPhaseWorkers(ctx context.Context, claims []super
 		if c.UpdateRound != "" {
 			continue
 		}
-		last := c.Step.LastStep()
-		if !workflow.PastBound(last, bound, now) {
+		if !workflow.PastBound(c.Step.LastStep(), bound, now) {
 			continue
 		}
-		// The handler refuses a claim whose report explains its quiet, so none is minted for it.
-		if !workflow.ReportExplainsQuiet(c.ActivityBackground, c.ActivityNextReminderAt, now) {
-			facts = append(facts, sweptFact{
-				ID: workerSilentEventID(c.Token, c.Generation, last),
-				Fact: intake.WorkerSilent{Issue: c.Issue, Role: c.Role, Generation: c.ServingRun(),
-					LastStep: last, Bound: bound},
-			})
+		silent := !workflow.ReportExplainsQuiet(c.ActivityBackground, c.ActivityNextReminderAt, now)
+		judged = append(judged, judgedClaim{index: i, silent: silent})
+		if silent {
+			silentIssues = append(silentIssues, c.Issue)
+		}
+	}
+	waiting := s.issuesReleasedForWait(ctx, silentIssues)
+	var facts []sweptFact
+	for _, j := range judged {
+		c := &claims[j.index]
+		if j.silent {
+			if fact, told := silenceFact(c, bound, now, waiting[c.Issue]); told {
+				facts = append(facts, fact)
+			}
 		}
 		if fact, told := backgroundStalledFact(c, s.cfg.WorkerBackground, now); told {
 			facts = append(facts, fact)
@@ -93,10 +137,48 @@ func (s *supervision) tellSilentPhaseWorkers(ctx context.Context, claims []super
 	_ = s.applySweepFacts(ctx, facts)
 }
 
+// silenceFact is the fact for a claim past bound whose session's report explains none of its
+// quiet. For a claim of an issue the daemon records as waiting on another issue (waits) it is the
+// wait notice (intake.WorkerSilent.Waiting, workerSilentWaitEventID), and only once the last step
+// is past workflow.WaitSilenceBound; inside that bound it is none. For every other claim it is
+// the repair (workerSilentEventID).
+func silenceFact(c *supervise.Claim, bound time.Duration, now time.Time, waits bool) (sweptFact, bool) {
+	last := c.Step.LastStep()
+	fact := intake.WorkerSilent{Issue: c.Issue, Role: c.Role, Generation: c.ServingRun(), LastStep: last, Bound: bound}
+	if !waits {
+		return sweptFact{ID: workerSilentEventID(c.Token, c.Generation, last), Fact: fact}, true
+	}
+	if !workflow.PastBound(last, workflow.WaitSilenceBound, now) {
+		return sweptFact{}, false
+	}
+	fact.Waiting = true
+	return sweptFact{ID: workerSilentWaitEventID(c.Token, c.Generation, last), Fact: fact}, true
+}
+
+// issuesReleasedForWait is the set of those of issues the daemon records as waiting on another
+// issue, which the silence sweep reads once a pass (tellSilentPhaseWorkers); it passes each issue
+// once, and no issues make no read. A failed read is logged and read as no such issue: the
+// handlers decide from the mark itself, inside each fact's own transaction (workflow's
+// workerSilent), so a repair fact minted for such a worker writes nothing, and the next sweep
+// reads the set again.
+func (s *supervision) issuesReleasedForWait(ctx context.Context, issues []string) map[string]bool {
+	if len(issues) == 0 {
+		return nil
+	}
+	slices.Sort(issues)
+	waiting, err := s.supervisor.store.IssuesReleasedForWait(ctx, slices.Compact(issues))
+	if err != nil {
+		s.log.Warn("silence sweep: could not read the issues waiting on another issue; every quiet worker is judged by the configured bound this pass",
+			"error", err)
+		return nil
+	}
+	return waiting
+}
+
 // backgroundStalledFact is the fact for a claim whose session reports background work of its own
 // running with that report past bound (config.Config.WorkerBackground), and false for any other.
 // It tells and never prompts, since nothing the daemon reads tells a long job from a hung one.
-func backgroundStalledFact(c supervise.Claim, bound time.Duration, now time.Time) (sweptFact, bool) {
+func backgroundStalledFact(c *supervise.Claim, bound time.Duration, now time.Time) (sweptFact, bool) {
 	reported := c.ActivityAt
 	if !c.ActivityBackground || !workflow.PastBound(reported, bound, now) {
 		return sweptFact{}, false

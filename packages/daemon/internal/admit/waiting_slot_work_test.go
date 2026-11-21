@@ -3,6 +3,7 @@ package admit
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -318,4 +319,150 @@ func TestReturningASlotStopsNothing(t *testing.T) {
 			t.Errorf("%s stands in %s, want implementing: a park takes the row and the mark, and moves nothing of the work", waiter, got)
 		}
 	})
+}
+
+// workerSilentNotices is every `worker-silent` notice the outbox holds for issue, oldest first:
+// the architect's notice of a silent phase worker (workflow's workerSilent).
+func workerSilentNotices(t *testing.T, pool *pgxpool.Pool, issue string) []record.Notice {
+	t.Helper()
+	var told []record.Notice
+	for _, row := range effects(t, pool) {
+		if notice, ok := row.payload.(record.Notice); ok && row.issue == issue && notice.Kind == "worker-silent" {
+			told = append(told, notice)
+		}
+	}
+	return told
+}
+
+// finishControllerNotices deletes every controller notice the outbox holds, as the lane that
+// publishes one does once it is sent: a tick queues no wake while one of its kind waits unsent
+// (Admission.wakeController), so a test that reads the next tick's list sends the last one first.
+func finishControllerNotices(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `delete from outbox where kind = $1`,
+		string(record.OutboxKindControllerNotice)); err != nil {
+		t.Fatalf("finish the controller notices: %v", err)
+	}
+}
+
+// R9 of dispatch://INFRA-2746, the tick's half. A started issue blocked by a Dispatch link gives
+// its slot back for the wait, and its quiet phase worker is judged against
+// workflow.WaitSilenceBound in place of `worker_silence_minutes` (workflow.SilenceBound), as the
+// silence handler judges it: the tick's silent list leaves it out while its quiet is under a day
+// and names it past the day. The control is a worker of an issue that waits on nothing, quiet as
+// long, which the list names at the configured bound in both ticks.
+func TestSilentPhaseWorkerOfAnIssueWaitingOnAnotherIsOutOfTheTickListUnderADay(t *testing.T) {
+	const (
+		waiter  = "LEGION-60"
+		control = "LEGION-61"
+		blocker = "LEGION-96"
+	)
+	pool := migratedPool(t)
+	admission := quiet(t, 2)
+	admission.UseWorkerSilence(silenceBound, backgroundBound)
+	seedStarted(t, pool, waiter, phase.Implementing, nil)
+	seedMirror(t, pool, waiter, "in_progress", blocker)
+	seedStarted(t, pool, control, phase.Implementing, nil)
+	seedMirror(t, pool, control, "in_progress")
+	seedMirror(t, pool, blocker, "in_progress")
+	waiting := putWorkerClaim(t, pool, waiter, waiter, claim.RoleImplementer, 1, supervise.StateReady, "")
+	working := putWorkerClaim(t, pool, control, control, claim.RoleImplementer, 1, supervise.StateReady, "")
+	quietUnderADay := fixedNow.Add(-2 * time.Hour)
+	steppedAt(t, pool, waiting, quietUnderADay)
+	steppedAt(t, pool, working, quietUnderADay)
+
+	// The pass that finds the wait takes the slot back. No controller is registered yet, so the
+	// slot it frees queues no wake beside the ticks this test reads.
+	tick(t, pool, admission, "the-wait-begins")
+	if holdsSlot(t, pool, waiter) || issue(t, pool, waiter).ReleasedForWaitAt == nil {
+		t.Fatalf("%s = %+v holding a slot %t, want it released for its wait on %s: the premise of this case", waiter,
+			issue(t, pool, waiter), holdsSlot(t, pool, waiter), blocker)
+	}
+	registerController(t, pool)
+
+	tick(t, pool, admission, "tick-under-a-day")
+
+	silent := tickNotice(t, pool).Silent
+	if len(silent) != 1 || silent[0].Issue != control || silent[0].Role != claim.RoleImplementer {
+		t.Fatalf("the tick names %#v as silent, want %s's implementer alone: %s's implementer has been quiet %s, past the %s bound and under the %s its waiting issue is judged by",
+			silent, control, waiter, fixedNow.Sub(quietUnderADay), silenceBound, workflow.WaitSilenceBound)
+	}
+
+	quietPastADay := fixedNow.Add(-workflow.WaitSilenceBound - time.Hour)
+	steppedAt(t, pool, waiting, quietPastADay)
+	finishControllerNotices(t, pool)
+
+	tick(t, pool, admission, "tick-past-a-day")
+
+	silent = tickNotice(t, pool).Silent
+	if len(silent) != 2 || silent[0].Issue != waiter || silent[1].Issue != control {
+		t.Fatalf("the tick names %#v as silent, want %s's implementer and %s's: %s's implementer has been quiet %s, past the %s its waiting issue is judged by",
+			silent, waiter, control, waiter, fixedNow.Sub(quietPastADay), workflow.WaitSilenceBound)
+	}
+	if !silent[0].LastStep.Equal(quietPastADay) {
+		t.Errorf("the tick says %s's implementer last stepped at %s, want the %s its claim records", waiter, silent[0].LastStep, quietPastADay)
+	}
+}
+
+// R9 of dispatch://INFRA-2746, the end of the wait. A started issue blocked by a Dispatch link
+// gives its slot back, and the silence fact of its quiet worker writes nothing while it waits,
+// leaving the fact unspent. The blocker's event to done is the admission pass that gives the
+// issue its slot back and clears the mark, and the first application of the same fact after it
+// writes the start row and the architect's notice.
+func TestSilentPhaseWorkerOfAnIssueWaitingOnAnotherIsSentItsTaskOnceItsBlockerIsDone(t *testing.T) {
+	const (
+		waiter  = "LEGION-70"
+		blocker = "LEGION-97"
+	)
+	pool := migratedPool(t)
+	admission := quiet(t, 2)
+	engine := admission.engine
+	seedStarted(t, pool, waiter, phase.Implementing, nil)
+	seedMirror(t, pool, waiter, "in_progress", blocker)
+	seedMirror(t, pool, blocker, "in_progress")
+	token := putWorkerClaim(t, pool, waiter, waiter, claim.RoleImplementer, 1, supervise.StateReady, "")
+	lastStep := fixedNow.Add(-2 * time.Hour)
+	steppedAt(t, pool, token, lastStep)
+
+	tick(t, pool, admission, "the-wait-begins")
+	if holdsSlot(t, pool, waiter) || issue(t, pool, waiter).ReleasedForWaitAt == nil {
+		t.Fatalf("%s = %+v holding a slot %t, want it released for its wait on %s: the premise of this case", waiter,
+			issue(t, pool, waiter), holdsSlot(t, pool, waiter), blocker)
+	}
+
+	silence := intake.WorkerSilent{Issue: waiter, Role: claim.RoleImplementer, Generation: 1, LastStep: lastStep, Bound: silenceBound}
+	const silenceID = "worker-silent-" + waiter
+	applyMovement(t, pool, admission, engine, "supervise", silenceID, silence)
+
+	if got := startsOf(t, pool, waiter); len(got) != 0 {
+		t.Fatalf("the starts of %s while it waits = %+v, want none: the start would wait for the slot the issue gave back and hold its pod meanwhile", waiter, got)
+	}
+	if told := workerSilentNotices(t, pool, waiter); len(told) != 0 {
+		t.Fatalf("the worker-silent notices of %s while it waits = %+v, want none under a day", waiter, told)
+	}
+	applied, err := intake.Applied(context.Background(), pool, "supervise", []string{silenceID})
+	if err != nil {
+		t.Fatalf("read which facts are applied: %v", err)
+	}
+	if applied[silenceID] {
+		t.Fatalf("the silence fact is spent while %s waits, want it unspent: spent, no later sweep applies it, and the worker is never sent its task", waiter)
+	}
+
+	dispatchEvent(t, pool, admission, "the-wait-ends", blocker, "done")
+
+	if !holdsSlot(t, pool, waiter) || issue(t, pool, waiter).ReleasedForWaitAt != nil {
+		t.Fatalf("%s = %+v holding a slot %t, want it holding the slot it gave back with no mark: the premise of the rest of this case", waiter,
+			issue(t, pool, waiter), holdsSlot(t, pool, waiter))
+	}
+
+	applyMovement(t, pool, admission, engine, "supervise", silenceID, silence)
+
+	got := startsOf(t, pool, waiter)
+	if want := workflow.ResumePhaseTask(issue(t, pool, waiter)); len(got) != 1 || got[0].role != claim.RoleImplementer || got[0].task != want {
+		t.Fatalf("the starts of %s once its wait ended = %+v, want the implementer's one start carrying %q: the first silence fact after the slot sends the task",
+			waiter, got, want)
+	}
+	if told := workerSilentNotices(t, pool, waiter); len(told) != 1 || told[0].Role != claim.RoleImplementer {
+		t.Fatalf("the worker-silent notices of %s once its wait ended = %+v, want the implementer's one", waiter, told)
+	}
 }

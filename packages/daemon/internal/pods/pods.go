@@ -34,9 +34,11 @@ const (
 )
 
 // IdleClaim is one claim of an issue's pod as the idle rule reads it. Every field comes from the
-// claims table and none from a live machine: the activity columns are written by the session's
-// activity route alone and are deliberately absent from the claim insert's conflict update, so a
-// machine's in-memory claim shows their zero values until the claim is read again.
+// store and none from a live machine: the claims table, but for the four of its role's record
+// (RowEntry, RowCompleted, MergeForwardHeld, MergedInMerging). The activity columns are written
+// by the session's activity route alone and are deliberately absent from the claim insert's
+// conflict update, so a machine's in-memory claim shows their zero values until the claim is
+// read again.
 type IdleClaim struct {
 	Role           claim.Role
 	State          supervise.ClaimState
@@ -58,6 +60,27 @@ type IdleClaim struct {
 	// ServingGeneration is the run the claim is serving, which tells a phase worker of the
 	// issue's current run from one left over by an older one.
 	ServingGeneration uint64
+	// ServingEntry is the phase entry the claim serves, by supervise.Claim.ServingEntry's rule,
+	// which the store applies to the claim it reads (store's readIdleView): 0 for a claim that has
+	// taken no task carrying an entry.
+	ServingEntry int64
+	// RowEntry and RowCompleted are the claim's role's phases row: the entry it stands on and
+	// whether it records the role's completion (record.PhaseRow.Entry, record.PhaseRow.Completed),
+	// 0 and false where the role has no row.
+	RowEntry     int64
+	RowCompleted bool
+	// MergeForwardHeld is whether a merge forward of the issue's pull request holds the claim's
+	// role at the phase the issue stands in (record.MergeForwardHolds).
+	MergeForwardHeld bool
+	// MergedInMerging is whether the issue stands in merging with its pull request merged
+	// (record.MergedInMerging), which finishes merging. It is the issue's and the same on every
+	// claim of the pod.
+	//
+	// It, MergeForwardHeld, RowEntry and RowCompleted are the record's, read in the view's own
+	// transaction (record.FillIdleClaims). With ServingGeneration and ServingEntry they are what the
+	// reminder hold asks of a claim that works the open phase: whether it owes that phase
+	// (record.PhaseOwed, workflow's IdleRelease).
+	MergedInMerging bool
 	// LastStartRow is the newest start row the outbox ran against the claim. The release records
 	// the highest of the pod's as its mark's started_row, which is what tells a start queued
 	// before the boundary and already run from one of the release's own rows.

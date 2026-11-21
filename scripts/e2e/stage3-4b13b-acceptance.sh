@@ -450,9 +450,9 @@ claim_is() { claim_json "$1" | jq -e "$2" >/dev/null; }
 token_session() { claim_json "$1" | jq -er '.session // empty | select(. != "")'; }
 
 # A sentence of the reminder the phase stall sends (owedReminder in
-# packages/pi-shared/src/phase-stall.ts), which also ends the reminder given when the daemon's
-# answer could not be read (UNREAD_REMINDER). It comes at the end of every turn for as long as the
-# daemon answers that the claim owes work; this check reads the first of them.
+# packages/pi-shared/src/phase-stall.ts), the only reminder it sends: a check that cannot read the
+# daemon's answer reminds no one. It comes at the end of every turn for as long as the daemon
+# answers that the claim owes work; this check reads the first of them.
 followup_needle="This reminder repeats at the end of every turn"
 
 # tool_outcomes FILE: every tool result in an OMP session file, joined to the call that produced it.

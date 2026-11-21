@@ -37,7 +37,8 @@ var pauseOperator = store.PauseActor{Kind: store.PauseByOperator}
 // recorded in implementing, a claim of each role the test names live on it, and the daemon's half
 // of the pause over that store (projectPause) with an hour's backstop, on the wall clock, writing
 // a JSON log the tests read. Its pause service has no Effects: these tests make the stops the
-// machines would make by hand.
+// machines would make by hand. The release rows of the idle backstop
+// (idle_release_backstop_test.go) use its store and records with no pause.
 type pauseRig struct {
 	t      *testing.T
 	ctx    context.Context
@@ -1014,5 +1015,195 @@ func TestASuspendRowDropsOnlyTheBackstopOfTheRoleItStops(t *testing.T) {
 	}
 	if got := armed(); len(got) != 0 {
 		t.Fatalf("backstops armed after the issue's close = %v, want none", got)
+	}
+}
+
+// dispatch://INFRA-2746 R1 at a project's pause (check c-idle-keeps-nothing-for-a-claim-that-owes-nothing):
+// both writers of the backstop a pause's stop of an open phase's worker arms read the rule a
+// release's backstop reads (getsBackstop, record.PhaseOwed). The stop transaction
+// (projectPause.stopTx), and a cancel of the pod's release made while the project is paused,
+// which records the released role stopped by the pause in the store (outbox.cancelRelease,
+// store.ReleaseCancelPause.GetsBackstop), each arm no backstop for LEGION-208's implementer when
+// its completion of the entry its phases row stands on is recorded while the issue stays in
+// implementing, and none when it is behind that entry and holds no task of the issue's run and
+// phase, since the daemon sends it its entry's task itself: in neither case does it owe the phase
+// anything a wake could bring back. The behind rows read the entry the claim serves from the
+// whole claim (supervise.Claim.ServingEntry, store.ClaimTx).
+//
+// The second control of the check is the one claim that owes nothing and still gets the
+// backstop (holdsUndeliveredEntryTask): the implementer took entry 1, was handed the task of
+// entry 2, which its row stands on, and the send of that task failed before any turn, so the
+// claim holds it unconfirmed and serves entry 1. Its delivery waits for the claim to come back,
+// and admission's owed-entry repair passes over a claim that holds a task of the issue's run and
+// phase it still works (supervise.Delivery.StillWorked), so both writers arm its backstop. The
+// third control is a relaunch that kept the task it held (keepsStartTask): the implementer took
+// entry 1 and holds the task of entry 2 unconfirmed, while its row stands on entry 3. The repair
+// passes over it all the same, so both writers arm its backstop: the exception reads a task of
+// the issue's run and phase of the row's entry, of an earlier one or of no entry. The same claim
+// with its completion of the row's entry recorded gets none from either writer, since the
+// exception's other terms are read at the row's entry. The fourth control is a ready worker's
+// resume task (workflow.ResumePhaseTask), a task of no entry: the implementer took entry 1, its
+// row stands on entry 3, and it holds a task of entry 0 of the issue's run and phase unconfirmed.
+// The repair passes over it as well, so both writers arm its backstop. The third and fourth
+// controls fail if the exception reads only a task of the row's entry (p.Entry == f.RowEntry).
+// The stop transaction's row stops it owing no launch, as every row here does; the machine's own
+// stop of a claim holding such a task owes it a launch as well (supervise's holdsTask), which the
+// row leaves out so that the stop reads the backstop's rule. The control, the same stop of an
+// implementer that serves its row's entry and owes it, arms the backstop as it always has. The
+// stop is recorded in every case, so a case that arms none is a stop that read the rule and not
+// one that never ran.
+func TestIdleOfAClaimThatOwesNothingArmsNoBackstopWhenAPauseStopsIt(t *testing.T) {
+	for _, writer := range []struct {
+		name string
+		// released is whether the implementer's pod was released before the pause, so that
+		// stop is the cancel of that release: the claim suspended as `released` under the
+		// release's mark.
+		released bool
+		stop     func(r *pauseRig, held store.Pause, implementer supervise.Claim)
+	}{
+		{name: "the stop transaction", stop: func(r *pauseRig, held store.Pause, implementer supervise.Claim) {
+			r.mustStop(implementer, supervise.PauseStop{Pause: held.ID})
+		}},
+		{name: "a cancel of its release while paused", released: true, stop: func(r *pauseRig, _ store.Pause, _ supervise.Claim) {
+			r.cancelRelease()
+		}},
+	} {
+		for _, c := range []struct {
+			name string
+			// served is the entry the implementer last served, and rowEntry and completed its
+			// phases row: the entry the row stands on and whether it records the completion.
+			// task is the entry of the task the implementer was handed and holds unconfirmed,
+			// its send failed before any turn (undeliveredTask), and 0 for none.
+			served, rowEntry, task int64
+			completed              bool
+			// noEntryTask is whether the implementer holds, unconfirmed in the same way, a task
+			// of no entry (entry 0) of the issue's run and phase in place of a task of an entry:
+			// a ready worker's resume task (workflow.ResumePhaseTask), which gives the claim no
+			// entry.
+			noEntryTask bool
+			// backstop is whether the stop arms the implementer's backstop, and why says why.
+			backstop bool
+			why      string
+		}{
+			{name: "its role's completion is recorded", served: 1, rowEntry: 1, completed: true,
+				why: "its completion stands, so it owes nothing a wake could bring back"},
+			{name: "it is behind its entry and holds no task of it", served: 1, rowEntry: 2,
+				why: "it owes nothing a wake could bring back, and the daemon sends it its entry's task itself"},
+			{name: "the second control: it took entry 1 and holds the task of entry 2, whose send failed before any turn",
+				served: 1, rowEntry: 2, task: 2, backstop: true,
+				why: "its delivery waits for it to come back, and the backstop is the one wake that brings its pod back"},
+			{name: "the third control: it took entry 1, its row stands on entry 3, and it holds the task of entry 2, which a relaunch kept",
+				served: 1, rowEntry: 3, task: 2, backstop: true,
+				why: "admission's owed-entry repair passes over a claim that holds a task it still works, so the backstop is the one wake that brings its pod back"},
+			{name: "the fourth control: it took entry 1, its row stands on entry 3, and it holds a task of no entry of the issue's run and phase, a ready worker's resume task",
+				served: 1, rowEntry: 3, noEntryTask: true, backstop: true,
+				why: "admission's owed-entry repair passes over a claim that holds a task it still works, of whatever entry, so the backstop is the one wake that brings its pod back"},
+			{name: "it holds the task of an earlier entry and its completion of its row's entry is recorded",
+				served: 1, rowEntry: 3, task: 2, completed: true,
+				why: "its completion of its row's entry stands, so it owes nothing a wake could bring back"},
+			{name: "the control: its role owes its phase", served: 1, rowEntry: 1, backstop: true, why: "it owes its phase"},
+		} {
+			t.Run(writer.name+"/"+c.name, func(t *testing.T) {
+				r := newPauseRig(t, claim.RoleImplementer)
+				implementer := r.claim(claim.RoleImplementer, supervise.StateSuspended)
+				implementer.ServedEntry = c.served
+				switch {
+				case c.task != 0:
+					implementer.GivenEntry, implementer.Pending = c.task, undeliveredTask(phase.Implementing, c.task)
+				case c.noEntryTask:
+					implementer.Pending = undeliveredTask(phase.Implementing, 0)
+				}
+				r.putPhaseRow(claim.RoleImplementer, c.rowEntry, c.completed)
+				if writer.released {
+					r.markReleased(implementer)
+				}
+				held := r.pauseLegion()
+				writer.stop(r, held, implementer)
+
+				if got := r.stops(held.ID, claim.RoleImplementer); len(got) != 1 || got[0] != (pauseStopRecord{end: store.PauseStopStopped}) {
+					t.Fatalf("the implementer's stops = %+v, want one stopped and owed no launch", got)
+				}
+				armed := r.count(`select count(*) from pod_wake_backstops where issue = $1 and role = 'implementer' and not fired`, pauseIssue)
+				want := 0
+				if c.backstop {
+					want = 1
+				}
+				if armed != want {
+					t.Errorf("the pause's stop of %s's implementer armed %d open backstops, want %d: %s", pauseIssue, armed, want, c.why)
+				}
+			})
+		}
+	}
+}
+
+// putPhaseRow writes role's phases row of LEGION-208 standing on entry, with its completion of
+// that entry recorded where completed is set (the handoff record a completion names, as the
+// workflow records it), and leaves the issue in its phase.
+func (r *pauseRig) putPhaseRow(role claim.Role, entry int64, completed bool) {
+	r.t.Helper()
+	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+		rows, err := r.pauses.records.Phases(r.ctx, tx, pauseIssue)
+		if err != nil {
+			return err
+		}
+		row := record.PhaseRowOf(rows, role)
+		row.Issue, row.Role, row.Claim, row.Entry = pauseIssue, role, mustClaimToken(r.t, pauseIssue, role), entry
+		if completed {
+			row.HandoffRecord, row.HandoffVersion = "implementer-completion", 1
+		}
+		return r.pauses.records.PutPhase(r.ctx, tx, row)
+	}); err != nil {
+		r.t.Fatalf("write the phases row of %s's %s: %v", pauseIssue, role, err)
+	}
+}
+
+// markReleased leaves c, a suspended claim of LEGION-208, as an idle release that has not
+// finished leaves it: suspended as `released`, with the task it holds where it holds one, and
+// named among the claims the issue's release mark suspended, the set a cancel of that release
+// stops for a pause (store.CancelIssueRelease).
+func (r *pauseRig) markReleased(c supervise.Claim) {
+	r.t.Helper()
+	r.putClaim(c)
+	if _, err := r.pool.Exec(r.ctx, `insert into issue_releases
+		(project, issue, generation, first_row, boundary_row, last_row, started_row, role, suspended, marked_at)
+		values ('legion', $1, 1, 18, 20, 22, 0, $2, $3, now())`, pauseIssue, string(c.Role), []string{string(c.Role)}); err != nil {
+		r.t.Fatalf("mark the release of %s: %v", pauseIssue, err)
+	}
+}
+
+// putClaim writes c with the pending delivery it holds, where it holds one, in one transaction,
+// as the machine writes a claim that holds a task (store.PutClaimAndDelivery).
+func (r *pauseRig) putClaim(c supervise.Claim) {
+	r.t.Helper()
+	var err error
+	if c.Pending != nil {
+		err = r.st.PutClaimAndDelivery(r.ctx, c, *c.Pending)
+	} else {
+		err = r.st.PutClaim(r.ctx, c)
+	}
+	if err != nil {
+		r.t.Fatalf("write the %s's claim: %v", c.Role, err)
+	}
+}
+
+// undeliveredTask is a task of LEGION-208's phase at, at entry and generation 1, as a send that
+// failed before any turn leaves it on its claim: queued and prompted, and neither read nor
+// confirmed, with the failed send recorded (supervise's refused in table.go). The delivery waits
+// for the claim to come back (supervise.Delivery.SendFailures).
+func undeliveredTask(at phase.Phase, entry int64) *supervise.Delivery {
+	queued := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	return &supervise.Delivery{ID: "outbox:42", Task: "the phase's next step", Generation: 1, Entry: entry, Phase: at,
+		QueuedAt: queued, Prompted: true, SendFailures: 1, LastSendFailureAt: queued.Add(time.Minute),
+		LastSendError: "the connection to the agent closed before the prompt was read"}
+}
+
+// cancelRelease cancels LEGION-208's release through the outbox's own cancel, with the rig's
+// backstop, as a release whose save failed does.
+func (r *pauseRig) cancelRelease() {
+	r.t.Helper()
+	runner := &outbox{pool: r.pool, records: r.pauses.records, trees: r.st, project: "legion", backstop: r.pauses.backstop,
+		now: time.Now, log: quietLogger()}
+	if err := runner.cancelRelease(r.ctx, pauseIssue, pauseIssue, workflow.IdleHoldBundleSave, "the save of the release failed"); err != nil {
+		r.t.Fatalf("cancel the release of %s while LEGION is paused: %v", pauseIssue, err)
 	}
 }

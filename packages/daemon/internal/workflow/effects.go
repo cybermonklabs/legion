@@ -19,21 +19,23 @@ import (
 
 // PhaseFinished says whether issue's phase is over by its own terminating fact rather than by its
 // worker's completion, so no worker of it is started or resumed for it. Merging's fact is the pull
-// request being merged: the merger merges, the daemon merges nothing, and a merged root then
-// stands in merging until the rest of its tree leaves the workflow (closeMerged), which can be
-// days. Accepting's is the architect's sign-off, which moves the issue on in the transaction that
-// records it, so an issue standing in accepting is always still waiting for it; every other
-// phase ends with its worker's completion, which moves the issue too. A recorded completion
-// answers nothing here: the merger's is recorded and moves no issue.
+// request being merged, which it reads by the one statement of that rule (record.MergedInMerging,
+// where a pull request the record does not hold is not merged): the merger merges, the daemon
+// merges nothing, and a merged root then stands in merging until the rest of its tree leaves the
+// workflow (closeMerged), which can be days. Accepting's is the architect's sign-off, which moves
+// the issue on in the transaction that records it, so an issue standing in accepting is always
+// still waiting for it; every other phase ends with its worker's completion, which moves the
+// issue too. A recorded completion answers nothing here: the merger's is recorded and moves no
+// issue.
 func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (bool, error) {
 	if issue.Phase != phase.Merging {
 		return false, nil
 	}
 	pr, err := store.PullRequest(ctx, tx, issue.Key)
-	if err != nil || pr == nil {
+	if err != nil {
 		return false, err
 	}
-	return pr.State == record.PullRequestMerged, nil
+	return record.MergedInMerging(pr, issue.Phase), nil
 }
 
 // RoleFor is phase.RoleFor, which is where the role that works a phase is decided
@@ -77,16 +79,53 @@ func PastBound(at time.Time, bound time.Duration, now time.Time) bool {
 // only onto the launch whose secret authenticated it (store's PutClaimActivity), so the report
 // read is the running process's. A reminder already due explains nothing: it is the timer a
 // silence repair backs up.
+//
+// An issue the daemon records as waiting on another issue explains no quiet here. That record
+// changes the bound the quiet is judged against (SilenceBound, WaitSilenceBound), and it is read
+// from the issue, not from the claim's report.
 func ReportExplainsQuiet(background bool, nextReminder time.Time, now time.Time) bool {
 	return background || nextReminder.After(now)
 }
 
+// WaitSilenceBound is how long a phase worker may be quiet before the daemon calls it silent
+// while its issue is one the daemon records as waiting on another issue: the issue gave its
+// admission slot back for a Dispatch blocker that is not done, or for an open child its own first
+// phase waits for (record.Issue.ReleasedForWaitAt, admit's releaseSlotsForWaits). It is used in
+// place of `worker_silence_minutes` by the silence rule (SilentPhaseWorker) and in place of
+// `backstop_minutes` by the idle backstop (podBackstopDue, internal/daemon's fireDueBackstops).
+//
+// It is 24 hours because that is the longest wait dispatch://INFRA-2040 lets a worker declare,
+// so a quiet by the worker's own word and a quiet by the daemon's record both leave a worker
+// unseen for at most one day (dispatch://INFRA-2746 R9). It is a bound and not a full quiet: the
+// mark does not say the worker has nothing to do, so a worker that stopped with work undone is
+// still named to its architect within a day.
+const WaitSilenceBound = 24 * time.Hour
+
+// SilenceBound is the bound a phase worker of issue is judged silent against: WaitSilenceBound
+// while the daemon records issue as waiting on another issue (record.Issue.ReleasedForWaitAt,
+// which Store.ReleaseSlotForWait sets and ClearReleasedForWait clears when admission gives the
+// issue a slot again), and configured, the deployment's `worker_silence_minutes`, otherwise. The
+// mark is read from the record at each pass, so the end of a wait needs no event of its own: the
+// first pass after the issue holds a slot again reads configured.
+func SilenceBound(issue record.Issue, configured time.Duration) time.Duration {
+	if issue.ReleasedForWaitAt != nil {
+		return WaitSilenceBound
+	}
+	return configured
+}
+
 // SilentPhaseWorker is whether role's claim in run is a phase worker nothing will prompt: a claim
 // unpromptedPhaseWorker holds, whose session's report does not explain its quiet
-// (ReportExplainsQuiet), and whose agent's last recorded step is past bound (PastBound). A live
-// claim holding no task is owed nothing by the daemon, and the timer that carries a worker
-// through its phase runs in its own process (packages/pi-shared/src/phase-reminder.ts), so it
-// dies with that process.
+// (ReportExplainsQuiet), and whose agent's last recorded step is past the bound issue's worker is
+// judged against (PastBound, SilenceBound): bound, the deployment's `worker_silence_minutes`, or
+// WaitSilenceBound while the daemon records issue as waiting on another issue. A live claim
+// holding no task is owed nothing by the daemon, and the timer that carries a worker through its
+// phase runs in its own process (packages/pi-shared/src/phase-reminder.ts), so it dies with that
+// process.
+//
+// The silence handler (workerSilent), admission's tick list (admit's silentWorkers) and its
+// stalled-tree measure (admit's workingTrees) all read this one rule, so a worker of a waiting
+// issue is silent to each of them only past WaitSilenceBound.
 //
 // Terms the code does not show:
 //   - a suspension held for the agent's turn is not a term: no record carries it
@@ -103,7 +142,7 @@ func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role clai
 	if ReportExplainsQuiet(c.ActivityBackground, c.ActivityNextReminderAt, now) {
 		return false
 	}
-	return PastBound(c.Step.LastStep(), bound, now)
+	return PastBound(c.Step.LastStep(), SilenceBound(issue, bound), now)
 }
 
 // unpromptedPhaseWorker is the half of SilentPhaseWorker that is not about a moment: a live claim

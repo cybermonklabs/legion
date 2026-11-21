@@ -219,13 +219,13 @@ const cutoverIdleTick = 250 * time.Millisecond
 //     that another start also starts gets one task, not two (spec R2).
 //
 // The second boot: G's merger completes with no merge, which records a READY head on its phase
-// row again, the idle release suspends it again, and the test deletes the backstop row that
-// release armed. G then matches the repair's selection again. The daemon boots again on the same
-// store, and the repair starts nothing: G's merger gets no start, and the boot's one record of the
-// repair names 0 mergers. A repair keyed on anything that changes at each boot would start G
-// again here. T's tester is still not started. Once the outbox holds no Dispatch message, Dispatch
-// has received exactly one cutover message on G and one on E over both boots, and none on A, D,
-// O, B, N, C, T or S.
+// row again, and the idle release suspends it again and arms no backstop for it, since its
+// completion stands (dispatch://INFRA-2746 R1). G then matches the repair's selection again. The
+// daemon boots again on the same store, and the repair starts nothing: G's merger gets no start,
+// and the boot's one record of the repair names 0 mergers. A repair keyed on anything that changes
+// at each boot would start G again here. T's tester is still not started. Once the outbox holds
+// no Dispatch message, Dispatch has received exactly one cutover message on G and one on E over
+// both boots, and none on A, D, O, B, N, C, T or S.
 func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	rig := newCutoverRig(t)
 	ctx := context.Background()
@@ -952,18 +952,24 @@ func (r *cutoverRig) bootsApplied(t *testing.T) int {
 	return applied
 }
 
-// releaseAgain has the idle release take issue's pod again, and then deletes the backstop row
-// that release armed for the merger. The pass takes a pod whose live claims are idle, have
-// reported since their last turn that they run no background work, and have been quiet for the
-// idle period (workflow.IdleRelease). cutoverAgent makes no activity report of its own, so the
-// test writes that report on the issue's claim rows and back-dates the rows past the period, as
+// releaseAgain has the idle release take issue's pod again, and holds that the release armed no
+// backstop for the merger. The merger's completion stands on its phase row (its READY head)
+// while the issue stays in merging on an open pull request, so it owes its phase nothing, and a
+// release arms no backstop for a released claim that owes nothing (dispatch://INFRA-2746 R1,
+// armBackstops): its later work comes as a task or message of the daemon's, which wakes the pod.
+// The release arms its backstops before it forgets its mark (ClearIssueRelease), so once the
+// merger stands suspended by `released` and the mark is gone, every backstop that release arms is
+// in the table. The pass takes a pod whose live claims are idle, have reported since their last
+// turn that they run no background work, and have been quiet for the idle period
+// (workflow.IdleRelease). cutoverAgent makes no activity report of its own, so the test writes
+// that report on the issue's claim rows and back-dates the rows past the period, as
 // idle_release_test.go's rig does, and refreshes the listener's ready report, without which the
 // pass releases nothing. It does both at every poll, since a write of the claim's own in between
 // moves the rows forward again.
 func (r *cutoverRig) releaseAgain(t *testing.T, issue cutoverIssue) {
 	t.Helper()
 	ctx := context.Background()
-	r.await(t, "the idle release to suspend "+issue.key+"'s merger and arm its backstop", func() bool {
+	r.await(t, "the idle release to suspend "+issue.key+"'s merger and forget its mark", func() bool {
 		if _, err := r.pool.Exec(ctx, `update claims set updated_at = now() - interval '30 minutes',
 			activity_at = now() - interval '25 minutes', activity_background = false, activity_kinds = '',
 			activity_next_reminder_at = null where issue = $1`, issue.key); err != nil {
@@ -977,16 +983,20 @@ func (r *cutoverRig) releaseAgain(t *testing.T, issue cutoverIssue) {
 		if held.State != string(supervise.StateSuspended) || held.SuspendedBy != string(supervise.SuspendedByReleased) {
 			return false
 		}
-		var releasing, armed bool
-		if err := r.pool.QueryRow(ctx, `select exists (select 1 from issue_releases where issue = $1),
-			exists (select 1 from pod_wake_backstops where issue = $1 and role = $2 and not fired)`, issue.key, string(claim.RoleMerger)).Scan(&releasing, &armed); err != nil {
+		var releasing bool
+		if err := r.pool.QueryRow(ctx, `select exists (select 1 from issue_releases where issue = $1)`, issue.key).Scan(&releasing); err != nil {
 			t.Fatalf("read the release of %s: %v", issue.key, err)
 		}
-		return !releasing && armed
+		return !releasing
 	})
-	tag, err := r.pool.Exec(ctx, `delete from pod_wake_backstops where issue = $1 and role = $2`, issue.key, string(claim.RoleMerger))
-	if err != nil || tag.RowsAffected() != 1 {
-		t.Fatalf("delete the backstop the release armed for %s's merger = %v rows, %v; want the one", issue.key, tag.RowsAffected(), err)
+	var armed int
+	if err := r.pool.QueryRow(ctx, `select count(*) from pod_wake_backstops where issue = $1 and role = $2 and not fired`,
+		issue.key, string(claim.RoleMerger)).Scan(&armed); err != nil {
+		t.Fatalf("read the backstops of %s's merger: %v", issue.key, err)
+	}
+	if armed != 0 {
+		t.Fatalf("the release of %s armed %d open backstops for its merger, want none: its completion stands, so it owes its phase nothing (dispatch://INFRA-2746 R1)",
+			issue.key, armed)
 	}
 }
 

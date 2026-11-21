@@ -51,8 +51,12 @@ const (
 	// IdleHoldUnreported: a live role's session has reported nothing, or last reported before its
 	// own last turn, so nothing says what it is doing now.
 	IdleHoldUnreported
-	// IdleHoldReminder: a live phase worker whose phase is open has a phase reminder due inside
-	// the idle period, which is a turn due.
+	// IdleHoldReminder: a live phase worker whose phase is open and that owes that phase, by the
+	// owed answer's rule (record.PhaseOwed), has a phase reminder due inside the idle period,
+	// which is a turn due. A claim that owes nothing holds no pod on its reminder: no reminder
+	// comes to it, since its timer asks the owed route and sends nothing on that answer, and the
+	// silence sweep does not nudge a role whose completion stands (PhaseWorkerOwedTurn), so a
+	// wake such a claim reported would hold its pod until the issue left the phase.
 	IdleHoldReminder
 	// IdleHoldNotIdle: the pod did something inside the idle period, so the period has not passed.
 	IdleHoldNotIdle
@@ -301,9 +305,13 @@ type IdleDecision struct {
 //     claim with no report, or one whose report predates its last turn, is never released: that
 //     is what makes a host that cannot report degrade safely;
 //
-//   - no live phase worker whose phase is open has a phase reminder due inside the idle period. A
-//     phase worker's phase is open when the issue's current phase is that worker's role and its
-//     claim serves the current generation;
+//   - no live phase worker whose phase is open and that owes it has a phase reminder due inside
+//     the idle period. A phase worker's phase is open when the issue's current phase is that
+//     worker's role and its claim serves the current generation (idlePhaseOpen), and it owes the
+//     phase by the rule the owed answer reads (record.PhaseOwed): its run is the issue's, it is
+//     neither behind nor above the entry its role's phases row stands on, the row records no
+//     completion of it, no merge forward holds its role, and the issue does not stand in merging
+//     with its pull request merged (record.MergedInMerging);
 //
 //   - the pod has done nothing the daemon recorded for the whole idle period;
 //
@@ -386,8 +394,13 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 			return IdleDecision{Hold: IdleHoldBackgroundWork, HoldKinds: c.ActivityKinds}
 		}
 	}
+	// A reminder is a turn due only of a claim that owes its phase, by the owed answer's rule
+	// (record.PhaseOwed, which api's owedBy reads too). No reminder comes to a claim that owes
+	// nothing, and the silence sweep does not nudge a role whose completion stands, so a past-due
+	// wake such a claim reported would hold the pod until the issue left its phase.
 	for _, c := range view.Claims {
-		if !c.Live() || !idlePhaseOpen(view, c) {
+		if !c.Live() || !idlePhaseOpen(view, c) || !record.PhaseOwed(c.ServingGeneration, view.Generation,
+			c.ServingEntry, c.RowEntry, c.RowCompleted, c.MergeForwardHeld, c.MergedInMerging) {
 			continue
 		}
 		if due := c.ActivityNextReminderAt; !due.IsZero() && !due.After(now) {

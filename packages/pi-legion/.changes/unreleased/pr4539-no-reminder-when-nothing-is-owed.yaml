@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  The end-of-turn phase reminder no longer reminds a role whose read of what its claim owes fails
+  or runs past its 3 s bound: it sends no reminder, counts none toward the architect notice, and
+  writes one warn line per claim per hour naming the cause. A reminder timer whose check decides
+  not to remind clears the session's reminder wake and reports it, at once or, while a report
+  between turns is still open, at the first 5 s reading after it ends, so the wake holds no pod.
+  The turn-end activity report is bounded at 3 s, so `session_stop` returns within about 6 s when
+  the daemon does not answer; a report between turns waits up to 60 s, and one is open at a time.
+  The reminder says what to do after each refusal of the completion:
+  after `HANDOFF_NOT_CURRENT_PHASE`, `CHECK_NOT_OPEN` or `CHECK_LOOK_NOT_OPEN` nothing more, and
+  after `HANDOFF_ALREADY_RECORDED` while the reminder still comes, which then means the daemon took
+  no completion under that key, complete again naming a new version of the handoff, or tell the
+  architect where the phase writes no handoff.

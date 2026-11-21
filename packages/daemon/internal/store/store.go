@@ -67,6 +67,10 @@ type Store struct {
 	// roleHoldersQueued is PublishRoleHolders' wake, read at each claim write. It is nil until the
 	// daemon turns the publication on, and while it is nil no claim write queues one.
 	roleHoldersQueued atomic.Pointer[func(issue string)]
+	// idleRecords is the record's half of the idle view (IdleRecords), which ReadIdleRecordsWith
+	// sets. It is nil until the daemon wires the idle release, and while it is nil the view reads
+	// none of it.
+	idleRecords atomic.Pointer[IdleRecords]
 }
 
 // Open connects to dsn and waits for the server to answer, so a daemon that

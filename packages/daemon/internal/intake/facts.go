@@ -1506,12 +1506,20 @@ func (f PodBackstopDue) namedIssue() (string, bool) { return f.Issue, true }
 // and its session's report explaining none of that quiet. The sweep applies it from the live
 // claims, never from an event, and its handler decides in the fact's own transaction
 // (internal/daemon's tellSilentPhaseWorkers says why, workerSilentEventID what its id is).
+//
+// Waiting marks the wait notice: a fact the sweep mints for a claim of an issue the daemon
+// records as waiting on another issue (record.Issue.ReleasedForWaitAt) once its last step is
+// older than workflow.WaitSilenceBound. Its handler writes the architect's one `worker-silent`
+// notice of that silence and no start row, and it has an id of its own
+// (internal/daemon's workerSilentWaitEventID). A fact without it is the repair, which writes the
+// start row and the notice, and which its handler leaves unspent while that record stands.
 type WorkerSilent struct {
 	Issue      string
 	Role       claim.Role
 	Generation uint64
 	LastStep   time.Time
 	Bound      time.Duration
+	Waiting    bool
 }
 
 func (f WorkerSilent) namedIssue() (string, bool) { return f.Issue, true }

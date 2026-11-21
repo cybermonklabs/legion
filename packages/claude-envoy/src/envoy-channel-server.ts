@@ -2565,7 +2565,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
           booted: claimBooted.promise,
           firstTurnStarted: () => reportFirstTurn?.(),
           readOwed: (input, signal) => daemon.owed(input, { signal }),
-          reportActivity: (input) => daemon.activity(input),
+          reportActivity: (input, signal) => daemon.activity(input, { signal }),
           inbox: inbox === undefined ? undefined : (text) => inbox.notification({ content: text }),
           publish: client.publish,
           env: process.env,

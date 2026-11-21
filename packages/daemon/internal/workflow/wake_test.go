@@ -504,6 +504,98 @@ func TestABackstopReadTwiceFiresOnce(t *testing.T) {
 	}
 }
 
+// armBackstopArmedAt arms one backstop of LEGION-208's role as a release arms it, armed at armed
+// and due at due (store.Store.ArmPodBackstop), and answers its row id.
+func armBackstopArmedAt(t *testing.T, pool *pgxpool.Pool, role claim.Role, armed, due time.Time) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.QueryRow(context.Background(), `insert into pod_wake_backstops (project, issue, role, release_id, armed_at, due_at)
+		values ($4, 'LEGION-208', $1, 0, $2, $3) returning id`, string(role), armed, due, wakeProjectToken(t)).Scan(&id); err != nil {
+		t.Fatalf("arm the %s backstop: %v", role, err)
+	}
+	return id
+}
+
+// rearmBackstopAt moves backstop id's arm time to armed, which is the clock a waiting issue's
+// backstop is measured on (podBackstopDue).
+func rearmBackstopAt(t *testing.T, pool *pgxpool.Pool, id int64, armed time.Time) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `update pod_wake_backstops set armed_at = $2 where id = $1`, id, armed); err != nil {
+		t.Fatalf("move the arm time of backstop %d: %v", id, err)
+	}
+}
+
+// backstopFired is whether backstop id is marked fired.
+func backstopFired(t *testing.T, pool *pgxpool.Pool, id int64) bool {
+	t.Helper()
+	var fired bool
+	if err := pool.QueryRow(context.Background(), `select fired from pod_wake_backstops where id = $1`, id).Scan(&fired); err != nil {
+		t.Fatalf("read backstop %d: %v", id, err)
+	}
+	return fired
+}
+
+// R9 of dispatch://INFRA-2746, the backstop handler's half. A due backstop of a released role of
+// an issue the daemon records as waiting on another issue (record.Issue.ReleasedForWaitAt) wakes
+// nothing while it was armed less than WaitSilenceBound ago: the fact leaves the row unfired and
+// is not spent, so the next wake tick reads the row again. Armed more than a day ago, it wakes
+// the pod. With the mark cleared, as admission clears it when the issue takes a slot again, it
+// wakes the pod at the next application. The control, an issue with no mark, wakes at its due
+// time, from a row inserted with no armed_at, which takes the column's default.
+func TestSilentPhaseWorkerOfAnIssueWaitingOnAnotherGetsNoBackstopWakeUnderADay(t *testing.T) {
+	fact := func(id int64) intake.PodBackstopDue {
+		return intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: claim.RoleImplementer}
+	}
+	// heldUnderADay applies the backstop and fails the test unless it woke nothing, left the row
+	// unfired and left the fact unspent.
+	heldUnderADay := func(t *testing.T, rig wakeRig, id int64) {
+		t.Helper()
+		if result := rig.apply("backstop", fact(id)); !result.Unspent {
+			t.Errorf("the backstop of a waiting issue armed under a day ago was spent, want it unspent: the next tick reads the row again")
+		}
+		if starts := wakeStarts(t, rig.pool); len(starts) != 0 {
+			t.Fatalf("supervise start rows = %+v, want none: the backstop of an issue waiting on another issue wakes its pod a day after the release armed it", starts)
+		}
+		if resumes := wakeResumes(t, rig.pool); len(resumes) != 0 {
+			t.Fatalf("pod resumes = %v, want none", resumes)
+		}
+		if backstopFired(t, rig.pool, id) {
+			t.Fatalf("the backstop is marked fired, want it open: a fired row is never read again, and the pod would never come back")
+		}
+	}
+
+	t.Run("armed under a day ago, then more than a day ago", func(t *testing.T) {
+		rig := newWakeRig(t)
+		releaseSlotForAWait(t, rig.pool, "LEGION-208", wakeAt.Add(-3*time.Hour))
+		id := armBackstopArmedAt(t, rig.pool, claim.RoleImplementer, wakeAt.Add(-2*time.Hour), wakeAt.Add(-time.Minute))
+
+		heldUnderADay(t, rig, id)
+
+		rearmBackstopAt(t, rig.pool, id, wakeAt.Add(-WaitSilenceBound-time.Minute))
+		rig.apply("backstop", fact(id))
+		oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeBackstop, "backstop")
+	})
+
+	t.Run("the mark cleared", func(t *testing.T) {
+		rig := newWakeRig(t)
+		releaseSlotForAWait(t, rig.pool, "LEGION-208", wakeAt.Add(-3*time.Hour))
+		id := armBackstopArmedAt(t, rig.pool, claim.RoleImplementer, wakeAt.Add(-2*time.Hour), wakeAt.Add(-time.Minute))
+
+		heldUnderADay(t, rig, id)
+
+		giveTheSlotBack(t, rig.pool, "LEGION-208", wakeAt)
+		rig.apply("backstop", fact(id))
+		oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeBackstop, "backstop")
+	})
+
+	t.Run("the control: an issue with no mark", func(t *testing.T) {
+		rig := newWakeRig(t)
+		id := armBackstop(t, rig.pool, claim.RoleImplementer, wakeAt.Add(-time.Minute))
+		rig.apply("backstop", fact(id))
+		oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeBackstop, "backstop")
+	})
+}
+
 // R5: an architect gets no backstop. OpenPhaseRole is the one statement of "the worker of the
 // open phase" — which role a release arms a backstop for, which role a CI settlement wakes, and
 // which live claim has a phase reminder armed in it — and it answers none for a phase the

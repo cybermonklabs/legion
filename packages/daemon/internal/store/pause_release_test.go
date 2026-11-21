@@ -41,6 +41,13 @@ func implementingWorker(p phase.Phase) claim.Role {
 	return ""
 }
 
+// getsBackstop stands in for the daemon's rule of whether the open phase's worker gets a backstop
+// (ReleaseCancelPause.GetsBackstop): every claim these tests stop gets one, as a claim of a role
+// with no phases row and no pull request owes its phase.
+func getsBackstop(context.Context, pgx.Tx, phase.Phase, uint64, supervise.Claim) (bool, error) {
+	return true, nil
+}
+
 // endPause ends pause at at as the operator, as the resume's transaction writes the end.
 func endPause(t *testing.T, st *Store, pause int64, at time.Time) {
 	t.Helper()
@@ -206,7 +213,7 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 			at := pausedAt.Add(time.Minute)
 
 			cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow,
-				ReleaseCancelPause{At: at, Backstop: time.Hour, OpenPhaseRole: implementingWorker})
+				ReleaseCancelPause{At: at, Backstop: time.Hour, OpenPhaseRole: implementingWorker, GetsBackstop: getsBackstop})
 			if err != nil {
 				t.Fatalf("cancel the release while paused: %v", err)
 			}

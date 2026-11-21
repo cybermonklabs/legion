@@ -138,8 +138,15 @@ export interface LegionDaemonClient {
     input: z.input<typeof LegionTurnOutcomeRequest>
   ) => Promise<z.output<typeof LegionTurnOutcomeResponse>>;
   /** The session's report of what it is doing, after each of its turns and whenever the report's
-   * content changes. It is authenticated by the claim, as `ready` is, and answers 204. */
-  readonly activity: (input: ActivityInput) => Promise<void>;
+   * content changes. It is authenticated by the claim, as `ready` is, and answers 204. `signal`
+   * aborts the request, its answer's body included: both hosts send a turn-end report under
+   * `ACTIVITY_REPORT_BOUND_MS` (`reportActivityWithin` in `src/session-activity.ts`) and a report
+   * between turns under `ACTIVITY_BETWEEN_TURNS_BOUND_MS` (`reportActivityBetweenTurns`), and
+   * abort it at its bound rather than leave it open. */
+  readonly activity: (
+    input: ActivityInput,
+    options?: { readonly signal?: AbortSignal }
+  ) => Promise<void>;
   /** What this session's claim owes now, read from the daemon's record, and what that work is
    * called (`POST /legion/v1/claims/owed`). It is authenticated by the claim, as `activity` is,
    * and changes nothing. `signal` aborts the request, its answer's body included: the phase
@@ -467,6 +474,59 @@ export async function retryWhileDaemonRestarts<T>(
   }
 }
 
+/** `work`'s answer, or a rejection once `ms` have passed without one, when the signal `work` was
+ * handed is aborted so what it started does not outlive the bound. The rejection, and the abort's
+ * reason, is `no answer within <ms>ms`. The phase reminder's owed read (`readOwedWithin` in
+ * `src/phase-reminder.ts`) and the two activity reports (`reportActivityWithin` at a turn end and
+ * `reportActivityBetweenTurns` between turns, in `src/session-activity.ts`) are bounded through
+ * it, so a daemon that does not answer is named the same way in every log line. `withinBudget` in
+ * `packages/pi-legion/src/capability-report.ts` is the same shape, with a fallback answer in place
+ * of the throw. */
+export async function withBound<T>(
+  work: (signal: AbortSignal) => Promise<T>,
+  ms: number
+): Promise<T> {
+  const controller = new AbortController();
+  const deadline = Promise.withResolvers<T>();
+  const timer = setTimeout(() => {
+    const late = new Error(`no answer within ${ms}ms`);
+    deadline.reject(late);
+    controller.abort(late);
+  }, ms);
+  try {
+    return await Promise.race([work(controller.signal), deadline.promise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** How long a host writes no second warn line about the same failure of one claim, counted from
+ * the line it wrote (dispatch://INFRA-2746/spec#b-r7: one line at warn level per claim per hour,
+ * which names the cause). A failure can repeat at every turn end, and on Oh My Pi at every 5 s
+ * reading, so one line an hour names the cause without a line at each repeat. */
+export const FAILURE_LOG_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
+ * Whether a warn line about `key` may be written now, read on `now`. When it may, the gate keeps
+ * the time, so the next line for that key waits `FAILURE_LOG_INTERVAL_MS` counted from the line
+ * written. A host keys it by the claim the failure is about.
+ *
+ * The owed check's failed reads (`logUnread` in `src/phase-reminder.ts`) and Oh My Pi's failed
+ * activity reports (`reportActivity` in `packages/pi-legion/extensions/legion.ts`) both log through
+ * a gate made here, so the two rules cannot become different. The times are the gate's own: a
+ * process the daemon starts again logs at its first failure.
+ */
+export function createFailureLogGate(now: () => number): (key: string) => boolean {
+  const logged = new Map<string, number>();
+  return (key) => {
+    const at = now();
+    const last = logged.get(key);
+    if (last !== undefined && at - last < FAILURE_LOG_INTERVAL_MS) return false;
+    logged.set(key, at);
+    return true;
+  };
+}
+
 /** `body` read through `schema`, or the reason it is not what the schema describes. The answer
  * schemas ignore a key they do not name, so a body carrying a field this build's contract has no
  * name for is read and that field left out of the value; what is refused is a body that is not
@@ -668,7 +728,7 @@ export function createLegionDaemonClient(
         LegionTurnOutcomeResponse,
         input
       ),
-    activity: (input) => acknowledge("/legion/v1/claims/activity", input),
+    activity: (input, options) => acknowledge("/legion/v1/claims/activity", input, options?.signal),
     // async, so a request the contract refuses comes back as a rejected promise, not a throw.
     owed: async (input, options) =>
       post("/legion/v1/claims/owed", LegionOwedRequest, LegionOwedResponse, input, options?.signal),

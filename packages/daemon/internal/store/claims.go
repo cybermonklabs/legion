@@ -526,18 +526,36 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 // not validate refuses the whole read, naming the claim: a daemon that loaded it would believe in
 // a process it has no way to act on.
 func (s *Store) Claims(ctx context.Context) ([]supervise.Claim, error) {
-	return readClaims(ctx, s.pool)
+	return readClaims(ctx, s.pool, "")
 }
 
 // ClaimsTx is Claims through tx's snapshot. State reports use it with their durable issue and
 // outbox reads, so a claim's state and the queued start that might wake it cannot come from two
 // moments.
 func (s *Store) ClaimsTx(ctx context.Context, tx pgx.Tx) ([]supervise.Claim, error) {
-	return readClaims(ctx, tx)
+	return readClaims(ctx, tx, "")
 }
 
-func readClaims(ctx context.Context, q rowsQuerier) ([]supervise.Claim, error) {
-	rows, err := q.Query(ctx, claimSelect+" order by c.token")
+// ClaimTx is the claim of token through tx, as Claims reads every claim: with its pending
+// delivery, the entry it last served and its update round, which is what a rule of the claim's
+// own reads where a narrower read of it carries less, such as the entry it serves
+// (supervise.Claim.ServingEntry) after the released-claim read (ReleasedClaimsOf). A token no
+// claim holds is refused.
+func ClaimTx(ctx context.Context, tx pgx.Tx, token claim.Token) (supervise.Claim, error) {
+	claims, err := readClaims(ctx, tx, " where c.token = $1", string(token))
+	if err != nil {
+		return supervise.Claim{}, err
+	}
+	if len(claims) == 0 {
+		return supervise.Claim{}, fmt.Errorf("no claim holds token %s", token)
+	}
+	return claims[0], nil
+}
+
+// readClaims reads the claims filter selects — a where clause over claims c, binding args, and ""
+// for every claim — with their pending deliveries, in token order.
+func readClaims(ctx context.Context, q rowsQuerier, filter string, args ...any) ([]supervise.Claim, error) {
+	rows, err := q.Query(ctx, claimSelect+filter+" order by c.token", args...)
 	if err != nil {
 		return nil, fmt.Errorf("read claims: %w", err)
 	}

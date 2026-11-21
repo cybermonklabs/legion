@@ -1030,6 +1030,12 @@ The project's controller reads the same issue in the `silent` list of its period
 The rule is this: the claim's process is up and between turns, it holds no task, and its agent's last recorded step is older than `worker_silence_minutes`.
 That bound is 30 minutes by default, and the configuration refuses a value under 16 minutes when it loads.
 
+An issue the daemon records as waiting on another issue — one that gave its admission slot back for a Dispatch blocker that is not `done`, or for an open child its first phase waits for — is judged against `WaitSilenceBound`, 24 hours, in place of `worker_silence_minutes`.
+While that record stands, the daemon writes no start row for its worker, since the start would wait for the slot and hold the pod meanwhile.
+Past the 24 hours it writes one `worker-silent` notice that names that bound and says it sent nothing, and the controller's tick names the worker silent from then on.
+At the first pass after the issue takes a slot again the normal bound applies, so a worker quiet past `worker_silence_minutes` then gets its task at once.
+The idle backstop of that issue's released pod waits the same 24 hours from the release that armed it, in place of `backstop_minutes`.
+
 The daemon sends the worker its work again, chosen by the phase entry the issue's phase row names for the role: the work of that entry where the worker's claim was never given it, and the phase's task again where the claim is on that entry already.
 The notice says what the daemon wrote, which is that start row, so the worker is coming back and there is nothing to do.
 A suspension an operator holds over the claim is the one thing that refuses the start when the outbox runs it, and the notice says so as well: resume the claim, or have the architect message the role and the controller start its session again with `fresh_session`.

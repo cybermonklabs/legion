@@ -26,8 +26,10 @@ var (
 // idleChild is a child issue's pod that every condition of the rule holds for: in the workflow
 // under a live root, on the configured image, one live implementer on the daemon's contract that
 // finished its turn twenty minutes ago and reported five minutes later that it runs no background
-// work with no reminder armed, a tester the daemon suspended beside it, and nothing queued for
-// either. Each row of the table below changes exactly one thing about it.
+// work with no reminder armed, and that owes its phase (record.PhaseOwed): it serves the issue's
+// run and the entry its phases row stands on, which records no completion, and no merge forward
+// holds it. Beside it is a tester the daemon suspended, and nothing is queued for either. Each
+// row of the table below changes exactly one thing about it.
 func idleChild() pods.IdleView {
 	return pods.IdleView{
 		Issue: "LEGION-209", Tree: "LEGION-208", Found: true,
@@ -37,6 +39,7 @@ func idleChild() pods.IdleView {
 			{
 				Role:  claim.RoleImplementer,
 				State: supervise.StateIdle, PluginContract: idleContract, ServingGeneration: 3,
+				ServingEntry: 3, RowEntry: 3,
 				LastTurnAt: idleNow.Add(-20 * time.Minute),
 				ActivityAt: idleNow.Add(-15 * time.Minute), UpdatedAt: idleNow.Add(-15 * time.Minute),
 			},
@@ -60,27 +63,58 @@ func idleRoot() pods.IdleView {
 	return view
 }
 
+// idleRuleRow is one row of a table of the idle rule: the view, the image verdict and the
+// repository verdict it decides with, the hold it names and the live roles a release names.
+// image is whether the pod runs the configured image, and drifted whether it was built from a
+// repository the issue's record has left. A row that sets neither reads a pod on the configured
+// image and on the repository the record holds, which is every pod of a deployment nothing has
+// changed under.
+type idleRuleRow struct {
+	name    string
+	view    pods.IdleView
+	image   bool
+	drifted bool
+	want    IdleHold
+	roles   []claim.Role
+}
+
+// decideIdleRows decides each row at idleNow against idlePeriod and the daemon's plugin
+// contract, and fails a row whose hold, release or roles differ from the row's own.
+func decideIdleRows(t *testing.T, rows []idleRuleRow) {
+	t.Helper()
+	for _, tc := range rows {
+		t.Run(tc.name, func(t *testing.T) {
+			got := IdleRelease(tc.view, idleNow, idlePeriod, tc.image, tc.drifted, idleContract)
+			if got.Hold != tc.want {
+				t.Fatalf("hold = %s, want %s", got.Hold, tc.want)
+			}
+			if want := tc.want == IdleHoldNone; got.Release != want {
+				t.Fatalf("release = %v, want %v (hold %s)", got.Release, want, got.Hold)
+			}
+			if len(got.Roles) != len(tc.roles) {
+				t.Fatalf("roles = %v, want %v", got.Roles, tc.roles)
+			}
+			for i, role := range tc.roles {
+				if got.Roles[i] != role {
+					t.Fatalf("roles = %v, want %v", got.Roles, tc.roles)
+				}
+			}
+		})
+	}
+}
+
 // Every condition of the idle rule is one row here: it holds the pod and names the hold the
 // daemon records, and the pod with every condition met is released with its live roles named.
 // The rule is pure, so each row is the view, the clock, the idle period, the image verdict and
-// the daemon's plugin contract and nothing else.
+// the daemon's plugin contract and nothing else. The reminder hold's rows that ask whether the
+// claim owes its phase, with that hold's own row, are
+// TestIdleOfAClaimThatOwesNothingHoldsNoPodOnItsReminder's.
 //
 // The condition this branch left out until sjawhar/legion#2538 landed — "no INFRA-484 update
 // round open on the pod" — is the two rows below the plugin contract's: #2538 is on main now,
 // and the rule reads supervise.Claim.UpdateRound with supervise.IsPodRound.
 func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		view pods.IdleView
-		// image is whether the pod runs the configured image, and drifted whether it was built
-		// from a repository the issue's record has left. A row that sets neither reads a pod on
-		// the configured image and on the repository the record holds, which is every pod of a
-		// deployment nothing has changed under.
-		image   bool
-		drifted bool
-		want    IdleHold
-		roles   []claim.Role
-	}{
+	decideIdleRows(t, []idleRuleRow{
 		{
 			name: "every condition holds", view: idleChild(), image: true, want: IdleHoldNone,
 			roles: []claim.Role{claim.RoleImplementer},
@@ -253,15 +287,6 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 			image: true, want: IdleHoldUnreported,
 		},
 		{
-			name: "an open phase's reminder is due inside the period",
-			view: func() pods.IdleView {
-				v := idleChild()
-				v.Claims[0].ActivityNextReminderAt = idleNow.Add(-time.Minute)
-				return v
-			}(),
-			image: true, want: IdleHoldReminder,
-		},
-		{
 			name: "an open phase's reminder is due after the period",
 			view: func() pods.IdleView {
 				v := idleChild()
@@ -328,25 +353,83 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 			}(),
 			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
 		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got := IdleRelease(tc.view, idleNow, idlePeriod, tc.image, tc.drifted, idleContract)
-			if got.Hold != tc.want {
-				t.Fatalf("hold = %s, want %s", got.Hold, tc.want)
-			}
-			if want := tc.want == IdleHoldNone; got.Release != want {
-				t.Fatalf("release = %v, want %v (hold %s)", got.Release, want, got.Hold)
-			}
-			if len(got.Roles) != len(tc.roles) {
-				t.Fatalf("roles = %v, want %v", got.Roles, tc.roles)
-			}
-			for i, role := range tc.roles {
-				if got.Roles[i] != role {
-					t.Fatalf("roles = %v, want %v", got.Roles, tc.roles)
-				}
-			}
-		})
-	}
+	})
+}
+
+// dispatch://INFRA-2746 R1 (check c-idle-keeps-nothing-for-a-claim-that-owes-nothing, its
+// workflow row): the idle release holds a pod for a phase reminder that is due only of a claim
+// that owes its phase, by the rule the owed answer reads (record.PhaseOwed). A live implementer
+// whose reported reminder wake is a minute past due is held reminder_due while it owes its
+// phase, which is the control; its pod is released, with that past-due wake, when its row
+// records its completion of the entry, when a merge forward holds it, and when it is behind its
+// entry, since no reminder comes to a claim that owes nothing and the silence sweep does not
+// nudge a role whose completion stands, so such a hold would never end. The same holds of a
+// merger in merging whose pull request is merged (record.MergedInMerging), whose merging that
+// merge finished while a merged root stands in merging until the rest of its tree leaves; its
+// control, the same merger with its pull request not merged, owes the merge and is held.
+func TestIdleOfAClaimThatOwesNothingHoldsNoPodOnItsReminder(t *testing.T) {
+	decideIdleRows(t, []idleRuleRow{
+		{
+			name: "the control: an open phase's reminder is due inside the period",
+			view: func() pods.IdleView {
+				v := idleChild()
+				v.Claims[0].ActivityNextReminderAt = idleNow.Add(-time.Minute)
+				return v
+			}(),
+			image: true, want: IdleHoldReminder,
+		},
+		{
+			name: "a reminder of a worker whose row records its completion",
+			view: func() pods.IdleView {
+				v := idleChild()
+				v.Claims[0].RowCompleted = true
+				v.Claims[0].ActivityNextReminderAt = idleNow.Add(-time.Minute)
+				return v
+			}(),
+			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
+		},
+		{
+			name: "a reminder of a worker a merge forward holds",
+			view: func() pods.IdleView {
+				v := idleChild()
+				v.Claims[0].MergeForwardHeld = true
+				v.Claims[0].ActivityNextReminderAt = idleNow.Add(-time.Minute)
+				return v
+			}(),
+			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
+		},
+		{
+			name: "a reminder of a worker behind its entry",
+			view: func() pods.IdleView {
+				v := idleChild()
+				v.Claims[0].ServingEntry = 2
+				v.Claims[0].ActivityNextReminderAt = idleNow.Add(-time.Minute)
+				return v
+			}(),
+			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
+		},
+		{
+			name: "a reminder of a merger in merging whose pull request is merged",
+			view: func() pods.IdleView {
+				v := idleChild()
+				v.Phase, v.Claims[0].Role = phase.Merging, claim.RoleMerger
+				v.Claims[0].MergedInMerging = true
+				v.Claims[0].ActivityNextReminderAt = idleNow.Add(-time.Minute)
+				return v
+			}(),
+			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleMerger},
+		},
+		{
+			name: "the control: a reminder of a merger in merging whose pull request is not merged",
+			view: func() pods.IdleView {
+				v := idleChild()
+				v.Phase, v.Claims[0].Role = phase.Merging, claim.RoleMerger
+				v.Claims[0].ActivityNextReminderAt = idleNow.Add(-time.Minute)
+				return v
+			}(),
+			image: true, want: IdleHoldReminder,
+		},
+	})
 }
 
 // unownedIssue is a root issue of a live tree that no claim of it can use any more: an architect

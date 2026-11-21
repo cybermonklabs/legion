@@ -141,6 +141,81 @@ func TestTheIdleViewReadsTheUnrestoredBundleAndTheRunningHoldStreak(t *testing.T
 	}
 }
 
+// The view gives each claim what the reminder hold asks of a claim that works the open phase
+// (record.PhaseOwed): the entry the claim serves, by supervise.Claim.ServingEntry's own rule, and,
+// through the record's reader the daemon hands the store (ReadIdleRecordsWith,
+// record.FillIdleClaims), the entry its role's phases row stands on, whether that row records a
+// completion, whether a merge forward of the issue's pull request holds the role, and whether
+// that pull request is merged while the issue stands in merging. A claim that has served no
+// entry, a role with no row and an issue with no pull request read 0 and false.
+func TestTheIdleViewReadsTheEntryServedAndTheRecordOfEachClaimsRole(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	st.ReadIdleRecordsWith(func(ctx context.Context, tx pgx.Tx, issue string, at phase.Phase, claims []pods.IdleClaim) error {
+		return record.FillIdleClaims(ctx, record.NewStore(), tx, issue, at, claims)
+	})
+	if _, err := st.Pool().Exec(ctx, `update issues set phase = 'testing' where key = $1`, rootIssue); err != nil {
+		t.Fatalf("move %s into testing: %v", rootIssue, err)
+	}
+	token := claim.Token("legion-legion-legion-208-tester")
+	tester := supervise.Claim{Token: token, Project: "legion", Tree: rootIssue, Issue: rootIssue,
+		Role: claim.RoleTester, TreeEpoch: 1, Generation: 1, ServingGeneration: 1, State: supervise.StateIdle}
+	if err := st.PutClaim(ctx, tester); err != nil {
+		t.Fatal(err)
+	}
+	if got := idleViewOf(t, st, rootIssue).Claims[0]; got.ServingEntry != 0 || got.RowEntry != 0 || got.RowCompleted ||
+		got.MergeForwardHeld || got.MergedInMerging {
+		t.Fatalf("claim = %+v, want no entry served, no phases row, no merge forward and no merged pull request", got)
+	}
+
+	// The tester left entry 2 behind and a turn confirmed the task of entry 3, which is the entry
+	// it serves; its row stands on entry 4 and records a completion, and the daemon asked the
+	// implementer in testing to merge the base forward onto the head the pull request stands at.
+	tester.ServedEntry = 2
+	if err := st.PutClaim(ctx, tester); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := st.Pool().Exec(ctx, `insert into pending_task_deliveries
+		(claim_token, delivery_id, task, queued_at, delivered_at, confirmed_at, phase, generation, entry)
+		values ($1, 'd-3', 'test it', $2, $2, $2, 'testing', 1, 3)`, string(token), now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		records := record.NewStore()
+		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: rootIssue, Role: claim.RoleTester, Claim: token,
+			Entry: 4, HandoffCommit: "c0de"}); err != nil {
+			return err
+		}
+		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: rootIssue,
+			Repo: "acme/widgets", Number: 42, Branch: "legion/" + rootIssue, HeadSHA: "c0de", Failing: []string{},
+			MergeForward: &record.MergeForward{Head: "c0de", Base: "main", Phase: phase.Testing, AskedAt: now}})
+	}); err != nil {
+		t.Fatalf("record the tester's row and the pull request of %s: %v", rootIssue, err)
+	}
+	if got := idleViewOf(t, st, rootIssue).Claims[0]; got.ServingEntry != 3 || got.RowEntry != 4 || !got.RowCompleted ||
+		!got.MergeForwardHeld || got.MergedInMerging {
+		t.Fatalf("claim = %+v, want entry 3 served, its row on entry 4 with its completion, the merge forward holding it and the pull request open", got)
+	}
+
+	// The issue moves into merging and its pull request merges: the claim reads the merging
+	// finished (record.MergedInMerging), and the ask made in testing holds no role in merging.
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `update issues set phase = 'merging' where key = $1`, rootIssue); err != nil {
+			return err
+		}
+		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestMerged, Issue: rootIssue,
+			Repo: "acme/widgets", Number: 42, Branch: "legion/" + rootIssue, HeadSHA: "c0de", Failing: []string{},
+			MergeForward: &record.MergeForward{Head: "c0de", Base: "main", Phase: phase.Testing, AskedAt: now}})
+	}); err != nil {
+		t.Fatalf("move %s into merging on its merged pull request: %v", rootIssue, err)
+	}
+	if got := idleViewOf(t, st, rootIssue).Claims[0]; !got.MergedInMerging || got.MergeForwardHeld {
+		t.Fatalf("claim = %+v, want the merging finished by the merged pull request and no merge forward holding it", got)
+	}
+}
+
 // idleViewOf is the pod's view as the release's own transaction reads it (readIdleView, which
 // ReleaseIdleIssue hands to the rule): the store serves no view of its own, because nothing but
 // that decision reads one.
@@ -150,7 +225,7 @@ func idleViewOf(t *testing.T, st *Store, issue string) pods.IdleView {
 	var view pods.IdleView
 	if err := st.Tx(ctx, func(tx pgx.Tx) error {
 		var err error
-		view, err = readIdleView(ctx, tx, "legion", issue)
+		view, err = readIdleView(ctx, tx, "legion", issue, st.idleRecordsOf())
 		return err
 	}); err != nil {
 		t.Fatalf("read the idle view of %s: %v", issue, err)

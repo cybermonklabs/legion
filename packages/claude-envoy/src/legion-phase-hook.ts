@@ -13,6 +13,8 @@ import {
 import { type PhaseStallEntry, phaseStallEntryFrom } from "@legion/pi-shared/phase-stall"
 import {
   CLAUDE_BACKGROUND_TASK_KIND,
+  reportActivityBetweenTurns,
+  reportActivityWithin,
   sessionActivity,
   sessionActivityRequest,
 } from "@legion/pi-shared/session-activity"
@@ -167,11 +169,21 @@ export interface PhaseHookDeps {
   /** What this session's claim owes now (`LegionDaemonClient.owed`), the one answer that decides
    * whether a reminder goes out, aborted with `signal` once the check's bound passes
    * (`PhaseReminderDeps.readOwed`). An answer that does not arrive is the shared reminder's to
-   * decide (`UNREAD_CHECK`, `@legion/pi-shared/phase-reminder`), as it is on Oh My Pi. */
+   * decide (`UNREAD_CHECK`, `@legion/pi-shared/phase-reminder`), as it is on Oh My Pi: it reminds
+   * no one. */
   readonly readOwed: (input: OwedInput, signal: AbortSignal) => Promise<LegionOwed>
   /** Sends this session's activity report to the daemon (`LegionDaemonClient.activity`), so the
-   * idle rule can decide whether the pane's pod may be released (INFRA-945). */
-  readonly reportActivity: (input: ActivityInput) => Promise<void>
+   * idle rule can decide whether the pane's pod may be released (INFRA-945). The endpoint sends one
+   * at each `Stop`, with the background work that `Stop`'s `${background_tasks}` shows, and one
+   * when a timer clears the reminder wake, with the launch's reading of its background work
+   * (`sendActivity`), since no other hook this host runs is shown the session's background tasks.
+   * The timer's report goes on a fresh launch too, whose reading is no background work: a claim
+   * never reported holds its pod. The request is to abort with `signal`, which is aborted once the
+   * report's bound passes without an answer, so a daemon that hangs is left no open request. The
+   * `Stop` report's bound is `ACTIVITY_REPORT_BOUND_MS` (`reportActivityWithin`), and the bound of
+   * the report a timer sends after it clears the reminder wake is `ACTIVITY_BETWEEN_TURNS_BOUND_MS`
+   * (`reportActivityBetweenTurns`), both in `@legion/pi-shared/session-activity`. */
+  readonly reportActivity: (input: ActivityInput, signal: AbortSignal) => Promise<void>
   /** Writes one line into the session over the bridge's inbox, which turns it into a user turn,
    * and resolves once the bridge has queued it. Undefined for a session outside a Legion pane,
    * where nothing can reach the worker between its turns. */
@@ -210,9 +222,11 @@ export function paneReminderLog(write: (line: string) => void): PhaseReminderLog
 
 /**
  * What this host's state file holds: the record the machine shares with the Oh My Pi host, and the
- * one key only this host keeps. `PhaseStallEntry` is the machine's record and both hosts read it,
- * so the extra key is composed around it here rather than added to it, and a record the Go bridge
- * left behind, which has no such key, still reads.
+ * keys only this host keeps. `PhaseStallEntry` is the machine's record and both hosts read it, so
+ * this host's keys are composed around it here rather than added to it. Each key is written only
+ * while it says something (`writePhaseStallRecord`), and a missing key reads as saying nothing, so
+ * a record the Go bridge left behind, which names neither, still reads, and so does one an earlier
+ * build wrote before `backgroundReading` existed.
  */
 export interface PhaseStallRecord {
   /** The reminder's rhythm and count the file holds, or undefined when it holds none this build
@@ -223,11 +237,48 @@ export interface PhaseStallRecord {
    * only a server Claude Code restarts inside one `claude` process: a launch that recreated
    * nothing clears it (`createPhaseHookEndpoint`). */
   readonly recreatedNoticeSent: boolean
+  /** A launch's reading of its own background work (`backgroundReading` in the file), or
+   * undefined for a record that holds none. A reading that says neither background work nor a
+   * tool since is held as none and never written: none is what a fresh launch reads as, and a
+   * report from either says the same, no background work (`createPhaseHookEndpoint`). */
+  readonly backgroundReading: BackgroundReading | undefined
 }
+
+/**
+ * What one launch of this session last knew of its own background work, kept in the record so a
+ * server Claude Code restarts inside the same `claude` process reads it again. Claude Code shows a
+ * hook the session's background tasks at `Stop` and `SubagentStop` only (`${background_tasks}`;
+ * not at `StopFailure`, Claude Code v2.1.145, anthropics/claude-code issue 60692), so a restarted
+ * server has read none, and a task the last `Stop` saw may still be running.
+ */
+export interface BackgroundReading {
+  /** The claim's launch generation the reading was taken in (`ClaimCapability.generation`). A
+   * server Claude Code restarts keeps its claim's generation, and a launch moves it, which also
+   * clears the daemon's stored report (`packages/daemon/internal/store/claims.go`, putClaim): a
+   * reading of another generation describes a process the launch replaced, and no task of that
+   * process outlives it. */
+  readonly generation: number
+  /** Whether that launch's last turn end left background work of its own running. */
+  readonly backgroundWork: boolean
+  /** Whether a tool has run since that turn end, the worker's or a subagent's: a tool call may
+   * have started a background task that only the next `Stop` can see. */
+  readonly toolSince: boolean
+}
+
+/** `BackgroundReading` as the file holds it: a key of any other shape is no reading. */
+const recordedBackgroundReading = z.object({
+  generation: z.number().int(),
+  backgroundWork: z.boolean(),
+  toolSince: z.boolean(),
+})
 
 /** A file this session holds no record in: a fresh session, an unreadable one, or one written by
  * a build whose state this one does not know. */
-const NO_RECORD: PhaseStallRecord = { entry: undefined, recreatedNoticeSent: false }
+const NO_RECORD: PhaseStallRecord = {
+  entry: undefined,
+  recreatedNoticeSent: false,
+  backgroundReading: undefined,
+}
 
 /**
  * The record `file` holds: a missing file is no record at all, so a fresh session restores
@@ -236,7 +287,9 @@ const NO_RECORD: PhaseStallRecord = { entry: undefined, recreatedNoticeSent: fal
  * `{"state":"closed"}` with its count, `{"state":"quiet"}` or `{"state":"text-call"}` — reads as
  * the rhythm's `active` here too, and a missing `count`, `reported` or `reportKey` reads as 0,
  * false and absent. This host adds the warning for a record it understands none of, and its own
- * `recreatedNoticeSent`.
+ * two keys: `recreatedNoticeSent`, false unless the file says true, and `backgroundReading`, none
+ * unless the file holds one of its shape (`recordedBackgroundReading`), so a record written before
+ * the key existed reads as a launch that has started no background work.
  */
 export function readPhaseStallRecord(file: string, log: PhaseReminderLog): PhaseStallRecord {
   let raw: string
@@ -274,29 +327,40 @@ export function readPhaseStallRecord(file: string, log: PhaseReminderLog): Phase
     })
     return NO_RECORD
   }
+  const reading = recordedBackgroundReading.safeParse(
+    "backgroundReading" in data ? data.backgroundReading : undefined,
+  )
   return {
     entry,
     recreatedNoticeSent: "recreatedNoticeSent" in data && data.recreatedNoticeSent === true,
+    backgroundReading: reading.success ? reading.data : undefined,
   }
 }
 
-/** Replaces `file` with `entry` and this host's own key, through a temporary file in the same
+/** Replaces `file` with `entry` and this host's own keys, through a temporary file in the same
  * directory renamed into place, so a process killed mid-write never leaves half a record to read:
  * the shape the Go bridge wrote the same file in while it kept this record, kept so a session
- * carried across the cutover reads whatever the build now in the pods left. The key is written
- * only once it is true, so a record this host writes is otherwise the shared entry and nothing
- * more. A write that fails is logged rather than thrown: the worker still gets its reminder. */
+ * carried across the cutover reads whatever the build now in the pods left. Each key is written
+ * only while it says something, `recreatedNoticeSent` once it is true and `backgroundReading`
+ * while there is one, so a record this host writes is otherwise the shared entry and nothing more.
+ * A write that fails is logged rather than thrown: the worker still gets its reminder. */
 export function writePhaseStallRecord(
   file: string,
   entry: PhaseStallEntry,
-  recreatedNoticeSent: boolean,
+  keys: Omit<PhaseStallRecord, "entry">,
   log: PhaseReminderLog,
 ): void {
   const temporary = join(dirname(file), `.legion-phase-stall-${randomUUID()}`)
   try {
     writeFileSync(
       temporary,
-      JSON.stringify({ ...entry, ...(recreatedNoticeSent ? { recreatedNoticeSent } : {}) }),
+      JSON.stringify({
+        ...entry,
+        ...(keys.recreatedNoticeSent ? { recreatedNoticeSent: true } : {}),
+        ...(keys.backgroundReading === undefined
+          ? {}
+          : { backgroundReading: keys.backgroundReading }),
+      }),
       { mode: 0o600 },
     )
     renameSync(temporary, file)
@@ -316,18 +380,28 @@ export function writePhaseStallRecord(
 export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint {
   const limits = stallLimits(deps.env, deps.log, configuredValue(deps.env["LEGION_ROLE"]))
   const restored = readPhaseStallRecord(deps.stateFile, deps.log)
-  // The machine's entry and this host's own key are one record, so the last entry written is kept
-  // for the write the notice makes.
+  // The machine's entry and this host's own keys are one record, so the last entry written is
+  // kept for the writes the notice and the background reading make.
   let entry: PhaseStallEntry = restored.entry ?? { state: "active", count: 0, reported: false }
   let recreatedNoticeSent = restored.recreatedNoticeSent
+  /** The last background reading written to the record (`BackgroundReading`), of this launch or
+   * of the one before it: `readingOf` tells which. Undefined while none says anything
+   * (`keepReading`). */
+  let reading = restored.backgroundReading
   const saveRecord = (next: PhaseStallEntry): void => {
     entry = next
-    writePhaseStallRecord(deps.stateFile, next, recreatedNoticeSent, deps.log)
+    writePhaseStallRecord(
+      deps.stateFile,
+      next,
+      { recreatedNoticeSent, backgroundReading: reading },
+      deps.log,
+    )
   }
-  // The key exists only so a server Claude Code restarts inside one `claude` process, whose
-  // environment is still its launch's, does not repeat that launch's notice. The launcher decides
-  // `LEGION_WORKSPACE_RECREATED` afresh for every launch, so a launch that recreated nothing
-  // clears it, and the next launch that recreates the workspace again is told again.
+  // `recreatedNoticeSent` exists only so a server Claude Code restarts inside one `claude`
+  // process, whose environment is still its launch's, does not repeat that launch's notice. The
+  // launcher decides `LEGION_WORKSPACE_RECREATED` afresh for every launch, so a launch that
+  // recreated nothing clears it, and the next launch that recreates the workspace again is told
+  // again.
   if (recreatedNoticeSent && !workspaceRecreated(deps.env)) {
     recreatedNoticeSent = false
     saveRecord(entry)
@@ -373,6 +447,36 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     return writeToSession(text, "a phase reminder")
   }
 
+  /**
+   * What `claim`'s launch last knew of its own background work, which the report a timer sends
+   * between turns repeats (`wakeChanged`): of the hooks this host runs, Claude Code shows the
+   * session's background tasks to `Stop` alone, so nothing between turns can read them again.
+   *
+   * A reading of the claim's generation was taken by this launch, by this server or by the one
+   * before it that Claude Code restarted inside this `claude` process, whose claim keeps its
+   * generation: a task the last `Stop` saw may still be running, so that reading stands. A launch
+   * whose record holds no reading or one of another generation is a fresh one, and its reading is
+   * no background work and no tool since: no task of the process the launch replaced outlives that
+   * process, only a turn of this process can start one, and every turn of it ends in `Stop` or
+   * `StopFailure`, each of which takes this generation's reading (`keepReading`).
+   */
+  const readingOf = (claim: ClaimCapability): Omit<BackgroundReading, "generation"> =>
+    reading?.generation === claim.generation ? reading : { backgroundWork: false, toolSince: false }
+  /** Makes `backgroundWork` and `toolSince` the reading of `claim`'s launch and writes it into the
+   * record at once, so a server Claude Code restarts after this call reads it again. A reading
+   * that says neither is kept as none: it reads the same (`readingOf`), and the record stays the
+   * shared entry alone. */
+  const keepReading = (
+    claim: ClaimCapability,
+    backgroundWork: boolean,
+    toolSince: boolean,
+  ): void => {
+    reading =
+      backgroundWork || toolSince
+        ? { generation: claim.generation, backgroundWork, toolSince }
+        : undefined
+    saveRecord(entry)
+  }
   const reminder = createPhaseReminder({
     // The bridge turns one inbox line into a user turn, which is what every reminder after the
     // `Stop` continuation is.
@@ -385,6 +489,19 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     saveEntry: saveRecord,
     claim: deps.claim,
     readOwed: deps.readOwed,
+    // A timer whose check decided not to remind has cleared the wake. This host otherwise reports
+    // only at `Stop`, and no turn starts whose `Stop` would carry the change, so the report goes
+    // now: a reported wake that is due and past holds the pod from its idle release. It goes on a
+    // fresh launch too, before any `Stop`: the launch cleared the daemon's stored report, and a
+    // first turn that ended in `StopFailure` sent none, so without this one the idle release would
+    // hold the pod as unreported (`IdleHoldUnreported`) until a turn that may never come. Its
+    // background work is the launch's reading (`readingOf`). No handler waits for this report, so
+    // it goes under the bound for a report between turns.
+    wakeChanged: () => {
+      const claim = deps.claim()
+      if (claim === undefined) return
+      void sendActivity(claim, readingOf(claim).backgroundWork, reportActivityBetweenTurns)
+    },
     // The server's own listener client, so the notice reaches the one this session already talks
     // to; Envoy off for the session leaves it undefined, the runner says so once at debug, and
     // the reminder keeps coming without a notice.
@@ -396,16 +513,28 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
   reminder.restore(restored.entry)
 
   /**
-   * INFRA-945: what this session is doing, reported to the daemon as each turn settles, so the
-   * idle rule can decide whether the pane's pod may be released. Claude Code's only sight of
-   * background work is the `Stop` hook's `${background_tasks}`, so this host reports at the
-   * settle and nowhere else; the one kind it can name is a Claude Code background task.
+   * INFRA-945: what this session is doing, reported to the daemon so the idle rule can decide
+   * whether the pane's pod may be released. Of the hooks this host runs, Claude Code shows the
+   * session's background tasks to `Stop` alone (`${background_tasks}`), so this host reports at
+   * each `Stop`, saying what that `Stop` read, and between turns only when a timer's check cleared
+   * the reminder wake (`wakeChanged`), repeating the launch's reading of what its last turn end
+   * left running (`readingOf`), since nothing between turns can read the tasks again. The one kind
+   * it can name is a Claude Code background task.
    *
    * A report that does not reach the daemon is logged and dropped: the turn's reminder is what
    * the hook owes its worker, and a claim with no report after its last turn is held rather than
-   * released.
+   * released. The caller chooses the report's bound (`bounded`). The `Stop` report goes under
+   * `ACTIVITY_REPORT_BOUND_MS` (`reportActivityWithin`), because the `Stop` hook awaits it: a
+   * daemon that does not answer holds the turn end here for at most 3 s. A report that bound cuts
+   * off leaves the claim unreported until its next report. No handler waits for the report
+   * `wakeChanged` sends, so it goes under `ACTIVITY_BETWEEN_TURNS_BOUND_MS`
+   * (`reportActivityBetweenTurns`): a daemon slower than 3 s still takes it.
    */
-  const sendActivity = async (claim: ClaimCapability, backgroundWork: boolean): Promise<void> => {
+  const sendActivity = async (
+    claim: ClaimCapability,
+    backgroundWork: boolean,
+    bounded: typeof reportActivityWithin,
+  ): Promise<void> => {
     const request = sessionActivityRequest({
       project: configuredValue(deps.env["LEGION_PROJECT"]),
       claim,
@@ -416,7 +545,7 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     })
     if (request === undefined) return
     try {
-      await deps.reportActivity(request)
+      await bounded(deps.reportActivity, request)
     } catch (error) {
       deps.log.warn("legion: this session's activity report did not reach the daemon", {
         issue: claim.issue,
@@ -490,6 +619,10 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // decide: a turn that ends with a background task of the worker's own still running is
           // a worker waiting to be woken by it, not a stalled one.
           const backgroundWork = backgroundWorkRunning(event.backgroundTasks)
+          // The launch's reading is what this `Stop` read, with no tool since, and it is on disk
+          // before the settle, so a server Claude Code restarts after this turn end repeats it
+          // rather than reading a fresh launch's no background work.
+          keepReading(claim, backgroundWork, false)
           deps.log.debug("legion: a Claude Code phase worker's turn is settling", {
             issue: claim.issue,
             role: claim.role,
@@ -504,7 +637,7 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // After the settle, so the report carries the wake that settle armed. The daemon
           // releases no claim whose last report is older than its last turn, so it goes at every
           // settle, whatever it says.
-          await sendActivity(claim, backgroundWork)
+          await sendActivity(claim, backgroundWork, reportActivityWithin)
           return reminded === undefined ? {} : { decision: "block", reason: reminded }
         }
         case "StopFailure": {
@@ -519,11 +652,31 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // answered that the claim owes nothing.
           // Claude Code ignores whatever this hook returns, which costs nothing now that there
           // is nothing to return.
+          //
+          // `StopFailure` carries no `${background_tasks}` (Claude Code v2.1.145;
+          // anthropics/claude-code issue 60692), so what this turn end leaves running comes from
+          // the launch's reading: what the launch's last turn end left running stands, and a
+          // refused turn that ran a tool counts as leaving background work, since that tool may
+          // have started a task. What that costs: the report the timer then sends holds the pod
+          // as background work (`IdleHoldBackgroundWork`, `packages/daemon/internal/workflow/
+          // idle.go`) until the next `Stop`, which a finishing task starts itself, and past
+          // `worker_background_hours` the daemon tells the architect. A refused turn that ran no
+          // tool started no task: its report repeats what the last turn end left running, and
+          // when that was nothing, as on a fresh launch, it lets the idle release take the pod.
+          const before = readingOf(claim)
+          keepReading(claim, before.backgroundWork || before.toolSince, false)
           await reminder.settle({ kind: "refused", message: event.lastAssistantMessage ?? "" })
           return {}
         }
         case "PostToolUse":
         case "PostToolUseFailure": {
+          // A tool call may have started a background task, which only the next `Stop` can see:
+          // the launch's reading notes that a tool has run since its last turn end, so a turn
+          // that `StopFailure` ends counts it. A subagent's call counts as the worker's does,
+          // since it may start a task as well. The record is written only when the note changes,
+          // at the first call after a turn end.
+          const before = readingOf(claim)
+          if (!before.toolSince) keepReading(claim, before.backgroundWork, true)
           // The worker is working, whatever it is working on, and an attempted call that failed
           // is work too. `${agent_id}` substitutes to "" in the main conversation and to a
           // non-empty id for a subagent (measured on the real binary), so a helper agent's call

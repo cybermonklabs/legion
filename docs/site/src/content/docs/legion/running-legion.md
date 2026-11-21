@@ -949,9 +949,11 @@ What each part is for:
   `LEGION_STALL_RESUME_MS` (120000, after a resume, when the daemon answers that the claim owes
   work) and
   `LEGION_STALL_ARCHITECT_AFTER` (3: how many delivered reminders in a row change nothing before
-  the architect is told, and never fewer than 2). Each of the six millisecond values is a whole
-  number of 0 or more; a value that is not is ignored, the default stands, and the worker's log
-  carries one `warn` line naming the variable.
+  the architect is told, and never fewer than 2). A reminder goes out only while the daemon's
+  record holds work open for the worker's role, and none goes out when the daemon's answer cannot
+  be read: no variable changes that. Each of the six millisecond values is a whole number of 0 or
+  more; a value that is not is ignored, the default stands, and the worker's log carries one
+  `warn` line naming the variable.
 
 The loader refuses any key it does not know, naming it, and refuses `omp_invocation` and
 `omp_launch_prefix` under Kubernetes, since every pod runs the image's Oh My Pi.
