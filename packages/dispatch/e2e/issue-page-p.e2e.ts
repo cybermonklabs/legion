@@ -1,5 +1,5 @@
+import { statusGlyph } from "../web/src/components/status-glyph";
 import { ACTION_WORDS } from "../web/src/features/issue-page/approval-chip-box";
-import { statusGlyph } from "../web/src/features/issue-page/issue-status";
 import { CONTROL_LABELS, STATE_LINES } from "../web/src/features/issue-page/page-words";
 import {
   createAsk,

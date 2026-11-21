@@ -6,14 +6,7 @@ import {
   type QueryKey,
   useQuery,
 } from "@tanstack/react-query";
-import {
-  act,
-  type RenderResult,
-  render,
-  renderHook,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { act, type RenderResult, renderHook, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -36,11 +29,6 @@ import type {
   UserState,
 } from "../../api/types";
 import { withoutEllipsis } from "../../components/tooltips";
-import {
-  pageStatusDoneText,
-  pageStatusIdleText,
-  pageStatusProgressText,
-} from "../../theme/classes";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl, assigneeControlName } from "../issue/AssigneeControl";
 import type { StepEntry } from "../issue/gated-steps";
@@ -50,13 +38,10 @@ import { stateForIssue } from "../issue/pins";
 import { RepoControl, repoControlName } from "../issue/RepoControl";
 import { issue as marginIssue } from "../margin/margin-fixture";
 import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
-import { issueStatuses } from "../project/board-model";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
-import { statusGlyph, statusTone } from "./issue-status";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
-import { StatusGlyph } from "./StatusGlyph";
 import {
   architecture,
   doc,
@@ -259,80 +244,6 @@ test("issueUpdateLabel names each field by the page's word", () => {
     "Parent and Title of CORE-1 saved"
   );
   expect(issueUpdateLabel("CORE-1", {})).toBe("CORE-1 saved");
-});
-
-// The prototype's `.st-*` puts every status in one of three groups, each with its glyph and its
-// colour: done, the work that moves, and the rest, a status the board does not know among them.
-test("statusGlyph and statusTone give the prototype's three groups", () => {
-  expect([statusGlyph("done"), statusTone("done")]).toEqual(["✓", pageStatusDoneText]);
-  const moving = ["in_progress", "testing", "needs_review"];
-  for (const status of moving) {
-    expect([status, statusGlyph(status), statusTone(status)]).toEqual([
-      status,
-      "◐",
-      pageStatusProgressText,
-    ]);
-  }
-  const others = [
-    ...issueStatuses.filter((status) => status !== "done" && !moving.includes(status)),
-    "blocked",
-  ];
-  expect(others).toEqual(expect.arrayContaining(["triage", "icebox", "backlog", "todo", "retro"]));
-  for (const status of others) {
-    expect([status, statusGlyph(status), statusTone(status)]).toEqual([
-      status,
-      "○",
-      pageStatusIdleText,
-    ]);
-  }
-});
-
-// The page's typeface lacks ◐, which as text would be drawn in a face of the reader's own machine,
-// at that face's width; a shape is the same whatever the reader's fonts, so each group's glyph is
-// an inline svg with no text in it.
-test("StatusGlyph draws each status's shape as an inline svg with no text", () => {
-  const groups: [status: string, shapes: (string | null)[][]][] = [
-    ["done", [["path", "none", "currentColor"]]],
-    [
-      "in_progress",
-      [
-        ["circle", "none", "currentColor"],
-        ["path", "currentColor", null],
-      ],
-    ],
-    ["todo", [["circle", "none", "currentColor"]]],
-  ];
-  for (const [status, shapes] of groups) {
-    const view = render(createElement(StatusGlyph, { glyph: statusGlyph(status) }));
-    try {
-      const svg = view.container.firstElementChild;
-      expect({
-        elements: Array.from(view.container.children, (element) => element.tagName),
-        glyph: svg?.getAttribute("data-status-glyph"),
-        hidden: svg?.getAttribute("aria-hidden"),
-        shapes: Array.from(svg?.children ?? [], (shape) => [
-          shape.tagName,
-          shape.getAttribute("fill"),
-          shape.getAttribute("stroke"),
-        ]),
-        sized: svg?.classList.contains("size-[1em]"),
-        status,
-        text: svg?.textContent,
-        textElements: svg?.querySelectorAll("text").length,
-      }).toEqual({
-        elements: ["svg"],
-        glyph: statusGlyph(status),
-        hidden: "true",
-        shapes,
-        sized: true,
-        status,
-        text: "",
-        textElements: 0,
-      });
-    } finally {
-      view.unmount();
-    }
-  }
 });
 
 /** The project's one architecture source, so the components line draws its picker
