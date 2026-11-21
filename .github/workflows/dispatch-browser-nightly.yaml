@@ -53,7 +53,7 @@ on:
 # new one on the same runners; `cancel-in-progress: false` queues the new run instead of killing
 # the old one, so neither night's report is lost.
 concurrency:
-  group: dispatch-browser-nightly
+  group: dispatch-browser-nightly-infra983-k8-B
   cancel-in-progress: false
 
 # The default for a job of this workflow that declares none. The one job below declares its own,
@@ -94,7 +94,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     # why: .github/ci-notes/dispatch-browser-nightly.md#the-quarantine-checks-measured-steps-and-its-budget
     # 300 + 33 = 333 s -> 6 min.
-    timeout-minutes: 6
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -107,7 +107,7 @@ jobs:
         working-directory: packages/contracts
       - name: Check the quarantine against 14 days of flaky rows
         # 213 x 1.15 = 245 s -> 5 min.
-        timeout-minutes: 5
+        timeout-minutes: 15
         run: bun e2e/tools/quarantine-check.ts
         working-directory: packages/dispatch
         env:
@@ -149,7 +149,7 @@ jobs:
   # unbudgeted steps round it to 26.
   re-record:
     runs-on: ubuntu-24.04
-    timeout-minutes: 26
+    timeout-minutes: 78
     # This job stays on the runner rather than in the browser image the shard and alone jobs
     # moved into, for the reason the multiprocess job stays: nothing can make it launch an
     # engine other than Chromium, so it keeps that one download, and it runs `go` through the
@@ -193,11 +193,11 @@ jobs:
         working-directory: packages/dispatch
       # Chromium alone: both stub projects launch it (`stub-phone` is an iPhone 13 on Chromium).
       - name: Install Playwright Chromium
-        timeout-minutes: 4
+        timeout-minutes: 12
         run: bunx playwright install chromium
         working-directory: packages/dispatch
       - name: Re-record every stubbed row against the real harness
-        timeout-minutes: 18
+        timeout-minutes: 54
         # Into a directory of its own, never over the committed set: a recording compared with
         # itself can never differ, so the committed recording that no row writes any more -
         # a row deleted, or one that stopped reading what it read - would be found by nobody.

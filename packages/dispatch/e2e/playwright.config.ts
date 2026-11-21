@@ -695,6 +695,8 @@ const stubProjects = [
 ] satisfies Project[];
 
 export default defineConfig({
+  // INFRA-983 k8 proof (scratch): every row twice.
+  repeatEach: 2,
   testDir: ".",
   testMatch: /.*\.e2e\.ts/,
   // The projects below that name no `testIgnore` of their own inherit this one. `stubSpecs` is
@@ -707,7 +709,8 @@ export default defineConfig({
   // it (e2e/test.ts); a worker never runs two rows at once, so rows of one file may run in
   // different stacks. A file whose rows must run in order says so itself, with
   // `test.describe.configure({ mode: "serial" })` and the reason.
-  fullyParallel: true,
+  // INFRA-983 k8 proof, run B (scratch): whole files, in file order, on each worker.
+  fullyParallel: false,
   // One worker by default, where Playwright's own default is half the machine's cores. A worker
   // costs a whole stack - a Postgres, a Go server and three to six fake listeners
   // (e2e/harness-pool.ts) - so a 16-core workstation would otherwise start eight of them before

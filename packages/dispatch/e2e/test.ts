@@ -354,7 +354,9 @@ export const test = base.extend<DispatchOptions & DispatchFixtures, DispatchWork
   // reset the fakes already, and this resets them once more: one more request to each fake, on
   // that row alone.
   freshFakes: [
-    async ({ workerDatabase: _emptiedFirst }, use) => {
+    async ({ workerDatabase: _emptiedFirst }, use, testInfo) => {
+      // INFRA-983 k8 proof, run B (scratch): a row of a single-worker leg meets no earlier row.
+      if (["agent-workspace-timing.e2e.ts", "heavy-bodies.e2e.ts", "nested-directive.e2e.ts", "search-tiers.e2e.ts", "coedit.multiprocess.e2e.ts", "cross-build.multiprocess.e2e.ts", "read-marker-disk-stall.multiprocess.e2e.ts", "two-builds.multiprocess.e2e.ts", "signin.multiprocess.e2e.ts"].includes(testInfo.file.split("/").pop() ?? "")) await emptyDatabase();
       await resetFakes();
       await use(undefined);
     },
