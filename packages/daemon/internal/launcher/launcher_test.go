@@ -140,10 +140,37 @@ func newSessionRig(t *testing.T, cfg Config) *rig {
 		case <-g.result:
 		case <-time.After(cleanupBeforeDeadline(t)):
 			t.Error("the launcher did not leave after its context ended, to 10 s before the test binary's deadline")
+			// The launcher never stopped its generation, so the case ends it: nothing of a case
+			// outlives the test binary.
+			if g.roleConn != nil && g.latest.Child != nil {
+				killGroupLedBy(g.latest.Child.PID)
+			}
 		}
 	})
 	g.accept()
 	return g
+}
+
+// killGroupLedBy sends SIGKILL to the process group pid leads, for a case whose launcher left a
+// generation running: the launcher starts each of a single-role launcher's generations as a group
+// of its own (launcher.go's Setpgid) from this test process. The group is signalled only while pid
+// is still this process's own child and leads its group, so a number the kernel has handed to
+// another process since is never signalled.
+func killGroupLedBy(pid int) {
+	body, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return
+	}
+	end := strings.LastIndex(string(body), ") ")
+	if end < 0 {
+		return
+	}
+	// The fields after the command are its state, its parent's pid and its group's.
+	fields := strings.Fields(string(body)[end+2:])
+	if len(fields) < 3 || fields[1] != strconv.Itoa(os.Getpid()) || fields[2] != strconv.Itoa(pid) {
+		return
+	}
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
 }
 
 // accept takes the launcher's next connection through its hello, acknowledgement and state.
