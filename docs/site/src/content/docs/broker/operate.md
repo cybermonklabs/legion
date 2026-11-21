@@ -95,17 +95,29 @@ its people sign in sets `BROKER_SIGNIN=off` instead, and that broker approves no
 ([A broker that signs nobody in](#a-broker-that-signs-nobody-in)).
 
 A caller's **name** decides which of those routes its account reaches, so listing an account is
-not one authority but a choice between them. The broker knows three names: `dispatch`, which
+not one authority but a choice between them. The broker knows four names: `dispatch`, which
 reaches every route Dispatch's server calls — the approval, denial, revocation and listing
 routes, `POST /v1/oauth/revoke`, and `POST /v1/oauth/introspect`; `listener`, which reaches
 `POST /v1/oauth/introspect` alone, for a resource server such as the Envoy listener that reads
-one of the broker's access tokens back and relays nobody's decision; and `access-review`, which
+one of the broker's access tokens back and relays nobody's decision; `access-review`, which
 reaches `GET /v1/grant-log` alone, for the quarterly review that reads the broker's record of
-who asked for what and who said yes, and changes nothing in it. The grant log is no part of what
-`dispatch` and `listener` carry, and neither of them reaches it. A listed caller on a route its
-name does not carry is answered `403 ACCOUNT_LACKS_POWER`, naming the caller and the route, and an
-entry naming a caller the broker does not know refuses the start, naming that name and the names
-it knows, so a typo cannot quietly produce a caller that reaches nothing.
+who asked for what and who said yes, and changes nothing in it; and `session-watch`, which
+reaches `GET /v1/private-projects` alone, for the shared session watch, which reads which
+projects are private so that it never judges a private project's session. The grant log and the
+private list are no part of what `dispatch` and `listener` carry, and neither of them reaches
+either. A listed caller on a route its name does not carry is answered `403 ACCOUNT_LACKS_POWER`,
+naming the caller and the route, and an entry naming a caller the broker does not know refuses
+the start, naming that name and the names it knows, so a typo cannot quietly produce a caller
+that reaches nothing.
+
+`GET /v1/private-projects` answers the broker's list of every private project, sorted and each key
+once, `[]` when none is. A list the broker cannot read is `503 PRIVATE_LIST_UNKNOWN`, naming the
+kind of failure and never a shorter list; the watch reads it as no list and fails closed. The
+route keeps nothing between calls. This release wires no list to it, so it answers every call
+that 503, whatever `BROKER_PROJECT_ACCESS_URL` is. The list it will answer is the union of the
+projects the broker's own settings declare private, a setting this release does not have yet, and
+the ones Dispatch answers private; Dispatch's alone would lack every declared one Dispatch does
+not also call private.
 
 Five settings turn the model judge on, which decides one narrow class of the requests that would
 otherwise wait for a person ([Concepts](/legion/broker/concepts/#the-model-judge)): the endpoint

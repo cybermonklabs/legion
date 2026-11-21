@@ -1,11 +1,12 @@
-// account_powers_test.go drives the REAL compiled broker with three accounts in
-// BROKER_API_ACCOUNTS — one calling as dispatch, one as listener, one as access-review — over
-// HTTP, on a real Postgres, against a local OpenID issuer standing in for the cluster's. Being
-// listed is not being allowed: the caller's name says which of the broker's fourteen
-// named-caller routes that account reaches, so the introspection-only caller is refused every
-// route Dispatch's server relays a person's decisions through, the review caller reads the
-// grant log and is refused the other thirteen, and the dispatch caller reaches all thirteen of
-// its own and is refused the review's. Nothing here is a unit test — the binary is the one
+// account_powers_test.go drives the REAL compiled broker with four accounts in
+// BROKER_API_ACCOUNTS — one calling as dispatch, one as listener, one as access-review, one as
+// session-watch — over HTTP, on a real Postgres, against a local OpenID issuer standing in for the
+// cluster's. Being listed is not being allowed: the caller's name says which of the broker's
+// fifteen named-caller routes that account reaches, so the introspection-only caller is refused
+// every route Dispatch's server relays a person's decisions through, the review caller reads the
+// grant log and is refused the other fourteen, the session watch reads the private list and is
+// refused the other fourteen, and the dispatch caller reaches all thirteen of its own and is
+// refused the review's and the watch's. Nothing here is a unit test — the binary is the one
 // cmd/cipherd builds and every request crosses a socket.
 package main
 
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -25,22 +27,27 @@ const (
 	// listenerAccount is the second listed ServiceAccount, calling as listener: the Envoy
 	// listener, which reads one of the broker's access tokens back and relays no person's
 	// decision. reviewAccount is the third, calling as access-review: the identity a quarterly
-	// access review reads the broker's audit trail as, which decides nothing. apiAccount
-	// (token_exchange_test.go) is the first, calling as dispatch.
+	// access review reads the broker's audit trail as, which decides nothing. watchAccount is the
+	// fourth, calling as session-watch: the shared session watch, which reads the broker's list of
+	// private projects and nothing else. apiAccount (token_exchange_test.go) is the first, calling
+	// as dispatch.
 	listenerAccount = "system:serviceaccount:example-ns:example-listener"
 	reviewAccount   = "system:serviceaccount:example-ns:example-access-review"
-	// The three caller names those accounts are listed under, which the broker names in a
+	watchAccount    = "system:serviceaccount:example-ns:example-session-watch"
+	// The four caller names those accounts are listed under, which the broker names in a
 	// refusal and this test drives every route from.
 	dispatchCaller = "dispatch"
 	listenerCaller = "listener"
 	reviewCaller   = "access-review"
+	watchCaller    = "session-watch"
 	// introspection is the one route two names carry: the listener's own, which dispatch
 	// reaches too, since the name that relays a person's decisions reads a token back as well.
 	// grantLogRoute is the review's own, which carries a closed period because the review
-	// caller's answer there is a page and not a refusal.
-	introspection = "/v1/oauth/introspect"
-	grantLogRoute = "/v1/grant-log"
-	grantLogQuery = grantLogRoute + "?since=2026-01-01T00:00:00Z&until=2026-01-02T00:00:00Z"
+	// caller's answer there is a page and not a refusal. privateListRoute is the watch's own.
+	introspection    = "/v1/oauth/introspect"
+	grantLogRoute    = "/v1/grant-log"
+	grantLogQuery    = grantLogRoute + "?since=2026-01-01T00:00:00Z&until=2026-01-02T00:00:00Z"
+	privateListRoute = "/v1/private-projects"
 	// powersApprover is the person a relayed decision would name, and unknownID an id no record,
 	// machine login or grant has: the routes under test are reached, never satisfied, so the
 	// answer this test reads is the authority's and not a decision's.
@@ -56,15 +63,99 @@ const (
 	lacksPower = "ACCOUNT_LACKS_POWER"
 )
 
-// TestAListedAccountReachesOnlyItsOwnRoutes lists three callers and drives every route
+// accountRoute is one route accountAuth authenticates, with a request that reaches its handler:
+// pattern is what the broker names in a refusal, path what the test calls, and status, key and
+// value the answer the route's own caller gets.
+type accountRoute struct {
+	method, pattern, path, contentType, body string
+	// caller is the listed caller the route belongs to: the name whose own powers carry it.
+	// Every other listed caller is refused it, except that dispatch reaches introspection
+	// too, since the name that relays a person's decisions reads a token back as well.
+	caller string
+	// status is the answer's status for the route's own caller, and key and value one member
+	// of its body that only that answer carries: a refusal's code, an OAuth error's error, or
+	// a list.
+	status int
+	key    string
+	value  any
+}
+
+// emptyList is a list route's answer on a broker that holds nothing, as JSON decodes it.
+var emptyList = []any{}
+
+// accountRoutes is one row for each route the broker's route table authenticates with
+// accountAuth (TestEveryAccountRouteHasARow holds the two to each other). This broker holds no
+// record, machine login, grant or sign-in, and asks no Dispatch, so each answer is the route's own
+// for nothing found: a list route's empty list, a decision's 404 for an id nothing has. Holding
+// each row to its own answer, rather than to "not the authority's refusal", is what makes a 401
+// or a 500 on the way to the handler a failure here.
+var accountRoutes = []accountRoute{
+	// Introspection answers about the token, and the token nobody issued is simply not live.
+	{method: http.MethodPost, pattern: introspection, path: introspection,
+		contentType: "application/x-www-form-urlencoded", body: "token=a-token-nobody-issued", caller: listenerCaller,
+		status: http.StatusOK, key: "active", value: false},
+	// The revocation body names no client, so the dispatch caller it reaches is refused by
+	// the provider's own client authentication (RFC 6749's invalid_client) rather than
+	// answered 200 with an empty body: what this walk reads is the authority, and callBroker
+	// reads a JSON answer.
+	{method: http.MethodPost, pattern: "/v1/oauth/revoke", path: "/v1/oauth/revoke",
+		contentType: "application/x-www-form-urlencoded", body: "token=a-token-nobody-issued", caller: dispatchCaller,
+		status: http.StatusUnauthorized, key: "error", value: "invalid_client"},
+	{method: http.MethodGet, pattern: "/v1/pending", path: "/v1/pending?approver=" + powersApprover, caller: dispatchCaller,
+		status: http.StatusOK, key: "pending", value: emptyList},
+	// The three decisions on a record id nothing has: writeNoSuchRecord.
+	{method: http.MethodPost, pattern: "/v1/credential-requests/{record}/approve", path: "/v1/credential-requests/" + unknownRecord + "/approve",
+		contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller,
+		status: http.StatusNotFound, key: "code", value: "NOT_FOUND"},
+	{method: http.MethodPost, pattern: "/v1/credential-requests/{record}/deny", path: "/v1/credential-requests/" + unknownRecord + "/deny",
+		contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller,
+		status: http.StatusNotFound, key: "code", value: "NOT_FOUND"},
+	{method: http.MethodPost, pattern: "/v1/credential-requests/{record}/dismiss", path: "/v1/credential-requests/" + unknownRecord + "/dismiss",
+		contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller,
+		status: http.StatusNotFound, key: "code", value: "NOT_FOUND"},
+	// No pending machine login carries the code.
+	{method: http.MethodPost, pattern: "/v1/machine-logins/lookup", path: "/v1/machine-logins/lookup",
+		contentType: "application/json", body: `{"code":"EXAM-PLE1"}`, caller: dispatchCaller,
+		status: http.StatusNotFound, key: "code", value: "NO_SUCH_CODE"},
+	{method: http.MethodGet, pattern: "/v1/launcher-credentials", path: "/v1/launcher-credentials?approver=" + powersApprover, caller: dispatchCaller,
+		status: http.StatusOK, key: "credentials", value: emptyList},
+	// enroll.ErrNoCredential: no machine login has the id.
+	{method: http.MethodPost, pattern: "/v1/launcher-credentials/{id}/revoke-by-approver", path: "/v1/launcher-credentials/" + unknownID + "/revoke-by-approver",
+		contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller,
+		status: http.StatusNotFound, key: "code", value: "NOT_FOUND"},
+	{method: http.MethodGet, pattern: "/v1/grants", path: "/v1/grants?approver=" + powersApprover, caller: dispatchCaller,
+		status: http.StatusOK, key: "grants", value: emptyList},
+	{method: http.MethodPost, pattern: "/v1/grants/{id}/revoke-by-approver", path: "/v1/grants/" + unknownID + "/revoke-by-approver",
+		contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller,
+		status: http.StatusNotFound, key: "code", value: "NOT_FOUND"},
+	{method: http.MethodGet, pattern: "/v1/person-signins", path: "/v1/person-signins?person=" + powersApprover, caller: dispatchCaller,
+		status: http.StatusOK, key: "signins", value: emptyList},
+	// store.ErrNoSignIn: the person has no sign-in of that id.
+	{method: http.MethodPost, pattern: "/v1/person-signins/{id}/revoke", path: "/v1/person-signins/" + unknownID + "/revoke",
+		contentType: "application/json", body: `{"person":"` + powersApprover + `"}`, caller: dispatchCaller,
+		status: http.StatusNotFound, key: "code", value: "NOT_FOUND"},
+	// The review's own route, called for a period that closed long ago, so the answer the
+	// review gets here is a page of the grant log, empty on a broker nothing has happened on
+	// yet, rather than a refusal of its period.
+	{method: http.MethodGet, pattern: grantLogRoute, path: grantLogQuery, caller: reviewCaller,
+		status: http.StatusOK, key: "events", value: emptyList},
+	// The watch's own route, on a broker that wires no list to it: a list it cannot read is no
+	// list, which is the route's own answer and not a refusal of the caller.
+	{method: http.MethodGet, pattern: privateListRoute, path: privateListRoute, caller: watchCaller,
+		status: http.StatusServiceUnavailable, key: "code", value: "PRIVATE_LIST_UNKNOWN"},
+}
+
+// TestAListedAccountReachesOnlyItsOwnRoutes lists four callers and drives every route
 // accountAuth authenticates from each of them. The listener caller, listed for introspection
 // alone, is refused each of the twelve relay routes — approve, deny, dismiss, both
 // revoke-by-approver, the RFC 7009 token revocation and both person sign-in routes among them —
-// and the grant log too, 403 ACCOUNT_LACKS_POWER naming itself and the route, and still reads a
-// token back. The access-review caller reads the grant log and is refused the other thirteen the
-// same way. The dispatch caller reaches all thirteen of its own, the introspection route
-// included, and is refused the grant log: the broker's audit trail is not another of the powers
-// the name that decides already holds.
+// the grant log and the private list too, 403 ACCOUNT_LACKS_POWER naming itself and the route, and
+// still reads a token back. The access-review caller reads the grant log and is refused the other
+// fourteen the same way, and the session-watch caller reaches the private list, on a broker that
+// wires no list to it its 503 PRIVATE_LIST_UNKNOWN, and is refused the other fourteen.
+// The dispatch caller reaches all thirteen of its own, the introspection route included, and is
+// refused the grant log and the private list: neither the broker's audit trail nor the list of
+// private projects is another of the powers the name that decides already holds.
 func TestAListedAccountReachesOnlyItsOwnRoutes(t *testing.T) {
 	databaseURL := storetest.URL(t)
 	cluster := oidctest.New(t)
@@ -80,7 +171,12 @@ func TestAListedAccountReachesOnlyItsOwnRoutes(t *testing.T) {
 		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
 		"BROKER_K8S_OIDC_ISSUER=" + cluster.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=" + enrolmentAudience,
-		"BROKER_API_ACCOUNTS=dispatch=" + apiAccount + " listener=" + listenerAccount + " access-review=" + reviewAccount,
+		"BROKER_API_ACCOUNTS=dispatch=" + apiAccount + " listener=" + listenerAccount + " access-review=" + reviewAccount + " session-watch=" + watchAccount,
+		// No Dispatch, whatever the environment the test runs in sets, so each answer below is the
+		// one a broker that asks no Dispatch gives. Each is the last of its key, which is the value
+		// exec gives the child.
+		"BROKER_PROJECT_ACCESS_URL=",
+		"BROKER_PROJECT_ACCESS_TOKEN_FILE=",
 	}})
 	live := newPlainBroker(broker.Addr)
 	// Each listed caller: the name the broker knows it by and that account's own token.
@@ -88,46 +184,10 @@ func TestAListedAccountReachesOnlyItsOwnRoutes(t *testing.T) {
 		{dispatchCaller, accountToken(t, cluster, clusterKey, apiAccount)},
 		{listenerCaller, accountToken(t, cluster, clusterKey, listenerAccount)},
 		{reviewCaller, accountToken(t, cluster, clusterKey, reviewAccount)},
+		{watchCaller, accountToken(t, cluster, clusterKey, watchAccount)},
 	}
 
-	// Each row is one route accountAuth authenticates, with a request that reaches its handler:
-	// pattern is what the broker names in a refusal, path what this test calls.
-	for _, route := range []struct {
-		method, pattern, path, contentType, body string
-		// caller is the listed caller the route belongs to: the name whose own powers carry it.
-		// Every other listed caller is refused it, except that dispatch reaches introspection
-		// too, since the name that relays a person's decisions reads a token back as well.
-		caller string
-	}{
-		{method: http.MethodPost, pattern: introspection, path: introspection,
-			contentType: "application/x-www-form-urlencoded", body: "token=a-token-nobody-issued", caller: listenerCaller},
-		// The revocation body names no client, so the dispatch caller it reaches is refused by
-		// the provider's own client authentication rather than answered 200 with an empty body:
-		// what this walk reads is the authority, and callBroker reads a JSON answer.
-		{method: http.MethodPost, pattern: "/v1/oauth/revoke", path: "/v1/oauth/revoke",
-			contentType: "application/x-www-form-urlencoded", body: "token=a-token-nobody-issued", caller: dispatchCaller},
-		{method: http.MethodGet, pattern: "/v1/pending", path: "/v1/pending?approver=" + powersApprover, caller: dispatchCaller},
-		{method: http.MethodPost, pattern: "/v1/credential-requests/{record}/approve", path: "/v1/credential-requests/" + unknownRecord + "/approve",
-			contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller},
-		{method: http.MethodPost, pattern: "/v1/credential-requests/{record}/deny", path: "/v1/credential-requests/" + unknownRecord + "/deny",
-			contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller},
-		{method: http.MethodPost, pattern: "/v1/credential-requests/{record}/dismiss", path: "/v1/credential-requests/" + unknownRecord + "/dismiss",
-			contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller},
-		{method: http.MethodPost, pattern: "/v1/machine-logins/lookup", path: "/v1/machine-logins/lookup",
-			contentType: "application/json", body: `{"code":"EXAM-PLE1"}`, caller: dispatchCaller},
-		{method: http.MethodGet, pattern: "/v1/launcher-credentials", path: "/v1/launcher-credentials?approver=" + powersApprover, caller: dispatchCaller},
-		{method: http.MethodPost, pattern: "/v1/launcher-credentials/{id}/revoke-by-approver", path: "/v1/launcher-credentials/" + unknownID + "/revoke-by-approver",
-			contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller},
-		{method: http.MethodGet, pattern: "/v1/grants", path: "/v1/grants?approver=" + powersApprover, caller: dispatchCaller},
-		{method: http.MethodPost, pattern: "/v1/grants/{id}/revoke-by-approver", path: "/v1/grants/" + unknownID + "/revoke-by-approver",
-			contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller},
-		{method: http.MethodGet, pattern: "/v1/person-signins", path: "/v1/person-signins?person=" + powersApprover, caller: dispatchCaller},
-		{method: http.MethodPost, pattern: "/v1/person-signins/{id}/revoke", path: "/v1/person-signins/" + unknownID + "/revoke",
-			contentType: "application/json", body: `{"person":"` + powersApprover + `"}`, caller: dispatchCaller},
-		// The review's own route, called for a period that closed long ago, so the answer the
-		// review gets here is a page of the grant log rather than a refusal of its period.
-		{method: http.MethodGet, pattern: grantLogRoute, path: grantLogQuery, caller: reviewCaller},
-	} {
+	for _, route := range accountRoutes {
 		for _, who := range callers {
 			t.Run("as "+who.name+": "+route.method+" "+route.pattern, func(t *testing.T) {
 				status, body := live.callAs(t, route.method, route.path, who.token, route.contentType, route.body)
@@ -147,30 +207,9 @@ func TestAListedAccountReachesOnlyItsOwnRoutes(t *testing.T) {
 					}
 					return
 				}
-				switch route.pattern {
-				case introspection:
-					// Introspection answers about the token, and the token nobody issued is
-					// simply not live.
-					if status != http.StatusOK || body["active"] != false {
-						t.Fatalf("%s %s as %s = %d %v, want 200 and an inactive token: a caller listed to read a token back must reach it",
-							route.method, route.pattern, who.name, status, body)
-					}
-				case grantLogRoute:
-					// The grant log answers a page, empty on a broker nothing has happened on
-					// yet, which is still a page and not a refusal.
-					if status != http.StatusOK || body["events"] == nil {
-						t.Fatalf("%s %s as %s = %d %v, want 200 and a page of events: the review reads the closed period it asked for",
-							route.method, route.pattern, who.name, status, body)
-					}
-				default:
-					// A route may well answer 400 or 404 — this test sets up no record, no
-					// machine login and no grant for the ids and bodies it sends — so what is
-					// asserted is that the answer is not the authority's refusal: neither "this
-					// caller may not call that route" nor "this account is not listed".
-					if code, _ := body["code"].(string); status == http.StatusForbidden && (code == lacksPower || code == "ACCOUNT_NOT_LISTED") {
-						t.Fatalf("%s %s as %s = %d %v, want anything but the authority's refusal: this route is the caller's own",
-							route.method, route.pattern, who.name, status, body)
-					}
+				if status != route.status || !reflect.DeepEqual(body[route.key], route.value) {
+					t.Fatalf("%s %s as %s = %d %v, want %d with %s %v: the route's own answer for its own caller",
+						route.method, route.pattern, who.name, status, body, route.status, route.key, route.value)
 				}
 			})
 		}

@@ -697,6 +697,11 @@ func main() {
 		TrustedProxyHeader:     cfg.TrustedProxyHeader,
 		Approval:               page,
 		Draining:               draining.Load,
+		// PrivateProjects is left nil: GET /v1/private-projects answers 503 PRIVATE_LIST_UNKNOWN
+		// until this broker holds the union of the projects its own settings declare private and
+		// the ones Dispatch answers private, with the one hold it keeps through an outage of
+		// Dispatch. Dispatch's list alone would lack every declared key Dispatch does not also call
+		// private, a short list the session watch cannot tell from the truth.
 		NotifyReread: func(ctx context.Context, name string) {
 			// This pod reread the name itself and merged what it read (the reread route's
 			// notifyPeers), so the value behind the name may be a new version: dropped from

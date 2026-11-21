@@ -93,8 +93,9 @@ type Config struct {
 	MachineLoginURL string
 	// BROKER_API_ACCOUNTS: the accounts that call the broker's named-caller routes — the
 	// approval routes Dispatch's server calls on a person's behalf, the introspection route
-	// a resource server reads one of the broker's access tokens back through, and the grant-log
-	// route a quarterly access review reads the broker's audit trail through —
+	// a resource server reads one of the broker's access tokens back through, the grant-log
+	// route a quarterly access review reads the broker's audit trail through, and the
+	// private-list route the shared session watch reads which projects are private through —
 	// whitespace-separated <caller>=<account> entries. An account is a Kubernetes service
 	// account, written as the subject a projected token carries
 	// (dispatch=system:serviceaccount:example-ns:example-dispatch), or a Google service
@@ -116,14 +117,17 @@ type Config struct {
 	// BROKER_VM_SERVICES, since a token from one proves nothing about which machine is asking.
 	//
 	// The caller's name decides what the account may do, and the broker
-	// knows three: dispatch reaches every one of those routes, the ten Dispatch's server relays
-	// a person's decisions and reads through as well as introspection; listener reaches
+	// knows four: dispatch reaches every one of those routes but two, the twelve Dispatch's server
+	// relays a person's decisions and reads through as well as introspection; listener reaches
 	// introspection alone, since the Envoy listener reads a token back and relays no decision;
-	// and access-review reaches GET /v1/grant-log alone, which answers every audit row of a
+	// access-review reaches GET /v1/grant-log alone, which answers every audit row of a
 	// closed period, so whoever runs the quarterly review reads the whole trail and can decide
-	// nothing, release no secret value and write no row. Dispatch's server is deliberately not
-	// given that last one: it already holds approval authority over every person's secrets, and
-	// the review is a reader, so the two stay separate names and separate accounts. A
+	// nothing, release no secret value and write no row; and session-watch reaches GET
+	// /v1/private-projects alone, the broker's list of every private project, which the shared
+	// session watch reads so that it never judges a private project's session. Dispatch's server
+	// is deliberately given neither of the last two: it already holds approval authority over
+	// every person's secrets, and the review and the watch are readers, so each stays a separate
+	// name and a separate account. A
 	// name the broker does not know refuses the boot naming it and the names it knows, so a typo
 	// never quietly produces a caller that reaches nothing, and a new caller is a deliberate
 	// edit to the broker's own table (api.AccountFor). A listed caller reaching a route its name

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -165,11 +166,21 @@ type Deps struct {
 	// never stops in the first place - ciphertest and the in-process rigs - for which the broker
 	// is never draining.
 	Draining func() bool
+	// PrivateProjects is the broker's list of every private project, which GET
+	// /v1/private-projects answers the shared session watch (PrivateProjects, the type, says what
+	// an implementation answers). Nil wires no list: the route answers 503 PRIVATE_LIST_UNKNOWN,
+	// never 200. cmd/cipherd leaves it nil until the broker holds the union of the projects its
+	// own settings declare private and the ones Dispatch answers private, with the one hold that
+	// union keeps through an outage of Dispatch.
+	PrivateProjects PrivateProjects
 }
 
 type server struct {
 	deps            Deps
 	launcherLimiter *launcherLimiter
+	// privateListLogged is when GET /v1/private-projects last logged a list it could not read
+	// (unix nanoseconds, zero for never), so it logs at most once per projectaccess.CacheTTL.
+	privateListLogged atomic.Int64
 	// rereadLimiter is the per-address bucket on POST /v1/secrets/{name}/reread
 	// (clientAddress) and rereadOverall the one every caller shares; refuseReread takes from
 	// both or neither. For a Deps that carries a RereadRate these are that rate's own pair, so

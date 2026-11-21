@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  `GET /v1/private-projects` answers the shared session watch the broker's list of every private
+  project, sorted and each key once. Only the new caller name `session-watch` reaches it, which a
+  deployment gives the watch's ServiceAccount with a `BROKER_API_ACCOUNTS` entry
+  (`session-watch=system:serviceaccount:<namespace>:<name>`); `dispatch`, `listener` and
+  `access-review` are refused `403 ACCOUNT_LACKS_POWER`, and `session-watch` reaches no other
+  route. A list the broker cannot read is `503 PRIVATE_LIST_UNKNOWN`, naming the kind of failure
+  and never a shorter list. This release wires no list to the route, so it answers every call that
+  503.
+time: 2026-11-21T00:24:29.000000000Z
+custom:
+  Issue: pr4694

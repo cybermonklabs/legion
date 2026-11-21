@@ -2076,6 +2076,35 @@ func TestLoadRefusesACallerTheBrokerDoesNotKnow(t *testing.T) {
 	}
 }
 
+// TestAPIAccountsParseTheSessionWatch pins the shared session watch's entry in
+// BROKER_API_ACCOUNTS: session-watch=<its ServiceAccount> loads as the caller session-watch, the
+// one name that reads GET /v1/private-projects, and the entry written the other way round, the
+// account before the name, is refused naming the entry, as every entry not of the
+// <caller>=<account> form is.
+func TestAPIAccountsParseTheSessionWatch(t *testing.T) {
+	const watchAccount = "system:serviceaccount:example-ns:example-session-watch"
+	e := withK8sIssuer()
+	e["BROKER_API_ACCOUNTS"] = "session-watch=" + watchAccount
+	cfg, err := Load(env(e))
+	if err != nil {
+		t.Fatalf("BROKER_API_ACCOUNTS=session-watch=%s: %v", watchAccount, err)
+	}
+	watch, known := api.AccountFor("session-watch")
+	if !known {
+		t.Fatal(`api.AccountFor("session-watch"): the broker knows no caller of that name`)
+	}
+	if want := map[string]api.Account{watchAccount: watch}; !maps.Equal(cfg.APIAccounts, want) || cfg.GoogleAPIAccounts != nil {
+		t.Fatalf("APIAccounts = %v and GoogleAPIAccounts = %v, want %v and no Google caller", cfg.APIAccounts, cfg.GoogleAPIAccounts, want)
+	}
+
+	reversed := watchAccount + "=session-watch"
+	e = withK8sIssuer()
+	e["BROKER_API_ACCOUNTS"] = reversed
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_API_ACCOUNTS") || !strings.Contains(err.Error(), strconv.Quote(reversed)) {
+		t.Fatalf("BROKER_API_ACCOUNTS = %q: err = %v, want a refusal naming the setting and the entry", reversed, err)
+	}
+}
+
 // TestLoadReadsTheAccessTokenLifetime pins BROKER_ACCESS_TOKEN_SECONDS: whole seconds, 900 by
 // default, and a refusal naming the variable and its range for anything else.
 func TestLoadReadsTheAccessTokenLifetime(t *testing.T) {
