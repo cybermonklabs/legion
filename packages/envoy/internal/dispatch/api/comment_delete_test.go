@@ -516,8 +516,8 @@ func payloadAnchorQuote(payload map[string]any) (string, bool) {
 // orphaned whether its quote was cleared or not: the reject takes the suggestion's mark out of
 // the document - an insert's with the text under it (docs/reject.go:23-56), a replace's by
 // unmarking it - and a refresh finds an anchor by its mark alone, never by its quote
-// (docs/anchor_refresh.go:198-210), so the delete's own margin write already finds no mark. A
-// plain comment's mark stays in the document, so it reads anchored.
+// (docs.refreshAnchors), so the delete's own margin write already finds no mark. A plain
+// comment's mark stays in the document, so it reads anchored.
 func TestDeletingAPendingInsertSuggestionClearsTheQuoteOfItsWords(t *testing.T) {
 	const words = "zarquoninserted"
 	for _, test := range []struct {
