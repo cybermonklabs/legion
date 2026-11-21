@@ -50,8 +50,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/legionagents"
@@ -71,14 +71,14 @@ var ErrEdgeNotAdmitted = errors.New("this edge listener does not admit the acces
 // every refusal wraps ErrEdgeNotAdmitted and names the rule. It reads nothing but its arguments,
 // so apiAuth asks it of each request's caller, and any other reader of a live answer about a
 // token can ask it again. apiAuth never hands it a read-only token: the listener's verifier
-// refuses one as no session (brokertoken.ErrNotASession), the 401 of a request with no session.
-func EdgeAdmits(edgeProjects []string, caller brokertoken.Caller) error {
+// refuses one as no session (ciphertoken.ErrNotASession), the 401 of a request with no session.
+func EdgeAdmits(edgeProjects []string, caller ciphertoken.Caller) error {
 	switch {
 	case caller.ReadOnly:
 		return fmt.Errorf("%w: a read-only token acts as no session here", ErrEdgeNotAdmitted)
-	case caller.ProjectScope != brokertoken.ProjectScopeNamed && caller.ProjectScope != brokertoken.ProjectScopePerson:
+	case caller.ProjectScope != ciphertoken.ProjectScopeNamed && caller.ProjectScope != ciphertoken.ProjectScopePerson:
 		return fmt.Errorf("%w: its project scope is %q, and the edge admits only %s and %s",
-			ErrEdgeNotAdmitted, caller.ProjectScope, brokertoken.ProjectScopeNamed, brokertoken.ProjectScopePerson)
+			ErrEdgeNotAdmitted, caller.ProjectScope, ciphertoken.ProjectScopeNamed, ciphertoken.ProjectScopePerson)
 	case len(caller.Projects) == 0:
 		return fmt.Errorf("%w: it lists no project, and the edge serves only %s", ErrEdgeNotAdmitted, strings.Join(edgeProjects, ", "))
 	}
@@ -126,7 +126,7 @@ func withEdgeHold(ctx context.Context) context.Context {
 	return context.WithValue(ctx, edgeHoldKey{}, true)
 }
 
-// heldProjects is the projects r is held to, its broker token's (brokertoken.Caller.Projects, the
+// heldProjects is the projects r is held to, its broker token's (ciphertoken.Caller.Projects, the
 // caller's own copy), and whether it is held at all: true only for a request an edge listener
 // admitted, false on every other listener.
 func heldProjects(r *http.Request) ([]string, bool) {
@@ -489,7 +489,7 @@ func edgeLegionWriteRefusal(r *http.Request) *edgeRefusal {
 
 // registeringProjects is the projects the registration r makes records on its session's entry
 // (session.SessionEntry.Projects): its broker token's list, sorted and each once as the broker
-// answers it (the caller's own copy, brokertoken.Caller.Projects), and [] for a registration that
+// answers it (the caller's own copy, ciphertoken.Caller.Projects), and [] for a registration that
 // presented no broker token or one listing none.
 func registeringProjects(r *http.Request) []string {
 	if caller, ok := brokerCaller(r); ok && len(caller.Projects) > 0 {

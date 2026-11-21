@@ -29,7 +29,7 @@
 -- The attribute node. Its id is `<supertag>/<store name>`, and its attributes are what the seed
 -- builds for an attribute of the file: the attribute's own JSON, `{"kind": "string"}`, with its
 -- name, its store name and its position beside it. `ci_check` is the name of no base attribute,
--- so its store name is its own name (pmdoc/schemanodes.StoreName). The position is its place
+-- so its store name is its own name (pmdoc/schemanodes/schemanodestest.StoreName). The position is its place
 -- among the type's attributes, counted from 0: serves, surface, run, when and negative_control
 -- hold 0 to 4, so ci_check holds 5.
 with change as (

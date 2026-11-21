@@ -31,10 +31,11 @@ import (
 // never read again. A claim in no turn has no turn to end: a claim's record is never cleared, so
 // the step of a turn that ended hours ago still stands on an idle claim, and reading it would end
 // a turn nobody is in. A claim in an update round is the round's to carry: the round replaces
-// that process with its pod once every worker of the pod has answered and no turn runs, or at
-// the round's bound whatever the workers answered, and tells the controller when something holds
-// it past that bound (reconcilePodUpdates, tellUpdateStalled), so a backstop relaunch under it
-// would replace a process the round is about to replace and start its clock again.
+// that process with its pod once every worker of the pod has answered, no turn runs and no
+// claim's activity report holds it (roundEnd.holding), or at the round's bound whatever the
+// workers answered and whatever runs, and tells the controller when something holds it past that
+// bound (reconcilePodUpdates, tellUpdateStalled), so a backstop relaunch under it would replace a
+// process the round is about to replace and start its clock again.
 //
 // The stop itself is the machine's (supervise's backstopStalledTurn), which re-reads the claim's
 // own record before it acts and charges nothing. The post is made at every tick that finds the
@@ -168,7 +169,9 @@ type stallNoticeOwed struct {
 // It reports whether the owner was told: a row the store refuses is owed and told again at the
 // next sweep, as a stalled update round's is (tellUpdateStalled). The project controller's own
 // claim has no issue and so no owner to tell; the line it logs is the whole of its telling, and
-// the record is in it.
+// the record is in it. So is the line of a claim of another project's issue, which the operator's
+// spawn makes: its owner's notice would be a row keyed by that issue, which only that project's
+// daemon runs, so none is written (supervision.enqueue), and the line says so.
 func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Claim, stop supervise.StallBackstopStop) bool {
 	found := stallBackstopRecord(c, stop, s.plan.clock.Now().Sub(stop.LastStep))
 	if c.Issue == "" {
@@ -181,12 +184,18 @@ func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Clai
 			"claim", c.Token, "issue", c.Issue, "record", found)
 		return true
 	}
-	if err := s.enqueueStallNotice(ctx, c, found); err != nil {
+	written, err := s.enqueueStallNotice(ctx, c, found)
+	if err != nil {
 		if ctx.Err() == nil {
 			s.log.Error("supervise: tell the owner what the daemon's stall backstop did to a stalled turn; telling again at the next sweep",
 				"claim", c.Token, "issue", c.Issue, "error", err)
 		}
 		return false
+	}
+	if !written {
+		s.log.Warn("supervise: the daemon's stall backstop acted on a stalled turn of a claim of another project's issue, whose rows this daemon writes none of; no owner is told",
+			"claim", c.Token, "issue", c.Issue, "role", c.Role, "record", found)
+		return true
 	}
 	s.log.Warn("supervise: the daemon's stall backstop acted on a stalled turn; the owner is told",
 		"claim", c.Token, "issue", c.Issue, "role", c.Role, "record", found)
@@ -195,13 +204,13 @@ func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Clai
 
 // enqueueStallNotice writes the owner's notice rows, both in one call so a stall told to one
 // side and not the other is never told again at the next sweep (tellUpdateStalled's own reason
-// for one call). A phase worker's stall is read by the architect that owns its issue, and a
-// child's own architect's stall by the architect above that child, as each one's death is. A tree
-// architect's own stall is told to the controller as well, in a row of its own: every notice of the
-// tree that no child's own architect takes reaches that architect, and nobody inside the tree is
-// left to act on it (workflow's claimFailed, which tells a failed tree architect's death the same
-// way).
-func (s *supervision) enqueueStallNotice(ctx context.Context, c supervise.Claim, found string) error {
+// for one call), and answers whether it wrote them (supervision.enqueue). A phase worker's stall
+// is read by the architect that owns its issue, and a child's own architect's stall by the
+// architect above that child, as each one's death is. A tree architect's own stall is told to the
+// controller as well, in a row of its own: every notice of the tree that no child's own architect
+// takes reaches that architect, and nobody inside the tree is left to act on it (workflow's
+// claimFailed, which tells a failed tree architect's death the same way).
+func (s *supervision) enqueueStallNotice(ctx context.Context, c supervise.Claim, found string) (bool, error) {
 	notice := record.Notice{Kind: stallBackstopNotice, Role: c.Role, Reason: found}
 	rows := []record.OutboxPayload{notice}
 	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {

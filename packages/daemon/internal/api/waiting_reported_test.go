@@ -44,7 +44,7 @@ var waitNow = time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 
 // waitRepositories resolves the one repository these records name. A repository it does not hold
 // answers as the daemon's own does since INFRA-2543: GitHub has not been read for it yet, which
-// records no refusal note, rather than the mapping refusal the daemon no longer makes.
+// records no refusal note.
 type waitRepositories struct{}
 
 func (waitRepositories) ResolveRepository(resolved string) (workflow.Resolution, error) {
@@ -114,8 +114,8 @@ func seedWaitMirror(t *testing.T, st *store.Store, records record.Store, key, st
 	t.Helper()
 	ctx := context.Background()
 	if err := st.Tx(ctx, func(tx pgx.Tx) error {
-		return records.PutDispatchIssue(ctx, tx, record.DispatchIssueRow{Key: key, Project: waitProject,
-			Status: status, Parent: parent, Blockers: waits, Seq: 1})
+		return records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: key, Project: waitProject, Seq: 1,
+			Status: record.Carry(status), Parent: record.Carry(parent), Blockers: record.Carry(waits)})
 	}); err != nil {
 		t.Fatalf("seed the mirror of %s: %v", key, err)
 	}
@@ -125,7 +125,7 @@ func seedWaitMirror(t *testing.T, st *store.Store, records record.Store, key, st
 // builds it (internal/projection), with no claims and no capability reports: this reading is the
 // admission object alone.
 func projectWaitingState(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep) (api.State, error) {
-	return projection.Project(ctx, tx, records, waitProject, steps, nil, nil, nil, nil, waitNow)
+	return projection.Project(ctx, projection.Inputs{Tx: tx, Store: records, Project: waitProject, Steps: steps, Now: waitNow})
 }
 
 // waitingIssue is one issue of the fixture, written out so each case names the record it reads.

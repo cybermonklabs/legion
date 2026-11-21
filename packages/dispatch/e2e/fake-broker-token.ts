@@ -1,6 +1,6 @@
 /** The access tokens e2e/fake-broker.ts answers at the secrets broker's RFC 7662 introspection
  *  route (`POST /v1/oauth/introspect`), which Dispatch asks about every token a caller presents
- *  under the DPoP scheme (packages/envoy/internal/brokertoken). A real broker's tokens are opaque
+ *  under the DPoP scheme (packages/envoy/internal/ciphertoken). A real broker's tokens are opaque
  *  and its answer comes from the row each is stored in; a token of the fake carries its answer
  *  itself, as base64url JSON after `fakeBrokerTokenPrefix`, so a caller that holds no address of
  *  the fake - e2e/acceptance/graph-store.sh reaches the harness through the server and the fake

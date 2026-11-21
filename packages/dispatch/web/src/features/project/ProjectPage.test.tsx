@@ -1,13 +1,22 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, waitForElementToBeRemoved, within } from "@testing-library/react";
+import {
+  act,
+  render,
+  screen,
+  waitFor,
+  waitForElementToBeRemoved,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import type { ReactNode } from "react";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
 import { answerRequests } from "../../__tests__/network";
+import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
-import type { ArchitectureSource, InboxRow } from "../../api/types";
+import type { ArchitectureSource, InboxRow, IssueSummary } from "../../api/types";
 import { withWaitingOnPerson } from "../inbox/inbox-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { ProjectPage } from "./ProjectPage";
@@ -19,6 +28,16 @@ function LocationProbe() {
       {location.pathname}
       {location.search}
     </output>
+  );
+}
+
+/** The reader going back: the browser's Back button, or anything that calls `navigate(-1)`. */
+function GoBack(): ReactNode {
+  const navigate = useNavigate();
+  return (
+    <button onClick={() => navigate(-1)} type="button">
+      Go back
+    </button>
   );
 }
 
@@ -69,12 +88,14 @@ function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
   return withWaitingOnPerson(row);
 }
 
-/** `sources` is what `GET /projects/CORE/architecture-sources` answers: the project's sources (a
- *  non-empty list opens it on Architecture; `[]`, the default, on Issues, as every render here
- *  expects unless it says otherwise), an `ApiError` for a failure, or `"pending"` for a lookup
- *  that never settles. */
+/** `path` is the address the page opens at, or the reader's history, oldest first, ending at that
+ *  address: a page with history behind it draws a Go back button beside it. `sources` is what
+ *  `GET /projects/CORE/architecture-sources` answers: the project's sources (a non-empty list
+ *  opens it on Architecture; `[]`, the default, on Issues, as every render here expects unless it
+ *  says otherwise), an `ApiError` for a failure, or `"pending"` for a lookup that never
+ *  settles. */
 function renderPage(
-  path: string,
+  path: string | readonly string[],
   projects = [
     {
       created_at: "2026-09-10T00:00:00Z",
@@ -118,12 +139,14 @@ function renderPage(
     () => Promise.withResolvers<never>().promise
   );
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const entries = typeof path === "string" ? [path] : [...path];
   const view = render(
-    <MemoryRouter initialEntries={[path]}>
+    <MemoryRouter initialEntries={entries} initialIndex={entries.length - 1}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
           <ProjectPage />
           <LocationProbe />
+          {entries.length > 1 ? <GoBack /> : null}
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -570,5 +593,87 @@ test("the Lanes toggle lives in Board view only and persists per signed-in user"
     window.localStorage.removeItem(lanesKey);
     window.localStorage.removeItem("dispatch.project.issue-view:bob");
     window.localStorage.removeItem("dispatch.project.board-lanes:bob");
+  }
+});
+
+/** An issue in Todo, as a project's issue list answers it. */
+function todo(key: string, title: string): IssueSummary {
+  return {
+    advances: [],
+    advances_revision: 0,
+    assignee: null,
+    blocked_by: [],
+    claim: null,
+    closed_at: null,
+    components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+    created_at: "2026-09-13T00:00:00Z",
+    created_by: null,
+    key,
+    labels: [],
+    last_seq: 1,
+    open_asks: 0,
+    parent: null,
+    primary_artifact_id: "artifact-1",
+    priority: null,
+    progress: { tasks: null, children: null },
+    rank: "a",
+    repo: null,
+    resolved_repo: null,
+    route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
+    status: "todo",
+    title,
+    updated_at: "2026-09-13T00:00:00Z",
+  };
+}
+
+// Back from one project's board to another's draws the same page for the other project, and a
+// move belongs to the board it was made on: its refusal names that project's issue. The other
+// project's board is drawn with none of it.
+test("a move refused on one project's board leaves no refusal above the board the reader goes back to", async () => {
+  const user = userEvent.setup();
+  const viewKey = "dispatch.project.issue-view:alice";
+  window.localStorage.setItem(viewKey, "board");
+  const page = renderPage(
+    ["/projects/OTHER/issues", "/projects/CORE/issues"],
+    [
+      {
+        created_at: "2026-09-10T00:00:00Z",
+        key: "CORE",
+        name: "Core",
+        open_asks: 0,
+        gated_steps: [],
+      },
+      {
+        created_at: "2026-09-10T00:00:00Z",
+        key: "OTHER",
+        name: "Other",
+        open_asks: 0,
+        gated_steps: [],
+      },
+    ]
+  );
+  page.listIssues.mockImplementation(async (options = {}) =>
+    options.project === "OTHER" ? [todo("OTHER-1", "Bravo")] : [todo("CORE-1", "Alpha")]
+  );
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new ApiError(409, { code: "CONFLICT", error: "CORE-1 is blocked by CORE-2" })
+  );
+
+  try {
+    const alpha = await screen.findByRole("article", { name: "CORE-1 Alpha" });
+    act(() => alpha.focus());
+    await user.keyboard("{Shift>}L{/Shift}");
+    expect(await screen.findByRole("alert")).toHaveTextContent("CORE-1 is blocked by CORE-2");
+
+    await user.click(screen.getByRole("button", { name: "Go back" }));
+    await screen.findByRole("article", { name: "OTHER-1 Bravo" });
+    expect(screen.queryByRole("alert")).toBeNull();
+  } finally {
+    patchIssue.mockRestore();
+    page.restore();
+    window.localStorage.removeItem(viewKey);
   }
 });

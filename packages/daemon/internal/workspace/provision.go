@@ -105,9 +105,12 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	if err := configureRepositoryCredential(ctx, run, workspace.Clone, request.CredentialHelper); err != nil {
 		return Workspace{}, err
 	}
-	// Every provision writes it, so a clone made before this setting existed takes it at its next
+	// Every provision runs these, so a clone made before a setting existed takes it at its next
 	// provision.
 	if err := configureCloneReads(ctx, run, workspace.Clone); err != nil {
+		return Workspace{}, err
+	}
+	if err := configureCloneDefaultRepository(ctx, run, workspace.Clone); err != nil {
 		return Workspace{}, err
 	}
 	if err := removeRepositoryIdentity(ctx, run, workspace.Clone); err != nil {
@@ -135,11 +138,11 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	// daemon bounds checkouts by.
 	//
 	// It is also the one command past those steps that no change of this repository's makes fit
-	// CommandTimeout's five minutes: one write of the largest repository mapped took nine minutes
-	// in an issue pod (CheckoutTimeout), and the runner killing it there failed the whole
-	// provision and spent one of the claim's three launches. So this command alone takes
-	// CheckoutTimeout (request.checkoutBound), and every provisioning command but it and those
-	// steps keeps the runner's slow-command budget.
+	// CommandTimeout's five minutes: one write of the largest repository a project then worked
+	// in took nine minutes in an issue pod (CheckoutTimeout), and the runner killing it there
+	// failed the whole provision and spent one of the claim's three launches. So this command
+	// alone takes CheckoutTimeout (request.checkoutBound), and every provisioning command but it
+	// and those steps keeps the runner's slow-command budget.
 	store.unlock()
 	if checkout {
 		release, err := request.checkoutPlace(ctx)

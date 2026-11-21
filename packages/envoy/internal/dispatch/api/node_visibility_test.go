@@ -14,8 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -55,7 +58,7 @@ type privateNodeFixture struct {
 	privateComment, publicComment string
 	// broker is the stub secrets broker the server asks about a DPoP-bound token, so a read can
 	// be made under a session the broker verified as well as under a cookie and a token.
-	broker *brokertokentest.StubBroker
+	broker *ciphertokentest.StubBroker
 }
 
 // author and reader are the two people of this test: the one who owns the private node and one
@@ -452,6 +455,114 @@ func TestNoReadAnswersANodeTheActingPersonMayNotSee(t *testing.T) {
 	requireEveryCredentialReadsAsItsPerson(t, held)
 }
 
+// TestAWritersShortIDResolvesOnlyAmongTheNodesTheWriterMaySee: a short id a comment writes
+// resolves among the nodes its writer may see, and no other (refs.NewReader, R9, R19). The
+// fixture's author keeps a comment to herself whose id starts as her public comment's does
+// (sharedCommentPrefix), so that short id is one two comments carry. The second person, who may
+// not see the private comment, writes a comment naming that short id: its stored reference is the
+// public comment's whole id, with no ambiguity, and the short id is not left as the text wrote
+// it, which would tell the second person that a comment they may not see carries it. The author
+// may see both comments, so the same short id written by her is ambiguous, and her comment stores
+// it as she wrote it.
+func TestAWritersShortIDResolvesOnlyAmongTheNodesTheWriterMaySee(t *testing.T) {
+	fixture := seedPrivateNode(t, true)
+	shared := fixture.sharedCommentPrefix()
+	body := "See dispatch://" + fixture.issue + "/comment/" + shared + "."
+	// stored is the comment references the comment login writes with body stores, read from
+	// refs, where a comment write stores what its text cites.
+	stored := func(login string) []string {
+		t.Helper()
+		comment := createThreadComment(t, fixture.handler, fixture.issue, map[string]any{"body": body}, login)
+		rows, err := fixture.database.Pool.Query(context.Background(), `
+			select to_id from refs where from_kind = 'comment' and from_id = $1 and to_kind = 'comment' order by to_id
+		`, comment.ID)
+		if err != nil {
+			t.Fatalf("read the references of %s's comment: %v", login, err)
+		}
+		cited, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read the references of %s's comment: %v", login, err)
+		}
+		return cited
+	}
+	switch written := stored(privateNodeReader().ID); {
+	case slices.Equal(written, []string{shared}):
+		t.Errorf("the short id %s the second person wrote stays unresolved as ambiguous, want the public node %s", shared, fixture.publicComment)
+	case !slices.Equal(written, []string{fixture.publicComment}):
+		t.Errorf("the second person's comment naming the short id %s stores the comment references %v, want the public node %s alone",
+			shared, written, fixture.publicComment)
+	}
+	if authored := stored(privateNodeAuthor().ID); !slices.Equal(authored, []string{shared}) {
+		t.Errorf("the author's comment naming the short id %s stores the comment references %v, want the short id as she wrote it: she may see both comments that carry it",
+			shared, authored)
+	}
+}
+
+// TestAnAnswersShortIDResolvesAmongTheNodesTheAnswererMaySee: an ask's parts are texts of two
+// writers, and each part's short ids resolve for the one who wrote it (R9): the question for the
+// ask's author, the answer for its answerer, the maker its part records (ask_blocks.made_by). The
+// fixture's author, who may see both her comments that carry the shared short id
+// (sharedCommentPrefix), asks a question naming it, and the second person, who may not see the
+// private one, answers naming it too. The answer part's stored link is the public comment's whole
+// id, not the short id as the answer wrote it, which would tell the answerer that a comment they
+// may not see carries it; the question part's stays the short id the author wrote, ambiguous to
+// her.
+func TestAnAnswersShortIDResolvesAmongTheNodesTheAnswererMaySee(t *testing.T) {
+	fixture := seedPrivateNode(t, true)
+	shared := fixture.sharedCommentPrefix()
+	reference := "dispatch://" + fixture.issue + "/comment/" + shared
+	created := dispatchRequest(t, fixture.handler, http.MethodPost, "/api/v1/issues/"+fixture.issue+"/asks", map[string]any{
+		"question": "Which remark is meant by " + reference + "?",
+	}, privateNodeAuthor().ID)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("the author's ask: status=%d body=%s", created.Code, created.Body.String())
+	}
+	askID := decodeBody[struct {
+		ID string `json:"id"`
+	}](t, created).ID
+	answered := dispatchRequest(t, fixture.handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer", map[string]any{
+		"text": "The one at " + reference + ".",
+	}, privateNodeReader().ID)
+	if answered.Code != http.StatusOK {
+		t.Fatalf("the second person's answer: status=%d body=%s", answered.Code, answered.Body.String())
+	}
+	// linked is the comment each current part of the ask links, by the part's type, read from
+	// ask_block_refs, where an ask's parts store what their texts cite.
+	rows, err := fixture.database.Pool.Query(context.Background(), `
+		select b.type, r.to_id
+		from ask_block_refs r
+		join ask_blocks b on b.ask_id = r.ask_id and b.block_id = r.block_id
+		where r.ask_id = $1::uuid and r.to_kind = 'comment' and b.position is not null
+		order by b.type, r.to_id
+	`, askID)
+	if err != nil {
+		t.Fatalf("read the links of the ask's parts: %v", err)
+	}
+	linked := map[string][]string{}
+	for rows.Next() {
+		var part, to string
+		if err := rows.Scan(&part, &to); err != nil {
+			rows.Close()
+			t.Fatalf("scan a link of the ask's parts: %v", err)
+		}
+		linked[part] = append(linked[part], to)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the links of the ask's parts: %v", err)
+	}
+	switch answer := linked[refs.AskAnswerPart]; {
+	case slices.Equal(answer, []string{shared}):
+		t.Errorf("the short id %s the answerer wrote stays unresolved as ambiguous, want the public node %s", shared, fixture.publicComment)
+	case !slices.Equal(answer, []string{fixture.publicComment}):
+		t.Errorf("the answer part naming the short id %s links the comments %v, want the public node %s alone", shared, answer, fixture.publicComment)
+	}
+	if question := linked[refs.AskQuestionPart]; !slices.Equal(question, []string{shared}) {
+		t.Errorf("the question part naming the short id %s links the comments %v, want the short id as its author wrote it: she may see both comments that carry it",
+			shared, question)
+	}
+}
+
 // recordedRead is one read the second person made, with every statement it issued.
 type recordedRead struct {
 	name       string
@@ -565,8 +676,8 @@ func requireOneAuthorRule(t *testing.T) {
 	if refs.VisibilityArg(bearer) != nil {
 		t.Error("a credential that proves no author binds a name an author-private read could match")
 	}
-	visibility, err := graphstore.VisibilityFor(graphstore.VisibilityAuthor, bearer)
-	if !errors.Is(err, graphstore.ErrAuthorNamesNobody) {
+	visibility, err := graphstoretest.VisibilityFor(graphstore.VisibilityAuthor, graphstore.ProvesAuthor(bearer))
+	if !errors.Is(err, graphstoretest.ErrAuthorNamesNobody) {
 		t.Fatalf("asking for an author-private node on the shared bearer = %q, %v; want the refusal", visibility, err)
 	}
 	for _, reason := range []string{"names nobody", "compare as one credential"} {
@@ -574,7 +685,7 @@ func requireOneAuthorRule(t *testing.T) {
 			t.Errorf("the refusal does not say why: %q does not hold %q", err, reason)
 		}
 	}
-	if written, err := graphstore.VisibilityFor("", bearer); err != nil || written != graphstore.VisibilityProject {
+	if written, err := graphstoretest.VisibilityFor("", graphstore.ProvesAuthor(bearer)); err != nil || written != graphstore.VisibilityProject {
 		t.Errorf("a node written on the shared bearer = %q, %v; want %q", written, err, graphstore.VisibilityProject)
 	}
 	// The going routes call the one rule for the asker, and hold a run's owner to graphstore's
@@ -817,10 +928,10 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 	`, fixture.comment, fixture.private)
 	// The nodes themselves, reserved for their author. No route writes one yet, so the store's
 	// own writer writes them, exactly as a route that asked for `author` would
-	// (graphstore.VisibilityFor answers the visibility, and refuses this one to a credential
-	// that proves no author).
+	// (graphstoretest.VisibilityFor answers the visibility, and refuses this one to a credential
+	// that proves no author, graphstore.ProvesAuthor).
 	author := privateNodeAuthor()
-	visibility, err := graphstore.VisibilityFor(graphstore.VisibilityAuthor, author)
+	visibility, err := graphstoretest.VisibilityFor(graphstore.VisibilityAuthor, graphstore.ProvesAuthor(author))
 	if err != nil {
 		t.Fatalf("reserve the node for its author: %v", err)
 	}

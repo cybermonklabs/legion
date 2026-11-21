@@ -26,16 +26,24 @@ import (
 // markdown holds the erased text and each approval over it by its issue and its version, its
 // embedding rows, each event row about it by its id, its document's history - and every row it
 // would leave, which holds the same bytes and derives from another node, by its table and key.
-// It prints that listing with its digest and exits 1. Run with --confirm <digest> it reads the
-// listing again in its own transaction, under its locks, and removes what it lists only when that
-// listing has the digest it was given, recording what went into `graph_erasures` with no erased
-// text in the row; a listing that changed since is refused with both digests, removing nothing.
+// It prints that listing with its digest and exits 1. Run with --confirm <digest> it first
+// searches again for the rows it would leave, in a read-only transaction of its own that takes no
+// lock, then reads the rest of the listing again in its own transaction, under its locks, and
+// removes what it lists only when that listing has the digest it was given, recording what went
+// into `graph_erasures` with no erased text in the row; a listing that changed since is refused
+// with both digests, removing nothing.
 //
-// The exit convention is the census's: 0 when it erased, 1 when it refused and said why (no
-// --confirm, a digest that is not the listing's, a row of another node that states something
-// about this one, or a document whose live text holds the erased bytes where its markdown spells
-// them otherwise), 2 when it could not run at all, and 2 too when it erased and its sweep of
-// text_trees after the commit failed, the report printed first.
+// Once it has committed it counts again, outside its locks, the term statistics of every project
+// whose items it moved, having taken the erased words out of them under its locks; a count that
+// fails there is reported with the refresh pass that counts the project again, and is no failure
+// of the erase.
+//
+// The exit convention is the census's: 0 when it erased, a failed count of the term statistics
+// after the commit included, 1 when it refused and said why (no --confirm, a digest that is not
+// the listing's, a row of another node that states something about this one, or a document whose
+// live text holds the erased bytes where its markdown spells them otherwise), 2 when it could not
+// run at all, and 2 too when it erased and its sweep of text_trees after the commit failed, the
+// report printed first.
 func erase(ctx context.Context, args []string, databaseURL string, out, errOut io.Writer) int {
 	flags := flag.NewFlagSet("erase", flag.ContinueOnError)
 	flags.SetOutput(errOut)

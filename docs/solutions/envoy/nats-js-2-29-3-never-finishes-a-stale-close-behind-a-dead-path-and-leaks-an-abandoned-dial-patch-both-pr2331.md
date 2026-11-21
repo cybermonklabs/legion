@@ -20,8 +20,10 @@ related_issues:
   and two fixes to nats.js 2.29.3, the last 2.x release. Short pings alone are not enough.
 - **Size the bound from the ping settings.** nats.js drops a connection on the ping tick that finds
   `maxPingOut` pings unanswered, so a freeze is noticed within (`maxPingOut` + 1) × `pingInterval`.
-  Each redial that also hangs adds the 20 s dial timeout and `reconnectTimeWait`. With 10 s and 2,
-  the path is left within 30 s, or 52 s after one hung redial. At 15 s one hung redial gives 67 s.
+  Each redial that also hangs adds the dial timeout and `reconnectTimeWait`. With 10 s and 2, and
+  nats.js's default 20 s dial timeout, the path is left within 30 s, or 52 s after one hung redial;
+  at 15 s one hung redial gives 67 s. Since #4353 the dial timeout is 10 s
+  (`NATS_DIAL_TIMEOUT_MS`), which makes it 42 s.
 - **Make the stale close skip the flush.** The heartbeat's stale path calls
   `ProtocolHandler.disconnect()`, which calls `transport.disconnect()`, which first flushes. A dead
   path never acknowledges what is queued, so once more is queued than the kernel buffers take, the
@@ -38,9 +40,10 @@ related_issues:
 
 ## Evidence
 
-- `patches/nats@2.29.3.patch`: one `protocol.js` hunk (`disconnect()`) and two `node_transport.js`
-  hunks (`dial()`, `_closed`). Root `package.json` `patchedDependencies` lists it.
-- `packages/envoy-client/src/nats-connection.ts` gives the 30 s / 52 s arithmetic.
+- `patches/nats@2.29.3.patch`: the `protocol.js` hunk in `disconnect()` and the `node_transport.js`
+  hunks in `dial()` and `_closed`, beside the patch's other hunks. Root `package.json`
+  `patchedDependencies` lists it.
+- `packages/envoy-client/src/nats-connection.ts` gives the 30 s / 42 s arithmetic.
 - Locks, in `packages/envoy-client/src/__tests__/nats-stall.test.ts`:
   - Row C writes 32 MiB after the freeze. At c2db0543, with the `protocol.js` hunk reverted, it
     printed `reconnect none` and failed at 60 s. With the hunk it passed at 30 s.

@@ -172,9 +172,9 @@ func TestALateMentionOfASessionThatClaimedARoleGivesItNoPageOfItsOwn(t *testing.
 // settleMention settles the pending attempt of commentID's mention of session as the API's sender
 // settles it once its send is answered (api's completeCommentDelivery and settleDeliveryAttempt):
 // in one transaction, under the comment's owner lock, the row is set sent, or failed with
-// failure when that is not empty; the session a sent attempt reached is made a node
-// (graphstore.QueueReached); and the attempt's comment.delivery receipt is appended. It returns
-// the receipt.
+// failure when that is not empty; the attempt's comment.delivery receipt is appended; and the
+// session a sent attempt reached is made a node under that receipt (graphstore.QueueReached). It
+// returns the receipt.
 func settleMention(t *testing.T, database *store.Store, broker *events.Broker, commentID, session string, actor model.Actor, failure string) model.Event {
 	t.Helper()
 	ctx := context.Background()
@@ -201,17 +201,16 @@ func settleMention(t *testing.T, database *store.Store, broker *events.Broker, c
 		&receipt.Target, &receipt.Attempt, &receipt.Delivery, &receipt.SessionID, &createdAt); err != nil {
 		t.Fatalf("settle the mention of %s %s: %v", session, state, err)
 	}
-	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		_, err := graphstore.QueueReached(b, state, session, actor, createdAt, graphstore.NoEvent)
-		return err
-	}); err != nil {
-		t.Fatalf("record the session the mention of %s reached: %v", session, err)
-	}
 	event := owner
 	event.Type, event.Actor, event.Payload = "comment.delivery", actor, receipt
 	appended, err := broker.Append(ctx, tx, event)
 	if err != nil {
 		t.Fatalf("append the receipt of the mention of %s: %v", session, err)
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		return graphstore.QueueReached(b, state, session, actor, createdAt, appended.ID)
+	}); err != nil {
+		t.Fatalf("record the session the mention of %s reached: %v", session, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the settle of the mention of %s: %v", session, err)

@@ -690,9 +690,7 @@ func (st *settlement) appendEvents(ctx context.Context, events []model.Event, ca
 				refs.QueueStamp(b, sourceKind, sourceID)
 			}
 			for _, stated := range caused[index] {
-				if err := graphstore.QueueCaused(b, *stated, graphstore.LatestEvent); err != nil {
-					return err
-				}
+				graphstore.QueueCaused(b, *stated, graphstore.LatestEvent)
 			}
 		}
 		return nil

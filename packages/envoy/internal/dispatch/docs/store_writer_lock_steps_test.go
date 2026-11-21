@@ -57,10 +57,10 @@ const storeStepWait = 30 * time.Second
 //     the block index's, and the fence row comes before all of them.
 //   - the block-index tick's read of the events after its build's cursor (readEventsAfterCursor),
 //     which takes, in its read phase, the owner lock of each comment the events name whose row
-//     names no node (graphcensus.LockCommentOwners), and in its write phase its build's cursor
+//     names no node (refs.LockCommentOwners), and in its write phase its build's cursor
 //     row, then marks the documents the events name in one statement that takes their
 //     document_block_versions rows `for no key update`, and only then writes those comments
-//     (graphcensus.CommentWrite.Queue): the comment's node and its author's in one store write,
+//     (refs.CommentWrite.Queue): the comment's node and its author's in one store write,
 //     their tuples, and the node named on the comment's row. The fence rows come before the nodes
 //     because a settlement takes its document's fence row and then a session's node: a tick that
 //     took that node first and then waited for the fence row would hold what the settlement
@@ -198,7 +198,7 @@ type docsRun struct {
 // The statement heads a step is read at, lower-cased with their whitespace folded.
 var (
 	// docsOwnerStatement is store.LockOwners' advisory lock of an owner, which lockArtifactOwner
-	// and graphcensus.LockCommentOwners take.
+	// and refs.LockCommentOwners take.
 	docsOwnerStatement = store.OwnerLockStatement
 )
 
@@ -225,13 +225,14 @@ const (
 	// their base attributes and moves them onto the cause in the same statement (queueAppend).
 	docsTupleStatement = "with written as ("
 	// docsCursorStatement is the block-index tick's move of its build's event cursor row, which
-	// records whether the tick found another build and the debt of the object pass with it.
-	docsCursorStatement = "insert into block_index_event_cursors (build_commit, event_id, another_build_seen, object_nodes_owed_at)"
+	// records the build's marking rule, whether the tick found another build, and the debt of the
+	// object pass with it.
+	docsCursorStatement = "insert into block_index_event_cursors (build_commit, event_id, marking_rule, another_build_seen, object_nodes_owed_at)"
 	// docsMarkingStatement is the block-index tick's marking (markVersionedDocuments), which takes
 	// the document_block_versions row of each document it marks `for no key update`.
 	docsMarkingStatement = "with held as ( select b.artifact_id from document_block_versions b"
 	// docsCommentRowStatement is the comment write's naming of each comment's node on its row
-	// (graphcensus.CommentWrite.Queue).
+	// (refs.CommentWrite.Queue).
 	docsCommentRowStatement = "update comments c set node_kind"
 )
 
@@ -284,9 +285,9 @@ func (r *docsWriterRig) tick() docsWriter {
 
 // tickEvents is the block-index tick's read of the events after its build's cursor
 // (readEventsAfterCursor): the owner lock of each comment the events name whose row names no node
-// (graphcensus.LockCommentOwners), then its cursor row, then the marking statement's
+// (refs.LockCommentOwners), then its cursor row, then the marking statement's
 // document_block_versions rows `for no key update`, then those comments
-// (graphcensus.CommentWrite.Queue) - the comment's node and its author's in one store write, their
+// (refs.CommentWrite.Queue) - the comment's node and its author's in one store write, their
 // tuples, and the node named on the comment's row - all in one transaction. Each run first runs
 // that read once, so its build's cursor row is there and stands past every event before the run's
 // own. It then writes as the release before this one writes them a document whose version 1 no
@@ -573,7 +574,7 @@ func (r *docsWriterRig) askOpenedAndCaused(ctx context.Context, document, sessio
 }
 
 // ownerStep is the owner lock of the rig's documents and their comments, issue CORE-1's, which
-// lockArtifactOwner and graphcensus.LockCommentOwners take first: a transaction advisory lock,
+// lockArtifactOwner and refs.LockCommentOwners take first: a transaction advisory lock,
 // which locks no table and no row.
 func (r *docsWriterRig) ownerStep() docsStep {
 	return docsStep{

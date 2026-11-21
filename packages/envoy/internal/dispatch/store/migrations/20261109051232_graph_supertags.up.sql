@@ -60,7 +60,7 @@ execute function block_schema_changed();
 -- An attribute's store name is the kind of the tuple that states one of its values, so it must
 -- not be one of the two base attributes every node carries, `visibility` and `state`
 -- (graphstore.IsBaseAttribute): a value tuple of either kind reads as the node's own. It is what
--- pmdoc/schemanodes.StoreName answers: the attribute's own name, except that ask's `state` is
+-- pmdoc/schemanodes/schemanodestest.StoreName answers: the attribute's own name, except that ask's `state` is
 -- stored as `answer_state` and any other attribute named for a base attribute as its type's
 -- name, `_` and its own name. The rule is written out in `block_attributes` below rather than
 -- taken from Go, as the schema's text is copied in, because a migration states what the

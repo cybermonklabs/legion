@@ -20,9 +20,9 @@ import (
 
 	"github.com/gorilla/websocket"
 	natsgo "github.com/nats-io/nats.go"
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -44,7 +44,7 @@ const (
 
 // relaySocketClock is the rig's reading of now for the verifier's cache and for the socket's own
 // test of whether a token's expiry has passed, so a row moves past the five seconds a live answer
-// is reused for (brokertoken.AffirmativeCacheTTL) without sleeping through them. A proof's own
+// is reused for (ciphertoken.AffirmativeCacheTTL) without sleeping through them. A proof's own
 // window is the library's, on the real clock, which is why this clock starts at the real one and
 // only moves forward.
 type relaySocketClock struct {
@@ -74,8 +74,8 @@ type relaySocketRig struct {
 	client  *bus.Client
 	sockets *relaySockets
 	server  *httptest.Server
-	broker  *brokertokentest.StubBroker
-	caller  *brokertokentest.Caller
+	broker  *ciphertokentest.StubBroker
+	caller  *ciphertokentest.Caller
 	clock   *relaySocketClock
 	logs    *cmdtest.LockedBuffer
 }
@@ -136,14 +136,14 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 	}
 	t.Cleanup(client.Close)
 
-	broker := brokertokentest.NewStubBroker(t)
+	broker := ciphertokentest.NewStubBroker(t)
 	clock := &relaySocketClock{}
 	tokens := newBrokerTokens(listenerBrokerConfig{
 		BrokerURL:        broker.Server.URL,
 		AccountTokenFile: "/var/run/secrets/broker/token",
 		Origin:           listenerBrokerOrigin,
 	})
-	verifier, err := brokertoken.New(brokertoken.Options{
+	verifier, err := ciphertoken.New(ciphertoken.Options{
 		BrokerURL: broker.Server.URL,
 		Account:   listenerBrokerAccount("listener-account-token"),
 		Origin:    listenerBrokerOrigin,
@@ -179,21 +179,21 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 	t.Cleanup(sockets.stop)
 	return &relaySocketRig{
 		owner: owner, client: client, sockets: sockets, server: server,
-		broker: broker, caller: brokertokentest.NewCaller(t), clock: clock, logs: logs,
+		broker: broker, caller: ciphertokentest.NewCaller(t), clock: clock, logs: logs,
 	}
 }
 
 // relaySocketAnswer is the broker's answer about a token traded for session acting for the rig's
 // person, listing projects and expiring after life: what an outside agent's access token is.
-func relaySocketAnswer(session, jkt string, life time.Duration, projects ...string) brokertoken.Introspection {
-	return brokertoken.Introspection{
+func relaySocketAnswer(session, jkt string, life time.Duration, projects ...string) ciphertoken.Introspection {
+	return ciphertoken.Introspection{
 		Active:       true,
 		Session:      session,
 		Person:       relaySocketPerson,
-		ProjectScope: brokertoken.ProjectScopePerson,
+		ProjectScope: ciphertoken.ProjectScopePerson,
 		Projects:     projects,
 		ExpiresAt:    time.Now().Add(life).Unix(),
-		ClientID:     brokertoken.ExchangeClientID,
+		ClientID:     ciphertoken.ExchangeClientID,
 		Thumbprint:   jkt,
 	}
 }

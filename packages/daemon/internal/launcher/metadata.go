@@ -13,10 +13,12 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google/externalaccount"
+
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 )
 
 // The pod-local metadata endpoint, which an issue pod's launcher serves when the pod runs in a GKE
@@ -85,12 +87,8 @@ const (
 	// metadataPrefix is the version of the metadata API Google's clients read. Every path under it
 	// needs the flavor header, as GKE's server has it; the two directories above it do not.
 	metadataPrefix = "/computeMetadata/v1/"
-	// stsTokenURL is the exchange GKE's own server makes.
-	stsTokenURL = "https://sts.googleapis.com/v1/token"
 	// workloadPoolSuffix ends every Workload Identity pool; the project is what comes before it.
 	workloadPoolSuffix = ".svc.id.goog"
-	// subjectTokenType is the projected ServiceAccount token's type, a JWT.
-	subjectTokenType = "urn:ietf:params:oauth:token-type:jwt"
 	// cloudPlatformScope is the scope of a token request that names none, as GKE's server has it.
 	cloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
 	// tokenEarlyRefresh is how long before its expiry a cached token is exchanged again, so no
@@ -236,7 +234,7 @@ func newMetadataServer(ctx context.Context, cfg MetadataConfig, logf func(format
 		ctx:       context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: exchangeTimeout}),
 		pool:      cfg.WorkloadPool,
 		audience:  "identitynamespace:" + cfg.WorkloadPool + ":" + cfg.IdentityProvider,
-		tokenFile: cfg.tokenFile, tokenURL: cmp.Or(cfg.tokenURL, stsTokenURL),
+		tokenFile: cfg.tokenFile, tokenURL: cmp.Or(cfg.tokenURL, sessionproxy.STSTokenURL),
 		answers: metadataAnswers{
 			root:            metadataList("computeMetadata/"),
 			computeMetadata: metadataList("v1/"),
@@ -406,7 +404,7 @@ func (s *metadataServer) tokenSource(scopes []string) (oauth2.TokenSource, error
 	}
 	source, err := externalaccount.NewTokenSource(s.ctx, externalaccount.Config{
 		Audience:         s.audience,
-		SubjectTokenType: subjectTokenType,
+		SubjectTokenType: sessionproxy.JWTTokenType,
 		TokenURL:         s.tokenURL,
 		Scopes:           scopes,
 		CredentialSource: &externalaccount.CredentialSource{File: s.tokenFile},
@@ -428,8 +426,10 @@ func (s *metadataServer) tokenSource(scopes []string) (oauth2.TokenSource, error
 // exchangeFailed logs a failed exchange, at most once in exchangeFailureLogInterval: while the
 // service refuses the pod's token every request fails, and one line a minute says so. The reason is
 // the exchange's own error, which names the service's answer and never the token sent, cut to
-// maxFailureReason bytes at a character's start; it is quoted, as are the scopes a client named, so
-// neither can break the line.
+// maxFailureReason bytes at a character's start by redact.Bytes, which reads it whole through the
+// URL rule first, since the answer is the service's and a cut made first could end inside a URL's
+// userinfo, before its "@"; it is quoted, as are the scopes a client named, so neither can break
+// the line.
 func (s *metadataServer) exchangeFailed(scopes []string, err error) {
 	s.mu.Lock()
 	now := s.now()
@@ -441,14 +441,7 @@ func (s *metadataServer) exchangeFailed(scopes []string, err error) {
 	if quiet {
 		return
 	}
-	reason := err.Error()
-	if len(reason) > maxFailureReason {
-		cut := maxFailureReason
-		for cut > 0 && !utf8.RuneStart(reason[cut]) {
-			cut--
-		}
-		reason = reason[:cut]
-	}
+	reason, _ := redact.Bytes(err.Error(), maxFailureReason)
 	s.logf("launcher: metadata: token exchange failed scopes=%q reason=%q", strings.Join(scopes, ","), reason)
 }
 

@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // volumeSeam is the daemon's VolumeReported as a test holds it: every report it was given, in
@@ -54,11 +55,11 @@ func (v *volumeSeam) took(t *testing.T, what string) volumeReport {
 }
 
 // volumeLaunchers is a launchers whose volume seam is the test's, with the leak-check reader, the
-// saved-bundle pair and the memory guard's receiver, which no test of the launcher protocol here
-// drives, left nil. It is the one constructor these tests build a launchers with: testLaunchers
-// (rig_test.go) is this one with no seam behind it.
+// saved bundle's take, confirmation and drop, and the memory guard's receiver, which no test of
+// the launcher protocol here drives, left nil. It is the one constructor these tests build a
+// launchers with: testLaunchers (rig_test.go) is this one with no seam behind it.
 func volumeLaunchers(seam runtime.VolumeReported) *launchers {
-	return newLaunchers(nil, nil, nil, nil, seam, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return newLaunchers(testLeakCheck, nil, nil, nil, nil, nil, seam, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 // The frame the daemon had no case for closed the connection: ServeLauncher's switch ends in
@@ -73,7 +74,7 @@ func volumeLaunchers(seam runtime.VolumeReported) *launchers {
 func TestTheLauncherServesAVolumeReportAndHandsItToTheSeam(t *testing.T) {
 	seam := newVolumeSeam()
 	launchers := volumeLaunchers(seam.reported)
-	session := launchers.accept(workerToken, testTree, rigNow, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
+	session := launchers.accept(workerToken, testTree, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
 	server, peer := net.Pipe()
 	t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
@@ -110,16 +111,12 @@ func TestTheLauncherServesAVolumeReportAndHandsItToTheSeam(t *testing.T) {
 	if err := writer.WriteFrame(shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: 7}}); err != nil {
 		t.Fatalf("write the state frame after the report: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	if !testwait.Holds(5*time.Second, 5*time.Millisecond, func() bool {
 		state, connected := launchers.state(workerToken, "pod-uid")
-		if connected && state.Child != nil && state.Child.Generation == 7 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("after the volume report the launcher is connected=%t state=%+v, want the connection still serving", connected, state)
-		}
-		time.Sleep(5 * time.Millisecond)
+		return connected && state.Child != nil && state.Child.Generation == 7
+	}) {
+		state, connected := launchers.state(workerToken, "pod-uid")
+		t.Fatalf("after the volume report the launcher is connected=%t state=%+v, want the connection still serving", connected, state)
 	}
 }
 
@@ -130,7 +127,7 @@ func TestTheLauncherServesAVolumeReportAndHandsItToTheSeam(t *testing.T) {
 func TestEverySweepsVolumeReportReachesTheSeamInOrder(t *testing.T) {
 	seam := newVolumeSeam()
 	launchers := volumeLaunchers(seam.reported)
-	session := launchers.accept(workerToken, testTree, rigNow, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
+	session := launchers.accept(workerToken, testTree, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
 	server, peer := net.Pipe()
 	t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
@@ -158,7 +155,7 @@ func TestAVolumeReportTheDaemonCannotRecordLeavesTheConnection(t *testing.T) {
 	seam := newVolumeSeam()
 	seam.err = context.DeadlineExceeded
 	launchers := volumeLaunchers(seam.reported)
-	session := launchers.accept(workerToken, testTree, rigNow, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
+	session := launchers.accept(workerToken, testTree, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
 	server, peer := net.Pipe()
 	t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
@@ -180,7 +177,7 @@ func TestAVolumeReportTheDaemonCannotRecordLeavesTheConnection(t *testing.T) {
 // connection stays open all the same.
 func TestALauncherWithNoVolumeSeamStillServesTheReport(t *testing.T) {
 	launchers := testLaunchers()
-	session := launchers.accept(workerToken, testTree, rigNow, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
+	session := launchers.accept(workerToken, testTree, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
 	server, peer := net.Pipe()
 	t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
@@ -192,16 +189,12 @@ func TestALauncherWithNoVolumeSeamStillServesTheReport(t *testing.T) {
 	if err := writer.WriteFrame(shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: 3}}); err != nil {
 		t.Fatalf("write the state frame after the report: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	if !testwait.Holds(5*time.Second, 5*time.Millisecond, func() bool {
 		state, connected := launchers.state(workerToken, "pod-uid")
-		if connected && state.Child != nil && state.Child.Generation == 3 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the launcher with no volume seam is connected=%t state=%+v after a report, want the connection still serving", connected, state)
-		}
-		time.Sleep(5 * time.Millisecond)
+		return connected && state.Child != nil && state.Child.Generation == 3
+	}) {
+		state, connected := launchers.state(workerToken, "pod-uid")
+		t.Fatalf("the launcher with no volume seam is connected=%t state=%+v after a report, want the connection still serving", connected, state)
 	}
 }
 
@@ -218,8 +211,8 @@ func TestALauncherWithNoVolumeSeamStillServesTheReport(t *testing.T) {
 func TestAVolumeReportTheFramesRuleRefusesIsDroppedAndLeavesTheConnection(t *testing.T) {
 	logs := &bytes.Buffer{}
 	seam := newVolumeSeam()
-	launchers := newLaunchers(nil, nil, nil, nil, seam.reported, slog.New(slog.NewTextHandler(logs, nil)))
-	session := launchers.accept(workerToken, testTree, rigNow, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
+	launchers := newLaunchers(testLeakCheck, nil, nil, nil, nil, nil, seam.reported, slog.New(slog.NewTextHandler(logs, nil)))
+	session := launchers.accept(workerToken, testTree, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
 	server, peer := net.Pipe()
 	t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
@@ -266,15 +259,11 @@ func TestAVolumeReportTheFramesRuleRefusesIsDroppedAndLeavesTheConnection(t *tes
 	if err := writer.WriteFrame(shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: 9}}); err != nil {
 		t.Fatalf("write the state frame after the dropped reports: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	if !testwait.Holds(5*time.Second, 5*time.Millisecond, func() bool {
 		state, connected := launchers.state(workerToken, "pod-uid")
-		if connected && state.Child != nil && state.Child.Generation == 9 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("after a report the frame's rule refuses the launcher is connected=%t state=%+v, want the connection still serving", connected, state)
-		}
-		time.Sleep(5 * time.Millisecond)
+		return connected && state.Child != nil && state.Child.Generation == 9
+	}) {
+		state, connected := launchers.state(workerToken, "pod-uid")
+		t.Fatalf("after a report the frame's rule refuses the launcher is connected=%t state=%+v, want the connection still serving", connected, state)
 	}
 }

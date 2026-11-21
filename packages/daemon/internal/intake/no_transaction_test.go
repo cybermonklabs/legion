@@ -31,7 +31,7 @@ func (l *factLocks) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.T
 
 func (l *factLocks) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-// A mapped repository carries far more GitHub events than Legion's own pull requests: other pull
+// A repository the daemon hears carries far more GitHub events than Legion's own pull requests: other pull
 // requests opened and pushed to, their reviews and CI settlements, and every workflow its CI runs.
 // None of them can change a record, so each is acknowledged without a transaction, the fact lock
 // or a GitHub read: a pull request event on a branch that is no issue's, a review or a checks

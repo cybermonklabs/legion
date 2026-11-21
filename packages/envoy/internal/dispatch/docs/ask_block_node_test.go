@@ -12,7 +12,7 @@ import (
 )
 
 // An ask block's answer state is the attribute `state` in its markdown and the attribute node
-// ask/answer_state in the store (schemanodes.StoreName), because `state` is a base attribute of
+// ask/answer_state in the store (schemanodestest.StoreName), because `state` is a base attribute of
 // every node: a block node whose `state` tuple read `answered` would be a node with no live state,
 // which the census counts as a difference.
 //

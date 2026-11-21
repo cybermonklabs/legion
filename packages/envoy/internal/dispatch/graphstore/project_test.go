@@ -34,7 +34,10 @@ func TestAnUncausedWriteStatesEachAttributesOwnValue(t *testing.T) {
 	writers := map[string]func(context.Context, pgx.Tx, Node, []Tuple) (Uncaused, error){
 		"QueueNodes": func(ctx context.Context, tx pgx.Tx, node Node, stated []Tuple) (Uncaused, error) {
 			write := PlanUncaused([]Node{node}, stated)
-			return write, store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return QueueNodes(b, write) })
+			return write, store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+				QueueNodes(b, write)
+				return nil
+			})
 		},
 		"WriteArmsUncaused": func(ctx context.Context, tx pgx.Tx, node Node, _ []Tuple) (Uncaused, error) {
 			arms, params, held, err := WriteArmsUncaused(1, []Node{node}, nil, nil)
@@ -197,7 +200,10 @@ func TestANodeStatesItsProjectOnce(t *testing.T) {
 		node := ArtifactNode("agent/s-2/photo-png", "", "s-2", who, at)
 		runInOneTransaction(t, database, "the uncaused write", func(ctx context.Context, tx pgx.Tx) error {
 			write := PlanUncaused([]Node{node}, nil)
-			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return QueueNodes(b, write) }); err != nil {
+			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+				QueueNodes(b, write)
+				return nil
+			}); err != nil {
 				return err
 			}
 			return Caused(ctx, tx, write, 9500003)

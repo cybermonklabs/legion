@@ -76,7 +76,10 @@ func TestTheBlockersReadProbesEachStatingNodeOnce(t *testing.T) {
 		blockIDs, addresses = append(blockIDs, blockID), append(addresses, address)
 	}
 	seed := explaintest.BatchedBy(t, func(tx pgx.Tx) error {
-		return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueWrite(b, nodes, tuples) })
+		return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nodes, tuples)
+			return nil
+		})
 	})
 	seed = append(seed, explaintest.Statement{SQL: `
 		insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, created_version, node_kind, node_address)

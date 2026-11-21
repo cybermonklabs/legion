@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -158,7 +158,7 @@ func TestABrokerTokensAnswerActsAsTheSessionTheBrokerProved(t *testing.T) {
 	caller := newBrokerCaller(t)
 	const token = "a-dev-box-token-that-answers"
 	says := liveNamedToken(caller.jkt)
-	says.ProjectScope, says.Projects = brokertoken.ProjectScopePerson, nil
+	says.ProjectScope, says.Projects = ciphertoken.ProjectScopePerson, nil
 	rig.broker.Says(token, says)
 
 	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{
@@ -206,7 +206,7 @@ func TestAnActsSessionIsProvenOnlyWhereTheCredentialProvedIt(t *testing.T) {
 	caller := newBrokerCaller(t)
 	const brokerToken = "a-dev-box-token-whose-session-is-proven"
 	says := liveNamedToken(caller.jkt)
-	says.ProjectScope, says.Projects = brokertoken.ProjectScopePerson, nil
+	says.ProjectScope, says.Projects = ciphertoken.ProjectScopePerson, nil
 	rig.broker.Says(brokerToken, says)
 	fixture := seedProject(t, rig, brokerTestProject, "Broker")
 	personal := mintPersonalToken(t, rig.handler, brokerTestPerson, actingTokenName, nil)
@@ -312,7 +312,7 @@ func TestABodyActorNamingAnotherSessionThanTheCredentialProvedIsRefused(t *testi
 	caller := newBrokerCaller(t)
 	const token = "a-dev-box-token-whose-body-lies"
 	says := liveNamedToken(caller.jkt)
-	says.ProjectScope, says.Projects = brokertoken.ProjectScopePerson, nil
+	says.ProjectScope, says.Projects = ciphertoken.ProjectScopePerson, nil
 	rig.broker.Says(token, says)
 	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{
 		"key": brokerTestProject, "name": "Broker",

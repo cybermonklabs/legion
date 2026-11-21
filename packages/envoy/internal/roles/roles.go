@@ -194,6 +194,24 @@ func ValidClaimKey(key string) bool {
 	return Valid(role) && contracts.RoleClaimKey(project, role) == key
 }
 
+// ForwardFenceAge is how old the resolution that chose a role message's holder may be when the
+// message's forward to that holder starts: a forward from the listener's role lane, its publish
+// route or Dispatch's outbox whose resolution is this old or older resolves the holder again
+// first. It is the listener's keep window (one hour, cmd/listener roleKeepWindow) less one
+// interval of its kept lane's sweep (five minutes, roleWakeInterval): a takeover's copy of the
+// previous holder's role messages reads them for as long as its record lives, and a forward
+// fenced so is stored inside the hour the copy reads from the takeover on.
+const ForwardFenceAge = 55 * time.Minute
+
+// ResolutionTooOld reports whether a forward whose holder was resolved at resolvedAt must resolve
+// the holder again before its publish starts at now: the resolution is ForwardFenceAge old or
+// older. A zero resolvedAt - a forward that read the claim itself just before, such as the kept
+// lane's walk - is never too old. The role lane, the publish route and Dispatch's outbox each ask
+// it, so the fence is one rule.
+func ResolutionTooOld(resolvedAt, now time.Time) bool {
+	return !resolvedAt.IsZero() && now.Sub(resolvedAt) >= ForwardFenceAge
+}
+
 // ResolveHolder resolves role's holder within ctx. It reads the role's claim record from claims
 // (Unclaimed when there is none), then that holder's session record through sessions, and judges
 // the record by the state it puts its session in (SessionLookup.EntryState): Live when it reads
@@ -206,6 +224,12 @@ func ValidClaimKey(key string) bool {
 // once ctx has ended: that is ctx's error, wrapped to name the role, at ClaimRead.
 //
 // One resolution is one claim read: there is no release for a second read to see past.
+//
+// It is the one judgement of a holder every role route makes - the role lookup, the role publish,
+// the role lane, the kept lane's handover and Dispatch's outbox - so a holder inside the live
+// window is live on each of them, whatever its relay subscriber does, and none of them probes its
+// relay subject. Only the send route probes a session's relay subject, and its answer goes in the
+// send's own state, never in a role answer's holder_state.
 func ResolveHolder(ctx context.Context, claims ClaimStore, sessions SessionLookup, role string) (Resolution, error) {
 	if err := ctx.Err(); err != nil {
 		return Resolution{}, &ReadError{Step: ClaimRead, Err: fmt.Errorf("resolve role %s's holder: %w", role, err)}

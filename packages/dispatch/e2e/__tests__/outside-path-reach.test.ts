@@ -15,6 +15,7 @@ import { join } from "node:path";
 import {
   bash,
   blackhole,
+  CURL_VERSION_LINE,
   closedPort,
   closingTarget,
   fakeDispatch,
@@ -29,6 +30,12 @@ import {
 } from "./outside-path-reach-fixtures";
 
 const { drive, targets, written, list, pathOf, pathWithCurl, pathRounds, v6Only } = reachFixtures();
+
+/** The line a run prints when the curl stand-in answered its `curl -q --version`, and so asked no
+ *  resolver (`CURL_VERSION_LINE`). One row of each way a run is given curl checks it (the default
+ *  PATH, `pathWithCurl`, `pathOf`), so a change to the script's version call, or a PATH that
+ *  leaves the stand-in out, fails a row rather than sending every run to the machine's DNS. */
+const answeredByStandIn = `outside-path-reach: curl ${CURL_VERSION_LINE.split(" ")[1]}\n`;
 
 describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
@@ -48,6 +55,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(lineFor(run, "closed-a")).toContain(" unreachable; curl exit 7,");
         expect(lineFor(run, "closed-b")).toContain(" unreachable; curl exit 7,");
         expect(verdict(run)).toStartWith("PASS");
+        expect(run.stdout).toContain(answeredByStandIn);
         expect(run.code).toBe(0);
         expect(await origin.seen()).toEqual([
           { method: "GET", path: "/healthz", credential: null },
@@ -185,20 +193,109 @@ describe.concurrent("outside-path-reach.sh", () => {
     }
   );
 
+  // A name that does not resolve is answered by the row's own curl as Ubuntu 24.04's curl 8.5.0
+  // answers one, measured: exit 6, with `0.000000 0.000000` for its lookup and connect times. The
+  // row asks no resolver, so its verdict is the script's reading of exit 6, not how fast the
+  // machine's DNS answers; with a resolver slower than the probe's 3 s, the host's curl would give
+  // exit 28 instead. The stand-in logs each probe it answered, one per round.
   probingRow(withoutTools)("is unknown, never a pass, when a target does not resolve", async () => {
     const origin = await fakeDispatch();
     try {
-      const run = await drive({
-        OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
-        OUTSIDE_PATH_TARGETS: await list("ghost does-not-exist.invalid 4222"),
-      });
-      expect(lineFor(run, "ghost")).toContain(" unresolved");
+      const log = written("");
+      const path = pathWithCurl(
+        `case "$*" in *telnet://does-not-exist.invalid:4222*) echo probe >>${log}; printf '0.000000 0.000000'; exit 6 ;; esac`
+      );
+      const run = await drive(
+        {
+          OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+          OUTSIDE_PATH_TARGETS: await list("ghost does-not-exist.invalid 4222"),
+        },
+        { path }
+      );
+      expect(readFileSync(log, "utf8")).toBe("probe\n".repeat(5));
+      expect(lineFor(run, "ghost")).toContain(" unresolved; curl exit 6,");
+      expect(run.stdout).toContain(answeredByStandIn);
       expect(verdict(run)).toBe("UNKNOWN: ghost unresolved or unknown");
       expect(run.code).toBe(2);
     } finally {
       await origin.stop();
     }
   });
+
+  // The two reads of the origin take their bounds from OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS and
+  // OUTSIDE_PATH_ORIGIN_READ_SECONDS, and from the script's own 3 s and 10 s when both are unset,
+  // as on a device that sets neither, or empty. Every run here sets both, so the unset run has bash
+  // unset them before the script starts, through BASH_ENV, which bash reads first. The row's own
+  // curl answers the origin as Dispatch and logs what each read asked of curl, so no stand-in's
+  // speed decides the row.
+  probingRow(withoutTools)(
+    "bounds each read of the origin by its two settings, and by 3 s to connect and 10 s in all when neither is set",
+    async () => {
+      const port = await closedPort();
+      const origin = `127.0.0.1:${port}`;
+      const answered = async (connect: string, read: string, unset = false) => {
+        const log = written("");
+        const run = await drive(
+          {
+            OUTSIDE_ORIGIN: `http://${origin}`,
+            OUTSIDE_PATH_TARGETS: await list(),
+            OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS: connect,
+            OUTSIDE_PATH_ORIGIN_READ_SECONDS: read,
+            ...(unset
+              ? {
+                  BASH_ENV: written(
+                    "unset OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS OUTSIDE_PATH_ORIGIN_READ_SECONDS\n"
+                  ),
+                }
+              : {}),
+          },
+          {
+            path: pathWithCurl(
+              'case "$*" in\n' +
+                `  *http://${origin}/*) printf '%s\\n' "$*" >>${log} ;;\n` +
+                "esac\n" +
+                'case "$*" in\n' +
+                `  *http://${origin}/healthz) printf 200; exit 0 ;;\n` +
+                `  *http://${origin}/api/v1/projects) printf '%s401' '{"code":"NO_IDENTITY"}'; exit 0 ;;\n` +
+                `  *telnet://${origin}) printf '0.000010 0.000100'; exit 28 ;;\n` +
+                "esac"
+            ),
+          }
+        );
+        const reads = readFileSync(log, "utf8")
+          .trimEnd()
+          .split("\n")
+          .map((call) => {
+            const words = call.split(" ");
+            return {
+              path: (words.at(-1) ?? "").replace(`http://${origin}`, ""),
+              connect: words[words.indexOf("--connect-timeout") + 1],
+              read: words[words.indexOf("--max-time") + 1],
+            };
+          });
+        return { reads, verdict: verdict(run), code: run.code };
+      };
+      const [unset, empty, given] = await Promise.all([
+        answered("870", "870", true),
+        answered("", ""),
+        answered("7", "2"),
+      ]);
+      expect(unset).toEqual({
+        reads: [
+          { path: "/healthz", connect: "3", read: "10" },
+          { path: "/api/v1/projects", connect: "3", read: "10" },
+        ],
+        verdict: `PASS: every target is unreachable from this device, and http://${origin} answered as Dispatch`,
+        code: 0,
+      });
+      expect(empty).toEqual(unset);
+      expect(given.reads).toEqual([
+        { path: "/healthz", connect: "7", read: "2" },
+        { path: "/api/v1/projects", connect: "7", read: "2" },
+      ]);
+      expect(given.code).toBe(0);
+    }
+  );
 
   // Answers only a broken network gives, from a curl that names them: an exit no rule classifies,
   // a probe that printed no times, a name lookup that timed out, and one that took so long the
@@ -632,6 +729,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         ]);
         expect(passing.stderr).toBe("");
         expect(verdict(passing)).toStartWith("PASS");
+        expect(passing.stdout).toContain(answeredByStandIn);
         expect(passing.code).toBe(0);
         expect(lineFor(failing, "hub")).toContain(" REACHED; ");
         expect(verdict(failing)).toBe("FAIL: reached hub");

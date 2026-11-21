@@ -2,7 +2,7 @@ package main
 
 // edge_repositories.go is the edge listener's reader of which repositories the issues of each
 // project it serves resolve to, as the secrets broker relays Dispatch's one rule
-// (GET /v1/project-repositories, internal/broker/api/project_repositories.go). The edge asks it
+// (GET /v1/project-repositories, internal/cipher/api/project_repositories.go). The edge asks it
 // with its own broker account, fresh at each registration that follows a GitHub topic and every
 // edgeRepositoryRefresh for each project it serves, and fails closed on any answer that is not a
 // whole list: a registration it cannot read for is 503 repositories_unknown, and while no answer
@@ -27,7 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -85,7 +85,7 @@ type repositoryAnswer struct {
 // edgeRepositories reads and holds the answer of each project the edge serves.
 type edgeRepositories struct {
 	brokerURL string
-	account   brokertoken.Account
+	account   ciphertoken.Account
 	projects  []string
 	client    *http.Client
 	// now is the clock answers are dated and aged by; time.Now outside a test.
@@ -103,7 +103,7 @@ type edgeRepositories struct {
 
 // newEdgeRepositories is the reader of the broker at brokerURL, asking as account, for the
 // projects the edge serves.
-func newEdgeRepositories(brokerURL string, account brokertoken.Account, projects []string, withheld *metrics.Counter, logger *logging.Logger) *edgeRepositories {
+func newEdgeRepositories(brokerURL string, account ciphertoken.Account, projects []string, withheld *metrics.Counter, logger *logging.Logger) *edgeRepositories {
 	return &edgeRepositories{
 		brokerURL: strings.TrimSuffix(brokerURL, "/"),
 		account:   account,

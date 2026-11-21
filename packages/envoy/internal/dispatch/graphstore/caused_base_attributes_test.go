@@ -12,14 +12,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// TestASettlesNodeAndItsBaseTuplesNameOneEvent is this change's R1 and R8 for a node
-// whose cause comes after it. A delivery's settle writes the session's node before its receipt
-// exists, so the node goes in at the sentinel and Caused moves its row onto the receipt once
-// that is appended. No tuple may be updated to learn its cause, so a base attribute stated at
-// the sentinel would stand for ever under event 0 while the row it projects named the receipt:
-// a row whose own log says no event recorded it. The settle therefore states no base attribute
-// in its node statement, marks the node as made (nodeMarks), and appends every base attribute the
-// node carries under the receipt (WriteArmsUncaused, queueAppend).
+// TestASettlesNodeAndItsBaseTuplesNameOneEvent is this change's R1 and R8 for the node a
+// delivery's settle records. The settle appends its receipt first and states the session's node
+// after it, in the same batch, with the receipt as its cause in hand (QueueReached over
+// LatestEvent; here the receipt's id): the node row and both of its base attributes go in under
+// that one event, in one statement (WriteArms). No tuple may be updated to learn its cause, so a
+// base attribute stated under any other event would stand for ever beside a row that names the
+// receipt: a row whose own log says another event recorded it.
 func TestASettlesNodeAndItsBaseTuplesNameOneEvent(t *testing.T) {
 	database := storetest.Open(t)
 	who := model.Actor{Kind: "user", ID: "alice"}
@@ -28,15 +27,9 @@ func TestASettlesNodeAndItsBaseTuplesNameOneEvent(t *testing.T) {
 	const session = "caused-base-attributes"
 
 	runInOneTransaction(t, database, "the settle of a delivery attempt", func(ctx context.Context, tx pgx.Tx) error {
-		var reached Uncaused
-		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-			var err error
-			reached, err = QueueReached(b, model.DeliveryStateQueued, session, who, at, NoEvent)
-			return err
-		}); err != nil {
-			return err
-		}
-		return Caused(ctx, tx, reached, receipt)
+		return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			return QueueReached(b, model.DeliveryStateQueued, session, who, at, receipt)
+		})
 	})
 
 	requireOneCause(t, database, KindSession, session, receipt)

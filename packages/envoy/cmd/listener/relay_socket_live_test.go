@@ -12,14 +12,14 @@ package main
 //     (infra/core's TestEdgePermissionsAreTheEdgeGrant holds the first pair equal);
 //   - two envoy-listener processes in edge mode, serving the one project PRIV: replica A holds the
 //     session's registration, so its consumer and its relay, and replica B serves its relay socket;
-//   - broker tokens from the real broker (internal/broker/brokertest, BROKER_TEST_DATABASE_URL)
+//   - broker tokens from the real broker (internal/cipher/ciphertest, BROKER_TEST_DATABASE_URL)
 //     whose access tokens live 30 s, traded from a device login a person approved, with the
 //     broker's project check answered by projectaccesstest. Row 7 alone needs an answer the test
-//     changes, and takes it from brokertokentest's stand-in.
+//     changes, and takes it from ciphertokentest's stand-in.
 //
 // The binary is built with its sockets' check every second (relaySocketCheckBuild), so a row waits
 // for one tick and the broker's live answer, which is reused for at most
-// brokertoken.AffirmativeCacheTTL.
+// ciphertoken.AffirmativeCacheTTL.
 
 import (
 	"context"
@@ -44,15 +44,15 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"golang.org/x/oauth2"
 
-	"github.com/sjawhar/envoy/internal/broker/brokertest"
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
-	"github.com/sjawhar/envoy/internal/broker/projectaccess"
-	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
-	"github.com/sjawhar/envoy/internal/broker/proof"
-	"github.com/sjawhar/envoy/internal/brokerclient"
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
+	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -80,7 +80,7 @@ const (
 	// relayLiveCloseBound is how long after the broker's answer changes an open socket may take to
 	// close: one check, the broker's live answer reused for at most AffirmativeCacheTTL, and a
 	// second for the close to reach the client.
-	relayLiveCloseBound = relayLiveCheck + brokertoken.AffirmativeCacheTTL + time.Second
+	relayLiveCloseBound = relayLiveCheck + ciphertoken.AffirmativeCacheTTL + time.Second
 )
 
 // relayLiveViolation matches a permissions violation nats-server logs, capturing its kind and the
@@ -99,10 +99,10 @@ type relayLiveRig struct {
 	// broker is the real broker, nil on a rig whose replicas ask stub. access is its project
 	// check's Dispatch stand-in, and proxy the address the replicas call the broker at, which a
 	// row closes to stop the broker for them.
-	broker *brokertest.Rig
+	broker *ciphertest.Rig
 	access *projectaccesstest.Server
 	proxy  *httptest.Server
-	stub   *brokertokentest.StubBroker
+	stub   *ciphertokentest.StubBroker
 	// a and b are the two replicas: a holds the sessions' registrations, b serves their sockets.
 	a, b *listenerProcess
 }
@@ -162,14 +162,14 @@ func newRelayLiveRig(t *testing.T, options relayLiveOptions) *relayLiveRig {
 	account := filepath.Join(t.TempDir(), "account-token")
 	var brokerURL, accountToken string
 	if options.stub {
-		rig.stub = brokertokentest.NewStubBroker(t)
+		rig.stub = ciphertokentest.NewStubBroker(t)
 		brokerURL, accountToken = rig.stub.Server.URL, "edge-listener-account-token"
 	} else {
 		rig.access = projectaccesstest.NewServer(t,
 			map[string]projectaccesstest.Row{relayLiveProject: {Visibility: "private", Owner: "owner@example.com", Listed: []string{relayLivePerson, relayLiveOtherPerson}}},
 			map[string]string{relayLivePerson: "restricted", relayLiveOtherPerson: "restricted"})
-		rig.broker = brokertest.NewRig(t, brokertest.WithAccessLifetime(relayLiveTokenLife),
-			brokertest.WithProjectAccess(projectaccess.New(rig.access.URL, rig.access.Account, nil)))
+		rig.broker = ciphertest.NewRig(t, ciphertest.WithAccessLifetime(relayLiveTokenLife),
+			ciphertest.WithProjectAccess(projectaccess.New(rig.access.URL, rig.access.Account, nil)))
 		target, err := url.Parse(rig.broker.URL)
 		if err != nil {
 			t.Fatalf("read the broker's URL: %v", err)
@@ -238,7 +238,7 @@ type relayLiveSession struct {
 	// login is the broker client the device login ran through, credential the launcher
 	// credential its approval minted, machine its token pair, and renewed when that pair was last
 	// issued; nil on a stub rig's session.
-	login      *brokertest.Client
+	login      *ciphertest.Client
 	credential string
 	machine    *oauth2.Token
 	renewed    time.Time
@@ -247,8 +247,8 @@ type relayLiveSession struct {
 // newSession is a session whose requests are signed with a key of its own, and no device login.
 func newRelayLiveSession(t *testing.T, id string) *relayLiveSession {
 	t.Helper()
-	key := brokertest.NewSigningKey(t)
-	return &relayLiveSession{id: id, key: key, signer: &http.Client{Transport: brokerclient.NewDPoPTransport(key, http.DefaultTransport), Timeout: 30 * time.Second}}
+	key := ciphertest.NewSigningKey(t)
+	return &relayLiveSession{id: id, key: key, signer: &http.Client{Transport: cipherclient.NewDPoPTransport(key, http.DefaultTransport), Timeout: 30 * time.Second}}
 }
 
 // login is session id of person's machine, whose device login person approved.
@@ -259,8 +259,8 @@ func (r *relayLiveRig) login(t *testing.T, id, person string) *relayLiveSession 
 	if err != nil {
 		t.Fatalf("read the broker's URL: %v", err)
 	}
-	session.login = brokertest.NewClient(t, r.broker.URL, address.Host)
-	session.login.DPoP = brokerclient.NewDPoPTransport
+	session.login = ciphertest.NewClient(t, r.broker.URL, address.Host)
+	session.login.DPoP = cipherclient.NewDPoPTransport
 	session.login.UIToken = r.broker.UIToken
 	authorization := session.login.DeviceLogin(t, session.key, person, "edge-live-"+strings.ReplaceAll(id, "_", "-"))
 	session.credential = session.login.ApproveMachineLogin(t, person, authorization.UserCode)
@@ -411,7 +411,7 @@ func (r *relayLiveRig) dial(t *testing.T, s *relayLiveSession, edge *listenerPro
 		t.Fatalf("build the upgrade: %v", err)
 	}
 	signing.Header.Set("Authorization", "DPoP "+token)
-	if _, err := (&http.Client{Transport: brokerclient.NewDPoPTransport(s.key, capture)}).Do(signing); err != nil {
+	if _, err := (&http.Client{Transport: cipherclient.NewDPoPTransport(s.key, capture)}).Do(signing); err != nil {
 		t.Fatalf("sign the upgrade: %v", err)
 	}
 	header := http.Header{"Authorization": {capture.last.Header.Get("Authorization")}, "DPoP": {capture.last.Header.Get("DPoP")}}
@@ -783,9 +783,9 @@ func TestAnOpenSocketClosesWhenTheAnswersProjectsChange(t *testing.T) {
 		t.Fatalf("thumbprint the session's key: %v", err)
 	}
 	says := func(token string, projects ...string) {
-		rig.stub.Says(token, brokertoken.Introspection{
-			Active: true, Session: s.id, Person: relayLivePerson, ProjectScope: brokertoken.ProjectScopePerson, Projects: projects,
-			ClientID: brokertoken.ExchangeClientID, Thumbprint: jkt, ExpiresAt: time.Now().Add(time.Hour).Unix(),
+		rig.stub.Says(token, ciphertoken.Introspection{
+			Active: true, Session: s.id, Person: relayLivePerson, ProjectScope: ciphertoken.ProjectScopePerson, Projects: projects,
+			ClientID: ciphertoken.ExchangeClientID, Thumbprint: jkt, ExpiresAt: time.Now().Add(time.Hour).Unix(),
 		})
 	}
 	const first, second = "access-token-first-answered-priv", "access-token-second-answered-priv"

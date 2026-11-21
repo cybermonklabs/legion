@@ -388,15 +388,6 @@ want_line_in() {
   pass "$1" "$2: $line"
 }
 
-# declared SECTION WHAT FILE SED: the one value SED prints out of a Go source file, refused when
-# the file or the declaration is gone. Every figure this driver holds the loop to is read from the
-# source that declares it, so a build that moved one moves this check with it.
-declared() {
-  [[ -r "$3" ]] || fail "$1" "$2" "$3 is unreadable"
-  answer="$(sed -n "$4" "$3")"
-  [[ -n "$answer" ]] || fail "$1" "$2" "no such declaration in $3"
-}
-
 # owed SECTION WHAT: how many documents the block-index reconciliation still owes an index. It is
 # the read cmd/dispatch/graph_cost_test.go's costBlockIndexDrained takes, over the column migration
 # 0122's trigger leaves null for a write that deferred its blocks.

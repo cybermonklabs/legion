@@ -2,8 +2,14 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -152,6 +159,7 @@ runtime:
       token_file: /var/run/secrets/agent-secrets/token
       audience: fixture-broker-audience
       token_expiry_seconds: 1800
+      exchange_audience: fixture-exchange-audience
     plugins:
       pi_legion: 10.4.0
       pi_envoy: https://legion:fixture-plugin-password@plugins.internal.example/pi-envoy-10.4.0.tgz?token=fixture-plugin-token
@@ -222,6 +230,8 @@ func populatedState(t *testing.T) State {
 	implementerFailedAt := time.Date(2026, 9, 22, 8, 47, 3, 0, time.UTC)
 	// When LEGION-207's linger runs out: its work finished and its tree lingers until then.
 	lingerUntil := time.Date(2026, 9, 22, 10, 10, 12, 0, time.UTC)
+	// When the controller paused the project, nine minutes before the state was read.
+	pausedSince := time.Date(2026, 9, 22, 9, 9, 0, 0, time.UTC)
 	// The two flags the line's members write: LEGION-212 kept the slot it took when the daemon
 	// started it and waits for no other (record.KeepsSlot), and LEGION-211's tree has not been
 	// opened, so it holds none and queues for one. A member that holds none writes `holdsSlot`
@@ -274,6 +284,13 @@ func populatedState(t *testing.T) State {
 		ArgsHash:      "9b2e45c0d1f8a673",
 		StartedAt:     time.Date(2026, 9, 22, 9, 17, 12, 0, time.UTC),
 	}
+	// What the daemon last saw of the architect's turns and of its launches (contract 86): the
+	// turn it began and ended, the ready that dates the two causes beside them, the cause its
+	// process was last found gone under, and the failure its last start reported. One claim view
+	// of the fixture carries all five, so every record describes each key.
+	architectTurnStart := time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC)
+	architectTurnEnd := time.Date(2026, 9, 22, 9, 16, 58, 0, time.UTC)
+	architectReady := time.Date(2026, 9, 22, 9, 15, 44, 0, time.UTC)
 	state := State{
 		Daemon: DaemonInfo{
 			Project:       "legion",
@@ -340,7 +357,20 @@ func populatedState(t *testing.T) State {
 						Incarnation: "31881:9442101",
 						Tmux:        &runtime.TmuxLocator{Window: "@4", Pane: "%12"},
 					},
-					Step: StepViewOf(architectStep),
+					// No round is open over this claim, and the pacing holds a catch-up for it:
+					// the notice a child's re-admission wrote it in place of a launch, which the
+					// state names under `wakesWaiting` too.
+					UpdateState: UpdateStateNone,
+					Step:        StepViewOf(architectStep),
+					Wake:        &WakeView{Kind: supervise.WakeCatchUp, DueAt: time.Date(2026, 9, 22, 9, 18, 3, 0, time.UTC)},
+					// The turns this agent began and ended, the ready that dates what follows,
+					// and the two causes a start of it reported before the one running now
+					// (contract 86).
+					LastTurnStart:    &architectTurnStart,
+					LastTurnEnd:      &architectTurnEnd,
+					LastReady:        &architectReady,
+					LastDeathCause:   "the pane's process was gone at the daemon's read",
+					LastStartFailure: "the pod was not ready within the worker boot timeout",
 				},
 				Workers: map[claim.Role]PhaseView{
 					claim.RolePlanner: {
@@ -358,7 +388,8 @@ func populatedState(t *testing.T) State {
 							},
 							// The pod's update round, which every claim of that pod shares: the round
 							// asks each role, and the daemon replaces the pod once every asked role has
-							// answered and no turn runs, or at the round's bound
+							// answered, no turn runs and no claim's activity report holds it
+							// (internal/daemon's roundEnd.holding), or at the round's bound
 							// (pod_update_grace_minutes) whatever the roles answered, an operator's
 							// suspension excepted. This one has answered, and reported the head it
 							// pushed. The reasons are the round's own, so every claim of the pod
@@ -366,6 +397,10 @@ func populatedState(t *testing.T) State {
 							UpdateRound:   "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
 							UpdateHead:    "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
 							UpdateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
+							// The worker answered with the ready_for_update call. Its launch onto
+							// the pod's replacement waits in the pacing meanwhile.
+							UpdateState: UpdateStateAnswered,
+							Wake:        &WakeView{Kind: supervise.WakeLaunch, DueAt: time.Date(2026, 9, 22, 9, 18, 11, 0, time.UTC)},
 						},
 						HandoffRecord: &HandoffRecordView{ID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 1},
 						Pass:          0,
@@ -394,8 +429,10 @@ func populatedState(t *testing.T) State {
 							},
 							// The same round, on the worker that has not answered it yet: no head is
 							// reported until a worker answers, and the reasons are the round's own.
+							// The round's ask reached a session of this worker's role.
 							UpdateRound:   "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
 							UpdateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
+							UpdateState:   UpdateStateAsked,
 							// The run of the last confirmed delivery this claim retired, which is
 							// this issue's own generation: the worker is turning over the run the
 							// issue is in.
@@ -446,10 +483,13 @@ func populatedState(t *testing.T) State {
 				EntryQueuedAt:    &entryQueued,
 				EntryConfirmedAt: &entryConfirmed,
 				PullRequest: &PullRequestView{
-					Repo:           "acme/widgets",
-					Number:         1247,
-					Head:           "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
-					State:          "open",
+					Repo:   "acme/widgets",
+					Number: 1247,
+					Head:   "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
+					State:  "open",
+					// GitHub's own merge state for the head as the daemon's last read found it
+					// (contract 86): a review the repository requires holds this one.
+					MergeState:     "blocked",
 					ReviewDecision: "changes_requested",
 				},
 				DesignGate: &GateView{
@@ -496,8 +536,9 @@ func populatedState(t *testing.T) State {
 					// leak check could not be installed in the pod, which this fixture carries with
 					// the other optional keys of the view at once, as operatorClaim does.
 					claim.RoleImplementer: {Claim: ClaimView{
-						Session: "ses_implementer_210",
-						State:   "failed",
+						Session:     "ses_implementer_210",
+						State:       "failed",
+						UpdateState: UpdateStateNone,
 						Failure: &ClaimFailureView{
 							Cause:    supervise.CauseDied,
 							Detail:   "launch failures ran out",
@@ -543,8 +584,9 @@ func populatedState(t *testing.T) State {
 					// the two sends that never reached a turn are on it: the diagnosis record a
 					// stalled claim is read by, with no budget spent on either.
 					claim.RoleImplementer: {Claim: ClaimView{
-						Session: "ses_implementer_211",
-						State:   "suspended",
+						Session:     "ses_implementer_211",
+						State:       "suspended",
+						UpdateState: UpdateStateNone,
 						PendingTask: &PendingTaskView{
 							Phase: phase.Implementing, QueuedAt: time.Date(2026, 9, 22, 8, 54, 20, 0, time.UTC),
 							SendFailures: 2, LastSendError: "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused",
@@ -682,7 +724,13 @@ func populatedState(t *testing.T) State {
 				// tree would read an absent `holdReason` by, the suppression being the linger's.
 				LingerUntil: &lingerUntil,
 				Workers: map[claim.Role]PhaseView{
-					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_207", State: "working"}, HandoffCommit: "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40", Pass: 1, Rounds: 1},
+					// The pacing holds this claim's relaunch onto this daemon's plugin, which the
+					// stale-plugin lane's own gate admitted for it: a wake stands over a claim no
+					// round has asked yet, which reads `none` with its wake beside it.
+					claim.RoleImplementer: {Claim: ClaimView{
+						Session: "ses_implementer_207", State: "working", UpdateState: UpdateStateNone,
+						Wake: &WakeView{Kind: supervise.WakePluginRefresh, DueAt: time.Date(2026, 9, 22, 9, 17, 56, 0, time.UTC)},
+					}, HandoffCommit: "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40", Pass: 1, Rounds: 1},
 				},
 				PullRequest: &PullRequestView{
 					Repo:           "acme/widgets",
@@ -869,6 +917,24 @@ func populatedState(t *testing.T) State {
 		// the pacing is holding now, which is the pair a reader of a running wave needs
 		// (contract 73).
 		ClaimsToRefresh: 4,
+		// The controller paused the project nine minutes before this read (decision 25 of
+		// dispatch://INFRA-3759), built through pausedViewOf from the store's own rows as the
+		// state's read builds it (PauseStateTx). LEGION-208's implementer is still in the turn the
+		// pause found it in, so the pause waits on its stop. Two rows are held for the pause: the
+		// start of LEGION-211's released implementer that a wake queued, which names its claim, and
+		// a notice for LEGION-209's architect, which names none (the tree walk routes a notice at
+		// run time), so it carries no `claim`.
+		Paused: pausedViewOf(store.Pause{
+			ID: 7, Project: "LEGION", Since: pausedSince, Reason: "the model provider is refusing every turn",
+			By: store.PauseActor{Kind: store.PauseByController, Session: "ses_controller"},
+		}, []store.PauseStop{{
+			ID: 31, Pause: 7, Claim: "legion-legion-legion-208-implementer", Issue: "LEGION-208",
+			Role: claim.RoleImplementer, AskedAt: pausedSince,
+		}}, []record.PauseHeldRow{
+			{OutboxRow: record.OutboxRow{ID: 811, Kind: record.OutboxKindSupervise, Issue: "LEGION-211"},
+				Claim: "legion-legion-legion-211-implementer", WaitedSeconds: 412},
+			{OutboxRow: record.OutboxRow{ID: 814, Kind: record.OutboxKindNotice, Issue: "LEGION-209"}, WaitedSeconds: 95},
+		}),
 		ControllerLocator: &ControllerLocator{
 			Runtime:      "kubernetes",
 			External:     true,
@@ -886,32 +952,37 @@ func populatedState(t *testing.T) State {
 			Decided:        map[capabilities.Name]string{capabilities.Secrets: "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod reads a secret"},
 			UnreservedPods: []capabilities.Pod{capabilities.PodIssue},
 		}.Report()),
-		// Four repositories of two owners: two the daemon serves, both role Apps being installed
-		// on them; one the review App is not installed on, which the daemon leaves out saying what
-		// GitHub answered of each App; and one whose implement App read GitHub did not answer,
-		// left out for now with no answer of the Apps at all, since GitHub gave it none.
-		// zeta/tools stands for a repository only a record names, which the daemon serves exactly
-		// as a mapped one and which is the project's default in no mapping (INFRA-2543 R6).
-		// acme/widgets' cache is Ready and its last health read answered, zeta/tools' could not be
-		// read, and acme/legacy, served no longer, keeps its cache until its retention ends.
+		// Five repositories the live records name, of three owners, sorted by name, each showing
+		// an answer the block carries: acme/gadgets, the review App not installed on it, which
+		// GitHub answered of both Apps; acme/widgets, both role Apps installed, its cache Ready and
+		// its last health read answered; sjawhar/legion, which the records keep under its name
+		// before a configured transfer and the rename rule serves as cybermonklabs/legion, both
+		// Apps installed there; zeta/archive, whose implement App read GitHub did not answer, so it
+		// carries why and no answer of the Apps at all; and zeta/tools, both Apps installed and its
+		// cache failing, which withoutWebhookApp names as Dispatch's GitHub App not installed on
+		// it, served all the same. acme/legacy, which no live record names any more, keeps its
+		// cache until its retention ends.
 		Repositories: RepositoriesView{
-			Owners: []string{"acme", "zeta"},
-			Mapped: []MappedRepositoryView{
-				{Repo: "acme/widgets", Default: true, Apps: AppInstallationsView{Implement: true, Review: true}, Cache: &CacheView{
+			Live: []LiveRepositoryView{
+				{Repo: "acme/gadgets", Apps: &AppInstallationsView{Implement: true}},
+				{Repo: "acme/widgets", Apps: &AppInstallationsView{Implement: true, Review: true}, Cache: &CacheView{
 					Repo: "acme/widgets", Sandbox: "legion-legion-cache-acme-widgets-d782c874", State: "ready", Ready: true, Address: "http://legion-legion-cache-acme-widgets-d782c874.legion.svc:8418",
 					Head: "34a7ac80e9c3389ffbc1bbeece371ccacc043992", LastFetchAt: time.Date(2026, 10, 16, 19, 20, 30, 0, time.UTC), Bytes: 6612345678,
 				}},
-				{Repo: "zeta/tools", Apps: AppInstallationsView{Implement: true, Review: true}, Cache: &CacheView{
-					Repo: "zeta/tools", Sandbox: "legion-legion-cache-zeta-tools-1b2c3d4e", State: "failing",
-					Reason: "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
-				}},
+				{Repo: "sjawhar/legion", ServedAs: "cybermonklabs/legion", Apps: &AppInstallationsView{Implement: true, Review: true}},
+				{Repo: "zeta/archive", ReadError: "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"},
+				{
+					Repo: "zeta/tools", Apps: &AppInstallationsView{Implement: true, Review: true},
+					Cache: &CacheView{
+						Repo: "zeta/tools", Sandbox: "legion-legion-cache-zeta-tools-1b2c3d4e", State: "failing",
+						Reason: "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
+					},
+				},
 			},
-			Refused: []RefusedRepositoryView{
-				{Repo: "acme/gadgets", Reason: "the review App is not installed on acme/gadgets", Apps: &AppInstallationsView{Implement: true}},
-				{Repo: "zeta/archive", Reason: "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"},
-			},
-			// Dispatch's GitHub App is not installed on zeta/tools, which is served all the same.
-			WithoutWebhookApp: []WebhookAppGapView{{Repo: "zeta/tools", Reason: "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"}},
+			WithoutWebhookApp: []WebhookAppGapView{{
+				Repo:   "zeta/tools",
+				Reason: "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed",
+			}},
 			Caches: []CacheView{{
 				Repo: "acme/legacy", Sandbox: "legion-legion-cache-acme-legacy-0a1b2c3d", State: "starting", RetainedUntil: time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC),
 			}},
@@ -979,6 +1050,12 @@ func populatedState(t *testing.T) State {
 		MemoryDrawMode: string(config.ExperimentRandom),
 		MemoryDrawnAt:  &memoryDrawnAt,
 	}
+	// The oldest plugin any pod of the fixture's project runs, which the state route reads from
+	// the claims of its own snapshot (api's lowestPluginContract). The floor is the reading this
+	// change records of the fleet, and the fixture carries a value so that the golden and every
+	// walk over it see the field.
+	lowest := ServingFloor
+	state.LowestPluginContract = &lowest
 	// Every issue standing in a tree the admission block names carries that tree's quiet time,
 	// the two keys contract 111 added: the measure is the tree's, so each member of one tree
 	// carries the same pair. LEGION-207's tree closed and LEGION-209 stands in no tree of this
@@ -1032,13 +1109,44 @@ func newest(times ...time.Time) time.Time {
 }
 
 // The state golden is the body the route serves a caller at this daemon's own contract: the
-// source answers no mark and the route writes one (server's stateFor), so the fixture carries
+// source answers no mark and the route writes one (shaping's stateFor), so the fixture carries
 // the two numbers of `contract` and the plugin's schema is held to them. A caller below the
 // contract that added it is served no such key, which TestANarrowedBodySaysSo holds.
 func TestStateGolden(t *testing.T) {
 	state := populatedState(t)
 	state.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: DaemonAPIVersion}
 	golden(t, "state.json", state)
+}
+
+// The state route's body for a caller whose plugin is at the contract before
+// repositoriesLiveContract, 201, asking from a pod whose claims record it and stating it in
+// `Legion-Plugin-Contract`, as every plugin from shapedAnswersContract on does: the state golden's
+// own state, asked through the route itself. 201 is no contract SupportedContracts records, so the
+// caller is served at 199, the recorded contract below it (recordedContractAtOrBelow), which the
+// mark names: its `repositories` block in the shape contract 152 gave it, written from the same
+// entries (withoutRepositoriesLive), and every other key as a caller at 199 is served it, since no
+// other row of stateNarrowings stands above 199. 199 moved no answer's shape, so those are the
+// keys a caller at 193 is served too. shapedAnswersContract's row and pauseContract's stand below
+// it, which is why the golden carries `lowestPluginContract`, each claim view's `updateState` and
+// `paused`. `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's
+// schema of the block, so the narrowing is held to the reader it is written for, and its drift
+// gate holds every key of the file to that copy.
+func TestStateNarrowedRepositoriesGolden(t *testing.T) {
+	server := stateServer(t, populatedState(t), podClaims(repositoriesLiveContract-1))
+	body := stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1)
+	golden(t, "state-narrowed-repositories.json", json.RawMessage(body))
+}
+
+// One issue's record, what `GET /legion/v1/issues/{key}/record` answers: the very `api.Issue`
+// the whole-project body holds under `issues.LEGION-208`, which a test of the route holds the
+// two to, field for field.
+func TestIssueRecordGolden(t *testing.T) {
+	golden(t, "issue-record.json", populatedState(t).Issues[recordGoldenIssue])
+}
+
+// What `GET /healthz` answers: that the daemon is serving, and the project it serves.
+func TestHealthGolden(t *testing.T) {
+	golden(t, "health.json", Health{Status: "ok", Project: "legion"})
 }
 
 // Every plugin parses the state with the schema of the contract it was built at, and a
@@ -1134,12 +1242,152 @@ func TestStateOperatorClaimGolden(t *testing.T) {
 						Incarnation: "1618075:268131172",
 						Tmux:        &runtime.TmuxLocator{Window: "@1", Pane: "%1"},
 					},
+					// No round is open over an operator's spawn either: every claim view names
+					// one of the four states, and the projection writes this one for a claim no
+					// round has reached.
+					UpdateState: UpdateStateNone,
 				},
 			},
 		},
 		PendingStatusWrites: []PendingStatusWrite{},
 		Settings:            SettingsOf(minimalSettingsConfig(t)),
 	})
+}
+
+// goldenPauseSince is when the goldens' pause began, and goldenPauseEnded when its resume ended it.
+var (
+	goldenPauseSince = time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	goldenPauseEnded = time.Date(2026, 11, 15, 9, 41, 30, 0, time.UTC)
+)
+
+// goldenPause is the goldens' pause: the operator paused LEGION for a provider's outage, and, once
+// ended, the controller resumed it from its session.
+func goldenPause(ended bool) store.Pause {
+	p := store.Pause{ID: 7, Project: "LEGION", Since: goldenPauseSince, By: store.PauseActor{Kind: store.PauseByOperator},
+		Reason: "the model provider is refusing every turn"}
+	if ended {
+		p.EndedAt, p.EndedBy = goldenPauseEnded, store.PauseActor{Kind: store.PauseByController, Session: "ses_controller"}
+	}
+	return p
+}
+
+// While the project runs after a pause has ended, the state names that pause and who ended it
+// (`lastPause`, decision 25 of dispatch://INFRA-3759) and carries no `paused`; populatedState
+// carries the other key, the pause that stands. A state carries one of the two at most, so each has
+// a state of its own, built as the state's read builds it (pauseViewOf).
+func TestStateLastPauseGolden(t *testing.T) {
+	last := pauseViewOf(goldenPause(true))
+	golden(t, "state-last-pause.json", State{
+		Daemon: DaemonInfo{
+			Project:       "LEGION",
+			SchemaVersion: 3,
+			Boots:         5,
+			FirstBootAt:   time.Date(2026, 11, 2, 14, 3, 27, 0, time.UTC),
+			StartedAt:     time.Date(2026, 11, 15, 8, 30, 0, 0, time.UTC),
+		},
+		Admission:           Admission{Cap: 2, Active: []string{}, Waiting: []string{}},
+		PendingStatusWrites: []PendingStatusWrite{},
+		LastPause:           &last,
+		Settings:            SettingsOf(minimalSettingsConfig(t)),
+	})
+}
+
+// stubPauses is a pause service that answers what a golden asks of it: the pause routes are held
+// to the real service by TestPauseRoutes, and these goldens pin what the routes write of each
+// answer and each refusal, through the routes themselves.
+type stubPauses struct {
+	pause, resumed      store.Pause
+	pauseErr, resumeErr error
+	released            int
+	open, last          store.Pause
+	openFound           bool
+	lastFound           bool
+	paused              int64
+}
+
+func (s stubPauses) Pause(context.Context, store.PauseActor, string) (store.Pause, error) {
+	return s.pause, s.pauseErr
+}
+
+func (s stubPauses) Resume(context.Context, store.PauseActor) (store.Pause, []record.PauseHeldRow, error) {
+	return s.resumed, make([]record.PauseHeldRow, s.released), s.resumeErr
+}
+
+func (s stubPauses) OpenPause(context.Context) (store.Pause, bool, error) {
+	return s.open, s.openFound, nil
+}
+
+func (s stubPauses) LastEndedPause(context.Context) (store.Pause, bool, error) {
+	return s.last, s.lastFound, nil
+}
+
+func (s stubPauses) Paused() (int64, bool) { return s.paused, s.paused != 0 }
+
+// pauseRouteAnswer is what the operator's route at target answers with svc behind it (nil for a
+// daemon with no pause service), held to want and decoded strictly into into, so a key the Go type
+// does not name fails here before it reaches a fixture.
+func pauseRouteAnswer(t *testing.T, svc PauseService, target string, body any, want int, into any) {
+	t.Helper()
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := NewServer("127.0.0.1", 8437, Options{Project: testProject, OperatorToken: testOperatorToken, Pause: svc, Log: quiet}).Handler
+	var reader io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reader = bytes.NewReader(encoded)
+	}
+	req := httptest.NewRequest(http.MethodPost, target, reader)
+	req.Header.Set("Authorization", "Bearer "+testOperatorToken)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	if recorder.Code != want {
+		t.Fatalf("POST %s = %d, want %d; body %s", target, recorder.Code, want, recorder.Body)
+	}
+	decodeInto(t, recorder, into)
+}
+
+// Every answer and refusal of the pause routes has a fixture (dispatch://INFRA-3759), written
+// from what the route itself writes: the pause it began; the pause a resume ended, with how many
+// held rows it let out; a blank reason; a daemon whose configuration cannot hold a pause, naming
+// the setting; a daemon with no workflow, which names no setting; a second pause, naming the pause
+// that stands; a resume of a running project, naming the last pause; and a turn refused while the
+// project is paused (PROJECT_PAUSED, here the operator's spawn), naming the pause that stands.
+func TestPauseRouteGoldens(t *testing.T) {
+	const pauseRoute, resumeRoute = "/legion/v1/operator/project/pause", "/legion/v1/operator/project/resume"
+	reason := OperatorPauseRequest{Reason: goldenPause(false).Reason}
+
+	var paused ProjectPauseResponse
+	pauseRouteAnswer(t, stubPauses{pause: goldenPause(false)}, pauseRoute, reason, http.StatusOK, &paused)
+	golden(t, "project-pause.json", paused)
+
+	var resumed ProjectResumeResponse
+	pauseRouteAnswer(t, stubPauses{resumed: goldenPause(true), released: 3}, resumeRoute, nil, http.StatusOK, &resumed)
+	golden(t, "project-resume.json", resumed)
+
+	var blank Failure
+	pauseRouteAnswer(t, stubPauses{pauseErr: pause.ErrReasonRequired}, pauseRoute, OperatorPauseRequest{}, http.StatusBadRequest, &blank)
+	golden(t, "project-pause-reason-required.json", blank)
+
+	for name, tc := range map[string]struct {
+		svc    PauseService
+		target string
+		body   any
+	}{
+		"project-pause-unavailable.json": {stubPauses{pauseErr: &pause.UnavailableError{Setting: pause.SettingTmux}}, pauseRoute, reason},
+		"project-pause-no-workflow.json": {nil, pauseRoute, reason},
+		"project-pause-refused.json": {stubPauses{pauseErr: fmt.Errorf("pause LEGION: %w",
+			&store.AlreadyPausedError{Standing: goldenPause(false)})}, pauseRoute, reason},
+		"project-resume-refused.json": {stubPauses{resumeErr: &store.NotPausedError{Project: "LEGION"},
+			last: goldenPause(true), lastFound: true}, resumeRoute, nil},
+		"project-paused.json": {stubPauses{paused: 7, open: goldenPause(false), openFound: true}, "/legion/v1/operator/claims",
+			SpawnRequest{Tree: "LEGION-208", Issue: "LEGION-209", Role: claim.RoleImplementer}},
+	} {
+		var refused PauseFailure
+		pauseRouteAnswer(t, tc.svc, tc.target, tc.body, http.StatusConflict, &refused)
+		golden(t, name, refused)
+	}
 }
 
 // golden pins one response's wire shape: Go writes it (`-update`), and
@@ -1229,7 +1477,7 @@ func TestReadyForUpdateRequestGolden(t *testing.T) {
 // than a literal. The store's `Project` is no field of the wire — the route answers one
 // project's records — so the rows carry only what is served.
 //
-// Two rows of each list, because one row of each pins less than the shape:
+// Two rows of each list, because one row of each pins less than the shape, and a third resume:
 //   - the releases are a release that suspended two roles and saved a bundle, and one whose
 //     stops suspended no claim and whose workspace held nothing unpushed (recordPodRelease
 //     counts only the claims this release's own stops suspended, and the store reads an empty
@@ -1238,7 +1486,9 @@ func TestReadyForUpdateRequestGolden(t *testing.T) {
 //   - the resumes are a wake whose pod was Ready and whose role took its first turn, which is
 //     the row that fills both optional stamps, and a wake of a pod with no release row recorded
 //     for it (`release` is 0) that went ten minutes with no turn, so it is `stuck` and its
-//     `firstTurnAt` is left out until something observes it;
+//     `firstTurnAt` is left out until something observes it; and a wake a project pause held
+//     (decision 15 of dispatch://INFRA-3759), which pairs with no release and names its pause in
+//     `pause`, the key every other resume leaves out;
 //   - the holds are a background-work streak over eleven passes with the kinds its session
 //     reported in `detail`, and a teardown's overtaken hold, which reads a hold and not the view
 //     behind it and so carries no detail at all (outbox.recordPodHold).
@@ -1256,6 +1506,9 @@ func TestReleaseRecordsResponseGolden(t *testing.T) {
 				FirstTurnAt: released.Add(32 * time.Minute)},
 			{ID: 202, Issue: "LEGION-207", Role: "architect", Kind: "backstop",
 				At: released.Add(45 * time.Minute), PodReadyAt: released.Add(46 * time.Minute), Stuck: true},
+			{ID: 203, Issue: "LEGION-210", Role: "implementer", Kind: "pause",
+				At: released.Add(50 * time.Minute), PodReadyAt: released.Add(80 * time.Minute),
+				FirstTurnAt: released.Add(81 * time.Minute), Pause: 7},
 		},
 		Holds: []store.PodHold{
 			{ID: 301, Issue: "LEGION-210", Reason: "background_work", Detail: "subagent,async-job",
@@ -1505,6 +1758,24 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "root-close.json", EmptyResponse{})
 	golden(t, "child-park.json", EmptyResponse{})
 	golden(t, "child-rerun.json", EmptyResponse{})
+}
+
+// The table of answers a plugin parses (answers.go): one row per response schema, the routes
+// that answer it, and the contract that answer arrived at. No route answers this fixture. It is
+// written out so that the plugin's own side reads the same rows the daemon shapes by.
+func TestAnswersGolden(t *testing.T) {
+	golden(t, "answers.json", Answers)
+}
+
+// The table of enumerated fields a plugin parses strictly (answers.go): one row per field, with
+// each value and the contract it arrived at. No route answers this fixture either. It is
+// written out beside answers.json so that the plugin's own side holds its enumerations to the
+// daemon's: `packages/contracts/src/legion-api.test.ts` reads this file, holds each row's values
+// equal to the members of the `z.enum` it reads at that row's key path, and fails a `z.enum` it
+// reads at a path no row declares. A value added on one side and not the other is red rather
+// than silent.
+func TestEnumeratedFieldsGolden(t *testing.T) {
+	golden(t, "enumerated-fields.json", EnumeratedFields)
 }
 
 // The turn outcome's answer is what a producer's report of one turn comes back as: the run of

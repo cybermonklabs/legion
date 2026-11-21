@@ -2,7 +2,11 @@ package dispatch
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
+	"fmt"
+	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -38,6 +42,9 @@ func TestUnreachableClassifiesEachErrorShape(t *testing.T) {
 		{"a TransientError wrapping a dial refusal", &TransientError{Err: &net.OpError{Op: "dial", Err: errors.New("connection refused")}}, true},
 		{"a decode error on a 2xx response: not Dispatch answering, not a transport failure — a schema mismatch",
 			errors.New("decode Dispatch GET /api/v1/issues response: unexpected end of JSON input"), false},
+		{"a TLS alert on one read joined with a TransientError of another: the refusal wins over the outage",
+			errors.Join(&TransientError{Err: context.DeadlineExceeded}, fmt.Errorf("read Dispatch GET /api/v1/issues/ACME-1/events: %w",
+				&net.OpError{Op: "remote error", Err: errors.New("tls: certificate required")})), false},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			if got := Unreachable(testCase.err); got != testCase.want {
@@ -47,13 +54,15 @@ func TestUnreachableClassifiesEachErrorShape(t *testing.T) {
 	}
 }
 
-// transportFailure's three shapes, each reproduced against a real server rather than a synthetic
-// error: a certificate the client does not trust and an https:// URL pointed at a plain-HTTP port
-// both stay loud refusals no wait fixes, exactly like the certificate case; a dial the network
-// refuses is wrapped as a TransientError, exactly what a real outage produces, so Unreachable
-// rides it out. dispatchBase's scheme check (internal/config) catches a scheme that is not http
-// or https at load time, but not a correct https:// whose port serves plain HTTP, which only a
-// real connection attempt reveals.
+// transportFailure's five shapes, each reproduced against a real server rather than a synthetic
+// error: a certificate the client does not trust, a TLS alert (tlsalert.In reads one on the
+// handshake or on a later record alike; this row's ends the handshake), an https:// URL pointed
+// at a plain-HTTP port, and an https:// URL pointed at a port that answers in neither TLS nor
+// HTTP/1.x all stay loud refusals no wait fixes, each one TransportRefusal reads; a dial the
+// network refuses is wrapped as a TransientError, exactly what a real outage produces, so
+// Unreachable rides it out and TransportRefusal does not read it. dispatchBase's scheme check
+// (internal/config) catches a scheme that is not http or https at load time, but not a correct
+// https:// whose port does not serve TLS, which only a real connection attempt reveals.
 func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 	for _, testCase := range []struct {
 		name          string
@@ -74,6 +83,26 @@ func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 			wantTransient: false,
 		},
 		{
+			name: "a TLS alert: a front door that demands a client certificate the client does not hold",
+			client: func(t *testing.T) *HTTPClient {
+				server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				}))
+				server.Config.ErrorLog = log.New(io.Discard, "", 0)
+				// Pinned to TLS 1.2, where the server's alert ends the handshake itself; at TLS 1.3
+				// the server decides once the client's handshake is done, and the client meets the
+				// alert at whichever write or read reaches it first.
+				server.TLS = &tls.Config{ClientAuth: tls.RequireAnyClientCert, MaxVersion: tls.VersionTLS12}
+				server.StartTLS()
+				t.Cleanup(server.Close)
+				client := New(server.URL, "test-token")
+				// The client trusts the server's certificate, so the alert is all that fails.
+				client.httpClient = server.Client()
+				return client
+			},
+			wantTransient: false,
+		},
+		{
 			name: "an https:// URL pointed at a plain-HTTP port",
 			client: func(t *testing.T) *HTTPClient {
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +110,38 @@ func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 				}))
 				t.Cleanup(server.Close)
 				return New("https://"+strings.TrimPrefix(server.URL, "http://"), "test-token")
+			},
+			wantTransient: false,
+		},
+		{
+			// net/http turns the client's tls.RecordHeaderError into http.ErrSchemeMismatch only
+			// where the answer starts "HTTP/" (net/http/client.go). A port that answers in neither
+			// TLS nor HTTP/1.x, such as an SSH server, leaves the record error itself, and no wait
+			// fixes that either. Python's http.server, which answers the TLS client hello as an
+			// HTTP/0.9 request with no status line, gave the real `legion start` the same error:
+			// "tls: first record does not look like a TLS handshake".
+			name: "an https:// URL pointed at a port that answers in neither TLS nor HTTP/1.x",
+			client: func(t *testing.T) *HTTPClient {
+				listener, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatalf("listen: %v", err)
+				}
+				t.Cleanup(func() { listener.Close() })
+				go func() {
+					for {
+						conn, err := listener.Accept()
+						if err != nil {
+							return
+						}
+						go func() {
+							defer conn.Close()
+							if _, err := conn.Write([]byte("SSH-2.0-OpenSSH_9.6\r\n")); err == nil {
+								_, _ = io.Copy(io.Discard, conn)
+							}
+						}()
+					}
+				}()
+				return New("https://"+listener.Addr().String(), "test-token")
 			},
 			wantTransient: false,
 		},
@@ -112,6 +173,9 @@ func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 			}
 			if got := Unreachable(err); got != testCase.wantTransient {
 				t.Fatalf("Unreachable(%v) = %t, want %t", err, got, testCase.wantTransient)
+			}
+			if got := TransportRefusal(err); got == testCase.wantTransient {
+				t.Fatalf("TransportRefusal(%v) = %t, want %t", err, got, !testCase.wantTransient)
 			}
 		})
 	}

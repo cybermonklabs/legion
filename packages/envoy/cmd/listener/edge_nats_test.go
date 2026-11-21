@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -22,7 +22,7 @@ const edgeProject = "PRIV"
 // against the NATS at uri, with env added to its environment: on a loopback port the test holds
 // (startListenerProcess says why), taking broker access tokens from broker and no other
 // credential, as an edge listener takes them.
-func startEdgeListenerProcess(t *testing.T, binary, uri, machineID string, broker *brokertokentest.StubBroker, env ...string) *listenerProcess {
+func startEdgeListenerProcess(t *testing.T, binary, uri, machineID string, broker *ciphertokentest.StubBroker, env ...string) *listenerProcess {
 	t.Helper()
 	held := cmdtest.HoldPort(t)
 	account := filepath.Join(t.TempDir(), "account-token")
@@ -50,7 +50,7 @@ func startEdgeListenerProcess(t *testing.T, binary, uri, machineID string, broke
 func TestTheEdgeRefusesToStartWithoutTheStream(t *testing.T) {
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
-	broker := brokertokentest.NewStubBroker(t)
+	broker := ciphertokentest.NewStubBroker(t)
 
 	refused := startEdgeListenerProcess(t, binary, uri, "edge-no-stream", broker)
 	refused.WaitExit(t, "its start")

@@ -41,10 +41,10 @@ const referenceTargetsMax = contracts.ReferenceTargetsMax
 // answer by index or by reference; a reference named twice is answered twice.
 //
 // It is a GET with one repeated parameter, not a POST of a list: a POST of the page goes through
-// the write store with an Idempotency-Key (packages/dispatch/AGENTS.md), so a POST read would be
-// a second write path, and a GET is what a browser cache, a conditional read and the page's
-// request budget are counted by. GET /api/v1/references reads one node's edges and stays as it
-// is; this read names no edges at all.
+// the write store with an Idempotency-Key (packages/dispatch/web/src/features/writes/), so a POST
+// read would be a second write path, and a GET is what a browser cache, a conditional read and the
+// page's request budget are counted by. GET /api/v1/references reads one node's edges and stays
+// as it is; this read names no edges at all.
 //
 // A reference the grammar cannot read is refused by name (parseRequestRef, as the per-reference
 // route refuses its own), and so is a set past referenceTargetsMax, which is refused before

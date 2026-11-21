@@ -272,7 +272,17 @@ export function ProjectPage(): ReactNode {
           ) : (
             <>
               <IssueFilters key={route.project} project={route.project} />
-              <IssueBoard lanes={lanes} project={route.project} showEdges={showEdges} />
+              {/* Keyed by the project, as the list and the filters are: the board holds what
+                  became of its last move, and a refusal of one project's move names that
+                  project's issue, so another project's board is drawn with none of it. The key
+                  names the board too: the filters beside it are keyed by the same project, and
+                  siblings are told apart by their keys. */}
+              <IssueBoard
+                key={`board:${route.project}`}
+                lanes={lanes}
+                project={route.project}
+                showEdges={showEdges}
+              />
             </>
           )
         ) : null}

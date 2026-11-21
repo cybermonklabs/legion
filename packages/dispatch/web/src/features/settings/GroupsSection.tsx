@@ -16,7 +16,7 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   settingsFieldLabel,
   settingsMonoInput,
@@ -88,6 +88,7 @@ export function GroupsSection(): ReactNode {
     inline: true,
     label: (input) => `New group ${input.name}`,
     write: (input, bounds) => api.putAccessGroup(input.name, { members: input.members }, bounds),
+    method: "PUT",
     onSuccess: (group, input) => {
       if (group !== null) {
         queryClient.setQueryData<AccessGroup[]>(groupsKey, (rows) => withGroup(rows, group));
@@ -235,13 +236,16 @@ export function GroupsSection(): ReactNode {
       {createGroup.isError && createGroup.variables !== undefined ? (
         <div className="mt-4">
           <QueryError
-            message={apiErrorMessage(
-              createGroup.error,
-              `Couldn't make group ${createGroup.variables.name}.`
-            )}
-            onRetry={() => {
-              if (createGroup.variables !== undefined) createGroup.mutate(createGroup.variables);
-            }}
+            message={
+              // A make the reader stopped may have made the group, and Retry makes that very
+              // press again (`retry`).
+              stoppedNote(createGroup, `the new group ${createGroup.variables.name}`, "made") ??
+              apiErrorMessage(
+                createGroup.error,
+                `Couldn't make group ${createGroup.variables.name}.`
+              )
+            }
+            onRetry={createGroup.retry}
             retrying={createGroup.isPending}
           />
         </div>
@@ -289,6 +293,7 @@ function GroupRow({
       }
       return api.putAccessGroup(group.name, { members: change.members }, bounds);
     },
+    method: (change) => (change.kind === "delete" ? "DELETE" : "PUT"),
     onSuccess: (answer, change) => {
       if (change.kind === "delete") {
         queryClient.setQueryData<AccessGroup[]>(groupsKey, (rows) =>
@@ -395,13 +400,24 @@ function GroupRow({
         <tr className={settingsTableRow}>
           <td className="px-4 py-3" colSpan={4}>
             <QueryError
-              message={apiErrorMessage(
-                write.error,
-                failed.kind === "delete"
-                  ? `Couldn't delete group ${group.name}.`
-                  : `Couldn't save the members of ${group.name}.`
-              )}
-              onRetry={() => write.mutate(failed)}
+              message={
+                // A change the reader stopped may have landed, and Retry makes that very press
+                // again (`retry`).
+                stoppedNote(
+                  write,
+                  failed.kind === "delete"
+                    ? `the deletion of group ${group.name}`
+                    : `the members of ${group.name}`,
+                  failed.kind === "delete" ? "made" : "saved"
+                ) ??
+                apiErrorMessage(
+                  write.error,
+                  failed.kind === "delete"
+                    ? `Couldn't delete group ${group.name}.`
+                    : `Couldn't save the members of ${group.name}.`
+                )
+              }
+              onRetry={write.retry}
               retrying={write.isPending}
             />
           </td>
