@@ -121,7 +121,15 @@ func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
 				t.Fatal(err)
 			}
 			client := &detailDispatch{resolved: map[string]string{root.Key: "acme/gadgets"}}
-			spec := intake.ConsumerSpec{Project: "LEGION", Repositories: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")}, AckWait: time.Second, Logger: quietLogger()}
+			// AckWait is a hang guard, not the subject: the daemon's preparation reads the
+			// issue's record from the store (prepareRepository, recordOf), and AckWait bounds that
+			// read. At 1 s a read a loaded runner made slower was cut and its event naked, here
+			// with the default 30 s NakDelay, so whether the event applied inside the row's wait
+			// was the machine's to decide. A minute, or what is left of the test binary's
+			// deadline less a second when that is sooner (testwait.Bounded), only a hung read
+			// reaches.
+			spec := intake.ConsumerSpec{Project: "LEGION", Repositories: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")},
+				AckWait: testwait.Bounded(t, time.Minute, time.Second), Logger: quietLogger()}
 			if tc.prepared {
 				w := &workflowRuntime{pool: pool, records: records, dispatch: client, repositories: newRepositories("LEGION", ghrepo.Renames{})}
 				spec.PrepareRepository = w.prepareRepository
@@ -204,8 +212,14 @@ func TestARetainedEventOfAnUnrecordedIssueReadsItsRepositoryFromDispatch(t *test
 		defaultBranches: newDefaultBranches(roleTokens{}, repos, github.url, defaultBranchTTL, time.Now)}
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
 	admission := admit.New(records, engine, 1, "LEGION", quietLogger())
+	// AckWait is a hang guard, not the subject: it bounds the whole preparation, the store read of
+	// the issue's record (recordOf) and the Dispatch read this row counts among them, so at 1 s a
+	// preparation a loaded runner made slower was cut, naked and prepared again, and could read
+	// Dispatch once more than the failed read and its retry the row counts. A minute, or what is
+	// left of the test binary's deadline less a second when that is sooner (testwait.Bounded),
+	// only a hung read reaches.
 	consumers, err := intake.OpenConsumers(ctx, js, pool, intake.ConsumerSpec{Project: "LEGION", Repositories: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")},
-		AckWait: time.Second, NakDelay: 10 * time.Millisecond, Logger: quietLogger(), PrepareRepository: w.prepareRepository})
+		AckWait: testwait.Bounded(t, time.Minute, time.Second), NakDelay: 10 * time.Millisecond, Logger: quietLogger(), PrepareRepository: w.prepareRepository})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,8 +291,11 @@ func TestAnAdmissionWhoseApplyFailedIsAppliedAsDispatchNowShowsIt(t *testing.T) 
 		}
 		return intake.Result{}, nil
 	})
+	// AckWait is a hang guard, not the subject, for the reason of the row above: it bounds the
+	// preparation's store read of the issue's record (recordOf), so at 1 s whether the row's
+	// preparations were cut was the machine's to decide.
 	consumers, err := intake.OpenConsumers(ctx, js, pool, intake.ConsumerSpec{Project: "LEGION", Repositories: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")},
-		AckWait: time.Second, NakDelay: 10 * time.Millisecond, Logger: quietLogger(), PrepareRepository: w.prepareRepository})
+		AckWait: testwait.Bounded(t, time.Minute, time.Second), NakDelay: 10 * time.Millisecond, Logger: quietLogger(), PrepareRepository: w.prepareRepository})
 	if err != nil {
 		t.Fatal(err)
 	}
