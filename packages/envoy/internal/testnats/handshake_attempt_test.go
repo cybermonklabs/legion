@@ -42,6 +42,9 @@ const (
 	// heldAttemptSpare is what the rows below leave of the test binary's deadline for their own
 	// failure and cleanups (testwait.Remaining).
 	heldAttemptSpare = 30 * time.Second
+	// childReportSpare is how much sooner than the context that kills it the child's own -timeout
+	// fires, so a child that hangs prints its goroutines and exits by its alarm, naming itself.
+	childReportSpare = 10 * time.Second
 )
 
 // A call that needs no connection lock answers within the attempt held when it began, and
@@ -70,14 +73,15 @@ const attemptHeld = "the child's handshake attempt is held"
 // whenever a read of the status is slow passes the call when that read is descheduled, and so does
 // one that reads the attempt count before the lock when the check is held up past the gap; the child
 // then passes, which fails this row. The child runs in a binary of its own, so its failure is read
-// rather than taken as this row's. Its -timeout, and the context that ends it, are what the test
-// binary's deadline leaves less heldAttemptSpare, so a child that hangs is ended, and named, with
-// this row's failure still to come.
+// rather than taken as this row's. The context that ends it fires when the test binary's deadline
+// leaves heldAttemptSpare, and the child's own -timeout childReportSpare before that, so a child
+// that hangs is ended by its alarm, with its goroutines printed, and this row's failure is still to
+// come.
 func TestAnswersWithinAttemptFailsACallThatWaitsOutTheAttempt(t *testing.T) {
-	bound := testwait.Remaining(t, heldAttemptSpare)
-	ctx, cancel := context.WithTimeout(t.Context(), bound)
+	childTimeout := testwait.Remaining(t, heldAttemptSpare+childReportSpare)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Remaining(t, heldAttemptSpare))
 	defer cancel()
-	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAnswersWithinAttemptChild$", "-test.timeout="+bound.String(), "-test.v")
+	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAnswersWithinAttemptChild$", "-test.timeout="+childTimeout.String(), "-test.v")
 	child.Env = append(os.Environ(), attemptChildEnv+"=1")
 	output, err := child.CombinedOutput()
 	text := string(output)

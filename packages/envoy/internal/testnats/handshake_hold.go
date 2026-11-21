@@ -255,11 +255,15 @@ func (h *HandshakeHold) Dials() int64 { return h.dials.Load() }
 // last that no later attempt has reached the hold, by its dial (Dials) or its CONNECT (Attempts). A
 // call that waits for nats.go's lock answers only once that attempt has ended, at the client's
 // connect timeout. Read in the gap after it, the lock is free. Read later, however long the check
-// was held up and wherever, the lock is the next attempt's, and that attempt dials the hold right
-// after taking it and holds it seconds more: the counts read after the lock have moved. Only a lock
-// read that lands between that attempt's Lock and the hold's accept of its dial, with the counts read
-// before the accept, would miss it. No reading of how long a call takes decides; the one wall-clock
-// bound is a 30 s guard against a call that never answers.
+// was held up and wherever, either lockLetGo has closed its channel, since its read is granted at
+// that attempt's Unlock, or the next attempt has taken the lock and dials the hold right after, so
+// the counts read after the lock have moved. What is left takes two delays at once: lockLetGo's
+// goroutine not yet run past its read through the gap after the attempt (ReconnectWait), and the
+// check held up past that gap too. Then the next attempt's Lock waits behind lockLetGo's granted
+// read with nothing dialed, or the lock read lands before the hold has accepted that attempt's dial,
+// and the lock reads taken, the channel open and the counts unmoved. No delay of one goroutine alone
+// gets there. No reading of how long a call takes decides; the one wall-clock bound is a 30 s guard
+// against a call that never answers.
 func (h *HandshakeHold) AnswersWithinAttempt(t testing.TB, conn *natsgo.Conn, what string, calls ...func() error) []error {
 	t.Helper()
 	began, dialed := h.Attempts(), h.Dials()
