@@ -36,16 +36,17 @@ const (
 // the App pays for; Pace is the ceiling, so the pass is never slower than the pause a deployment
 // configures and the work only ever buys GitHub more room, never less.
 //
-// The passes after one that a deadline ended before it reached a head read at the floor, until
-// one reaches a head (Reconciler.starved). That pass learned no work: the heads it listed count,
-// but no page of any of them, so the arithmetic spreads one repository's identity over the bound
-// and can land on Pace -- the pace at which it reached no head. A pass set by that arithmetic
-// would reach no head either and learn nothing again, so every pass after would end on its bound
-// at Pace and the cursor would stay where it is for good. At the floor the pass reads as fast as
-// this package ever lets it, so it reaches a head wherever the bound holds one head's requests at
-// the floor, learns that head's pages, and the pass after it paces itself by them. This does not
-// depend on how many listings a head needs; a bound that does not hold one head's requests at the
-// floor holds them at no slower pace either.
+// The passes after a pass that its own bound ended before it reached a head -- read one whole or
+// gave one up (counts.heads) -- read at the floor until one reaches a head (Reconciler.starved).
+// That pass learned no page of any head it listed, so the work the arithmetic spreads over the
+// bound is each repository's identity alone, and nine tenths of a bound of a second or more over
+// one request is above the ceiling: the gap would be Pace. A pass at Pace under a short bound can
+// reach no head either and learn nothing again, so every pass after it would end on its bound at
+// Pace and no cycle would close. At the floor a pass reads as fast as this package ever lets it,
+// so it reaches a head wherever the bound holds one head's requests at the floor, learns that
+// head's pages, and the pass after it paces itself by them. This needs no count of the listings a
+// head takes: a bound that does not hold one head's requests at the floor holds them at no slower
+// pace either.
 func (r *Reconciler) gap(rows int) time.Duration {
 	if r.Pace <= 0 {
 		// A caller that waits for nothing, which is what every test of this package is.

@@ -218,12 +218,9 @@ type Reconciler struct {
 	// of it. reconcile is the one place that writes it, from the ending the walk of the order
 	// answered with.
 	resume cursor
-	// starved says a deadline ended a pass before it reached a head, and no pass has reached one
-	// since. A head is reached when the pass reads it whole or gives it up (counts.heads), which
-	// is what moves the cursor. Such a pass learned no REST work, so the gap the work sets
-	// (Reconciler.gap) can be Pace, the pace at which that pass reached no head: every pass after
-	// it would end the same way and the cursor would never move. The passes after it read at the
-	// floor instead, until one reaches a head (gap). Pass is the one place that writes it.
+	// starved says the pass's own bound ended a pass before it reached a head, and no pass has
+	// reached one since: the passes in between read at the floor, and gap says why. Pass is the
+	// one place that writes it.
 	starved bool
 	// seenRows, seenRepositories and seenHeads are everything the passes of the cycle now
 	// running have reached, keyed as the maps above are. They are what the pass closing the

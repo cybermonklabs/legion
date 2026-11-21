@@ -1,6 +1,6 @@
 kind: Fixed
 body: |-
-    A CI reconcile pass that its deadline ends before it reaches a pull request head no longer makes the passes after it read at the slowest pace. Those passes learned no work, so they read at 500 ms between REST requests, and with a short deadline no pass ever reached a head again and the cursor stayed at the first one. The passes after such a pass now read at the floor (100 ms, or a configured pace below it) until one reaches a head; a pass that a rate limit ends leaves that floor as it was.
+    A CI reconcile pass that its deadline ends before it reaches a pull request head no longer makes the passes after it read at the slowest pace. That pass learned none of the pages its heads take, so the arithmetic set the passes after it at 500 ms between REST requests, and with a short deadline no pass reached a head again and the cursor stayed at the first one. The passes after such a pass now read at the floor (100 ms, or a configured pace below it) until one reaches a head; a pass that a rate limit ends leaves that floor as it was.
 time: 2026-11-18T04:06:14.866232718Z
 custom:
     Issue: pr4380

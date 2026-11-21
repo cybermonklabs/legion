@@ -201,14 +201,14 @@ func (r *Reconciler) Pass(ctx context.Context) {
 		// a limit the pass read from the shared ledger is noted here alone.
 		githubreads.NoteFailure(ctx, at.ended("at "+r.resume.repository))
 	}
-	// A pass its own bound ended before it reached a head learned no work to pace the next by, so
-	// the passes after it read at the floor until one reaches a head (gap). The bound is read off
-	// the pass's context, not off the cut the walk counted (counts.deadline), so a bound that ends
-	// the pass before the walk reads GitHub -- inside the mapping's read -- counts too. A pass that
-	// reached no head for another reason -- a rate limit, its caller's cancellation or an earlier
-	// deadline of the caller's own, an order with no head in it -- says nothing about the pace and
-	// leaves the floor as it was, as a pass a limit in force ended before it read anything does
-	// above.
+	// The pass's own bound ending it before it reached a head sets the floor of the passes after
+	// it, and a pass that reached a head clears it (Reconciler.starved; gap says why). The bound
+	// is read off the pass's context, not off the cut the walk counted (counts.deadline), so a
+	// bound that ends the pass before the walk reads GitHub -- inside the mapping's read -- counts
+	// too. Every other way a pass ends with no head reached leaves the floor as it was: a rate
+	// limit, whether in force as the pass began (above), answered inside it or answered as its
+	// bound fell; its caller's cancellation, or a deadline of the caller's own; and the end of an
+	// order with no head in it, reached before the bound.
 	ownBound := at == nil && caller.Err() == nil && errors.Is(ctx.Err(), context.DeadlineExceeded)
 	switch {
 	case c.heads > 0:
