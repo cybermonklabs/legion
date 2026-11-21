@@ -33,6 +33,6 @@ A label holding a `'` or a line break cannot be quoted and never goes in a comma
 
 The daemon queues nothing for a label a session set, so admit a `triage` root in the same turn, from step 3. In any other status, `set_status` it to `todo` only when the person asked Legion to start it now. When you file or admit an issue, name each priority it advances (`--advance <id>`; `dispatch priorities` lists them).
 
-Taking the label off a waiting root drops it from the waiting line; taking it off an admitted tree does not stop it. A child needs no label: it runs in its tree. A child outside a live tree is admitted as a root of its own and needs the label.
+Taking the label off a waiting root drops it from the waiting line. Taking it off an admitted tree does not stop it, unless its root waits on a person (`awaiting_person`): then the daemon takes the root out of the workflow and sends you an `unslotted` wake. A child needs no label: it runs in its tree. A child outside a live tree is admitted as a root of its own and needs the label.
 
 Work that must start at a commit other than its base branch's head needs `legion/<KEY>` there before Legion starts the issue: a root before admission, a child before its first phase. You push nothing, so whoever gives you the root, or the architect that owns a child's parent, runs `gh api -X POST repos/<owner>/<name>/git/refs -f ref=refs/heads/legion/<KEY> -f sha=<commit>`. Read it back before `set_status` to `todo`: `gh api repos/<owner>/<name>/git/ref/heads/legion/<KEY>`.

@@ -11,5 +11,5 @@ A non-zero exit of a script in the shared workspace is not reportable until you 
 Three limits hold:
 
 - A file's `mtime` proves little, because a checkout or a workspace rebuild stamps every path at once: an `mtime` inside the run's window proves nothing, one outside it still rules out the race, and `.jj/legion-created`, written once when the workspace was made, tells such a stamp from a real write.
-- A pod replacement takes the `mtime` evidence of every run before it.
+- A pod replacement takes the `mtime` evidence of every run before it, unless the deployment keeps a microVM pod's volume (`runtime.kubernetes.sandbox.microvm.keep_volume`): then the next pod finds the workspace as the roles left it.
 - A run whose output you did not capture can be neither confirmed nor cleared, so it is unclassifiable.

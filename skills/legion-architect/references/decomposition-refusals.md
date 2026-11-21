@@ -14,5 +14,7 @@ release the rest again without the child it names.
 - `ISSUE_NOT_OWNED`: the issue is another architect's (the tree root, your own issue, a sibling of
   it or an issue under a sibling); send the move to the architect above you. A child's own
   architect cannot park or rerun its own issue, so it sends a restart of its issue there too.
-- `CHILD_UNDER_ACCEPTED_PARENT`: an ancestor is already accepted. Take it back with
-  `request_backward_move`, or release once it has closed.
+- `CHILD_UNDER_ACCEPTED_PARENT`: an ancestor is already accepted (in `retro` or `merging`). Ask the
+  role that holds its phase (the implementer in `retro`, the merger in `merging`) to move it back
+  with `request_backward_move`, or release the child once the ancestor has closed. Your own
+  `request_backward_move` works only from `accepting`.

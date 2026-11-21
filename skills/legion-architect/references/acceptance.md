@@ -102,4 +102,5 @@ Only the pull request author's App resolves a thread, so the implementer resolve
 with plain `gh`: the ones it answers and the bot threads the reviewer accepted and named to it.
 The reviewer resolves none. When GitHub refuses its `resolveReviewThread`, open a `dispatch ask`
 with the thread's URL and GitHub's message, for a person to resolve it, with the options resolved
-and could not. The merger does not complete while it is open.
+and could not. Nothing in Legion waits on this ask: the merger resolves no thread and merges under
+the repository's own rules, and only a rule that requires resolved conversations holds the merge.

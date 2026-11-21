@@ -229,7 +229,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. " +
   "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
   "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move " +
-  "counts a review round. " +
+  "counts no review round. " +
   "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
   "It also reports the contract the daemon states on its answer to the health route. " +
   "That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. " +

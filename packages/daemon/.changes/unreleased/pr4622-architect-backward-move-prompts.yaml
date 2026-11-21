@@ -1,0 +1,12 @@
+kind: Fixed
+custom:
+  Issue: pr4622
+body: |-
+  The architect's prompt no longer says that its move back from `accepting` counts a review
+  round: `review_round_cap` counts only a review that requests changes. Where the issue stands in
+  `reviewing` (a red required check, a `behind` or `blocked` head, a path filter that skips the
+  change), the prompt has the architect tell the reviewer to submit a `REQUEST_CHANGES`, since the
+  daemon refuses the architect's `request_backward_move` outside `accepting`. Under an ancestor in
+  `retro` or `merging`, it has the architect ask the role that holds that phase to move the
+  ancestor back. The reviewer's prompt says that after a forward merge past its review, the merger
+  merges the new head only once the reviewer's approval of it is on the pull request.

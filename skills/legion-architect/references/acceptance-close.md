@@ -7,10 +7,12 @@ above it.
 ## After your sign-off
 
 Retro runs, then the merger merges the approved head under the repository's own rules; you start
-none of it. A person's request after your sign-off is a requirement of this issue: the role that
-holds the phase makes the `request_backward_move`. A merge the merger cannot make arrives while the
-merger holds `merging`, so the merger makes the move and you tell it which; from `accepting` you
-send an issue back only to `implementing` or `testing`. When the merger reports:
+none of it. A person's request after your sign-off is this issue's work. It becomes a requirement
+once it is in this issue's spec: on a root, at a version the person approves; on a child, at a
+version the architect above you reviews. Then the role that holds the phase makes the
+`request_backward_move`. A merge the merger cannot make arrives while the merger holds `merging`,
+so the merger makes the move and you tell it which; from `accepting` you send an issue back only
+to `implementing` or `testing`. When the merger reports:
 
 - a failed verification: tell it to move the issue back with `request_backward_move`, naming what
   failed; never bypass;

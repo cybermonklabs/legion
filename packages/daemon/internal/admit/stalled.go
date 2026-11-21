@@ -857,6 +857,6 @@ func stalledTreeReason(root string, measure record.TreeQuiet, members []record.I
 		}
 	}
 	reason.WriteString("\nRead the tree and decide what it needs. You can ask a role what it waits on." +
-		" You can move an issue back a phase. You can park the tree.")
+		" You can park the tree.")
 	return reason.String()
 }

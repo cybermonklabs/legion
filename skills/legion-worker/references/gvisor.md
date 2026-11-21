@@ -31,7 +31,7 @@ Issue pods run under gVisor unless the deployment's `runtime.kubernetes.sandbox`
   - The soft limit is set first, because lowering the hard limit below a soft `unlimited` is `EINVAL`: a hard set made first fails there, a soft set chained after it with `&&` never runs, and the process keeps `unlimited` and gets 8 MiB.
   - The hard limit is set only when it reads `unlimited`, because setting it unconditionally lowers a higher finite hard limit the pod gave you, the headroom a tool with its own guard may need.
   - Keep the `|| true` around that line: where the hard limit is already finite its test is false, and a bare `&&` list whose test fails exits non-zero, so as a script's last line it exits 1 with everything correct.
-  - The fallback covers a want above the current hard limit, where the soft set fails: it raises the hard limit, then sets the soft one.
+  - The fallback is for a want above the current hard limit, where the soft set fails. It tries to raise the hard limit, which a role cannot do: the pod runs as a non-root user with every capability dropped. So the read-back refuses. Choose a `want` no higher than `ulimit -Hs`.
   - Do not reduce it to a single `ulimit -s <n>`: whether that also sets the hard limit differs from shell to shell.
 
   The ceiling is 128 MiB whichever finite value you choose, and a larger soft limit costs rather than buys: glibc sizes a default thread stack from it, and a tool that creates a thread pool can fail to allocate one.

@@ -461,13 +461,13 @@ Legion uses GitHub's own review mechanisms rather than labels:
   At the round cap the architect decides, in the turn the notice wakes, whether to narrow the next
   rounds, split work
   off (into a sibling child, or, on a root, an ask whether the rest needs an issue of its own), or
-  let converging rounds run, and posts that decision on the issue. Every move back to an earlier
-  phase counts a round: a tester's fail, a review's request for changes and a worker's move back.
-  A move made while the record holds the head conflicting with its base is a conflict round, which
-  `review_round_cap` does not count: the implementer answers such a round with a forward merge,
-  which no reviewer asked for, and the cap's message names both numbers, the rounds counted and
-  the conflict rounds left out.
-- Each move back is counted by its kind as well, as the pair `<from>-<to>` —
+  let converging rounds run, and posts that decision on the issue. Only a review that requests
+  changes counts a round; a tester's fail and every other move back count none. A review that
+  requests changes while the record holds the head conflicting with its base is a conflict round,
+  which `review_round_cap` does not count: the implementer answers such a round with a forward
+  merge, which no reviewer asked for, and the cap's message names both numbers, the rounds counted
+  and the conflict rounds left out.
+- Each move back is counted by its kind, as the pair `<from>-<to>` —
   `testing-implementing`, `reviewing-implementing`, `merging-implementing` and the other eighteen —
   beside the round count, and a conflict round raises no pair.
   `GET /legion/v1/state` serves the counts as `workers.implementer.backwardMoves`, left out for an
