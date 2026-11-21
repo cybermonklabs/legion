@@ -515,11 +515,18 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 			}
 		}
 	}
-	operator := deref(e.Operator)
+	return policy.Requester{Operator: m.actingPerson(e), Service: service, Withheld: withheld, Restricted: e.Restricted}, nil
+}
+
+// actingPerson is the person the session e acts for: its operator, and no one for a pod whose
+// account BROKER_POD_OPERATORS no longer maps (unmappedPersonPod), a service's pod and a
+// machine's own session. requester decides by that person, and restrictedOperator asks Dispatch
+// about that same person and no other.
+func (m *Machine) actingPerson(e enrollmentRow) string {
 	if m.unmappedPersonPod(e) {
-		operator = ""
+		return ""
 	}
-	return policy.Requester{Operator: operator, Service: service, Withheld: withheld, Restricted: e.Restricted && operator != ""}, nil
+	return deref(e.Operator)
 }
 
 // restrictedOperator reports whether Dispatch calls the person e acts for a restricted member
@@ -535,20 +542,21 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 // being that such a person's machine login enrolls nothing (enroll.Service.checkMember). This
 // half reaches the sessions that rule never saw: one a broker with no client of Dispatch
 // enrolled, and one whose person Dispatch called something else when it enrolled. A failure to
-// ask, of any kind, is a *projectaccess.MemberKindUncheckable, which Create, every release and
-// every airlock connection return as it is: a check that cannot decide refuses, so while Dispatch
-// cannot be asked about a person nothing is decided, released or carried for that person's
-// sessions, and each asks again.
+// ask, of any kind, is a *projectaccess.MemberKindUncheckable, which Create, every release, every
+// airlock connection and every approval return as it is: a check that cannot decide refuses, so
+// while Dispatch cannot be asked about a person nothing is decided, released or carried for that
+// person's sessions, and each asks again.
 //
-// An approval of a request still pending from before asks nothing, and neither does the model
-// judge's read of the policy: no request a restricted member's session makes is left pending
-// once Create asks, and the grant an approval of an older one makes is refused and ended at its
-// first release, where a value would leave.
+// An approval of a request still pending from before the broker asked asks too, before its
+// transaction (decisionPerson), and records a restricted member's request as the policy's
+// denial, restricted-member, so no grant is written for it; and so does the model judge's read of
+// the policy (JudgePolicy), which then answers deny before any model is asked.
 func (m *Machine) restrictedOperator(ctx context.Context, e enrollmentRow) (bool, error) {
-	if m.Projects == nil || e.Operator == nil || m.unmappedPersonPod(e) {
+	person := m.actingPerson(e)
+	if m.Projects == nil || person == "" {
 		return false, nil
 	}
-	return projectaccess.Restricted(ctx, m.Projects, *e.Operator)
+	return projectaccess.Restricted(ctx, m.Projects, person)
 }
 
 // Create verifies the request object (record.VerifyRequestObject, jti replay through the Replay
@@ -1753,13 +1761,53 @@ func (m *Machine) judgeLifetime(set *policy.Set, names []string, signed, lifetim
 func (m *Machine) applyDecision(ctx context.Context, recordID string, approve bool, who decider) (Decision, error) {
 	const maxAttempts = 3
 	for range maxAttempts {
-		decision, moved, err := m.applyDecisionAttempt(ctx, recordID, approve, who)
+		// An approval asks Dispatch about the request's person before its transaction, as Create
+		// and every release do (decisionPerson): a restricted member's request left pending from
+		// before the broker asked is then the policy's denial, restricted-member, and no grant is
+		// written for a release to refuse. A denial asks nothing, since it releases nothing.
+		var asked askedPerson
+		if approve {
+			var err error
+			if asked, err = m.decisionPerson(ctx, recordID); err != nil {
+				return Decision{}, err
+			}
+		}
+		decision, moved, err := m.applyDecisionAttempt(ctx, recordID, approve, who, asked)
 		if moved {
 			continue
 		}
 		return decision, err
 	}
 	return Decision{}, fmt.Errorf("decide record %s: exhausted retries while the request kept moving to another enrollment", recordID)
+}
+
+// askedPerson is what an approval learned of its request's person before its transaction: the
+// enrollment the request hung off when it asked, and whether Dispatch calls that enrollment's
+// person a restricted member (restrictedOperator).
+type askedPerson struct {
+	enrollmentID string
+	restricted   bool
+}
+
+// decisionPerson asks Dispatch whether the person recordID's request acts for is a restricted
+// member, reading the enrollment the request hangs off now on the pool, under no lock, as the rule
+// internal/cipher/projectaccess states for every caller is. A failure to ask is the
+// *projectaccess.MemberKindUncheckable restrictedOperator returns, which refuses the approval: a
+// check that cannot decide refuses, and the person approves again. applyDecisionAttempt reads the
+// enrollment again under its lock, and a request that moved in between is asked about again.
+func (m *Machine) decisionPerson(ctx context.Context, recordID string) (askedPerson, error) {
+	var enr enrollmentRow
+	if err := m.Store.Pool.QueryRow(ctx, `select e.id, e.kind, e.operator, e.subject, c.service, c.host
+		from requests req join enrollments e on e.id = req.enrollment_id
+		left join launcher_credentials c on c.id = e.launcher_credential_id where req.record_id=$1`, recordID).
+		Scan(&enr.ID, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Service, &enr.Host); err != nil {
+		return askedPerson{}, err
+	}
+	restricted, err := m.restrictedOperator(ctx, enr)
+	if err != nil {
+		return askedPerson{}, err
+	}
+	return askedPerson{enrollmentID: enr.ID, restricted: restricted}, nil
 }
 
 // judgedKind is the audit kind of the model judge's own verdict on a record: what it was asked,
@@ -1991,7 +2039,7 @@ const enrollmentWouldGoDormant = `coalesce(e.session_id,'') <> '' and e.carry_pr
 // request's own enrollment_id, and the attempt is abandoned when the two disagree. Nothing is
 // written against a box the session has moved off, and nothing is denied for a move that was
 // already done when the decision arrived.
-func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, approve bool, who decider) (_ Decision, moved bool, _ error) {
+func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, approve bool, who decider, asked askedPerson) (_ Decision, moved bool, _ error) {
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
 		return Decision{}, false, err
@@ -2037,6 +2085,12 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	if m.testAdoptionHook != nil {
 		m.testAdoptionHook()
 	}
+	// An approval decides by the answer decisionPerson had for this same enrollment; a request
+	// that moved to another since is asked about again (moved).
+	if approve && enr.ID != asked.enrollmentID {
+		return Decision{}, true, nil
+	}
+	enr.Restricted = asked.restricted
 	var requestID, holder, state string
 	var expired, held bool
 	if err := tx.QueryRow(ctx, `select id, enrollment_id, state, pending_expires_at <= now(), coalesce(judge_until > now(), false) from requests where record_id=$1 for update`, recordID).
@@ -2276,15 +2330,17 @@ func decidedUnder(ctx context.Context, tx pgx.Tx, requestID string, granted []re
 	return err
 }
 
-// policyDenial is currentPolicyAdmits' answer for a name the current policy denies because the
-// secret's requesters tag no longer lists this session's person or its pod's service. It is
-// deliberately not a record.ErrNotApprover: no login could approve such a name, so leaving the
-// card pending would wait on a person who can do nothing with it. applyDecisionAttempt records
-// the approval as the request's denial instead, and its message is that denial's detail.
-type policyDenial struct{ name string }
+// policyDenial is currentPolicyAdmits' answer for a name the current policy denies whoever
+// decides: the secret's requesters tag no longer lists this session's person or its pod's service
+// (policy.ReasonRequesterNotListed), or Dispatch calls the session's person a restricted member
+// (policy.ReasonRestrictedMember). It is deliberately not a record.ErrNotApprover: no login could
+// approve such a name, so leaving the card pending would wait on a person who can do nothing with
+// it. applyDecisionAttempt records the approval as the request's denial instead, and its message
+// is that denial's detail.
+type policyDenial struct{ name, reason string }
 
 func (e *policyDenial) Error() string {
-	return e.name + ": " + policy.ReasonRequesterNotListed
+	return e.name + ": " + e.reason
 }
 
 // PolicyDeniedActor is what a request the policy denied under an approval records as having
@@ -2367,8 +2423,8 @@ func currentPolicyAdmits(requested []requestedSecret, set *policy.Set, requester
 		if err != nil {
 			return err
 		}
-		if d.Outcome == policy.Deny && d.Reason == policy.ReasonRequesterNotListed {
-			return &policyDenial{name: g.name}
+		if d.Outcome == policy.Deny && (d.Reason == policy.ReasonRequesterNotListed || d.Reason == policy.ReasonRestrictedMember) {
+			return &policyDenial{name: g.name, reason: d.Reason}
 		}
 	}
 	for _, g := range requested {

@@ -141,10 +141,11 @@ type grantRelease struct {
 // good (errRequesterNotListed).
 //
 // A session whose person Dispatch calls a restricted member (restrictedOperator, asked here
-// before anything is re-checked) is re-checked whatever else is true, and its grant ends for good
-// (errRestrictedMember): such a person's agents are released no secret, whoever approved the
-// grant and whenever it was made. While that cannot be asked of Dispatch, the release is refused
-// (*projectaccess.MemberKindUncheckable) and the grant left as it is, for the next release to try.
+// before anything is re-checked) has its grant ended for good there and then, before any name is
+// re-checked (restrictedMember, errRestrictedMember): such a person's agents are released no
+// secret, whoever approved the grant and whenever it was made, whatever its names now are. While
+// that cannot be asked of Dispatch, the release is refused (*projectaccess.MemberKindUncheckable)
+// and the grant left as it is, for the next release to try.
 //
 // owner, when it is not empty, is the enrollment the caller proved, which must be the grant's own
 // (ErrNotYours). AirlockValues passes none: a proxy connection proves its grant by holding one of
@@ -193,10 +194,14 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 	}
 	// One policy snapshot serves both the grant re-check and the minters' name, tier and owners.
 	set := m.Policy.Get()
-	if enr.Restricted, err = m.restrictedOperator(ctx, enr); err != nil {
+	restricted, err := m.restrictedOperator(ctx, enr)
+	if err != nil {
 		return grantRelease{}, err
 	}
-	if policyVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || personPodGrant(enr) || enr.Restricted {
+	if restricted {
+		return grantRelease{}, m.endGrant(ctx, grantID, restrictedMember())
+	}
+	if policyVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || personPodGrant(enr) {
 		requester, err := m.requester(ctx, m.Store.Pool, enr)
 		if err != nil {
 			return grantRelease{}, err
@@ -211,7 +216,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 				// secret the policy now tags as an administrator's: a person approves every
 				// release of one, so taking the tag off again must not revive a grant no person
 				// ever approved — the session asks again, as a new request.
-				if errors.Is(err, errSourceMoved) || errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret) || errors.Is(err, errRestrictedMember) {
+				if errors.Is(err, errSourceMoved) || errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret) {
 					return grantRelease{}, m.endGrant(ctx, grantID, err)
 				}
 				return grantRelease{}, err
@@ -436,11 +441,12 @@ func requesterNotListed(name string) error {
 	return fmt.Errorf("%w: %w: %s no longer lists this requester", ErrGrantNotLive, errRequesterNotListed, name)
 }
 
-// restrictedMember is the refusal of a granted name to a session whose person Dispatch calls a
-// restricted member (policy.ReasonRestrictedMember), which ends the grant for good
-// (errRestrictedMember).
-func restrictedMember(name string) error {
-	return fmt.Errorf("%w: %w: %s is released to no restricted member's session", ErrGrantNotLive, errRestrictedMember, name)
+// restrictedMember is the refusal of a whole grant to a session whose person Dispatch calls a
+// restricted member, which ends the grant for good (errRestrictedMember) before any of its names
+// is re-checked: a release (checkRelease), a reuse (reuseLiveGrant) and an airlock connection
+// (AirlockConnection) alike.
+func restrictedMember() error {
+	return fmt.Errorf("%w: %w: this grant is released to no restricted member's session", ErrGrantNotLive, errRestrictedMember)
 }
 
 // judgedAdminSecret is the refusal of a granted name the live policy tags as an administrator's
@@ -639,9 +645,7 @@ func neededADecision(requested []requestedSecret) func(string) bool {
 // either: the frozen source no longer names the secret the policy decides about, so the session
 // asks again. A name whose requesters tag no longer lists this requester is not live either, and
 // ends the grant for good (errRequesterNotListed): that list is who may ask for the secret at
-// all, so a grant made before it dropped them must not go on releasing while they are off it. A
-// name of a session whose person Dispatch calls a restricted member ends the grant for good too
-// (errRestrictedMember).
+// all, so a grant made before it dropped them must not go on releasing while they are off it.
 // A grant the model judge decided — record.JudgeLogin reads a judge actor off its decidedBy — is
 // held to the rules instead of to that login, and to the admin tag over both: the secret must not
 // be an administrator's now, and the rules in force must still give the name a judge of at least
@@ -662,8 +666,6 @@ func stillAllowed(set *policy.Set, rules proxyrules.Rules, name, frozenSource, f
 	switch {
 	case d.Outcome == policy.Deny && d.Reason == policy.ReasonRequesterNotListed:
 		return requesterNotListed(name)
-	case d.Outcome == policy.Deny && d.Reason == policy.ReasonRestrictedMember:
-		return restrictedMember(name)
 	case d.Outcome == policy.Deny:
 		return fmt.Errorf("%w: the current policy no longer allows %s", ErrGrantNotLive, name)
 	case d.Outcome != policy.Approval:
@@ -730,11 +732,11 @@ var errSourceMoved = errors.New("source moved")
 // never brings back a grant they held while they were off it; they ask again instead.
 var errRequesterNotListed = errors.New("requester not listed")
 
-// errRestrictedMember is stillAllowed's refusal of a granted name to a session whose person
-// Dispatch calls a restricted member (policy.ReasonRestrictedMember): a grant such a session got
-// before the broker asked, from a broker that did not ask or while Dispatch called the person
-// something else. Values and reuseLiveGrant end it for good (endGrant), so nothing that person's
-// agents hold is released again.
+// errRestrictedMember is the refusal of a grant to a session whose person Dispatch calls a
+// restricted member (restrictedMember): a grant such a session got before the broker asked, from
+// a broker that did not ask or while Dispatch called the person something else. A release, a
+// reuse and an airlock connection end it for good (endGrant), so nothing that person's agents
+// hold is released again.
 var errRestrictedMember = errors.New("restricted member")
 
 // errJudgedAdminSecret is judgeStillDecides's refusal of a judged grant of a secret the live
@@ -773,13 +775,19 @@ var errJudgedAdminSecret = errors.New("judged administrator's secret")
 //
 // An enrollment that is no longer live (revoked, or its lease lapsed) is an error carrying
 // pgx.ErrNoRows, never a decision: the judge's check fails and the request waits for its person,
-// where a silent approval would grant a credential to a box that has gone.
+// where a silent approval would grant a credential to a box that has gone. The session's person is
+// asked of Dispatch first (restrictedOperator), so a restricted member's request is answered
+// deny, restricted-member, before the judge spends a model call on it, and one Dispatch cannot
+// be asked about is the *projectaccess.MemberKindUncheckable it returns, which decides nothing.
 func (m *Machine) JudgePolicy(ctx context.Context, enrollmentID, name string) (policy.Decision, bool, bool, error) {
 	enr, err := m.enrollment(ctx, enrollmentID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return policy.Decision{}, false, false, fmt.Errorf("enrollment %s is no longer live: %w", enrollmentID, err)
 		}
+		return policy.Decision{}, false, false, err
+	}
+	if enr.Restricted, err = m.restrictedOperator(ctx, enr); err != nil {
 		return policy.Decision{}, false, false, err
 	}
 	requester, err := m.requester(ctx, m.Store.Pool, enr)
@@ -1158,13 +1166,14 @@ func writtenBeforeMigration13(alias string) string {
 // at that candidate, as with one: a policy end (below) answers no reusable grant, a grant no
 // longer live answers none, and any other error is returned. With no candidate left there is
 // none, and Create asks afresh.
-// A grant whose secret no longer lists this requester, a judged grant of a secret the policy now
-// tags as an administrator's, and every grant of a session whose person Dispatch calls a
-// restricted member (enrollmentRow.Restricted, which Create asked before this) are not merely
-// passed over: each is ended for good here, as Values ends it (errRequesterNotListed,
-// errJudgedAdminSecret, errRestrictedMember), and Create goes on to ask for the names afresh —
-// the denied request that tells the session why, where the list dropped it or the person is a
-// restricted member, and the card the tag's own person answers, where the tag ended it.
+// A grant whose secret no longer lists this requester and a judged grant of a secret the policy
+// now tags as an administrator's are not merely passed over: each is ended for good here, as
+// Values ends it (errRequesterNotListed, errJudgedAdminSecret), and Create goes on to ask for the
+// names afresh — the denied request that tells the session why, where the list dropped it, and the
+// card the tag's own person answers, where the tag ended it. A session whose person Dispatch calls
+// a restricted member (enrollmentRow.Restricted, which Create asked before this) has the grant
+// ended before any name is re-checked (restrictedMember), and Create goes on to the denied
+// request that names restricted-member.
 // An automatic grant a person's pod got as that person is not ended once BROKER_POD_OPERATORS no
 // longer maps the pod's account to that person, but its re-check refuses it (ErrGrantNotLive),
 // which answers no reusable grant, so Create asks for the names afresh. The grant is reusable
@@ -1188,6 +1197,12 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted 
 		return Request{}, false, err
 	}
 	for _, match := range matches {
+		if enr.Restricted {
+			if ended := m.endGrant(ctx, match.grantID, restrictedMember()); !errors.Is(ended, ErrGrantNotLive) {
+				return Request{}, false, ended
+			}
+			return Request{}, false, nil
+		}
 		var rulesVersion, decidedBy string
 		if err := m.Store.Pool.QueryRow(ctx, `select rules_version, coalesce(decided_by, '') from requests where id=$1`, match.requestID).Scan(&rulesVersion, &decidedBy); err != nil {
 			return Request{}, false, err
@@ -1196,7 +1211,7 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted 
 		if err != nil {
 			return Request{}, false, err
 		}
-		if rulesVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || personPodGrant(enr) || enr.Restricted {
+		if rulesVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || personPodGrant(enr) {
 			requester, err := m.requester(ctx, m.Store.Pool, enr)
 			if err != nil {
 				return Request{}, false, err
@@ -1204,12 +1219,11 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted 
 			for _, g := range granted {
 				err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester)
 				switch {
-				case errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret) || errors.Is(err, errRestrictedMember):
-					// The list dropped this requester while the grant was live, the secret
-					// became an administrator's, which a person approves every release of, or
-					// the session's person is a restricted member: end the grant here as Values
-					// does, rather than leave it live and unrevoked, and answer no reusable grant
-					// so Create goes on to ask for the names afresh.
+				case errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret):
+					// The list dropped this requester while the grant was live, or the secret
+					// became an administrator's, which a person approves every release of: end
+					// the grant here as Values does, rather than leave it live and unrevoked, and
+					// answer no reusable grant so Create goes on to ask for the names afresh.
 					if ended := m.endGrant(ctx, match.grantID, err); !errors.Is(ended, ErrGrantNotLive) {
 						return Request{}, false, ended
 					}

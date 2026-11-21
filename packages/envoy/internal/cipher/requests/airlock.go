@@ -582,7 +582,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 		return AirlockConnection{}, err
 	}
 	if restricted {
-		return AirlockConnection{}, m.endGrant(ctx, conn.GrantID, restrictedMember("this grant"))
+		return AirlockConnection{}, m.endGrant(ctx, conn.GrantID, restrictedMember())
 	}
 	conn.Issue = record.IssueKeyInReason(reason)
 	held, err := placeholdersOf(ctx, m.Store.Pool, conn.GrantID)
