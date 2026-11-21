@@ -396,6 +396,73 @@ func TestTheJJWrapperReadsTheConfigurationThePushWouldUse(t *testing.T) {
 	}
 }
 
+// A push the jj wrapper refuses because jj could not read its git.executable-path says, after the
+// refusal and on the same standard error, what jj itself said. The read's standard error went to
+// /dev/null, so `jj git push -R <a directory with no repository>` and `jj git push --config foo`
+// printed the wrapper's setup error alone, and the cause jj gave was lost. A configuration
+// argument written after `--` is jj's to refuse as well: the push keeps it after its `--`, where
+// jj refuses it as an unexpected argument, and the read, which took a `--config` wherever it was
+// written, refused the push for a value no push reads. The read takes only the ones before the
+// first `--`, as the push does, so the error that reaches the caller is jj's own, and the git that
+// `--config` names never runs. What jj says to each case is plain jj's, which the case runs first
+// (measured with jj 0.45.1 and 0.46.0-sami): a case whose plain jj no longer says it fails as a
+// stale expectation, not as the wrapper's fault.
+func TestTheJJWrapperPrintsJJsOwnErrorForAPushItCannotRead(t *testing.T) {
+	f := newJJWrapper(t)
+	otherLog := filepath.Join(f.dir, "other-argv")
+	other := logging(t, filepath.Join(f.dir, "other-git"), otherLog)
+	repo := f.repo("repo")
+	// A directory with no repository in it, for a -R to name.
+	empty := filepath.Join(f.dir, "empty")
+	if err := os.MkdirAll(empty, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const refusal = "LEAK CHECK SETUP ERROR: the push: jj could not read its git.executable-path"
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		// refused is whether the wrapper must refuse the push, rather than run it for jj to refuse.
+		refused bool
+		// says is a stable part of what plain jj prints for the same command, which the wrapper's
+		// standard error must carry, after the refusal where there is one.
+		says string
+	}{
+		{name: "a -R naming a directory with no repository", args: []string{"git", "push", "-R", empty}, refused: true, says: "There is no jj repo in"},
+		{name: "a --config with no =", args: []string{"git", "push", "--config", "foo"}, refused: true, says: "--config must be specified as NAME=VALUE"},
+		{name: "a --config after --", args: []string{"git", "push", "--", "--config", "git.executable-path=" + other}, says: "unexpected argument '--config' found"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if out, err := f.setup.Try(repo, append([]string{"jj"}, tc.args...)...); err == nil || !strings.Contains(out, tc.says) {
+				t.Fatalf("plain jj %q does not fail saying %q, so what this case expects of the wrapper is stale: %v\n%s", tc.args, tc.says, err, out)
+			}
+			wrapped := exec.Command(f.script, tc.args...)
+			wrapped.Dir = repo
+			wrapped.Env = f.run.Env
+			var stdout, stderr strings.Builder
+			wrapped.Stdout, wrapped.Stderr = &stdout, &stderr
+			err := wrapped.Run()
+			out := stderr.String()
+			if _, statErr := os.Stat(otherLog); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("the push ran the git that a --config after -- names, as %q, with no git wrapper and so no leak check: %v\n%s", ranAs(t, otherLog), err, out)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("the wrapper printed %q on its standard output, where a push that fails prints nothing", stdout.String())
+			}
+			if !tc.refused {
+				if strings.Contains(out, "LEAK CHECK SETUP ERROR") || err == nil || !strings.Contains(out, tc.says) {
+					t.Fatalf("the wrapper did not leave the push for jj to refuse saying %q: %v\n%s", tc.says, err, out)
+				}
+				return
+			}
+			assertRefused(t, out, err, refusal)
+			if _, after, _ := strings.Cut(out, refusal); !strings.Contains(after, tc.says) {
+				t.Fatalf("the refusal is not followed by jj's own %q, so the cause jj gave is lost:\n%s", tc.says, out)
+			}
+		})
+	}
+}
+
 // The jj wrapper checks a `jj gerrit upload` as it checks a `jj git push`: jj uploads through the
 // same git subprocess (`git::push_updates`, cli/src/commands/gerrit/upload.rs), so an upload run
 // with `--config git.executable-path=<another git>` would reach a git with no pre-push hook and so
