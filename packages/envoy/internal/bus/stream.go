@@ -75,6 +75,10 @@ const (
 	// reaches (ListenerBuckets): only the auth service grants its calls, so a hub that runs none
 	// refuses both its write and its read, which both sides read as no project being private.
 	PrivateProjectsBucket = "envoy_private_projects"
+	// SessionConsumersBucket records each listener session's consumer name on the notification
+	// stream (envoy-infra consumer-names). The NATS writer hold protects it: only the operator
+	// writes it, and only inside a hold (envoy-infra hold).
+	SessionConsumersBucket = "envoy_session_consumers"
 )
 
 // ListenerBuckets reports the KV buckets envoy-listener opens, in the order its NATS grant lists
