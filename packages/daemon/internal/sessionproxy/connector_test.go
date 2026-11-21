@@ -282,8 +282,8 @@ func TestTheWriterTokenFileIsReadAgainAtEachExchange(t *testing.T) {
 // refresh as soon as one completes, and a dial that then fails drops the instance from its cache
 // and abandons that refresh's requests without waiting for the fake. The row holds a request whose
 // headers the server has read and whose handler has not started (headersHeldListener), on a new
-// connection and on an idle one that has served a request before: a forced reproduction of the
-// connector rows' failure holds it on both kinds, idle ones in most runs. stopServing must close
+// connection and on an idle one that has served a request before: forced reproductions of the
+// connector rows' failure held it on both kinds, most often on an idle one. stopServing must close
 // the connection and run no handler on it.
 func TestStopServingRunsNoHandlerOnAConnectionItCloses(t *testing.T) {
 	const served = "GET /served HTTP/1.1\r\nHost: fake.example\r\n\r\n"
