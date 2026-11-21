@@ -2902,8 +2902,9 @@ test("an approval entry's a approves that entry's document and no other", async 
     },
     async (page, seeded) => {
       const reviewed = reviewsSent(page);
+      // no opening focus: the seed's spec and Verification document hold no block a row draws,
+      // and the issue nothing else, so the outline has no row and the page places no focus.
       await gotoIssue(page, `/issues/${seeded.key}`);
-      await expectOpeningLanded(page);
       await expectHeaderDrawn(page);
       await expect(waitingCount(page)).toHaveText("Waiting on you (2)");
       for (const step of ["criteria", "spec"]) {
@@ -3741,8 +3742,9 @@ test("an approval entry's a approves its own document when an earlier entry also
     },
     async (page, seeded) => {
       const reviewed = reviewsSent(page);
+      // no opening focus: the seed's spec and Verification document hold no block a row draws,
+      // and the issue nothing else, so the outline has no row and the page places no focus.
       await gotoIssue(page, `/issues/${seeded.key}`);
-      await expectOpeningLanded(page);
       await expectHeaderDrawn(page);
       await expect(waitingCount(page)).toHaveText("Waiting on you (2)");
       const chip = approvalEntry(page, "spec").locator("[data-approval-artifact]");
