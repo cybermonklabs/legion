@@ -636,9 +636,12 @@ func TestParentCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 // TestAProjectScopedCallerIsRefusedAParentOfAnotherProject: a credential that may write one
 // project is refused a parent outside it, as it is refused such a blocked_by target, though the
 // issue it writes is of its own project: 403 PROJECT_SCOPE naming the parent and its project,
-// with nothing written. A parent of its own project is the control.
+// with nothing written. An unforced create that the near-copy gate would refuse is refused for
+// its parent or blocker first, so the gate writes no near_copy_checks row for a create the
+// credential may not make. A parent of its own project is the control, and so is the same near
+// copy under its own project's parent, which the gate refuses.
 func TestAProjectScopedCallerIsRefusedAParentOfAnotherProject(t *testing.T) {
-	rig := newBrokerTokenRig(t)
+	rig := newBrokerTokenRigOn(t, testServerOptions{duplicateBound: nearCopyVerdictBound(t)})
 	caller := newBrokerCaller(t)
 	for _, project := range []string{"ALPHA", "BETA"} {
 		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {
@@ -667,13 +670,48 @@ func TestAProjectScopedCallerIsRefusedAParentOfAnotherProject(t *testing.T) {
 		return count
 	}
 
-	before := betaIssues()
+	nearCopyChecks := func() int {
+		t.Helper()
+		var count int
+		if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from near_copy_checks`).Scan(&count); err != nil {
+			t.Fatalf("count the near-copy checks: %v", err)
+		}
+		return count
+	}
+	// An open BETA issue the scoped creates below copy word for word, unforced.
+	createdIssue(t, "the issue a near copy copies", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "BETA", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe,
+	}))
+
+	before, checksBefore := betaIssues(), nearCopyChecks()
 	refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
 		"project": "BETA", "title": "Filed under another project's issue", "spec": "# Spec", "parent": approved, "force": true,
 	}))
 	expectRefusal(t, "a scoped create under a parent of another project", refused, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
+	for _, field := range []string{"parent", "blocked_by"} {
+		var target any = approved
+		if field == "blocked_by" {
+			target = []string{approved}
+		}
+		nearCopy := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+			"project": "BETA", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe, field: target,
+		}))
+		expectRefusal(t, "an unforced scoped near copy with a "+field+" of another project", nearCopy, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
+	}
 	if after := betaIssues(); after != before {
-		t.Fatalf("the refused create took BETA from %d issues to %d, want none written", before, after)
+		t.Fatalf("the refused creates took BETA from %d issues to %d, want none written", before, after)
+	}
+	if after := nearCopyChecks(); after != checksBefore {
+		t.Fatalf("the refused creates took near_copy_checks from %d rows to %d, want none written", checksBefore, after)
+	}
+	// The control: the same near copy under its own project's parent meets the gate, which
+	// refuses it and records the refusal.
+	ownNearCopy := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": "BETA", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe, "parent": sibling,
+	}))
+	requireDuplicateRefusal(t, ownNearCopy)
+	if after := nearCopyChecks(); after != checksBefore+1 {
+		t.Fatalf("the gate's refusal took near_copy_checks from %d rows to %d, want one more", checksBefore, after)
 	}
 
 	moved := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{"parent": approved}))
