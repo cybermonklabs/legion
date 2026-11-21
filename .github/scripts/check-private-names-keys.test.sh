@@ -276,15 +276,14 @@ echo "case: a pull request opened after the cutoff is read in its comments and r
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 opened_after
 items 501 "Fine." 502 "Tracked as $planted_key." > "$work/comments.1"
-items 601 "See ${link}x/spec." > "$work/reviews.1"
+items 601 "$(printf 'See %sx/spec.\nTracked as %s.\n' "$link" "$planted_key")" > "$work/reviews.1"
 key_run
-check "a key in a comment fails" "$(is "$status" 1)"
+check "a key in a comment and one in a review fail" "$(is "$status" 1)"
 check "names the comment" "$(contains "$out" "comment:502:1: $key_refused")"
-check "and not the review, which holds only a link" "$(is "$(contains "$out" 'review:601')" false)"
+check "names the review's key line" "$(contains "$out" "review:601:2: $key_refused")"
+check "and not the review's link line" "$(is "$(contains "$out" 'review:601:1:')" false)"
 
 echo "case: a Dispatch link in new text passes, and a key beside it or inside it is still refused"
-# The operator decided that a Dispatch link is no private name, so no rule reads the scheme; a key
-# of a listed project is refused wherever it stands, in a link too.
 write_pr_text "fix(dispatch): keep the inbox order" \
   "$(printf 'See %sLEGION-7/ask/x for the decision.\nTracked as %s.\n' "$link" "$planted_key")" \
   "fix: keep the order"
@@ -866,16 +865,12 @@ run_check_as merge_group "$planted_terms" "$root"
 check "a names run of the tree, which reads no key, still passes with no key: line" "$(is "$status" 0)"
 # A fork's pull request runs with no list at all, which its event allows: a keys run then reads no
 # project, and says that it checked nothing rather than that no text names a key.
-set +e
-out=$(cd "$root" && PRIVATE_NAME_TERMS='' GITHUB_EVENT_NAME=pull_request PRIVATE_NAME_RULES=keys \
-  .github/scripts/check-private-names.sh docs 2>&1)
-status=$?
-set -e
+PRIVATE_NAME_RULES=keys run_check_as pull_request '' "$root" docs
 check "a keys run under no list on a pull_request event exits 0" "$(is "$status" 0)"
 check "warns that no issue key was checked" \
   "$(contains "$out" '^::warning::check-private-names: PRIVATE_NAME_TERMS is unset or empty, so no issue key')"
 check "and its last line says it checked none" \
-  "$(contains "$out" '^check-private-names: no issue key was checked: PRIVATE_NAME_TERMS holds no key: line')"
+  "$(contains "${out##*$'\n'}" '^check-private-names: no issue key was checked: PRIVATE_NAME_TERMS holds no key: line')"
 check "and never that no text names a key" "$(is "$(contains "$out" 'no text names an issue key')" false)"
 
 echo "case: no issue key's project reaches a command's arguments"

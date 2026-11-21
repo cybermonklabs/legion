@@ -396,8 +396,6 @@ done
 if [ ${#terms[@]} -eq 0 ]; then
   case ${GITHUB_EVENT_NAME:-} in
     '' | pull_request)
-      # A keys run reads rule 6 alone, which this script does not spell: with no key: line in
-      # the list it checks nothing, and says so here and in its last line.
       if [ "$rules" = names ]; then
         echo "::warning::check-private-names: PRIVATE_NAME_TERMS is unset or empty, so only the" \
           "rules this script spells ran, and no term of the deployment's own list was checked" >&2
