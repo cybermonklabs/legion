@@ -389,6 +389,37 @@ func Measure() Permissions {
 	}
 }
 
+// Store is one bucket or stream a grant of this package names and the services that write and
+// read it, each named by the grant it holds: "listener" (Listener, ListenerHost), "dispatch"
+// (Dispatch), "daemon" (Daemon) and "measure" (Measure). A bucket is named without its stream's
+// KV_ prefix. A service writes a store when its grant can change what the store holds: a put to a
+// bucket's keys, a create, update, delete or purge of the stream, or a publish the stream
+// captures; it reads one when its grant reads the stream's state or messages or consumes them.
+type Store struct {
+	Name             string
+	Writers, Readers []string
+}
+
+// Stores is every bucket and stream a grant of this package names, each with its writers and
+// readers. Every one is a service's: no session grant names any (Session holds no $JS. or $KV.
+// subject, so a session neither writes nor reads a store, and the server answers nothing it asks
+// into one). No store holds what a project's privacy or the writer hold decides: Dispatch answers
+// the first and the broker's Postgres keeps the second, so no NATS user can store, copy or evict a
+// record that grants anything. envoy_listener is the lease bucket of an earlier listener, which the
+// measurement job still reads and no grant here writes.
+func Stores() []Store {
+	both := []string{"listener", "dispatch"}
+	stores := []Store{{Name: bus.Stream, Writers: both, Readers: []string{"listener", "dispatch", "daemon"}}}
+	for _, bucket := range bus.ListenerBuckets() {
+		stores = append(stores, Store{Name: bucket, Writers: both, Readers: both})
+	}
+	return append(stores,
+		Store{Name: bus.WebhookRedeliveryBucket, Writers: []string{"dispatch"}, Readers: []string{"dispatch"}},
+		Store{Name: "envoy_listener", Readers: []string{"measure"}},
+		Store{Name: "ENVOY_MEASURE", Writers: []string{"measure"}},
+	)
+}
+
 // systemAccountPrefix is the first token of every subject of nats-server's own, the auth
 // service's authorization requests ($SYS.REQ.USER.AUTH) among them.
 const systemAccountPrefix = "$SYS"
