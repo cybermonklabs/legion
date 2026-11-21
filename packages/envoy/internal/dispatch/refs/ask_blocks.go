@@ -310,20 +310,6 @@ func planAskIfOwed(ctx context.Context, q Queryer, askID, serverURL string) (Ite
 	return repair, nil
 }
 
-// askPartLinksFrom and askPartLinksCurrent are the from and the where of a read of the links the
-// current parts of an ask hold, the link row aliased r and the part holding it b, held apart for
-// a caller that joins a relation of its own to each link between the two: a join belongs before
-// the where. closureQuery is their last reader, and the statement it runs keeps their text;
-// every other read of an item's block links is built from itemBlockLinks and itemBlockCurrent,
-// the same rule for every item kind.
-const (
-	askPartLinksFrom = `
-		from ask_block_refs r
-		join ask_blocks b on b.ask_id = r.ask_id and b.block_id = r.block_id`
-	askPartLinksCurrent = `
-		where b.position is not null`
-)
-
 // asksCitingTheDocument lists, as the ask itself, every ask holding a current part that cites
 // the document whose ref_key is the numbered parameter param, or one of that document's current
 // blocks: the arms a whole-document "in" read adds (readEdgeRows). Each ask is listed once per

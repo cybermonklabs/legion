@@ -113,34 +113,21 @@ func blockKindList(kinds ...string) string {
 // type the pointer does not allow (block_ref_listed). An item the block index has not reached
 // holds no block link, so its own edge stays; an ask's question part holds the links its row
 // holds, so the row's edge is the one hidden.
-//
-// documentUUID is how the probe of block_refs names the source document. Empty, the probe compares
-// artifact_id as text with alias.from_id, the text every read of graph_edges and BacklinkCounts
-// sends, which block_refs_to_source keys by its third column. Else it is a SQL expression of the
-// source document's uuid, for a statement that already holds that uuid, and the probe compares
-// artifact_id with it, which block_refs' primary key keys by its first column with no cast. The
-// probes of the item tables are the same in both forms: each item table's index of targets keys
-// the item's id as text.
-func heldByABlock(alias, documentUUID string) string {
-	document := `b.artifact_id::text = ` + alias + `.from_id`
-	if documentUUID != "" {
-		document = `b.artifact_id = ` + documentUUID
-	}
-	holders := []string{blockHolds(alias, "artifact", "block_refs", document)}
+func heldByABlock(alias string) string {
+	holders := []string{blockHolds(alias, "artifact", "block_refs", "artifact_id")}
 	for _, item := range itemKinds {
 		tables, _ := item.tables()
-		holders = append(holders, blockHolds(alias, string(item), tables.refs, `b.`+tables.item+`::text = `+alias+`.from_id`))
+		holders = append(holders, blockHolds(alias, string(item), tables.refs, tables.item))
 	}
 	return `(` + alias + `.kind = 'mentions' and (` + strings.Join(holders, " or ") + `))`
 }
 
 // blockHolds is true of a graph_edges row alias written by an item of fromKind when one of the
-// item's blocks holds a link of any kind to its target in table, aliased b, where source is the
-// condition that a row of b is the item's.
-func blockHolds(alias, fromKind, table, source string) string {
+// item's blocks holds a link of any kind to its target in table, whose column keys the item.
+func blockHolds(alias, fromKind, table, column string) string {
 	return `(` + alias + `.from_kind = '` + fromKind + `' and exists (
 		select 1 from ` + table + ` b where b.to_kind = ` + alias + `.to_kind and b.to_id = ` + alias + `.to_id
-		and ` + source + `))`
+		and b.` + column + `::text = ` + alias + `.from_id))`
 }
 
 // documentBlockIDs is the node id of every current block of the document whose ref_key is the
@@ -381,7 +368,7 @@ func readEdgeRows(ctx context.Context, q Queryer, query Query) ([]edgeRow, error
 	var arms string
 	switch {
 	case query.Direction == "in":
-		source := `not ` + heldByABlock("g", "")
+		source := `not ` + heldByABlock("g")
 		if document && query.WholeDocuments {
 			// The document's citers, each by its own edges: a document's, an ask's, a comment's
 			// or a message's blocks are listed by their item.
@@ -414,14 +401,14 @@ func readEdgeRows(ctx context.Context, q Queryer, query Query) ([]edgeRow, error
 		// The document's id again, bound as the uuid block_refs keys its rows by.
 		args = append(args, query.ID)
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
-			from graph_edges g where g.from_kind = $1 and g.from_id = $2 and not ` + heldByABlock("g", "") + `
+			from graph_edges g where g.from_kind = $1 and g.from_id = $2 and not ` + heldByABlock("g") + `
 			union all
 			select b.kind, b.to_kind, b.to_id, b.created_at, b.source_seq, b.from_node
 			from block_refs b where b.artifact_id = $3::uuid and (b.to_types is null or block_ref_listed(b.to_types, b.to_id))`
 	case query.Direction == "out" && itemBlocks:
 		tables, _ := item.tables()
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
-			from graph_edges g where g.from_kind = $1 and g.from_id = $2 and not ` + heldByABlock("g", "") + `
+			from graph_edges g where g.from_kind = $1 and g.from_id = $2 and not ` + heldByABlock("g") + `
 			union all
 			select r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq, r.from_node
 			from ` + itemBlockLinks(item) + `

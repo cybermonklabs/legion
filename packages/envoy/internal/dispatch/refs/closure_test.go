@@ -27,12 +27,12 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// mainClosureQuery is main's closure statement at commit d36289cb84b1, the text closureQuery
-// rendered there, held here letter for letter as the oracle of the comparisons below. Every
-// fragment it was built from (documentOfTarget, documentBlockHeld, documentTarget,
-// askPartLinksFrom, askPartLinksCurrent) is written out, so it names no identifier of the
-// package: a statement built from those would move with them, and the two sides would agree
-// however the reach of the read changed.
+// mainClosureQuery is main's closure statement at commit d36289cb84b1, the eight-hop walk the
+// references read ran there, held here letter for letter as the oracle of the comparisons below.
+// Every fragment it was built from (documentOfTarget, documentBlockHeld, documentTarget, and the
+// from and the where of its read of an ask's current parts) is written out, so it names no
+// identifier of the package: a statement built from those would move with them, and the two
+// sides would agree however the reach of the read changed.
 const mainClosureQuery = `
 		with recursive closure as (
 			select case when r.to_kind = 'block' then split_part(r.to_id, '#', 1) else r.to_id end as ref_key, 1 as depth, r.from_kind as via_kind, r.from_id as via_id
@@ -88,8 +88,8 @@ type closureRow struct {
 }
 
 // closureFixture is the data both tests below read: an issue whose comment cites a document and
-// two document blocks, one of which no current version holds, and a chain of documents ten deep
-// so that the walk reports its ninth hop truncated.
+// two document blocks, one of which no current version holds, and a chain of documents ten deep,
+// which main's walk follows to its ninth hop and the one-hop read to its first document alone.
 type closureFixture struct {
 	database *store.Store
 	// refKeys names the ref_key of each document the closure reaches, in the order the walk
@@ -114,8 +114,8 @@ func newClosureFixture(t *testing.T) closureFixture {
 	createReferenceIssue(t, tx, "CORE-1", "CORE")
 	createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
 
-	// A chain of ten documents: the comment reaches the first, and each cites the next, so the
-	// tenth sits at depth ten and the walk stops with its ninth hop reported as truncated.
+	// A chain of ten documents: the comment reaches the first, and each cites the next, so main's
+	// walk reaches the tenth at depth ten, where the one-hop read reaches the first alone.
 	ids := make(map[string]string)
 	refs := make(map[string]string)
 	for index := 1; index <= 10; index++ {
@@ -178,47 +178,20 @@ func closureStatementRows(t *testing.T, database *store.Store, statement, issueK
 	return got
 }
 
-// The closure answers, row for row and in the same order, what main's statement answered over
-// the same data, and Closure reduces main's rows to the members it reports: a block its document
-// still holds reaches that document, one no version holds reaches nothing, and the tenth document
-// of the chain is the ninth hop, which main marked truncated and which is no member.
+// Closure's members are main's rows of depth 1 over the same data, each at depth 1 with main's
+// via: a block its document still holds reaches that document, one no version holds reaches
+// nothing, and the documents of the chain past its first, which main's walk answered at depths
+// two to ten, are no member.
 func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
 	fixture := newClosureFixture(t)
-	want := closureStatementRows(t, fixture.database, mainClosureQuery, "CORE-1")
-	if len(want) < 9 {
-		t.Fatalf("main's closure answered %d rows, too few for the comparison to decide anything: %v", len(want), want)
-	}
-	if got := closureStatementRows(t, fixture.database, closureQuery, "CORE-1"); !reflect.DeepEqual(got, want) {
-		t.Fatalf("the closure answered\n%v\nwant main's rows\n%v", got, want)
-	}
-
-	// Main's own reduction of its own rows, which this change does not touch: a row at depth
-	// nine is the truncation and no member, and the rest are ordered by depth then ref key.
-	wantMembers := []Member{}
-	wantTruncated := false
-	for _, row := range want {
-		if row.depth == 9 {
-			wantTruncated = true
-			continue
-		}
-		wantMembers = append(wantMembers, Member{RefKey: row.refKey, Depth: row.depth, Via: model.ReferenceVia{Kind: row.viaKind, ID: row.viaID}})
-	}
-	sort.SliceStable(wantMembers, func(left, right int) bool {
-		if wantMembers[left].Depth != wantMembers[right].Depth {
-			return wantMembers[left].Depth < wantMembers[right].Depth
-		}
-		return wantMembers[left].RefKey < wantMembers[right].RefKey
-	})
-	if !wantTruncated {
-		t.Fatal("main's closure reached no ninth hop, so the fixture decides nothing about truncation")
-	}
+	wantMembers := mainsDepthOneMembers(t, fixture.database, "CORE-1")
 	references, err := Closure(context.Background(), fixture.database.Pool, "CORE-1")
 	if err != nil {
 		t.Fatalf("read the closure: %v", err)
 	}
 	members := references.Members
 	if !reflect.DeepEqual(members, wantMembers) {
-		t.Fatalf("Closure = %#v; want %#v", members, wantMembers)
+		t.Fatalf("Closure = %#v; want main's rows of depth 1 %#v", members, wantMembers)
 	}
 	for _, member := range members {
 		if member.RefKey == fixture.droppedBlock {
@@ -227,13 +200,12 @@ func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
 	}
 }
 
-// The closure reaches document_blocks through document_blocks_node_id, the hash index on
-// exactly the column it probes, and never reads that table whole. An `exists` probe written in
-// the predicate is planned as a hashed subplan instead, which reads all of document_blocks to
+// The out statement of the read, the one statement of it that reduces a link to a document's
+// block to its document, reaches document_blocks through document_blocks_node_id, the hash index
+// on exactly the column it probes, and never reads that table whole. An `exists` probe written in
+// the predicate may be planned as a hashed subplan instead, which reads all of document_blocks to
 // build its hash and cannot use that index at all; the lateral join is what keeps the probe a
-// keyed one. Every read of refs is keyed too, which is why the predicate names the target kinds
-// of its own: with the block test moved above a join, that is the only clause the planner can
-// restrict the scan with.
+// keyed one. Every read of refs is keyed too.
 func TestTheClosureProbesDocumentBlocksThroughItsNodeIndex(t *testing.T) {
 	fixture := newClosureFixture(t)
 	ctx := context.Background()
@@ -249,8 +221,8 @@ func TestTheClosureProbesDocumentBlocksThroughItsNodeIndex(t *testing.T) {
 		t.Fatalf("set local enable_seqscan = off: %v", err)
 	}
 	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+closureQuery, "CORE-1").Scan(&raw); err != nil {
-		t.Fatalf("explain the closure: %v", err)
+	if err := tx.QueryRow(ctx, "explain (format json) "+linksOutQuery, "CORE-1").Scan(&raw); err != nil {
+		t.Fatalf("explain the out statement: %v", err)
 	}
 	plan := explaintest.OnePlan(t, raw)
 

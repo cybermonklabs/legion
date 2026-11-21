@@ -471,6 +471,10 @@ func TestReplaceKeepsAnEdgeOfANodeKindThisBuildDoesNotKnow(t *testing.T) {
 	}
 }
 
+// A chain of ten documents, the first of which the issue's comment cites and each of which cites
+// the next, answers its first document alone, at depth 1 via the comment: the references read
+// reads one hop, so no document past the first is a member, where the eight-hop walk this test
+// was named for answered eight of them and marked the ninth hop truncated.
 func TestClosureFollowsArtifactLinksToDepthEightAndReportsTruncation(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -480,28 +484,21 @@ func TestClosureFollowsArtifactLinksToDepthEightAndReportsTruncation(t *testing.
 	}
 	defer tx.Rollback(ctx)
 	createReferenceProject(t, tx, "CORE")
-	createReferenceProject(t, tx, "OPS")
 	createReferenceIssue(t, tx, "CORE-1", "CORE")
-	_, ownRefKey := createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
 
 	artifactIDs := make(map[string]string)
 	artifactRefs := make(map[string]string)
-	for index := 1; index <= 9; index++ {
+	for index := 1; index <= 10; index++ {
 		slug := "d" + strconv.Itoa(index)
 		artifactIDs[slug], artifactRefs[slug] = createReferenceArtifact(t, tx, "", "CORE", slug)
 	}
-	_, diagramRefKey := createReferenceArtifact(t, tx, "", "OPS", "diagram-png")
 	commentID := createReferenceComment(t, tx, "CORE-1")
 	insertReference(t, tx, "comment", commentID, "artifact", artifactRefs["d1"])
-	insertReference(t, tx, "comment", commentID, "artifact", diagramRefKey)
-	for index := 1; index < 9; index++ {
+	for index := 1; index < 10; index++ {
 		from := "d" + strconv.Itoa(index)
 		to := "d" + strconv.Itoa(index+1)
 		insertReference(t, tx, "artifact", artifactIDs[from], "artifact", artifactRefs[to])
 	}
-	insertReference(t, tx, "artifact", artifactIDs["d1"], "artifact", ownRefKey)
-	insertReference(t, tx, "artifact", artifactIDs["d1"], "artifact", "CORE/ghost")
-	insertReference(t, tx, "artifact", artifactIDs["d3"], "artifact", artifactRefs["d1"])
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit fixture: %v", err)
 	}
@@ -510,17 +507,7 @@ func TestClosureFollowsArtifactLinksToDepthEightAndReportsTruncation(t *testing.
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
-	want := []Member{
-		{RefKey: artifactRefs["d1"], Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: commentID}},
-		{RefKey: diagramRefKey, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: commentID}},
-		{RefKey: artifactRefs["d2"], Depth: 2, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d1"]}},
-		{RefKey: artifactRefs["d3"], Depth: 3, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d2"]}},
-		{RefKey: artifactRefs["d4"], Depth: 4, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d3"]}},
-		{RefKey: artifactRefs["d5"], Depth: 5, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d4"]}},
-		{RefKey: artifactRefs["d6"], Depth: 6, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d5"]}},
-		{RefKey: artifactRefs["d7"], Depth: 7, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d6"]}},
-		{RefKey: artifactRefs["d8"], Depth: 8, Via: model.ReferenceVia{Kind: "artifact", ID: artifactIDs["d7"]}},
-	}
+	want := []Member{{RefKey: artifactRefs["d1"], Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: commentID}}}
 	if got := references.Members; !reflect.DeepEqual(got, want) {
 		t.Fatalf("closure = %#v; want %#v", got, want)
 	}

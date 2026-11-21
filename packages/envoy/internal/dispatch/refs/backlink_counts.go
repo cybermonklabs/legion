@@ -345,7 +345,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		// view's readers do not. The source-kind filter is this arm's alone for the same reason:
 		// every other arm's literal from_kind is a kind nodeLoaders resolves, so the filter would
 		// drop nothing there.
-		arm(`refs r`, ` and r.from_kind = any($2) and not `+heldByABlock("r", "")),
+		arm(`refs r`, ` and r.from_kind = any($2) and not `+heldByABlock("r")),
 		// block_refs_to_source (to_kind, to_id, (artifact_id::text)), by its first two columns. The
 		// view's own arm lists a block[] pointer's row only while block_ref_listed holds, the types
 		// test a typed block's pointer carries, and a row with no limit is listed without the call;
