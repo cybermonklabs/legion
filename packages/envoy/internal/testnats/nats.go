@@ -61,7 +61,7 @@ var Images = []struct{ Name, Ref string }{{"hub", HubImage}}
 
 var (
 	mainRuns      bool
-	sharedOnce    sync.Once
+	sharedMu      sync.Mutex
 	shared        *accountServer
 	sharedCleanup *sharedTB
 )
@@ -113,15 +113,39 @@ func URL(t testing.TB) string {
 	if !mainRuns {
 		t.Fatal("testnats: the package's TestMain must return testnats.Main(m), which shuts the shared NATS server down")
 	}
-	sharedOnce.Do(func() {
-		sharedCleanup = &sharedTB{TB: t}
-		shared = startAccountServer(sharedCleanup, firstAccounts)
-	})
-	if shared == nil {
-		t.Fatal("testnats: the package's shared NATS server did not start; the test that first asked for it reports why")
-	}
-	return shared.url(t)
+	return sharedServer(t).url(t)
 }
+
+// sharedServer is the package's shared server, started by the first test that asks for it. A
+// start that fails fails the test that asked, with its own reason, and leaves nothing behind: the
+// next test that asks starts the server afresh. Under load a JetStream start can fail where a
+// later one succeeds, and a failed start once failed every later test of the binary that asked,
+// with no reason of its own (TestALaterTestStartsTheSharedServerAnEarlierStartFailedToStart).
+func sharedServer(t testing.TB) *accountServer {
+	t.Helper()
+	sharedMu.Lock()
+	defer sharedMu.Unlock()
+	if shared != nil {
+		return shared
+	}
+	attempt := &sharedTB{TB: t}
+	started := false
+	// A failed start ends this goroutine (t.Fatalf), so what it set up is torn down here, before
+	// the lock is let go.
+	defer func() {
+		if !started {
+			attempt.run()
+		}
+	}()
+	server := startShared(attempt, firstAccounts)
+	started = true
+	shared, sharedCleanup = server, attempt
+	return server
+}
+
+// startShared starts the shared server: startAccountServer, which a row of this package's tests
+// replaces to have a start fail.
+var startShared = startAccountServer
 
 // sharedTB stands in for the test that first asks for the package's shared server. That server
 // outlives the test, so the cleanup start registers on it runs from Main, after the last test, and
@@ -138,6 +162,15 @@ func (s *sharedTB) Cleanup(clean func()) { s.cleanups = append(s.cleanups, clean
 func (s *sharedTB) Errorf(format string, args ...any) {
 	s.failed = true
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
+}
+
+// Deadline is the deadline of the test sharedTB stands in for, when it has one, so the shared
+// server's start waits as long as that test may run (awaitReady).
+func (s *sharedTB) Deadline() (time.Time, bool) {
+	if timed, ok := s.TB.(interface{ Deadline() (time.Time, bool) }); ok {
+		return timed.Deadline()
+	}
+	return time.Time{}, false
 }
 
 // run runs the cleanups the shared server registered, the most recent first, as testing does.
