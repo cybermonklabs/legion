@@ -532,7 +532,7 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
  * What the page publishes from the targets of the batched reference read (`reads.targets`) for
  * every surface beside the tree to name them by (`refs/reference-names.tsx`), each read by the
  * rule a chip naming the target is named by (`treeContext`), so a link and a chip naming one
- * target never disagree. All four are read from one context in one walk over the targets, so
+ * target never disagree. All five are read from one context in one walk over the targets, so
  * they cannot disagree either.
  *
  * - **`readings`**: how each target that something answers to now is named, by its address: the
@@ -545,6 +545,8 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
  * - **`unnamed`**: the references the read answered with nothing to name them by - another
  *   issue's block it sent no words for - which a surface reads for itself, as a link to the
  *   target does (R8).
+ * - **`statuses`**: each named issue's status as the read answered it, by its address, which the
+ *   mark beside a reference to it draws (INFRA-4009 R2).
  */
 export function targetNaming(reads: IssueTreeReads): Omit<PublishedReferences, "asked"> {
   const context = treeContext(reads);
@@ -552,14 +554,18 @@ export function targetNaming(reads: IssueTreeReads): Omit<PublishedReferences, "
   const gone = new Set<string>();
   const unnamed = new Set<string>();
   const readings = new Map<string, ReferenceNameReading>();
+  const statuses = new Map<string, string>();
   for (const target of reads.targets ?? []) {
     const chip = context.chipOf(target.ref);
     if (chip.ambiguous === true) ambiguous.add(target.ref);
     else if (chip.gone) gone.add(target.ref);
     else if (chip.reading === undefined) unnamed.add(target.ref);
-    else readings.set(target.ref, chip.reading);
+    else {
+      readings.set(target.ref, chip.reading);
+      if (target.status !== undefined) statuses.set(target.ref, target.status);
+    }
   }
-  return { ambiguous, gone, readings, unnamed };
+  return { ambiguous, gone, readings, statuses, unnamed };
 }
 
 /** How many nodes a branch holds below `children`, at any depth. */

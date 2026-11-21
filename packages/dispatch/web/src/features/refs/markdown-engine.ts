@@ -545,11 +545,14 @@ export const markdownClassName =
  *  `mention`, what a party's mention of it reads as, undefined where the mention keeps its
  *  author's words. An issue's name is its title, which the projection never writes: once its
  *  issue is read, an issue reference reads as its key alone (`standingName`), as a rendered body
- *  draws the key beside the issue's status mark (`RefLink`, INFRA-4009 R6). A reference the
- *  lookup does not answer has not been read yet. */
+ *  draws the key beside the issue's status mark (`RefLink`, INFRA-4009 R6). `status` is an issue's
+ *  status where its read answered one, which the projection never writes either and a surface
+ *  that draws the status mark draws (`issue-page/RowText.tsx`). A reference the lookup does not
+ *  answer has not been read yet. */
 export interface ReferenceName {
   readonly name: string | undefined;
   readonly mention: string | undefined;
+  readonly status?: string;
 }
 
 /** What each reference a projected text writes resolved to, by its `dispatch://` reference: a
