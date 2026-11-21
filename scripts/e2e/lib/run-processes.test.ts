@@ -2,7 +2,7 @@ import { afterEach, beforeAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "./arg-max-force";
 import { ownGroup, untilRunning } from "./own-group";
 import { procRootOf } from "./proc-root";
@@ -17,7 +17,14 @@ import { procRootOf } from "./proc-root";
 const rig = join(import.meta.dir, "rig.sh");
 const force = join(import.meta.dir, "arg-max-force.sh");
 const root = join(import.meta.dir, "..", "..", "..");
-const dir = temporaryDirectory("run-processes-test");
+// On the memory root (memoryRoot): each row's proc roots, and the force's synthetic entries in them,
+// are made here, and the rows leave 605 entries, 1.7 MiB as tmpfs charges them, for the one
+// afterAll to remove. On a dev box's shared disk at a load near 1,400 that removal took 26.5 s
+// (2026-11-21), and at a load near 1,000 it ran out Bun's 5 s at 9.3 s. The need is six such runs
+// at once.
+const dir = temporaryDirectory("run-processes-test", {
+  root: memoryRoot({ need: 6 * 2 * 2 ** 20 }),
+});
 // perl: every process a row starts, and every harness, runs through ownGroup (lib/own-group.ts).
 const skip = skipWithout("perl");
 // python3: the newline-name row renames its process through prctl (ctypes).

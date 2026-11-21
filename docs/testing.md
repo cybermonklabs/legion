@@ -160,6 +160,11 @@ itself, whose tests import its sources by relative path.
   not once the whole start has succeeded: a start that throws half-way has already made the
   container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`). Remove it with `docker rm -f
   -v`, and give it the CPU and memory limits "Containers a test starts" below requires.
+  Give each `docker` call the time left of the bound of the hook or row that makes it, and kill it
+  with SIGKILL when that time runs out, failing with the call's name (`dockerRun` in the same
+  file): Bun's guard of a hook sends a `spawnSync` child one SIGTERM and then waits for it, and a
+  `docker port` whose daemon did not answer ran on that way, 67 s past its hook's 120 s, naming
+  nothing.
 
 - Two caches stay where their tool puts them, under the user's cache directory, and this is the one
   rule here that holds only under a condition. Oh My Pi's native modules, about 123 MiB a pin, are

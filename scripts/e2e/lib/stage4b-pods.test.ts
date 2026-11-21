@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { runJq } from "./run-jq";
 import { scriptFunctions } from "./script-functions";
 import { defaults, type Reservation } from "./stage4b-reservations";
@@ -17,7 +17,11 @@ const root = join(import.meta.dir, "..", "..", "..");
 const lib = join(root, "scripts", "e2e", "lib");
 const fn = scriptFunctions(join(root, "scripts", "e2e", "stage4b-sandbox-tree.sh"));
 const shapeProblems = fn("shape_problems");
-const dir = temporaryDirectory("stage4b-pods-test");
+// On the memory root (memoryRoot): the rows leave 188 entries here, 0.84 MiB as tmpfs charges them,
+// for the one afterAll to remove, and on a dev box's shared disk at a load near 1,400 that removal
+// took 4.0 s (2026-11-21) and ran out Bun's 5 s at 9.8 s at a load near 1,000. The need is six
+// such runs at once.
+const dir = temporaryDirectory("stage4b-pods-test", { root: memoryRoot({ need: 6 * 2 ** 20 }) });
 let runs = 0;
 const golden = JSON.parse(
   readFileSync(

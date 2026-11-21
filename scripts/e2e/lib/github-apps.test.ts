@@ -2,7 +2,7 @@
 // they write for lib/app-logins.ts, check_github_apps over it, and the token files the sandbox
 // proof's refresher mints under bridge, each driven under a stage script's shell options against
 // the stand-in GitHub of stand-in-github-fixtures.ts.
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, onTestFinished, test } from "bun:test";
 import {
   chmodSync,
   copyFileSync,
@@ -26,6 +26,7 @@ import {
   standInGitHub,
   tokenOf,
 } from "./stand-in-github-fixtures";
+import { withinRow } from "./within-row";
 
 const { url: standIn, seen, dir } = standInGitHub("github-apps-test");
 // The home every child of this file runs under, so none of them reads the caller's.
@@ -159,13 +160,17 @@ ${then}`;
   return { child: Bun.spawn(["bash", "-c", shell], { env, stdout: "pipe", stderr: "pipe" }), work };
 }
 
+// The run's output and exit, awaited within the row (withinRow): a run the row's guard ended is
+// killed, and nothing the row asserts on it runs after that.
 async function githubApps(inputs: Record<string, string | undefined>, then: string) {
   const { child, work } = spawnGithubApps(inputs, then);
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
+  const [stdout, stderr, code] = await withinRow(
+    Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ])
+  );
   return { code, stdout: stdout.trimEnd(), stderr: stderr.trim(), work };
 }
 const line = (stdout: string, prefix: string) =>
@@ -668,6 +673,12 @@ mint_app_tokens "$TOKEN_DIR" sjawhar`
     // The one secret the refresher may ask for: a round that asked for any other would print a
     // refresh failure on stderr, which this row refuses.
     copyFileSync(join(store, "IMPLEMENT_APP"), join(refreshStore, "IMPLEMENT_APP"));
+    // The shell waits for the fact the row is about, the rotated release in the last file a round
+    // writes, for as long as the refresher runs: a refresher that ended without it fails the row
+    // by name, and one that never writes it is the hang the run's --timeout ends. Fifty polls in
+    // its place, inside Bun's 5 s default for the row, made the verdict the machine's speed: at a
+    // load near 1,000 the first mints and the 1 s period took longer, and the row ran out at
+    // 5,002 ms.
     const { code, stdout, stderr } = await githubApps(
       { ...appInputs, TOKEN_DIR: tokenDir, STORE: refreshStore },
       `require_app_inputs implement review
@@ -677,8 +688,8 @@ echo "key before $(stat -c '%i %s %Y' -- "$key")"
 app_token_refresh_seconds=1
 start_app_token_refresher "$TOKEN_DIR"
 printf '%s' '${release({ sjawhar: "ghs_rotated" })}' >"$STORE/IMPLEMENT_APP"
-for _ in $(seq 50); do
-  grep -q ghs_rotated "$TOKEN_DIR/implement/sjawhar.read.json" && break
+until grep -q ghs_rotated "$TOKEN_DIR/implement/sjawhar.read.json"; do
+  kill -0 "$app_token_refresher" 2>/dev/null || { echo "the refresher ended before it wrote the rotated release" >&2; break; }
   sleep 0.1
 done
 pid=$app_token_refresher
@@ -1345,42 +1356,47 @@ echo done`
     // each of them held it until the command exited before the lib's two probes released them
     // (github-apps.sh, above app_token_flag_taken, says which stage holds a line and which flag
     // releases it).
-    // So the row reads the run's stderr as it arrives rather than after the exit, and asserts the
-    // gap between the two: the line is due about 100 ms in, and the command exits about 2100 ms
-    // in, so a line that arrives 1.5 s before the exit cannot be a line that arrived with it,
-    // and a host loaded enough to spend a second of that margin on starting bash still passes.
+    // So the key command prints its line and then holds at a gate, a file this row makes only once
+    // the line has reached the run's stderr: a stage that held the line until the command exited
+    // would hold it for good, and the row would wait for it until the run's --timeout ended it.
+    // The gap between the line and the exit that the row read in place of the gate (more than
+    // 1.5 s of a 2 s sleep, the line less than 1 s in) was the machine's speed, not the relay's.
     const progress = "reading the review App key from the deployment store";
-    const started = performance.now();
+    const gate = join(mkdtempSync(join(dir, "gate.")), "open");
+    // The gate opens when the row ends, whatever ended it, so no command is left holding there.
+    onTestFinished(() => writeFileSync(gate, ""));
     const { child, work } = spawnGithubApps(
       {
         ...appInputs,
-        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `printf '%s\\n' '${progress}' >&2; sleep 2; cat -- ${reviewKeyFile}`,
+        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `printf '%s\\n' '${progress}' >&2; until [ -e '${gate}' ]; do sleep 0.05; done; cat -- ${reviewKeyFile}`,
       },
       `require_app_inputs implement review
 write_github_apps --key-dir "$work/app-key" implement review
 echo written`
     );
-    let firstLineAt = 0;
     let stderr = "";
+    // The first line, or the end of the run's stderr when none comes: a run that ended first fails
+    // the assertions below by name.
+    const firstLine = Promise.withResolvers<void>();
     const decoder = new TextDecoder();
     const reading = (async () => {
       for await (const chunk of child.stderr as ReadableStream<Uint8Array>) {
         stderr += decoder.decode(chunk, { stream: true });
-        if (firstLineAt === 0 && stderr.includes("\n")) firstLineAt = performance.now();
+        if (stderr.includes("\n")) firstLine.resolve();
       }
+      firstLine.resolve();
     })();
-    const stdout = await new Response(child.stdout).text();
-    const code = await child.exited;
-    const exitedAt = performance.now();
-    await reading;
+    const stdoutText = new Response(child.stdout).text();
+    await withinRow(firstLine.promise);
+    // The line arrived while the command held at the gate, so the run had not exited either.
+    expect(stderr).toBe(`${progress}\n`);
+    expect(child.exitCode).toBeNull();
+    writeFileSync(gate, "");
+    const [stdout, code] = await withinRow(Promise.all([stdoutText, child.exited, reading]));
     expect(code).toBe(0);
     expect(stdout).toContain("written");
     expect(stderr.trim()).toBe(progress);
-    // The line arrived, and it arrived while the command was still in its sleep.
-    expect(firstLineAt).toBeGreaterThan(0);
-    expect(exitedAt - firstLineAt).toBeGreaterThan(1500);
-    expect(firstLineAt - started).toBeLessThan(1000);
-    // And the key the command printed after the sleep still reached its file alone.
+    // And the key the command printed after the gate still reached its file alone.
     expect(readFileSync(join(work, "app-key", "review", "key.pem"), "utf8")).toBe(reviewKey);
     holdsNoKey(stdout + stderr, keyIDs);
   });

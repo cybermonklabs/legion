@@ -6437,6 +6437,13 @@ A walk of the host's whole `/proc` held a row to the host's process count; on th
 Each row of `lib/run-processes.test.ts` walks a root of the processes it started and the test process, and its first row starts a marked process outside that root, which a walk that went back to the host's `/proc` would name.
 A harness shell makes the same root for itself with one `ln -s` an entry, as `lib/unread-proc.test.ts`'s row for an agent's member that outlives its TERM does
 
+## lib/within-row.ts
+
+`withinRow(promise)` is `promise` as the row that calls it sees it: it settles as `promise` does while the row runs, and never once the row has ended.
+A row that `bun test`'s `--timeout` ends is not stopped: Bun 1.4.4 marks it failed, kills the processes it started and runs the next row, and the row's body still waits at its `await`, so the killed child's exit resumed it and its assertion on that exit threw where no row ran ("Unhandled error between tests"), or inside a later row, which then failed for a cause not its own.
+The row's `onTestFinished` runs when the guard ends it, before the killed child's exit is read, and from there the promise stops settling.
+`lib/github-apps.test.ts` awaits each run of the lib through it, and `lib/nats-stream.test.ts` each read it starts; `lib/within-row.test.ts` runs a file of two rows under a `bun test` of its own, with the wait through it and, as the control, without it.
+
 ## lib/process-tree.sh
 
 How a live proof knows a process it started: by the pid it had when it started, read from what started it, and by the program the kernel records it runs (`/proc/<pid>/exe`), never by a walk of the machine's `/proc` for its name, its command line or its working directory.
