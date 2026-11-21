@@ -306,7 +306,10 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
   if (access.isPending) {
     return <p className={`mt-4 ${textMutedOnCanvas}`}>Loading who may see this project…</p>;
   }
-  if (access.isError) {
+  // Only a first read that failed replaces the panel. A later read that fails (a focus read, or
+  // the poll a row runs while it shows a link) keeps the list it already read, so no row unmounts
+  // and no link Dispatch showed once is lost with its row.
+  if (access.isLoadingError) {
     return (
       <div className="mt-4">
         <QueryError

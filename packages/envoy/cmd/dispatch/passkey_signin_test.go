@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -123,19 +124,21 @@ func (r *passkeyRig) invite(t *testing.T, email string) string {
 }
 
 // linkToken is the token of the link response answers, failing the test naming what for any
-// answer but 201 {url, expires_at} with a url of the outside origin's enrollment page.
+// answer but 201 {url, made_at, expires_at} with a url of the outside origin's enrollment page and
+// an expires_at InvitationLifetime after its made_at.
 func linkToken(t *testing.T, what string, response *httptest.ResponseRecorder) string {
 	t.Helper()
 	var answer struct {
-		URL       string `json:"url"`
-		ExpiresAt string `json:"expires_at"`
+		URL       string    `json:"url"`
+		MadeAt    time.Time `json:"made_at"`
+		ExpiresAt time.Time `json:"expires_at"`
 	}
 	if response.Code != http.StatusCreated || json.Unmarshal(response.Body.Bytes(), &answer) != nil {
-		t.Fatalf("%s answered %d %s, want 201 {url, expires_at}", what, response.Code, response.Body.String())
+		t.Fatalf("%s answered %d %s, want 201 {url, made_at, expires_at}", what, response.Code, response.Body.String())
 	}
 	page, token, ok := strings.Cut(answer.URL, "#")
-	if !ok || page != passkeyOrigin+"/enroll" || len(token) != 43 || answer.ExpiresAt == "" {
-		t.Fatalf("%s is %+v, want %s/enroll#<43 characters> and when it lapses", what, answer, passkeyOrigin)
+	if !ok || page != passkeyOrigin+"/enroll" || len(token) != 43 || answer.MadeAt.IsZero() || !answer.ExpiresAt.Equal(answer.MadeAt.Add(store.InvitationLifetime)) {
+		t.Fatalf("%s is %+v, want %s/enroll#<43 characters>, when it was made, and when it lapses 24 hours on", what, answer, passkeyOrigin)
 	}
 	return token
 }

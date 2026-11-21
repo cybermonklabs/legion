@@ -458,9 +458,12 @@ func (s *server) endUnlistedPasskeySignIn(ctx context.Context, tx pgx.Tx, key, e
 
 // invitationAnswer is POST /api/v1/projects/{key}/access/people/{email}/invitations's answer: the
 // link the owner hands the person, the outside origin's enrollment page with the token in its
-// fragment, and when it lapses.
+// fragment, when it was made and when it lapses, on the database's clock, which a passkey's
+// enrolled_at is read on too: a passkey of this project enrolled after made_at used this link,
+// since a newer link of the project ends it.
 type invitationAnswer struct {
 	URL       string    `json:"url"`
+	MadeAt    time.Time `json:"made_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
@@ -529,7 +532,7 @@ func namedPerson(ctx context.Context, tx pgx.Tx, key, email string) (string, err
 // (namedPerson), whom no project of another owner names directly (store.ListedByAnotherOwner,
 // 409 LISTED_BY_ANOTHER_OWNER: a passkey reads every project that names its person, so one owner
 // binds it), which ends the person's earlier unused links of the project
-// (store.MakeInvitationTx). It answers 201 {url, expires_at}: the url is the outside origin's
+// (store.MakeInvitationTx). It answers 201 {url, made_at, expires_at}: the url is the outside origin's
 // enrollment page with 32 random bytes, base64url, in its fragment, which no server logs and no
 // browser sends as a Referer, and outside_invitations keeps only their hash. The answer is the
 // one time the link is shown, so an Idempotency-Key never keeps it (answerHoldsSecret): a repeat
@@ -556,11 +559,11 @@ func (s *server) createInvitation(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		expiresAt, err := store.MakeInvitationTx(ctx, tx, hash, login, key, by.ID)
+		madeAt, expiresAt, err := store.MakeInvitationTx(ctx, tx, hash, login, key, by.ID)
 		if err != nil {
 			return nil, err
 		}
-		answer = invitationAnswer{URL: s.deps.Passkeys.Issuer() + "/enroll#" + token, ExpiresAt: expiresAt}
+		answer = invitationAnswer{URL: s.deps.Passkeys.Issuer() + "/enroll#" + token, MadeAt: madeAt, ExpiresAt: expiresAt}
 		return nil, nil
 	}) {
 		return

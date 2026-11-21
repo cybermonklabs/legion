@@ -8,7 +8,9 @@ body: |-
   page of another site frames the enrollment page or the passkey sign-in. `GET /auth/whoami`'s
   `401 NO_IDENTITY` at `DISPATCH_OUTSIDE_ORIGIN` carries `"sign_in":"passkey"` with passkey
   sign-in off too, so the outside origin's sign-in page never offers a Google sign-in, unless
-  `DISPATCH_SIGNIN_OUTSIDE=1` signs people from outside in with Google there.
+  `DISPATCH_SIGNIN_OUTSIDE=1` signs people from outside in with Google there. The owner's link
+  (`POST /api/v1/projects/{key}/access/people/{email}/invitations`) answers `made_at` beside `url`
+  and `expires_at`, so the Access tab tells a link the person used from one they have not.
 time: 2026-11-21T03:02:32Z
 custom:
     Issue: passkeys-web

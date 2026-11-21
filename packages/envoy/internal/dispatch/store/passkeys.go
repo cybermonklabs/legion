@@ -152,20 +152,19 @@ type PasskeyReader interface {
 // MakeInvitationTx records, in tx, the link an owner makes for email on project: tokenHash, the
 // SHA-256 of its 32 random bytes, which no row holds, lapsing InvitationLifetime after the
 // database's now(). It first deletes the person's unused links of that project, so one link at a
-// time can enroll them, and answers when the new one lapses. Who may make it, and for whom, is the
-// caller's to decide first (api.createInvitation).
-func MakeInvitationTx(ctx context.Context, tx pgx.Tx, tokenHash [32]byte, email, project, madeBy string) (time.Time, error) {
+// time can enroll them, and answers when the new one was made and when it lapses. Who may make
+// it, and for whom, is the caller's to decide first (api.createInvitation).
+func MakeInvitationTx(ctx context.Context, tx pgx.Tx, tokenHash [32]byte, email, project, madeBy string) (madeAt, expiresAt time.Time, err error) {
 	if err := DeleteInvitationsTx(ctx, tx, project, email); err != nil {
-		return time.Time{}, err
+		return time.Time{}, time.Time{}, err
 	}
-	var expiresAt time.Time
-	err := tx.QueryRow(ctx, `insert into outside_invitations (token_sha256, email, project_key, made_by, expires_at)
-		values ($1, $2, $3, $4, now() + $5::interval) returning expires_at`,
-		tokenHash[:], model.CanonicalLogin(email), project, madeBy, fmt.Sprintf("%d seconds", int(InvitationLifetime/time.Second))).Scan(&expiresAt)
+	err = tx.QueryRow(ctx, `insert into outside_invitations (token_sha256, email, project_key, made_by, expires_at)
+		values ($1, $2, $3, $4, now() + $5::interval) returning made_at, expires_at`,
+		tokenHash[:], model.CanonicalLogin(email), project, madeBy, fmt.Sprintf("%d seconds", int(InvitationLifetime/time.Second))).Scan(&madeAt, &expiresAt)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("record the invitation: %w", err)
+		return time.Time{}, time.Time{}, fmt.Errorf("record the invitation: %w", err)
 	}
-	return expiresAt, nil
+	return madeAt, expiresAt, nil
 }
 
 // DeleteInvitationsTx deletes, in tx, email's unused links of project: a newer link and a removal

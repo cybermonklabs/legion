@@ -18,7 +18,9 @@ const ana = "ana@other.example";
 function withPasskeys(overrides: Partial<ProjectAccess> = {}): ProjectAccess {
   return access({
     invitable: [ana],
-    passkeys: [{ email: ana, enrolled_at: "2026-11-20T10:00:00Z", made_by: "alice" }],
+    passkeys: [
+      { email: ana, enrolled_at: "2026-11-20T10:00:00Z", made_by: "alice", project: "CORE" },
+    ],
     people: [ana, "carol@example.com"],
     ...overrides,
   });
@@ -91,11 +93,13 @@ test("Invite shows the link to send and when it stops, and a second press makes 
   const panel = renderPanel({ answer: withPasskeys() });
   const invite = spyOn(api, "createProjectInvitation")
     .mockResolvedValueOnce({
-      expires_at: "2026-11-21T10:00:00Z",
+      expires_at: "2099-11-21T10:00:00Z",
+      made_at: "2099-11-20T10:00:00Z",
       url: `https://dispatch.example/enroll#${"a".repeat(43)}`,
     })
     .mockResolvedValueOnce({
-      expires_at: "2026-11-21T11:00:00Z",
+      expires_at: "2099-11-21T11:00:00Z",
+      made_at: "2099-11-20T11:00:00Z",
       url: `https://dispatch.example/enroll#${"b".repeat(43)}`,
     });
   try {
@@ -197,7 +201,8 @@ test("a new link and when it stops are announced to a screen reader, through a r
   const user = userEvent.setup();
   const panel = renderPanel({ answer: withPasskeys() });
   const invite = spyOn(api, "createProjectInvitation").mockResolvedValue({
-    expires_at: "2026-11-21T10:00:00Z",
+    expires_at: "2099-11-21T10:00:00Z",
+    made_at: "2099-11-20T10:00:00Z",
     url: `https://dispatch.example/enroll#${"a".repeat(43)}`,
   });
   try {
@@ -258,7 +263,8 @@ test("Reset takes away the link an earlier Invite showed, since Dispatch deletes
   const user = userEvent.setup();
   const panel = renderPanel({ answer: withPasskeys() });
   const invite = spyOn(api, "createProjectInvitation").mockResolvedValue({
-    expires_at: "2026-11-21T10:00:00Z",
+    expires_at: "2099-11-21T10:00:00Z",
+    made_at: "2099-11-20T10:00:00Z",
     url: `https://dispatch.example/enroll#${"a".repeat(43)}`,
   });
   const confirm = spyOn(window, "confirm").mockReturnValue(true);
@@ -298,13 +304,14 @@ test("Reset takes away the link an earlier Invite showed, since Dispatch deletes
 });
 
 // The person used the link while the owner's row showed it: the link stops at its first use, so
-// once the access answer lists the passkey it made (enrolled after the link was made, 24 hours
-// before it stops), the row stops offering it as a link that works once.
+// once the access answer lists the passkey it made (enrolled through this project's link after the
+// link's made_at), the row stops offering it as a link that works once.
 test("a link the person used is taken out of the row once the answer lists the passkey it made", async () => {
   const user = userEvent.setup();
   const panel = renderPanel({ answer: withPasskeys({ passkeys: [] }) });
   const invite = spyOn(api, "createProjectInvitation").mockResolvedValue({
-    expires_at: "2026-11-21T10:00:00Z",
+    expires_at: "2099-11-21T10:00:00Z",
+    made_at: "2099-11-20T10:00:00Z",
     url: `https://dispatch.example/enroll#${"a".repeat(43)}`,
   });
   try {
@@ -314,7 +321,9 @@ test("a link the person used is taken out of the row once the answer lists the p
 
     await panel.lands(
       withPasskeys({
-        passkeys: [{ email: ana, enrolled_at: "2026-11-20T10:05:00Z", made_by: "alice" }],
+        passkeys: [
+          { email: ana, enrolled_at: "2099-11-20T10:05:00Z", made_by: "alice", project: "CORE" },
+        ],
       })
     )();
     await act(() => panel.queryClient.invalidateQueries());
@@ -325,6 +334,102 @@ test("a link the person used is taken out of the row once the answer lists the p
     expect(
       within(personRow(ana)).queryByTestId("access-invitation-expiry")
     ).not.toBeInTheDocument();
+  } finally {
+    panel.restore();
+    invite.mockRestore();
+  }
+});
+
+// One owner may list the person on two projects, each with a link of its own. A passkey the
+// person enrolled with the other project's link, after this project's link was made, did not use
+// this link: the row keeps offering it.
+test("a passkey enrolled with another project's link leaves this project's link in the row", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel({ answer: withPasskeys({ passkeys: [] }) });
+  const invite = spyOn(api, "createProjectInvitation").mockResolvedValue({
+    expires_at: "2099-11-21T10:00:00Z",
+    made_at: "2099-11-20T10:00:00Z",
+    url: `https://dispatch.example/enroll#${"a".repeat(43)}`,
+  });
+  try {
+    await user.click(await screen.findByRole("button", { name: `Invite ${ana}` }));
+    const link = { name: `Enrollment link for ${ana}` };
+    expect(await within(personRow(ana)).findByRole("textbox", link)).toBeInTheDocument();
+
+    await panel.lands(
+      withPasskeys({
+        passkeys: [
+          { email: ana, enrolled_at: "2099-11-20T10:05:00Z", made_by: "alice", project: "OTHER" },
+        ],
+      })
+    )();
+    await act(() => panel.queryClient.invalidateQueries());
+    await waitFor(() =>
+      expect(within(personRow(ana)).getByTestId("access-passkey")).toBeInTheDocument()
+    );
+    expect(within(personRow(ana)).getByRole("textbox", link)).toBeInTheDocument();
+    expect(within(personRow(ana)).getByTestId("access-invitation-expiry")).toBeInTheDocument();
+  } finally {
+    panel.restore();
+    invite.mockRestore();
+  }
+});
+
+// While a row shows a link, it reads the access list again every few seconds. A read that fails
+// keeps the list it already read: the panel does not swap itself for its error view, so the row,
+// and the link Dispatch showed only once, stay.
+test("a failed read of the access list while a link shows keeps the link in the row", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel({ answer: withPasskeys({ passkeys: [] }) });
+  const invite = spyOn(api, "createProjectInvitation").mockResolvedValue({
+    expires_at: "2099-11-21T10:00:00Z",
+    made_at: "2099-11-20T10:00:00Z",
+    url: `https://dispatch.example/enroll#${"a".repeat(43)}`,
+  });
+  try {
+    await user.click(await screen.findByRole("button", { name: `Invite ${ana}` }));
+    const link = { name: `Enrollment link for ${ana}` };
+    expect(await within(personRow(ana)).findByRole("textbox", link)).toBeInTheDocument();
+
+    panel.getProjectAccess.mockRejectedValueOnce(
+      new ApiError(503, { code: "DATABASE_BUSY", error: "the database is busy" })
+    );
+    await act(() => panel.queryClient.refetchQueries({ queryKey: ["project-access", "CORE"] }));
+    await waitFor(() =>
+      expect(panel.queryClient.getQueryState(["project-access", "CORE"])?.status).toBe("error")
+    );
+    expect(within(personRow(ana)).getByRole("textbox", link)).toHaveValue(
+      `https://dispatch.example/enroll#${"a".repeat(43)}`
+    );
+  } finally {
+    panel.restore();
+    invite.mockRestore();
+  }
+});
+
+// A link stops working at its expires_at, so the row stops offering it then: it shows no dead
+// link as one that works once, and its reads of the access list end with it.
+test("a link leaves the row when it lapses", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel({ answer: withPasskeys({ passkeys: [] }) });
+  const invite = spyOn(api, "createProjectInvitation").mockResolvedValue({
+    expires_at: new Date(Date.now() + 400).toISOString(),
+    made_at: new Date(Date.now() - 1000).toISOString(),
+    url: `https://dispatch.example/enroll#${"a".repeat(43)}`,
+  });
+  try {
+    await user.click(await screen.findByRole("button", { name: `Invite ${ana}` }));
+    const link = { name: `Enrollment link for ${ana}` };
+    expect(await within(personRow(ana)).findByRole("textbox", link)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(within(personRow(ana)).queryByRole("textbox", link)).not.toBeInTheDocument()
+    );
+    expect(
+      within(personRow(ana)).queryByTestId("access-invitation-expiry")
+    ).not.toBeInTheDocument();
+    expect(within(personRow(ana)).getByTestId("access-invitation-announcement")).toHaveTextContent(
+      /^$/
+    );
   } finally {
     panel.restore();
     invite.mockRestore();

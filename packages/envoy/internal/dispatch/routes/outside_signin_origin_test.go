@@ -176,6 +176,32 @@ func TestTheOutsideOriginsPagesRefuseEveryFrame(t *testing.T) {
 	}
 }
 
+// A signed-out GET /auth/whoami at the outside origin names the passkey sign-in wherever that
+// origin serves no Google sign-in (googleSignInHere's condition), so its page offers no Google
+// link that answers 404 there: under the domain rule it names "passkey". Under the outside rule
+// (DISPATCH_SIGNIN_OUTSIDE=1), which serves Google there, it names none, and the page offers that
+// Google sign-in. The canonical origin's 401 names none under either rule.
+func TestTheOutsideOriginsWhoamiNamesTheSignInItServes(t *testing.T) {
+	const plain = `{"code":"NO_IDENTITY","error":"unauthorized"}`
+	for _, test := range []struct {
+		name    string
+		rule    identity.SignInRule
+		outside string
+	}{
+		{"the outside rule", outsideRuleListingEveryone(), plain},
+		{"the domain rule", identity.DomainRule{Domain: rigDomain}, `{"code":"NO_IDENTITY","error":"unauthorized","sign_in":"passkey"}`},
+	} {
+		rig := newOriginRig(t, test.rule, outsideOrigin)
+		for origin, want := range map[string]string{outsideOrigin: test.outside, canonicalOrigin: plain} {
+			response := httptest.NewRecorder()
+			rig.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, origin+"/auth/whoami", nil))
+			if body := strings.TrimSpace(response.Body.String()); response.Code != http.StatusUnauthorized || body != want {
+				t.Errorf("GET %s/auth/whoami signed out under %s = %d %s, want 401 %s", origin, test.name, response.Code, body, want)
+			}
+		}
+	}
+}
+
 // A refused outside sign-in offers a link that asks Google for its account chooser, so a browser
 // holding one Google session is not sent straight back with the account just refused; the
 // sign-in a person starts any other way asks for consent alone, and a refusal under the domain

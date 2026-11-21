@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useId, useState } from "react";
+import { type ReactNode, useEffect, useId, useState } from "react";
 
 import { ApiError, api, apiErrorMessage } from "../../api/client";
 import { projectAccessQuery } from "../../api/queries";
@@ -20,16 +20,16 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
 /** One enrolled passkey as the owner's access answer lists it. */
 type EnrolledPasskey = NonNullable<ProjectAccess["passkeys"]>[number];
 
-/** The link a press of Invite made: the outside origin's `/enroll#<token>`, and when it stops. */
+/** The link a press of Invite made: the outside origin's `/enroll#<token>`, when Dispatch made it
+ *  and when it stops, both on Dispatch's clock, which a passkey's `enrolled_at` is read on too. */
 interface Invitation {
   readonly url: string;
+  readonly made_at: string;
   readonly expires_at: string;
 }
 
-/** How long a link works: it lapses 24 hours after it was made (store.InvitationLifetime), so it
- *  was made this long before its `expires_at`, on Dispatch's clock, which a passkey's
- *  `enrolled_at` is read on too. */
-const INVITATION_LIFETIME_MS = 24 * 60 * 60 * 1000;
+/** The longest delay `setTimeout` keeps: 2^31 − 1 ms, about 24.8 days. */
+const LONGEST_TIMEOUT_MS = 2_147_483_647;
 
 /** How often the owner's page reads the access list again while a row shows a link nobody has
  *  used: no Dispatch event tells the page that the person enrolled with it, which uses it. */
@@ -71,10 +71,11 @@ const linkFieldClass = `min-h-11 w-full min-w-0 rounded-md px-3 py-2 font-mono t
  * under no write key, so a later Invite makes a new link, which ends this one. A Reset deletes it,
  * so the row stops showing it once the owner confirms the Reset; and the person's enrollment uses
  * it, so the row stops showing it once the access list, which the row reads again every few
- * seconds while it shows a link, names a passkey enrolled after the link was made. A new link and
- * when it stops, and a link made whose answer was lost, are announced to a screen reader through
- * status regions the row holds while Invite can be pressed, since a region that mounts with its
- * words already in it is not announced by every reader.
+ * seconds while it shows a link, names a passkey enrolled through this project's link after the
+ * link was made (`made_at`). A new link and when it stops, and a link made whose answer was lost,
+ * are announced to a screen reader through status regions the row holds while Invite can be
+ * pressed, since a region that mounts with its words already in it is not announced by every
+ * reader.
  */
 export function AccessPersonRow({
   email,
@@ -132,16 +133,33 @@ export function AccessPersonRow({
     invite.forgetUnanswered();
     onReset();
   };
+  // A link stops working at its expires_at: the row stops offering it then, which also ends its
+  // poll, rather than show a dead link as one that "works once".
+  useEffect(() => {
+    if (invitation === undefined) return;
+    const left = Date.parse(invitation.expires_at) - Date.now();
+    if (left <= 0) {
+      setInvitation(undefined);
+      return;
+    }
+    // A browser fires a timer longer than its 32-bit limit at once; a link lasts 24 hours, far
+    // under that, so a later expires_at sets none.
+    if (left > LONGEST_TIMEOUT_MS) return;
+    const lapse = setTimeout(() => setInvitation(undefined), left);
+    return () => clearTimeout(lapse);
+  }, [invitation]);
   const shown = passkeys !== undefined;
   const enrolled = passkeys ?? [];
-  // A passkey enrolled after the link was made used it, since a link enrolls once: the row stops
-  // offering it. A passkey enrolled before the link (the person's first device, when the link is
-  // for a second one) leaves it shown.
+  // A passkey enrolled through this project's link after this link was made used this link: a
+  // newer link of the project ends this one, so no other link of this project enrolled it. The row
+  // stops offering it. A passkey of another project's link, or one enrolled before this link (the
+  // person's first device, when the link is for a second one), leaves it shown.
   const link =
     invitation !== undefined &&
     enrolled.some(
       (passkey) =>
-        Date.parse(passkey.enrolled_at) > Date.parse(invitation.expires_at) - INVITATION_LIFETIME_MS
+        passkey.project === project &&
+        Date.parse(passkey.enrolled_at) > Date.parse(invitation.made_at)
     )
       ? undefined
       : invitation;
