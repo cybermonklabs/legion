@@ -31,7 +31,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-private-names-test-l
 key_project=QUILL
 planted_key="$key_project-""123"
 key_terms=$(printf '%s\n' "$planted_terms" "key:$key_project" key:LEGION)
-link="dispatch"':''//'
+link='dispatch://'
 cutoff_at=2026-11-20T00:00:00Z
 # git_fixture <dir> <git args...>: git in a fixture repository, with no user or system
 # configuration of this machine (a signing setting, say) in the way.

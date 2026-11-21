@@ -5,9 +5,9 @@
 # a path, a named target and another command's message masked so the log never prints a term or a
 # fragment of one, overlapping terms and a traced run included; several files a mask prints alike
 # counted one by one; the allowed hosts of the committed rules never excusing a term; an unset
-# list warning on a pull request's event and failing on the merge queue's, a push's, a dispatched
-# run's and a review's; and a pull request's text through check-pr-text.sh, a stranger's login
-# never printed.
+# list warning on a pull request's event and a review's and failing on the merge queue's, a
+# push's and a dispatched run's; and a pull request's text through check-pr-text.sh, a
+# stranger's login never printed.
 #
 # The terms are placeholders this file and check-private-names-test-lib.sh set, never a real
 # term, and every case is named by a neutral label, since this script's own output is the CI log;
