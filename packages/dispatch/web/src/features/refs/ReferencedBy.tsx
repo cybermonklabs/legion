@@ -293,6 +293,15 @@ export function ReferencedBy({
             });
           },
         };
+  // Where the host notes Retry's press - Details - the line stands only while the read holds no
+  // answer and a fetch of it has failed, as Details says each of its own reads failed: a refresh
+  // that fails over the list keeps the list and draws no line over it, and the line stays while
+  // Retry's read is out, so Retry keeps its focus. That is `standsFailed`
+  // (`issue-page/useIssueTree.ts`), written out here because importing it would bring the new
+  // page's words into every page that draws this list. Every other page draws the line while the
+  // last read failed.
+  const failed =
+    retried === undefined ? query.isError : query.data === undefined && query.errorUpdateCount > 0;
 
   return (
     <section aria-label="Referenced by" className={`space-y-2 ${className ?? ""}`} id={toggle?.id}>
@@ -304,7 +313,7 @@ export function ReferencedBy({
       {query.isPending ? (
         <p className={`text-sm ${textMutedOnSurface}`}>Loading references…</p>
       ) : null}
-      {query.isError ? (
+      {failed ? (
         <p className={`flex flex-wrap items-center gap-2 text-sm ${textMutedOnSurface}`}>
           <span>Referenced by unavailable.</span>
           <button

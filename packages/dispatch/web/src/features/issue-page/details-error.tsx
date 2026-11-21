@@ -125,24 +125,36 @@ export function useRetryHandOff(to: Parameters<typeof useFocusHandOff>[0]): Retr
  *  of issues the row lists, spread on its line (`DetailsErrorLine`): it sends the read under
  *  `queryKey` again (`retryRead`) and notes that key as the read it was pressed for; as Retry
  *  leaves the page with the focus after that press (`useRetryHandOff`), it hands the focus on to
- *  what `to` returns only where the read now drawn is under that key. The key alone tells that
- *  the read answered the press: the line stands while the read stands failed (`standsFailed`),
- *  and a read that has failed stops standing failed only by holding its own answer - a names
- *  read draws no placeholder once it failed (`keptUntilFailed`) - or by being reset or taken out
- *  of the cache, which the app does only as the reader signs out and the page goes. A refresh
- *  that fails over that answer before the page draws it draws no line, and the focus goes on all
- *  the same. A line that goes under another key went with the set of issues the row lists. */
+ *  what `to` returns only where the read now drawn is under that key. A line that goes under
+ *  another key went with the set of issues the row lists. The press is forgotten as soon as the
+ *  row draws another key, even where the line stays over another set's read that stands failed
+ *  too: a read leaves the cache once nothing has observed it for its `gcTime`, so the row taken
+ *  back to the key pressed for can draw a read built afresh, which has not failed, and its line
+ *  goes with no answer to the press. While the row draws that key, the key alone tells that the
+ *  read answered the press: the line stands while the read stands failed (`standsFailed`), and a
+ *  read that has failed stops standing failed only by holding its own answer - a names read draws
+ *  no placeholder once it failed (`keptUntilFailed`) - or by being reset or taken out of the
+ *  cache, which the app does to a read the row observes only as the reader signs out and the page
+ *  goes. A refresh that fails over that answer before the page draws it draws no line, and the
+ *  focus goes on all the same. */
 export function useTitlesRetry(
   read: Parameters<typeof retryRead>[0],
   queryKey: QueryKey,
   to: Parameters<typeof useRetryHandOff>[0]
 ): RetryHandOff & { readonly onRetry: () => void } {
+  const key = hashKey(queryKey);
   const pressedFor = useRef<string | null>(null);
-  const handOff = useRetryHandOff((left) =>
-    pressedFor.current === hashKey(queryKey) ? to(left) : null
-  );
+  const handOff = useRetryHandOff((left) => (pressedFor.current === key ? to(left) : null));
+  const { retried } = handOff;
+  // A press answers only the read it was made for: once the row draws another key, no later
+  // going of the line is its answer, even back under the key it was made for.
+  useEffect(() => {
+    if (pressedFor.current === key) return;
+    pressedFor.current = null;
+    retried.current = false;
+  }, [key, retried]);
   const onRetry = () => {
-    pressedFor.current = hashKey(queryKey);
+    pressedFor.current = key;
     retryRead(read)();
   };
   return { ...handOff, onRetry };

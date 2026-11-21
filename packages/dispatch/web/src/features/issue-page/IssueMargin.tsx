@@ -443,15 +443,15 @@ export function IssueMarginPanel({
         retrying={failure.read.isFetching}
       />
     ) : null;
-  // Referenced by's Retry goes with its line: at its press where the list's first read failed,
-  // since the list then says it loads, and otherwise once the read the press sent answers. Where
-  // the reader's press of Retry took it away, the focus it held goes on to the list's first link;
-  // where the list draws none - while it loads, or with nothing to list - to Referenced by's own
-  // control, which opens and closes the list; and where that is not drawn - at a count of 0, while
-  // a list opened before stays open - to References' heading, the button that opens and closes
-  // the section. Each passes over a control that takes no press (`usableControl`). A line that
-  // goes with no press of its Retry - the list read again on an event, or after a press whose
-  // read failed - leaves the focus on the page's body.
+  // Referenced by's line stands while its read stands failed (`standsFailed`), as each line of
+  // Details' own does - `ReferencedBy` draws it so where it is handed `retried` - so its Retry
+  // goes with it once the read the press sent answers. Where the reader's press of Retry took it
+  // away, the focus it held goes on to the list's first link; where the list draws none, with
+  // nothing to list, to Referenced by's own control, which opens and closes the list; and where
+  // that is not drawn - at a count of 0, while a list opened before stays open - to References'
+  // heading, the button that opens and closes the section. Each passes over a control that takes
+  // no press (`usableControl`). A line that goes with no press of its Retry - the list read again
+  // on an event, or after a press whose read failed - leaves the focus on the page's body.
   const referencesValue = useRef<HTMLDivElement>(null);
   const referencesControl = useRef<HTMLButtonElement>(null);
   const referencesHeading = useRef<HTMLButtonElement>(null);
