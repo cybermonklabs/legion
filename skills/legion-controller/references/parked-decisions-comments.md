@@ -1,6 +1,6 @@
 # Comments on a parked tree's decisions
 
-Read this before you post on a decision that step 4 of `skill://legion-controller/references/parked-decisions.md#deciding` judged. `<KEY>` is the issue where the decision was made, `<root>` its tree's root, `<ref>` the decision's reference and `<login>` the person who made it (`skill://legion-controller/references/parked-decisions-notice.md`).
+Read this before you post on a decision that step 4 of `skill://legion-controller/references/parked-decisions.md#deciding` judged. `<KEY>` is the issue where the decision was made, `<root>` its tree's root (for `carried-gate-opened`, the notice's `root`, which left `<KEY>`'s tree), `<ref>` the decision's reference and `<login>` the person who made it (`skill://legion-controller/references/parked-decisions-notice.md`).
 
 On a tree whose architect has stopped (step 1 there: `phase` is not `done`, and `architect.state` is `failed` or `retired`), write `<root>'s architect has stopped, so it` for `<root> is parked, so its architect`, `The tree waits.` for `The tree stays parked.`, and `backlog, then todo,` for `todo`, in the reply and in the root's copy.
 

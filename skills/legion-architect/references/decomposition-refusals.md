@@ -1,8 +1,10 @@
 # A refused release or rerun
 
 Part of `skill://legion-architect/references/decomposition.md`. Read this when
-`release_children` or `rerun_child` is refused. A refused release writes nothing:
-release the rest again without the child it names.
+`release_children` or `rerun_child` is refused. A release refused with one of the codes below
+writes nothing: release the rest again without the child it names. `CHILD_NOT_RECORDED` can follow
+the `todo` writes of other children: release the child it names again after the wait its message
+names; `CHILD_RELEASE_STALLED` comes with a `child-release-stalled` notice.
 
 - `CHILD_NOT_ADOPTABLE`: it runs or ran as a tree of its own, carries a run handed over to it, or
   was handed over as a root of its own; or it is a member of a closed tree that holds an admission

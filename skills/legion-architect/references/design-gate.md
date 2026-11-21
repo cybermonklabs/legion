@@ -17,8 +17,8 @@ Read this before you write a root spec, before any edit to an approved one, and 
   `negative_control` names the test row or run that drives it. A requirement over every member of
   a class iterates the class's list, never a sample.
 - Every later role reads the checks: the implementer and the tester record a result against each
-  check with no `ci_check`, and the reviewer approves only once a pass stands for every
-  `before_merge` check at the head, which is the check's own answer in
+  `before_merge` check with no `ci_check`, and the reviewer approves only once a pass stands for
+  every `before_merge` check at the head, which is the check's own answer in
   `dispatch results --issue <issue>`, never a pass at another commit, a pass recorded under an
   older wording of the check or a retracted one.
 - Where a real recorded input exists (a stored record, a captured log, a real service's answer),
@@ -96,11 +96,13 @@ For each gated step, once every child is filed:
 ## After approval
 
 An approval is pinned to its version: any new version closes that step, with no wake. One step
-closing holds the tree's work whatever the other steps stand at. Two versions keep it: one whose
-only change is a person's answer to a decision block, and one equal to the approved text with no
-decision block in it decided since. Undo an accidental edit of an approved root spec exactly:
-when the spec then reads Approved at the new version, request nothing; when it does not (a block
-in it was decided since), request approval again with steps 3 to 5.
+closing holds the tree's work whatever the other steps stand at. Three versions keep it: one whose
+only change is the approver's own answer to a decision block, given after the approval; one equal
+to the approved text with no decision block in it decided since; and, after the issue was closed
+and reopened, the approved text with the questions the close withdrew opened again. Undo an
+accidental edit of an approved root spec exactly: when the spec then reads Approved at the new
+version, request nothing; when it does not (a block in it was decided since), request approval
+again with steps 3 to 5.
 
 Edit an approved spec only where its Summary, a requirement, a check, the scope or a settled
 decision changes: put the problem to the person as its own decision block, with its evidence, at

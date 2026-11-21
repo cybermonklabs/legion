@@ -36,9 +36,7 @@ that hold with a WAITING line naming the defect and the answer you wait on. The 
    must stand at the approved head for every `before_merge` check, and the body's `Checks` block
    carries each.
    - A check carrying `ci_check` is CI's: its derived result is the pass it needs, and its CI job
-     is its evidence (`skill://legion-worker/references/ci-checks.md`). In cybermonklabs/legion a
-     surface may also be the daemon's real-process tests, a live proof under `scripts/e2e/`, or a
-     live check at the operator's next daemon restart recorded on the pull request. A `ci_check`
+     is its evidence (`skill://legion-worker/references/ci-checks.md`). A `ci_check`
      check has no pass standing at that head when its derived result is a fail, or its run
      concluded `skipped`, `neutral` or `cancelled`. Wait for a run that has not concluded. Where
      GitHub could not be read, read it again; when that second read fails too, the step fails as

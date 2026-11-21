@@ -6,12 +6,12 @@ Every issue the record holds in the workflow that is in neither `admission.activ
 
 `admission.blocked` keeps its own rows beside them: it names Dispatch links and children-first waits alone, and an issue it names that stands in `admission.held` reads there under whichever word the daemon's order gives it, which can be an earlier one: a child under a shut gate that a link also holds reads `design_gate`. A blocked issue the line carries stands in `admission.waiting` and has no held row at all: a blocked root the line carries, and a started issue that gave its slot back to wait on another issue.
 
-The daemon starts none of them by itself: name them in the day's report and take nothing for them, except where the row's last column names an act of yours.
+The daemon starts none of them by itself, except the members a root's linger close hands over as roots of their own: name them in the day's report and take nothing for them, except where the row's last column names an act of yours.
 
 | Word | Meaning | What ends it |
 |---|---|---|
-| `tree_closed` | Its tree's root is `done`, or still lingering after it left the workflow | An architect's `release_children` of the live tree its Dispatch parent reaches, where that release is accepted (below) |
-| `tree_parked` | Its tree was parked and the linger ran out | A `todo` on the root, and nothing else: no release takes such a member. Where the park is your own hold, the parked-root walk decides it (`skill://legion-controller/references/parked-decisions.md`) |
+| `tree_closed` | Its tree's root is `done`, or still lingering after it left the workflow | An architect's `release_children` of the live tree its Dispatch parent reaches, where that release is accepted (below), or a `done` root's linger close, which hands it over as a root of its own |
+| `tree_parked` | Its tree was parked and the linger ran out | A `todo` on the root, or a person's label and `todo` on the member, which admits it as a root of its own; no release takes such a member. Where the park is your own hold, the parked-root walk decides it (`skill://legion-controller/references/parked-decisions.md`) |
 | `label_off` | A root whose `legion` label is off | A person's label. Take no issue back yourself |
 | `ancestry` | Its Dispatch chain reaches another live root: that tree's unreleased work | That tree's architect releasing it or its parent, or the chain leaving that tree |
 | `root_awaiting_person` | Its root waits on a person | The root's resume |

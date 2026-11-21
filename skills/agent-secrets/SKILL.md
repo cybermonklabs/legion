@@ -17,7 +17,7 @@ agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] -- <com
 
 - Each granted secret reaches `<command>`'s environment under its own name. Nothing runs unless every name is granted.
 - `--reason` is necessary wherever a person or the model judge decides: such a request that carries none is denied whole. A request every name of which is granted at once needs none. Say what the credential is for, in a sentence the approver can decide on, and name in it the issue you work on by its key, an issue that is not done.
-- Each key says who decides a request for it: `agent-secrets secret show NAME` prints it on its `decides:` line, beside the `guidance:` a model judge decides by. Meet that guidance in `--reason`. The judge grants a request or refuses it for good (77); one it cannot decide goes to the key's person. A request that also names a key a person decides goes to that person whole.
+- Each key says who decides a request for it: `agent-secrets secret show NAME` prints it on its `decides:` line, beside the `guidance:` a model judge decides by. Meet that guidance in `--reason`. The judge grants a request or refuses it for good (77); one it cannot decide goes to the key's person. A request that also names a key a person decides goes to that person whole; keys of different approvers exit 1: ask for them apart.
 - A session that must not block passes `--wait 0s` and reads the decision later with `agent-secrets status <request_id>`.
   The same command run again (the same names and `--ttl`) uses the live grant or joins the waiting request, and asks nobody again.
 - Read `skill://agent-secrets/references/github-app.md` before you use a GitHub App secret: what its name holds, the flags that narrow its token, and the refusals of a narrowing.
@@ -54,21 +54,21 @@ After a grant the client writes `agent-secrets: <names> from <source>` to stderr
 One case breaks that: a line `agent-secrets: exec <command>: …` after it means the command could not start, and the status is 1.
 Without the grant line the status is the client's:
 
-- **1**: a refusal or a failure that the message names: a name the broker does not serve (`UNKNOWN_SECRET`), a secret that waits for its first value (`PENDING_VALUE`), a broker it cannot reach, a machine that is not logged in to the broker, a request cancelled or expired, `REQUEST_PENDING`, a grant that is no longer live, a command that is not on `PATH`, which is refused before the broker is asked anything, so it reaches no approver, or no broker identity at all.
+- **1**: a refusal or a failure that the message names: a name the broker does not serve (`UNKNOWN_SECRET`), `MIXED_APPROVERS`, a secret that waits for its first value (`PENDING_VALUE`), a broker it cannot reach, a machine that is not logged in to the broker, a request cancelled or expired, `REQUEST_PENDING`, a grant that is no longer live, a command that is not on `PATH`, which is refused before the broker is asked anything, so it reaches no approver, or no broker identity at all.
   `UNKNOWN_SECRET` is final: do not ask again, and do not try a name of your own.
   `PENDING_VALUE` means its owner is storing the value now with `agent-secrets secret create`; no request was made and no approver asked. Ask again once a minute, for ten minutes at most: ten minutes after its making the broker stops calling it pending and refuses the name `UNKNOWN_SECRET`. Then tell its owner, who sees it as `versions: none` in `agent-secrets secret show NAME`.
   `REQUEST_PENDING`: any other run that would itself wait for a person or the model judge and shares a name with a waiting request, with another `--ttl` or another set of names, is refused `REQUEST_PENDING`, which names the request already waiting.
 - **2**: a usage error, such as no `AGENT_SECRETS_URL` or no `--`.
 - **75**: the request still waits for a person or the model judge when `--wait` runs out, and nothing ran. The message gives the `agent-secrets status <request_id>` that reads it.
   Read `skill://agent-secrets/references/waiting.md` when a run exits 75, and before you end a grant with `agent-secrets grant revoke`.
-- **77**: the request was denied: the approver or the model judge denied it, the policy refused a name (a service's secret, or one whose requesters list does not name this session), or the request named a secret a person or the model judge must approve and carried no reason, which the detail reads `<NAME>: a reason is necessary; ask again with --reason`. Final: ask for none of it again, and try no name of your own. The one exception is a message that says `ask again with --reason`: ask again with `--reason`.
+- **77**: denied by the approver, the model judge or the broker (a service's secret, a requesters list without you, `project-not-named`, `project-channels-need-airlock`, `BROKER_SIGNIN=off`, no `--reason`). Final: ask for none of it again and try no name of your own, unless the message says `ask again with --reason` (do so) or names `AGENT_SECRETS_PROJECTS` (tell whoever starts your session).
 
 ## Where a name comes from
 
 The broker tells a session no names. A name comes from your instructions, your role prompt, a skill or the issue you work on; there is no list to browse.
 Request a secret only to use it for the work in front of you: every request is recorded against your session with its reason, and can reach a person.
 A secret that a service owns goes to that service's own pods and to nothing else: the broker grants it at once when the session's own service is the secret's owner, and denies every other session, with no person asked.
-A shared agent secret, such as `LEGION_SLACK_BOT_TOKEN`, goes at once to every session, a pod's and a person's alike, unless its `requesters` tag lists who may ask for it.
+A shared agent secret, such as `LEGION_SLACK_BOT_TOKEN`, goes at once to every session, a pod's and a person's alike, unless its `requesters` tag lists who may ask for it, a private project refuses it, or a person withheld it.
 
 ## Before you say that a service is out of reach
 

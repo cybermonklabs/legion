@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # Thermonuclear Deep Review
 
-Make your own scratch as `skill://thermonuclear-code-quality` says, and delete only the paths you made: every role of this issue writes into one shared `$TMPDIR`.
+Make your own scratch as `skill://thermonuclear-code-quality` says.
 
 ## Verdict
 
