@@ -37,6 +37,11 @@ import (
 // hit is shown to need no bus. The negative control is every request asked again before the
 // freeze on the same rig: each answers 200, or the 404 the bucket's word that the key is absent
 // earns.
+//
+// Serial: its assertion is a time - each route must answer the silent bus inside 4 s, within the
+// caller's 5 s attempt, and GET /v1/interests/<session_id> may spend all of sendRequestBudget
+// (3.5 s) waiting on that read before it answers, which leaves a parallel test's load half a
+// second to stretch the answer past the bound.
 func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.T) {
 	const (
 		missed = "ses_interest_routes_subscribed_to_nothing"

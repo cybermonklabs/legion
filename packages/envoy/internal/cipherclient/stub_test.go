@@ -35,6 +35,10 @@ type stubRequest struct {
 	ProofHeader, ProofClaims map[string]any
 	// Proof is the compact proof itself, for a test that compares two requests' proofs.
 	Proof string
+	// Status and Answer are what the stub answered the trade, for a failure message that has to
+	// say what each trade was told.
+	Status int
+	Answer map[string]any
 }
 
 // stubBroker is a broker's token endpoint and nothing else.
@@ -70,6 +74,9 @@ func newStubBroker(t *testing.T, answer func(n int, form url.Values) (int, map[s
 		})
 		broker.mu.Unlock()
 		status, body := broker.answer(n, r.PostForm)
+		broker.mu.Lock()
+		broker.requests[n].Status, broker.requests[n].Answer = status, body
+		broker.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(body)

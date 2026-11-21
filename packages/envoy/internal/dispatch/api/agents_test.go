@@ -36,6 +36,7 @@ func agentsHandlerWithStore(t *testing.T, envoyURL string, database *store.Store
 }
 
 func TestAgentsListsLiveSessionsNewestFirstForHumans(t *testing.T) {
+	t.Parallel()
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`[{"session_id":"older","title":"worker","last_seen":100,"port":1,"topics":["t"]},{"session_id":"b","title":"planner","last_seen":200},{"session_id":"a","title":"reviewer","last_seen":200}]`))
 	}))
@@ -63,6 +64,7 @@ func TestAgentsListsLiveSessionsNewestFirstForHumans(t *testing.T) {
 // GET /api/v1/agents carries each session's real machine (host) wherever the listener reported
 // it, and keeps machine_id (the listener that owns the session's delivery) untouched beside it.
 func TestAgentsReportsHostFromListener(t *testing.T) {
+	t.Parallel()
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`[{"session_id":"a","title":"planner","machine_id":"example-listener","host":"example-host-a","last_seen":100}]`))
 	}))
@@ -84,6 +86,7 @@ func TestAgentsReportsHostFromListener(t *testing.T) {
 // A listener that predates the "host" field answers with none; Dispatch must still show a
 // machine rather than an empty one during a partial rollout.
 func TestAgentsFallsBackToMachineIDWhenListenerReportsNoHost(t *testing.T) {
+	t.Parallel()
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`[{"session_id":"a","title":"planner","machine_id":"example-listener","last_seen":100}]`))
 	}))
@@ -195,6 +198,7 @@ func TestAgentsTmuxPlaceFromAListenerThatPredatesTheFieldChangesNothing(t *testi
 }
 
 func TestAgentsIncludeGroupedOpenAskCountsAndLastActivity(t *testing.T) {
+	t.Parallel()
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`[
 			{"session_id":"planner","title":"Planner","dir":"/w/planner","machine_id":"host-a","roles":["planner"],"capabilities":["btw"],"last_seen":200},
@@ -258,6 +262,7 @@ func TestAgentsIncludeGroupedOpenAskCountsAndLastActivity(t *testing.T) {
 // message; the issue-less POST /agents/{session}/messages needs the person scope, which the
 // deployment's shared token does not hold.
 func TestAgentsListsCapabilitiesForBearerCallers(t *testing.T) {
+	t.Parallel()
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`[{"session_id":"s1","title":"planner","last_seen":100,"capabilities":["aside","btw"]}]`))
 	}))
@@ -286,8 +291,10 @@ func TestAgentsListsCapabilitiesForBearerCallers(t *testing.T) {
 }
 
 func TestAgentsReportsListenerUnavailable(t *testing.T) {
+	t.Parallel()
 	for name, envoyURL := range map[string]string{"refused": "http://127.0.0.1:1", "unconfigured": ""} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			response := dispatchRequest(t, agentsHandler(t, envoyURL), http.MethodGet, "/api/v1/agents", nil, "alice")
 			if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"code":"ENVOY_UNAVAILABLE"`) {
 				t.Fatalf("status %d: %s", response.Code, response.Body.String())
@@ -501,6 +508,7 @@ func TestAnAgentsListWhoseRequestEndsWhileItWaitsOnTheFetchAnswers503(t *testing
 // own request and lists its sessions, whether the cache was cold or already holds the shutdown's
 // failure.
 func TestAnAgentsListDuringAShutdownDrainListsAHealthyListenersSessions(t *testing.T) {
+	t.Parallel()
 	listenerURL, _ := sessionsListener(t, `[{"session_id":"ses-live","title":"worker","last_seen":100}]`)
 	database := storetest.Open(t)
 	mux := http.NewServeMux()
@@ -551,6 +559,7 @@ func requireEnvoyRefilling(t *testing.T, response *httptest.ResponseRecorder, re
 // server process to read (route_roster) and the two cases run different listeners: sharing one
 // database would serve the second case the first one's stored silence, with its Retry-After.
 func TestAgentsReportsARefillingListenerAsRefilling(t *testing.T) {
+	t.Parallel()
 	for retryAfter, want := range map[string]string{"7": "7", "": "5"} {
 		database := storetest.Open(t)
 		listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

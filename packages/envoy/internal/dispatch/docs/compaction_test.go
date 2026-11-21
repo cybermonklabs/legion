@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"strings"
@@ -127,6 +128,9 @@ func TestARoomCloseCompactionLeavesABusyDocumentForALaterCompaction(t *testing.T
 // A failed room's eviction waits for the document's lock and compacts under the tail rule before
 // the room recovers: the rows older than the tail fold, the young row stays as written, and the
 // recovered room reads the document as it was.
+//
+// Serial: its assertion is a time - the top row writeRoomRows wrote must still be younger than
+// compactTail (2 min) when the eviction compacts once the lock is free, or the fold takes it too.
 func TestAFailedRoomsEvictionCompactionWaitsForTheLockAndFoldsOnlyOldRows(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -138,7 +142,7 @@ func TestAFailedRoomsEvictionCompactionWaitsForTheLockAndFoldsOnlyOldRows(t *tes
 	ctx := context.Background()
 	unlock := holdDocumentLock(t, service.store, artifactID)
 	service.failRoom(artifactID, errors.New("test: fail the room"))
-	waitFor(t, 10*time.Second, "the failed room's compaction to wait for the document's lock", func() bool {
+	waitFor(t, roomWait(t), "the failed room's compaction to wait for the document's lock", func() bool {
 		return lockWaits(t, ctx, service.store, "select pg_advisory_lock(%") > 0
 	})
 	requireRowsAsStored(t, service.store, artifactID, before)
@@ -223,6 +227,7 @@ func TestACompactionFinishesAStrandedPruneAndFoldsOnTheNextAttempt(t *testing.T)
 // A rebuild between a compaction's read and its write drops the fold: the rebuilt history stands
 // as the rebuild wrote it.
 func TestACompactionDropsItsFoldWhenARebuildRunsInsideIt(t *testing.T) {
+	t.Parallel()
 	database, versioned, artifactID := newHeldCompactionDocument(t)
 	var left []updateRow
 	duringCompactionFold(versioned, artifactID, func() {
@@ -261,6 +266,7 @@ func TestACompactionDropsItsFoldWhenARebuildRunsInsideIt(t *testing.T) {
 
 // A delete between a compaction's read and its write drops the fold: the document stays deleted.
 func TestACompactionDropsItsFoldWhenADeleteRunsInsideIt(t *testing.T) {
+	t.Parallel()
 	database, versioned, artifactID := newHeldCompactionDocument(t)
 	duringCompactionFold(versioned, artifactID, func() {
 		if err := versioned.Delete(context.Background(), artifactID); err != nil {
@@ -279,6 +285,7 @@ func TestACompactionDropsItsFoldWhenADeleteRunsInsideIt(t *testing.T) {
 // drops this one's fold: the rows stay as the other compaction wrote them, and the document reads
 // as it did.
 func TestACompactionDropsItsFoldWhenAnotherProcessCompactsInsideIt(t *testing.T) {
+	t.Parallel()
 	database, versioned, artifactID := newHeldCompactionDocument(t)
 	reading := storedReading(t, versioned, artifactID)
 	var left []updateRow
@@ -301,6 +308,7 @@ func TestACompactionDropsItsFoldWhenAnotherProcessCompactsInsideIt(t *testing.T)
 // An older build's keep-1 compaction, which folds every row into the head, between a compaction's
 // read and its write drops the fold: the one row it left stands, and the document reads as it did.
 func TestACompactionDropsItsFoldWhenAnOlderBuildCompactsInsideIt(t *testing.T) {
+	t.Parallel()
 	database, versioned, artifactID := newHeldCompactionDocument(t)
 	reading := storedReading(t, versioned, artifactID)
 	var left []updateRow
@@ -323,6 +331,7 @@ func TestACompactionDropsItsFoldWhenAnOlderBuildCompactsInsideIt(t *testing.T) {
 // compaction folds. The compaction reads the cursor under the lock it writes under, so the folded
 // row does not claim content past the cursor, and a later settlement versions nothing more.
 func TestACompactionReadsTheCursorASettlementMovedInsideIt(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n")
@@ -419,6 +428,7 @@ func TestACompactionSkipsAnUnfoldableLogUntilItChanges(t *testing.T) {
 // the compaction holds no lock then. The compaction then folds the rows it read, and the edit's row,
 // above them, stays as written.
 func TestABrowserAppendLandsWhileACompactionIsInsideItsFold(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n")
@@ -432,7 +442,7 @@ func TestABrowserAppendLandsWhileACompactionIsInsideItsFold(t *testing.T) {
 	var cursor int64
 	duringCompactionFold(persist, artifactID, func() {
 		editLiveTree(t, service, artifactID, appendBlocks(t, "Third.\n"))
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), roomWait(t))
 		defer cancel()
 		if err := service.waitForDurableAppends(ctx, artifactID); err != nil {
 			t.Fatalf("the browser's append did not land while the compaction was inside its fold: %v", err)
@@ -454,6 +464,7 @@ func TestABrowserAppendLandsWhileACompactionIsInsideItsFold(t *testing.T) {
 // An agent's write joined to its request's transaction commits while the document's compaction is
 // held inside its fold, and the compaction then folds the rows it read beneath the write's row.
 func TestAJoinedWriteCommitsWhileACompactionIsInsideItsFold(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n")
@@ -476,7 +487,7 @@ func TestAJoinedWriteCommitsWhileACompactionIsInsideItsFold(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the joined write: %v", err)
 			}
-		case <-time.After(30 * time.Second):
+		case <-time.After(roomWait(t)):
 			t.Fatal("the joined write did not commit while the compaction was inside its fold")
 		}
 		written, cursor = storedRows(t, service.store, artifactID), settlementCursor(t, service.store, artifactID)
@@ -497,6 +508,7 @@ func TestAJoinedWriteCommitsWhileACompactionIsInsideItsFold(t *testing.T) {
 // document-rooms pool is in use while it is inside its fold, and neither pool hands out a
 // connection across the whole compaction, its write included.
 func TestACompactionHoldsNoSharedOrRoomsConnection(t *testing.T) {
+	t.Parallel()
 	database, versioned, artifactID := newHeldCompactionDocument(t)
 	compactionPool, err := database.Pool.Compaction()
 	if err != nil {
@@ -527,6 +539,7 @@ func TestACompactionHoldsNoSharedOrRoomsConnection(t *testing.T) {
 // queued behind a compaction that is itself waiting, the opposite of what not waiting asks for
 // (lockRoom).
 func TestACompactionThatDoesNotWaitHoldsNoRoomLockWhileItWaitsForAConnection(t *testing.T) {
+	t.Parallel()
 	database, versioned, artifactID := newHeldCompactionDocument(t)
 	pool, err := database.Pool.Compaction()
 	if err != nil {
@@ -560,7 +573,7 @@ func TestACompactionThatDoesNotWaitHoldsNoRoomLockWhileItWaitsForAConnection(t *
 			conn.Release()
 		}
 	})
-	t.Cleanup(release)
+	cleanupAndRelease(t, release)
 	if got, want := len(held), int(pool.Config().MaxConns); got != want {
 		t.Fatalf("the test holds %d of the compaction pool's %d connections, want all of them", got, want)
 	}
@@ -601,6 +614,7 @@ func TestACompactionThatDoesNotWaitHoldsNoRoomLockWhileItWaitsForAConnection(t *
 // holding the document's lock whether or not the compaction read anything. It returns once the
 // holder of that lock lets go, with the read's error.
 func TestAWaitingCompactionWhoseReadFailedStillWaitsForTheRoomsLock(t *testing.T) {
+	t.Parallel()
 	database, versioned, artifactID := newHeldCompactionDocument(t)
 	unlock := holdDocumentLock(t, database, artifactID)
 	renameDocUpdatesAway(t, database)
@@ -677,11 +691,20 @@ const everyVersion int64 = math.MaxInt64
 // clock: time.Hour is older than both compactTail and compactMaxTailAge.
 func ageUpdatesThrough(t *testing.T, database *store.Store, artifactID string, through int64, age time.Duration) {
 	t.Helper()
+	if err := ageUpdates(database, artifactID, through, age); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// ageUpdates is ageUpdatesThrough for a goroutine that may not fail the test, such as a hook the
+// compaction queue's worker runs: it returns the error for the test to fail on.
+func ageUpdates(database *store.Store, artifactID string, through int64, age time.Duration) error {
 	if _, err := database.Pool.Exec(context.Background(), `
 		update doc_updates set created_at = now() - make_interval(secs => $3) where artifact_id = $1 and version <= $2
 	`, artifactID, through, age.Seconds()); err != nil {
-		t.Fatalf("age document updates: %v", err)
+		return fmt.Errorf("age document updates: %w", err)
 	}
+	return nil
 }
 
 // compactUnderTail compacts the document under the tail rule, waiting for its lock.
@@ -773,7 +796,7 @@ func renameDocUpdatesAway(t *testing.T, database *store.Store) {
 	if _, err := database.Pool.Exec(context.Background(), `alter table doc_updates rename to doc_updates_renamed`); err != nil {
 		t.Fatalf("rename doc_updates out of the way: %v", err)
 	}
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		if _, err := database.Pool.Exec(context.Background(), `alter table doc_updates_renamed rename to doc_updates`); err != nil {
 			t.Errorf("rename doc_updates back: %v", err)
 		}
@@ -925,6 +948,6 @@ func holdDocumentLock(t testing.TB, database *store.Store, artifactID string) (u
 			t.Errorf("release the document's session lock: %v", err)
 		}
 	})
-	t.Cleanup(unlock)
+	cleanupAndRelease(t, unlock)
 	return unlock
 }

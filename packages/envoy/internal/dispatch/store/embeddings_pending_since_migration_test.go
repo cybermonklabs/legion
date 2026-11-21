@@ -107,6 +107,7 @@ func readPendingSince(t *testing.T, store *Store, kind, id string) (time.Time, *
 // TestMigrationDropsTheBackfillCheckpoints: the removed backfill-embeddings subcommand's
 // checkpoint table, rows and all, is gone after the next version.
 func TestMigrationDropsTheBackfillCheckpoints(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
 	if err := store.migrate(ctx, migrationsThrough(t, embeddingsPendingSinceVersion)); err != nil {

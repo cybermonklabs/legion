@@ -98,6 +98,7 @@ var ownTransactionFunctions = []string{
 // TestCopyLockOrderGuardFollowsTheLockTakers holds the resolution to the chains this rule is about,
 // so the check cannot pass by losing them.
 func TestCopyLockComesBeforeEveryPendingRowAndEvent(t *testing.T) {
+	t.Parallel()
 	graph := copyLockGraph(t)
 	var offences []string
 	for _, fn := range graph.functions {
@@ -118,6 +119,7 @@ func TestCopyLockComesBeforeEveryPendingRowAndEvent(t *testing.T) {
 // is about: if a rename or a refactor hid one of these from it, the guard would pass by seeing
 // nothing.
 func TestCopyLockOrderGuardFollowsTheLockTakers(t *testing.T) {
+	t.Parallel()
 	graph := copyLockGraph(t)
 	for _, want := range []struct {
 		function string
@@ -192,8 +194,12 @@ type lockGraph struct {
 	stored map[*types.Var][]*lockFunction
 	// concrete are this module's named types that are not interfaces, the candidates for an
 	// interface method call.
-	concrete        []types.Type
-	implementations map[*types.Func][]*lockFunction
+	concrete []types.Type
+	// implementations is funcTargets' answer for each interface method it has been asked about,
+	// filled as the walks ask. The guard tests run in parallel over the one graph
+	// sharedCopyLockGraph builds, so implementationsMu guards every read and write of it.
+	implementationsMu sync.Mutex
+	implementations   map[*types.Func][]*lockFunction
 }
 
 // listedPackage is the part of `go list -json` the guard reads.
@@ -531,6 +537,8 @@ func (g *lockGraph) funcTargets(fn *types.Func) []*lockFunction {
 		}
 		return nil
 	}
+	g.implementationsMu.Lock()
+	defer g.implementationsMu.Unlock()
 	if implementations, ok := g.implementations[fn]; ok {
 		return implementations
 	}

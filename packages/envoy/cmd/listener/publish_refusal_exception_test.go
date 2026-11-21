@@ -99,7 +99,7 @@ func TestARefusalExceptionThatCannotBePublishedIsOnlyLogged(t *testing.T) {
 
 	publishRefusalException(client, logger, refusedPublish(""), roles.Resolution{State: roles.Unclaimed})
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWait)
 	for time.Now().Before(deadline) {
 		if strings.Contains(logs.String(), exceptionPublishFailedLine) {
 			return
@@ -123,10 +123,10 @@ func TestARefusalExceptionDoesNotWaitForTheBus(t *testing.T) {
 	}
 	t.Cleanup(client.Close)
 	server.Stop(t)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWait)
 	for client.Connected() || !client.Conn.IsReconnecting() {
 		if time.Now().After(deadline) {
-			t.Fatal("the client is not reconnecting 10 s after its server stopped")
+			t.Fatalf("the client is not reconnecting %s after its server stopped", listenerWait)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -184,7 +184,7 @@ func TestARefusalExceptionLeavesAnOversizedPayloadOutOnTheBus(t *testing.T) {
 
 	publishRefusalException(client, logging.NewWithWriter("test", io.Discard), item, roles.Resolution{State: roles.Unclaimed})
 
-	message, err := probe.NextMsg(5 * time.Second)
+	message, err := probe.NextMsg(listenerWait)
 	if err != nil {
 		t.Fatalf("read the refusal exception: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestTheRouteRaisesOneExceptionWhereItRefusesARoleSend(t *testing.T) {
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("publish with keep: false to an unheld role: status %d, body %s; want 404", recorder.Code, recorder.Body.String())
 	}
-	message, err := refusedProbe.NextMsg(5 * time.Second)
+	message, err := refusedProbe.NextMsg(listenerWait)
 	if err != nil {
 		t.Fatalf("the refusal raised no exception: %v", err)
 	}

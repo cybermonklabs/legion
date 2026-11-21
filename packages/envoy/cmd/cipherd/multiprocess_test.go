@@ -225,12 +225,13 @@ type brokerFleet struct {
 	env    []string
 }
 
-// startBrokerPair starts two brokers from binary on a database of this test's own — a whole
-// database rather than a schema, because the Postgres channel the reread fan-out listens on and
-// the advisory lock the migration takes are both database-wide (storetest.DatabaseURL) — and
-// returns once both have logged the address they bound. Neither process drains: nothing a row
-// sharing this pair leaves in flight when it ends, so a drain would only make every row's
-// cleanup wait out a budget it has no use for.
+// startBrokerPair starts two brokers from binary on an unmigrated database of this test's own
+// (storetest.DatabaseURL), and returns once both have logged the address they bound. The
+// database is unmigrated because the brokers migrate it themselves, and the test's own because
+// the Postgres channel the reread fan-out listens on and the advisory lock the migration takes
+// are both database-wide. Neither process drains: nothing a row sharing this pair leaves in
+// flight when it ends, so a drain would only make every row's cleanup wait out a budget it has no
+// use for.
 func startBrokerPair(t *testing.T, binary string) *brokerFleet {
 	t.Helper()
 	return startBrokerFleet(t, binary, make([]time.Duration, 2))

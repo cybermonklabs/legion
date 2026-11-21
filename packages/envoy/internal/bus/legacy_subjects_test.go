@@ -15,6 +15,7 @@ import (
 // message on another session's agent subject, in either form, is not. So the rename can move a
 // producer to the new form without one session missing a message, whichever form it registered.
 func TestASessionConsumerFiltersOnBothFormsOfEachTopic(t *testing.T) {
+	// Serial: its assertion is a quiet window: the consumer delivers nothing more in 1 s.
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_forms"
@@ -61,6 +62,7 @@ func TestASessionConsumerFiltersOnBothFormsOfEachTopic(t *testing.T) {
 // session that follows an issue the way the rename names it still receives the events Dispatch
 // publishes in the form it publishes them in today.
 func TestANewFormTopicTakesTheOldFormToo(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_new_form"
@@ -83,6 +85,7 @@ func TestANewFormTopicTakesTheOldFormToo(t *testing.T) {
 // own agent subject (create), and a message sent to it in the new form before it registered is
 // one of those: it is the session's own, and nothing else would ever deliver it.
 func TestAConsumerStartsAtTheFirstMessageOfItsOwnAgentSubjectInEitherForm(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_first_new_form"
@@ -102,6 +105,7 @@ func TestAConsumerStartsAtTheFirstMessageOfItsOwnAgentSubjectInEitherForm(t *tes
 // is not renamed reduce to exactly the filters they reduced to before, and the one subject a
 // registration gains is its own agent subject's new form.
 func TestTopicsOfAFamilyTheRenameLeavesKeepTheirFilters(t *testing.T) {
+	t.Parallel()
 	topics := []string{
 		"notifications.github.o.r.>",
 		"notifications.team.deploy-squad",
@@ -132,6 +136,7 @@ func TestTopicsOfAFamilyTheRenameLeavesKeepTheirFilters(t *testing.T) {
 // one filter, as at the merge base, and the session's consumer reaches no other issue. The control
 // is the issue's topic in either form under its own project, which keeps its two disjoint forms.
 func TestAWildcardProjectIssueTopicKeepsItsOneFilter(t *testing.T) {
+	t.Parallel()
 	const wildcard = "notifications.dispatch.issue.*.INFRA-12.>"
 	if filters := SessionConsumerFilters([]string{wildcard}); !slices.Equal(filters, []string{wildcard}) {
 		t.Fatalf("filters of %s = %q, want the topic alone", wildcard, filters)

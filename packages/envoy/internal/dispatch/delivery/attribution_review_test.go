@@ -15,6 +15,7 @@ import (
 // external link naming the pull request (source 2) and one naming a GitHub issue its body cites
 // (source 3) credit it whatever case either side spells them in.
 func TestAttributionMatchesGitHubURLsWhateverTheirCase(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	// URLs no other row of this test links: a link's URL is unique across every issue.
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-201", "ATTR-202"}, map[string][]string{
@@ -42,6 +43,7 @@ func TestAttributionMatchesGitHubURLsWhateverTheirCase(t *testing.T) {
 // source wins exactly one row; handing any two inputs over in another order credits some row from
 // the wrong source.
 func TestAttributingStoredPullRequestsTakesEverySourceInOrder(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-211", "ATTR-212", "ATTR-213", "ATTR-214", "ATTR-215"}, map[string][]string{
 		"ATTR-212": {"https://github.com/acme/widgets/pull/210"},
@@ -260,6 +262,7 @@ func TestAStoredPullRequestTitledAfterTwoOfItsOwnIssuesTakesTheFirst(t *testing.
 // covers, a pass makes no more than attributionBackfillCalls GitHub calls for them, the rest wait
 // for later passes, and the workflow runs are read before the backfill spends anything.
 func TestTheAttributionBackfillStaysWithinItsCallBudget(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)

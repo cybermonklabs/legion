@@ -26,6 +26,12 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
+// machineLoginPoll is how long machine login first waits between two reads of the login's state,
+// doubling from there up to retryCap. A person reads the code off this terminal and types it
+// somewhere else, so seconds is the right scale in production; a test that decides the login
+// itself passes --poll a short one (dispatch://INFRA-1075).
+const machineLoginPoll = 2 * time.Second
+
 // refuseUnexpectedArgument prints form's refusal of an argument it does not take
 // (unexpectedArgument) and answers exitUsageError.
 func refuseUnexpectedArgument(stderr io.Writer, form string) int {
@@ -40,12 +46,20 @@ func refuseUnexpectedArgument(stderr io.Writer, form string) int {
 // terminal state. The login op waits helper.BrokerCallWait, because its answer is the outcome of
 // a broker call; each login-status poll reads the helper's own state and waits 10 s.
 func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
-	flagArgs, positional := splitArgs(args, nil)
-	if err := newFlagSet("machine login", stderr).Parse(flagArgs); err != nil {
+	flagArgs, positional := splitArgs(args, map[string]bool{"poll": true})
+	flags := newFlagSet("machine login", stderr)
+	poll := flags.Duration("poll", machineLoginPoll, "how long to wait before the first re-read of the login's state; the wait doubles from it up to "+retryCap.String())
+	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
 	if len(positional) > 0 {
 		return refuseUnexpectedArgument(stderr, "machine login")
+	}
+	// A zero or negative first wait would make every later one zero too, so the re-reads would
+	// spin against the helper's socket: the flag shortens the wait, it does not remove it.
+	if *poll <= 0 {
+		fmt.Fprintln(stderr, "agent-secrets machine login: --poll must be positive")
+		return exitUsageError
 	}
 	sock, _ := helperSocket()
 	resp, err := helper.Call(sock, helper.Request{Op: "login"}, helper.BrokerCallWait)
@@ -74,7 +88,7 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 	} else {
 		fmt.Fprintln(stdout, "enter it on the Dispatch credential page")
 	}
-	backoff := 2 * time.Second
+	backoff := *poll
 	for {
 		resp, err := helper.Call(sock, helper.Request{Op: "login-status"}, 10*time.Second)
 		if err != nil {

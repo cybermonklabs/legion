@@ -266,7 +266,7 @@ func restoredRoleClaimRegistry(t *testing.T, seed func(roles natsgo.KeyValue, st
 		t.Fatalf("open a registry over the stored claims: %v", err)
 	}
 	t.Cleanup(reg.StopWatch)
-	ready, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ready, cancel := context.WithTimeout(context.Background(), heldWait)
 	defer cancel()
 	if err := reg.WaitForCacheReady(ready); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)

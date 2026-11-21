@@ -20,10 +20,12 @@ import (
 )
 
 // broadcastListener is a fake Envoy listener for the broadcast tests: it advertises the given
-// sessions and records every send it is asked to make.
+// sessions and records every send it is asked to make, and every read it serves.
 type broadcastListener struct {
 	sync.Mutex
 	sends []struct{ target, key, body string }
+	// lookups is every read the listener served, for a failure message.
+	lookups listenerLookups
 }
 
 // newBroadcastListener's intercepts run first on every request, in order; one that answers the
@@ -34,7 +36,7 @@ func newBroadcastListener(
 ) (*httptest.Server, *broadcastListener) {
 	t.Helper()
 	state := &broadcastListener{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(state.lookups.recording(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for _, intercept := range intercepts {
 			if intercept(w, r) {
 				return
@@ -63,7 +65,7 @@ func newBroadcastListener(
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
-	}))
+	})))
 	t.Cleanup(server.Close)
 	return server, state
 }
@@ -119,6 +121,7 @@ const broadcastSessions = `[
 // targeted message and a delivery attempt of its own, and a selection that mixes capabilities
 // excludes the sessions that cannot take the mode rather than switching them to another one.
 func TestBroadcastSendsOneMessagePerRecipientAndExcludesTheRest(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, broadcastSessions)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 
@@ -161,7 +164,8 @@ func TestBroadcastSendsOneMessagePerRecipientAndExcludesTheRest(t *testing.T) {
 	for _, recipient := range delivered.Recipients {
 		attempt := recipient.Message.Deliveries[0]
 		if attempt.State != "sent" || attempt.Delivery != "steer" || attempt.SessionID != recipient.SessionID {
-			t.Fatalf("%s attempt = %#v, want a steer sent to that session", recipient.SessionID, attempt)
+			t.Fatalf("%s attempt = %s, want a steer sent to that session",
+				recipient.SessionID, describeAttempts([]model.MessageDelivery{attempt}))
 		}
 	}
 	if len(messageIDs) != 2 {
@@ -198,7 +202,7 @@ func TestBroadcastSendsOneMessagePerRecipientAndExcludesTheRest(t *testing.T) {
 	}
 	for _, recipient := range stored.Recipients {
 		if len(recipient.Message.Deliveries) != 1 || recipient.Message.Deliveries[0].State != "sent" {
-			t.Fatalf("%s stored attempts = %#v", recipient.SessionID, recipient.Message.Deliveries)
+			t.Fatalf("%s stored attempts = %s", recipient.SessionID, describeAttempts(recipient.Message.Deliveries))
 		}
 	}
 }
@@ -210,6 +214,16 @@ func sendTargets(response broadcastResponse) []string {
 	}
 	sort.Strings(targets)
 	return targets
+}
+
+// recipientAttempts is every recipient's attempts as describeAttempts renders them, for a failure
+// message about what a broadcast sent.
+func recipientAttempts(response broadcastResponse) string {
+	described := make([]string, 0, len(response.Recipients))
+	for _, recipient := range response.Recipients {
+		described = append(described, recipient.SessionID+": "+describeAttempts(recipient.Message.Deliveries))
+	}
+	return strings.Join(described, "; ")
 }
 
 func equalStrings(got, want []string) bool {
@@ -229,6 +243,7 @@ func equalStrings(got, want []string) bool {
 // wire: a numbered list that reads as one line on the dashboard is the dashboard's rendering,
 // never a body the server collapsed, and every recipient was sent the list.
 func TestBroadcastBodyReachesStorageAndTheWireUnchanged(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, broadcastSessions)
 	handler, _ := newTargetedMessageHandler(t, listener.URL)
 
@@ -251,7 +266,8 @@ func TestBroadcastBodyReachesStorageAndTheWireUnchanged(t *testing.T) {
 	sends.Lock()
 	defer sends.Unlock()
 	if len(sends.sends) != 2 {
-		t.Fatalf("listener sends = %d, want one per recipient", len(sends.sends))
+		t.Fatalf("listener sends = %d, want one per recipient; the recipients' attempts: %s",
+			len(sends.sends), recipientAttempts(delivered))
 	}
 	for _, send := range sends.sends {
 		if send.body != body {
@@ -263,6 +279,7 @@ func TestBroadcastBodyReachesStorageAndTheWireUnchanged(t *testing.T) {
 // Each recipient answers its own delivery, and the broadcast view is where every answer is
 // read back together.
 func TestBroadcastRecipientRepliesAppearInTheBroadcastAndItsSummary(t *testing.T) {
+	t.Parallel()
 	listener, _ := newBroadcastListener(t, broadcastSessions)
 	handler, _ := newTargetedMessageHandler(t, listener.URL)
 
@@ -331,6 +348,7 @@ func TestBroadcastRecipientRepliesAppearInTheBroadcastAndItsSummary(t *testing.T
 // it from one recipient's copy of a broadcast: the thread read a session confirms a delivery
 // with, the Agents page's conversation list, and each reply in a thread.
 func TestMessageReadsNameTheBroadcastThatSentThem(t *testing.T) {
+	t.Parallel()
 	listener, _ := newBroadcastListener(t, broadcastSessions)
 	handler, _ := newTargetedMessageHandler(t, listener.URL)
 
@@ -395,6 +413,7 @@ func TestMessageReadsNameTheBroadcastThatSentThem(t *testing.T) {
 // Nothing is written when no selected session can take the mode: the sender is told why
 // rather than left with an empty broadcast to explain.
 func TestBroadcastWithNoReachableRecipientIsRefusedAndWritesNothing(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, broadcastSessions)
 	handler, _ := newTargetedMessageHandler(t, listener.URL)
 
@@ -421,6 +440,7 @@ func TestBroadcastWithNoReachableRecipientIsRefusedAndWritesNothing(t *testing.T
 // by id instead, so a selection the list has dropped entirely still reaches every session the
 // store holds a record for, with nothing excluded.
 func TestBroadcastReachesSessionsTheLiveListNoLongerHolds(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, broadcastSessions, func(w http.ResponseWriter, r *http.Request) bool {
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/sessions" {
 			return false
@@ -445,9 +465,10 @@ func TestBroadcastReachesSessionsTheLiveListNoLongerHolds(t *testing.T) {
 	if len(created.Excluded) != 0 {
 		t.Fatalf("excluded = %#v, want nothing excluded for a list that holds neither", created.Excluded)
 	}
-	awaitBroadcastDeliveries(t, handler, created.ID)
+	delivered := awaitBroadcastDeliveries(t, handler, created.ID)
 	if got := sends.targets(); !equalStrings(got, []string{"planner", "tester"}) {
-		t.Fatalf("listener sends = %v, want one frame per recipient", got)
+		t.Fatalf("listener sends = %v, want one frame per recipient; the recipients' attempts: %s",
+			got, recipientAttempts(delivered))
 	}
 }
 
@@ -458,6 +479,7 @@ func TestBroadcastReachesSessionsTheLiveListNoLongerHolds(t *testing.T) {
 // failure would be unreachable under that key for good - and the key itself must stay free, so
 // the sender's retry is a fresh send rather than a replay of a broadcast that never happened.
 func TestBroadcastWhoseSessionReadDoesNotAnswerWritesNothingAndLeavesItsKeyFree(t *testing.T) {
+	t.Parallel()
 	var refusing atomic.Bool
 	refusing.Store(true)
 	listener, sends := newBroadcastListener(t, broadcastSessions, func(w http.ResponseWriter, r *http.Request) bool {
@@ -520,6 +542,7 @@ func TestBroadcastWhoseSessionReadDoesNotAnswerWritesNothingAndLeavesItsKeyFree(
 // original send. So a send whose budget ends first is refused, nothing is written, and the key
 // is still free for the same send once the budget allows it.
 func TestBroadcastWhoseBudgetEndsBeforeEverySessionIsReadWritesNothingAndLeavesItsKeyFree(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, broadcastSessions)
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
 	// A nanosecond has ended by the time the resolution first looks at its budget, so it
@@ -572,6 +595,7 @@ func TestBroadcastWhoseBudgetEndsBeforeEverySessionIsReadWritesNothingAndLeavesI
 // reading one back: the deployment's shared token holds no scope and is turned away from all
 // three rows, and the person's own token reads the list her browser reads.
 func TestBroadcastRoutesRefuseACredentialWithoutThePersonScope(t *testing.T) {
+	t.Parallel()
 	listener, _ := newBroadcastListener(t, broadcastSessions)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 
@@ -614,6 +638,7 @@ func TestBroadcastRoutesRefuseACredentialWithoutThePersonScope(t *testing.T) {
 }
 
 func TestBroadcastRejectsMalformedInput(t *testing.T) {
+	t.Parallel()
 	listener, _ := newBroadcastListener(t, broadcastSessions)
 	handler, _ := newTargetedMessageHandler(t, listener.URL)
 
@@ -679,7 +704,7 @@ func TestBroadcastRejectsMalformedInput(t *testing.T) {
 // delivery runs behind the create response, so a test that asserts on settled attempts waits for it.
 func awaitBroadcastDeliveries(t *testing.T, handler http.Handler, id string) broadcastResponse {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(concurrentWait)
 	for {
 		read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/broadcasts/"+id, nil, "alice")
 		if read.Code != http.StatusOK {
@@ -696,7 +721,7 @@ func awaitBroadcastDeliveries(t *testing.T, handler http.Handler, id string) bro
 			return stored
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("recipients still without a settled attempt: %#v", stored.Recipients)
+			t.Fatalf("recipients still without a settled attempt: %s", recipientAttempts(stored))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -708,6 +733,7 @@ func awaitBroadcastDeliveries(t *testing.T, handler http.Handler, id string) bro
 // load balancer's idle timeout - strand one attempt pending and leave every later recipient with
 // no attempt at all, with nothing to recover them.
 func TestBroadcastAnswersBeforeDeliveringAndStillReachesEveryRecipient(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	var listenerState struct {
 		sync.Mutex
@@ -745,7 +771,8 @@ func TestBroadcastAnswersBeforeDeliveringAndStillReachesEveryRecipient(t *testin
 	sends := listenerState.sends
 	listenerState.Unlock()
 	if sends != 0 {
-		t.Fatalf("%d sends completed before the create answered; delivery must run behind it", sends)
+		t.Fatalf("%d sends completed before the create answered; delivery must run behind it; the recipients' attempts: %s",
+			sends, recipientAttempts(created))
 	}
 	// Every recipient carries its attempt from the moment the broadcast is written, opened
 	// pending and unclaimed: a recipient with no attempt could only be moved by a delivery in
@@ -772,8 +799,8 @@ func TestBroadcastAnswersBeforeDeliveringAndStillReachesEveryRecipient(t *testin
 		// The worker settles the attempt the write opened; it never opens a second one beside it.
 		if len(recipient.Message.Deliveries) != 1 || recipient.Message.Deliveries[0].Attempt != 1 ||
 			recipient.Message.Deliveries[0].State != "sent" {
-			t.Fatalf("%s attempts = %#v, want the one attempt settled sent",
-				recipient.SessionID, recipient.Message.Deliveries)
+			t.Fatalf("%s attempts = %s, want the one attempt settled sent",
+				recipient.SessionID, describeAttempts(recipient.Message.Deliveries))
 		}
 	}
 }
@@ -784,6 +811,7 @@ func TestBroadcastAnswersBeforeDeliveringAndStillReachesEveryRecipient(t *testin
 // no longer its to send; a worker that opened an attempt of its own would send a SECOND frame to
 // the same session.
 func TestBroadcastWorkerSkipsARecipientTakenOverFromTheAgentCard(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	// The worker announces itself when it parks, so the takeover below happens while it is
 	// held rather than at a moment this test guessed.
@@ -850,7 +878,7 @@ func TestBroadcastWorkerSkipsARecipientTakenOverFromTheAgentCard(t *testing.T) {
 	}
 	close(release)
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(concurrentWait)
 	for {
 		var pending int
 		if err := database.Pool.QueryRow(context.Background(),
@@ -873,7 +901,8 @@ func TestBroadcastWorkerSkipsARecipientTakenOverFromTheAgentCard(t *testing.T) {
 	sends := append([]string(nil), listenerState.sends...)
 	listenerState.Unlock()
 	if len(sends) != 1 || sends[0] != message+":steer" {
-		t.Fatalf("listener sends = %#v, want only the human's mode change (%s:steer)", sends, message)
+		t.Fatalf("listener sends = %#v, want only the human's mode change (%s:steer); the message's attempts: %s",
+			sends, message, describeAttempts(messageAttempts(t, database, message)))
 	}
 	var attempts int
 	if err := database.Pool.QueryRow(context.Background(),
@@ -888,6 +917,7 @@ func TestBroadcastWorkerSkipsARecipientTakenOverFromTheAgentCard(t *testing.T) {
 // TestBroadcastRecipientsReadBackInRequestOrder catches a change that falls back to the random
 // message UUID when every recipient message has the transaction's same created_at timestamp.
 func TestBroadcastRecipientsReadBackInRequestOrder(t *testing.T) {
+	t.Parallel()
 	requested := []string{"zeta", "alpha", "mid", "bravo", "echo", "delta", "hotel", "gamma"}
 	for _, scenario := range []struct {
 		name     string
@@ -897,6 +927,7 @@ func TestBroadcastRecipientsReadBackInRequestOrder(t *testing.T) {
 		{name: "an excluded session leaves the remaining order intact", excluded: "bravo"},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
+			t.Parallel()
 			live := make([]string, 0, len(requested))
 			want := make([]string, 0, len(requested))
 			for _, sessionID := range requested {
@@ -987,6 +1018,7 @@ func broadcastRecipientSessionIDs(response broadcastResponse) []string {
 // The migrated schema must accept it and readers must retain the only fallback order those rows
 // have: their timestamp and UUID.
 func TestBroadcastReadsLegacyUnpositionedRecipientsByCreatedAtAndID(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	author := []byte(`{"kind":"user","id":"alice"}`)

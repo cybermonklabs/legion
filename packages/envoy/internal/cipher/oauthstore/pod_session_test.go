@@ -30,6 +30,7 @@ const (
 // extends the row and leaves the key required: an exchange proved with another key is refused as
 // bound to another key, and one proved with the bound key is admitted.
 func TestAWriteWithoutAThumbprintKeepsTheBinding(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s, _ := newStore(t)
 	const pod, session, kA, kB = "pod-uid-issue", "reviewer-g1", "thumbprint-of-role-a", "thumbprint-of-role-b"
@@ -55,6 +56,7 @@ func TestAWriteWithoutAThumbprintKeepsTheBinding(t *testing.T) {
 // changes nothing: the row stays bound to kB at generation 2 with the expiry the newer write
 // left, the late write is answered that row, and the exchange keeps admitting kB and refusing kA.
 func TestALateOlderGenerationLeavesTheNewerKey(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s, _ := newStore(t)
 	const pod, session, kA, kB = "pod-uid-issue", "implementer-g1", "thumbprint-of-the-old-incarnation", "thumbprint-of-the-new-incarnation"
@@ -78,6 +80,7 @@ func TestALateOlderGenerationLeavesTheNewerKey(t *testing.T) {
 // renewal of one incarnation and every write of a session watch, which sends none, are: a key it
 // names replaces the row's, and its expiry is never earlier than the row's.
 func TestAWriteOfTheSameGenerationIsApplied(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s, _ := newStore(t)
 	const pod, kA, kB = "pod-uid-issue", "thumbprint-of-role-a", "thumbprint-of-role-b"
@@ -100,6 +103,7 @@ func TestAWriteOfTheSameGenerationIsApplied(t *testing.T) {
 // nothing; a write naming another key replaces the row's; and a write of a lower generation is
 // not applied and replaces nothing.
 func TestAWriteSaysWhetherItWasAppliedAndWhatItReplaced(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s, _ := newStore(t)
 	const pod, kA, kB = "pod-uid-issue", "thumbprint-of-role-a", "thumbprint-of-role-b"
@@ -169,6 +173,8 @@ const insertedBy = `insert into oauth_pod_sessions (pod_uid, session, expires_at
 // finds no row and then waits on another writer's insert of it names the key that writer
 // inserted, rather than reporting a first write.
 func TestAWriteNamesTheKeyTheRowHeldWhenItWrote(t *testing.T) {
+	// Serial: it holds open a transaction that takes a transaction id (whileHeld's update and
+	// insert of the row, each held until RegisterPodSession waits on its lock).
 	ctx := context.Background()
 	s, pool := newStore(t)
 	const pod, kA, kB, kC = "pod-uid-issue", "thumbprint-a", "thumbprint-b", "thumbprint-c"
@@ -326,6 +332,8 @@ func (r *tally) report(t *testing.T) {
 // interleaving that matters every time: the first write's insert held open until the second
 // waits on it, in each order of the generations.
 func TestConcurrentFirstRegistrationsKeepTheHigherGeneration(t *testing.T) {
+	// Serial: it holds open a transaction that takes a transaction id (whileHeld's insert of the
+	// row, held until RegisterPodSession waits on its lock).
 	const pod, k0, k1, k2, rounds = "pod-uid-issue", "thumbprint-registered", "thumbprint-of-generation-1", "thumbprint-of-generation-2", 200
 	for _, isolation := range []string{"read committed", "repeatable read"} {
 		t.Run("database default "+isolation, func(t *testing.T) {
@@ -435,6 +443,7 @@ func TestConcurrentFirstRegistrationsKeepTheHigherGeneration(t *testing.T) {
 // refuses a context that already carries a transaction, whose level and lifetime it would not
 // choose, and writes nothing in it.
 func TestARegistrationInsideAnotherTransactionIsRefused(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s, pool := newStore(t)
 	tx, err := pool.Begin(ctx)

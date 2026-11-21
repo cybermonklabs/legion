@@ -122,6 +122,7 @@ func attemptStates(t *testing.T, database *store.Store, table, column, id string
 // and it must take it - the row names the message's own target - and pin it to the session the
 // target resolved to, rather than refusing an attempt whose row names no session.
 func TestABoundSendTakesAnUnpinnedAttemptAndPinsTheSessionItsTargetResolvedTo(t *testing.T) {
+	t.Parallel()
 	listener := startResumeListener(t)
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
 	direct := directServer(deps)
@@ -149,13 +150,15 @@ func TestABoundSendTakesAnUnpinnedAttemptAndPinsTheSessionItsTargetResolvedTo(t 
 		t.Fatalf("bound send of the unpinned attempt 1: %v", err)
 	}
 	if attempt.Attempt != 1 || attempt.State != "sent" || attempt.SessionID != "s1" {
-		t.Fatalf("bound send = %#v, want attempt 1 sent and pinned to s1, the session role:reviewer resolved to", attempt)
+		t.Fatalf("bound send = %s, want attempt 1 sent and pinned to s1, the session role:reviewer resolved to",
+			describeAttempts([]model.MessageDelivery{attempt}))
 	}
 	if sends := listener.answered(); len(sends) != 1 || sends[0] != (resumeSend{key: message.ID + ":steer", target: "s1"}) {
-		t.Fatalf("listener sends = %#v, want one send to s1 under %q", sends, message.ID+":steer")
+		t.Fatalf("listener sends = %#v, want one send to s1 under %q; attempts: %s",
+			sends, message.ID+":steer", describeAttempts(messageAttempts(t, database, message.ID)))
 	}
 	if states := attemptStates(t, database, "message_deliveries", "message_id", message.ID); !slices.Equal(states, []string{"1:sent"}) {
-		t.Fatalf("attempts = %v, want attempt 1 alone, sent", states)
+		t.Fatalf("attempts = %s, want attempt 1 alone, sent", describeAttempts(messageAttempts(t, database, message.ID)))
 	}
 }
 
@@ -164,6 +167,7 @@ func TestABoundSendTakesAnUnpinnedAttemptAndPinsTheSessionItsTargetResolvedTo(t 
 // no attempt beside it, where a Retry would open one; once that claim lapses, the bound send takes
 // the attempt under its original number and key.
 func TestACommentResumeSendsNothingBesideALiveSenderAndTakesTheAttemptOnceItLapses(t *testing.T) {
+	t.Parallel()
 	listener := startResumeListener(t)
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
 	direct := directServer(deps)
@@ -208,14 +212,15 @@ func TestACommentResumeSendsNothingBesideALiveSenderAndTakesTheAttemptOnceItLaps
 		t.Fatalf("resume the abandoned attempt: %v (waits %+v)", err, waits)
 	}
 	if resumed.Attempt != 1 || resumed.State != "sent" {
-		t.Fatalf("resume of the abandoned attempt = %#v, want attempt 1 sent", resumed)
+		t.Fatalf("resume of the abandoned attempt = %s, want attempt 1 sent", describeAttempts([]model.CommentDelivery{resumed}))
 	}
 	key := comment.ID + ":session:s1:steer"
 	if sends := listener.answered(); len(sends) != 1 || sends[0] != (resumeSend{key: key, target: "s1"}) {
-		t.Fatalf("resume sends = %#v, want one send to s1 under the original key %q", sends, key)
+		t.Fatalf("resume sends = %#v, want one send to s1 under the original key %q; attempts: %s",
+			sends, key, describeAttempts(commentAttempts(t, database, comment.ID)))
 	}
 	if states := attemptStates(t, database, "comment_deliveries", "comment_id", comment.ID); !slices.Equal(states, []string{"1:sent"}) {
-		t.Fatalf("attempts after the resume = %v, want attempt 1 alone, sent", states)
+		t.Fatalf("attempts after the resume = %s, want attempt 1 alone, sent", describeAttempts(commentAttempts(t, database, comment.ID)))
 	}
 }
 
@@ -225,6 +230,7 @@ func TestACommentResumeSendsNothingBesideALiveSenderAndTakesTheAttemptOnceItLaps
 // resumeOwedDelivery hands deliverMessageResuming the attempt's number and nothing else - and a
 // stranded urgent message it resumes still reaches the listener as urgent, not as a plain steer.
 func TestTheDeliverySweepResumesAnAttemptWithTheUrgencyItRecorded(t *testing.T) {
+	t.Parallel()
 	listener := startResumeListener(t)
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
 	direct := directServer(deps)
@@ -241,10 +247,11 @@ func TestTheDeliverySweepResumesAnAttemptWithTheUrgencyItRecorded(t *testing.T) 
 
 	want := resumeSend{key: stranded.ID + ":steer", target: "s1", urgency: "high"}
 	if sends := listener.answered(); len(sends) != 1 || sends[0] != want {
-		t.Fatalf("the sweep sent %#v, want exactly %#v: the urgency the attempt recorded", sends, want)
+		t.Fatalf("the sweep sent %#v, want exactly %#v: the urgency the attempt recorded; attempts: %s",
+			sends, want, describeAttempts(messageAttempts(t, database, stranded.ID)))
 	}
 	if states := attemptStates(t, database, "message_deliveries", "message_id", stranded.ID); !slices.Equal(states, []string{"1:sent"}) {
-		t.Fatalf("attempts = %v, want attempt 1 alone, sent", states)
+		t.Fatalf("attempts = %s, want attempt 1 alone, sent", describeAttempts(messageAttempts(t, database, stranded.ID)))
 	}
 }
 
@@ -254,6 +261,7 @@ func TestTheDeliverySweepResumesAnAttemptWithTheUrgencyItRecorded(t *testing.T) 
 // its own instead - in another mode, or beside a sender still holding the stranded one - is a new
 // send of the person's, which asked for no urgency.
 func TestARetryCarriesTheUrgencyOfTheAttemptItResumesAndNoneOnANewAttempt(t *testing.T) {
+	t.Parallel()
 	listener := startResumeListener(t)
 	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
 	issue := createInteractionIssue(t, handler, "TEST", "Urgent retries", "before")
@@ -301,11 +309,12 @@ func TestARetryCarriesTheUrgencyOfTheAttemptItResumesAndNoneOnANewAttempt(t *tes
 				t.Fatalf("retry: status=%d body=%s", retry.Code, retry.Body.String())
 			}
 			if attempt := decodeBody[model.MessageDelivery](t, retry); attempt.Attempt != test.wantAttempt || attempt.State != "sent" {
-				t.Fatalf("retry = attempt %d %s, want attempt %d sent", attempt.Attempt, attempt.State, test.wantAttempt)
+				t.Fatalf("retry = %s, want attempt %d sent", describeAttempts([]model.MessageDelivery{attempt}), test.wantAttempt)
 			}
 			want := test.wantSend(message)
 			if sends := listener.answered(); len(sends) != 1 || sends[0] != want {
-				t.Fatalf("retry sent %#v, want exactly %#v", sends, want)
+				t.Fatalf("retry sent %#v, want exactly %#v; attempts: %s",
+					sends, want, describeAttempts(messageAttempts(t, database, message.ID)))
 			}
 		})
 	}

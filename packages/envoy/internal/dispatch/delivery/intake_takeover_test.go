@@ -19,7 +19,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // takeOverAttempt is one intake's own process: its client, its lease pool and the intake itself,
@@ -63,10 +62,12 @@ func (a *takeOverAttempt) delivers() string { return a.intake.subject }
 // (TestTwoProcessesPollingOneDurableNeverBothBindIt in #2913), asked of the mechanism that
 // replaced it.
 func TestTwoProcessesPollingOneDurableNeverBothBindIt(t *testing.T) {
+	t.Parallel()
 	t.Run("back to back", func(t *testing.T) {
+		t.Parallel()
 		pool, ctx := deliveryTestPool(t)
 		seedDeliverySettings(t, ctx, pool)
-		natsURL := testnats.URL(t)
+		natsURL := deliveryTestNATS(t)
 		publisher := intakeTestClient(t)
 		first, second := newTakeOverProcess(t, pool, natsURL), newTakeOverProcess(t, pool, natsURL)
 
@@ -77,9 +78,10 @@ func TestTwoProcessesPollingOneDurableNeverBothBindIt(t *testing.T) {
 	})
 
 	t.Run("at once", func(t *testing.T) {
+		t.Parallel()
 		pool, ctx := deliveryTestPool(t)
 		seedDeliverySettings(t, ctx, pool)
-		natsURL := testnats.URL(t)
+		natsURL := deliveryTestNATS(t)
 		publisher := intakeTestClient(t)
 		first, second := newTakeOverProcess(t, pool, natsURL), newTakeOverProcess(t, pool, natsURL)
 
@@ -121,14 +123,16 @@ func requireOneBinder(t *testing.T, publisher *bus.Client, first, second *takeOv
 }
 
 // standbyTakeOverBound is how long TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates
-// gives a standby to replace the holder that stopped. The holder releases its hold as it stops,
-// so what the standby waits out is one durableBindInterval poll (2 s) and its own take-over: the
-// durable's consumer lease, the delete, the subscribe and the create. Ten seconds is what the
-// two-process row of the real binary allows a surviving envoy-dispatch after a holder *stops*
-// while waiting for admission (cmd/dispatch/multiprocess_test.go,
-// TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables gives it four), with room for a
-// loaded two-CPU host; nothing here is jittered, so this is a hang guard too. The hand-over after
-// a holder *dies* is the slower one, bounded by the hold's lapse
+// gives a standby to replace the holder that stopped, counted from the moment the holder begins
+// to stop. The holder releases its hold as it stops, so what the standby waits out is one
+// durableBindInterval poll (2 s) and its own take-over: the durable's consumer lease, the delete,
+// the subscribe and the create. Ten seconds is what the two-process row of the real binary allows
+// a surviving envoy-dispatch after a holder *stops* while waiting for admission
+// (cmd/dispatch/multiprocess_test.go, TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables
+// gives it four), with room for a loaded two-CPU host; nothing here is jittered, so this is a hang
+// guard too. It is also intakeHoldTTL less intakeHoldRenew, the soonest a hold that lapsed rather
+// than being released can be taken after its holder began to stop. The hand-over after a holder
+// *dies* is the slower one, bounded by the hold's lapse
 // (TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse).
 const standbyTakeOverBound = 10 * time.Second
 
@@ -136,11 +140,15 @@ const standbyTakeOverBound = 10 * time.Second
 // durable's single binding that makes it worth having. This is #2913's regression lock on the
 // hand-over, measured against the mechanism that replaced its bind: the exclusion the hold buys
 // must not be paid for with a slower hand-over.
+//
+// Serial: its assertion is a time (the standby takes the durable over within
+// standbyTakeOverBound, 10 s), and it swaps process-wide state, shrinkIntakeFlowControl's
+// intakeMessageTimeout, which every intake in the process reads.
 func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	natsURL := testnats.URL(t)
+	natsURL := deliveryTestNATS(t)
 	publisher := intakeTestClient(t)
 
 	holder := startIntakeProcess(t, pool, natsURL, nil)
@@ -150,10 +158,16 @@ func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 	// so the hand-over measured below is one of its ordinary polls and not its first.
 	time.Sleep(2 * durableBindInterval)
 
+	// The span is read from before the stop: a hold that lapsed rather than being handed over
+	// cannot be taken before intakeHoldTTL less intakeHoldRenew after the stop began, since the
+	// lapse falls one TTL after a renewal and the last renewal was at most one Renew before it,
+	// and that is the 10 s standbyTakeOverBound allows. Taking the time after stop returned would
+	// hand whatever the stop cost - its release alone may wait intakeHoldRenew - to a lapsed
+	// hand-over as slack, and the bound could then no longer tell the two apart.
+	stopping := time.Now()
 	holder.stop()
-	stopped := time.Now()
 	var taken *natsgo.ConsumerInfo
-	waitFor(t, standbyTakeOverBound, func() bool {
+	waitFor(t, standbyTakeOverBound-time.Since(stopping), func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		if err != nil || !info.PushBound || info.Config.DeliverSubject == held.Config.DeliverSubject {
 			return false
@@ -163,10 +177,10 @@ func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 	}, func() string {
 		return "the standby did not take the durable the holder released over within the bound: " + consumerState(publisher)
 	})
-	t.Logf("the standby took the durable over %s after the holder stopped", time.Since(stopped))
+	t.Logf("the standby took the durable over %s after the holder began to stop", time.Since(stopping).Round(time.Millisecond))
 
 	publishMergedPullRequest(t, publisher, 11)
-	waitFor(t, 20*time.Second, func() bool { return standby.fetches(11) == 1 }, func() string {
+	waitFor(t, eventWait, func() bool { return standby.fetches(11) == 1 }, func() string {
 		return "the standby that took the durable over did not handle a message: " + consumerState(publisher)
 	})
 	if taken.Config.DeliverSubject == held.Config.DeliverSubject {
@@ -182,12 +196,16 @@ func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 // TestABindTheServerNeverConfirmsIsUnsubscribedAndFails held of its confirmation step, asked of
 // the step that replaced it: there is no confirmation read any more, because the create's own
 // answer is the confirmation.
+//
+// Serial: it swaps process-wide state. captureLogs replaces the default logger, which is where the
+// intake logs the create it gave up on, and shrinkIntakeFlowControl and failCreatesWhile set
+// package variables every intake in the process reads (intakeMessageTimeout, createDurable).
 func TestATakeOverWhoseCreateNeverLandsGivesItsSubscriptionUp(t *testing.T) {
 	logs := captureLogs(t)
 	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	natsURL := testnats.URL(t)
+	natsURL := deliveryTestNATS(t)
 	publisher := intakeTestClient(t)
 
 	var failing atomic.Bool

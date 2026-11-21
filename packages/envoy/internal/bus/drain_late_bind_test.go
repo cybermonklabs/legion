@@ -19,6 +19,7 @@ import (
 // the rest, before the connection drains, so each forward can still subscribe its reply inbox.
 // Once Drain has taken its last, the connection's drain lets them finish.
 func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// late has the bind end once Drain has taken the last subscription it drains itself.
@@ -55,7 +56,7 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 				if tc.late {
 					return
 				}
-				forward, err := client.StartRequestStoredTo(holderSubject, contracts.Envelope{EventID: "drain-late-bind"}, ForwardMsgID("drain-late-bind", holderSubject), 2*time.Second)
+				forward, err := client.StartRequestStoredTo(holderSubject, contracts.Envelope{EventID: "drain-late-bind"}, ForwardMsgID("drain-late-bind", holderSubject), busWait)
 				if err == nil {
 					err = forward.Wait()
 				}
@@ -93,11 +94,11 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 			}
 			select {
 			case <-started:
-			case <-time.After(5 * time.Second):
+			case <-time.After(busWait):
 				t.Fatal("the first role message never reached the handler")
 			}
 			// nats.go counts a delivery as pending until its handler returns.
-			for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+			for deadline := time.Now().Add(busWait); ; time.Sleep(10 * time.Millisecond) {
 				if pending, _, _ := sub.Pending(); pending == 2 {
 					break
 				}
@@ -114,8 +115,11 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 			client.subscriptionsMu.Unlock()
 			client.stop()
 			_ = client.endBind(slot, sub, nil, true)
+			// Drain's deliveries are given what is left of twice busWait once its hook reserve is
+			// kept back, which outlasts each forward's own busWait: a forward that gets no answer
+			// fails the row by its own error, and Drain returns once both deliveries have finished.
 			drained := make(chan error, 1)
-			go func() { drained <- client.Drain(5 * time.Second) }()
+			go func() { drained <- client.Drain(2 * busWait) }()
 			// Well within this, a drain that takes no subscription has begun draining the connection.
 			time.Sleep(200 * time.Millisecond)
 			releaseHandlers()
@@ -124,7 +128,7 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 				if err != nil {
 					t.Fatalf("drain: %v", err)
 				}
-			case <-time.After(10 * time.Second):
+			case <-time.After(2 * busWait):
 				t.Fatal("Drain never returned")
 			}
 			if finished := finished.Load(); finished != 2 {
@@ -140,6 +144,7 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 // Close may arrive after a subscription's raw bind succeeded and before it has installed the
 // subscription. That bind belongs to the stopped client: it must not be recorded as active.
 func TestCloseDoesNotInstallABindThatFinishesAfterStop(t *testing.T) {
+	t.Parallel()
 	client, err := ConnectOwningStream([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -176,6 +181,7 @@ func TestCloseDoesNotInstallABindThatFinishesAfterStop(t *testing.T) {
 
 // Once a client stops, neither subscription transport starts another registration.
 func TestStoppedClientRefusesNewSubscriptions(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		stop    func(*Client) error
@@ -194,7 +200,7 @@ func TestStoppedClientRefusesNewSubscriptions(t *testing.T) {
 			name:    "Drain",
 			stopped: true,
 			stop: func(client *Client) error {
-				return client.Drain(5 * time.Second)
+				return client.Drain(busWait)
 			},
 		},
 	} {

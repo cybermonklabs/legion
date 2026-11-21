@@ -215,6 +215,7 @@ func TestCommentPayloadSuppressesResolvedRouteAndAuthorSessions(t *testing.T) {
 }
 
 func TestCommentRouteSuppressionAppliesOnlyToTheCreationRoute(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
 	publisher := &recordingPublisher{}
@@ -253,6 +254,7 @@ func TestCommentRouteSuppressionAppliesOnlyToTheCreationRoute(t *testing.T) {
 }
 
 func TestCommentRouteSuppressionFollowsTheResolvedHolder(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
 	publisher := &recordingPublisher{}
@@ -731,6 +733,7 @@ func TestAHeldBackClaimantCopyDefersNoAttemptThatFailedElsewhere(t *testing.T) {
 // TestARetryReachesTheClaimantTheScanReads: the claimant comes from the scan's read of the issue,
 // so an attempt after the claim moved reaches the new holder, and a person's claim reaches no one.
 func TestARetryReachesTheClaimantTheScanReads(t *testing.T) {
+	t.Parallel()
 	const issueTopic = "notifications.dispatch.issue.T-1.message.created"
 	for _, tc := range []struct {
 		name  string
@@ -749,6 +752,7 @@ func TestARetryReachesTheClaimantTheScanReads(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := store.WithTransactionTracking(context.Background())
 			database := storetest.Open(t)
 			broker := events.NewBroker()
@@ -1621,6 +1625,7 @@ func TestTheCopyOfAFailedMentionCarriesTheMentionsDedupeKey(t *testing.T) {
 }
 
 func TestCommentEnvelopeCorrelatesRepliesUnlessTheyReplyToAnAsk(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		event   model.Event

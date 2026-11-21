@@ -15,7 +15,7 @@ import (
 const roleLaneMachine = "example machine"
 
 // requireRoleMessage publishes a role message as another connection of the same user and requires
-// the lane's handler to receive it within 5 s.
+// the lane's handler to receive it within busWait.
 func requireRoleMessage(t *testing.T, uri string, received <-chan string) {
 	t.Helper()
 	publisher, err := bus.Dial("role-publisher", []string{uri}, os.LookupEnv)
@@ -35,13 +35,14 @@ func requireRoleMessage(t *testing.T, uri string, received <-chan string) {
 		if got != topic {
 			t.Fatalf("the role lane received %s, want %s", got, topic)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the role lane received nothing")
+	case <-time.After(busWait):
+		t.Fatalf("the role lane received nothing within %s", busWait)
 	}
 }
 
 // A user granted the shared role-lane queue group subscribes in it.
 func TestRoleLaneSubscribesInTheSharedQueueGroup(t *testing.T) {
+	// Serial: it sets NATS_NKEY_SEED with t.Setenv, which panics beside t.Parallel.
 	seed, public := testnats.User(t)
 	_, uri := testnats.StartConfig(t, testnats.SubscribeGrantConfig(public, "_INBOX.>", contracts.RoleTopicPrefix+"> "+bus.RoleLaneQueue), []string{"-js"}, false)
 	t.Setenv("NATS_NKEY_SEED", seed)
@@ -64,6 +65,7 @@ func TestRoleLaneSubscribesInTheSharedQueueGroup(t *testing.T) {
 // is refused the shared group, and the lane subscribes in the machine's group instead and receives
 // role messages there.
 func TestRoleLaneFallsBackToTheMachinesQueueGroupWhenTheSharedOneIsRefused(t *testing.T) {
+	// Serial: it sets NATS_NKEY_SEED with t.Setenv, which panics beside t.Parallel.
 	seed, public := testnats.User(t)
 	machineQueue := bus.ListenerQueue(roleLaneMachine)
 	_, uri := testnats.StartConfig(t, testnats.SubscribeGrantConfig(public, "_INBOX.>", contracts.RoleTopicPrefix+"> "+machineQueue), []string{"-js"}, false)
@@ -85,6 +87,7 @@ func TestRoleLaneFallsBackToTheMachinesQueueGroupWhenTheSharedOneIsRefused(t *te
 
 // A user granted neither group gets an error, not a lane that delivers nothing.
 func TestRoleLaneWithNeitherQueueGroupGrantedIsAnError(t *testing.T) {
+	// Serial: it sets NATS_NKEY_SEED with t.Setenv, which panics beside t.Parallel.
 	seed, public := testnats.User(t)
 	_, uri := testnats.StartConfig(t, testnats.SubscribeGrantConfig(public, "_INBOX.>"), []string{"-js"}, false)
 	t.Setenv("NATS_NKEY_SEED", seed)
@@ -97,6 +100,7 @@ func TestRoleLaneWithNeitherQueueGroupGrantedIsAnError(t *testing.T) {
 // A client counts each slow consumer its connection reports: a core subscription narrowed to one
 // pending message, its handler held, falls behind at the third message.
 func TestClientCountsSlowConsumers(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	client, err := bus.Connect([]string{uri})
 	if err != nil {
@@ -126,5 +130,5 @@ func TestClientCountsSlowConsumers(t *testing.T) {
 	if err := publisher.Flush(); err != nil {
 		t.Fatalf("flush the publishes: %v", err)
 	}
-	waitFor(t, 10*time.Second, "the client to count the slow consumer", func() bool { return client.SlowConsumers() == 1 })
+	waitFor(t, busWait, "the client to count the slow consumer", func() bool { return client.SlowConsumers() == 1 })
 }

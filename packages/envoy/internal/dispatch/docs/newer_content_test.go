@@ -56,6 +56,7 @@ func storedHoldsUnknownElement(t *testing.T, service *Service, artifactID string
 // element as data on the error (NewerContentError.Elements) as well as in its message, so a log
 // writes the name without writing the message.
 func TestADocumentHoldingAnUnknownElementReadsAsNewerContent(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newerContentDocument(t)
 	reads := []struct {
 		name string
@@ -104,6 +105,7 @@ func TestADocumentHoldingAnUnknownElementReadsAsNewerContent(t *testing.T) {
 // writes no version, records no failure and leaves the live room standing. It never retries the
 // read until the room fails, which would answer every read 503.
 func TestSettlementSkipsADocumentHoldingNewerContent(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newerContentDocument(t)
 	state := service.room(artifactID)
 	state.mu.Lock()
@@ -141,6 +143,7 @@ func TestSettlementSkipsADocumentHoldingNewerContent(t *testing.T) {
 // the stored document keeps the element and gains no update, whether a room holds the document or
 // a replacement after a restart reads it from the store.
 func TestAReplacementOverNewerContentIsRefusedAndKeepsTheElement(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newerContentDocument(t)
 	if err := service.Evict(context.Background(), artifactID); err != nil {
 		t.Fatalf("evict the document: %v", err)
@@ -174,12 +177,14 @@ func TestAReplacementOverNewerContentIsRefusedAndKeepsTheElement(t *testing.T) {
 // with documentNewerContentCloseCode, which the Hocuspocus provider answers by reconnecting, not
 // with documentSchemaCloseCode, which the dashboard reads as the repair state.
 func TestDocumentSocketClosesARoomHoldingNewerContentWithItsOwnCode(t *testing.T) {
+	t.Parallel()
 	for _, resident := range []bool{true, false} {
 		name := "stored"
 		if resident {
 			name = "resident"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			service, artifactID := newerContentDocument(t)
 			if !resident {
 				if err := service.Evict(context.Background(), artifactID); err != nil {
@@ -195,7 +200,7 @@ func TestDocumentSocketClosesARoomHoldingNewerContentWithItsOwnCode(t *testing.T
 				t.Fatalf("connect a document holding newer content: response=%#v err=%v, want an upgrade the server closes", response, err)
 			}
 			t.Cleanup(func() { _ = connection.Close() })
-			connection.SetReadDeadline(time.Now().Add(time.Second))
+			connection.SetReadDeadline(time.Now().Add(roomWait(t)))
 			_, message, err := connection.ReadMessage()
 			var closed *gws.CloseError
 			if !errors.As(err, &closed) || closed.Code != documentNewerContentCloseCode {
@@ -214,7 +219,10 @@ func TestDocumentSocketClosesARoomHoldingNewerContentWithItsOwnCode(t *testing.T
 // refusal that cannot be compared would panic on, ending the request with no answer at all. A
 // process behind a type migration takes exactly such writes until it reinstalls.
 func TestAWriteOfATypedBlockThisBuildDoesNotKnowIsRefused(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
+	// The transaction takes no transaction id: SeedText's parse refuses the block before the
+	// write reads, locks or writes a row, so it holds back no safe horizon a test beside it reads.
 	tx, err := service.store.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("begin the write: %v", err)

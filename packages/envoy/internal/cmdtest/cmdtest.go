@@ -4,10 +4,12 @@
 package cmdtest
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,7 +21,7 @@ import (
 )
 
 // Build builds the main package in the test's working directory, its own command's, into a binary
-// named name that is removed when the test ends.
+// named name, as BuildCommand builds a Command naming only that binary.
 func Build(t testing.TB, name string) string {
 	t.Helper()
 	return BuildCommand(t, Command{Name: name})
@@ -34,10 +36,10 @@ func BuildStamped(t testing.TB, name, commit string) string {
 	return BuildCommand(t, Command{Name: name, Flags: []string{"-ldflags", "-X main.buildCommit=" + commit}})
 }
 
-// Command is a binary to build: Name is what the binary is called under the test's own
-// directory, Dir the directory go build runs in (the test's own when empty), Target what it
-// builds ("." when empty), Flags the flags before the target, and Env the whole environment of
-// the go command (the process's when nil).
+// Command is a binary to build: Name is what the binary is called under the directory built for
+// it, Dir the directory go build runs in (the test's own when empty), Target what it builds ("."
+// when empty), Flags the flags before the target, and Env the whole environment of the go command
+// (the process's when nil).
 type Command struct {
 	Name   string
 	Dir    string
@@ -46,72 +48,165 @@ type Command struct {
 	Env    []string
 }
 
-// built is the binary each test has already built, by builtKey. go build relinks the whole
-// binary into every -o path it is given - about a second apiece on a warm build cache, minutes on
-// a loaded machine - and a row that starts five processes of one command asked for five of them
-// (INFRA-985), so a test builds each command once and hands every process of that test the same
-// binary. The key holds the test itself, so no binary outlives the TempDir it was written into,
-// and the entry goes when the test ends.
-var built sync.Map
+// overlayEnv names the overlay go build is given, so that a probe builds a command from changed
+// sources without editing the tree. It is part of a build's key: two calls under different
+// overlays are two builds.
+const overlayEnv = "ENVOY_TEST_GO_OVERLAY"
 
-// builtKey is one test's build of one command: the test, and everything that decides what go
-// build writes - the command's name, directory, target, flags and environment, and the overlay.
-type builtKey struct {
-	t    testing.TB
+// buildKey is everything a binary's build depends on, so that calls agreeing on all of it share
+// one build and a call differing in any of it gets a build of its own: the directory go build
+// runs in, the binary's name, the target it builds, and the overlay.
+type buildKey struct {
+	dir     string
+	name    string
+	target  string
+	overlay string
+	// args holds the caller's flags and environment joined by a byte neither holds, with the
+	// count of the flags standing between them, so that a value that moves from one of the two
+	// to the other is another key rather than the same one.
 	args string
 }
 
-// builtBinary is one memoised build: once makes it, path is what it wrote, empty where it failed.
-type builtBinary struct {
-	once sync.Once
-	path string
-}
+var (
+	buildsMu sync.Mutex
+	// builds holds each key's one build: a function that runs go build on its first call and
+	// answers every later call with that build's path and error. go build relinks the whole
+	// binary into every -o path it is given - about a second apiece on a warm build cache,
+	// minutes on a loaded machine - and a row that starts five processes of one command asked
+	// for five of them (INFRA-985), which this cache answers for the whole test process rather
+	// than for one test. Functions rather than results, so that a caller arriving while a build
+	// runs waits for that build instead of starting a second one, and a build that failed fails
+	// every caller with the one error rather than handing a later one the path of a binary that
+	// was never written (dispatch://INFRA-1075).
+	builds = map[buildKey]func() (string, error){}
+)
 
-// BuildCommand builds c and returns the binary's path. The binary is removed when the test ends,
-// and ENVOY_TEST_GO_OVERLAY, when set, is passed to go build -overlay, so a probe can build it
-// from changed sources without editing the tree. A test that asks for the same build again is
-// handed the one it already built (built).
+// BuildCommand builds c and returns the binary's path. The test process builds each distinct
+// binary once, however many of its tests ask for it, and that binary stays on disk until the
+// process ends, so a later test runs the build an earlier one paid for. ENVOY_TEST_GO_OVERLAY,
+// when set, is passed to go build -overlay, so a probe can build the binary from changed sources
+// without editing the tree.
 func BuildCommand(t testing.TB, c Command) string {
 	t.Helper()
-	overlay := os.Getenv("ENVOY_TEST_GO_OVERLAY")
-	// The count of the flags stands between them and the environment, so a value that moves from
-	// one of the two to the other is another key rather than the same one.
-	parts := append([]string{c.Name, c.Dir, c.Target, overlay, strconv.Itoa(len(c.Flags))}, c.Flags...)
-	key := builtKey{t: t, args: strings.Join(append(parts, c.Env...), "\x00")}
-	entry, loaded := built.LoadOrStore(key, &builtBinary{})
-	if !loaded {
-		t.Cleanup(func() { built.Delete(key) })
+	dir := c.Dir
+	if dir == "" {
+		var err error
+		if dir, err = os.Getwd(); err != nil {
+			t.Fatalf("build %s: read the test's working directory: %v", c.Name, err)
+		}
 	}
-	binary := entry.(*builtBinary)
-	binary.once.Do(func() { binary.path = runBuild(t, c, overlay) })
-	if binary.path == "" {
-		t.Fatalf("build %s: an earlier build of it in this test failed", c.Name)
-	}
-	return binary.path
-}
-
-// runBuild is one go build of c, into a binary named c.Name under a directory of this test's
-// own. It returns the empty path where the build failed, having failed the test.
-func runBuild(t testing.TB, c Command, overlay string) string {
-	t.Helper()
-	binary := filepath.Join(t.TempDir(), c.Name)
-	args := []string{"build", "-o", binary}
-	if overlay != "" {
-		args = append(args, "-overlay", overlay)
-	}
-	args = append(args, c.Flags...)
 	target := c.Target
 	if target == "" {
 		target = "."
 	}
-	args = append(args, target)
-	cmd := exec.Command("go", args...)
-	cmd.Dir, cmd.Env = c.Dir, c.Env
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Errorf("build %s: %v\n%s", c.Name, err, out)
-		return ""
+	args := append([]string{strconv.Itoa(len(c.Flags))}, c.Flags...)
+	key := buildKey{
+		dir:     dir,
+		name:    c.Name,
+		target:  target,
+		overlay: os.Getenv(overlayEnv),
+		args:    strings.Join(append(args, c.Env...), "\x00"),
+	}
+	buildsMu.Lock()
+	once, keyed := builds[key]
+	if !keyed {
+		// The caller owns its slices, and these are read long after the call returns.
+		flags, env := slices.Clone(c.Flags), slices.Clone(c.Env)
+		once = sync.OnceValues(func() (string, error) { return goBuild(key, flags, env) })
+		builds[key] = once
+	}
+	buildsMu.Unlock()
+	binary, err := once()
+	if err != nil {
+		t.Fatal(err)
 	}
 	return binary
+}
+
+// goBuild runs one go build for key and returns the binary's path. Each build gets a directory of
+// its own under the test process's, so that two builds of one name, from different sources or
+// under different flags, each keep that name: a process is known by the name it runs under.
+func goBuild(key buildKey, flags, env []string) (string, error) {
+	parent, err := buildsDir()
+	if err != nil {
+		return "", fmt.Errorf("build %s: %w", key.name, err)
+	}
+	dir, err := os.MkdirTemp(parent, "")
+	if err != nil {
+		return "", fmt.Errorf("build %s: %w", key.name, err)
+	}
+	binary := filepath.Join(dir, key.name)
+	args := []string{"build", "-o", binary}
+	if key.overlay != "" {
+		args = append(args, "-overlay", key.overlay)
+	}
+	args = append(args, flags...)
+	args = append(args, key.target)
+	cmd := exec.Command("go", args...)
+	// The package built is the one the key names, whatever directory the test process stands in
+	// by the time a later caller's build runs.
+	cmd.Dir, cmd.Env = key.dir, env
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("build %s: %v\n%s", key.name, err, out)
+	}
+	return binary, nil
+}
+
+// buildsDir is the one directory this test process builds its binaries in, made on the first
+// build and removed when the process ends.
+var buildsDir = sync.OnceValues(makeBuildsDir)
+
+// reaperPipe is the write end of the pipe the build directory's reaper reads. This process holds
+// it for the rest of its life, in a package-level variable because the garbage collector closes
+// an *os.File nothing can reach any more, and that close would have the reaper remove the
+// binaries while the tests still run them.
+var reaperPipe *os.File
+
+// makeBuildsDir makes the directory this process's binaries are built in and starts the process
+// that removes it.
+//
+// A binary one test built is run by the tests after it, so no t.Cleanup can remove it: the test
+// that paid for the build ends while later tests still run its binary. Go runs no hook of its own
+// when a test binary exits either, and a TestMain in every package that builds a command would be
+// a rule each new caller has to know. So the directory is removed by a child process that waits
+// for this one to go: it reads a pipe this process holds the only write end of, and that read
+// ends the moment the kernel closes this process's descriptors, whether it returned from its
+// tests, panicked, or was killed.
+func makeBuildsDir() (string, error) {
+	dir, err := os.MkdirTemp("", "envoy-cmdtest-")
+	if err != nil {
+		return "", fmt.Errorf("make the test process's build directory: %w", err)
+	}
+	// The reaper is housekeeping, so a machine that cannot start one still builds: refusing
+	// every Build of the process to avoid leaving a directory behind would cost more than the
+	// directory, which the operating system reclaims with the rest of its temporary files.
+	if err := removeWhenThisProcessExits(dir); err != nil {
+		fmt.Fprintf(os.Stderr, "cmdtest: %v; %s is left for the operating system to reclaim\n", err, dir)
+	}
+	return dir, nil
+}
+
+// removeWhenThisProcessExits starts the process that removes dir once this one has exited.
+func removeWhenThisProcessExits(dir string) error {
+	read, write, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("open the build directory's reaper pipe: %w", err)
+	}
+	defer read.Close()
+	// cat returns when the write end this process holds is closed, and rm then removes the
+	// directory. The reaper takes a session of its own, so that the interrupt a terminal sends to
+	// its whole foreground process group does not kill it before it has removed anything, and it
+	// is given no output of its own: a child holding the test binary's standard output or error
+	// would keep go test waiting for output after the tests were over.
+	reaper := exec.Command("/bin/sh", "-c", `cat >/dev/null; exec rm -rf -- "$1"`, "cmdtest-reaper", dir)
+	reaper.Stdin = read
+	reaper.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := reaper.Start(); err != nil {
+		_ = write.Close()
+		return fmt.Errorf("start the build directory's reaper: %w", err)
+	}
+	reaperPipe = write
+	return nil
 }
 
 // Process is a binary a test started, with its combined output.

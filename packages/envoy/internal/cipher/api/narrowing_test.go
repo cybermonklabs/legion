@@ -186,6 +186,7 @@ func TestABadNarrowingIs400AndMintsNothing(t *testing.T) {
 // App that failed, and each is logged at WARN as a refused narrowing, never as the operator's
 // mint failure, beside the record of the refusal the answer recorder writes for it.
 func TestANarrowingTheSecretCannotServeIsTheCallersAndNotAMintFailure(t *testing.T) {
+	// Serial: it swaps the standard logger's output (policytest.CaptureLog).
 	logged := policytest.CaptureLog(t)
 	s := newNarrowingServer(t)
 	for _, tc := range []struct {

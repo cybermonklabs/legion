@@ -28,6 +28,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -61,14 +62,22 @@ type Intake struct {
 	// heldDurable is this intake's delivery from bus.DispatchDeliveryDurable under the durable's
 	// hold: the subscription, StopDelivering and the take-over.
 	heldDurable
+	// decode reads one message's envelope (decodeEnvelope), for keying a message (intakeKey) and
+	// for deliver. A field of the intake rather than a package variable because a test that counts
+	// or holds its own intake's decodes must leave every other test's intake decoding as
+	// production does: the tests of this package run beside one another, and a swapped package
+	// variable counted their decodes too.
+	decode func([]byte) (contracts.Envelope, error)
 }
 
 // newIntake builds an Intake on natsClient, a connected client StartIntakes opens for it alone,
 // holding its durable and taking it over under a hold and a lease it takes on leases, and routing
-// by settings.
+// by settings. Its durable keys each message through the intake's own decode, read at each
+// message, so a test that replaces decode before Run has every message keyed by its own.
 func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache) *Intake {
-	in := &Intake{pool: pool, github: github, events: broker, settings: settings}
-	in.heldDurable = newHeldDurable(natsClient, leases, deliveryConsumerConfig, intakeKey, in.deliver)
+	in := &Intake{pool: pool, github: github, events: broker, settings: settings, decode: decodeEnvelope}
+	key := func(msg *natsgo.Msg) (string, *contracts.Envelope, bool) { return intakeKey(msg, in.decode) }
+	in.heldDurable = newHeldDurable(natsClient, leases, deliveryConsumerConfig, key, in.deliver)
 	return in
 }
 
@@ -411,7 +420,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 
 	envelope := message.envelope
 	if envelope == nil {
-		decoded, err := decodeEnvelope(msg.Data)
+		decoded, err := in.decode(msg.Data)
 		if err != nil {
 			slog.Error("dispatch delivery: decode envelope", "subject", msg.Subject, "error", err)
 			return

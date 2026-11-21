@@ -15,6 +15,7 @@ import (
 // living in the run's context would end as the hook returned, leave the cache frozen with a
 // terminal error, and wait for the listener's self-health rebuild to notice.
 func TestAWatcherARewatchInstalledOutlivesTheRunThatInstalledIt(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	logger, records := jsonLogger(t)

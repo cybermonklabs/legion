@@ -52,7 +52,7 @@ func stopSession(t *testing.T, mux *http.ServeMux, sessionID, query string) *htt
 // before the delete.
 func (rig *sessionConsumerReapRig) requireNoConsumer(t *testing.T, sessionID, when string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	for {
 		info, err := rig.consumers.Info(ctx, sessionID)
@@ -318,7 +318,7 @@ func TestACleanStopsRelayHandOverNeverPromisesAFurtherDelivery(t *testing.T) {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	for {
 		info, err := rig.consumers.Info(ctx, sessionID)
@@ -432,7 +432,7 @@ func instanceRegistration(t *testing.T, sessionID, epoch, instanceID string) str
 // consumer changes it.
 func consumerCreatedAt(t *testing.T, rig *relayRig, sessionID, when string) time.Time {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	info, err := rig.consumers.Info(ctx, sessionID)
 	if err != nil {

@@ -32,6 +32,7 @@ import (
 // by ada. Every request and answer is logged, with no proof, bearer or token, as the live run's
 // transcript.
 func TestTheBinaryLogsTheDaemonInWithItsTokenAndOnlyAPersonDecidesTheirOwnLogin(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	issuer := oidctest.New(t)
 	podKey := issuer.PublishKey(t, "signing-key")
@@ -64,8 +65,15 @@ func TestTheBinaryLogsTheDaemonInWithItsTokenAndOnlyAPersonDecidesTheirOwnLogin(
 		"BROKER_API_ACCOUNTS=dispatch=" + dispatchAccount,
 	}})
 	base := "http://" + broker.Addr
+	// client is every request's below: it gives up on a request brokerRequestWait after sending
+	// it, and signedCall's requests also give up brokerRequestWait after their signing.
+	client := &http.Client{Timeout: brokerRequestWait}
 
-	call := func(method, path string, auth map[string]string, body any) (int, []byte) {
+	// signedCall sends one request and logs both halves. A request carrying a proof or a request
+	// object the test signed before sending it names the moment that signing began as signed, and
+	// is given up brokerRequestWait after it (signedContext); call is the same for a request
+	// carrying neither.
+	signedCall := func(signed time.Time, method, path string, auth map[string]string, body any) (int, []byte) {
 		t.Helper()
 		var payload []byte
 		if body != nil {
@@ -74,7 +82,9 @@ func TestTheBinaryLogsTheDaemonInWithItsTokenAndOnlyAPersonDecidesTheirOwnLogin(
 				t.Fatal(err)
 			}
 		}
-		request, err := http.NewRequest(method, base+path, bytes.NewReader(payload))
+		ctx, cancel := signedContext(signed)
+		defer cancel()
+		request, err := http.NewRequestWithContext(ctx, method, base+path, bytes.NewReader(payload))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -82,7 +92,7 @@ func TestTheBinaryLogsTheDaemonInWithItsTokenAndOnlyAPersonDecidesTheirOwnLogin(
 		for name, value := range auth {
 			request.Header.Set(name, value)
 		}
-		response, err := http.DefaultClient.Do(request)
+		response, err := client.Do(request)
 		if err != nil {
 			t.Fatalf("%s %s: %v", method, path, err)
 		}
@@ -102,17 +112,22 @@ func TestTheBinaryLogsTheDaemonInWithItsTokenAndOnlyAPersonDecidesTheirOwnLogin(
 		t.Logf("> %s %s %s\n< %d %s", method, path, shown, response.StatusCode, bytes.TrimSpace(answer))
 		return response.StatusCode, answer
 	}
+	call := func(method, path string, auth map[string]string, body any) (int, []byte) {
+		t.Helper()
+		return signedCall(time.Time{}, method, path, auth, body)
+	}
 	ui := func(method, path string, body any) (int, []byte) {
 		t.Helper()
 		return call(method, path, map[string]string{"Authorization": "Bearer " + dispatchToken}, body)
 	}
 	launcher := func(key *ecdsa.PrivateKey, credentialID, method, path string, body any) (int, []byte) {
 		t.Helper()
-		signed, err := proof.SignLauncher(key, credentialID, method, base+path, time.Now())
+		signing := time.Now()
+		signed, err := proof.SignLauncher(key, credentialID, method, base+path, signing)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return call(method, path, map[string]string{"Proof": signed}, body)
+		return signedCall(signing, method, path, map[string]string{"Proof": signed}, body)
 	}
 	field := func(answer []byte, name string) string {
 		t.Helper()
@@ -139,11 +154,19 @@ func TestTheBinaryLogsTheDaemonInWithItsTokenAndOnlyAPersonDecidesTheirOwnLogin(
 		if err != nil {
 			t.Fatal(err)
 		}
+		signing := time.Now()
 		form := url.Values{
 			"client_id": {oauthwire.ClientID}, "scope": {oauthwire.Scope}, "dpop_jkt": {jkt},
 			"request": {signRequest(key, host, service, loginHint)},
 		}
-		response, err := http.Post(base+"/v1/oauth/device_authorization", "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
+		ctx, cancel := signedContext(signing)
+		defer cancel()
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/oauth/device_authorization", strings.NewReader(form.Encode()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		response, err := client.Do(request)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -170,7 +193,8 @@ func TestTheBinaryLogsTheDaemonInWithItsTokenAndOnlyAPersonDecidesTheirOwnLogin(
 	}
 	tokenLogin := func(key *ecdsa.PrivateKey) string {
 		t.Helper()
-		status, answer := call(http.MethodPost, "/v1/launcher-credentials/token", nil, map[string]any{
+		signing := time.Now()
+		status, answer := signedCall(signing, http.MethodPost, "/v1/launcher-credentials/token", nil, map[string]any{
 			"token":   issuer.Mint(t, podKey, issuer.Claims(daemonAccount, podAudience)),
 			"request": signRequest(key, "example-host-cluster", "legion-daemon", ""),
 		})
@@ -212,7 +236,8 @@ func TestTheBinaryLogsTheDaemonInWithItsTokenAndOnlyAPersonDecidesTheirOwnLogin(
 	if status != http.StatusBadRequest || !strings.HasPrefix(field(answer, "error_description"), "SERVICE_LOGS_IN_WITH_TOKEN: ") {
 		t.Fatalf("the daemon's device-code login = %d %s, want 400 SERVICE_LOGS_IN_WITH_TOKEN", status, answer)
 	}
-	status, answer = call(http.MethodPost, "/v1/launcher-credentials", nil,
+	signing := time.Now()
+	status, answer = signedCall(signing, http.MethodPost, "/v1/launcher-credentials", nil,
 		map[string]any{"request": signRequest(daemonKey, "example-host-devbox", "", "ada@example.com")})
 	if status != http.StatusMethodNotAllowed {
 		t.Fatalf("the removed POST /v1/launcher-credentials = %d %s, want 405", status, answer)
@@ -232,11 +257,14 @@ func TestTheBinaryLogsTheDaemonInWithItsTokenAndOnlyAPersonDecidesTheirOwnLogin(
 	renewAt := func(body any, at time.Time) (int, string) {
 		t.Helper()
 		path := "/v1/enrollments/" + enrollmentID + "/renew"
+		// signing, not at, starts the bound: at is the iat a row chooses, 10 minutes back for the
+		// proof the binary must refuse.
+		signing := time.Now()
 		signed, err := proof.Sign(sessionKey, enrollmentID, http.MethodPost, base+path, at)
 		if err != nil {
 			t.Fatal(err)
 		}
-		status, answer := call(http.MethodPost, path, map[string]string{"Proof": signed}, body)
+		status, answer := signedCall(signing, http.MethodPost, path, map[string]string{"Proof": signed}, body)
 		return status, field(answer, "code")
 	}
 	renew := func(body any) (int, string) { t.Helper(); return renewAt(body, time.Now()) }

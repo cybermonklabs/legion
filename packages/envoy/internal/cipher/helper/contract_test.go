@@ -74,6 +74,12 @@ func startContractHelper(t *testing.T, broker *ciphertest.Rig, machineFile strin
 		PeerOf:   PeerOf,
 		Log:      log,
 		MinRenew: 50 * time.Millisecond,
+		// The broker here is a real one in this process, which answers at once, so the
+		// production enroll backoff and revoke wait would be the whole of a row's clock
+		// (server_test.go's testEnrollRetryMin).
+		EnrollRetryMin: testEnrollRetryMin,
+		EnrollRetryMax: testEnrollRetryMax,
+		RevokeRetry:    testRevokeRetry,
 	}
 	cr.sock = filepath.Join(shortTempDir(t), "helper.sock")
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: cr.sock, Net: "unix"})
@@ -124,8 +130,9 @@ func (cr *contractRig) call(t *testing.T, req Request) Response {
 }
 
 // waitForIssued blocks until the background login poller (pollLogin, at the broker's 5 s
-// interval) installs the machine credential, or fails the test — longer than the package's own
-// waitFor, since a real broker round trip plus that interval can outrun a 5 s deadline.
+// interval) installs the machine credential, or fails the test. It waits longer than the
+// package's own waitFor, since the credential comes no sooner than that first poll and a real
+// broker's round trip, which take half of waitFor's ten seconds before a loaded runner adds any.
 func waitForIssued(t *testing.T, b *Broker) {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
@@ -327,6 +334,7 @@ func TestContractLoginApprovalEnrollSignAndExpiry(t *testing.T) {
 // but says at ERROR that the broker refused the credential and that the session cannot enroll and
 // why, where a minute-by-minute stream of retry warnings once hid it for hours.
 func TestContractARefusedLauncherCredentialIsAnErrorAndTheHelperKeepsServing(t *testing.T) {
+	t.Parallel()
 	cr := newContractRig(t)
 	b := cr.srv.Broker
 	code, err := b.Login(context.Background(), cr.srv.Hostname)
@@ -373,6 +381,7 @@ func TestContractARefusedLauncherCredentialIsAnErrorAndTheHelperKeepsServing(t *
 // carries the minted credential's expiry, and login-status hands it on, so a human sees the
 // deadline for the next machine login before the credential lapses.
 func TestContractLoginStatusNamesWhenTheLauncherCredentialExpires(t *testing.T) {
+	t.Parallel()
 	cr := newContractRig(t)
 	b := cr.srv.Broker
 	code, err := b.Login(context.Background(), cr.srv.Hostname)
@@ -398,6 +407,7 @@ func TestContractLoginStatusNamesWhenTheLauncherCredentialExpires(t *testing.T) 
 // launcher route is refused 401 LAUNCHER_INVALID, so the helper drops the credential, says at
 // ERROR that the broker refused it, and login-status reports no credential held.
 func TestContractRevokingTheMachineLoginEndsItsSessionsAndTheHelperDropsIt(t *testing.T) {
+	t.Parallel()
 	cr := newContractRig(t, ciphertest.WithLease(3*time.Second))
 	b := cr.srv.Broker
 	code, err := b.Login(context.Background(), cr.srv.Hostname)
@@ -443,6 +453,7 @@ func TestContractRevokingTheMachineLoginEndsItsSessionsAndTheHelperDropsIt(t *te
 // answers this machine's own login, the held credential on this helper's host; and since the proof
 // names its method and URL, the broker refuses one replayed against another route.
 func TestContractSignLauncherProvesTheOperatorRoutes(t *testing.T) {
+	t.Parallel()
 	cr := newContractRig(t)
 	b := cr.srv.Broker
 	code, err := b.Login(context.Background(), cr.srv.Hostname)

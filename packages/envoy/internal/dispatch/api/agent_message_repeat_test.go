@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -66,6 +67,42 @@ func messageAttempts(t *testing.T, database *store.Store, messageID string) []mo
 	return attempts
 }
 
+// describeAttempts renders delivery attempts for a failure message, one per attempt: its number,
+// mode and session, the state it settled in, the error recorded on it and the reply that answered
+// it, and on a mention its target and the error its resolution recorded. A send or a lookup that
+// runs out settles its attempt failed and logs nothing (internal/dispatch/envoy/client.go has no
+// log call), so that error is the only cause a failing test can print; %#v of these structs
+// prints it as a pointer.
+func describeAttempts[A model.MessageDelivery | model.CommentDelivery | commentDeliveryRead](attempts []A) string {
+	if len(attempts) == 0 {
+		return "no attempts"
+	}
+	described := make([]string, len(attempts))
+	for index, attempt := range attempts {
+		var target, mode, state string
+		var number int
+		var session, failure, reply, resolveFailure *string
+		switch attempt := any(attempt).(type) {
+		case model.MessageDelivery:
+			number, mode, session, state, failure, reply = attempt.Attempt, attempt.Delivery, &attempt.SessionID,
+				attempt.State, attempt.Error, attempt.ReplyID
+		case model.CommentDelivery:
+			target, number, mode, session, state, failure, reply, resolveFailure = attempt.Target, attempt.Attempt,
+				attempt.Delivery, attempt.SessionID, attempt.State, attempt.Error, attempt.ReplyID, attempt.ResolveError
+		case commentDeliveryRead:
+			target, number, mode, session, state, failure, reply, resolveFailure = attempt.Target, attempt.Attempt,
+				attempt.Delivery, attempt.SessionID, attempt.State, attempt.Error, attempt.ReplyID, attempt.ResolveError
+		}
+		line := fmt.Sprintf("attempt %d %s to %s: %s, error %s, reply %s", number, mode, describeOptionalString(session),
+			state, describeOptionalString(failure), describeOptionalString(reply))
+		if target != "" {
+			line = target + " " + line + ", resolve error " + describeOptionalString(resolveFailure)
+		}
+		described[index] = line
+	}
+	return strings.Join(described, "; ")
+}
+
 // commitKeyedMessage writes what alice's keyed send to s1 commits before its delivery starts - the
 // message, and its key holding the message as its recovery point - and nothing else, as a process
 // that died between the commit and the attempt leaves them: the key in flight, leased leasedAgo,
@@ -122,6 +159,7 @@ func keysOf(l *broadcastListener) []string {
 // INFRA-258. A single-session send without an Idempotency-Key is sent, as any write without one
 // is: it is only not replayed.
 func TestASingleSessionSendWithoutAKeyIsSent(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	handler, _ := newTargetedMessageHandler(t, listener.URL)
 	keyless := dispatchRequest(t, handler, http.MethodPost, "/api/v1/agents/s1/messages", map[string]any{
@@ -131,13 +169,15 @@ func TestASingleSessionSendWithoutAKeyIsSent(t *testing.T) {
 		t.Fatalf("a keyless send: status=%d body=%s, want 201", keyless.Code, keyless.Body.String())
 	}
 	if got := sends.targets(); !equalStrings(got, []string{"s1"}) {
-		t.Fatalf("listener sends = %v, want the keyless send's one", got)
+		t.Fatalf("listener sends = %v, want the keyless send's one; the message's attempts: %s",
+			got, describeAttempts(decodeBody[model.Message](t, keyless).Deliveries))
 	}
 }
 
 // A repeat of one send - a double press, a retry after a 5xx or a timeout - is answered the
 // message the first request made, with its deliveries, and the session is handed it once.
 func TestARepeatedKeyAnswersTheMessageItMadeAndDeliversOnce(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	send := func() *httptest.ResponseRecorder {
@@ -153,7 +193,7 @@ func TestARepeatedKeyAnswersTheMessageItMadeAndDeliversOnce(t *testing.T) {
 	}
 	original := decodeBody[model.Message](t, first)
 	if len(original.Deliveries) != 1 || original.Deliveries[0].State != "sent" {
-		t.Fatalf("first send's deliveries = %#v, want one sent attempt", original.Deliveries)
+		t.Fatalf("first send's deliveries = %s, want one sent attempt", describeAttempts(original.Deliveries))
 	}
 
 	repeat := send()
@@ -180,6 +220,10 @@ func TestARepeatedKeyAnswersTheMessageItMadeAndDeliversOnce(t *testing.T) {
 // signal therefore finishes inside the drain: its attempt settles sent, and the page's retry under
 // its key is answered with that message and hands the session nothing more.
 func TestASendInFlightAtShutdownStillSettles(t *testing.T) {
+	// Serial: a product timer is under its steps. The listener client gives a send up at its
+	// window (envoy defaultTimeout, 5 s, shorter than concurrentWait), so the listener's hold of
+	// the send, from its arrival to the release below, must end inside those 5 s, and a parallel
+	// test's load is what would stretch it past them.
 	held := make(chan struct{})
 	release := make(chan struct{})
 	cut := make(chan struct{})
@@ -210,7 +254,7 @@ func TestASendInFlightAtShutdownStillSettles(t *testing.T) {
 	go func() { answered <- send() }()
 	select {
 	case <-held:
-	case <-time.After(10 * time.Second):
+	case <-time.After(concurrentWait):
 		t.Fatal("the send never reached the listener")
 	}
 	// The deploy's signal, while the listener holds the send. A send cut off by it ends its
@@ -225,7 +269,7 @@ func TestASendInFlightAtShutdownStillSettles(t *testing.T) {
 	var created *httptest.ResponseRecorder
 	select {
 	case created = <-answered:
-	case <-time.After(10 * time.Second):
+	case <-time.After(concurrentWait):
 		t.Fatal("the send in flight at shutdown never answered")
 	}
 
@@ -266,6 +310,7 @@ func TestASendInFlightAtShutdownStillSettles(t *testing.T) {
 // them has arrived there: one makes the message and every other is told the first is in flight or,
 // once it has answered, given its answer. The session is handed the message once.
 func TestConcurrentSendsUnderOneKeyMakeOneMessage(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	ctx := context.Background()
@@ -310,7 +355,7 @@ func TestConcurrentSendsUnderOneKeyMakeOneMessage(t *testing.T) {
 			default:
 				t.Errorf("status=%d body=%s", response.Code, response.Body.String())
 			}
-		case <-time.After(20 * time.Second):
+		case <-time.After(concurrentWait):
 			t.Fatal("a concurrent send did not answer")
 		}
 	}
@@ -322,7 +367,7 @@ func TestConcurrentSendsUnderOneKeyMakeOneMessage(t *testing.T) {
 	}
 	for id := range ids {
 		if attempts := messageAttempts(t, database, id); len(attempts) != 1 || attempts[0].State != "sent" {
-			t.Fatalf("the message's attempts = %#v, want one sent attempt", attempts)
+			t.Fatalf("the message's attempts = %s, want one sent attempt", describeAttempts(attempts))
 		}
 	}
 	if got := sends.targets(); !equalStrings(got, []string{"s1"}) {
@@ -334,6 +379,7 @@ func TestConcurrentSendsUnderOneKeyMakeOneMessage(t *testing.T) {
 // while the listener still holds the frame. The delivery runs on past the request, the key keeps
 // its answer, and the page's retry under the key is answered the message, sending nothing again.
 func TestAClientAbortMidSendStillDeliversOnce(t *testing.T) {
+	t.Parallel()
 	sending := make(chan struct{})
 	release := make(chan struct{})
 	var held atomic.Bool
@@ -364,14 +410,14 @@ func TestAClientAbortMidSendStillDeliversOnce(t *testing.T) {
 	}()
 	select {
 	case <-sending:
-	case <-time.After(10 * time.Second):
+	case <-time.After(concurrentWait):
 		t.Fatal("the send never reached the listener")
 	}
 	cancel()
 	close(release)
 	select {
 	case <-answered:
-	case <-time.After(10 * time.Second):
+	case <-time.After(concurrentWait):
 		t.Fatal("the cut-off send never finished")
 	}
 
@@ -381,7 +427,7 @@ func TestAClientAbortMidSendStillDeliversOnce(t *testing.T) {
 		t.Fatalf("find the message: %v", err)
 	}
 	if attempts := messageAttempts(t, database, id); len(attempts) != 1 || attempts[0].State != "sent" {
-		t.Fatalf("the cut-off send's attempts = %#v, want one attempt settled sent", attempts)
+		t.Fatalf("the cut-off send's attempts = %s, want one attempt settled sent", describeAttempts(attempts))
 	}
 
 	retry := postAgentMessageKeyed(t, handler, "s1", input, "alice", "abort-1")
@@ -498,6 +544,7 @@ func TestARetryOfAStrandedSendResumesItsAttempt(t *testing.T) {
 // delivery never started is started even then, and the listener's outage is recorded on its
 // attempt, never answered as a server error the page would retry.
 func TestARetryIsAnsweredWhileTheListenerIsDown(t *testing.T) {
+	t.Parallel()
 	var down atomic.Bool
 	var asked atomic.Int32
 	listener, sends := newBroadcastListener(t, agentSessions, func(w http.ResponseWriter, _ *http.Request) bool {
@@ -522,7 +569,8 @@ func TestARetryIsAnsweredWhileTheListenerIsDown(t *testing.T) {
 		t.Fatalf("a repeat while the listener is down: status=%d body=%s, want the message replayed", repeat.Code, repeat.Body.String())
 	}
 	if got := decodeBody[model.Message](t, repeat); got.ID != original.ID || len(got.Deliveries) != 1 || got.Deliveries[0].State != "sent" {
-		t.Fatalf("the repeat answered %#v, want message %s with its one sent attempt", got, original.ID)
+		t.Fatalf("the repeat answered message %s with attempts %s, want message %s with its one sent attempt",
+			got.ID, describeAttempts(got.Deliveries), original.ID)
 	}
 	if n := asked.Load(); n != 0 {
 		t.Fatalf("the repeat asked the listener %d times, want none", n)
@@ -546,6 +594,7 @@ func TestARetryIsAnsweredWhileTheListenerIsDown(t *testing.T) {
 // A send whose key a repeat took over while it was slow commits nothing: its message and its
 // recovery point roll back together, and the repeat that holds the key makes the send instead.
 func TestASendThatLostItsKeyCommitsNothing(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	_, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
 	holdRequestKey(t, database, heldKey{
@@ -583,6 +632,7 @@ func TestASendThatLostItsKeyCommitsNothing(t *testing.T) {
 // recovery point kept, so the next attempt is answered from the message at once, not refused as in
 // flight and never made twice. A request that committed nothing has its key deleted instead.
 func TestAFailureAfterTheSendCommittedIsAnsweredFromItsMessage(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
 	id := commitKeyedMessage(t, database, "failed-after-commit", "Status?", "btw", 0, nil)
@@ -595,7 +645,8 @@ func TestAFailureAfterTheSendCommittedIsAnsweredFromItsMessage(t *testing.T) {
 		t.Fatalf("the next attempt: status=%d body=%s, want the message replayed", retry.Code, retry.Body.String())
 	}
 	if got := decodeBody[model.Message](t, retry); got.ID != id || len(got.Deliveries) != 1 || got.Deliveries[0].State != "sent" {
-		t.Fatalf("the next attempt answered %#v, want message %s sent once", got, id)
+		t.Fatalf("the next attempt answered message %s with attempts %s, want message %s sent once",
+			got.ID, describeAttempts(got.Deliveries), id)
 	}
 	if messages := countMessages(t, database); messages != 1 {
 		t.Fatalf("the database holds %d messages, want the one", messages)

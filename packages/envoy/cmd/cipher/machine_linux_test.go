@@ -70,6 +70,7 @@ func loggedInElsewhere(t *testing.T, rig *ciphertest.Rig, host string) (*helper.
 // case (the broker reads any case), warns that it ends this machine's access, and the broker
 // refuses the next command, which says to log the machine in again.
 func TestMachineListAndRevokeUnderTheMachinesLogin(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, rig.URL, rig.Operator)
@@ -142,6 +143,7 @@ func TestMachineListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 // the secret, which now names a reason because the revoke withheld the name and so put it to a
 // person, waits for approval.
 func TestGrantListAndRevokeUnderTheMachinesLogin(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, rig.URL, rig.Operator)
@@ -210,6 +212,7 @@ func TestGrantListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 // `grant list` run from inside one say so and exit 1. `grant revoke` is no longer here: a session
 // ends a grant it was given from inside the session (TestGrantRevokeInsideASessionEndsItsOwnGrant).
 func TestMachineAndGrantCommandsRefusedInsideASession(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock := realHelper(t)
 	for _, args := range [][]string{{"machine", "list"}, {"machine", "revoke", uuid.NewString()}, {"grant", "list"}} {
@@ -224,6 +227,7 @@ func TestMachineAndGrantCommandsRefusedInsideASession(t *testing.T) {
 // TestMachineAndGrantCommandsOnAMachineNotLoggedIn: from the operator's own shell on a machine
 // whose helper holds no machine login, every machine and grant command says to log it in.
 func TestMachineAndGrantCommandsOnAMachineNotLoggedIn(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, "http://127.0.0.1:1", "ada@example.com")
 	for _, args := range [][]string{{"machine", "list"}, {"machine", "revoke", uuid.NewString()}, {"grant", "list"}, {"grant", "revoke", uuid.NewString()}} {
@@ -341,7 +345,7 @@ func (s *grantSession) run(args ...string) grantSessionResult {
 		s.t.Fatalf("sending %v to the session: %v", args, err)
 	}
 	s.seen++
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(promptJobWait)
 	for {
 		data, _ := os.ReadFile(s.resultsPath)
 		if len(data) > 0 {
@@ -355,7 +359,7 @@ func (s *grantSession) run(args ...string) grantSessionResult {
 			}
 		}
 		if time.Now().After(deadline) {
-			s.t.Fatalf("the session never reported a result for %v", args)
+			s.t.Fatalf("the session never reported a result for %v within promptJobWait (%s)", args, promptJobWait)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

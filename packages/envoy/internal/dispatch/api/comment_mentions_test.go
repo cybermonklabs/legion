@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -30,7 +33,11 @@ type commentDeliveryRead struct {
 	SessionID *string `json:"session_id"`
 	State     string  `json:"state"`
 	Error     *string `json:"error"`
-	ReplyID   *string `json:"reply_id"`
+	// ResolveError is what the attempt's own resolution found. A create response carries it as
+	// the creating transaction wrote it, so it says, with nothing racing it, whether the
+	// listener answered that mention's lookup inside mentionLookupTimeout.
+	ResolveError *string `json:"resolve_error"`
+	ReplyID      *string `json:"reply_id"`
 }
 
 type mentionedCommentRead struct {
@@ -68,6 +75,96 @@ func settledCommentDeliveries(t *testing.T, database *store.Store, commentID str
 	})
 }
 
+// aResolvedMentionCreation posts input until the comment it creates committed what its mention's
+// lookup found - a pinned session, or the listener's refusal - on attempt 1.
+//
+// A comment's creation bounds every lookup it makes at mentionLookupTimeout (250 ms,
+// comment_delivery.go) and is answered without one that missed it, committing that attempt with
+// neither a session nor a resolve error; the sender of that mention then resolves the target
+// again after the commit (mentionResolutionFor), which is a second lookup of the product's own
+// making. A creation that lost its lookup to that bound is not what a case using this helper is
+// about - each is about what a committed resolution does next - so that comment's deliveries are
+// settled, again puts the listener back as the case found it, and the comment is posted once
+// more, until concurrentWait has passed: the bound is missed about once in sixty on a loaded
+// two-core runner, so tries that run out that wait are not a wait a person will ever see, and a
+// case that spent it says so rather than asserting against a resolution that was never recorded.
+func aResolvedMentionCreation(
+	t *testing.T, handler http.Handler, database *store.Store, issueKey string,
+	input map[string]any, again func(),
+) mentionedCommentRead {
+	t.Helper()
+	for try, deadline := 1, time.Now().Add(concurrentWait); ; try++ {
+		created := decodeMentionedComment(t, postMentionedComment(t, handler, issueKey, input))
+		if len(created.Deliveries) != 1 {
+			t.Fatalf("creation %d = %#v, want the one mention's attempt", try, created)
+		}
+		if created.Deliveries[0].SessionID != nil || created.Deliveries[0].ResolveError != nil {
+			return created
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d creations in a row over %s gave their mention's lookup up at %v", try, concurrentWait, mentionLookupTimeout)
+		}
+		settledCommentDeliveries(t, database, created.ID)
+		again()
+	}
+}
+
+// listenerLookups records every read a listener stand-in served - a session, a role, the session
+// list - with when it arrived, how long the stand-in took over it and how the request's context
+// stood once it had, for a failure message. A read Dispatch gives up on is answered as nothing: a
+// mention's creation commits its attempt with neither a session nor an error once a lookup passes
+// mentionLookupTimeout (250 ms), and a route reads unknown once the roster passes
+// routeRosterTimeout (2 s), so these times are the only cause such a failure can print.
+type listenerLookups struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+// recording is handler with every GET it serves recorded.
+func (l *listenerLookups) recording(handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			handler.ServeHTTP(w, r)
+			return
+		}
+		arrived := time.Now()
+		handler.ServeHTTP(w, r)
+		l.mu.Lock()
+		l.calls = append(l.calls, fmt.Sprintf("GET %s arrived %s, handled in %s, its context then: %v",
+			r.URL.RequestURI(), arrived.Format(time.RFC3339Nano), time.Since(arrived), r.Context().Err()))
+		l.mu.Unlock()
+	})
+}
+
+// String is every read recorded so far, in the order the stand-in finished them.
+func (l *listenerLookups) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.calls) == 0 {
+		return "no reads"
+	}
+	return strings.Join(l.calls, "; ")
+}
+
+// commentAttempts reads every attempt of the comment once, by target and attempt, straight from its
+// rows.
+func commentAttempts(t *testing.T, database *store.Store, commentID string) []model.CommentDelivery {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select `+commentDeliveryColumns+` from comment_deliveries where comment_id = $1 order by target, attempt
+	`, commentID)
+	if err != nil {
+		t.Fatalf("read comment %s attempts: %v", commentID, err)
+	}
+	attempts, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.CommentDelivery, error) {
+		return scanCommentDelivery(row)
+	})
+	if err != nil {
+		t.Fatalf("read comment %s attempts: %v", commentID, err)
+	}
+	return attempts
+}
+
 // waitForCommentDeliveries reads the comment's attempts, by target and attempt, until done accepts
 // them; want says what done waits for. Its patience covers a whole take-over window and ten
 // seconds past it, because a send on the mention sender's lanes may wait one out after the
@@ -77,31 +174,21 @@ func waitForCommentDeliveries(
 	t *testing.T, database *store.Store, commentID, want string, done func([]model.CommentDelivery) bool,
 ) []model.CommentDelivery {
 	t.Helper()
-	deadline := time.Now().Add(listenerTakeoverWindow + 10*time.Second)
+	deadline := time.Now().Add(listenerTakeoverWindow + concurrentWait)
 	for {
-		rows, err := database.Pool.Query(context.Background(), `
-			select `+commentDeliveryColumns+` from comment_deliveries where comment_id = $1 order by target, attempt
-		`, commentID)
-		if err != nil {
-			t.Fatalf("read comment %s attempts: %v", commentID, err)
-		}
-		attempts, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.CommentDelivery, error) {
-			return scanCommentDelivery(row)
-		})
-		if err != nil {
-			t.Fatalf("read comment %s attempts: %v", commentID, err)
-		}
+		attempts := commentAttempts(t, database, commentID)
 		if done(attempts) {
 			return attempts
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("comment %s attempts = %#v, want %s", commentID, attempts, want)
+			t.Fatalf("comment %s attempts = %s, want %s", commentID, describeAttempts(attempts), want)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 }
 
 func TestMentionedCommentRecordsFailedOfflineSession(t *testing.T) {
+	t.Parallel()
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/v1/sessions" {
 			_, _ = w.Write([]byte(`[]`))
@@ -124,7 +211,7 @@ func TestMentionedCommentRecordsFailedOfflineSession(t *testing.T) {
 	}
 	if settled := settledCommentDeliveries(t, database, created.ID); len(settled) != 1 || settled[0].State != "failed" ||
 		settled[0].SessionID != nil || settled[0].Error == nil || *settled[0].Error != "no live session gone" {
-		t.Fatalf("offline delivery = %#v, want a failed delivery with no resolved session", settled)
+		t.Fatalf("offline delivery = %s, want a failed delivery with no resolved session", describeAttempts(settled))
 	}
 	events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
 	if events.Code != http.StatusOK || !strings.Contains(events.Body.String(), `"type":"comment.delivery"`) ||
@@ -134,6 +221,7 @@ func TestMentionedCommentRecordsFailedOfflineSession(t *testing.T) {
 }
 
 func TestMentionedCommentUsesRequestedOrDefaultDeliveryMode(t *testing.T) {
+	t.Parallel()
 	capabilities := []string{"btw", "steer"}
 	sent := []map[string]any{}
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -169,14 +257,14 @@ func TestMentionedCommentUsesRequestedOrDefaultDeliveryMode(t *testing.T) {
 	}
 	if settled := settledCommentDeliveries(t, database, defaultMode.ID); len(settled) != 1 ||
 		settled[0].Delivery != "steer" || settled[0].State != "sent" {
-		t.Fatalf("default mode delivery = %#v", settled)
+		t.Fatalf("default mode delivery = %s", describeAttempts(settled))
 	}
 	btwMode := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "BTW mode.", "mentions": []map[string]any{{"target": "session:s1"}}, "delivery": "btw",
 	}))
 	if settled := settledCommentDeliveries(t, database, btwMode.ID); len(settled) != 1 ||
 		settled[0].Delivery != "btw" || settled[0].State != "sent" {
-		t.Fatalf("btw mode delivery = %#v", settled)
+		t.Fatalf("btw mode delivery = %s", describeAttempts(settled))
 	}
 	if len(sent) != 2 {
 		t.Fatalf("mention sends = %#v, want default and btw sends", sent)
@@ -214,6 +302,7 @@ func TestMentionedCommentUsesRequestedOrDefaultDeliveryMode(t *testing.T) {
 }
 
 func TestMentionedCommentRejectsInvalidMentionInput(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTargetedMessageHandler(t, "")
 	issue := createInteractionIssue(t, handler, "TEST", "Mention validation", "before")
 	tooMany := make([]map[string]any, 11)
@@ -240,16 +329,29 @@ func TestMentionedCommentRejectsInvalidMentionInput(t *testing.T) {
 }
 
 func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
+	// Serial: a product timer is under its steps. What this case reads is the session the
+	// creation's own lookup pinned, and the creation keeps a lookup only when the listener
+	// answers it inside mentionLookupTimeout (250 ms, comment_delivery.go), a constant no test
+	// can raise. This listener is one more goroutine of this process, so a parallel neighbour's
+	// load is measured with each lookup, and a load that outlasts aResolvedMentionCreation's
+	// tries fails the case; it runs with the machine to itself.
+	var mu sync.Mutex
 	roleHolder := "s1"
-	roleLookups := 0
+	// relookups counts the lookups that found the role already moved to s2: every lookup after
+	// the first one since roleHolder was last set to s1, which answers s1 and moves the role.
+	relookups := 0
 	sent := []map[string]any{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["btw","steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/reviewer":
-			roleLookups++
+			mu.Lock()
 			holder := roleHolder
+			if holder == "s2" {
+				relookups++
+			}
 			roleHolder = "s2"
+			mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"role": "reviewer", "holder": holder, "title": "reviewer", "capabilities": []string{"btw", "steer"},
 			})
@@ -262,7 +364,9 @@ func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 				t.Fatalf("decode role mention send: %v", err)
 			}
+			mu.Lock()
 			sent = append(sent, input)
+			mu.Unlock()
 			_, _ = w.Write([]byte(`{"event_id":"mention-envelope","recipient":"s1"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -276,13 +380,30 @@ func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
 		t.Fatalf("set route: status=%d body=%s", patched.Code, patched.Body.String())
 	}
 
-	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
+	created := aResolvedMentionCreation(t, handler, database, issue.Key, map[string]any{
 		"body": "Review this exact version.", "mentions": []map[string]any{{"target": "role:reviewer"}},
-	}))
-	settledCommentDeliveries(t, database, created.ID)
-	if roleLookups != 1 || roleHolder != "s2" || len(created.Mentions) != 1 || created.Mentions[0].SessionID == nil ||
-		*created.Mentions[0].SessionID != "s1" || len(sent) != 1 || sent[0]["target_session"] != "s1" {
-		t.Fatalf("role resolution/sends = holder:%s lookups:%d mentions:%#v sends:%#v, want one pinned s1 delivery after role moves to s2", roleHolder, roleLookups, created.Mentions, sent)
+	}, func() {
+		mu.Lock()
+		roleHolder = "s1"
+		relookups = 0
+		sent = nil
+		mu.Unlock()
+	})
+	// The lookup behind this comment answered s1 and moved the role to s2, and the attempt
+	// committed with the holder it read. From here the role must not be asked about again: the
+	// send is made to the session the attempt names, through a read of that session alone. Every
+	// lookup after that one finds the role at s2, so relookups counts each of them whenever it
+	// came, one the sender made before this test read the response included, and they are the
+	// whole proof that no role transition redirected the frame. The creation's own lookup is not
+	// among them: it is the one that answered s1, as the mention's pinned session shows.
+	settled := settledCommentDeliveries(t, database, created.ID)
+	mu.Lock()
+	holder, lookups, sends := roleHolder, relookups, slices.Clone(sent)
+	mu.Unlock()
+	if lookups != 0 || holder != "s2" || len(created.Mentions) != 1 || created.Mentions[0].SessionID == nil ||
+		*created.Mentions[0].SessionID != "s1" || len(sends) != 1 || sends[0]["target_session"] != "s1" {
+		t.Fatalf("role resolution/sends = holder:%s lookups after the one that pinned s1:%d mentions:%d the creation's attempts:%s sends:%#v attempts:%s, want one pinned s1 delivery after role moves to s2",
+			holder, lookups, len(created.Mentions), describeAttempts(created.Deliveries), sends, describeAttempts(settled))
 	}
 	events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
 	if events.Code != http.StatusOK || !strings.Contains(events.Body.String(), `"suppress_route":true`) ||
@@ -293,6 +414,7 @@ func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
 }
 
 func TestMentionReplyRequiresItsAttemptTargetAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["btw","steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -364,6 +486,7 @@ func TestMentionReplyRequiresItsAttemptTargetAndIsIdempotent(t *testing.T) {
 }
 
 func TestMentionReplyErrorRecordsAttemptWithoutComment(t *testing.T) {
+	t.Parallel()
 	live := true
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1" {
@@ -404,7 +527,7 @@ func TestMentionReplyErrorRecordsAttemptWithoutComment(t *testing.T) {
 	}
 	attempt := decodeBody[commentDeliveryRead](t, failure)
 	if attempt.State != "failed" || attempt.Error == nil || *attempt.Error != "No active model." || attempt.ReplyID != nil {
-		t.Fatalf("failed answer attempt = %#v", attempt)
+		t.Fatalf("failed answer attempt = %s", describeAttempts([]commentDeliveryRead{attempt}))
 	}
 	reloaded := dispatchRequest(t, handler, http.MethodGet, "/api/v1/comments/"+comment.ID, nil, "alice")
 	if reloaded.Code != http.StatusOK {
@@ -424,6 +547,7 @@ func TestMentionReplyErrorRecordsAttemptWithoutComment(t *testing.T) {
 }
 
 func TestMentionRetrySelectsOneTargetAndReresolvesIt(t *testing.T) {
+	t.Parallel()
 	live := false
 	roleHolder := "s1"
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -471,7 +595,7 @@ func TestMentionRetrySelectsOneTargetAndReresolvesIt(t *testing.T) {
 		"body": "Retry a single mention.", "mentions": []map[string]any{{"target": "session:s1"}},
 	}))
 	if settled := settledCommentDeliveries(t, database, single.ID); len(settled) != 1 || settled[0].State != "failed" {
-		t.Fatalf("initial retry candidate = %#v", settled)
+		t.Fatalf("initial retry candidate = %s", describeAttempts(settled))
 	}
 	live = true
 	humanRetry := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+single.ID+"/deliveries", map[string]any{"delivery": "steer"}, "alice")
@@ -479,7 +603,7 @@ func TestMentionRetrySelectsOneTargetAndReresolvesIt(t *testing.T) {
 		t.Fatalf("human retry: status=%d body=%s", humanRetry.Code, humanRetry.Body.String())
 	}
 	if attempt := decodeBody[commentDeliveryRead](t, humanRetry); attempt.Attempt != 2 || attempt.Target != "session:s1" || attempt.State != "sent" {
-		t.Fatalf("human retry attempt = %#v", attempt)
+		t.Fatalf("human retry attempt = %s", describeAttempts([]commentDeliveryRead{attempt}))
 	}
 	bearerRetry := bearerRequest(t, handler, http.MethodPost, "/api/v1/comments/"+single.ID+"/deliveries", map[string]any{
 		"actor": map[string]any{"kind": "session", "id": "s2"}, "delivery": "btw",
@@ -488,7 +612,7 @@ func TestMentionRetrySelectsOneTargetAndReresolvesIt(t *testing.T) {
 		t.Fatalf("bearer retry: status=%d body=%s", bearerRetry.Code, bearerRetry.Body.String())
 	}
 	if attempt := decodeBody[commentDeliveryRead](t, bearerRetry); attempt.Attempt != 3 || attempt.Delivery != "btw" || attempt.State != "sent" {
-		t.Fatalf("bearer retry attempt = %#v", attempt)
+		t.Fatalf("bearer retry attempt = %s", describeAttempts([]commentDeliveryRead{attempt}))
 	}
 
 	multiple := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
@@ -533,6 +657,7 @@ func TestMentionRetrySelectsOneTargetAndReresolvesIt(t *testing.T) {
 }
 
 func TestCommentMentionReadProjectionIncludesReplyChain(t *testing.T) {
+	t.Parallel()
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -577,16 +702,27 @@ func TestCommentMentionReadProjectionIncludesReplyChain(t *testing.T) {
 }
 
 func TestMentionedCommentDoesNotReresolveMissingRoleHolder(t *testing.T) {
+	// Serial: a product timer is under its steps. What this case reads is the listener's refusal
+	// the creation's own lookup committed on attempt 1, and the creation keeps a lookup only when
+	// the listener answers it inside mentionLookupTimeout (250 ms, comment_delivery.go), a
+	// constant no test can raise. This listener is one more goroutine of this process, so a
+	// parallel neighbour's load is measured with each lookup, and a load that outlasts
+	// aResolvedMentionCreation's tries fails the case; it runs with the machine to itself.
+	var mu sync.Mutex
 	roleLookups := 0
 	sends := 0
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/reviewer":
+			mu.Lock()
 			roleLookups++
+			mu.Unlock()
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":"no holder for role reviewer"}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
+			mu.Lock()
 			sends++
+			mu.Unlock()
 			w.WriteHeader(http.StatusInternalServerError)
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -600,14 +736,34 @@ func TestMentionedCommentDoesNotReresolveMissingRoleHolder(t *testing.T) {
 		t.Fatalf("set role route: status=%d body=%s", patched.Code, patched.Body.String())
 	}
 
-	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
+	created := aResolvedMentionCreation(t, handler, database, issue.Key, map[string]any{
 		"body": "No holder should remain unresolved.", "mentions": []map[string]any{{"target": "role:reviewer"}},
-	}))
+	}, func() {
+		mu.Lock()
+		roleLookups = 0
+		sends = 0
+		mu.Unlock()
+	})
+	// Attempt 1 committed with the listener's refusal on it, which is the resolution this case
+	// is about: it is kept, never taken again, so the comment reaches no holder that appears
+	// later. The lookups counted since the last creation began are that proof: the creation's
+	// own lookup is the one, and a sender that looked the role up again for the attempt makes
+	// two. They are counted from the creation's start, not from its answer: the creation queues
+	// the mention's send before it writes its response (createCommentFor), so the sender can
+	// claim the attempt and look the role up again before the answer is read. An earlier
+	// creation whose lookup was given up at mentionLookupTimeout - which the mention's sender
+	// resolves again, as an attempt with nothing recorded on it asks - has settled before
+	// again() zeroed the count (aResolvedMentionCreation).
 	settled := settledCommentDeliveries(t, database, created.ID)
-	if roleLookups != 1 || sends != 0 || len(created.Mentions) != 1 || created.Mentions[0].SessionID != nil ||
-		len(settled) != 1 || settled[0].SessionID != nil || settled[0].State != "failed" {
-		t.Fatalf("missing-holder mention = lookups:%d sends:%d comment:%#v attempts:%#v, want one unresolved failed attempt",
-			roleLookups, sends, created, settled)
+	mu.Lock()
+	lookups, sendCount := roleLookups, sends
+	mu.Unlock()
+	if lookups != 1 || sendCount != 0 || len(created.Mentions) != 1 || created.Mentions[0].SessionID != nil ||
+		created.Deliveries[0].ResolveError == nil || *created.Deliveries[0].ResolveError != "no holder for role reviewer" ||
+		len(settled) != 1 || settled[0].SessionID != nil || settled[0].State != "failed" ||
+		settled[0].Error == nil || *settled[0].Error != "no holder for role reviewer" {
+		t.Fatalf("missing-holder mention = lookups by the creation and its send:%d sends:%d mentions:%d the creation's attempts:%s attempts:%s, want the creation's one lookup and one unresolved failed attempt",
+			lookups, sendCount, len(created.Mentions), describeAttempts(created.Deliveries), describeAttempts(settled))
 	}
 	events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
 	if events.Code != http.StatusOK || !strings.Contains(events.Body.String(), `"suppress_route":false`) {
@@ -620,6 +776,7 @@ func TestMentionedCommentDoesNotReresolveMissingRoleHolder(t *testing.T) {
 // the Inbox row select every reply on ask_id, and the stream keys its refresh on the event's
 // own ask_id.
 func TestCallbackReplyUnderAnAskJoinsTheAskThread(t *testing.T) {
+	t.Parallel()
 	live := true
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
@@ -687,29 +844,123 @@ func TestCallbackReplyUnderAnAskJoinsTheAskThread(t *testing.T) {
 	}
 }
 
+// routeMover moves an issue's delivery route while a comment's resolution of that route is in
+// flight, which is the fixture's own act rather than any lookup's work. It keeps the move
+// clear of the lookup in both directions.
+//
+// Nothing it runs is bound to a lookup request's context. A comment's creation bounds every
+// listener lookup it makes at mentionLookupTimeout (250 ms, comment_delivery.go) and is
+// answered without a lookup that missed it, so a move on the request's context is cancelled
+// the moment its update has to wait - behind another transaction's row lock, or behind a
+// loaded runner's scheduler - and then the route the locked row carries never moves at all,
+// which is the one thing these cases are about. The test's own context bounds it instead.
+//
+// It also runs on one connection, taken before the comment request: a move is a statement on a
+// warm connection rather than a pool acquisition that may first have to open one.
+//
+// What a case cannot leave to timing is that its move lands before the comment's transaction
+// reads the route under the issue row's lock, because a move the transaction read past proves
+// nothing. prepare settles that with the lock itself rather than with a clock: it writes the
+// new route and holds the write open, so the transaction's own "for no key update" read of
+// that row waits for release, however late the lookup reached this listener and whether or not
+// Dispatch was still waiting for its answer.
+type routeMover struct {
+	t    *testing.T
+	conn *pgxpool.Conn
+	// held is the prepared move: the open transaction holding the issue row, or nil.
+	held pgx.Tx
+}
+
+func newRouteMover(t *testing.T, database *store.Store) *routeMover {
+	t.Helper()
+	conn, err := database.Pool.Acquire(t.Context())
+	if err != nil {
+		t.Fatalf("take the connection the route moves run on: %v", err)
+	}
+	// A prepared move nothing releases would hold the issue row for as long as the test ran,
+	// and the comment's transaction would wait on it rather than fail. Postgres ends it
+	// instead, and the case fails on the assertion it is about.
+	if _, err := conn.Exec(t.Context(), `set idle_in_transaction_session_timeout = '30s'`); err != nil {
+		t.Fatalf("bound a prepared route move: %v", err)
+	}
+	mover := &routeMover{t: t, conn: conn}
+	t.Cleanup(func() {
+		if mover.held != nil {
+			_ = mover.held.Rollback(context.Background())
+		}
+		conn.Release()
+	})
+	return mover
+}
+
+// prepare writes route on the issue and holds that write open, taking the issue row's lock
+// before the comment request is made; release lets it land.
+func (m *routeMover) prepare(issueKey, route string) {
+	m.t.Helper()
+	held, err := m.conn.Begin(m.t.Context())
+	if err != nil {
+		m.t.Fatalf("open the move of %s to %s: %v", issueKey, route, err)
+	}
+	if _, err := held.Exec(m.t.Context(), `
+		update issues set route = $2 where key = $1
+	`, issueKey, route); err != nil {
+		m.t.Fatalf("write the move of %s to %s: %v", issueKey, route, err)
+	}
+	m.held = held
+}
+
+// release lands the prepared move, from inside the lookup handler whose route it is moving.
+func (m *routeMover) release() {
+	held := m.held
+	m.held = nil
+	if err := held.Commit(m.t.Context()); err != nil {
+		m.t.Errorf("land the prepared route move: %v", err)
+	}
+}
+
+// move writes route on the issue in one statement, for a case that moves the route again on a
+// later lookup and so cannot hold the row across the comment's earlier rounds: the transaction
+// would wait for a release that only the next lookup makes, and that lookup only comes once
+// the round it is waiting on has ended.
+func (m *routeMover) move(issueKey, route string) {
+	if _, err := m.conn.Exec(m.t.Context(), `
+		update issues set route = $2 where key = $1
+	`, issueKey, route); err != nil {
+		m.t.Errorf("move the route of %s to %s mid-resolution: %v", issueKey, route, err)
+	}
+}
+
 // The issue's route is resolved through the Envoy listener before the comment's transaction
 // opens, so the route can move while that lookup is in flight. The locked issue row is the
 // authority: a resolution it contradicts is taken again against the route the lock found, and
 // a route that keeps moving is a conflict rather than a comment whose route suppression was
 // decided from a route the issue no longer has.
+//
+// Serial: the suppression it reads measures a span. That suppression is decided from the
+// redo's resolution of the locked route, and Dispatch takes that resolution only from a lookup
+// the listener answers inside mentionLookupTimeout (250 ms, comment_delivery.go): one it gave
+// up on pins no session and suppresses nothing. This listener is one more goroutine of this
+// process, so a parallel neighbour's work is measured with it - measured on this pod, a bare
+// loopback lookup under two busy loops on two cores misses that bound about once in sixty. The
+// moves themselves are off the clock (routeMover) and the bound is the product's, so what is
+// left is this measurement, and it runs with the machine to itself.
 func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 	var database *store.Store
-	var issueKey string
+	var mover *routeMover
 	lookups := []string{}
-	moveRouteTo := ""
+	const movedRoute = "role:auditor"
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["btw","steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/v1/roles/"):
 			role := strings.TrimPrefix(r.URL.Path, "/v1/roles/")
 			lookups = append(lookups, role)
-			// The route moves while Dispatch is asking the listener who holds the old one.
-			if moveRouteTo != "" {
-				if _, err := database.Pool.Exec(r.Context(), `
-					update issues set route = $2 where key = $1
-				`, issueKey, moveRouteTo); err != nil {
-					t.Errorf("move the route mid-resolution: %v", err)
-				}
+			// The route moves while Dispatch is asking the listener who holds the old
+			// one, and the comment's transaction waits on that move's lock whatever
+			// this lookup does. One move: the redo's own lookup finds the route the
+			// locked row carries and touches no database at all.
+			if len(lookups) == 1 {
+				mover.release()
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"role": role, "holder": "s1", "title": "planner", "capabilities": []string{"btw", "steer"},
@@ -726,18 +977,20 @@ func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 	}))
 	defer listener.Close()
 	var handler http.Handler
-	handler, database = newTargetedMessageHandler(t, listener.URL)
+	// The seeded spec's settlement locks the very issue row these moves take, and one that
+	// fired inside a resolution would hold the move behind it (testServerOptions.settle). It
+	// decides nothing here, so it is kept out of the way for the whole test.
+	handler, database, _ = newTestServer(t, testServerOptions{envoyURL: listener.URL, settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "Route moves mid-resolution", "before")
-	issueKey = issue.Key
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
 		"route": "role:reviewer",
 	}, "alice")
 	if patched.Code != http.StatusOK {
 		t.Fatalf("set route: status=%d body=%s", patched.Code, patched.Body.String())
 	}
-
-	// One move: the redo resolves the route the locked row actually carries.
-	moveRouteTo = "role:auditor"
+	mover = newRouteMover(t, database)
+	// One move, landed at the first lookup: the redo resolves the route the locked row carries.
+	mover.prepare(issue.Key, movedRoute)
 	created := postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "Mentioning the session the new route holds.", "mentions": []map[string]any{{"target": "session:s1"}},
 	})
@@ -755,7 +1008,6 @@ func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 
 	// A route that keeps moving is refused rather than decided from a stale resolution.
 	lookups = nil
-	moveRouteTo = ""
 	moved := 0
 	listener.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -763,11 +1015,7 @@ func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 			role := strings.TrimPrefix(r.URL.Path, "/v1/roles/")
 			lookups = append(lookups, role)
 			moved++
-			if _, err := database.Pool.Exec(r.Context(), `
-				update issues set route = $2 where key = $1
-			`, issue.Key, fmt.Sprintf("role:moved-%d", moved)); err != nil {
-				t.Errorf("keep moving the route: %v", err)
-			}
+			mover.move(issue.Key, fmt.Sprintf("role:moved-%d", moved))
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"role": role, "holder": "s1", "title": "planner", "capabilities": []string{"btw", "steer"},
 			})
@@ -795,6 +1043,7 @@ func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 // a suggestion on a closed issue (which still takes every other comment), has to be found first,
 // from the pool, or every doomed request wakes the listener once per mention it names.
 func TestACommentItsOwnerRefusesResolvesNoMention(t *testing.T) {
+	t.Parallel()
 	lookups := 0
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]},` +
 		`{"session_id":"s2","title":"tester","capabilities":["steer"]}]`
@@ -851,6 +1100,7 @@ func TestACommentItsOwnerRefusesResolvesNoMention(t *testing.T) {
 // neither the comment's delivery projection nor the issue event log describes the delivery that
 // plainly happened.
 func TestReplyDuringAMentionSendStillRecordsTheDeliveryReceipt(t *testing.T) {
+	t.Parallel()
 	var handler http.Handler
 	replied := 0
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["btw","steer"]}]`
@@ -901,7 +1151,8 @@ func TestReplyDuringAMentionSendStillRecordsTheDeliveryReceipt(t *testing.T) {
 	// after the send returns, is what appends the receipt the answered row owes.
 	receipts := awaitCommentDeliveryReceipts(t, database, comment.ID, "session:s1", 1)
 	if replied != 1 {
-		t.Fatalf("the session answered %d times, want exactly one reply from inside the send", replied)
+		t.Fatalf("the session answered %d times, want exactly one reply from inside the send; attempts: %s",
+			replied, describeAttempts(commentAttempts(t, database, comment.ID)))
 	}
 
 	attempt := commentAttemptRow(t, database, comment.ID, "session:s1", 1)

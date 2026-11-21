@@ -29,7 +29,7 @@ import (
 // agent subjects, so a forward copy published to one is stored there.
 func publishTo(t *testing.T, client *bus.Client, subject string, item contracts.Envelope) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	if err := client.PublishCoreContext(ctx, subject, item); err != nil {
 		t.Fatalf("publish %s to %s: %v", item.Topic, subject, err)
@@ -179,7 +179,7 @@ func expectFrames(t *testing.T, frames <-chan contracts.Envelope, want int, quie
 		select {
 		case frame := <-frames:
 			got = append(got, frame)
-		case <-time.After(5 * time.Second):
+		case <-time.After(listenerWait):
 			t.Fatalf("the stand-in received %d frames, want %d", len(got), want)
 		}
 	}
@@ -216,6 +216,7 @@ func exceptionProbe(t *testing.T, client *bus.Client) *natsgo.Subscription {
 // A live holder answers no receipt, so its forward counts as delivered once the stream stored it:
 // the sender is answered 200 after the one forward, and the holder is not sent the envelope again.
 func TestPublishRouteAnswersStoredOnceTheHoldersForwardIsKept(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const role = "stored-forward"
 	claimRoleFor(t, harness.registry, harness.sessions, "ses_holder", role, nil)
@@ -246,6 +247,7 @@ func TestPublishRouteAnswersStoredOnceTheHoldersForwardIsKept(t *testing.T) {
 // the holder's agent subject, where the holder's consumer delivers it with acknowledgement and
 // redelivery. Nothing answers a receipt there, and the send waits for none.
 func TestPublishRouteStoresTheForwardForAHolderThatIsNotConnected(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const role = "offline-holder"
 	claimRoleFor(t, harness.registry, harness.sessions, "ses_offline", role, nil)
@@ -288,6 +290,7 @@ func TestPublishRouteStoresTheForwardForAHolderThatIsNotConnected(t *testing.T) 
 // of the first one's confirmation - forward the envelope to the holder twice, and the stream
 // stores that one copy.
 func TestPublishRouteStoresOneCopyOfARoleForwardSentTwice(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const role = "stored-once"
 	claimRoleFor(t, harness.registry, harness.sessions, "ses_one_copy", role, nil)
@@ -319,6 +322,7 @@ func TestPublishRouteStoresOneCopyOfARoleForwardSentTwice(t *testing.T) {
 // /v1/roles/<role> gives the same stalled read - the bus-unavailable 503 with Retry-After: 1,
 // naming the read - rather than holding the sender past its window.
 func TestPublishRouteAnswersBusUnavailableWhenTheClaimReadStalls(t *testing.T) {
+	// Serial: its assertion is a time (the 503 comes after sendRequestBudget and within 4.5 s).
 	srv, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
@@ -359,6 +363,7 @@ func TestPublishRouteAnswersBusUnavailableWhenTheClaimReadStalls(t *testing.T) {
 // A holder that does not advertise the payload's delivery mode is refused as /v1/messages/send
 // refuses it, naming the holder, and is sent nothing.
 func TestPublishRouteRefusesADeliveryModeTheHolderDoesNotAdvertise(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const role = "no-steer"
 	claimRoleFor(t, harness.registry, harness.sessions, "ses_aside_only", role, []string{"aside"})
@@ -377,6 +382,7 @@ func TestPublishRouteRefusesADeliveryModeTheHolderDoesNotAdvertise(t *testing.T)
 // A sender that holds the role itself is answered 200 and nothing is sent, to the holder or on the
 // role lane, as the role lane skips an echo.
 func TestPublishRouteSendsNothingToASenderHoldingTheRole(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const role = "self-held"
 	claimRoleFor(t, harness.registry, harness.sessions, "ses_self", role, nil)
@@ -434,6 +440,7 @@ func TestPublishRouteDoesNotForwardARepeatKeyItsHolderConfirmed(t *testing.T) {
 // the durable acknowledges it and delivers it to nobody, so a session subscribed to the copy's
 // topic is not given the message a second time.
 func TestDurableAcknowledgesAStoredForwardCopyAndDeliversNothing(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const topic = "notifications.team.stored-copy"
 	harness.registerFanoutTarget(t, "ses_subscriber", topic, nil)
@@ -446,7 +453,7 @@ func TestDurableAcknowledgesAStoredForwardCopyAndDeliversNothing(t *testing.T) {
 
 	forwardCopy := listenerTestEnvelope(topic, "publish.stored-copy")
 	publishTo(t, harness.client, contracts.LegacyAgentSubject("ses_self_subscribed"), forwardCopy)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(listenerWait)
 	for {
 		info, err := harness.client.JS().ConsumerInfo(bus.Stream, consumer)
 		if err != nil {

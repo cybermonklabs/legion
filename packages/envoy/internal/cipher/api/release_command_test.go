@@ -42,6 +42,7 @@ func lastRelease(t *testing.T, capture *logtest.Recorder, grantID string) map[st
 // A command that is not a list of strings refuses the whole body, as any field of the wrong shape
 // does, and releases nothing.
 func TestAReleaseBodyNamesTheCommandItStarts(t *testing.T) {
+	// Serial: it swaps the default logger (logtest.SetDefault) to read the release records back.
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	s := newNarrowingServer(t)

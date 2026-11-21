@@ -229,6 +229,7 @@ func TestStaticHandlerRetainedAssets(t *testing.T) {
 // never a miss: a build the server cannot read is not a file that is not there, so neither the
 // store nor the SPA shell answers for it.
 func TestStaticHandlerAnswers500WhenTheFilesystemFails(t *testing.T) {
+	t.Parallel()
 	webDist := t.TempDir()
 	locked := filepath.Join(webDist, "assets", "locked")
 	if err := os.MkdirAll(locked, 0o700); err != nil {
@@ -291,6 +292,7 @@ func TestStaticHandlerDeliversAWholeRetainedAssetToASlowClient(t *testing.T) {
 // cap gives, 503, not a 502 store failure: the store was never shown to be broken, only asked too
 // late to answer, and the client never gets a 200 carrying a year's immutable caching.
 func TestStaticHandlerAnswers503ForARetainedAssetThatStallsPastTheFetchBound(t *testing.T) {
+	t.Parallel()
 	handler, context := newTestRouter(t)
 	context.WebDistDir = t.TempDir()
 	context.AssetStore = latentStore{delay: time.Hour, object: []byte("never")}
@@ -874,6 +876,7 @@ func TestStaticHandlerReadsTheStoreOnceForConcurrentMisses(t *testing.T) {
 // are not the ones lost. That the bytes it counts are the bytes it holds is the shared cache's
 // own invariant (bytelru).
 func TestAssetCacheKeepsAtMostItsLimitEvictingTheLeastRecentlyUsed(t *testing.T) {
+	t.Parallel()
 	cache := newAssetCache(maxCachedAssetBytes)
 	sizes := []int64{MaxRetainedAssetSize, 3 << 20, 1, MaxRetainedAssetSize - 1, 5 << 20, 1747955}
 	for i := range 60 {

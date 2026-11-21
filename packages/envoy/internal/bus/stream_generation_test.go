@@ -20,12 +20,12 @@ const generationKey = "dispatch.stream-generation"
 // test plays another build's process with it.
 func rawJetStream(t *testing.T, url string) nats.JetStreamContext {
 	t.Helper()
-	conn, err := nats.Connect(url, nats.Timeout(5*time.Second))
+	conn, err := nats.Connect(url, nats.Timeout(busWait))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := conn.JetStream(nats.MaxWait(busWait))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestAStreamDeletedWhileTheClientRunsIsRecreatedOnItsReconnect(t *testing.T)
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(busWait)
 	for {
 		info, err := checkerJS.StreamInfo(Stream)
 		if err == nil {
@@ -299,10 +299,10 @@ func TestAClientFollowsASubjectANewerBuildAddsWhileItRuns(t *testing.T) {
 			if _, err := js.UpdateStream(&newer); err != nil {
 				t.Fatalf("the newer build adds its subject: %v", err)
 			}
-			deadline := time.Now().Add(10 * time.Second)
+			deadline := time.Now().Add(busWait)
 			for client.UsesCoreTransport(topic) {
 				if time.Now().After(deadline) {
-					t.Fatalf("the client still sends %s over core NATS 10 s after the stream captured it", topic)
+					t.Fatalf("the client still sends %s over core NATS %s after the stream captured it", topic, busWait)
 				}
 				time.Sleep(20 * time.Millisecond)
 			}
@@ -364,10 +364,10 @@ func TestABackgroundClientReadsTheDeployedSubjectsAtItsFirstConnection(t *testin
 			}
 
 			srv.Start(t)
-			deadline := time.Now().Add(15 * time.Second)
+			deadline := time.Now().Add(busWait)
 			for client.UsesCoreTransport(topic) {
 				if time.Now().After(deadline) {
-					t.Fatalf("the client still sends %s over core NATS 15 s after the server came up", topic)
+					t.Fatalf("the client still sends %s over core NATS %s after the server came up", topic, busWait)
 				}
 				time.Sleep(20 * time.Millisecond)
 			}

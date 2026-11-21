@@ -142,6 +142,7 @@ func (r *subjectStallRelay) close() {
 // that check: 503 unhealthy, naming the dependency and the context's deadline. The negative control
 // is /healthz on the same rig before the stall: 200 healthy.
 func TestHealthzAnswersAJetStreamThatStoppedAnsweringInsideItsBudget(t *testing.T) {
+	// Serial: its assertion is a time (each /healthz answer lands within healthzWithin).
 	for _, stall := range []struct {
 		name     string
 		prefixes []string
@@ -151,7 +152,7 @@ func TestHealthzAnswersAJetStreamThatStoppedAnsweringInsideItsBudget(t *testing.
 		{"the durable consumer's info read", []string{"$JS.API.CONSUMER.INFO."}, "durable consumer unavailable: context deadline exceeded"},
 	} {
 		t.Run(stall.name, func(t *testing.T) {
-			t.Parallel()
+			// Serial: its assertion is a time: /healthz answers within healthzWithin.
 			relay := startSubjectStallRelay(t, testnats.URL(t))
 			client, err := bus.ConnectOwningStream([]string{relay.relayed}, bus.WithReplicas(1))
 			if err != nil {
@@ -170,7 +171,7 @@ func TestHealthzAnswersAJetStreamThatStoppedAnsweringInsideItsBudget(t *testing.
 				t.Fatalf("open the session registry: %v", err)
 			}
 			t.Cleanup(sessions.StopWatch)
-			ready, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ready, cancel := context.WithTimeout(context.Background(), listenerWait)
 			defer cancel()
 			if err := registry.WaitForCacheReady(ready); err != nil {
 				t.Fatalf("wait for the interest cache: %v", err)

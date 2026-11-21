@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The suggestion outcome sweep caps each page at a writer floor it reads from marks of the event
+  log it keeps for itself, where it trailed the safe horizon. The floor waits only on the writes
+  still open on this database's event log, so a transaction open anywhere else on the Postgres
+  instance (another database's write, an operator's psql session) no longer holds the sweep's
+  judgements back, as it held back the safe horizon. A process's first pass under an event write
+  older than every mark it holds still waits for the safe horizon.

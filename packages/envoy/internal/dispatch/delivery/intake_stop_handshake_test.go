@@ -77,6 +77,11 @@ func startStopRow(t *testing.T, key func(*natsgo.Msg) (string, *contracts.Envelo
 	return row
 }
 
+// productionIntakeKey is intakeKey through the decode newIntake gives every intake (decodeEnvelope).
+func productionIntakeKey(msg *natsgo.Msg) (string, *contracts.Envelope, bool) {
+	return intakeKey(msg, decodeEnvelope)
+}
+
 // subscribers is how many subscribers the server counts on the row's deliver subject.
 func (r *stopRow) subscribers(t *testing.T) int {
 	return deliverSubjectSubscribers(t, r.server, r.subject)
@@ -172,7 +177,7 @@ func startGivenUpRow(t *testing.T) *stopRow {
 	t.Helper()
 	handling := make(chan struct{}, 2)
 	decided := make(chan struct{}, 2)
-	row := startStopRow(t, intakeKey, func(delivery *intakeDelivery, message intakeMessage) {
+	row := startStopRow(t, productionIntakeKey, func(delivery *intakeDelivery, message intakeMessage) {
 		handling <- struct{}{}
 		<-delivery.handling.Done()
 		delivery.handBack(message.msg)
@@ -278,7 +283,7 @@ func (r *stopRow) reconnect(t *testing.T) {
 // the hand-back the stop withholds.
 func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 	t.Run("a drain NATS has not taken", func(t *testing.T) {
-		row := startStopRow(t, intakeKey, func(*intakeDelivery, intakeMessage) {}, false)
+		row := startStopRow(t, productionIntakeKey, func(*intakeDelivery, intakeMessage) {}, false)
 		row.hold.HoldReconnect(t, row.conn)
 		row.hold.AnswersWithinAttempt(t, row.conn, "StopDelivering", row.stopUnder(context.Background()), row.stopUnder(context.Background()))
 		row.reconnect(t)
@@ -361,7 +366,7 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 			t.Cleanup(goOn)
 			// The handler makes its answer to NATS once the row lets it, as Intake.deliver and
 			// JobIntake.deliver do when their handling is done.
-			row := startStopRow(t, intakeKey, func(d *intakeDelivery, m intakeMessage) {
+			row := startStopRow(t, productionIntakeKey, func(d *intakeDelivery, m intakeMessage) {
 				entered <- struct{}{}
 				<-proceed
 				answering <- struct{}{}
@@ -486,7 +491,7 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 func TestAHandBackOutsideAStopReachesTheServerWhileAWriteHoldsTheLock(t *testing.T) {
 	handlerReady := make(chan struct{}, 1)
 	writeHeld := make(chan struct{})
-	row := startStopRow(t, intakeKey, func(delivery *intakeDelivery, message intakeMessage) {
+	row := startStopRow(t, productionIntakeKey, func(delivery *intakeDelivery, message intakeMessage) {
 		select {
 		case handlerReady <- struct{}{}:
 		default:
@@ -533,7 +538,7 @@ func TestAHandBackOnAReconnectingLinkLogsAtInfo(t *testing.T) {
 	logs := captureLogs(t)
 	handlerReady := make(chan struct{}, 1)
 	linkCut := make(chan struct{})
-	row := startStopRow(t, intakeKey, func(delivery *intakeDelivery, message intakeMessage) {
+	row := startStopRow(t, productionIntakeKey, func(delivery *intakeDelivery, message intakeMessage) {
 		select {
 		case handlerReady <- struct{}{}:
 		default:
@@ -601,7 +606,7 @@ func TestAHandBackOnAReconnectingLinkLogsAtInfo(t *testing.T) {
 // with a context.WithTimeout of callNATSWait).
 func TestACallNATSThatOutlivesItsWaitStillCompletesItsBookkeeping(t *testing.T) {
 	var first sync.Once
-	row := startStopRow(t, intakeKey, func(delivery *intakeDelivery, message intakeMessage) {
+	row := startStopRow(t, productionIntakeKey, func(delivery *intakeDelivery, message intakeMessage) {
 		// Only the first delivery is handed back: a hand-back with no delay is redelivered at once,
 		// and handing each redelivery back would loop until teardown.
 		first.Do(func() { delivery.handBack(message.msg) })
@@ -639,7 +644,7 @@ func startBufferedDrainRow(t *testing.T) (*stopRow, func()) {
 		default:
 		}
 		<-hold
-		return intakeKey(msg)
+		return productionIntakeKey(msg)
 	}, func(*intakeDelivery, intakeMessage) {}, true)
 	row.publishPullRequestSeven(t)
 	select {

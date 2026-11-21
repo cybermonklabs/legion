@@ -35,6 +35,7 @@ func squat(address string) (net.Listener, error) {
 // squatter that can take no port at all. The holder keeps its port throughout, so no other process
 // can take it in between.
 func TestTheSquatterTakesAPortItsHolderShares(t *testing.T) {
+	t.Parallel()
 	holder, err := squat("127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("hold a port that lets others share it: %v", err)
@@ -48,6 +49,7 @@ func TestTheSquatterTakesAPortItsHolderShares(t *testing.T) {
 }
 
 func TestRefusedRefusesEveryDialAndHoldsItsPort(t *testing.T) {
+	t.Parallel()
 	address := Refused(t)
 	for range 3 {
 		conn, err := net.DialTimeout("tcp", address, 5*time.Second)
@@ -77,6 +79,7 @@ func TestRefusedRefusesEveryDialAndHoldsItsPort(t *testing.T) {
 // beside it twice, as a server that starts and then restarts on the port makes it. The listener
 // rows fail when Reserve drops SO_REUSEADDR, and the dial row when the reservation listens.
 func TestReserveTakesAListenerAndRefusesADialAndAPlainBind(t *testing.T) {
+	t.Parallel()
 	fd, port, err := Reserve(&syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}})
 	if err != nil {
 		t.Fatalf("reserve a loopback port: %v", err)

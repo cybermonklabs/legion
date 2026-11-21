@@ -40,6 +40,7 @@ import (
 // project, which tells the person which one they write to. A broker from before the `store`
 // field holds them in AWS Secrets Manager.
 func TestASourceNamesTheBrokerAndTheStoreItsSettingsDescribe(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name     string
 		base     string
@@ -78,6 +79,7 @@ func TestASourceNamesTheBrokerAndTheStoreItsSettingsDescribe(t *testing.T) {
 // what tells this CLI's answer from another secrets CLI's for the same name; the secret forms say
 // which broker by host in place of a store rather than guessing one.
 func TestASourceWithNoSettingsNamesTheBrokerItself(t *testing.T) {
+	t.Parallel()
 	src := brokerSource(cipheraddr.New("https://secrets.internal.example"))
 	if got := src.String(); got != "the broker AGENT_SECRETS_URL names" {
 		t.Fatalf("source = %q, want the broker AGENT_SECRETS_URL names alone", got)
@@ -161,6 +163,7 @@ func TestExecFormNamesItsSourceBeforeItExecs(t *testing.T) {
 // cause prints as its class alone. A clean URL's messages read as before. No value forges a line
 // with a control byte, raw or escaped.
 func TestNoFormPrintsACredentialTheBrokerURLCarries(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	broker, _ := fakeBroker(t)
@@ -278,6 +281,7 @@ func TestAnIDThatWouldNotNameOnePathSegmentIsRefusedByName(t *testing.T) {
 // over https and a real server that closes the connection each read as a peer that answered and
 // broke the exchange, with net/http's own cause.
 func TestAPeerThatBrokeTheExchangeIsNamed(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	plain := httptest.NewServer(http.NotFoundHandler())
@@ -311,6 +315,7 @@ func TestAPeerThatBrokeTheExchangeIsNamed(t *testing.T) {
 // point - net/http reads the header before it asks CheckRedirect - so the call fails as a
 // request, and its class alone prints.
 func TestARedirectsTargetIsNotPrinted(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	var targetCalls atomic.Int64
@@ -577,6 +582,7 @@ func TestAnAnswerFromABrokerWithNoSettingsRouteStillNamesTheBroker(t *testing.T)
 // connection), names the address it tried and the variable that named it, so a session that
 // inherited a stale AGENT_SECRETS_URL reads a stale address rather than a broker that is down.
 func TestABrokerThatCannotBeReachedSaysSo(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 
@@ -611,6 +617,7 @@ func TestABrokerThatCannotBeReachedSaysSo(t *testing.T) {
 // exchange, and an error none of those covers worded as no more than a failed request. Each class
 // sends a reader to a different layer: DNS, routing or a listener, TLS or a proxy.
 func TestEveryUnreachableFailureIsClassified(t *testing.T) {
+	t.Parallel()
 	const base = "https://secrets.internal.example"
 	const answered = "answered but the exchange failed"
 	dial := func(errno syscall.Errno) error {

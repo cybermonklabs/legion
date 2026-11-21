@@ -126,7 +126,7 @@ func TestAWindowRequestRefusesAForwardWithoutAMsgID(t *testing.T) {
 		if !errors.Is(err, bus.ErrNoForwardMsgID) || !errors.Is(err, bus.ErrRefused) {
 			t.Fatalf("an unnamed request answered %v, want ErrNoForwardMsgID and ErrRefused", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("an unnamed request was never answered")
 	}
 	info, err := client.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: subject})
@@ -164,7 +164,7 @@ func TestStartRequestStoredToIsBoundedByItsWindowWhenTheFlushTimesOut(t *testing
 		TraceID:        "trace_stalled",
 	}
 	// Control: the same subject and envelope are stored while the server runs.
-	forward, err := client.StartRequestStoredTo(subject, item, bus.ForwardMsgID(item.DedupeKey, subject), 2*time.Second)
+	forward, err := client.StartRequestStoredTo(subject, item, bus.ForwardMsgID(item.DedupeKey, subject), busWait)
 	if err != nil {
 		t.Fatalf("StartRequestStoredTo against a healthy server: %v", err)
 	}

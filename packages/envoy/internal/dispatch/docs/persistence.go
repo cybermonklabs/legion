@@ -387,10 +387,17 @@ func ceilingOf(ceiling int64, recovering bool) *int64 {
 // clearSettlementPending deletes the document's pending settlement inside the settlement
 // transaction that has read every update, so it commits only with that settlement's writes. The
 // settlement holds the document's advisory lock from before it reads the update cursor until it
-// commits, so no update it has not read can be appended meanwhile. The same statement keeps kept
-// as the document's closed edit source (doc_closed_edit_sources), or deletes the one kept where
-// kept is nil. It goes through write, so it runs in the settlement's write phase, in its place
-// among the settlement's other writes.
+// commits, so no update it has not read can be appended meanwhile. When it deletes the row, the
+// same statement keeps kept as the document's closed edit source (doc_closed_edit_sources), or
+// deletes the one kept where kept is nil. A settlement that finds no row to delete leaves the kept
+// source as it is: the document owed it nothing, so it credited no edit, and the source is the
+// editor the settlement that deleted the row credited. Such a settlement is one started while an
+// earlier one was committing, which runs once that one has committed: the timer a resumption pass
+// armed when it picked the row before that settlement deleted it, or settleOwedNow, which read the
+// row then. Were it to delete the source, the reopen's ask-state write would insert a row naming
+// no editor (settlementPendingStatement), and the settlement after the reopen would credit
+// SettlementActor with the text the kept editor wrote. It goes through write, so it runs in the
+// settlement's write phase, in its place among the settlement's other writes.
 func clearSettlementPending(ctx context.Context, tx pgx.Tx, room string, kept *model.Actor) error {
 	encoded, err := encodeActor(kept)
 	if err != nil {
@@ -400,17 +407,19 @@ func clearSettlementPending(ctx context.Context, tx pgx.Tx, room string, kept *m
 }
 
 // clearSettlementPendingStatement is clearSettlementPending's one statement: it deletes the pending
-// row of the document $1 and either keeps $2 as the document's closed edit source or, where $2 is
-// null, deletes the one kept.
+// row of the document $1 and, when it deleted one, either keeps $2 as the document's closed edit
+// source or, where $2 is null, deletes the one kept.
 const clearSettlementPendingStatement = `
 	with pending as (
 		delete from doc_settlements_pending where artifact_id = $1::uuid
+		returning artifact_id
 	), kept as (
 		insert into doc_closed_edit_sources (artifact_id, last_actor)
-		select $1::uuid, $2::jsonb where $2::jsonb is not null
+		select artifact_id, $2::jsonb from pending where $2::jsonb is not null
 		on conflict (artifact_id) do update set last_actor = excluded.last_actor
 	)
-	delete from doc_closed_edit_sources where artifact_id = $1::uuid and $2::jsonb is null`
+	delete from doc_closed_edit_sources
+	where artifact_id in (select artifact_id from pending) and $2::jsonb is null`
 
 // settlementPending reports whether room owes a settlement. Shutdown's drain uses this to skip
 // settling a document that already has none owed, rather than spending its budget repeating work

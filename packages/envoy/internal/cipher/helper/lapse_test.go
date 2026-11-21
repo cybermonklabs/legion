@@ -43,7 +43,7 @@ func lapseRig(t *testing.T, failRevokes int) (*rig, string, string) {
 	r.fake.revokeFailFirst = failRevokes
 	r.fake.renewGate = gate
 	r.fake.mu.Unlock()
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	reg := r.call(t, Request{Op: "register", WaitSeconds: 10})
 	if !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register: %+v", reg)
 	}
@@ -62,40 +62,46 @@ func revoked(r *rig, id string) bool {
 }
 
 // endSessionThenReleaseRevokes ends sess while every revoke is failing (reg.Remove, as retire and
-// unregister do), waits for the next revoke attempt after that, then clears the fake's revoke
-// fault. The fake fails an attempt in the same critical section that counts it, so the attempt the
-// helper sees has already failed. That attempt is the handed-off revoke's first, or at most one
-// last try of the session's own loop, which then returns at once. In that second case the
-// handed-off revoke's first try follows at once, and the 200 ms sleep before the fault is cleared
-// makes that try fail too. Either way the id lands on the handed-off revoke's next try, 2 s later,
-// although no test asserts which try lands it. The helper fails the test when no attempt comes
-// within 5 s: nothing handed the id on.
+// unregister do) and leaves exactly one more failure behind it, so the lapsed id can only be
+// revoked by the revoke the session hands off, on whichever of that revoke's three tries follows
+// the failure. Nothing here is timed: the fault is cleared by a count the fake decrements, not by
+// a sleep the next try has to outlast, so no assertion depends on how far apart those tries are
+// (dispatch://INFRA-1075).
+//
+// The count and the Remove are one critical section of the fake's own lock, which its DELETE
+// handler takes before it answers anything, so a revoke already in flight waits there until the
+// session is gone and the one remaining failure is counted from a point no answer can cross.
+// Once its stop is closed the session's own loop can attempt at most once more — the attempt it
+// held in flight, or one whose backoff fired in that same instant — because the wait after that
+// attempt fails meets a closed stop and a timer that has only just started (retryUntilStop). So
+// that one failure is the last the session's own loop can be answered, and the fake answers
+// every attempt after it, every one of which is the handed-off revoke's.
 func endSessionThenReleaseRevokes(t *testing.T, r *rig, reg *Registry, sess *Session) {
 	t.Helper()
 	r.fake.mu.Lock()
 	before := r.fake.revokeAttempts
-	r.fake.mu.Unlock()
+	r.fake.revokeFailFirst = 1
 	reg.Remove(sess)
+	r.fake.mu.Unlock()
 	if sess.peer != nil {
 		sess.peer.Close()
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	// Some revoke must follow the session's end — the session's own last try, or the handed-off
+	// revoke's first. None within eventWait means the id went nowhere, which says more here than
+	// the caller's own "never revoked" after its wait.
+	deadline := time.Now().Add(eventWait)
 	for {
 		r.fake.mu.Lock()
 		n := r.fake.revokeAttempts
 		r.fake.mu.Unlock()
 		if n > before {
-			break
+			return
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("no revoke was attempted after the session ended; nothing handed its id on")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	time.Sleep(200 * time.Millisecond)
-	r.fake.mu.Lock()
-	r.fake.revokeFailFirst = 0
-	r.fake.mu.Unlock()
 }
 
 // testGate returns a gate for the fake's enrollGate or renewGate and the func that opens it, once
@@ -116,11 +122,12 @@ const lapseReason = "the broker refused this session's renew (ENROLLMENT_NOT_LIV
 // explicit "not live" message) lapses and re-enrolls a helper session. PROOF_INVALID may be an
 // iat-skew error; its next proof can succeed after the clock is corrected, so the helper retains
 // the enrollment and retries it. The fake holds the refused renew at its renew gate until the test
-// has moved the enrollment's stored expiry a minute out, past every deadline in the test, so the
-// retry is judged on its proof alone and never meets a lease that has passed, however slow the host
-// is. The session is checked at every poll until the retry has renewed, so a lapse fails the test
-// as soon as it shows rather than when the wait runs out.
+// has moved the enrollment's stored expiry past any run of the test binary (testwait.PastTheRun),
+// so the retry is judged on its proof alone and never meets a lease that has passed, however slow
+// the host is. The session is checked at every poll until the retry has renewed, so a lapse fails
+// the test as soon as it shows rather than when the wait runs out.
 func TestAProofInvalidRenewKeepsTheEnrollment(t *testing.T) {
+	t.Parallel()
 	r := startRig(t, filepath.Join(t.TempDir(), "sessions.json"))
 	gate, release := testGate(t)
 	r.fake.mu.Lock()
@@ -129,7 +136,7 @@ func TestAProofInvalidRenewKeepsTheEnrollment(t *testing.T) {
 	r.fake.renewRefusalCode = "PROOF_INVALID"
 	r.fake.renewGate = gate
 	r.fake.mu.Unlock()
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	reg := r.call(t, Request{Op: "register", WaitSeconds: 10})
 	if !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register: %+v", reg)
 	}
@@ -140,7 +147,7 @@ func TestAProofInvalidRenewKeepsTheEnrollment(t *testing.T) {
 		return r.fake.renewAttempts == 1
 	})
 	r.fake.mu.Lock()
-	r.fake.leaseExpiry[id] = time.Now().Add(time.Minute)
+	r.fake.leaseExpiry[id] = time.Now().Add(testwait.PastTheRun)
 	r.fake.mu.Unlock()
 	release() // answered 401 PROOF_INVALID; the gate stays open for the retry
 
@@ -170,6 +177,7 @@ func TestAProofInvalidRenewKeepsTheEnrollment(t *testing.T) {
 // so a helper restart meanwhile revokes it. Once the revoke lands the session enrolls afresh and
 // signs again.
 func TestALapsedEnrollmentStopsSigningWhileItsRevokeRetries(t *testing.T) {
+	t.Parallel()
 	r, lapsed, state := lapseRig(t, failAlways)
 	sign := Request{Op: "sign", Method: "GET", URL: "https://secrets.test/v1/enrollments/self"}
 	want := "this session is not enrolled with the broker yet; last attempt: " + lapseReason
@@ -220,9 +228,10 @@ func TestALapsedEnrollmentStopsSigningWhileItsRevokeRetries(t *testing.T) {
 // TestASessionThatEndsWhileItsLapsedRevokeRetriesStillRevokesIt: retire revokes only a live
 // enrollment, so a session that ends while its lapsed id's revoke is backing off must hand that
 // id to the bounded independent revoke rather than abandon it. Every revoke fails until the
-// session has ended and its own retry loop has stopped, so only the handed-off revoke can land
-// the id: its second try, 2 s after the first.
+// session has ended and its own retry loop has stopped (endSessionThenReleaseRevokes), so only
+// the handed-off revoke can land the id.
 func TestASessionThatEndsWhileItsLapsedRevokeRetriesStillRevokesIt(t *testing.T) {
+	t.Parallel()
 	r, lapsed, _ := lapseRig(t, failAlways)
 	sess := r.srv.Registry.Get(os.Getpid())
 	endSessionThenReleaseRevokes(t, r, r.srv.Registry, sess)
@@ -242,6 +251,8 @@ func TestASessionThatEndsWhileItsLapsedRevokeRetriesStillRevokesIt(t *testing.T)
 // test cannot pass by arriving after the session enrolled again: a register that does not wait
 // answers while the gate is still shut, and the test fails.
 func TestRegisterWaitWaitsForTheReEnrollmentAfterALapse(t *testing.T) {
+	// Serial: registerWaitBlocked reads the whole process's goroutine dump
+	// (blockedInRegisterReply), which a parallel test's own waiting register would match.
 	r, lapsed, _ := lapseRig(t, failAlways)
 	gate, open := testGate(t)
 	r.fake.mu.Lock()
@@ -263,6 +274,8 @@ func TestRegisterWaitWaitsForTheReEnrollmentAfterALapse(t *testing.T) {
 // revoked before the next enrollment (the fake answers an unrevoked id's key with that same id),
 // and the session ends under a third id with no lapsed id left on it or on its record.
 func TestASecondLapseWaitsAgainAndRevokesBothLapsedIDs(t *testing.T) {
+	// Serial: registerWaitBlocked reads the whole process's goroutine dump
+	// (blockedInRegisterReply), which a parallel test's own waiting register would match.
 	r, first, state := lapseRig(t, failAlways)
 	renewGate, releaseRenew := testGate(t)
 	r.fake.mu.Lock()
@@ -310,10 +323,13 @@ func TestASecondLapseWaitsAgainAndRevokesBothLapsedIDs(t *testing.T) {
 // TestARenewThatFailsTransientlyKeepsTheLease: a renew the broker cannot answer (503) is an outage,
 // not a refusal, so the session keeps its enrollment and its lease and renews again: it never
 // lapses, revokes or enrolls afresh. The fake holds the first renew at one gate until the test has
-// moved the enrollment's stored expiry a minute out, past every deadline in the test, so no lease
-// passes under the test however slow the host is, and holds the retry at a second gate, so the
-// session is read after it has handled the 503 and before the retry succeeds.
+// moved the enrollment's stored expiry past any run of the test binary (testwait.PastTheRun), so
+// no lease passes under the test however slow the host is, and holds the retry at a second gate,
+// so the session is read after it has handled the 503 and before the retry succeeds. The retry's
+// renew is read from the expiry the fake writes for it, which is no longer the one the test
+// stored.
 func TestARenewThatFailsTransientlyKeepsTheLease(t *testing.T) {
+	t.Parallel()
 	r := startRig(t, "")
 	first, releaseFirst := testGate(t)
 	r.fake.mu.Lock()
@@ -321,7 +337,7 @@ func TestARenewThatFailsTransientlyKeepsTheLease(t *testing.T) {
 	r.fake.renewFail = 1
 	r.fake.renewGate = first
 	r.fake.mu.Unlock()
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	reg := r.call(t, Request{Op: "register", WaitSeconds: 10})
 	if !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register: %+v", reg)
 	}
@@ -334,7 +350,7 @@ func TestARenewThatFailsTransientlyKeepsTheLease(t *testing.T) {
 	waitFor(t, func() bool { return renews() == 1 }) // the first renew is waiting at its gate
 	retry, releaseRetry := testGate(t)
 	r.fake.mu.Lock()
-	stored := time.Now().Add(time.Minute)
+	stored := time.Now().Add(testwait.PastTheRun)
 	r.fake.leaseExpiry[id] = stored
 	r.fake.renewGate = retry
 	r.fake.mu.Unlock()
@@ -372,8 +388,8 @@ func TestARenewThatFailsTransientlyKeepsTheLease(t *testing.T) {
 	r.fake.mu.Lock()
 	renewed := r.fake.leaseExpiry[id]
 	r.fake.mu.Unlock()
-	if !renewed.After(stored) {
-		t.Fatalf("the retry must renew the lease: expiry %v, want after %v", renewed, stored)
+	if renewed.Equal(stored) {
+		t.Fatalf("the retry must renew the lease: expiry still %v, the one the test stored", stored)
 	}
 }
 
@@ -431,7 +447,8 @@ func freshEnrollment(t *testing.T, replies <-chan registerAnswer, stale ...strin
 // that goroutine by name in the goroutine dump, a "[select" header over a ").registerReply("
 // frame, so a rename of registerReply must be made here too. A name that no longer matches never
 // lets the test pass: TestRegisterWaitWaitsForTheReEnrollmentAfterALapse then fails after about
-// 10 s.
+// 10 s. The dump is the whole process's, so every test that reads it is serial: a register
+// another test has waiting would match it before the caller's own call waits.
 func blockedInRegisterReply() bool {
 	for _, g := range goroutinetest.Traces() {
 		header, _, _ := strings.Cut(g, "\n")
@@ -446,6 +463,7 @@ func blockedInRegisterReply() bool {
 // (before its first attempt returns) is told only that it is not enrolled; one whose last attempt
 // failed is told why.
 func TestNotEnrolledNamesTheLastAttemptOnlyWhenThereIsOne(t *testing.T) {
+	t.Parallel()
 	r := startRig(t, "")
 	sess, _ := newSession(1, 1, "h:1:1", "", nil, nil)
 	if got := r.srv.notEnrolled(sess.snapshot()); got.Code != CodeNotEnrolled || got.Error != "this session is not enrolled with the broker yet" {
@@ -463,6 +481,7 @@ func TestNotEnrolledNamesTheLastAttemptOnlyWhenThereIsOne(t *testing.T) {
 // refusal is final, so the helper must stop retrying it and enroll the session afresh; before,
 // the session stayed NOT_ENROLLED until it was relaunched.
 func TestAPriorEnrollmentOfAnotherOperatorDoesNotStrandTheSession(t *testing.T) {
+	t.Parallel()
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	pid := recordPrior(t, state, "enr-other-operator")
 
@@ -491,6 +510,7 @@ func TestAPriorEnrollmentOfAnotherOperatorDoesNotStrandTheSession(t *testing.T) 
 // which no retry can change, so the helper must stop retrying it and enroll the session afresh.
 // Before, the session retried that revoke for as long as its process lived and never enrolled.
 func TestAPriorEnrollmentOfAReplacedCredentialDoesNotStrandTheSession(t *testing.T) {
+	t.Parallel()
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	pid := recordPrior(t, state, "enr-other-credential")
 
@@ -554,6 +574,7 @@ func recordedID(t *testing.T, state string, pid int) string {
 // until the next login. Until then the saved record must still name it, as a lapsed id; before,
 // Recover's save wrote the re-pinned session with no enrollment id at all.
 func TestARestartWithNoLoginKeepsThePriorEnrollmentOnDisk(t *testing.T) {
+	t.Parallel()
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	pid := recordPrior(t, state, "enr-prior")
 	r := newRig(t, state) // Recover re-pins the child and saves; no login
@@ -569,12 +590,14 @@ func TestARestartWithNoLoginKeepsThePriorEnrollmentOnDisk(t *testing.T) {
 // restarts again before anyone logs in. The second start must still find the prior enrollment
 // on disk and, once logged in, revoke it before enrolling the session afresh.
 func TestASecondRestartBeforeTheLoginStillRevokesThePriorEnrollment(t *testing.T) {
+	t.Parallel()
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	pid := recordPrior(t, state, "enr-prior")
 
 	// The first restart: Recover re-pins and saves, and the helper exits before any login.
 	first := &Server{Registry: NewRegistry(state), Broker: &Broker{URL: cipheraddr.New("http://127.0.0.1:1"), OperatorFile: operatorFile(t, "ada@example.com")},
-		Hostname: "testhost", PeerOf: PeerOf, Log: slog.New(slog.NewTextHandler(os.Stderr, nil)), MinRenew: time.Second}
+		Hostname: "testhost", PeerOf: PeerOf, Log: slog.New(slog.NewTextHandler(os.Stderr, nil)), MinRenew: time.Second,
+		EnrollRetryMin: testEnrollRetryMin, EnrollRetryMax: testEnrollRetryMax, RevokeRetry: testRevokeRetry}
 	ctx, cancel := context.WithCancel(context.Background())
 	first.Recover(ctx)
 	cancel() // the helper process ends: its goroutines stop, and nothing revokes or saves again

@@ -150,6 +150,12 @@ func TestContractARebootKeepsAGrantTheSessionWasGiven(t *testing.T) {
 	}
 }
 
+// contractRebootWait bounds a wait for the helper's own record to reach the disk, which
+// server_test.go's restart rows make before they simulate the helper's death. The save it waits
+// for is already under way when the wait begins, so the bound is a loaded runner's scheduling,
+// not any work: ten seconds, this package's other end-to-end waits (waitForIssued) being twenty.
+const contractRebootWait = 10 * time.Second
+
 // rebootRecords stops cr's helper and rewrites its records file as a reboot leaves it: every
 // recorded process is gone, so each record names a pid whose start ticks no live process can
 // match. Everything else — the session id, the runtime id, the key and the enrollment — is exactly
@@ -160,10 +166,20 @@ func TestContractARebootKeepsAGrantTheSessionWasGiven(t *testing.T) {
 // enrollment: the sweep then revokes nothing and the grant answers on, which failed the dormant
 // sweep test under load (the pull request records the runs). So the reboot first waits, under the
 // test's own deadline, until the file names every enrollment the helper's sessions hold.
+//
+// It then stops the helper and closes its registry before the rewrite. Rewriting the file while
+// a save of the helper's can still come writes a record the helper then overwrites:
+// Registry.Save puts back the LIVE start ticks of a session still in the registry, so Recover
+// finds the recorded process alive, re-pins it and keeps its enrollment rather than parking its
+// identity, and the reboot these tests are about never happened. Registry.Close, which waits for
+// a save in progress and makes every later one write nothing, is what makes the file the test's
+// alone from here on. The same ordering is kept in server_test.go's restart row, which waits for
+// the enrolled record and quiesces the old session before it simulates the helper's death.
 func rebootRecords(t *testing.T, cr *contractRig) {
 	t.Helper()
 	awaitEnrollmentsSaved(t, cr)
 	cr.cancel()
+	cr.srv.Registry.Close()
 	path := cr.sessionsPath
 	recs, err := LoadRecords(path)
 	if err != nil {
@@ -301,6 +317,7 @@ func TestContractASessionThatDoesNotComeBackLosesItsGrant(t *testing.T) {
 // enrollment still there afterwards; it also shows a helper upgraded in place carrying the
 // records it finds at the old path over to the new one.
 func TestContractTheProductionRecordsPathSurvivesTheRuntimeDirectoryGoing(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	runtime := t.TempDir()
 	getenv := func(key string) string {

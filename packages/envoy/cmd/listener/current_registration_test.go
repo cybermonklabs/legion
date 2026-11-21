@@ -190,7 +190,7 @@ func TestASessionRegisteredAgainThroughAnotherListenerIsReachedAndStampedThrough
 	if status != http.StatusOK {
 		t.Fatalf("the session's publish through the second listener: status %d: %s", status, answer)
 	}
-	message, err := ownMessages.NextMsg(10 * time.Second)
+	message, err := ownMessages.NextMsg(listenerWait)
 	if err != nil {
 		t.Fatalf("read the message the session sent on %s: %v", ownTopic, err)
 	}

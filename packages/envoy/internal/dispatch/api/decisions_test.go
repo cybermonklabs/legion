@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // holdIt is the spec's second callout, written with its id, hold-it.
@@ -140,6 +141,7 @@ func specVersionCount(t *testing.T, database *store.Store, artifactID string) in
 // Right after the decisions are written no link is stale, and writing decisions.md wrote the spec
 // no version of its own.
 func TestIssueDecisionsReadsEachDecisionOfTheDocument(t *testing.T) {
+	t.Parallel()
 	fixture := newDecisionsFixture(t)
 	specVersions := specVersionCount(t, fixture.database, fixture.issue.PrimaryArtifactID)
 
@@ -217,6 +219,7 @@ func TestIssueDecisionsReadsEachDecisionOfTheDocument(t *testing.T) {
 // own text makes every link it already held out of date; and a later version of one linked spec
 // block clears that link alone.
 func TestDecisionLinksGoStaleWithTheDecisionAndClearWithTheirBlock(t *testing.T) {
+	t.Parallel()
 	fixture := newDecisionsFixture(t)
 	handler, key := fixture.handler, fixture.issue.Key
 
@@ -256,6 +259,7 @@ func TestDecisionLinksGoStaleWithTheDecisionAndClearWithTheirBlock(t *testing.T)
 // twice - a decision made again after a replaced one of the same name - still names each of its
 // decisions, so the live one's links go out of date with its own text.
 func TestTheVersionCutReadsTheSameDecisionsAsTheBlockWalk(t *testing.T) {
+	t.Parallel()
 	fixture := newDecisionsFixture(t)
 	handler, key := fixture.handler, fixture.issue.Key
 
@@ -301,6 +305,7 @@ func TestTheVersionCutReadsTheSameDecisionsAsTheBlockWalk(t *testing.T) {
 // before that change is refused. A bearer may not keep, and a block that is no decision heading
 // is not a target.
 func TestKeepRecordsAgreementUntilTheDecisionChanges(t *testing.T) {
+	t.Parallel()
 	fixture := newDecisionsFixture(t)
 	handler, key := fixture.handler, fixture.issue.Key
 	table := decisionNamed(t, readIssueDecisions(t, handler, key), tableDecision)
@@ -384,6 +389,7 @@ func keepBlock(t *testing.T, handler http.Handler, artifactID, blockID, sum stri
 // leave both decisions' versions where they were while their text changed: the text, not the
 // version, is what Keep records and what the out-of-date rule reads.
 func TestAKeptDecisionWaitsForReviewAgainWhenABlockLeavesOrJoinsIt(t *testing.T) {
+	t.Parallel()
 	fixture := newDecisionsFixture(t)
 	handler, key, id := fixture.handler, fixture.issue.Key, fixture.decisions.ID
 
@@ -468,6 +474,7 @@ func TestAKeptDecisionWaitsForReviewAgainWhenABlockLeavesOrJoinsIt(t *testing.T)
 // Each person's last read version of a document: null before they read it, the version they
 // recorded after, and a bearer may read neither route.
 func TestDocumentReadRecordsEachPersonsLastReadVersion(t *testing.T) {
+	t.Parallel()
 	fixture := newDecisionsFixture(t)
 	handler := fixture.handler
 	path := "/api/v1/me/documents/" + fixture.decisions.ID + "/read"
@@ -513,6 +520,7 @@ func TestDocumentReadRecordsEachPersonsLastReadVersion(t *testing.T) {
 // date, in both cases of a first indexing: the document's first version, written while it has no
 // block rows, and the backfill over a document no block-aware build indexed.
 func TestAFirstIndexingMarksNothingOutOfDate(t *testing.T) {
+	t.Parallel()
 	fixture := newDecisionsFixture(t)
 	handler, database, key := fixture.handler, fixture.database, fixture.issue.Key
 
@@ -558,6 +566,7 @@ func TestAFirstIndexingMarksNothingOutOfDate(t *testing.T) {
 // written in two versions, so one is older than the other: two that one settlement writes share
 // their created_at and the order between them is their ids'.
 func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{settle: 20 * time.Millisecond})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", ":::ask{#decide_first}\nWhich store?\n:::\n\nA paragraph.\n")
@@ -582,22 +591,22 @@ func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
 }
 
 // waitForOpenQuestions reads the view until it holds want open questions: settlement indexes a
-// spec's ask blocks, and until it has the issue holds none.
+// spec's ask blocks, and until it has the issue holds none. It waits askIndexWait, as
+// awaitIndexedAskBlock waits for the same indexing.
 func waitForOpenQuestions(t *testing.T, handler http.Handler, key string, want int) (issueDecisions, []string) {
 	t.Helper()
 	var view issueDecisions
 	questions := []string{}
-	for range 200 {
+	if testwait.Holds(askIndexWait, 25*time.Millisecond, func() bool {
 		view = readIssueDecisions(t, handler, key)
 		questions = questions[:0]
 		for _, question := range view.OpenQuestions {
 			questions = append(questions, question.Question)
 		}
-		if len(questions) == want {
-			return view, questions
-		}
-		time.Sleep(25 * time.Millisecond)
+		return len(questions) == want
+	}) {
+		return view, questions
 	}
-	t.Fatalf("open_questions = %v, want %d of them", questions, want)
+	t.Fatalf("open_questions = %v, want %d of them within %v", questions, want, askIndexWait)
 	return view, questions
 }

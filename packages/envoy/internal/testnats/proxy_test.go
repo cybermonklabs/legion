@@ -40,6 +40,8 @@ func waitSignal(t *testing.T, signal <-chan struct{}, within time.Duration, what
 // once and every dial is refused while it stays cut. Restore lets the client reconnect, and a new
 // client connect, through the same URL.
 func TestAProxyRelaysUntilCutAndAgainOnceRestored(t *testing.T) {
+	// Serial: its assertion is a quiet window: the client does not reconnect through the cut proxy
+	// for 300 ms.
 	proxy := StartProxy(t, URL(t))
 	conn, disconnected, reconnected := proxiedClient(t, proxy)
 	if err := conn.FlushTimeout(time.Second); err != nil {
@@ -74,6 +76,9 @@ func TestAProxyRelaysUntilCutAndAgainOnceRestored(t *testing.T) {
 // reach a subscriber, and a flush gets no answer. Restore delivers what was held, and the
 // connection that stayed open answers again.
 func TestAFrozenProxyKeepsTheConnectionAndMovesNothingUntilRestored(t *testing.T) {
+	// Serial: its assertion is a quiet window: a flush through the frozen proxy gets no answer in
+	// 500 ms, and in the 300 ms after it nothing reaches the subscriber and the client is not
+	// disconnected.
 	uri := URL(t)
 	proxy := StartProxy(t, uri)
 	conn, disconnected, _ := proxiedClient(t, proxy)
@@ -121,6 +126,7 @@ func TestAFrozenProxyKeepsTheConnectionAndMovesNothingUntilRestored(t *testing.T
 
 // ProxyLatency adds its round trip to every round trip through the proxy.
 func TestAProxyWithLatencyAddsItsRoundTrip(t *testing.T) {
+	// Serial: its assertion is a time (a round trip through the proxy takes at least its 200 ms).
 	const rtt = 200 * time.Millisecond
 	proxy := StartProxy(t, URL(t), ProxyLatency(rtt))
 	conn, _, _ := proxiedClient(t, proxy)
@@ -138,6 +144,8 @@ func TestAProxyWithLatencyAddsItsRoundTrip(t *testing.T) {
 // it sleeps for it, so the last read of the payload, up to proxyReadBuffer bytes, crosses
 // uncharged; the bound allows exactly that and nothing more.
 func TestAProxyWithARateMovesNoFasterThanIt(t *testing.T) {
+	// Serial: its assertion is a time (393,216 bytes, less one 64 KiB read, take at least 1.64 s
+	// to cross a proxy of 200,000 B/s).
 	const rate = 200_000
 	uri := URL(t)
 	proxy := StartProxy(t, uri, ProxyRate(rate))

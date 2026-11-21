@@ -27,11 +27,12 @@ import (
 const webhookRedeliveryLease = "webhook-redelivery"
 
 // redeliverTestLeases opens the lease pool a running sweep takes webhook-redelivery on, on a
-// database of the test's own: storetest.Open's clone of the template this test process migrated
-// once, which skips the test (not fails it) when DISPATCH_TEST_DATABASE_URL is unset. A lease is
-// an advisory lock and reads no table, but the period a sweep is due by is a row of duty_passes
-// (duty.Exclusive, migration 0115), which a pass reads and writes under its lease, so this pool's
-// database carries the migrations; a clone carries no pass an earlier run recorded.
+// database of the test's own: a clone storetest.Open makes of the one migrated template that every
+// test process on the server shares and none drops (pgtemplate). storetest.Open skips the test
+// (not fails it) when DISPATCH_TEST_DATABASE_URL is unset. A lease is an advisory lock and reads
+// no table, but the period a sweep is due by is a row of duty_passes (duty.Exclusive, migration
+// 0115), which a pass reads and writes under its lease, so this pool's database carries the
+// migrations; a clone carries no pass an earlier run recorded.
 //
 // The database is never the one DISPATCH_TEST_DATABASE_URL names. Migrating that one runs each
 // CREATE INDEX CONCURRENTLY there, and a concurrent build waits for every session of its own
@@ -72,6 +73,10 @@ func (g *countingGitHub) Redeliver(context.Context, int64) error {
 // sweep - holds the webhook-redelivery lease. The lease is not what makes a redelivery safe (the
 // KV compare-and-set on each delivery's record is); it is what keeps N processes from spending N
 // times the listing calls on one installation's rate limit for one result.
+//
+// Serial: it swaps process-wide state. captureDefaultLogs replaces the default logger, which is
+// where the lease itself logs, so a parallel test running beside it would have its own lines
+// counted here and its own logger taken away (docs/testing.md).
 func TestARunningSweepWhoseLeaseIsHeldElsewhereListsNothing(t *testing.T) {
 	leases := redeliverTestLeases(t)
 	logs := captureDefaultLogs(t)
@@ -271,6 +276,9 @@ func (s *drawSequence) calls() []time.Duration {
 // a wait of 1.099999999s). The bubble's lease is this test's own; that a wait longer than the
 // period always reaches the next period, which is what keeps a sweep from being skipped as served,
 // is the row below against the real one.
+//
+// Serial: it swaps process-wide state. redeliver.FixJitter assigns the package's jitter function,
+// which every sweep loop in the process draws from (docs/testing.md).
 func TestTheRunningSweepSweepsAtStartThenWaitsMoreThanNineTenthsAndAtMostOneInterval(t *testing.T) {
 	const (
 		interval = time.Minute
@@ -362,6 +370,9 @@ func TestTheRunningSweepSweepsAtStartThenWaitsMoreThanNineTenthsAndAtMostOneInte
 // sweep and reads the order everything came in: each sweep listed and then ended, the loop asked
 // for one wait after each sweep and before the next one listed, and the first sweep listed before
 // any wait.
+//
+// Serial: it swaps process-wide state, both kinds this file holds - redeliver.FixJitter's draw
+// and the default logger captureDefaultLogs takes (docs/testing.md).
 func TestNoSweepOfALoneProcessIsSkippedAsAPeriodAlreadyServed(t *testing.T) {
 	const (
 		interval = 100 * time.Millisecond

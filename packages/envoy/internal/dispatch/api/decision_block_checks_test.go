@@ -80,6 +80,25 @@ func readDecisionBlockRows(t *testing.T, database *store.Store) []decisionBlockR
 	return found
 }
 
+// decisionBlockRowsRead is rows as a test read them, each as "<block> <outcome> on <issue or
+// document> reason <reason> by <actor>", beside the rows read again once srv's detached work has
+// ended. A check's record whose first attempt runs past its 1 s bound (relatedRecordTimeout) is
+// written by a retry behind the edit's answer (retryRecord, suggestions.go), so a row there only
+// after the wait is that record landing late, and not a check that was never recorded.
+func decisionBlockRowsRead(t *testing.T, srv *server, database *store.Store, rows []decisionBlockRow) string {
+	t.Helper()
+	describe := func(rows []decisionBlockRow) string {
+		described := make([]string, len(rows))
+		for index, row := range rows {
+			described[index] = fmt.Sprintf("%s %s on issue %s document %s reason %s by %s", row.BlockID, row.Outcome,
+				describeOptionalString(row.IssueKey), describeOptionalString(row.ArtifactID), describeOptionalString(row.Reason), row.ActorID)
+		}
+		return "[" + strings.Join(described, "; ") + "]"
+	}
+	awaitBackgroundWrites(t, srv)
+	return describe(rows) + "; once the server's detached work had ended: " + describe(readDecisionBlockRows(t, database))
+}
+
 // suggestedOwnerKeys is the issue each related item of suggestions stands for.
 func suggestedOwnerKeys(suggestions *model.Suggestions) []string {
 	if suggestions == nil {
@@ -101,7 +120,8 @@ func insertAtEnd(markdown string) map[string]any {
 // its rare words, the answer names the block, and the check is recorded against the document's
 // issue. An edit after it that adds no block - plain text, a reworded block - answers no check.
 func TestDecisionBlockCheckAnswersTheEditsNewBlock(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	t.Parallel()
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "DBLK")
 	target := createSearchIssue(t, handler, "DBLK", "Dashboard ledger for zymurgy batches", "")
 	spec := "# Spec\n\nPlanning notes.\n"
@@ -127,7 +147,7 @@ func TestDecisionBlockCheckAnswersTheEditsNewBlock(t *testing.T) {
 	rows := readDecisionBlockRows(t, database)
 	if len(rows) != 1 || rows[0].BlockID != "rounding" || rows[0].IssueKey == nil || *rows[0].IssueKey != issue.Key ||
 		rows[0].ArtifactID != nil || rows[0].Outcome != "found" || rows[0].ActorID != "alice" {
-		t.Fatalf("decision block rows = %+v, want one found check of rounding on %s", rows, issue.Key)
+		t.Fatalf("decision block rows = %s, want one found check of rounding on %s", decisionBlockRowsRead(t, served, database, rows), issue.Key)
 	}
 
 	for name, body := range map[string]map[string]any{
@@ -149,7 +169,8 @@ func TestDecisionBlockCheckAnswersTheEditsNewBlock(t *testing.T) {
 // An edit adding six decision blocks checks the first five, in document order, and answers the
 // sixth that its check was not made, recording that too.
 func TestDecisionBlockChecksPastFiveAreNotMade(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	t.Parallel()
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "SIX")
 	createSearchIssue(t, handler, "SIX", "Dashboard ledger for zymurgy batches", "")
 	spec := "# Spec\n\nPlanning notes.\n"
@@ -182,7 +203,7 @@ func TestDecisionBlockChecksPastFiveAreNotMade(t *testing.T) {
 	}
 	rows := readDecisionBlockRows(t, database)
 	if len(rows) != 6 {
-		t.Fatalf("decision block rows = %+v, want six", rows)
+		t.Fatalf("decision block rows = %s, want six", decisionBlockRowsRead(t, served, database, rows))
 	}
 	var tooMany []string
 	for _, row := range rows {
@@ -201,8 +222,17 @@ func TestDecisionBlockChecksPastFiveAreNotMade(t *testing.T) {
 // A conditional edit's gate is released at its commit: a second conditional edit of the same
 // document completes while the first is still waiting on its decision block's check, here held
 // behind a lock on the term statistics every check reads.
+//
+// The first edit's check gives up at the server's related-item allowance, five seconds in
+// production (relatedCheckAllowance), and then answers: under load the second edit can take
+// longer than that to land, and the first would answer before it for the allowance's end rather
+// than for a gate. So this server's allowance is the package's guard (concurrentWait): the lock,
+// not the allowance, is what holds the first edit, and the allowance only ends a check whose
+// lock never comes, which also bounds the last wait for the first edit's answer.
 func TestDecisionBlockCheckDoesNotHoldTheConditionalEditGate(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	t.Parallel()
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	served.suggestionTimeout = concurrentWait
 	createSuggestionProject(t, handler, "GATE")
 	spec := "# Spec\n\nPlanning notes.\n"
 	issue := createAdviceIssue(t, handler, "GATE", "Gated edits", &spec)
@@ -226,12 +256,13 @@ func TestDecisionBlockCheckDoesNotHoldTheConditionalEditGate(t *testing.T) {
 	// once something waits on the lock. (Another waiter, the term statistics refresh the issue's
 	// own check started, may be the one seen: the commit is what the second edit needs.) The second
 	// edit is guarded by the paragraph it rewrites, which the first block's settlement leaves alone.
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(concurrentWait)
 	var second map[string]any
 	for {
 		var waiting int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_locks where relation = 'search_term_stats'::regclass and not granted
+			  and database = (select oid from pg_database where datname = current_database())
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("read lock waits: %v", err)
 		}
@@ -272,7 +303,8 @@ func TestDecisionBlockCheckDoesNotHoldTheConditionalEditGate(t *testing.T) {
 // project with the document itself left out, though it holds the block's words, and is recorded
 // against that document.
 func TestDecisionBlockCheckOnAProjectDocumentLeavesTheDocumentOut(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	t.Parallel()
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "PDBL")
 	target := createSearchIssue(t, handler, "PDBL", "Dashboard ledger for zymurgy batches", "")
 	upload := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/PDBL/artifacts", map[string]string{
@@ -305,7 +337,7 @@ func TestDecisionBlockCheckOnAProjectDocumentLeavesTheDocumentOut(t *testing.T) 
 	rows := readDecisionBlockRows(t, database)
 	if len(rows) != 1 || rows[0].IssueKey != nil || rows[0].ArtifactID == nil || *rows[0].ArtifactID != document ||
 		rows[0].BlockID != "rounding" || rows[0].Outcome != "found" {
-		t.Fatalf("decision block rows = %+v, want one found check of rounding on the document %s", rows, document)
+		t.Fatalf("decision block rows = %s, want one found check of rounding on the document %s", decisionBlockRowsRead(t, served, database, rows), document)
 	}
 }
 
@@ -317,7 +349,8 @@ func TestDecisionBlockCheckOnAProjectDocumentLeavesTheDocumentOut(t *testing.T) 
 // ask shares a word with every block and carries a long answer, so each check reads every ask's
 // state and its cursor stays open over several network reads, which is when the others collided.
 func TestDecisionBlockChecksEachReadTheirAskStatesAndRecord(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	t.Parallel()
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "RACE")
 	const shared = " For the aerostat programme."
 	blocks := []struct{ id, title, asked, restated string }{
@@ -368,15 +401,16 @@ func TestDecisionBlockChecksEachReadTheirAskStatesAndRecord(t *testing.T) {
 			}
 		}
 		if !listed {
-			t.Fatalf("block %s: related = %+v, want the ask %s listed with its answered state", block.id, check.Suggestions.Related, asks[block.id])
+			t.Fatalf("block %s: suggestions = %s, want the ask %s listed with its answered state", block.id, asJSON(t, check.Suggestions), asks[block.id])
 		}
 	}
+	rows := readDecisionBlockRows(t, database)
 	var recorded []string
-	for _, row := range readDecisionBlockRows(t, database) {
+	for _, row := range rows {
 		recorded = append(recorded, row.BlockID)
 	}
 	slices.Sort(recorded)
 	if want := []string{"fjord", "hangar", "harbour", "lacquer", "pilot"}; !slices.Equal(recorded, want) {
-		t.Fatalf("recorded decision blocks = %v, want %v", recorded, want)
+		t.Fatalf("recorded decision blocks = %v, want %v; the rows: %s", recorded, want, decisionBlockRowsRead(t, served, database, rows))
 	}
 }

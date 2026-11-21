@@ -38,17 +38,44 @@ func connectWithHandler(t *testing.T, hold time.Duration) (*bus.Client, *atomic.
 	}
 	select {
 	case <-started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("the delivery never reached its handler")
 	}
 	return client, finished
 }
 
+// connectWithHeldHandler connects a client and subscribes a core handler that signals when a
+// delivery reaches it and then holds it until the test ends, as a handler that never returns
+// holds one for the whole of a drain's deadline.
+func connectWithHeldHandler(t *testing.T) *bus.Client {
+	t.Helper()
+	_, uri := startNATS(t)
+	client, err := bus.ConnectOwningStream([]string{uri})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	hold, started := heldDelivery(t)
+	if _, err := client.Conn.Subscribe("drain.in-flight", hold); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if err := client.Conn.Publish("drain.in-flight", nil); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(busWait):
+		t.Fatal("the delivery never reached its handler")
+	}
+	return client
+}
+
 // A drain lets a delivery already in its handler finish before the connection closes. nats.go's
 // Drain only starts the drain, so returning when it returns would close under the handler.
 func TestDrainLetsAnInFlightDeliveryFinish(t *testing.T) {
+	t.Parallel()
 	client, finished := connectWithHandler(t, 300*time.Millisecond)
-	if err := client.Drain(5 * time.Second); err != nil {
+	if err := client.Drain(busWait); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
 	if !finished.Load() {
@@ -62,7 +89,8 @@ func TestDrainLetsAnInFlightDeliveryFinish(t *testing.T) {
 // A drain that cannot finish closes the connection at its deadline, so a handler that never
 // returns cannot keep a shutting-down process alive.
 func TestDrainClosesTheConnectionAtItsDeadline(t *testing.T) {
-	client, _ := connectWithHandler(t, 5*time.Second)
+	// Serial: its assertion is a time (Drain returns within 2 s, about its 200 ms deadline).
+	client := connectWithHeldHandler(t)
 	started := time.Now()
 	err := client.Drain(200 * time.Millisecond)
 	if !errors.Is(err, context.DeadlineExceeded) {
@@ -79,11 +107,12 @@ func TestDrainClosesTheConnectionAtItsDeadline(t *testing.T) {
 // The drain's close is a shutdown, not a lost connection: the client does not reconnect and
 // re-subscribe afterwards, which would hand deliveries to a process that is about to exit.
 func TestDrainDoesNotReconnect(t *testing.T) {
+	t.Parallel()
 	client, _ := connectWithHandler(t, 0)
 	if _, err := client.SubscribeCore("notifications.role.>", func(*natsgo.Msg) {}, "drain-test"); err != nil {
 		t.Fatalf("subscribe role lane: %v", err)
 	}
-	if err := client.Drain(5 * time.Second); err != nil {
+	if err := client.Drain(busWait); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
 	time.Sleep(2 * time.Second)
@@ -99,6 +128,7 @@ func TestDrainDoesNotReconnect(t *testing.T) {
 // so both forwards are published after the drain has begun; both are stored on the holder's agent
 // subject, which the stream captures and acknowledges as a forward needs.
 func TestDrainLetsARoleForwardInItsHandlerFinish(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	publisher := testnats.Connect(t, uri)
 	t.Cleanup(publisher.Close)
@@ -121,7 +151,7 @@ func TestDrainLetsARoleForwardInItsHandlerFinish(t *testing.T) {
 			Topic:         "notifications.role.drain-test",
 			DedupeKey:     "drain-" + string(message.Data),
 			IssuedAt:      contracts.NowMillis(),
-		}, bus.ForwardMsgID("drain-"+string(message.Data), holderSubject), 2*time.Second)
+		}, bus.ForwardMsgID("drain-"+string(message.Data), holderSubject), busWait)
 		if err != nil {
 			forwards <- err
 			return
@@ -143,11 +173,11 @@ func TestDrainLetsARoleForwardInItsHandlerFinish(t *testing.T) {
 	}
 	select {
 	case <-started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("the first role message never reached its handler")
 	}
 
-	if err := client.Drain(5 * time.Second); err != nil {
+	if err := client.Drain(busWait); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
 	for index := range 2 {
@@ -165,8 +195,9 @@ func TestDrainLetsARoleForwardInItsHandlerFinish(t *testing.T) {
 // After a drain the client stays down: a publish from a request still in flight at shutdown gets
 // an error rather than dialling a new connection nothing will drain.
 func TestAPublishAfterDrainDoesNotReconnect(t *testing.T) {
+	t.Parallel()
 	client, _ := connectWithHandler(t, 0)
-	if err := client.Drain(5 * time.Second); err != nil {
+	if err := client.Drain(busWait); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
 	err := client.Publish(contracts.Envelope{
@@ -188,17 +219,15 @@ func TestAPublishAfterDrainDoesNotReconnect(t *testing.T) {
 // A delivery subscription whose handler outlasts the deadline does not hold the drain: Drain waits
 // for the subscriptions it drains only until the deadline, then closes the connection.
 func TestDrainClosesAtItsDeadlineWhileADeliverySubscriptionDrains(t *testing.T) {
+	// Serial: its assertion is a time (Drain returns within 2 s, about its 300 ms deadline).
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	started := make(chan struct{}, 1)
-	if _, err := client.SubscribeCore("notifications.role.drain-deadline", func(*natsgo.Msg) {
-		started <- struct{}{}
-		time.Sleep(10 * time.Second)
-	}, "drain-deadline"); err != nil {
+	hold, started := heldDelivery(t)
+	if _, err := client.SubscribeCore("notifications.role.drain-deadline", hold, "drain-deadline"); err != nil {
 		t.Fatalf("role subscribe: %v", err)
 	}
 	if err := client.Conn.Publish("notifications.role.drain-deadline", nil); err != nil {
@@ -206,7 +235,7 @@ func TestDrainClosesAtItsDeadlineWhileADeliverySubscriptionDrains(t *testing.T) 
 	}
 	select {
 	case <-started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("the delivery never reached its handler")
 	}
 	began := time.Now()
@@ -226,6 +255,8 @@ func TestDrainClosesAtItsDeadlineWhileADeliverySubscriptionDrains(t *testing.T) 
 // reconnecting reaches the server, so a drained subscription would keep its server-side SUB (a
 // reconnect re-sends it) and the drain would only run out its deadline.
 func TestDrainWhileReconnectingClosesAtOnce(t *testing.T) {
+	// Serial: its assertion is a time (Drain returns within 1 s while reconnecting, against its
+	// 5 s deadline).
 	srv, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -236,7 +267,7 @@ func TestDrainWhileReconnectingClosesAtOnce(t *testing.T) {
 		t.Fatalf("role subscribe: %v", err)
 	}
 	srv.Stop(t)
-	waitFor(t, 15*time.Second, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
+	waitFor(t, busWait, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
 
 	began := time.Now()
 	_ = client.Drain(5 * time.Second)
@@ -253,6 +284,8 @@ func TestDrainWhileReconnectingClosesAtOnce(t *testing.T) {
 // budget, would spend it on a subscription that delivers nothing yet. Drain returns once the
 // connection has drained, and the close ends the bind, which binds nothing.
 func TestDrainDoesNotWaitForABindInFlight(t *testing.T) {
+	// Serial: its assertion is a time (Drain returns within 2 s with a bind in flight, against
+	// the 10 s JetStream waits a lost bind request out, and the bind ends within 2 s of the close).
 	_, uri := startNATS(t)
 	proxy := startRelayProxy(t, uri)
 	client, err := bus.ConnectOwningStream([]string{proxy.url()})
@@ -277,11 +310,11 @@ func TestDrainDoesNotWaitForABindInFlight(t *testing.T) {
 	}()
 	select {
 	case <-proxy.swallowed:
-	case <-time.After(10 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("the bind's consumer lookup never reached the link")
 	}
 	proxy.drop()
-	waitFor(t, 15*time.Second, "the connection to reconnect in place", func() bool {
+	waitFor(t, busWait, "the connection to reconnect in place", func() bool {
 		return client.Connected() && client.Conn.Stats().Reconnects > 0
 	})
 	select {
@@ -316,6 +349,9 @@ func TestDrainDoesNotWaitForABindInFlight(t *testing.T) {
 // delivery in its handler finish, and returns once the connection has drained. Closing the
 // connection there would end Drain at once on the CLOSED event and cut the delivery off.
 func TestDrainKeepsAConnectionThatReconnectedBeforeIt(t *testing.T) {
+	// Serial: Drain's 5 s deadline covers the test's own waits (Drain reaching DRAINING, the
+	// release of the held callbacks, the late reconnect callback), so a step slowed past it fails
+	// the drain.
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -352,14 +388,14 @@ func TestDrainKeepsAConnectionThatReconnectedBeforeIt(t *testing.T) {
 	}
 	select {
 	case <-inHandler:
-	case <-time.After(5 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("the delivery never reached its handler")
 	}
 
 	if err := conn.ForceReconnect(); err != nil {
 		t.Fatalf("reconnect: %v", err)
 	}
-	waitFor(t, 15*time.Second, "the connection to reconnect in place", func() bool {
+	waitFor(t, busWait, "the connection to reconnect in place", func() bool {
 		return conn.Status() == natsgo.CONNECTED && conn.Stats().Reconnects == 1
 	})
 	began := time.Now()
@@ -374,7 +410,7 @@ func TestDrainKeepsAConnectionThatReconnectedBeforeIt(t *testing.T) {
 	releaseCallbacks()
 	select {
 	case <-reconnectRan:
-	case <-time.After(5 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("the reconnect callback never ran")
 	}
 	select {
@@ -406,6 +442,8 @@ func TestDrainKeepsAConnectionThatReconnectedBeforeIt(t *testing.T) {
 // so nats.go has no request subscription to drain. The test repeats the close/drain overlap and
 // requires each drain to return with a closed connection.
 func TestDrainEndsWhenTheConnectionClosesWhileNATSDrainsIt(t *testing.T) {
+	// Serial: Drain's 5 s deadline covers the test's own wait for Drain to drain the connection
+	// and the close that follows, in each of ten attempts, so a step slowed past it fails the drain.
 	uri := testnats.URL(t)
 	for attempt := 1; attempt <= 10; attempt++ {
 		client, err := bus.Connect([]string{uri})
@@ -429,7 +467,7 @@ func TestDrainEndsWhenTheConnectionClosesWhileNATSDrainsIt(t *testing.T) {
 		}
 		select {
 		case <-inHandler:
-		case <-time.After(5 * time.Second):
+		case <-time.After(busWait):
 			t.Fatal("the delivery never reached its handler")
 		}
 		drained := make(chan error, 1)

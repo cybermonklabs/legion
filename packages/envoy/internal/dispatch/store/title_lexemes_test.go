@@ -13,6 +13,7 @@ import (
 // after it, a title whose whole vector passes Postgres's limit on one tsvector included, whose
 // lexemes are those of the opening its bounded vector indexes.
 func TestTitleLexemesFillEveryStoredTitleAndFollowEveryRetitle(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
 	migrateThrough(t, store, 87)

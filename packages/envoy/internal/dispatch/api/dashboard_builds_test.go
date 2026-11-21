@@ -101,6 +101,7 @@ func TestDashboardBuildsNamesTheEntryChunksOfTheLiveProcesses(t *testing.T) {
 // With no live process and no dashboard of its own, the route answers an empty serving and an
 // empty live array, never null, and refuses a caller with no credential.
 func TestDashboardBuildsWithNothingLive(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	publishBuild(t, database, "build-a", "/assets/index-a.js")
 	if code, body, live := getDashboardBuildsAs(t, handler, "cookie"); code != http.StatusOK || body.Serving != "" || live != "[]" {

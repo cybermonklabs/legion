@@ -95,8 +95,8 @@ func TestARoomALateSettlementLoadedStaysForAWriterThatTookItUp(t *testing.T) {
 	// record by the time the test retires the room.
 	r.service.settle = 20 * time.Millisecond
 	forkedFrom := make(chan *crdt.Doc, 1)
-	r.service.checkRendering = func(at string, write *liveWrite) {
-		if at == "publish" && write.artifactID == r.room {
+	r.service.beforePublish = func(write *liveWrite) {
+		if write.artifactID == r.room {
 			select {
 			case forkedFrom <- write.forkedFrom.Value():
 			default:
@@ -295,8 +295,8 @@ func TestAWriterOpeningAsASettlementRoomRetiresTakesUpNoRoomTheCloseTakesAway(t 
 		forkedFrom, held *crdt.Doc
 	}
 	publishes := make(chan publish, 1)
-	r.service.checkRendering = func(at string, write *liveWrite) {
-		if at == "publish" && write.artifactID == r.room {
+	r.service.beforePublish = func(write *liveWrite) {
+		if write.artifactID == r.room {
 			select {
 			case publishes <- publish{cold: write.cold, forkedFrom: write.forkedFrom.Value(), held: r.service.srv.GetDoc(r.room)}:
 			default:

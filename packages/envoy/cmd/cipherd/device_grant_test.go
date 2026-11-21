@@ -207,6 +207,7 @@ func TestTheBinaryWithAMachineLoginURLServesTheDeviceGrant(t *testing.T) {
 // is an API account: introspection works without listing a VM service, but neither that caller
 // nor an unlisted account can exchange its token for an access token or launcher credential.
 func TestAListenerOnAVMIntrospectsWithItsGoogleIdentity(t *testing.T) {
+	t.Parallel()
 	cluster, github, google := oidctest.New(t), oidctest.New(t), oidctest.New(t)
 	cluster.PublishKey(t, "cluster-key")
 	github.PublishKey(t, "github-key")

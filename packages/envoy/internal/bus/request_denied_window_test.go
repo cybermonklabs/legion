@@ -1,5 +1,8 @@
 package bus_test
 
+// Every test here reaches t.Setenv through grantedClient (core_permission_test.go), which panics
+// the process beside t.Parallel, so none of them is parallel (dispatch://INFRA-1075).
+
 import (
 	"errors"
 	"fmt"
@@ -61,7 +64,7 @@ func TestEveryDeniedRequestOfOneWindowNamesItsOwnSubject(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(30 * time.Second):
+	case <-time.After(busWait):
 		t.Fatalf("only %d of %d denied Requests were answered", len(answers), deniedRequests)
 	}
 	close(answers)

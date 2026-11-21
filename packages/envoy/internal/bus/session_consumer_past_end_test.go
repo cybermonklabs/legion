@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -124,15 +123,15 @@ func requireConsumerStart(t *testing.T, consumers *SessionConsumers, sessionID s
 	}
 }
 
-// requireNext requires pull to hand over the message stored at seq next, within 5 s, and fails the
-// test with why that message is the one: a consumer that skipped it hands over nothing.
+// requireNext requires pull to hand over the message stored at seq next, within busWait, and fails
+// the test with why that message is the one: a consumer that skipped it hands over nothing.
 func requireNext(t *testing.T, pull *SessionPull, seq uint64, why string) SessionMessage {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), busWait)
 	defer cancel()
 	msg, err := pull.Next(ctx)
 	if err != nil {
-		t.Fatalf("consumer %s handed over nothing within 5s (%v), want the message stored at %d: %s", pull.name, err, seq, why)
+		t.Fatalf("consumer %s handed over nothing within %s (%v), want the message stored at %d: %s", pull.name, busWait, err, seq, why)
 	}
 	if msg.StreamSeq != seq {
 		t.Fatalf("consumer %s handed over the message stored at %d, want the one at %d: %s", pull.name, msg.StreamSeq, seq, why)

@@ -19,6 +19,7 @@ import (
 // "a version that cannot be read". The control is a connection that does not reconnect within the
 // wait: it is refused for that, never for the version it could not read.
 func TestConnectedRefusalWaitsOutAReconnect(t *testing.T) {
+	t.Parallel()
 	server, uri := testnats.Start(t)
 	conn, err := nats.Connect(uri, nats.Name(t.Name()), nats.MaxReconnects(-1), nats.ReconnectWait(50*time.Millisecond))
 	if err != nil {
@@ -69,6 +70,7 @@ func TestConnectedRefusalWaitsOutAReconnect(t *testing.T) {
 // between them, and the server's version from then on. ConnectedRefusal must decide on a version
 // it actually read, so it answers nil for v2.15.1.
 func TestConnectedRefusalDecidesOnlyOnAVersionItRead(t *testing.T) {
+	t.Parallel()
 	reconnecting := &reconnectBetweenReads{version: "2.15.1"}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

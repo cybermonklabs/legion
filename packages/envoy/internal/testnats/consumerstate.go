@@ -16,9 +16,10 @@ import (
 )
 
 // consumerStatePoll is how often AwaitConsumerStored reads the consumer's info and its state file,
-// and consumerStateWait how long it waits for the two to agree: the 20 ms and 5 s the bus tests'
-// waitUntil polls with, for the same reason, a state that follows a publish the server answers
-// nothing to arriving a moment after it, from a server in this process.
+// and consumerStateWait how long it waits for the two to agree. The bus tests' waitUntil polls
+// every 20 ms as well, for the same reason, a state that follows a publish the server answers
+// nothing to arriving a moment after it, from a server in this process, and gives up after
+// busWait, a minute.
 const (
 	consumerStatePoll = 20 * time.Millisecond
 	consumerStateWait = 5 * time.Second

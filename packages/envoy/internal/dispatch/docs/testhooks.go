@@ -68,6 +68,30 @@ func (s *Service) ResumeOwedSettlementsForTest(ctx context.Context, age time.Dur
 	return s.resumeOwedSettlements(ctx, age)
 }
 
+// SettleNowForTest runs room's settlement on the calling goroutine at the room's current
+// generation, as the room's timer runs it once it fires (settleRoom), whether or not the document
+// owes one: a timer's settlement reads no pending row before it runs. Tests in package api run it
+// once a settlement of the document has committed, as the timer a resumption pass armed while that
+// settlement was committing runs then (resumeOwedSettlements). It takes a settleWG count and holds
+// the room's state across the settlement, as settleOwedNow does, and answers the reason a
+// settlement that stopped short gives, retrying nothing.
+func (s *Service) SettleNowForTest(room string) error {
+	state := s.lockState(room)
+	if !s.addUnlessStopping(&s.settleWG) {
+		s.unlockState(room, state)
+		return ErrServiceUnavailable
+	}
+	generation := state.roomGeneration
+	state.settling++
+	s.unlockState(room, state)
+	outcome := s.settleRoomWithin(context.Background(), room, generation, false)
+	state.mu.Lock()
+	state.settling--
+	s.unlockState(room, state)
+	s.settleWG.Done()
+	return outcome.err
+}
+
 // AppendRenderOnlySchemaViolationForTest appends to artifactID's stored history a tree the
 // validator reads and the renderer refuses: a checked task whose empty first paragraph precedes a
 // heading has no markdown the browser reads back as a task. Tests here and in package api build

@@ -86,7 +86,7 @@ func requireDrift(t *testing.T, registry *store.Registry, role, copyNames, store
 	guard.RLock()
 	inCopy, _ := roleCopy.Get(role)
 	guard.RUnlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	claim, err := registry.RoleClaim(ctx, role)
 	if err != nil {
@@ -153,7 +153,7 @@ func keptLaneHeadReads(t *testing.T, client *bus.Client, role string) func() int
 // happens next.
 func unreadableLaneHead(t *testing.T, client *bus.Client, role string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	if _, err := client.PublishCursorAt(ctx, bus.KeptRoleCursorSubject(role), []byte("{"), 0); err != nil {
 		t.Fatalf("write role %s's cursor no read can decode: %v", role, err)
@@ -291,6 +291,8 @@ func (r *roleActRig) requireNoForward(t *testing.T, window time.Duration) {
 // required to do what the record says: the role message, the kept-role sweep, the drain hold and
 // the handover's retry. The test logs the cases it ran and their count.
 func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
+	// Serial: its assertion is a time, in its handover-retry surplus row: the handover ends at its
+	// first lane read, inside roleKeepDrainRetryPause (1 s).
 	const (
 		holder = "ses_act_holder"
 		other  = "ses_act_other"
@@ -397,7 +399,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 			// The same counter the surplus case reads none on counts this handover's read, so
 			// that none is a handover that never started rather than a counter that counts
 			// nothing.
-			waitFor(t, 5*time.Second, "the handover's read of the kept lane to be counted", func() bool { return reads() > 0 })
+			waitFor(t, listenerWait, "the handover's read of the kept lane to be counted", func() bool { return reads() > 0 })
 		})
 	})
 
@@ -447,6 +449,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 		// The lane-head read fails and the copy names a session for a role no record claims: the
 		// handover ends at its first read, reporting nothing, as it does for a role nobody holds.
 		t.Run("surplus", func(t *testing.T) {
+			// Serial: its assertion is a time: the handover ends inside roleKeepDrainRetryPause (1 s).
 			leaf(t)
 			const role = "act-retry-surplus"
 			rig := newRoleActRig(t)
@@ -476,11 +479,21 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 			dropRoleFromCopy(t, rig.harness.registry, role)
 			requireDrift(t, rig.harness.registry, role, "", holder)
 
+			reads := keptLaneHeadReads(t, rig.harness.client, role)
 			elapsed, err := rig.handOver(t, role)
 
-			if err == nil || elapsed < roleKeepDrainRetryPause {
-				t.Fatalf("the handover of role %s ended %s in, reporting %v; want it to wait out a pause of %s, read the lane again and report the read that failed: the claim record names %s",
-					role, elapsed, err, roleKeepDrainRetryPause, holder)
+			// The second read of the lane is what shows the handover waited the failed read out
+			// and read again. The count's upper end is what holds that wait to a pause: the
+			// handover's pauses widen from roleKeepDrainRetryPause (1 s, then 2 s,
+			// roleKeepDrainBackoff), so the rig's window of three such pauses holds two passes, and
+			// a third read only where the window's end is seen after the second pause's, while a
+			// retry that skipped its pause would read the lane every few milliseconds until the
+			// window ended. A loaded machine can only shorten what each pass gets of the window,
+			// never add a pass inside it. The elapsed floor beside them, which load cannot break
+			// either, says the same from the clock.
+			if read := reads(); err == nil || read < 2 || read > 3 || elapsed < roleKeepDrainRetryPause {
+				t.Fatalf("the handover of role %s ended %s in having read the lane %d times, reporting %v; want it to wait out a pause of %s, read the lane again and report the read that failed: the claim record names %s",
+					role, elapsed, read, err, roleKeepDrainRetryPause, holder)
 			}
 		})
 	})
@@ -496,6 +509,8 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 // drives with the reads answering: the message and each kept copy reach the holder, and the
 // registration renews the claim with no WARN.
 func TestTheActHoldsOnAFailedRead(t *testing.T) {
+	// Serial: its assertion is a time, in its failing-read handover row: the handover ends at its
+	// first resolution, inside roleKeepDrainRetryPause (1 s).
 	const holder = "ses_act_held"
 	for _, reads := range []struct {
 		name string
@@ -573,6 +588,8 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 					rig.requireNoForward(t, 0)
 				})
 				t.Run("handover", func(t *testing.T) {
+					// Serial: its assertion is a time: with the claim read failing, the handover ends
+					// inside roleKeepDrainRetryPause (1 s).
 					const role = "act-held-handover"
 					rig := newRoleActRig(t)
 					rig.claim(t, holder, role)

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -23,14 +24,11 @@ const plannerSessionID = "01a0e090-4848-7473-acc5-fc96e6a646d3"
 // reviewerSessionID is a second session, for a page watching two at once.
 const reviewerSessionID = "6f1c5b1e-8a3c-4b7e-9a51-0d2f3c4b5a69"
 
-// agentFeedWait bounds a wait for an agent view's next frame.
-const agentFeedWait = 5 * time.Second
-
 // agentFrame reads the next frame but a heartbeat, which must be sub's agent frame named event, and
-// answers its data.
+// answers its data. It waits eventFeedWait for it, the package's bound for a wait on a frame.
 func (c *socketClient) agentFrame(t *testing.T, sub, event string) string {
 	t.Helper()
-	frame := c.next(t, agentFeedWait, "the "+event+" of "+sub)
+	frame := c.next(t, eventFeedWait, "the "+event+" of "+sub)
 	agent, ok := frame.(LiveAgentFrame)
 	if !ok || agent.Sub != sub || agent.Event != event {
 		t.Fatalf("frame = %+v, want the %s of %s", frame, event, sub)
@@ -41,7 +39,7 @@ func (c *socketClient) agentFrame(t *testing.T, sub, event string) string {
 // endedAs reads the next frame but a heartbeat, which must end sub, and answers its reason.
 func (c *socketClient) endedAs(t *testing.T, sub string) string {
 	t.Helper()
-	frame := c.next(t, agentFeedWait, "the end of "+sub)
+	frame := c.next(t, eventFeedWait, "the end of "+sub)
 	ended, ok := frame.(LiveEnded)
 	if !ok || ended.Sub != sub {
 		t.Fatalf("frame = %+v, want the end of %s", frame, sub)
@@ -56,6 +54,7 @@ func (c *socketClient) subscribeAgent(t *testing.T, sub, session string) {
 }
 
 func TestAgentStreamRelaysTheSessionsOwnReplayThenItsLiveFrames(t *testing.T) {
+	t.Parallel()
 	source := agentstream.NewMemory()
 	source.SetReplay(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"replay-body"}`))
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
@@ -87,6 +86,7 @@ func TestAgentStreamRelaysTheSessionsOwnReplayThenItsLiveFrames(t *testing.T) {
 // every release that can stream answers the control subject, and none that cannot does. The
 // relay says so on the wire rather than leaving a viewer waiting on a turn that cannot arrive.
 func TestAgentStreamReportsASessionNobodyAnswersFor(t *testing.T) {
+	t.Parallel()
 	source := agentstream.NewMemory()
 	source.SetResponder(plannerSessionID, false)
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
@@ -109,6 +109,9 @@ func TestAgentStreamReportsASessionNobodyAnswersFor(t *testing.T) {
 // answer delivers the history without the page subscribing again. Once it has answered, a re-arm
 // only tells the session the viewer is still there.
 func TestAgentStreamRearmsTheSessionAndDeliversItsReplayOnItsFirstAnswer(t *testing.T) {
+	// No t.Parallel: this test measures the process. In the 300 ms quiet window after the replay
+	// the view must re-arm the session again, at its 50 ms interval, and another test's work on
+	// the same machine would read as a view that stopped re-arming.
 	source := agentstream.NewMemory()
 	source.SetResponder(plannerSessionID, false)
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source, agentWatchInterval: 50 * time.Millisecond}, nil)
@@ -117,7 +120,7 @@ func TestAgentStreamRearmsTheSessionAndDeliversItsReplayOnItsFirstAnswer(t *test
 	if data := client.agentFrame(t, "agent", "responder"); data != `{"v":1,"responding":false}` {
 		t.Fatalf("the first frame's data is %s, want the no-responder verdict", data)
 	}
-	pollUntil(t, 5*time.Second, "the view re-arms the session", func() bool { return source.Watches(plannerSessionID) >= 3 })
+	pollUntil(t, concurrentWait, "the view re-arms the session", func() bool { return source.Watches(plannerSessionID) >= 3 })
 
 	source.SetReplay(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"late-replay"}`))
 	if data := client.agentFrame(t, "agent", "responder"); data != `{"v":1,"responding":true}` {
@@ -134,6 +137,7 @@ func TestAgentStreamRearmsTheSessionAndDeliversItsReplayOnItsFirstAnswer(t *test
 }
 
 func TestAgentStreamWritesNothingToPostgres(t *testing.T) {
+	t.Parallel()
 	source := agentstream.NewMemory()
 	source.SetReplay(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"replay-body"}`))
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
@@ -163,6 +167,7 @@ func TestAgentStreamWritesNothingToPostgres(t *testing.T) {
 // asked about. What a credential that does resolve may watch is the scope it holds, which
 // TestAnAgentViewIsServedToThePersonScopeAndRefusedWithoutIt below decides.
 func TestAgentStreamRefusesAViewerWithNoCredential(t *testing.T) {
+	t.Parallel()
 	source := agentstream.NewMemory()
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
 
@@ -184,6 +189,10 @@ func TestAgentStreamRefusesAViewerWithNoCredential(t *testing.T) {
 // frame naming the scope it lacks. /ws/live is one socket serving every view, so this check is
 // the view's own and not the route table's.
 func TestAnAgentViewIsServedToThePersonScopeAndRefusedWithoutIt(t *testing.T) {
+	// No t.Parallel: this test measures the process. After each refusal no frame may come in a
+	// 300 ms quiet window, and the refused view must have armed nothing by its end; another
+	// test's work on the same machine could hold a wrongly sent frame or arm past the window, so
+	// the test would pass with the defect.
 	source := agentstream.NewMemory()
 	source.SetReplay(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"replay-body"}`))
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
@@ -205,7 +214,7 @@ func TestAnAgentViewIsServedToThePersonScopeAndRefusedWithoutIt(t *testing.T) {
 	} {
 		client := rig.dial(t, withBearer(token))
 		client.subscribeAgent(t, "agent", reviewerSessionID)
-		refusal := client.refusal(t, agentFeedWait, "agent", codeScopeRequired)
+		refusal := client.refusal(t, eventFeedWait, "agent", codeScopeRequired)
 		if !strings.Contains(refusal.Message, model.ScopePerson) {
 			t.Fatalf("%s was refused %q, which does not name the %s scope", name, refusal.Message, model.ScopePerson)
 		}
@@ -220,16 +229,21 @@ func TestAnAgentViewIsServedToThePersonScopeAndRefusedWithoutIt(t *testing.T) {
 }
 
 func TestAgentStreamReportsADeploymentWithNoRelay(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	client := rig.dial(t, asUser("alice"))
 	client.subscribeAgent(t, "agent", plannerSessionID)
-	client.refusal(t, agentFeedWait, "agent", "STREAM_UNAVAILABLE")
+	client.refusal(t, eventFeedWait, "agent", "STREAM_UNAVAILABLE")
 }
 
 // A session id goes straight into a NATS subject, where `*` and `>` are wildcards: one view
 // naming either would subscribe a single viewer to every armed session on the bus. The view is
 // refused anything that is not a session uuid before it touches NATS at all.
 func TestAgentStreamRefusesASessionIdThatIsNotAUUID(t *testing.T) {
+	// No t.Parallel: this test measures the process. After the last refusal no frame may come in
+	// a 300 ms quiet window, and no refused session id may have reached the bus by its end;
+	// another test's work on the same machine could hold a wrongly sent frame or watch past the
+	// window, so the test would pass with the defect.
 	source := agentstream.NewMemory()
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
 	client := rig.dial(t, asUser("alice"))
@@ -238,10 +252,10 @@ func TestAgentStreamRefusesASessionIdThatIsNotAUUID(t *testing.T) {
 	for index, id := range ids {
 		sub := fmt.Sprintf("agent-%d", index)
 		client.subscribeAgent(t, sub, id)
-		client.refusal(t, agentFeedWait, sub, "SESSION_ID_INPUT")
+		client.refusal(t, eventFeedWait, sub, "SESSION_ID_INPUT")
 	}
 	client.send(t, liveSubscribe("no-session", LiveView{DeliveryLiveView: DeliveryLiveView{Kind: liveAgentView}}, ""))
-	client.refusal(t, agentFeedWait, "no-session", "SESSION_ID_INPUT")
+	client.refusal(t, eventFeedWait, "no-session", "SESSION_ID_INPUT")
 	client.quiet(t, 300*time.Millisecond, "after every refused session id")
 	for _, id := range ids {
 		if got := source.Watches(id); got != 0 {
@@ -255,6 +269,7 @@ func TestAgentStreamRefusesASessionIdThatIsNotAUUID(t *testing.T) {
 
 // An agent view names its kind and its session and nothing else.
 func TestAnAgentViewNamesItsKindAndItsSessionAlone(t *testing.T) {
+	t.Parallel()
 	source := agentstream.NewMemory()
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
 	client := rig.dial(t, asUser("alice"))
@@ -265,7 +280,7 @@ func TestAnAgentViewNamesItsKindAndItsSessionAlone(t *testing.T) {
 		liveSubscribe("c", LiveView{DeliveryLiveView: DeliveryLiveView{Kind: liveAgentView, At: &at}, SessionID: &session}, ""),
 	} {
 		client.send(t, frame)
-		client.refusal(t, agentFeedWait, frame.Sub, "INVALID_FRAME")
+		client.refusal(t, eventFeedWait, frame.Sub, "INVALID_FRAME")
 	}
 	if got := source.Watches(plannerSessionID); got != 0 {
 		t.Fatalf("a refused agent view armed the session %d times, want 0", got)
@@ -294,6 +309,7 @@ func agentFrameOf(t *testing.T, stream *gatedStream, event string) string {
 // subscription here waits for room as a socket's does while its page reads nothing, so it drains
 // nothing of what the session publishes until the test lets it.
 func TestAnAgentViewHoldsFramesWithinTheViewersBudget(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		frames int
@@ -306,12 +322,13 @@ func TestAnAgentViewHoldsFramesWithinTheViewersBudget(t *testing.T) {
 		{name: "the whole budget", frames: agentStreamBufferBytes / (1 << 20), size: 1 << 20},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			source := agentstream.NewMemory()
 			_, _, _, served := newRegisteredTestServer(t, testServerOptions{agentStream: source})
 			stream := newGatedStream()
 			running := served.startAgentSubscription(t.Context(), stream, "agent", plannerSessionID)
 			t.Cleanup(running.stop)
-			pollUntil(t, 5*time.Second, "the view arms the session", func() bool { return source.Watches(plannerSessionID) >= 1 })
+			pollUntil(t, concurrentWait, "the view arms the session", func() bool { return source.Watches(plannerSessionID) >= 1 })
 
 			for index := range test.frames {
 				source.Publish(plannerSessionID, paddedFrame(index, test.size))
@@ -334,12 +351,13 @@ func TestAnAgentViewHoldsFramesWithinTheViewersBudget(t *testing.T) {
 // tool call reading "running…" with nothing later to correct it. Ending the subscription costs
 // the page a subscribe, and the subscribe rebuilds from the session's own replay.
 func TestAnAgentViewThatFallsPastItsBudgetEndsAsBehind(t *testing.T) {
+	t.Parallel()
 	source := agentstream.NewMemory()
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{agentStream: source})
 	stream := newGatedStream()
 	running := served.startAgentSubscription(t.Context(), stream, "agent", plannerSessionID)
 	t.Cleanup(running.stop)
-	pollUntil(t, 5*time.Second, "the view arms the session", func() bool { return source.Watches(plannerSessionID) >= 1 })
+	pollUntil(t, concurrentWait, "the view arms the session", func() bool { return source.Watches(plannerSessionID) >= 1 })
 
 	// The whole budget, and then one frame more than it holds.
 	frames := agentStreamBufferBytes / (1 << 20)
@@ -370,13 +388,17 @@ func TestAnAgentViewThatFallsPastItsBudgetEndsAsBehind(t *testing.T) {
 		}
 		break
 	}
-	pollUntil(t, 5*time.Second, "the view that fell behind leaves the session's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
+	pollUntil(t, concurrentWait, "the view that fell behind leaves the session's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
 }
 
 // The relay ending a viewer, as a connection lost on the way to the page does, ends the
 // subscription as dropped, and the socket stays open: the page subscribes again at once, and that
 // subscription rebuilds from the session's replay.
 func TestARelayDropEndsTheSubscriptionAsDropped(t *testing.T) {
+	// No t.Parallel: this test measures the process. After the relay drops the view, a frame
+	// published to the session must not reach the page in a 300 ms quiet window; another test's
+	// work on the same machine could hold a wrongly relayed frame past the window, so the test
+	// would pass with the defect.
 	source := agentstream.NewMemory()
 	source.SetReplay(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"first-replay"}`))
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
@@ -389,7 +411,7 @@ func TestARelayDropEndsTheSubscriptionAsDropped(t *testing.T) {
 	if reason := client.endedAs(t, "agent"); reason != "dropped" {
 		t.Fatalf("the dropped view ended %q, want dropped", reason)
 	}
-	pollUntil(t, 5*time.Second, "the dropped view leaves the session's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
+	pollUntil(t, concurrentWait, "the dropped view leaves the session's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
 	source.Publish(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"message","seq":1}`))
 	client.quiet(t, 300*time.Millisecond, "after the relay dropped the view")
 	if !client.open() {
@@ -409,6 +431,9 @@ func TestARelayDropEndsTheSubscriptionAsDropped(t *testing.T) {
 // (the writer closes a socket with 1011 for a frame it cannot encode). The subscription counts what
 // it skipped in one WARN when it ends, the count alone and never the bytes.
 func TestAFrameThatIsNotJSONIsSkipped(t *testing.T) {
+	// No t.Parallel: this test swaps process-wide state. logtest.SetDefault points slog's default
+	// logger at a buffer of its own to read the ended view's WARN, which every other test's
+	// logging would join.
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	source := agentstream.NewMemory()
@@ -435,7 +460,7 @@ func TestAFrameThatIsNotJSONIsSkipped(t *testing.T) {
 
 	client.send(t, LiveUnsubscribe{Type: "unsubscribe", Sub: "agent"})
 	const message = "dispatch: skipped agent frames that are not JSON"
-	pollUntil(t, 5*time.Second, "the ended view logs what it skipped", func() bool { return logs.Lines(message) != "" })
+	pollUntil(t, concurrentWait, "the ended view logs what it skipped", func() bool { return logs.Lines(message) != "" })
 	lines := logs.Lines(message)
 	if strings.Count(lines, message) != 1 || !strings.Contains(lines, "level=WARN") || !strings.Contains(lines, "skipped=3") {
 		t.Fatalf("the view logged %q, want one WARN counting 3 skipped frames", lines)
@@ -448,6 +473,11 @@ func TestAFrameThatIsNotJSONIsSkipped(t *testing.T) {
 // One page's socket carries every agent view it shows: each subscription relays its own session
 // alone, and one that stops leaves the session's frames while the other goes on.
 func TestTwoAgentViewsShareOneSocket(t *testing.T) {
+	// No t.Parallel: this test measures the process. Once the planner's view stops, the planner's
+	// next frame must not reach the page in a 300 ms quiet window; another test's work on the same
+	// machine could hold a wrongly relayed frame past the window, so the test would pass with the
+	// defect. It also holds the unsubscribed view to leaving the planner's frames within 5 s, a
+	// wall-clock bound a parallel neighbour's load spends.
 	source := agentstream.NewMemory()
 	source.SetReplay(plannerSessionID, agentstream.Frame(`{"v":1,"kind":"planner-replay"}`))
 	source.SetResponder(reviewerSessionID, true)
@@ -463,7 +493,7 @@ func TestTwoAgentViewsShareOneSocket(t *testing.T) {
 		"reviewer": {`responder {"v":1,"responding":true}`},
 	}
 	for len(want["planner"])+len(want["reviewer"]) > 0 {
-		frame, ok := client.next(t, agentFeedWait, "the views' opening frames").(LiveAgentFrame)
+		frame, ok := client.next(t, eventFeedWait, "the views' opening frames").(LiveAgentFrame)
 		if !ok || len(want[frame.Sub]) == 0 || want[frame.Sub][0] != frame.Event+" "+string(frame.Data) {
 			t.Fatalf("frame = %+v, want the next of %v", frame, want)
 		}
@@ -519,6 +549,10 @@ func (s *heldReplaySource) Replay(ctx context.Context, sessionID string) (agents
 // same socket opens at once, and an unsubscribe ends the waiting view at once, cancelling its
 // request rather than waiting the request out.
 func TestAnAgentViewAsksForItsReplayOffTheReadLoop(t *testing.T) {
+	// No t.Parallel: this test measures the process. The reviewer's view must open, and the
+	// waiting planner's view end after its unsubscribe, each within half the 2 s replay timeout
+	// (agentStreamReplayTimeout), and another test's work on the same machine would read as a
+	// view held behind the replay.
 	memory := agentstream.NewMemory()
 	memory.SetResponder(plannerSessionID, true)
 	memory.SetResponder(reviewerSessionID, true)
@@ -530,7 +564,7 @@ func TestAnAgentViewAsksForItsReplayOffTheReadLoop(t *testing.T) {
 	client.subscribeAgent(t, "planner", plannerSessionID)
 	select {
 	case <-source.asked:
-	case <-time.After(agentFeedWait):
+	case <-time.After(eventFeedWait):
 		t.Fatal("the planner's view never asked for its replay")
 	}
 	opened := time.Now()
@@ -572,40 +606,51 @@ func (s *failingSource) Watch(sessionID string) error {
 
 // A relay that cannot subscribe the view or tell the session it is attached ends the subscription
 // as dropped, so its page subscribes again rather than watching a session that never hears of it;
-// and it waits a second first, so a relay that keeps failing is asked again at that pace rather than
-// as fast as the page can subscribe.
+// and it waits the server's retry first, so a relay that keeps failing is asked again at that
+// pace rather than as fast as the page can subscribe. The retry is the server's own when a test
+// gives it one, and production's agentStreamRetry on a server built as production builds it.
 func TestAnAgentViewWhoseRelayFailsEndsAsDropped(t *testing.T) {
-	for name, source := range map[string]*failingSource{
-		"its subscribe": {Memory: agentstream.NewMemory(), subscribe: errors.New("nats: connection closed")},
-		"its watch":     {Memory: agentstream.NewMemory(), watch: errors.New("nats: connection reconnecting")},
+	// No t.Parallel: this test measures the process. The failed view must leave the session's
+	// frames within half of the retry, and another test's work on the same machine would read as
+	// a view that held on to them.
+	for name, retry := range map[string]time.Duration{
+		"a retry the server was given": 100 * time.Millisecond,
+		"production's retry":           0,
 	} {
-		t.Run(name, func(t *testing.T) {
-			_, _, _, served := newRegisteredTestServer(t, testServerOptions{agentStream: source})
-			stream := newGatedStream()
-			close(stream.gate)
-			began := time.Now()
-			running := served.startAgentSubscription(t.Context(), stream, "agent", plannerSessionID)
-			t.Cleanup(running.stop)
-			pollUntil(t, agentStreamRetry/2, "the failed view leaves the session's frames before its end", func() bool {
-				return source.Viewers(plannerSessionID) == 0
+		want := cmp.Or(retry, agentStreamRetry)
+		for failing, source := range map[string]*failingSource{
+			"its subscribe": {Memory: agentstream.NewMemory(), subscribe: errors.New("nats: connection closed")},
+			"its watch":     {Memory: agentstream.NewMemory(), watch: errors.New("nats: connection reconnecting")},
+		} {
+			t.Run(name+", "+failing, func(t *testing.T) {
+				_, _, _, served := newRegisteredTestServer(t, testServerOptions{agentStream: source, agentStreamRetry: retry})
+				stream := newGatedStream()
+				close(stream.gate)
+				began := time.Now()
+				running := served.startAgentSubscription(t.Context(), stream, "agent", plannerSessionID)
+				t.Cleanup(running.stop)
+				pollUntil(t, want/2, "the failed view leaves the session's frames before its end", func() bool {
+					return source.Viewers(plannerSessionID) == 0
+				})
+				ended, ok := stream.next(t, "agent's end").(LiveEnded)
+				if !ok || ended.Sub != "agent" || ended.Reason != "dropped" {
+					t.Fatalf("the first frame of a view whose relay failed = %+v, want its end, dropped", ended)
+				}
+				if waited := time.Since(began); waited < want {
+					t.Fatalf("the view ended %s after it started, before the relay's retry (%s)", waited, want)
+				}
+				pollUntil(t, concurrentWait, "the failed view leaves the session's frames", func() bool {
+					return source.Viewers(plannerSessionID) == 0
+				})
 			})
-			ended, ok := stream.next(t, "agent's end").(LiveEnded)
-			if !ok || ended.Sub != "agent" || ended.Reason != "dropped" {
-				t.Fatalf("the first frame of a view whose relay failed = %+v, want its end, dropped", ended)
-			}
-			if waited := time.Since(began); waited < agentStreamRetry {
-				t.Fatalf("the view ended %s after it started, before the relay's retry (%s)", waited, agentStreamRetry)
-			}
-			pollUntil(t, 5*time.Second, "the failed view leaves the session's frames", func() bool {
-				return source.Viewers(plannerSessionID) == 0
-			})
-		})
+		}
 	}
 }
 
 // GET /api/v1/agents/{session_id}/stream is gone; the test hook that feeds the in-memory relay
 // stays, since the browser suite's agent views read from it.
 func TestTheAgentStreamRouteIsGone(t *testing.T) {
+	t.Parallel()
 	source := agentstream.NewMemory()
 	rig := newLiveSocketRig(t, testServerOptions{testHooks: true, agentStream: source}, nil)
 	if response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/agents/"+plannerSessionID+"/stream", nil, "alice"); response.Code != http.StatusNotFound {
@@ -623,6 +668,7 @@ func TestTheAgentStreamRouteIsGone(t *testing.T) {
 // (decodeJSONTestHook): a browser row that misspells `responding` would otherwise be answered 200
 // with the session's verdict left as it was.
 func TestTheResponderTestHookRefusesAMemberItDoesNotDeclare(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{testHooks: true, agentStream: agentstream.NewMemory()}, nil)
 	hook := "/api/v1/agents/" + plannerSessionID + "/stream/_test/publish?as=responder"
 	refused := dispatchRequest(t, rig.handler, http.MethodPost, hook, map[string]any{"responding": true, "respondng": true}, "alice")

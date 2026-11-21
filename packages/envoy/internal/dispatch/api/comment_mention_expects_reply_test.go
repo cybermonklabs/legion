@@ -63,7 +63,7 @@ func TestCommentMentionExpectsReplyFollowsTheComment(t *testing.T) {
 		if len(created.Deliveries) != 1 || created.Deliveries[0].State != "pending" {
 			t.Fatalf("deliveries of %q = %#v, want one pending delivery", body, created.Deliveries)
 		}
-		deadline := time.Now().Add(10 * time.Second)
+		deadline := time.Now().Add(concurrentWait)
 		for {
 			guard.Lock()
 			_, sent := sends[body]
@@ -72,7 +72,7 @@ func TestCommentMentionExpectsReplyFollowsTheComment(t *testing.T) {
 				return created.ID
 			}
 			if time.Now().After(deadline) {
-				t.Fatalf("no mention send of %q reached the listener within 10s", body)
+				t.Fatalf("no mention send of %q reached the listener within %s", body, concurrentWait)
 			}
 			time.Sleep(10 * time.Millisecond)
 		}

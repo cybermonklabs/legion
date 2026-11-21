@@ -20,7 +20,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
@@ -47,7 +46,7 @@ func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	natsURL := testnats.URL(t)
+	natsURL := deliveryTestNATS(t)
 	natsClient, err := bus.ConnectOwningStream([]string{natsURL})
 	if err != nil {
 		t.Fatalf("connect NATS: %v", err)
@@ -69,7 +68,7 @@ func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 42, envelopeFields)
 
 	var count int
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(eventWait)
 	for {
 		if err := pool.QueryRow(ctx, "select count(*) from delivery_pull_requests where repo = $1 and number = $2", "acme/widgets", 42).Scan(&count); err != nil {
 			t.Fatalf("count rows: %v", err)
@@ -101,7 +100,7 @@ func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
 	// (intake.go deliver), so the row can be read before the freshness is: wait for it on a
 	// deadline of its own rather than reading it once.
 	got, err := GetSettings(ctx, pool)
-	freshnessDeadline := time.Now().Add(10 * time.Second)
+	freshnessDeadline := time.Now().Add(eventWait)
 	for err == nil && got.LastEventAt == nil && time.Now().Before(freshnessDeadline) {
 		time.Sleep(50 * time.Millisecond)
 		got, err = GetSettings(ctx, pool)

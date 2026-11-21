@@ -61,14 +61,15 @@ func startRoomSync(t *testing.T, hub *pglisten.Hub, rs *roomSync) (listening <-c
 	stop = func() {
 		once.Do(func() {
 			cancel()
+			wait := roomWait(t)
 			select {
 			case <-done:
-			case <-time.After(10 * time.Second):
-				t.Error("the room sync and its listener hub did not return within 10s of their context ending")
+			case <-time.After(wait):
+				t.Errorf("the room sync and its listener hub did not return within %s of their context ending", wait)
 			}
 		})
 	}
-	t.Cleanup(stop)
+	cleanupAndRelease(t, stop)
 	return connected, stop
 }
 
@@ -92,6 +93,9 @@ func runRoomSync(t *testing.T, rs *roomSync) (stop func()) {
 // own included; the NOTIFY sender, a connection of its own as well, is never counted; and a
 // process whose listener stops leaves at once, with nothing to collect, because its connection is
 // gone.
+//
+// Serial: it holds task B's room sync and listener hub to returning within 10 s of their context
+// ending, a wall-clock bound a parallel neighbour's load spends.
 func TestEveryProcessesRoomSyncListenerIsAMemberUntilItStops(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -123,7 +127,18 @@ func TestEveryProcessesRoomSyncListenerIsAMemberUntilItStops(t *testing.T) {
 		}
 	}
 
-	stopB()
+	// stopB's own wait is the package's hang guard (startRoomSync), so the row times the stop
+	// itself.
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		stopB()
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("task B's room sync and its listener hub did not return within 10s of their context ending")
+	}
 	waitFor(t, roomWait(t), "task B to leave the members once its listener stopped", func() bool {
 		members, err := roomSyncMembers(ctx, database.Pool)
 		if err != nil {

@@ -17,6 +17,8 @@ import (
 // its client reads once more and presents again after a 401, as the kubelet may have rotated it
 // (envoy.Client.do): one try, two requests.
 func TestAListenerRefusingTheTokenSettlesTheSendAtOnce(t *testing.T) {
+	// Serial: this test measures the process. It bounds the whole database-backed send
+	// at 2 s, and another test's work on the same machine would read as a send that waited.
 	listener := startTakeOverListener(t)
 	handler, database := newTargetedMessageHandler(t, listener.server.URL)
 

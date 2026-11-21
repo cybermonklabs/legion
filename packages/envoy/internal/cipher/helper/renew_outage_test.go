@@ -110,6 +110,8 @@ func reply(status int, body any) *http.Response {
 // In a pod this row runs -run-filtered: the package's contract rows need SO_PEERPIDFD, which
 // gVisor does not answer, and fail PEER_UNIDENTIFIED. CI's envoy-go job runs the whole package.
 func TestRenewLoopOutlivesAnOutageOnlyAboveTheLeaseBound(t *testing.T) {
+	// Serial: its assertion is a time (renewLoop's real timers must land within 100 ms of the
+	// model's instants).
 	model := leasetime.Production().Scale(outageUnit)
 	sweep := 5 * outageUnit
 	// minMargin is how far from the boundary each lease below has to be: the row decides the
@@ -124,6 +126,8 @@ func TestRenewLoopOutlivesAnOutageOnlyAboveTheLeaseBound(t *testing.T) {
 		{"a lease that outlives it", 180 * outageUnit, false},
 	} {
 		t.Run(c.what, func(t *testing.T) {
+			// Serial: its assertion is a time: renewLoop's real timers land within 100 ms of the
+			// model's instants.
 			want := model.WorstFor(leasetime.RenewerHelper, c.lease, sweep)
 			if want.Survived() == c.wantLapse {
 				t.Fatalf("the model renews a lease of %v at %v, which survives %v; this row wants a lapse: %v", c.lease, want.Renewed, want.Survived(), c.wantLapse)
@@ -193,5 +197,6 @@ func TestRenewLoopOutlivesAnOutageOnlyAboveTheLeaseBound(t *testing.T) {
 }
 
 // renewOutageBound is how long a row waits for a loop that should have ended long before: the
-// longest walk below renews at 120 units, and this is the same five seconds waitFor keeps.
-const renewOutageBound = 5 * time.Second
+// longest walk below renews at 120 units, and this is the same ten seconds waitFor keeps for the
+// other row, the package's guard for a wait on an event.
+const renewOutageBound = 10 * time.Second

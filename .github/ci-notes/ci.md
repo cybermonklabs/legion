@@ -591,7 +591,7 @@ must start this job too (check-ci-filters.sh's rule 15).
 ## envoy_go_checks: envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
 
 envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
-checks, the shell-script tests, the vet of the module as darwin compiles it,
+checks, the twelve shell-script tests, the vet of the module as darwin compiles it,
 and the build and pack of the envoy commands,
 with the tests of internal/dispatch/architecture/notes, internal/runnerlog,
 internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check, whose one
@@ -609,6 +609,17 @@ Those two steps judge the files at the actions' default paths,
 .dispatch/architecture and .dispatch/spec. The pattern names .dispatch whole:
 main holds no spec file yet, and check-ci-filters.sh refuses a pattern that
 matches no file (its rule 9).
+
+## envoy_go_checks: Its step that tests the API's wall-clock measurements alone compiles the API
+
+Its step that tests the API's wall-clock measurements alone compiles the API
+package's test binary, whose tests read these (their RULES rows in
+.github/scripts/ci_job_reads.py): its live-feed fixtures
+(internal/dispatch/api/delivery_live_diff_test.go:1031,1053) and the ask reply's
+copies (session_answers_test.go's
+TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers). The committed OpenAPI
+document its openapi_test.go reads is under packages/contracts/schemas/**, the
+filter's pattern above these two.
 
 ## text_checks: The text checks of the three Go modules, the Dispatch
 
@@ -910,7 +921,7 @@ The shared race job: the closure of `go test -race` over delivery, the Dispatch
 store, the bus, the listener, the registry store, the session cache, kvwatch, natscred,
 the NATS auth service and the sign-in code flow (`go list -deps -test -race` in
 packages/envoy), and every .md file under packages/envoy, which internal/dispatch/store's
-search_text_test.go:104-120 walks (the RULES row for
+search_text_test.go:84-111 walks (the RULES row for
 that file in .github/scripts/ci_job_reads.py declares packages/envoy/**/*.md). The
 filter names the wide root rather than that package list and that glob, and its
 generated block keeps it off the Go test files the job does not compile, and
@@ -1068,7 +1079,8 @@ internal/daemon test binary daemon-go's race step does — and pi-legion; the te
 it while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job
 of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
-listener, and envoy-go-race-docs and envoy-go-docs-finalizers), go-envoy-test (envoy-go, which
+listener, envoy-go-race-docs and envoy-go-docs-finalizers, and envoy-go-race, for the plain build
+of its step that tests the wall-clock measurements alone), go-envoy-test (envoy-go, which
 builds the test binary of every package of the envoy module, envoy-go-claim-model, which builds
 the API's of that set, and the binaries, multiprocess
 and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
@@ -1311,8 +1323,11 @@ only which lane it runs: that job's `lane:` input reads the label, and
 
 ## The ten slow suites, whose runner time dwarfs every other job's. The
 
-The ten slow suites, whose runner time dwarfs every other job's. The merge queue runs
-them on the tree the change lands as, and that is where their result normally comes from;
+The ten slow suites, whose runner time dwarfs every other job's: envoy-go, the three
+race jobs, envoy-go-claim-model, envoy-go-docs-finalizers, dispatch-memory,
+dispatch-multiprocess, dispatch-two-builds and envoy-smoke, under nine outputs, since
+envoy-go-docs-finalizers reads envoy_go_race_docs. The merge queue runs them on the tree
+the change lands as, and that is where their result normally comes from;
 a pull request runs them only when it carries the label `full-ci`. Each is false on a
 pull-request run without that label, so the skip is one `changes` chose: ci-ok reads it as
 it reads any other output, and no job's `if:` knows about the label. The label is read
@@ -1652,7 +1667,7 @@ Every browser row of the Dispatch suite, which .github/workflows/dispatch-browse
 holds: the binaries job that builds the Go commands the lanes run, the shard legs, the three
 `-alone` projects a machine each, the two-process job, the fake-embedder job that runs on both
 lanes, the containerised visual review, and the merge job that joins the shard and alone
-reports into one and posts this job's ci-ok report.
+reports into one. Each of those jobs ends with this job's ci-ok report.
 
 Two lanes, and which run pays for which. A pull request without the label `full-ci` runs
 `pull-request`, the two projects a change is held to (chromium and iphone), so such a run
@@ -1673,8 +1688,8 @@ job id, and .github/actions/ci-ok-report posts the failing ci-ok of a merge-grou
 the job whose own result decides that run, as that job's last step: legs written here would
 each be `dispatch-browser`, so a decided group would take one such post per leg that failed,
 each posting under a job id several legs answer to. A called workflow's legs are jobs of
-that workflow, and one job of it - the merge job, which needs every other - posts the single
-report this job id gets.
+that workflow, and each of its jobs, the shard legs among them, ends with that report, so a
+job that fails posts as it fails rather than when the merge job, which needs every other, ends.
 
 No timeout-minutes: GitHub's keywords for a job that calls a reusable workflow leave it out.
 Each job of dispatch-browser.yaml carries its own limit.
@@ -1684,8 +1699,9 @@ Each job of dispatch-browser.yaml carries its own limit.
 The same rule as the docs job's: a caller that declares no `permissions:` hands the
 called workflow the default GITHUB_TOKEN permissions rather than this file's block.
 `contents: read` is every job of dispatch-browser.yaml's checkout; `actions: read` is the
-merge job's `gh api .../actions/runs/<id>/jobs` read of this run's jobs, and `checks: write`
-that job's last step, the ci-ok report.
+merge job's `gh api .../actions/runs/<id>/jobs` read of this run's jobs and the ci-ok
+report's read of them, and `checks: write` that report's post, the last step of every job
+of that workflow.
 
 ## What the lane input reads
 
@@ -1696,8 +1712,8 @@ recheck a slow-suite failure on a pull request: the label picks the lane, while 
 
 ## envoy-go's fast half: the Go format check, the two generated-code checks, the
 
-envoy-go's fast half: the Go format check, the two generated-code checks, the shell-script
-tests, the vet of the module as darwin compiles it, and the build and pack of
+envoy-go's fast half: the Go format check, the two generated-code checks, the twelve
+shell-script tests, the vet of the module as darwin compiles it, and the build and pack of
 the envoy commands. It also runs the tests of internal/dispatch/architecture/notes,
 internal/runnerlog, internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check,
 whose one run this is (envoy-go's unit step leaves
@@ -1707,17 +1723,23 @@ its .dispatch/spec through the composite action .github/actions/spec-check, both
 other repositories can call. The slow half, the envoy-go job (the module's unit tests, the
 container-backed NATS matrix and the integration suite), is one of the ten slow suites,
 which run in the merge queue and on a pull request labelled `full-ci`, while these checks
-must come back on every push. No Postgres service: nothing here opens a database. It
-restores go-envoy rather than go-envoy-test, the family of the slow half (the test binary of
-every package of the envoy module) and of dispatch-browser.yaml's Go-building jobs. It also
-runs the guard that no CI file of this repository compares the spec files with the approved
-spec.
+must come back on every push. It restores go-envoy rather than go-envoy-test, the family of
+the slow half (the test binary of every package of the envoy module) and of
+dispatch-browser.yaml's Go-building jobs. It also runs the guard that no CI file of this
+repository compares the spec files with the approved spec, and, as its first test step, the
+Dispatch API's tests whose assertion is a wall-clock time, its xid window tests, alone on the
+runner against a Postgres service of the job's own: its filter covers what the API's plain
+test binary reads, which envoy-go-race-api's does not, and the job is off envoy-go's path
+(the step's own comment says why they run alone).
 
 ## What the envoy-go job runs
 
-The slow half: the unit tests of every package of the envoy module, the container-backed NATS
-matrix and the integration suite, all against this job's Postgres. Its format, generated-code,
-shell-script, build and pack steps are envoy-go-checks'.
+The slow half: the unit tests of every package of the envoy module but the race lane's, which
+the three race jobs below run under the detector, the text checks, which text-checks runs,
+and the architecture-note packages, which envoy-go-checks runs, with the container-backed
+NATS matrix and the integration suite beside them. The unit tests run against this job's
+five Postgres services; the NATS matrix and the integration suite open no database. Its
+format, generated-code, shell-script, build and pack steps are envoy-go-checks'.
 
 ## The envoy-infra module, its own workspace and its live tests
 
@@ -1772,10 +1794,13 @@ that walks a live document without its lock races the room's peers, which no ord
 shows: envoy-go's unit-test step runs without -race (LEGION-499). The lane sits beside
 envoy-go because -race runs these packages several times slower, and each job carries a
 package deadline of its own, since go test's ten-minute default is a whole package's.
-envoy-go runs none of these packages plain any more (INFRA-1408): its unit step leaves out
-exactly what the lane runs, and the one plain run it keeps of them is the step named "Test
-what the race build cannot run at all or at full size", which runs the handful of
-assertions the detector makes impossible or shrinks and nothing else.
+envoy-go's package list runs none of these packages (INFRA-1408): its unit step leaves out
+exactly what the lane runs. Two calls of that step run tests of them plain: the
+race-impossible call, which runs the handful of assertions the detector makes impossible or
+shrinks but those whose assertion is a wall-clock time, and the natslive call, which runs the
+tests the natslive tag adds to internal/bus and internal/cipher/natscallout. The wall-clock
+ones run alone, each in the first test step of a job: delivery's xid window tests and the
+auth service's restart storm in envoy-go-race, the API's xid window tests in envoy-go-checks.
 
 The lane is three jobs: envoy-go-race (delivery, the Dispatch store, the bus, the listener,
 the registry store, the session cache, kvwatch, natscred, the NATS auth service and the sign-in
@@ -1786,8 +1811,8 @@ say why the document service runs alone.
 api sits apart because isolation is what made it fast: sharing a runner, the race binaries
 contended for the four vCPUs, and alone api fell from 1099.487 s to 746.718 s. The packages
 left in envoy-go-race are cheap enough to share one: the two heaviest of those measured
-there, the bus at 286.931 s and the listener at 365.787 s (run 40926978371), are a quarter
-and a third of the lane's bar of 1080 s, which is 60 % of a 30-minute step's own timeout, so
+there, the bus at 286.931 s and the listener at 365.787 s (run 40926978371), were a quarter
+and a third of the 1080 s bar the lane held then, 60 % of the 30-minute step it had, so
 a runner each would buy nothing and cost about 8,000 replayed runner minutes. Running a heavy
 package apart also reads its seconds as its own job's, and leaves the others' numbers
 standing when one is red.
@@ -1809,10 +1834,12 @@ own.
 
 Delivery, the Dispatch store, the bus, the listener, the registry store, the session cache,
 kvwatch, natscred, the NATS auth service and the sign-in code flow share this runner. The
-Dispatch store's tests
-(store_test.go:28) and delivery's take their databases from storetest.Open
-(storetest.go:64-66), which reads DISPATCH_TEST_DATABASE_URL and skips without it, and
-cmd/listener/dispatch_resolution_test.go:158 gets its database through internal/testpg, so the
+Dispatch store's tests read
+DISPATCH_TEST_DATABASE_URL and skip without it (internal/dispatch/store/store_test.go,
+testDatabaseURL), cloning their databases through a harness of their own (store_test.go,
+templates), and delivery's take theirs from storetest.Open
+(internal/dispatch/store/storetest/storetest.go, serverURL), which does the same;
+cmd/listener/dispatch_resolution_test.go's migratedDispatchDatabase gets its database through internal/testpg, so the
 job carries the lane's Postgres service; the registry store itself is the NATS KV view, and
 natscred's, the auth service's and the code flow's tests open no store, so they need none.
 
@@ -1867,12 +1894,15 @@ The two-process tests (packages/envoy/cmd/dispatch/multiprocess_test.go, INFRA-6
 starts two real envoy-dispatch processes against one Postgres and one NATS - which is what
 production runs - and drives them over HTTP, their own logs and NATS's own consumer and
 stream reads. They build only under the `multiprocess` tag, so envoy-go's unit run leaves
-them out, and they are a job of their own for the reason dispatch-memory is: envoy-go's unit
-step runs under go test's default ten-minute package deadline, which the memory tests
-already took red at 600 s (run 37116639565), and one row here waits out a durable hand-over
-or a maintenance loop's tick, tens of seconds each. Each row's NATS runs in its own test
-process (internal/testnats), so the job needs no container runtime of its own. It runs only
-the tests the tag adds: `-tags multiprocess ./cmd/dispatch` would run the package's untagged
+them out, and they are a job of their own for the reason dispatch-memory is: each `go test`
+call of envoy-go's unit step is held to a -timeout sized from its slowest package's measured
+time (for the package list, which runs cmd/dispatch, the -timeout
+.github/workflows/ci-job-envoy-go.yaml sizes), which rows of tens of seconds each
+would move - one here waits out a durable hand-over or a maintenance loop's tick - and the
+memory tests already took that step red at 600 s when it ran under go test's default
+ten-minute deadline (run 37116639565). Each row's NATS runs in its own test process
+(internal/testnats), so the job needs no container runtime of its own. It runs only the
+tests the tag adds: `-tags multiprocess ./cmd/dispatch` would run the package's untagged
 tests a second time, envoy-go's unit step having run them already, so the -run comes from
 .github/scripts/go-tagged-tests.sh, which reads the names off the source at run time. The
 assignment is a line of its own: under bash -e it carries the script's exit status, so an
@@ -1935,20 +1965,23 @@ processes, migrate one empty database with both at once, prove a retag read by o
 enforced by the other through the reread fan-out, and signal a process to watch it fail
 readiness while it serves a request out past the old shutdown budget.
 
-They build only under the `multiprocess` tag, so envoy-go's unit run leaves them out, and
-they could not run there in any case: that step runs under go test's default ten-minute
-package deadline, which the memory tests already took red at 600 s (run 37116639565), and the
-rows here wait out a migration race, a ten-second fan-out window and a twelve-second drain,
-tens of seconds each. A job of their own rather than a step in dispatch-multiprocess, whose
-Postgres service and shape this copies, so that each runs only on what it reads: the broker's
-closure (broker_multiprocess) shares little with the Dispatch server's
-(dispatch_multiprocess). They need no NATS and no test-container pull - the broker starts
-nothing in a container - so neither step is here. The step runs only the tests the tag adds:
-`-tags multiprocess ./cmd/cipherd` would run the package's untagged tests a second time,
-envoy-go's unit step having run them already, so the -run comes from
-.github/scripts/go-tagged-tests.sh, which reads the names off the source at run time. The
-assignment is a line of its own: under bash -e it carries the script's exit status, so an
-empty or refused list fails the step instead of running -run "", which matches every test.
+They build only under the `multiprocess` tag, so envoy-go's run of cmd/cipherd leaves them
+out, and they are kept out of it: cmd/cipherd runs in envoy-go's database-skips count, under a
+--timeout sized from its slowest package's measured time (the --timeout
+.github/workflows/ci-job-envoy-go.yaml sizes), which rows of tens of seconds each
+would move - these wait out a migration race, a ten-second
+fan-out window and a twelve-second drain - and the memory tests already took envoy-go's unit
+step red at 600 s when it ran under go test's default ten-minute deadline (run 37116639565). A job of
+their own rather than a step in dispatch-multiprocess, whose Postgres service and shape this
+copies, so that each runs only on what it reads: the broker's closure (broker_multiprocess)
+shares little with the Dispatch server's (dispatch_multiprocess). They need no NATS and no
+test-container pull - the broker starts nothing in a container - so neither step is here.
+The step runs only the tests the tag adds: `-tags multiprocess ./cmd/cipherd` would run the
+package's untagged tests a second time, envoy-go's unit step having run them already, so
+the -run comes from .github/scripts/go-tagged-tests.sh, which reads the names off the source
+at run time. The assignment is a line of its own: under bash -e it carries the script's exit
+status, so an empty or refused list fails the step instead of running -run "", which matches
+every test.
 
 ## The Lean model of the airlock, and why its fuzz run is two minutes
 

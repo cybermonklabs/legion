@@ -41,11 +41,17 @@ var cutRewatchCaches = []string{
 // branch a rewatch replaced is pinned by the unit test of internal/kvwatch. What this test holds
 // is the whole cut path, every cache's replacement included, to no ERROR at all.
 func TestASilentCutRewatchesTheCachesWithNoErrorLine(t *testing.T) {
+	t.Parallel()
 	server, uri := testnats.Start(t)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "cut-rewatch")
 	listener.waitHealthy(t)
 
-	thaw, output := freezeUntilTheClientReportsTheCut(t, server, listener)
+	// The cut's report is an event this test waits on, not its subject, so the wait is the
+	// package's give-up, listenerWait. How soon the client reports a cut is
+	// TestTheListenersNATSClientReportsASilentCutWithinSeconds's, which holds silentCutBound and
+	// runs serial for it: held to that bound here, a test slowed past it failed for the machine's
+	// load rather than for a rewatch.
+	thaw, output := freezeUntilTheClientReportsTheCut(t, server, listener, listenerWait)
 	thaw()
 
 	// Every cache is rewatched on the reconnect, and each replacement's warm-up line says so.
@@ -75,7 +81,7 @@ func TestASilentCutRewatchesTheCachesWithNoErrorLine(t *testing.T) {
 	}
 	written := time.Now()
 	for !listsInterest(t, listener.port, sessionID) {
-		if time.Since(written) > 10*time.Second {
+		if time.Since(written) > listenerWait {
 			t.Fatalf("%s after the thaw, the listener's cache still missed an interest another listener wrote:\n%s",
 				time.Since(written).Round(time.Millisecond), output())
 		}

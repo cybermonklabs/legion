@@ -133,6 +133,7 @@ func nextNotification(t *testing.T, ctx context.Context, conn *pgx.Conn, wait ti
 // its merge time, and a later upsert that changes its title logs a second with that time on both
 // sides.
 func TestAPullRequestUpsertWithNewContentLogsOneChange(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	merged := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	before := latestChange(t, ctx, pool)
@@ -164,6 +165,7 @@ func TestAPullRequestUpsertWithNewContentLogsOneChange(t *testing.T) {
 // attribution pass over rows whose issue did not change, and a run and its jobs written again with
 // the same facts -- logs no change.
 func TestAReconcileReupsertOfTheSameFactsLogsNothing(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	merged := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 
@@ -218,6 +220,7 @@ func TestAReconcileReupsertOfTheSameFactsLogsNothing(t *testing.T) {
 // TestARunChangeLogsItsKindAndItsLaterTime: a run logs its kind and the later of its head commit
 // and its start, and a job of it logs the run's kind and the same time.
 func TestARunChangeLogsItsKindAndItsLaterTime(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	before := latestChange(t, ctx, pool)
@@ -258,6 +261,7 @@ type freshnessPayload struct {
 // every reconcile pass make log no change, and each committed one notifies delivery_freshness with
 // the row's three freshness values.
 func TestFreshnessOnlySettingsWritesLogNoChangeButNotify(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	conn := listenConn(t, ctx, pool, "delivery_freshness")
@@ -289,7 +293,7 @@ func TestFreshnessOnlySettingsWritesLogNoChangeButNotify(t *testing.T) {
 		if err := write.write(); err != nil {
 			t.Fatalf("%s: %v", write.name, err)
 		}
-		notification := nextNotification(t, ctx, conn, 5*time.Second)
+		notification := nextNotification(t, ctx, conn, eventWait)
 		if notification == nil {
 			t.Fatalf("%s notified nothing", write.name)
 		}
@@ -339,6 +343,7 @@ func TestRecordEventAtStampsTheDatabasesClock(t *testing.T) {
 // ahead of the database's, a change the database dates 25 hours old goes and one it dates 23 hours
 // old stays.
 func TestPruneChangesCutsAtTheDatabasesClock(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	pool = laggingDatabaseClock(t, ctx, pool, 2*time.Hour)
 	if _, err := pool.Exec(ctx, `delete from delivery_changes`); err != nil {
@@ -378,6 +383,7 @@ func TestPruneChangesCutsAtTheDatabasesClock(t *testing.T) {
 // and one of four-byte characters, each commit and notify a payload under Postgres's 8,000-byte
 // limit, rather than failing the settings write.
 func TestTheFreshnessPayloadStaysUnderTheNotifyLimit(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	conn := listenConn(t, ctx, pool, "delivery_freshness")
@@ -388,7 +394,7 @@ func TestTheFreshnessPayloadStaysUnderTheNotifyLimit(t *testing.T) {
 		if err := RecordReconcileError(ctx, pool, message); err != nil {
 			t.Fatalf("RecordReconcileError with 5,000 %s: %v", name, err)
 		}
-		notification := nextNotification(t, ctx, conn, 5*time.Second)
+		notification := nextNotification(t, ctx, conn, eventWait)
 		if notification == nil {
 			t.Fatalf("5,000 %s notified nothing", name)
 		}
@@ -401,6 +407,7 @@ func TestTheFreshnessPayloadStaysUnderTheNotifyLimit(t *testing.T) {
 // TestEveryLoggedChangeNotifiesAtCommit: a change notifies delivery_changes once its transaction
 // commits, and not before.
 func TestEveryLoggedChangeNotifiesAtCommit(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	conn := listenConn(t, ctx, pool, "delivery_changes")
 	tx, err := pool.Begin(ctx)
@@ -420,7 +427,7 @@ func TestEveryLoggedChangeNotifiesAtCommit(t *testing.T) {
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
-	if nextNotification(t, ctx, conn, 5*time.Second) == nil {
+	if nextNotification(t, ctx, conn, eventWait) == nil {
 		t.Fatal("the commit notified nothing")
 	}
 	if extra := nextNotification(t, ctx, conn, 300*time.Millisecond); extra != nil {
@@ -432,6 +439,7 @@ func TestEveryLoggedChangeNotifiesAtCommit(t *testing.T) {
 // until the first writer commits, so it cannot take a seq a reader could pass before the first
 // writer's lands.
 func TestChangeSeqsFollowCommitOrder(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	before := latestChange(t, ctx, pool)
 	insert := `
@@ -465,11 +473,12 @@ func TestChangeSeqsFollowCommitOrder(t *testing.T) {
 		bErr <- b.Commit(ctx)
 	}()
 
-	waitFor(t, 10*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		var waiting int
 		err := pool.QueryRow(ctx, `
 			select count(*) from pg_locks
 			where locktype = 'advisory' and not granted and classid = 6900 and objid = 0 and objsubid = 2
+			  and database = (select oid from pg_database where datname = current_database())
 		`).Scan(&waiting)
 		return err == nil && waiting == 1
 	}, func() string { return "B never waited on the change log's advisory lock" })
@@ -491,6 +500,7 @@ func TestChangeSeqsFollowCommitOrder(t *testing.T) {
 // members' writes, and a settings change each log their change; settings written again unchanged
 // log none.
 func TestRunJobAndGroupAndSettingsChangesAreLogged(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
@@ -577,6 +587,7 @@ func TestRunJobAndGroupAndSettingsChangesAreLogged(t *testing.T) {
 // TestDeletingAPullRequestLogsItsOldMergeTime: a deleted pull request logs its merge time as the
 // time before and none after.
 func TestDeletingAPullRequestLogsItsOldMergeTime(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	merged := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	if err := UpsertPullRequest(ctx, pool, changeTestPR(13, merged, "chore: task")); err != nil {

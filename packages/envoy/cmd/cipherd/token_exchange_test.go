@@ -145,6 +145,12 @@ func fakeSecret(path, owner, value string) string {
 // renewed from the same standing pod token, and the eight refusals that
 // keep the credential-less path from being a way in for anyone else. It skips when
 // BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
+//
+// Serial: its renewal step is a span. That step's broker gives every access token
+// shortAccessSeconds (2 s) of life, so that the first token lapses rather than the test waiting
+// minutes, and the renewed token is then introspected as live, which holds only while the
+// introspection reaches the broker inside those 2 s of the renewal's mint; a parallel test's load
+// can stretch the one request between the two past them.
 func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 	databaseURL := storetest.URL(t)
 	// Two issuers the test controls: the cluster's, which mints every service-account token here,
@@ -252,7 +258,7 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 	})
 
 	t.Run("a lapsed token is renewed by the same standing pod token", func(t *testing.T) {
-		// Its own broker run, on a schema of its own, started with an access-token lifetime of a
+		// Its own broker run, on a database of its own, started with an access-token lifetime of a
 		// few seconds: the proof is that the first token lapses, not that the test waits.
 		renewalBroker := startBroker(t, brokerOptions{Env: exchangeEnv(t, storetest.URL(t), cluster, github, shortAccessSeconds)})
 		renewalBroker.Await(t, "token exchange")
@@ -395,6 +401,7 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 // registered for nothing, is refused it, the refusal naming the session. Registering that third
 // pod is what then answers it.
 func TestAPodWritesOnlyUnderASessionRegisteredForIt(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
 	clusterKey := cluster.PublishKey(t, "cluster-key")
@@ -1494,17 +1501,30 @@ type liveBroker struct {
 	plain *http.Client
 }
 
+// brokerRequestWait bounds one request a test sends the broker binary, from the moment the test
+// signs what the request carries (a DPoP proof, a launcher proof, a request object) to the
+// binary's answer. The binary takes what was signed for BROKER_PROOF_SKEW_SECONDS after its iat,
+// 60 s by default (internal/cipher/config/config.go), and no test here sets it; with iat in whole
+// seconds that is 59 to 61 s from the signing. So a request is given up on, failing its test
+// with the route named, well inside that window: load on the runner cannot carry a request past
+// the window and have the binary refuse what was good when it was signed. A healthy request
+// answers in milliseconds.
+const brokerRequestWait = 30 * time.Second
+
 // newPlainBroker drives the broker listening at addr with no key: the routes a listed caller
-// reaches present that caller's ServiceAccount token and sign no proof.
+// reaches present that caller's ServiceAccount token and sign no proof. Its client gives up on a
+// request brokerRequestWait after sending it.
 func newPlainBroker(addr string) *liveBroker {
-	return &liveBroker{base: "http://" + addr, plain: &http.Client{}}
+	return &liveBroker{base: "http://" + addr, plain: &http.Client{Timeout: brokerRequestWait}}
 }
 
 // newLiveBroker drives the broker listening at addr, signing a proof of key for every request the
-// exchange judges a credential-less caller on.
+// exchange judges a credential-less caller on. The DPoP transport signs each proof as the client
+// sends the request (cipherclient.NewDPoPTransport), inside the span the client's
+// brokerRequestWait bounds, so that bound runs from the signing.
 func newLiveBroker(addr string, key *ecdsa.PrivateKey) *liveBroker {
 	live := newPlainBroker(addr)
-	live.dpop = &http.Client{Transport: cipherclient.NewDPoPTransport(key, http.DefaultTransport)}
+	live.dpop = &http.Client{Timeout: brokerRequestWait, Transport: cipherclient.NewDPoPTransport(key, http.DefaultTransport)}
 	return live
 }
 
@@ -1541,8 +1561,9 @@ func (l *liveBroker) registered(t *testing.T, podToken, session, bearer string) 
 
 // brokerCall is one request to the live broker as send makes it: the method and path, the body
 // and the content type it is sent under (empty for a request that carries neither), the bearer
-// whose Authorization header goes on when it is not empty, and the request half as the transcript
-// shows it, with every credential named rather than repeated.
+// whose Authorization header goes on when it is not empty, the request half as the transcript
+// shows it, with every credential named rather than repeated, and when the test signed what the
+// request carries if it signed that before the send.
 type brokerCall struct {
 	method      string
 	path        string
@@ -1550,6 +1571,22 @@ type brokerCall struct {
 	body        string
 	bearer      string
 	shown       string
+	// signed is the moment the test began signing something the request carries before sending
+	// it, a request object, which no transport signs; zero for a request carrying no such
+	// signature. send gives the request up brokerRequestWait after it (signedContext).
+	signed time.Time
+}
+
+// signedContext is the context of a request carrying something the test signed at signed, before
+// the request is sent: it ends brokerRequestWait after that moment, so the bound covers the span
+// the binary's skew counts from the signing and not only the send the client's Timeout counts
+// from. A zero signed is a request carrying no such signature, which the client's Timeout alone
+// bounds.
+func signedContext(signed time.Time) (context.Context, context.CancelFunc) {
+	if signed.IsZero() {
+		return context.WithCancel(context.Background())
+	}
+	return context.WithDeadline(context.Background(), signed.Add(brokerRequestWait))
 }
 
 // send sends one request to the broker, reads its answer and logs both halves as the live run's
@@ -1558,7 +1595,9 @@ type brokerCall struct {
 // body for a revocation that worked.
 func (l *liveBroker) send(t *testing.T, client *http.Client, call brokerCall) (int, []byte) {
 	t.Helper()
-	request, err := http.NewRequest(call.method, l.base+call.path, strings.NewReader(call.body))
+	ctx, cancel := signedContext(call.signed)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, call.method, l.base+call.path, strings.NewReader(call.body))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -17,6 +17,8 @@ import (
 	"time"
 )
 
+// Serial: each row sets a process-wide variable, HOME, and clientConfig, the package-level settings
+// loadClientConfig fills; t.Setenv panics under t.Parallel.
 func TestAConfigPathThatIsNotARegularFileIsRefused(t *testing.T) {
 	for name, create := range map[string]func(path string) error{
 		"a directory": func(path string) error { return os.Mkdir(path, 0o700) },

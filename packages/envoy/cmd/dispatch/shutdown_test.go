@@ -49,6 +49,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // promptShutdown bounds a SIGTERM's whole ordered shutdown with a dashboard open. Closing the
@@ -56,6 +57,22 @@ import (
 // connection that held the HTTP drain open would cost httpDrainBeforeDocuments, eleven seconds,
 // alone.
 const promptShutdown = 3 * time.Second
+
+// bootWait bounds a wait for a process this package started to serve: waitHealthy's wait for the
+// listening line and a 200 from /healthz, and registry_test's waits for a line a boot writes
+// before it serves. It is a give-up bound and never a measurement: no test here asserts anything
+// about how long a boot takes, and the boot's cost is not this package's to choose. Dispatch
+// opens its pool and runs the migration pass over every migration of the set
+// (224 of them) before it serves, and a test's database is a clone that already holds them all,
+// so the pass reads the version table once per migration and applies none: that pass alone took
+// 13.2 s of a 15.5 s boot on an idle two-core box, and 28.0 s of a 29.9 s boot on CI's envoy-go
+// lane, where seven go test calls share four cores (run 42779139068 attempt 2, job 129723739595:
+// the boot's first line at 08:51:42.685, the document_search fill's first batch at 08:52:10.681,
+// "dispatch: listening" at 08:52:12.583). Against that boot the 30 s this wait once gave was
+// 0.3 s short, and failed a process that was serving by the time the failure was written. So the
+// number is far above what a loaded boot costs, and what it still catches is a process that
+// never serves at all: a boot that hangs, and a process the kernel never scheduled.
+const bootWait = 2 * time.Minute
 
 // streamedSessionID is the session whose conversation the test's agent view watches; an agent
 // view names a session uuid.
@@ -68,6 +85,20 @@ const streamedSessionID = "01a0e090-4848-7473-acc5-fc96e6a646d3"
 // the document an edit has just left owing a settlement. An edit's settlement runs two seconds after
 // it (docs.Deps.Settle's default), so a signal sent as soon as the edit answers reaches the document
 // service with that settlement still owed, and Shutdown is the one that runs it.
+// Serial: its assertion is a time. waitPromptExit holds the whole ordered shutdown to
+// promptShutdown, three seconds, and a parallel test's load is what would stretch it past that
+// (dispatch://INFRA-985).
+//
+// Its Postgres must be an instance no other package writes on, which ci.yaml's envoy-go lane gives
+// it by running it in a go test call of its own, with DISPATCH_TEST_DATABASE_URL naming a service
+// of its own, as it does for internal/dispatch/routes (postgres_routes). The two live sockets
+// below each wait for the event feed's events_start, which waits for the safe horizon, and that
+// horizon waits on the oldest transaction id open anywhere on the instance, whatever database it
+// is in and whatever it is doing (internal/dispatch/events, horizon.go). On the lane's shared
+// service this test failed that wait in run 42581214577: its own process logged "event horizon
+// held back by an open transaction" naming a backend of another package's clone,
+// database=dispatch_test_2be55348167c1ee8, running a block-state read, and the events_start never
+// came.
 func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing.T) {
 	database := storetest.Open(t)
 	process := startDispatchProcess(t, database.Pool.Config().ConnString())
@@ -104,13 +135,25 @@ func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing
 // A request in flight can hold the HTTP drain for its whole share of the budget, here a title change
 // queued behind another writer's lock on the issue. The document service starts once that share
 // ends, so the settlement owed by the edit before the signal still runs and commits. Settlement waits
-// on the same lock: the edit's own timer starts one two seconds in, during the drain, and Shutdown
-// starts another. The lock is released once Shutdown's is queued behind it too, or two seconds after
-// the document service started, which is ample for it to read what is owed; a release before that
-// read could let the timer's settlement commit first.
+// on the same lock, so the lock is released once Shutdown's settlement is queued behind it too.
+//
+// The process settles a live change only after a settle delay that outlasts any run of the test
+// binary, so the edit's own timer never runs inside the row: the settlement owed at the signal is
+// Shutdown's alone, and the row waits on events: the title change queued, the document service
+// started, and Shutdown's settlement queued behind the lock. At the server's own two seconds, the
+// edit's timer ran a settlement of its own that the steps from the edit to the lock had to beat,
+// and the release had to come within two seconds of the document service starting, before that
+// timer's settlement could commit what Shutdown had yet to read as owed: a run slowed past either
+// found nothing owed at the signal and failed as a shutdown that settled nothing.
+//
+// Serial: a product deadline is under its steps. Shutdown's settlement waits on the lock this test
+// holds, and the document service gives it docs.ShutdownDrainBudget (9 s, inside
+// documentShutdownTimeout) from the line saying it settles documents with requests still in
+// flight, so the release must come inside those nine seconds or the settlement is cut short, and
+// a parallel test's load is what would stretch the steps before the release past them.
 func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *testing.T) {
 	database := storetest.Open(t)
-	process := startDispatchProcess(t, database.Pool.Config().ConnString())
+	process := startDispatchProcessWithSettleDelay(t, database.Pool.Config().ConnString(), testwait.PastTheRun)
 	process.waitHealthy(t)
 	key, artifactID := process.createIssue(t)
 	process.editOwingSettlement(t, database, artifactID)
@@ -120,8 +163,8 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 		// Its answer is not this test's.
 		_, _ = process.renameIssue(key, "Renamed")
 	}()
-	// The edit's settlement queues behind the same lock two seconds in, so a count of waiters
-	// could pass with the title change still on its way: watch the title change's own backend.
+	// Watch the title change's own backend: a count of waiters would also count a settlement
+	// queued behind the same lock.
 	if pid := waitForRenameBehind(t, database, holder, 10*time.Second); pid == 0 {
 		t.Fatalf("the title change never queued behind the issue lock:\n%s", process.Output.String())
 	}
@@ -129,12 +172,16 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 	signalled := process.Terminate(t)
 	process.WaitForOutput(t, `msg="dispatch: settle documents with requests still in flight"`)
 	t.Logf("the document service started with the request in flight %v after SIGTERM", time.Since(signalled))
-	waiting := storetest.WaitForLockWaiters(t, holder, 3, 2*time.Second)
+	// The title change, and Shutdown's settlement of the owed document behind it: nothing else
+	// settles the document while the test runs.
+	if waiting := storetest.WaitForLockWaiters(t, holder, 2, 10*time.Second); waiting < 2 {
+		t.Fatalf("%d waiting on the issue lock, want the title change and Shutdown's settlement:\n%s", waiting, process.Output.String())
+	}
 	if err := holder.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the issue lock: %v", err)
 	}
 	process.WaitExit(t, "SIGTERM")
-	t.Logf("released the issue lock with %d waiting on it; exited %v after SIGTERM", waiting, time.Since(signalled))
+	t.Logf("exited %v after SIGTERM", time.Since(signalled))
 	process.checkSettledAtShutdown(t, database, artifactID)
 }
 
@@ -145,6 +192,7 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 // commits and its answer is sent, and only then closes the pool, as the deferred close of the pool
 // before this shutdown order did.
 func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.T) {
+	t.Parallel()
 	const lockHeldAfterSIGTERM = 27 * time.Second
 	database := storetest.Open(t)
 	process := startDispatchProcess(t, database.Pool.Config().ConnString())
@@ -443,6 +491,7 @@ func TestSIGTERMWithABroadcastAtTheListenerSettlesEveryRecipientBeforeExit(t *te
 // shutdown must wait for the socket handler and the delivery hub after cancelling Lifetime, before
 // it closes the database pool they use.
 func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documentService := docs.New(docs.Deps{Store: database, Events: broker})
@@ -836,6 +885,7 @@ func testGitHubApp(t *testing.T, baseURL string) *githubapp.Client {
 // without cancelling first never returned, and the process hung with the panic unprinted while its
 // intake kept consuming.
 func TestAPanicAfterTheIntakesStartEndsTheProcess(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	_, natsURL := testnats.Start(t)
 	// The publisher owns the stream, as the server's does, so the intakes bind their durables.
@@ -997,6 +1047,9 @@ func TestSIGTERMWithAnEditorConnectedSettlesItsDocumentBeforeExit(t *testing.T) 
 // it would create has none yet. Dispatch then gives up on the connection when silentProbes health
 // probes in a row have failed with no connection taken back meanwhile, so it exits well inside a
 // runtime's grace period instead of being killed, and says why.
+// Serial: its assertion is a time. It bounds how long after SIGTERM the process exits with the
+// database unanswering, against a budget read off the binary's own timeouts, and a parallel
+// test's load is what would stretch it past that (dispatch://INFRA-985).
 func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -1223,6 +1276,7 @@ func (p *dispatchProcess) checkSettledAtShutdown(t *testing.T, database *store.S
 // both answers, and takes the same answer from a running process whose output says it serves on
 // the port.
 func TestTheHealthWaitTakesNoAnswerOnThePortForAProcessThatLostIt(t *testing.T) {
+	t.Parallel()
 	holder := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	t.Cleanup(holder.Close)
 	port := holder.Listener.Addr().(*net.TCPAddr).Port
@@ -1259,6 +1313,7 @@ func TestTheHealthWaitTakesNoAnswerOnThePortForAProcessThatLostIt(t *testing.T) 
 // (connectionRefusalCause): the connection ceiling check counts only this binary's Dispatch
 // processes, so a server whose slots other clients hold passes it, and the process fails later.
 func TestAProcessThatExitsBeforeItIsHealthySaysWhy(t *testing.T) {
+	t.Parallel()
 	exited := func(output, databaseURL string) error {
 		logged := &cmdtest.LockedBuffer{}
 		_, _ = logged.Write([]byte(output))
@@ -1314,6 +1369,7 @@ func TestAProcessThatExitsBeforeItIsHealthySaysWhy(t *testing.T) {
 // chose for it, and says that address in its listening line. Without the socket it would bind
 // every interface on 8766.
 func TestDispatchServesOnTheListenSocketItInheritsWithNoAddressSet(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
 		Without: []string{"DISPATCH_LISTEN_HOST", "DISPATCH_PORT"},
@@ -1333,6 +1389,7 @@ func TestDispatchServesOnTheListenSocketItInheritsWithNoAddressSet(t *testing.T)
 // the test holds, so a bind would log its failure. The refusal comes before Dispatch reads its
 // database, so the test needs none.
 func TestDispatchRefusesAListenFDThatIsNotASocketAndBindsNothing(t *testing.T) {
+	t.Parallel()
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("hold the port DISPATCH_PORT names: %v", err)
@@ -1529,11 +1586,11 @@ func (p *dispatchProcess) listeningLine() string {
 	return `msg="dispatch: listening" addr=127.0.0.1:` + strconv.Itoa(p.port)
 }
 
-// waitHealthy waits up to 30 s for the process to be healthy (healthyWithin), and fails the test
+// waitHealthy waits bootWait for the process to be healthy (healthyWithin), and fails the test
 // when it is not.
 func (p *dispatchProcess) waitHealthy(t *testing.T) {
 	t.Helper()
-	if err := p.healthyWithin(30 * time.Second); err != nil {
+	if err := p.healthyWithin(bootWait); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1596,7 +1653,12 @@ func (p *dispatchProcess) healthyWithin(within time.Duration) error {
 	if exited() {
 		return fmt.Errorf("Dispatch exited before it became healthy. %s\n%s\n%s", p.exitCause(), dispatchOutputHeading, p.Output.String())
 	}
-	return fmt.Errorf("Dispatch never became healthy:\n%s", p.Output.String())
+	// Which of the two waits ran out says what to read the output for: a boot still working its
+	// way to its listening line, or a server that logged it serves and did not answer on the port.
+	if !strings.Contains(p.Output.String(), listening) {
+		return fmt.Errorf("Dispatch never logged that it serves on its port, so its boot was unfinished %v after it started:\n%s", within, p.Output.String())
+	}
+	return fmt.Errorf("Dispatch logged that it serves but never answered /healthz 200 within %v:\n%s", within, p.Output.String())
 }
 
 // exitCause is the reason a process that exited before it was healthy gives in its output: the
@@ -1743,6 +1805,10 @@ type streamEnd struct {
 // the socket the feed's frames arrive on. The frame is behind the event horizon, so the wait for it
 // is the server's own stall warning rather than a deadline (live_events_wait_test.go). The socket
 // closes when the test ends.
+//
+// That horizon is held back by any transaction open anywhere on this Postgres instance, so a test
+// that calls this needs an instance no other package writes on, which is why this one test of the
+// package runs on a service of its own (dispatch://INFRA-1075).
 func (p *dispatchProcess) openLiveEvents(t *testing.T) *gws.Conn {
 	t.Helper()
 	conn, response, err := gws.DefaultDialer.Dial("ws://127.0.0.1:"+strconv.Itoa(p.port)+"/ws/live", http.Header{

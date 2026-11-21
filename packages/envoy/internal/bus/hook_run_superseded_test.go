@@ -3,6 +3,7 @@ package bus
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -20,25 +21,25 @@ import (
 
 // supersede is what a reconnect hook does to lose the connection its run is on: it stops srv, and
 // returns once conn, the run's connection, has left CONNECTED and ctx, the run's context, has ended
-// with it, with the context's error. Either that is not done within 10 s returns an error of its
+// with it, with the context's error. Either that is not done within busWait returns an error of its
 // own, which no run reads as superseded.
 func supersede(ctx context.Context, t *testing.T, srv *testnats.Server, conn *nats.Conn) error {
 	srv.Stop(t)
 	return awaitRunLost(ctx, conn)
 }
 
-// awaitRunLost waits, within 10 s each, for conn to leave CONNECTED and then for ctx, the context
+// awaitRunLost waits, within busWait each, for conn to leave CONNECTED and then for ctx, the context
 // of a run on conn, to end, and returns ctx's error; a wait that runs out returns an error of its
 // own.
 func awaitRunLost(ctx context.Context, conn *nats.Conn) error {
-	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool { return !conn.IsConnected() }) {
-		return errors.New("the run's connection still read CONNECTED 10s after it was cut")
+	if !testwait.Holds(busWait, 10*time.Millisecond, func() bool { return !conn.IsConnected() }) {
+		return fmt.Errorf("the run's connection still read CONNECTED %s after it was cut", busWait)
 	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-time.After(10 * time.Second):
-		return errors.New("the run's context had not ended 10s after its connection left CONNECTED")
+	case <-time.After(busWait):
+		return fmt.Errorf("the run's context had not ended %s after its connection left CONNECTED", busWait)
 	}
 }
 
@@ -56,6 +57,7 @@ func markHooksDue(c *Client) {
 // (afterReconnect), and both lose their connection to a stopped server; the third covers the
 // reconnect that follows.
 func TestASupersededRunKeepsNoErrorAndLogsNoWarning(t *testing.T) {
+	// Serial: it captures the default slog handler (captureLogs), a process-wide swap.
 	srv, uri := testnats.Start(t)
 	client, err := Connect([]string{uri}, WithName(t.Name()))
 	if err != nil {
@@ -124,6 +126,7 @@ type hookCall struct {
 // hook that returns the cancel, which ends the run there, and for one that swallows it and returns
 // nil, after which the hooks behind it run on the ended context; the run is superseded either way.
 func TestASupersededRunLeavesEveryHookDue(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		swallow bool
@@ -168,7 +171,7 @@ func TestASupersededRunLeavesEveryHookDue(t *testing.T) {
 			}
 
 			srv.Start(t)
-			testwait.WithinPolling(t, 30*time.Second, 20*time.Millisecond, "the second hook to run on the reconnected connection and the run to cover it", func() bool {
+			testwait.WithinPolling(t, busWait, 20*time.Millisecond, "the second hook to run on the reconnected connection and the run to cover it", func() bool {
 				mu.Lock()
 				defer mu.Unlock()
 				for _, call := range seconds {
@@ -307,6 +310,7 @@ func (p *halfOpenProxy) forward(conn *proxiedConn) {
 // durable's push binding, for minutes. nats.go reconnects in place, and the durable ends bound and
 // handed what the stream takes.
 func TestTheRestoresBindOutlivesTheRunItsConnectionLossSuperseded(t *testing.T) {
+	// Serial: it captures the default slog handler (captureLogs), a process-wide swap.
 	_, uri := testnats.Start(t)
 	owner, err := ConnectOwningStream([]string{uri}, WithName(t.Name()+"-owner"))
 	if err != nil {

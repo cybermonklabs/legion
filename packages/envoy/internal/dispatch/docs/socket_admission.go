@@ -426,7 +426,7 @@ func (s *Service) authorize(r *http.Request) (websocket.ConnectionConfig, bool) 
 	room := socketRoom(r)
 	fleet, err := readSchemaFleet(r.Context(), s.queryFrom(r.Context()))
 	if err != nil {
-		slog.Warn("dispatch: refuse a document socket: read the live server processes", "room", room, "error", err)
+		s.log().Warn("dispatch: refuse a document socket: read the live server processes", "room", room, "error", err)
 		return websocket.ConnectionConfig{}, false
 	}
 	state := s.lockState(room)

@@ -754,6 +754,10 @@ func refuseValueReads(t *testing.T) {
 
 func alwaysServed(name string) Reread { return Reread{Name: name, Served: true} }
 
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBrokerWith's t.Setenv), CLOUDSDK_AUTH_ACCESS_TOKEN
+// (useGCPIdentity's t.Setenv), and the package-level seams the GCP backend is reached through
+// (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretCreateShowSetRetagDeleteRestoreLifecycle(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
@@ -886,6 +890,10 @@ func holdScratchTest(f *fakeSecretManager) string {
 // active gcloud account in R1's order, so where gcloud holds a login the same writes run under
 // that login. Where the store's IAM refuses the identity (PermissionDenied), the refusal (exit 1)
 // names its source and principal, and nothing changes.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, the gcloud and
+// application-credential variables, and the package-level seams the GCP backend is reached
+// through (gcpCredentialsFile, gcpMetadataToken, gcpMetadataPrincipal, gcpUserinfo,
+// gcpClientDial, secretStdin).
 func TestGCPSecretWriteUnderAMachineIdentityRunsUnderIt(t *testing.T) {
 	for _, kind := range machineADCKinds {
 		t.Run(cmp.Or(kind, "metadata server"), func(t *testing.T) {
@@ -954,6 +962,10 @@ func TestGCPSecretWriteUnderAMachineIdentityRunsUnderIt(t *testing.T) {
 // userinfo endpoint refuses to name, writes an existing secret all the same: set, retag, and
 // delete then restore each write, every Secret Manager call carrying the lent token, and the
 // broker is asked to reread each.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpMetadataToken, gcpMetadataPrincipal, gcpUserinfo, gcpClientDial,
+// secretStdin).
 func TestGCPSecretWritesUnderALentTokenWithoutAnEmailScope(t *testing.T) {
 	for _, row := range []struct {
 		name  string
@@ -1001,6 +1013,10 @@ func TestGCPSecretWritesUnderALentTokenWithoutAnEmailScope(t *testing.T) {
 // person the sign-in is, which Google's userinfo endpoint does not answer for a token without an
 // email scope, so create and retag refuse it (exit 2), naming the lent token and --owner <email>,
 // before the value is read and with nothing written.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpMetadataToken, gcpMetadataPrincipal, gcpUserinfo, gcpClientDial,
+// secretStdin).
 func TestGCPSecretOwnerMeUnderALentTokenWithoutAnEmailScopeIsRefused(t *testing.T) {
 	for _, args := range [][]string{{"create", "NEW_TEST", "--owner", "me", "--tier", "agent"}, {"retag", "SCRATCH_TEST", "--owner", "me"}} {
 		t.Run(args[0], func(t *testing.T) {
@@ -1032,6 +1048,10 @@ func TestGCPSecretOwnerMeUnderALentTokenWithoutAnEmailScopeIsRefused(t *testing.
 // on create and on retag, so a sign-in whose person Google cannot name - here a lent token without
 // an email scope - creates a secret for its person and gives one to another, every call under the
 // lent token.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpMetadataToken, gcpMetadataPrincipal, gcpUserinfo, gcpClientDial,
+// secretStdin).
 func TestGCPSecretOwnerNamedByEmail(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
@@ -1064,6 +1084,9 @@ func TestGCPSecretOwnerNamedByEmail(t *testing.T) {
 // own choice, so every form signs in with it, a read and a write alike, beside any other
 // credential - Application Default Credentials GOOGLE_APPLICATION_CREDENTIALS names, a person's
 // own Application Default Credentials, or, with none, a gcloud login - with gcloud never run.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretALentTokenOutranksEveryOtherCredential(t *testing.T) {
 	for _, row := range []struct {
 		name string
@@ -1110,6 +1133,10 @@ func TestGCPSecretALentTokenOutranksEveryOtherCredential(t *testing.T) {
 // gcloud does not hold, a form is refused (exit 1), naming that account and each login gcloud
 // holds, with no token lent and no Secret Manager call - never run as another login, though gcloud
 // holds only one.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_CORE_ACCOUNT and the other
+// gcloud and application-credential variables, and the package-level seams the GCP backend is
+// reached through (gcpMetadataToken, gcpMetadataPrincipal, gcpUserinfo, gcpClientDial,
+// secretStdin).
 func TestGCPSecretGcloudLoginIsTheOneGcloudUses(t *testing.T) {
 	several := []string{machineEmail, "ada@example.com", "grace@example.com"}
 	for _, row := range []struct {
@@ -1171,6 +1198,9 @@ func TestGCPSecretGcloudLoginIsTheOneGcloudUses(t *testing.T) {
 // environment turns file logging and HTTP logging on and their token redaction off; its token
 // command prints the token in the private format, which bypasses gcloud's log file, and clears
 // none of gcloud's own auth properties.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, the CLOUDSDK_* variables gcloud
+// itself reads, and the package-level seams the GCP backend is reached through
+// (gcpMetadataToken, gcpMetadataPrincipal, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretGcloudRunsWithItsOwnSettingsAndNoLogs(t *testing.T) {
 	t.Run("the caller's settings, and no logs", func(t *testing.T) {
 		fake := newFakeSecretManager()
@@ -1244,6 +1274,9 @@ func requireGcloudRuns(t *testing.T, gcloud gcloudStub, want map[string]string, 
 // value in, after refusing a value of more than one line at the prompt, starts with the
 // CLOUDSDK_CORE_ACCOUNT that chose the gcloud login, shell-quoted, so running it picks the same
 // login among several; with a single login it chose none, and the command carries none.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_CORE_ACCOUNT and the other
+// gcloud variables, and the package-level seams the GCP backend is reached through
+// (gcpMetadataToken, gcpMetadataPrincipal, gcpUserinfo, gcpClientDial, readHidden).
 func TestGCPSecretPipeCommandKeepsTheGcloudAccountChoice(t *testing.T) {
 	for _, row := range []struct {
 		name     string
@@ -1282,6 +1315,9 @@ func TestGCPSecretPipeCommandKeepsTheGcloudAccountChoice(t *testing.T) {
 // never answers - here a script whose child holds its output open, as the real gcloud's Python does
 // under its shell wrapper - ends at the deadline on each store call (storeCallDeadline), so a stalled
 // refresh cannot outlast the store call it serves; the error names the account and the deadline.
+// Serial: it shortens storeCallDeadline (useStoreCallDeadline), the package-level deadline
+// withStoreDeadline puts on each store call it bounds: a gcloud token refresh like this test's,
+// the gcloud source's `auth list`, and each store call of a secret create.
 func TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) {
 	useStoreCallDeadline(t, 300*time.Millisecond)
 	dir := t.TempDir()
@@ -1349,6 +1385,11 @@ func useGcloudThatAnswers(t *testing.T, account, authList, configList string) {
 // to name whom its token acts as (R2), so a `gcloud config list` that fails, or that does not
 // answer within gcloudSettingsDeadline, never stops the command: the form runs under the login's
 // token, and the using line names the login with the principal unknown.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL (startSecretBrokerWith's t.Setenv),
+// PATH (useGcloudThatAnswers' stub), HOME, CLOUDSDK_CONFIG and the gcloud and credential variables
+// (useNoADC), and the package-level seams the GCP backend is reached through (gcpClientDial,
+// gcpMetadataToken, gcpMetadataPrincipal, gcpUserinfo) - and its hang row's assertion is also a
+// time: the form ends within 15 s, short of the 30 s the stub's settings read hangs for.
 func TestGCPSecretGcloudSettingsReadIsBestEffort(t *testing.T) {
 	for _, mode := range []string{"fail", "hang"} {
 		t.Run(mode, func(t *testing.T) {
@@ -1376,6 +1417,10 @@ func TestGCPSecretGcloudSettingsReadIsBestEffort(t *testing.T) {
 // decides whether the gcloud source is present, runs under storeCallDeadline as the token's
 // refresh does, so a gcloud that never answers stops the command at the deadline, naming it,
 // before any Secret Manager call.
+// Serial: it shares process-wide state - storeCallDeadline, the package-level deadline it
+// shortens (useStoreCallDeadline), AGENT_SECRETS_URL, PATH, HOME, CLOUDSDK_CONFIG and the gcloud
+// and credential variables, and the seams useNoADC and startFakeSecretManager set - and its
+// assertion is also a time: the command ends within 10 s, at the 300 ms deadline.
 func TestGCPSecretGcloudLoginListThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) {
 	useStoreCallDeadline(t, 300*time.Millisecond)
 	fake := newFakeSecretManager()
@@ -1396,6 +1441,9 @@ func TestGCPSecretGcloudLoginListThatNeverAnswersEndsAtTheStoreDeadline(t *testi
 // TestGCPSecretWithNoApplicationDefaultCredentialsUsesTheGcloudLogin: where there are no
 // Application Default Credentials and GOOGLE_APPLICATION_CREDENTIALS is unset, every form, a read
 // included, runs under the gcloud login.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, the gcloud and
+// application-credential variables, and the package-level seams the GCP backend is reached
+// through (gcpMetadataToken, gcpMetadataPrincipal, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretWithNoApplicationDefaultCredentialsUsesTheGcloudLogin(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
@@ -1435,6 +1483,9 @@ func TestGCPSecretWithNoApplicationDefaultCredentialsUsesTheGcloudLogin(t *testi
 // TestGCPSecretWithNoCredentialAtAllIsRefused: with no CLOUDSDK_AUTH_ACCESS_TOKEN, no Application
 // Default Credentials, and no gcloud login either, a read is refused (exit 1), naming the sources
 // it tried, before any Secret Manager call.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, the gcloud and
+// application-credential variables, and the package-level seams the GCP backend is reached
+// through (gcpMetadataToken, gcpMetadataPrincipal, gcpUserinfo, gcpClientDial).
 func TestGCPSecretWithNoCredentialAtAllIsRefused(t *testing.T) {
 	for _, row := range []struct {
 		name   string
@@ -1464,6 +1515,10 @@ func TestGCPSecretWithNoCredentialAtAllIsRefused(t *testing.T) {
 // TestGCPSecretCreateWithLentPersonsAccessToken: without ADC or a gcloud login, a person's lent
 // token whose account Google's userinfo endpoint names creates the secret and supplies its
 // --owner me email.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpMetadataToken, gcpMetadataPrincipal, gcpUserinfo, gcpClientDial,
+// secretStdin).
 func TestGCPSecretCreateWithLentPersonsAccessToken(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
@@ -1489,6 +1544,9 @@ func TestGCPSecretCreateWithLentPersonsAccessToken(t *testing.T) {
 // Default Credentials, the lent token being the one userinfo is asked about - is refused (exit 2),
 // naming the account and --owner <email>, before the value is read and with nothing written: a
 // service account names no person.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretOwnerMeUnderAServiceAccountIsRefused(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
@@ -1522,6 +1580,10 @@ func TestGCPSecretOwnerMeUnderAServiceAccountIsRefused(t *testing.T) {
 // TestGCPSecretLentTokenWithNoUserinfoEmailIsRefused: no empty userinfo email can become an
 // owner: --owner me is refused (exit 2), naming --owner <email>, before a value is read or
 // anything is written.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpMetadataToken, gcpMetadataPrincipal, gcpUserinfo, gcpClientDial,
+// secretStdin).
 func TestGCPSecretLentTokenWithNoUserinfoEmailIsRefused(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
@@ -1542,6 +1604,10 @@ func TestGCPSecretLentTokenWithNoUserinfoEmailIsRefused(t *testing.T) {
 // names the credentials every form uses, so the gcloud login never stands in for them, though
 // gcloud holds a person's login: a file there that cannot be loaded is refused before any Secret
 // Manager call, and a write runs under a machine's credentials named there, with gcloud never run.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, GOOGLE_APPLICATION_CREDENTIALS and
+// the other gcloud variables, and the package-level seams the GCP backend is reached through
+// (gcpCredentialsFile, gcpMetadataToken, gcpMetadataPrincipal, gcpUserinfo, gcpClientDial,
+// secretStdin).
 func TestGCPSecretUnderGoogleApplicationCredentialsNeverAsksGcloud(t *testing.T) {
 	t.Run("a file that cannot be loaded", func(t *testing.T) {
 		fake := newFakeSecretManager()
@@ -1585,6 +1651,9 @@ func TestGCPSecretUnderGoogleApplicationCredentialsNeverAsksGcloud(t *testing.T)
 // TestGCPSecretWriteUnderAPersonsADCNeverAsksGcloud: a person's own Application Default
 // Credentials (a laptop's) write as they always have, every call under them, with gcloud never
 // run, though it holds another person's login.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, the gcloud and
+// application-credential variables, and the package-level seams the GCP backend is reached
+// through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretWriteUnderAPersonsADCNeverAsksGcloud(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
@@ -1611,6 +1680,9 @@ func TestGCPSecretWriteUnderAPersonsADCNeverAsksGcloud(t *testing.T) {
 // even under a token that lacks the scope that call needs. On a machine whose gcloud holds a login
 // beside the machine's own identity, it runs under that login, the active gcloud account, which
 // R1 puts before the metadata server.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, the gcloud and
+// application-credential variables useGcloud sets, and the package-level seams the GCP backend
+// is reached through (gcpMetadataToken, gcpMetadataPrincipal, gcpUserinfo, gcpClientDial).
 func TestGCPSecretListSucceedsWithoutUserinfoScope(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
@@ -1636,6 +1708,8 @@ func TestGCPSecretListSucceedsWithoutUserinfoScope(t *testing.T) {
 // TestGCPSecretRetagKeepsUnrelatedAnnotations: retag changes only owner and tier, never an
 // annotation it does not know about (an UpdateSecret whose mask names "annotations" replaces the
 // whole map unless retag reads and merges the current one first).
+// Serial: it shares process-wide state - AGENT_SECRETS_URL and the package-level seams the GCP
+// backend is reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretRetagKeepsUnrelatedAnnotations(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
@@ -1664,6 +1738,8 @@ func TestGCPSecretRetagKeepsUnrelatedAnnotations(t *testing.T) {
 }
 
 // TestGCPSecretOwnerMeIsTheSignInEmailLowercased: --owner me is the userinfo email, lowercased.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL and the package-level seams the GCP
+// backend is reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretOwnerMeIsTheSignInEmailLowercased(t *testing.T) {
 	startFakeSecretManager(t, newFakeSecretManager())
 	useGCPIdentity(t, "authorized_user", "Ada@Example.com")
@@ -1681,6 +1757,8 @@ func TestGCPSecretOwnerMeIsTheSignInEmailLowercased(t *testing.T) {
 
 // TestGCPSecretRetagOnlyNamedFieldReplacesHeldOne: retag with only --tier keeps the held owner,
 // sending both as one UpdateSecret call (the annotations map is written whole).
+// Serial: it shares process-wide state - AGENT_SECRETS_URL and the package-level seams the GCP
+// backend is reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretRetagOnlyNamedFieldReplacesHeldOne(t *testing.T) {
 	startFakeSecretManager(t, newFakeSecretManager())
 	useGCPIdentity(t, "authorized_user", "ada@example.com")
@@ -1702,6 +1780,8 @@ func TestGCPSecretRetagOnlyNamedFieldReplacesHeldOne(t *testing.T) {
 // TestGCPSecretRetagOfASharedSecretSaysAnAdministratorChangesIt: IAM (PermissionDenied) refuses a
 // person's change to a shared secret's annotations; the CLI prints GCP's refusal and says whose
 // change it is.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL and the package-level seams the GCP
+// backend is reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretRetagOfASharedSecretSaysAnAdministratorChangesIt(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
@@ -1730,6 +1810,8 @@ func TestGCPSecretRetagOfASharedSecretSaysAnAdministratorChangesIt(t *testing.T)
 
 // TestGCPSecretListShowsOwnerTierAndValue: list shows every secret under the prefix, its owner,
 // tier and whether it has a value, never the value.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL and the package-level seams the GCP
+// backend is reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretListShowsOwnerTierAndValue(t *testing.T) {
 	startFakeSecretManager(t, newFakeSecretManager())
 	useGCPIdentity(t, "authorized_user", "ada@example.com")
@@ -1753,6 +1835,9 @@ func TestGCPSecretListShowsOwnerTierAndValue(t *testing.T) {
 
 // TestGCPSecretReadsRefuseBadSettings: an invalid kms_key_name is refused before any GCP call.
 // TestCheckSettingsKMSKeyName covers the other checkSettingsKMSKeyName refusals directly.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN
+// (useGCPIdentity's t.Setenv), and the package-level seams the GCP backend is reached through
+// (gcpCredentialsFile, gcpUserinfo, gcpClientDial).
 func TestGCPSecretReadsRefuseBadSettings(t *testing.T) {
 	startFakeSecretManager(t, newFakeSecretManager())
 	useGCPIdentity(t, "authorized_user", "ada@example.com")
@@ -1771,6 +1856,7 @@ func TestGCPSecretReadsRefuseBadSettings(t *testing.T) {
 }
 
 func TestCheckSettingsKMSKeyName(t *testing.T) {
+	t.Parallel()
 	if err := checkSettingsKMSKeyName(gcpTestSettings()); err != nil {
 		t.Fatalf("valid settings refused: %v", err)
 	}
@@ -1795,6 +1881,9 @@ func TestCheckSettingsKMSKeyName(t *testing.T) {
 
 // TestOpenSecretBackendRefusesUnknownStore: a store name neither backend names is refused before
 // any cloud call.
+// Serial: it sets a process-wide variable, AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBrokerWith's t.Setenv); t.Setenv panics under
+// t.Parallel.
 func TestOpenSecretBackendRefusesUnknownStore(t *testing.T) {
 	startSecretBrokerWith(t, Settings{Store: "azure-key-vault"}, alwaysServed)
 	_, stderr, code := runSecret("list")
@@ -1808,6 +1897,9 @@ func TestOpenSecretBackendRefusesUnknownStore(t *testing.T) {
 
 // TestGCPSecretChosenConfigurationNamesAGcloudLogin: CLOUDSDK_ACTIVE_CONFIG_NAME names a gcloud
 // configuration, and a form runs under that configuration's login, though another is active.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, PATH, HOME, CLOUDSDK_CONFIG and the
+// gcloud variables (useGcloudConfigurations), CLOUDSDK_ACTIVE_CONFIG_NAME, which it sets itself,
+// and gcpClientDial (startFakeSecretManager).
 func TestGCPSecretChosenConfigurationNamesAGcloudLogin(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
@@ -1832,6 +1924,9 @@ func TestGCPSecretChosenConfigurationNamesAGcloudLogin(t *testing.T) {
 // CLOUDSDK_CORE_ACCOUNT is set, it outranks a configuration's account, so a configuration chooses
 // only once it is unset, and the advice says so. A create that IAM lets make the secret but not
 // add its value says the same.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, PATH, HOME, CLOUDSDK_CONFIG, the
+// gcloud and credential variables each row sets and GCE_METADATA_HOST (startMetadataServer), and
+// the package-level seams gcpClientDial, secretStdin and gcpUserinfo, which it assigns itself.
 func TestGCPSecretRefusalNamesTheSourceAndTheChoice(t *testing.T) {
 	const (
 		later       = "choose another with a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an account in CLOUDSDK_CORE_ACCOUNT, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS (gcloud configurations here: box, person)"
@@ -1920,6 +2015,11 @@ func TestGCPSecretRefusalNamesTheSourceAndTheChoice(t *testing.T) {
 // server's email read does not answer, still signs in under its token and names the generic
 // identity. No source makes a userinfo call to learn a principal, and every row reaches a store
 // call, which is what signing in proves.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, PATH, HOME, CLOUDSDK_CONFIG and the
+// gcloud and credential variables each row's setup sets, and the package-level seams the GCP
+// backend is reached through: gcpClientDial, secretStdin, gcpCredentialsFile, gcpMetadataToken
+// and gcpMetadataPrincipal (useGCPIdentity, useNoADC, and one row's own assignment), and
+// gcpUserinfo, which it assigns itself.
 func TestGCPSecretRefusalNamesThePrincipalOfEachSource(t *testing.T) {
 	const (
 		dev   = "dev-box@acme.iam.gserviceaccount.com"

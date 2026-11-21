@@ -56,6 +56,9 @@ func TestRegisterRetriesADrainingHelper(t *testing.T) {
 // TestRegisterStopsRetryingDrainingAtItsWait: a helper still draining when the --wait budget runs
 // out is reported, as before, with its DRAINING code, and not before that budget has passed. The
 // upper bound only catches a retry that never stops.
+// Serial: its assertion is a time. It holds the retry to the --wait budget at the bottom and to
+// thirty seconds at the top, and a parallel test's load is what would stretch it past that
+// (dispatch://INFRA-985).
 func TestRegisterStopsRetryingDrainingAtItsWait(t *testing.T) {
 	sock, _ := drainingHelper(t, 1<<30)
 	start := time.Now()

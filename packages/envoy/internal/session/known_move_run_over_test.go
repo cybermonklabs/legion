@@ -21,6 +21,7 @@ import (
 // store, arms the retry. The listener's hook reads the same rule for its WARN
 // (cmd/listener, TestTheKnownSessionHookLogsNothingForARunThatIsOver).
 func TestAMoveWhoseRunIsOverArmsNoRetry(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// arrange puts the store's connection in the case's state and returns the move's context.
@@ -69,9 +70,12 @@ func TestAMoveWhoseRunIsOverArmsNoRetry(t *testing.T) {
 			if buffer, reconnects := client.Conn.Opts.ReconnectBufSize, client.Conn.Opts.MaxReconnect; buffer != -1 || reconnects != -1 {
 				t.Fatalf("the connection has ReconnectBufSize %d and MaxReconnect %d, want -1 and -1 as the bus sets them", buffer, reconnects)
 			}
+			// The store's own log is kept: an open that ran out of its wait is answered as a store
+			// that is not open and nothing else, and the WARN it writes carries the open's error.
+			logs := &lockedWriter{}
 			known, err := OpenKnownSessions(t.Context(), client.Conn,
 				WithKnownSessionReplicas(1),
-				WithKnownSessionLogger(slog.New(slog.NewTextHandler(&lockedWriter{}, nil))),
+				WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
 				// A retry the move arms waits an hour before its first attempt, so nothing retires
 				// it while the test reads it.
 				withKnownSessionRetry(time.Hour, time.Hour))
@@ -82,7 +86,8 @@ func TestAMoveWhoseRunIsOverArmsNoRetry(t *testing.T) {
 			ready, cancelReady := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancelReady()
 			if err := known.WaitForCacheReady(ready); err != nil || !known.Opened() {
-				t.Fatalf("the store's watcher is not open (WaitForCacheReady %v, Opened %t); the case needs one open", err, known.Opened())
+				t.Fatalf("the store's watcher is not open (WaitForCacheReady %v, Opened %t); the case needs one open; the store logged:\n%s",
+					err, known.Opened(), logs.String())
 			}
 			if repairRunning(known) {
 				t.Fatal("a retry runs before the move; the case needs none")

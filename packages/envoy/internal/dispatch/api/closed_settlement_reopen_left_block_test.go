@@ -2,12 +2,16 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -32,6 +36,9 @@ const leavingDecisionSpec = "Context\n\n" +
 // document owed itself, as the block document of an open ask (docs.MarkReopenOwedAskDocuments).
 // The resumption after the reopen settles it on the open issue.
 func TestAWithdrawnAskWhoseBlockLeftWhileClosedIsRestoredAtTheReopen(t *testing.T) {
+	// Serial: closeIssueThroughPatch moves the close a minute ahead, and the store takes a
+	// browser's update after the close only while that minute and its close margin (2 s) have not
+	// passed, so the steps from the close to the browser's deletion below must finish inside them.
 	handler, database, documentService := newClosedSettlementHandler(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "An ask whose block leaves while closed", leavingDecisionSpec)
@@ -64,7 +71,7 @@ func TestAWithdrawnAskWhoseBlockLeftWhileClosedIsRestoredAtTheReopen(t *testing.
 	if err := documentService.ResumeOwedSettlementsForTest(ctx, 0); err != nil {
 		t.Fatalf("resume the closed issue's owed settlements: %v", err)
 	}
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(concurrentWait); ; time.Sleep(20 * time.Millisecond) {
 		_, version := documentTexts(t, handler, spec)
 		if strings.Contains(version, "Context") && !strings.Contains(version, "leaving-decision") &&
 			!documentOwesSettlement(t, database, spec) {
@@ -98,7 +105,7 @@ func TestAWithdrawnAskWhoseBlockLeftWhileClosedIsRestoredAtTheReopen(t *testing.
 		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
 	}
 	var retracted model.Ask
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(concurrentWait); ; time.Sleep(20 * time.Millisecond) {
 		if retracted = readBlockAsk(t, handler, ask); retracted.State != "open" {
 			break
 		}
@@ -167,7 +174,49 @@ func TestAWithdrawnAsksBlockRewordedInsideTheCloseMarginRewordsItsAskAtTheReopen
 // read bob, and the resumption settles the document on the open issue: its one ask.edited of the
 // decision is alice's, edited_by alice, and it notifies.
 func TestAMarginRewordReachesTheAskInTheEditorsNameAfterTheReopen(t *testing.T) {
+	// Serial: closeIssueThroughPatch moves the close a minute ahead, and the store takes a
+	// browser's update after the close only while that minute and its close margin (2 s) have not
+	// passed, so the steps from the close to the browser's reword (rewordWithdrawnDecisionWhileClosed)
+	// must finish inside them.
+	reopenAndRequireTheRewordInAlicesName(t, rewordWithdrawnDecisionWhileClosed(t))
+}
+
+// The editor a closed issue's settlement keeps for its document stays kept through a later
+// settlement of the closed issue's document that finds it owing nothing, so the rewording still
+// reaches the ask after the reopen in that editor's name. Such a settlement credits no edit: no
+// pending row names an editor, no pending author is left and no edit is in flight. One runs when a
+// resumption pass picks the document's pending row while the timer's settlement of the rewording
+// is committing, past that settlement's check of the room's generation and before its commit
+// deletes the row: the pass arms the room's settlement again, and once the timer's settlement has
+// committed, crediting and keeping alice, the settlement the pass armed finds the document owing
+// nothing. rewordWithdrawnDecisionWhileClosed runs such a pass while the room's timer is armed.
+// Here, once the closed issue's settlement of the rewording has committed, the room's settlement
+// runs again on the closed issue (SettleNowForTest): the document keeps alice as its closed edit
+// source, and after bob reopens the issue the one ask.edited of the decision is alice's.
+func TestASettlementOwingNothingWhileClosedKeepsTheEditorForTheReopen(t *testing.T) {
+	// Serial: closeIssueThroughPatch moves the close a minute ahead, and the store takes a
+	// browser's update after the close only while that minute and its close margin (2 s) have not
+	// passed, so the steps from the close to the browser's reword (rewordWithdrawnDecisionWhileClosed)
+	// must finish inside them.
 	f := rewordWithdrawnDecisionWhileClosed(t)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	if kept := keptClosedEditor(t, f.database, f.spec); kept == nil || !kept.SameAs(alice) {
+		t.Fatalf("the closed issue's settlement of the rewording kept %+v as the document's closed edit source, want alice", kept)
+	}
+	if err := f.documents.SettleNowForTest(f.spec); err != nil {
+		t.Fatalf("settle the closed issue's document again: %v", err)
+	}
+	if kept := keptClosedEditor(t, f.database, f.spec); kept == nil || !kept.SameAs(alice) {
+		t.Errorf("the settlement of the closed issue's document that found it owing nothing left %+v as its closed edit source, want alice still: it credited no edit", kept)
+	}
+	reopenAndRequireTheRewordInAlicesName(t, f)
+}
+
+// reopenAndRequireTheRewordInAlicesName reopens f's issue as bob through PATCH, so an edit credited
+// to the reopener would read bob, and runs the resumption, which settles the document on the open
+// issue: its one ask.edited of the decision is alice's, edited_by alice, and it notifies.
+func reopenAndRequireTheRewordInAlicesName(t *testing.T, f rewordedWhileClosed) {
+	t.Helper()
 	ctx := context.Background()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	seq := latestIssueSeq(t, f.database, f.issue)
@@ -188,6 +237,24 @@ func TestAMarginRewordReachesTheAskInTheEditorsNameAfterTheReopen(t *testing.T) 
 		t.Fatalf("after the reopen ask %s has the ask.edited events %+v, want one, edited_by and in the name of alice, whose rewording it takes, and notifying",
 			f.ask, edits)
 	}
+}
+
+// keptClosedEditor is the editor doc_closed_edit_sources keeps for document, nil for none.
+func keptClosedEditor(t *testing.T, database *store.Store, document string) *model.Actor {
+	t.Helper()
+	var raw []byte
+	err := database.Pool.QueryRow(context.Background(), `select last_actor from doc_closed_edit_sources where artifact_id = $1`, document).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("read the closed edit source of %s: %v", document, err)
+	}
+	var editor model.Actor
+	if err := json.Unmarshal(raw, &editor); err != nil {
+		t.Fatalf("decode the closed edit source of %s: %v", document, err)
+	}
+	return &editor
 }
 
 // askedQuestion and rewordedQuestion are the question rewordedDecisionSpec's decision asks and the
@@ -266,7 +333,7 @@ func rewordWithdrawnDecisionWhileClosed(t *testing.T) rewordedWhileClosed {
 func awaitRewordedAsk(t *testing.T, f rewordedWhileClosed) {
 	t.Helper()
 	var restored model.Ask
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(concurrentWait); ; time.Sleep(20 * time.Millisecond) {
 		if restored = readBlockAsk(t, f.handler, f.ask); restored.State == "open" && restored.Question == rewordedQuestion {
 			return
 		}

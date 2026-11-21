@@ -55,7 +55,44 @@ jobs:
     # same listener build (.github/workflows/ci-caches.yaml fills it on a push to main). Without
     # it the pack step would recompile the set per architecture from nothing on every push, which
     # is the runner time this change exists to cut.
-    timeout-minutes: 30
+    #
+    # R6 sizes the job's bound and each go test call's -timeout from the final measurement pair,
+    # runs 44657322918 and 44657415021 at 8cfd2682, by the rule envoy-go's comment gives
+    # (dispatch://INFRA-1075, check 6224bb0e), and the dispatch run at each later head, which may
+    # raise a limit and never lower one (the architect's rule of 2026-11-20, the issue's
+    # open-items.md). The job's bound is its slowest time, 1,208 s in run 44717243297 at 66058706
+    # (job 136223826114), against 830 s and 853 s in the pair (run 44657322918, job 136026780288,
+    # and run 44657415021, job 136039517954), 988 s in run 44687712471 at 56f4dabc (job
+    # 136126010901), 1,042 s in run 44790111577 at 85f6b018 (job 136476756211) and 1,000 s in run
+    # 44846096964 at 28ce7c74 (job 136669775694), 20.13 minutes, plus the largest -timeout of its
+    # go test calls, the alone step's 2m, plus 6: 20.13 + 2 + 6 = 28.13, so 29. Its other go
+    # commands are builds, the darwin vet and two `go run`s, which run no test binary and carry no
+    # -timeout. The step that tests the API's wall-clock measurements alone is in this pair too,
+    # and its comment gives its reading. The steps that grew, against run 44657415021: the
+    # daemon-release-gate.sh verdict test 162 s against 11 s (main's #4449 added its cases; 137 s
+    # at 56f4dabc); the autodeploy.sh
+    # test 62 s against 13 s, loadtest/vm 190 s against 153 s and loadtest/cluster 184 s against
+    # 168 s (main's #4387 changed deploy/scripts and both load-test drivers; 13 s, 155 s and 169 s
+    # at 56f4dabc); and the darwin vet 194 s against 143 s and the API's wall-clock step 178 s
+    # against 140 s, unattributed.
+    timeout-minutes: 29
+    # The Postgres the API's alone step runs against, as envoy-go-race-api's: the same image, the
+    # same settings on the server's own command line and the same health check. envoy-go's own
+    # service says what each setting buys and why this container can do without durability
+    # (dispatch://INFRA-1075).
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -123,6 +160,49 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      # The settings the service's command: asks for, read back from the server itself; envoy-go's
+      # own read-back step says why a command is worth reading back.
+      - name: Read the disposable service's settings back
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # The Dispatch API's tests whose assertion is a wall-clock time measured in the test's own
+      # process: its xid window tests, which judge each gap of a transaction's xid window against
+      # storetest.XidMaxGap (5 ms). Main runs them in a step of their own with nothing else on the
+      # runner; run beside envoy-go's other calls, one of them failed in each run of the pair at
+      # c3e93e7e (runs 44476496859 and 44476544762). So they run alone, as this job's first test
+      # step, while its Postgres service is quiet, and plain, since the detector stretches the gaps
+      # past any bound. They are here rather than in envoy-go-race-api for this job's filter: the
+      # API's plain test binary compiles its `//go:build !race` guard files whatever -run selects,
+      # and what those read is every non-test file of packages/envoy, which this job's filter covers
+      # already and envoy-go-race-api's, the closure of the API's race build, does not. So this
+      # job's filter gains only two fixture paths the API's tests read, its live-feed fixtures and
+      # the ask reply's copies (ci.yaml's envoy_go_checks), and the tests are off envoy-go's
+      # critical path; they run on every push this job runs on, where envoy-go runs in the merge
+      # queue and with `full-ci`. The -run list is
+      # derived in .github/scripts/ci_job_reads.py (ALONE_PREFIX and ALONE_STEPS) from the race
+      # lane's packages and their source, so an xid window test added there that this step lacks
+      # fails the ci-filters job naming it. The database is on the step rather than in the job's
+      # env:, so it reaches this step alone. With the xid window tests in one call, the API took
+      # 134.082 s on a two-vCPU pod (INFRA-636), more than the 2m below. -timeout 2m, by R6 from
+      # the pair at 8cfd2682 (envoy-go's comment gives the rule): this call's one package on the
+      # slower run is internal/dispatch/api, 49.6 s (run 44657415021, job 136039517954), and
+      # 49.6 / 30 = 1.65, so 2m. The `go test -json` stream goes to a file the upload step below
+      # publishes and is replayed to the log, as the architecture-note step's is.
+      - name: Test the wall-clock measurements alone
+        env:
+          DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+        run: |
+          mkdir -p "$RUNNER_TEMP/go-test-json"
+          s=0
+          go test -json -count=1 -p 1 -timeout 2m -run '^(TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec)$' ./internal/dispatch/api > "$RUNNER_TEMP/go-test-json/alone-api.json" || s=$?
+          if [ "$s" -eq 0 ]; then
+            jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/alone-api.json"
+          else
+            jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/alone-api.json"
+          fi
+          exit $s
+        working-directory: packages/envoy
       - name: Check Go formatting
         run: |
           unformatted=$(gofmt -l .)
@@ -135,16 +215,44 @@ jobs:
       # These five packages need no database, so they run here on every push. This is their one
       # run: envoy-go's unit step leaves them out, its `grep -Ev` and this step's package list
       # built from NOTE_AND_SPEC_PACKAGES in .github/scripts/ci_job_reads.py.
+      #
+      # -timeout 1m, by R6 from the pair at 8cfd2682 (envoy-go's comment gives the rule): this
+      # call's slowest package on the slower run is cmd/spec-check, 20.0 s (run 44657322918, job
+      # 136026780288), and 20.0 / 30 = 0.67, so 1m, the smallest whole minute there is.
+      # The `go test -json` stream goes to a file the upload step below publishes and is replayed
+      # to the log, as the display-tree fixture check's is.
       - name: Test the architecture-note and spec-file rules and their commands
-        run: go test -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/
+        run: |
+          mkdir -p "$RUNNER_TEMP/go-test-json"
+          s=0
+          go test -json -count=1 -timeout 1m ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/ > "$RUNNER_TEMP/go-test-json/architecture-notes.json" || s=$?
+          if [ "$s" -eq 0 ]; then
+            jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/architecture-notes.json"
+          else
+            jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/architecture-notes.json"
+          fi
+          exit $s
         working-directory: packages/envoy
       # listenerwire's tests and wirecheck's need no database, and listenerwire's clients test
       # type-checks the daemon's listener clients, so they run here, their one run, and a change to
       # only those daemon packages starts this job rather than envoy-go's: envoy-go's unit step
       # leaves both packages out, its `grep -Ev` and this step's package list built from
-      # LISTENERWIRE_PACKAGES in .github/scripts/ci_job_reads.py.
+      # LISTENERWIRE_PACKAGES in .github/scripts/ci_job_reads.py. -timeout 1m, by R6 from the pair
+      # at 8cfd2682 (envoy-go's comment gives the rule): this call's slowest package on the slower
+      # run is internal/wirecheck, 2.3 s (run 44657322918, job 136026780288), and 2.3 / 30 = 0.08,
+      # so 1m, the smallest whole minute there is. The `go test -json` stream goes to a file the
+      # upload step below publishes and is replayed to the log, as the architecture-note step's is.
       - name: Test the listener's wire package, its clients and wirecheck
-        run: go test -count=1 ./listenerwire/ ./internal/wirecheck/
+        run: |
+          mkdir -p "$RUNNER_TEMP/go-test-json"
+          s=0
+          go test -json -count=1 -timeout 1m ./listenerwire/ ./internal/wirecheck/ > "$RUNNER_TEMP/go-test-json/listenerwire.json" || s=$?
+          if [ "$s" -eq 0 ]; then
+            jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/listenerwire.json"
+          else
+            jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/listenerwire.json"
+          fi
+          exit $s
         working-directory: packages/envoy
       - name: Check Go contracts are generated from the shared schema
         run: bun run check:go
@@ -171,8 +279,25 @@ jobs:
       # the same file: without `--check` the first writes the fixture instead of checking it, so
       # envoy-go's unit step skips both by the same names, both texts built from
       # WEB_FIXTURE_TESTS in .github/scripts/ci_job_reads.py.
+      #
+      # -timeout 1m, by R6 from the pair at 8cfd2682 (envoy-go's comment gives the rule): this
+      # call's one package, internal/dispatch/pmdoc, read 0.026 s and 0.026 s (runs 44657322918
+      # and 44657415021, jobs 136026780288 and 136039517954), and 0.026 / 30 = 0.001, so 1m, the
+      # smallest whole minute there is. The `go test -json` stream goes to a file the
+      # upload step below publishes and is replayed to the log, as the race lane's steps do, for
+      # the reason envoy-go's unit step gives: the log keeps the package line of a green run and
+      # the whole stream of a red one.
       - name: Check the web app's display-tree fixture is up to date
-        run: go test -count=1 -run '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' ./internal/dispatch/pmdoc/ -args --check
+        run: |
+          mkdir -p "$RUNNER_TEMP/go-test-json"
+          s=0
+          go test -json -count=1 -timeout 1m -run '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' ./internal/dispatch/pmdoc/ -args --check > "$RUNNER_TEMP/go-test-json/web-fixture.json" || s=$?
+          if [ "$s" -eq 0 ]; then
+            jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/web-fixture.json"
+          else
+            jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/web-fixture.json"
+          fi
+          exit $s
         working-directory: packages/envoy
       - name: Isolation test for dev-broker.sh (fakes docker/go/curl; no real Postgres or network)
         run: bash scripts/dev-broker.test.sh
@@ -273,14 +398,28 @@ jobs:
             GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
           done <<< "$flags"
         working-directory: packages/envoy
-      # The release's archives (release-envoy-listener.yaml), THIRD_PARTY_NOTICES included.
+      # The release's archives (release-envoy-listener.yaml), THIRD_PARTY_NOTICES included. One
+      # architecture's build and notices run beside the other's and nothing of either is the
+      # other's input, so the step is as long as the slower of the two rather than their sum
+      # (5.0 s and 5.5 s of a 10 s step, run 42307926510, dispatch://INFRA-1075). The archives
+      # are written after both, in the target list's order, so the listing below reads as it
+      # did. Under the runner's `bash -e` a failed `wait` ends the step, so an architecture that
+      # did not build still fails it.
       - name: Pack envoy binaries
         run: |
+          pids=()
           for arch in $(jq -r '.envoy[]' ../../.github/go-release-targets.json); do
             out="../../out/pr-artifacts/envoy-$arch"
             mkdir -p "$out"
-            GOOS=linux GOARCH=$arch go build -buildvcs=false -o "$out/envoy-listener" ./cmd/listener
-            GOOS=linux GOARCH=$arch ../../scripts/go-third-party-notices.sh "$out/THIRD_PARTY_NOTICES" ./cmd/listener
+            (
+              GOOS=linux GOARCH=$arch go build -buildvcs=false -o "$out/envoy-listener" ./cmd/listener
+              GOOS=linux GOARCH=$arch ../../scripts/go-third-party-notices.sh "$out/THIRD_PARTY_NOTICES" ./cmd/listener
+            ) &
+            pids+=("$!")
+          done
+          for pid in "${pids[@]}"; do wait "$pid"; done
+          for arch in $(jq -r '.envoy[]' ../../.github/go-release-targets.json); do
+            out="../../out/pr-artifacts/envoy-$arch"
             tar czf "../../out/pr-artifacts/legion-envoy-$arch.tar.gz" -C "$out" envoy-listener THIRD_PARTY_NOTICES
             tar tzvf "../../out/pr-artifacts/legion-envoy-$arch.tar.gz"
           done
@@ -291,6 +430,14 @@ jobs:
           path: |
             out/pr-artifacts/legion-envoy-amd64.tar.gz
             out/pr-artifacts/legion-envoy-arm64.tar.gz
+      # Always, and one artifact per run attempt, for the reasons envoy-go's own upload step gives.
+      - name: Upload the go test -json stream
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: envoy-go-checks-test-json-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/go-test-json/
+          if-no-files-found: warn
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

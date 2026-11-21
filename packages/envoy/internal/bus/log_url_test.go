@@ -1,5 +1,8 @@
 package bus
 
+// Every test here that calls captureLogs (stream_config_test.go) captures the default slog
+// handler, a process-wide swap, so none of those is parallel (dispatch://INFRA-1075).
+
 import (
 	"errors"
 	"net/url"
@@ -14,6 +17,7 @@ import (
 // user:password as a password, so neither part may reach a log line or a logged error.
 // url.URL.Redacted is not enough: it keeps the user name, which is the whole of a token.
 func TestNATSURLWithoutUserinfo(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		raw, want string
 	}{

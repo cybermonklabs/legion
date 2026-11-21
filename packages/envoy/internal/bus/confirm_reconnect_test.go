@@ -83,6 +83,7 @@ func serveFake(conn net.Conn, deny string) {
 // reconnect clears the recorded violation before it has counted itself, so the connection's last
 // error and reconnect count read exactly as they did before the publish.
 func TestConfirmPublishedRefusesADenialAReconnectCleared(t *testing.T) {
+	t.Parallel()
 	subject := "notifications.role.reviewer"
 	var once sync.Once
 	disconnected := make(chan struct{})
@@ -100,14 +101,14 @@ func TestConfirmPublishedRefusesADenialAReconnectCleared(t *testing.T) {
 	if err := conn.Publish(subject, []byte("{}")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if err := conn.FlushTimeout(5 * time.Second); err != nil {
+	if err := conn.FlushTimeout(busWait); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	// nats.go queues the disconnect callback after the reconnect has cleared the last error
 	// (doReconnect), so once it runs the violation is gone and the reconnect has not counted.
 	select {
 	case <-disconnected:
-	case <-time.After(5 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("the client never saw the server drop the connection")
 	}
 	if err := confirmPublished(conn, subject, before); !errors.Is(err, ErrPublishUnconfirmed) {
@@ -120,6 +121,7 @@ func TestConfirmPublishedRefusesADenialAReconnectCleared(t *testing.T) {
 // is not confirmed either: the connection reads as connected again with no error, and only its
 // reconnect count shows the violation may have gone with the old connection.
 func TestConfirmPublishedRefusesADenialACompletedReconnectCleared(t *testing.T) {
+	t.Parallel()
 	subject := "notifications.role.reviewer"
 	var once sync.Once
 	reconnected := make(chan struct{})
@@ -137,13 +139,13 @@ func TestConfirmPublishedRefusesADenialACompletedReconnectCleared(t *testing.T) 
 	if err := conn.Publish(subject, []byte("{}")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if err := conn.FlushTimeout(5 * time.Second); err != nil {
+	if err := conn.FlushTimeout(busWait); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	// nats.go queues the reconnect callback once the new connection is marked connected.
 	select {
 	case <-reconnected:
-	case <-time.After(5 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("the client never reconnected")
 	}
 	if err := confirmPublished(conn, subject, before); !errors.Is(err, ErrPublishUnconfirmed) {
@@ -159,6 +161,7 @@ func (sliceError) Error() string { return "slice error" }
 
 // sameError never panics on a value that cannot be compared, and counts it as a change.
 func TestSameErrorTreatsAValueThatCannotBeComparedAsChanged(t *testing.T) {
+	t.Parallel()
 	if sameError(sliceError{[]int{1}}, sliceError{[]int{1}}) {
 		t.Fatal("two incomparable error values read as the same error")
 	}
@@ -246,6 +249,7 @@ func answeringServer(t *testing.T, deny string, stored bool) *nats.Conn {
 // The state a publish is judged against is read before the publish: a violation the server reports
 // while the publish call is still running is this publish's denial, not a state it started from.
 func TestPublishConfirmedReadsTheStateBeforeThePublish(t *testing.T) {
+	t.Parallel()
 	subject := "notifications.role.reviewer"
 	conn := answeringServer(t, subject, false)
 	client := &Client{Conn: conn}
@@ -257,7 +261,7 @@ func TestPublishConfirmedReadsTheStateBeforeThePublish(t *testing.T) {
 		return conn.Flush()
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), busWait)
 	defer cancel()
 	err := client.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, answered)
 	if !errors.Is(err, ErrPublishDenied) {
@@ -269,10 +273,11 @@ func TestPublishConfirmedReadsTheStateBeforeThePublish(t *testing.T) {
 // during it - still counts as delivered when the stream's acknowledgement arrives, since it
 // proves the forward reached the stream.
 func TestAnUnconfirmedForwardTheStreamStoredIsDelivered(t *testing.T) {
+	t.Parallel()
 	conn := answeringServer(t, "notifications.other", true)
 	client := &Client{Conn: conn}
 
-	forward, err := client.StartRequestStoredTo("notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), 2*time.Second)
+	forward, err := client.StartRequestStoredTo("notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), busWait)
 	if err != nil {
 		t.Fatalf("an unconfirmed forward was refused outright: %v", err)
 	}
@@ -284,6 +289,7 @@ func TestAnUnconfirmedForwardTheStreamStoredIsDelivered(t *testing.T) {
 // An unconfirmed forward the stream never acknowledged is not stored, and says why it is
 // unconfirmed: the listener reports it delivery_failed rather than delivered.
 func TestAnUnconfirmedForwardWithoutTheStreamsAcknowledgementIsNotStored(t *testing.T) {
+	t.Parallel()
 	conn := answeringServer(t, "notifications.other", false)
 	client := &Client{Conn: conn}
 

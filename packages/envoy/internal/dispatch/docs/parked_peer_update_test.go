@@ -21,16 +21,17 @@ import (
 // earlier keystroke arrives. A load of the stored rows - the fold a room load and a compaction make -
 // reads the document the room holds, both while the keystroke waits and once it has landed.
 func TestTheStoredRowsOfARoomFoldToItsDocumentWhenAPeerUpdateParks(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	// No settlement writes the room between the load of its stored rows and the read of the room
 	// that load is compared with.
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "Seed.\n")
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	cleanupAndRelease(t, server.Close)
 	alpha := connectPeer(t, server.URL, artifactID, "alice")
 	beta := connectPeer(t, server.URL, artifactID, "alice")
-	waitFor(t, 10*time.Second, "both peers to hold the room's document", func() bool {
+	waitFor(t, roomWait(t), "both peers to hold the room's document", func() bool {
 		return strings.TrimSpace(peerMarkdown(alpha)) == "Seed." && strings.TrimSpace(peerMarkdown(beta)) == "Seed."
 	})
 
@@ -46,7 +47,7 @@ func TestTheStoredRowsOfARoomFoldToItsDocumentWhenAPeerUpdateParks(t *testing.T)
 	if err := alpha.Write(ygsync.EncodeUpdate(second)); err != nil {
 		t.Fatalf("send the second keystroke: %v", err)
 	}
-	waitFor(t, 10*time.Second, "the room to park the second keystroke", func() bool {
+	waitFor(t, roomWait(t), "the room to park the second keystroke", func() bool {
 		live := service.srv.GetDoc(artifactID)
 		return live != nil && live.PendingStats().Items > 0
 	})
@@ -58,7 +59,7 @@ func TestTheStoredRowsOfARoomFoldToItsDocumentWhenAPeerUpdateParks(t *testing.T)
 	if err := alpha.Write(ygsync.EncodeUpdate(first)); err != nil {
 		t.Fatalf("send the first keystroke: %v", err)
 	}
-	waitFor(t, 10*time.Second, "the other peer to receive both keystrokes", func() bool {
+	waitFor(t, roomWait(t), "the other peer to receive both keystrokes", func() bool {
 		return strings.HasPrefix(peerMarkdown(beta), "second\n\nfirst\n\nSeed.")
 	})
 	requireStoredRowsFoldToTheRoom(t, service, artifactID, "once the first keystroke landed")

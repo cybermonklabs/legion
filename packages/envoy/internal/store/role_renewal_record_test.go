@@ -273,7 +273,7 @@ func TestTheSetReadFromTheStoreRenewsARoleAStaleInterestCacheHides(t *testing.T)
 		t.Fatalf("open the other listener's registry: %v", err)
 	}
 	t.Cleanup(other.StopWatch)
-	ready, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ready, cancel := context.WithTimeout(ctx, heldWait)
 	defer cancel()
 	if err := other.WaitForCacheReady(ready); err != nil {
 		t.Fatalf("WaitForCacheReady on the other listener's registry: %v", err)

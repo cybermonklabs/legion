@@ -32,10 +32,26 @@ env:
 jobs:
   envoy-go-race-docs:
     runs-on: ubuntu-24.04-arm
-    # The step's -timeout 60m must fire before the runner cancels the job, so a hung test prints
-    # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race binary,
-    # then the step's own 60 minutes, which is 66 under this limit of 70.
-    timeout-minutes: 70
+    # R6 sizes both numbers from the final measurement pair, runs 44657322918 and 44657415021 at
+    # 8cfd2682 (dispatch://INFRA-1075, check 6224bb0e), and the dispatch run at each later head,
+    # which may raise a limit and never lower one (the architect's rule of 2026-11-20, the issue's
+    # open-items.md). The step's -timeout is the smallest whole minute at which its slowest
+    # package's slowest reading takes at most half of it: internal/dispatch/docs, this job's one
+    # package, 1,630.5 s in run 44846096964 at 28ce7c74 (job 136669775477), against 1,613.4 s in
+    # run 44790111577 at 85f6b018 (job 136476756178), 1,609.7 s in run 44717243297 at 66058706
+    # (job 136223826761), 1,602.2 s in run 44687712471 at 56f4dabc (job 136126011928), and
+    # 1,603.9 s and 1,590.7 s in the pair (run 44657322918, job 136026779859, and run
+    # 44657415021, job 136039518210); 1,630.5 / 30 = 54.35, so 55m. Run 44846096964 raised it
+    # from the 54m the pair's 1,603.9 / 30 = 53.46 gave and the dispatch runs before it kept
+    # (1,613.4 / 30 = 53.78 at most). The job's bound is its slowest time, 1,724 s (run
+    # 44846096964, job 136669775477), against 1,698 s, 1,688 s and 1,682 s in those three runs and
+    # 1,681 s and 1,671 s in the pair (jobs 136026779859 and 136039518210), 28.73 minutes, plus
+    # that -timeout plus 6: 28.73 + 55 + 6 = 89.73, so 90, raised from the 89 the pair's
+    # 28.02 + 54 + 6 = 88.02 gave. The limit must fire before the runner cancels the job, so a
+    # hung test prints the dump that names it. The pair and the four dispatch runs since it ran
+    # this job on arm64 (ubuntu-24.04-arm); the pair at 4f1f4436 read the package at 1,353.2 s at
+    # most, on x64 (ubuntu-24.04).
+    timeout-minutes: 90
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -43,15 +59,19 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # The settings these tests need, as the server's own command line, so it starts with them
+        # and no step has to restart it; envoy-go's own service says what each of them buys and
+        # why this container can do without durability (dispatch://INFRA-1075).
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
         options: >-
           --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
+          --health-interval 1s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 50
     # Load-bearing, not boilerplate: this package's TestMain is storetest.Main
-    # (internal/dispatch/docs/persistence_test.go:19), and storetest.Open skips every test that
+    # (internal/dispatch/docs/persistence_test.go:31-32), and storetest.Open skips every test that
     # opens the store when DISPATCH_TEST_DATABASE_URL is unset
-    # (internal/dispatch/store/storetest/storetest.go:67-71). A skip is a pass, so without the
+    # (internal/dispatch/store/storetest/storetest.go, serverURL). A skip is a pass, so without the
     # service this job would be green having run almost nothing.
     env:
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
@@ -73,6 +93,10 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      # The settings the service's command: asks for, read back from the server itself; envoy-go's
+      # own read-back step says why a command is worth reading back.
+      - name: Read the disposable service's settings back
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # Under the sampler, not bare: the race detector maps about four bytes of shadow memory per
@@ -87,9 +111,46 @@ jobs:
       # out, so the log still carries the --- FAIL lines and the package's own line. -count=1
       # because the job restores the Go build cache above, and a cached pass must not stand in
       # for a run.
+      #
+      # -parallel 2 rather than go test's default of GOMAXPROCS, which is four here, is what
+      # holds the peak under that limit: this package's memory is what its parallel cases hold at
+      # once. At four slots the sampler read a peak of 14,189,716 kB. Its highest sample,
+      # 14,174,324 kB at 738.6 s, had TestAMarginWriteMatchesTheWholeDocumentWrite's
+      # generated-390KiB and generated-600KiB cases running together beside
+      # TestReadsOfALiveDocumentRunBesideItsPeers; the plateau before them, 11,555,172 kB, had
+      # the four parallel passes of TestACaptureNeverReusesARenderingTheForkHasMovedPast; and
+      # before any of those cases ran the step stood at 5,101,120 kB (run 42342555091, job
+      # 128313251577). Each such case holds a document of hundreds of kilobytes with the whole
+      # update history it writes, which the detector shadows at about four bytes a byte, so the
+      # nine gigabytes those two families added are two slots' worth more than this limit has
+      # room for. Two slots were measured rather than chosen: those same three families under
+      # this sampler at -parallel 2 peaked at 1,534,288 kB, and the rest of the package at
+      # -parallel 2 reached 6,240,116 kB, so even added as though nothing were reused they stay
+      # under 8388608 kB. What it costs is this step's own time, about twice the 965 s the run
+      # above spent at four slots, which the -timeout 55m below and the job's 90 minutes hold.
+      # No -p beside it: one package is one build lane, so go test's package parallelism has
+      # nothing to divide. No GOMEMLIMIT either: two slots leave the heap it would bound below
+      # the 2 GiB this step once set, so it would only make the detector's work slower.
+      #
+      # RACE_MEM_JSON_PATH is where the sampler keeps the stream it unwraps, byte for byte as go
+      # test wrote it, so this job uploads one artifact of its own as the lane's other two do:
+      # .github/scripts/go-test-times.py ranks the packages and tests of such a stream, and
+      # without the file this job's per-package times were in its log alone (dispatch://INFRA-1075,
+      # check 9b3200e3). The sampler's own log is unchanged: it still unwraps every Output field
+      # to stdout, still prints a sample every 5 s, and still fails the step over the limit.
       - name: Race-test the document service
-        run: RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/
+        run: |
+          mkdir -p "$RUNNER_TEMP/go-test-json"
+          RACE_MEM_LIMIT_KB=8388608 RACE_MEM_JSON_PATH="$RUNNER_TEMP/go-test-json/race-docs.json" ../../.github/scripts/race_memory.py go test -json -race -count=1 -parallel 2 -timeout 55m ./internal/dispatch/docs/
         working-directory: packages/envoy
+      # Always, and one artifact per run attempt, for the reasons envoy-go's own upload step gives.
+      - name: Upload the go test -json stream
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: envoy-go-race-docs-test-json-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/go-test-json/
+          if-no-files-found: warn
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

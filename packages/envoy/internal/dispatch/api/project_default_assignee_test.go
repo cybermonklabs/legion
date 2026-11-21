@@ -37,6 +37,7 @@ func putDefaultAssignee(t *testing.T, handler http.Handler, project string, assi
 // The PUT sets and changes a project's default, answering {project, assignee} each time, and
 // refuses to clear it: a project always names the person its unowned work lands on.
 func TestPutProjectDefaultAssigneeSetsChangesAndRefusesClearing(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createDefaultAssigneeProject(t, handler, "CORE", "Core")
 
@@ -66,6 +67,7 @@ func TestPutProjectDefaultAssigneeSetsChangesAndRefusesClearing(t *testing.T) {
 // An unknown project is a 404, and a login nobody has signed in as is refused before anything is
 // stored.
 func TestPutProjectDefaultAssigneeRefusesUnknownProjectAndLogin(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createDefaultAssigneeProject(t, handler, "CORE", "Core")
 
@@ -91,6 +93,7 @@ func TestPutProjectDefaultAssigneeRefusesUnknownProjectAndLogin(t *testing.T) {
 // always names the person its unowned work lands on, so neither a PUT of `{}` nor one of
 // `{"assignee": null}` may wipe it.
 func TestPutProjectDefaultAssigneeRefusesABodyWithoutAssignee(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createDefaultAssigneeProject(t, handler, "CORE", "Core")
 	putDefaultAssignee(t, handler, "CORE", "bob")
@@ -111,6 +114,7 @@ func TestPutProjectDefaultAssigneeRefusesABodyWithoutAssignee(t *testing.T) {
 // names one, the person who created it until somebody moves it — and an empty list, never null,
 // where there is no project at all.
 func TestListProjectDefaultAssigneesOrdersByProjectKey(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 
 	empty := dispatchRequest(t, handler, http.MethodGet, "/api/v1/settings/project-default-assignees", nil, "alice")
@@ -138,6 +142,7 @@ func TestListProjectDefaultAssigneesOrdersByProjectKey(t *testing.T) {
 // deployment configured rather than a person is turned away, and a person's own token sets and
 // reads the default as their browser does.
 func TestProjectDefaultAssigneeRoutesNeedThePersonScope(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createDefaultAssigneeProject(t, handler, "CORE", "Core")
 
@@ -168,6 +173,7 @@ func TestProjectDefaultAssigneeRoutesNeedThePersonScope(t *testing.T) {
 
 // The PUT appends one quiet event on the project: settings, retained and streamed, waking nobody.
 func TestPutProjectDefaultAssigneeAppendsAQuietEvent(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createDefaultAssigneeProject(t, handler, "CORE", "Core")
 	putDefaultAssignee(t, handler, "CORE", "bob")

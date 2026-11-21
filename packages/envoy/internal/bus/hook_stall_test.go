@@ -1,5 +1,8 @@
 package bus_test
 
+// Every test here captures the default slog handler (captureBusLogs, restart_test.go), a
+// process-wide swap, so none of them is parallel (dispatch://INFRA-1075).
+
 import (
 	"context"
 	"errors"
@@ -45,12 +48,12 @@ func TestRewatchRetryAfterAReconnectLogsNoError(t *testing.T) {
 	for run := 1; run <= 2; run++ {
 		select {
 		case <-hooked:
-		case <-time.After(30 * time.Second):
+		case <-time.After(busWait):
 			t.Fatalf("the reconnect hooks ran %d time(s); want the failed run and the retry", run-1)
 		}
 	}
 	// The retry clears the stall as it records the events it covered, just after the hook returned.
-	waitFor(t, 15*time.Second, "the retry that covered the reconnect", func() bool {
+	waitFor(t, busWait, "the retry that covered the reconnect", func() bool {
 		stall, hookErr := client.HookStall()
 		return stall == 0 && hookErr == nil
 	})
@@ -87,7 +90,7 @@ func TestHookStallReportsTheStallAndTheLastHookError(t *testing.T) {
 	if err := client.Conn.ForceReconnect(); err != nil {
 		t.Fatalf("reconnect in place: %v", err)
 	}
-	waitFor(t, 30*time.Second, "the failed run of the hooks to be recorded", func() bool {
+	waitFor(t, busWait, "the failed run of the hooks to be recorded", func() bool {
 		_, hookErr := client.HookStall()
 		return hookErr != nil
 	})

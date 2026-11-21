@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -192,6 +190,7 @@ func queuedChanges(t *testing.T, database *store.Store) int {
 // caller uses, apart from the three deletes and the block an ask is attached to, which no route
 // makes.
 func TestRefreshAppliesEveryKindOfChangeAsAFullRebuildCountsIt(t *testing.T) {
+	t.Parallel()
 	handler, database, srv := relatedTermsServer(t)
 	const project = "TERM"
 	issue := createInteractionIssue(t, handler, project, "Astrolabe survey", "The astrolabe measures altitude.\n")
@@ -284,6 +283,7 @@ func TestRefreshAppliesEveryKindOfChangeAsAFullRebuildCountsIt(t *testing.T) {
 // items and refreshed_at and nothing else, so the row still carries this build's snapshot and a
 // rule keyed on a null snapshot would read it as this build's own.
 func TestRefreshRebuildsInFullAfterTheOldReleaseWroteTheRow(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "ROLL")
 	fixture.addTermComment(t, "The gnomon casts a shadow.")
 	if applied := refreshTermStatsPass(t, fixture.database, fixture.project); applied.Mode != searchTermModeStep {
@@ -306,6 +306,7 @@ func TestRefreshRebuildsInFullAfterTheOldReleaseWroteTheRow(t *testing.T) {
 // A2. A check that finds a project it needs counts refreshes it (ensureSearchTermStats), and that
 // refresh applies whatever waits in the queue, so its counts are a full rebuild's too.
 func TestRefreshFromTheRelatedCheckAppliesTheQueuedChanges(t *testing.T) {
+	t.Parallel()
 	handler, database, srv := relatedTermsServer(t)
 	const project = "ENSURE"
 	issue := createInteractionIssue(t, handler, project, "Astrolabe survey", "The astrolabe measures altitude.\n")
@@ -335,6 +336,7 @@ func TestRefreshFromTheRelatedCheckAppliesTheQueuedChanges(t *testing.T) {
 // pass and by no other: the full build cannot see its item, so it leaves that writer's queued
 // change where it is, and the step pass that follows applies it once.
 func TestRefreshCountsAWriterThatCommitsAfterAPass(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "RACE")
 	ctx := context.Background()
 	writer, err := fixture.database.Pool.Begin(ctx)
@@ -376,6 +378,7 @@ func TestRefreshCountsAWriterThatCommitsAfterAPass(t *testing.T) {
 // A2. A project created since the last pass has no totals row, so the next pass counts it in
 // full, and the queue holds nothing of it afterwards.
 func TestRefreshCountsAProjectCreatedSinceTheLastPass(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "FIRST")
 	ctx := context.Background()
 	for _, seed := range []struct {
@@ -414,6 +417,7 @@ func TestRefreshCountsAProjectCreatedSinceTheLastPass(t *testing.T) {
 // ever, and the project's next count from its items is what puts its counts right - which is the
 // recovery, and the reason no production code path deletes an issue or an artifact.
 func TestAPassDropsTheQueuedChangesThatNameNoProject(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "GONE")
 	ctx := context.Background()
 	// The issue's own items first: no foreign key of theirs cascades. Every one of the four rows
@@ -479,6 +483,7 @@ func relatedTermDF(t *testing.T, database *store.Store, project, text, excludeIs
 // A3. The df the picker reads, with the owner of an item written since the last full build left
 // out, is the same after a pass that applied the queue as after one that counted every item.
 func TestRelatedTermDFAfterAStepPassEqualsAFullRebuilds(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "DF")
 	ctx := context.Background()
 	if _, err := fixture.database.Pool.Exec(ctx, `
@@ -509,65 +514,126 @@ func TestRelatedTermDFAfterAStepPassEqualsAFullRebuilds(t *testing.T) {
 	}
 }
 
-// itemRowsReadSQL sums every row the six item tables have handed out since the counters were
-// reset: the rows read sequentially or fetched by an index scan of each table, and the index
-// entries each of their indexes returned.
-const itemRowsReadSQL = `
-select coalesce((select sum(seq_tup_read + idx_tup_fetch) from pg_stat_user_tables
-                  where relname in ('issues', 'artifacts', 'artifact_versions', 'comments', 'asks', 'messages')), 0)
-     + coalesce((select sum(idx_tup_read) from pg_stat_user_indexes
-                  where relname in ('issues', 'artifacts', 'artifact_versions', 'comments', 'asks', 'messages')), 0)`
+// itemTables are the six tables a pass must not read when nothing is queued.
+var itemTables = []string{"issues", "artifacts", "artifact_versions", "comments", "asks", "messages"}
 
-// itemRowsRead reads that sum, after the connection it is taken on has flushed what it did:
-// a backend flushes its own counters and no other's, and pg_stat_force_next_flush() makes it
-// flush at the end of the transaction it runs in, so the reading that follows, in a transaction
-// of its own, sees everything the connection has done.
-func itemRowsRead(t *testing.T, pool *store.Pool) int64 {
+// itemReads is what the backends of a database have reported doing to one table: the scans they
+// began on it, sequential or through any of its indexes, and the rows those scans read.
+type itemReads struct{ scans, rows int64 }
+
+// since is what was done between the reading before and this one.
+func (r itemReads) since(before itemReads) itemReads {
+	return itemReads{scans: r.scans - before.scans, rows: r.rows - before.rows}
+}
+
+// otherBackends selects, in pg_stat_activity, every backend on the caller's database but the
+// caller's own and autovacuum's. A backend reports everything it has counted when it exits, and
+// it does so before it leaves pg_stat_activity: PostgreSQL runs its before_shmem_exit callbacks,
+// the statistics flush among them (pgstat_shutdown_hook), ahead of its on_shmem_exit ones, which
+// clear its pg_stat_activity entry (pgstat_beshutdown_hook). Autovacuum's workers are left out
+// because none of their work moves the four counts readItemReads sums: VACUUM reads a table's
+// pages itself, and ANALYZE's sample is no sequential scan in PostgreSQL's counts.
+const otherBackends = `datname = current_database() and pid <> pg_backend_pid() and backend_type <> 'autovacuum worker'`
+
+// readItemReads waits until reader's one connection is the only backend on its database
+// (otherBackends) and answers, for each item table, what pg_stat_user_tables then holds: every
+// scan begun and every row read by every backend that has used the database, the caller's
+// excepted, whose reads are of the statistics views alone.
+//
+// pg_stat_user_tables is the database's count, not a backend's, and a live backend reports what
+// it has read only as it goes idle, and then no more than once a second. So a reading taken while
+// another connection of the test is open can count what that connection read earlier and reports
+// late, or miss what the measured one read and has not reported yet: CI run 41939604288 counted
+// six rows in a pass whose statements read no item table, read while the fixture's connections
+// were open. Read once no other backend is left, the count holds everything done before the
+// reading and nothing done after it. schemaname keeps another table of the same name out of it,
+// and each reading is a statement, and so a transaction, of its own, which PostgreSQL gives a
+// statistics snapshot of its own.
+func readItemReads(t *testing.T, reader *store.Store) map[string]itemReads {
 	t.Helper()
-	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `select pg_stat_force_next_flush()`); err != nil {
-		t.Fatalf("flush the connection's statistics: %v", err)
+	waitForBackends(t, reader, 0, otherBackends)
+	rows, err := reader.Pool.Query(context.Background(), `
+		select relname, seq_scan + coalesce(idx_scan, 0), seq_tup_read + coalesce(idx_tup_fetch, 0)
+		  from pg_stat_user_tables
+		 where schemaname = 'public' and relname = any($1)`, itemTables)
+	if err != nil {
+		t.Fatalf("read the item tables' statistics: %v", err)
 	}
-	var read int64
-	if err := pool.QueryRow(ctx, itemRowsReadSQL).Scan(&read); err != nil {
-		t.Fatalf("read the item tables' counters: %v", err)
+	defer rows.Close()
+	reads := map[string]itemReads{}
+	for rows.Next() {
+		var table string
+		var read itemReads
+		if err := rows.Scan(&table, &read.scans, &read.rows); err != nil {
+			t.Fatalf("scan the item tables' statistics: %v", err)
+		}
+		reads[table] = read
 	}
-	return read
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the item tables' statistics: %v", err)
+	}
+	if len(reads) != len(itemTables) {
+		t.Fatalf("pg_stat_user_tables holds %v, want a row for each of %v", reads, itemTables)
+	}
+	return reads
 }
 
 // A3. A pass with nothing queued reads no item at all, which is what makes the refresh's work
-// proportional to what changed. The pass runs on a pool of one connection, so the two readings
-// are of the connection that ran it, and no server runs over this database, so nothing else
-// reads an item table between them.
+// proportional to what changed. It is read of the pass itself - refreshSearchTermStats, the call
+// the leased loop and a related-item check make - as the database counts it: what every backend
+// on the test's database reported of the item tables before the pass and after it, which is no
+// scan begun and no row read. The pass has a pool of its own, closed once it returns, and the
+// fixture's pool is closed before the first reading, so nothing but the pass moves the counts
+// between the two (readItemReads). Whatever the pass executes is in them: every statement it
+// sends, with the arguments it sends them with, and its commit, so a trigger or a function beneath
+// a statement, a deferred trigger at the commit and a parallel worker's share of a scan as well;
+// and an index probe that finds nothing, which reads no row, is a scan begun.
 func TestARefreshWithNoChangeReadsNoItem(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "QUIET")
-	config, err := pgxpool.ParseConfig(fixture.database.Pool.Config().ConnString())
-	if err != nil {
-		t.Fatalf("read the test database's connection string: %v", err)
-	}
-	config.MaxConns, config.MinConns = 1, 1
-	raw, err := pgxpool.NewWithConfig(context.Background(), config)
-	if err != nil {
-		t.Fatalf("open a pool of one connection: %v", err)
-	}
-	t.Cleanup(raw.Close)
-	alone := store.NewPool(raw)
 
-	// The pass that empties the queue, so that the measured one has nothing to apply.
-	if _, err := refreshSearchTermStats(context.Background(), alone, fixture.project); err != nil {
-		t.Fatalf("refresh before the reading: %v", err)
+	// The passes that empty the queue, so that the measured one has nothing to apply. A pass
+	// applies the rows it claimed, and a row written while it ran is left for the next one, so
+	// what this waits on is the queue's own depth rather than one pass: a queued change the
+	// measured pass picks up is an item read, which is this test's subject and not its setup.
+	const drains = 5
+	for drain := 1; ; drain++ {
+		refreshTermStatsPass(t, fixture.database, fixture.project)
+		queued := queuedChanges(t, fixture.database)
+		if queued == 0 {
+			break
+		}
+		if drain == drains {
+			t.Fatalf("%d changes are still queued after %d passes", queued, drains)
+		}
 	}
-	before := itemRowsRead(t, alone)
-	measured, err := refreshSearchTermStats(context.Background(), alone, fixture.project)
+
+	// The readings and the pass each have a pool of one connection, which connects when it is
+	// first used. Both copy the fixture's configuration, so they are opened before its pool closes.
+	reader := storetest.SingleConnection(t, fixture.database)
+	measured := storetest.SingleConnection(t, fixture.database)
+	fixture.database.Pool.Close()
+	before := readItemReads(t, reader)
+	// The fixture's first pass counted every item, so a reading that holds none of it does not
+	// count what the backends read - track_counts off, or a connection that had not reported yet -
+	// and would pass whatever the pass read.
+	if read := before["comments"]; read.rows == 0 {
+		t.Fatalf("the item tables' statistics hold %+v of comments after a pass that read every comment, want its rows counted", read)
+	}
+
+	result, err := refreshSearchTermStats(context.Background(), measured.Pool, fixture.project)
+	measured.Pool.Close()
 	if err != nil {
 		t.Fatalf("refresh with nothing queued: %v", err)
 	}
-	if measured.Mode != searchTermModeStep || measured.Changes != 0 {
-		t.Fatalf("the pass ran mode=%s changes=%d, want a step with nothing to apply", measured.Mode, measured.Changes)
+	if result.Mode != searchTermModeStep || result.Changes != 0 {
+		t.Fatalf("the pass ran mode=%s changes=%d, want a step with nothing to apply", result.Mode, result.Changes)
 	}
-	after := itemRowsRead(t, alone)
-	if after != before {
-		t.Fatalf("the pass read %d rows of the item tables, want none", after-before)
+	after := readItemReads(t, reader)
+	for _, table := range itemTables {
+		if did := after[table].since(before[table]); did != (itemReads{}) {
+			t.Errorf("the pass began %d scans of %s and read %d of its rows, want none", did.scans, table, did.rows)
+		}
 	}
 }
 
@@ -575,6 +641,7 @@ func TestARefreshWithNoChangeReadsNoItem(t *testing.T) {
 // neither column is in a trigger's column list, so an event append queues no change. The two
 // statements are the broker's own (events/broker.go).
 func TestAnEventAppendQueuesNoChange(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "EVENT")
 	ctx := context.Background()
 	if queued := queuedChanges(t, fixture.database); queued != 0 {
@@ -602,6 +669,7 @@ func TestAnEventAppendQueuesNoChange(t *testing.T) {
 // alone, so such a write would stay counted wrong with no limit. Without search in the four
 // lists, every one of these writes queues nothing and this test fails.
 func TestADirectWriteOfTheSearchVectorQueuesTheChange(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "VECTOR")
 	ctx := context.Background()
 	for _, item := range []struct {
@@ -635,6 +703,7 @@ func TestADirectWriteOfTheSearchVectorQueuesTheChange(t *testing.T) {
 // moment of that snapshot, and every queue row left behind is one the snapshot cannot see - which
 // is what makes the rows it dropped exactly the rows it applied.
 func TestAStepPassLeavesOnlyChangesItsSnapshotCannotSee(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "SNAP")
 	ctx := context.Background()
 	writer, err := fixture.database.Pool.Begin(ctx)
@@ -684,6 +753,7 @@ func TestAStepPassLeavesOnlyChangesItsSnapshotCannotSee(t *testing.T) {
 // bounded batch and still moved refreshed_at would leave the counts behind for every item queued
 // at or before that moment.
 func TestOnePassDrainsAQueueDeeperThanOneBatch(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "DEEP")
 	ctx := context.Background()
 	if _, err := fixture.database.Pool.Exec(ctx, `
@@ -720,6 +790,7 @@ func TestOnePassDrainsAQueueDeeperThanOneBatch(t *testing.T) {
 // the snapshot of the pass that last changed it, so nothing a reader compares with refreshed_at
 // moves while the project stands still.
 func TestARefreshWithNoChangeLeavesTheRowAsItWas(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "STILL")
 	fixture.addTermComment(t, "The gnomon casts a shadow.")
 	if applied := refreshTermStatsPass(t, fixture.database, fixture.project); applied.Changes != 1 {
@@ -752,6 +823,7 @@ from search_term_totals where project_key = $1`
 // text is the oracle held in the test (related_terms_oracle_test.go), not a statement built from
 // this package's own constants, so an edit to the document arm moves one side and not the other.
 func TestSearchTermItemsAnswerWhatMainsStatementDoes(t *testing.T) {
+	t.Parallel()
 	fixture := newTermFixture(t, "ITEMS")
 	ctx := context.Background()
 	// A second version of the document, so that a statement reading every version rather than

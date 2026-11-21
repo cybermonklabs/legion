@@ -62,6 +62,12 @@ func (h hungCreate) CreateSecret(ctx context.Context, in *secretsmanager.CreateS
 // it, deleting nothing, and asks the broker to reread the name; on AWS, whose CreateSecret makes
 // the secret with its value in one call, it says that the store may hold the secret or not and
 // names the command that says which. Each exits 1 well before the store would answer.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's and startSecretBrokerWith's t.Setenv),
+// CLOUDSDK_AUTH_ACCESS_TOKEN in its gcp half (useGCPIdentity's t.Setenv), the package-level seams
+// the secret forms are reached through (awsClients and the gcp* ones, secretStdin), and
+// storeCallDeadline, the package-level deadline on each store call, which it shortens
+// (useStoreCallDeadline).
 func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 	for _, store := range []string{"gcp", "aws"} {
 		t.Run(store, func(t *testing.T) {
@@ -146,6 +152,9 @@ func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 // ResourceExistsException - the secret it made a moment ago - leaves the create unable to say
 // nothing was stored, so it says the store may hold the secret, with its value, and names `secret
 // show`. A store that refuses the one attempt it sees says nothing was stored. Each exits 1.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
+// the secret forms are reached through (awsClients, secretStdin).
 func TestAWSSecretCreateReadsEveryAttemptTheSDKMade(t *testing.T) {
 	for _, row := range []struct {
 		name      string
@@ -223,6 +232,9 @@ func (f failedCreate) CreateSecret(ctx context.Context, in *secretsmanager.Creat
 // was stored. Any other error, which can follow a create the store carried out, says the store may
 // hold the secret with its value, or nothing, and names `secret show NAME`, which tells them apart.
 // Each exits 1.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
+// the secret forms are reached through (awsClients, secretStdin).
 func TestAWSSecretCreateSaysWhetherAFailedCreateMayHaveStoredTheValue(t *testing.T) {
 	// The two facts the refusal tells apart: a definite refusal says nothing was stored; any other
 	// says the store may hold the secret and names the command that tells.
@@ -275,6 +287,9 @@ func TestAWSSecretCreateSaysWhetherAFailedCreateMayHaveStoredTheValue(t *testing
 // what the store may hold is said though the form, ending by the signal, never prints it: once,
 // naming the command that tells which. The cleanup is run here as the signal would run it, right
 // after the store's answer.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's t.Setenv), and awsClients, the seam the
+// secret forms reach the store through.
 func TestCreateSignalAfterAFailedAWSStoreSaysWhatTheStoreMayHold(t *testing.T) {
 	local := secrets.NewLocal()
 	startSecretBroker(t, servedBy(local))
@@ -301,6 +316,9 @@ func TestCreateSignalAfterAFailedAWSStoreSaysWhatTheStoreMayHold(t *testing.T) {
 // TestAWSSecretCreateRecoveryCommandSignsInAsTheCreateDid: the command a create prints for telling
 // whether a failed CreateSecret made the secret carries the AWS_PROFILE prefix the create ran
 // under, so it reads the store as the identity that wrote to it.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
+// the secret forms are reached through (awsClients, secretStdin).
 func TestAWSSecretCreateRecoveryCommandSignsInAsTheCreateDid(t *testing.T) {
 	local := secrets.NewLocal()
 	startSecretBroker(t, servedBy(local))
@@ -318,6 +336,10 @@ func TestAWSSecretCreateRecoveryCommandSignsInAsTheCreateDid(t *testing.T) {
 // no window. With GCP's window shortened to a nanosecond, which is over before any value is read -
 // a create given that deadline refuses the value, whenever it comes - a value piped in at once is
 // still stored on AWS.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's t.Setenv), the package-level seams the
+// secret forms are reached through (awsClients, secretStdin), and valueReadWindow, the
+// package-level window a create reads its value for, which it shortens.
 func TestAWSSecretCreateValueReadHasNoWindow(t *testing.T) {
 	restore := valueReadWindow
 	valueReadWindow = time.Nanosecond

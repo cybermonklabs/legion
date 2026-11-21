@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // laterEvent appends another human message on an issue routedEvent already seeded, so that an
@@ -44,19 +45,24 @@ func (r *roleRig) laterEvent(t *testing.T, key string, actor model.Actor) model.
 // TestAForwardTheStreamDoesNotAcknowledgeDoesNotDelayAnotherIssuesEvents covers two owners in
 // two batches; this covers two owners in one, which only a per-owner release reaches. Both
 // issues' events are committed before the outbox runs, so its first batch reads both owners.
+//
+// The row reads no window of the process - its verdict is the order above, not a clock - so it
+// runs beside the rest of the package (docs/testing.md).
 func TestAnOwnerOfTheStalledHoldersBatchIsReleasedBeforeTheBatchEnds(t *testing.T) {
+	t.Parallel()
 	const (
 		stalledRole, stalledHolder = "stalled-reviewer", "ses_never_acknowledged"
 		liveRole, liveHolder       = "live-reviewer", "ses_acknowledged"
 		// What the outbox waits for the stalled forward's acknowledgement (Deps.forwardAckWait).
-		// It outlasts the whole test, so the wait is still running when the verdict below is read
-		// and a batch that held its owners until it ended could not end during this test at all,
-		// however slow the machine is.
-		stalledForwardWait = 10 * time.Minute
+		// It outlasts the whole test - past any run of the test binary - so the wait is
+		// still running when the verdict below is read and a batch that held its owners until it
+		// ended could not end during this test at all, however slow the machine is. Nothing here
+		// waits for it to run out: the stop cancels the batch's wait (sendChains) and the rig's
+		// cleanup closes the client the forward is waiting on.
+		stalledForwardWait = testwait.PastTheRun
 		// A hang guard on each wait for a forward, not a bound this row measures anything
 		// against: a healthy run reaches every one of them in milliseconds, and a batch that
-		// holds its owners until it ends forwards the later event only after stalledForwardWait,
-		// ten times this.
+		// holds its owners until it ends forwards the later event only after stalledForwardWait.
 		hangGuard = 60 * time.Second
 	)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -69,12 +75,12 @@ func TestAnOwnerOfTheStalledHoldersBatchIsReleasedBeforeTheBatchEnds(t *testing.
 	stalled := rig.receiver(t, stalledHolder)
 	live := rig.receiver(t, liveHolder)
 	held := rig.routedEvent(t, "T-1", stalledRole, alice)
-	rig.routedEvent(t, "T-2", liveRole, alice)
+	liveFirst := rig.routedEvent(t, "T-2", liveRole, alice)
 
 	deps := rig.deps()
 	deps.Listen = rig.database.Pool.Listener
 	deps.forwardAckWait = stalledForwardWait
-	stop := runDeps(t, deps, 15*time.Second)
+	stop := runDeps(t, deps)
 	defer stop()
 
 	select {
@@ -108,9 +114,15 @@ func TestAnOwnerOfTheStalledHoldersBatchIsReleasedBeforeTheBatchEnds(t *testing.
 		t.Logf("the live holder received its issue's later forward %s after its commit",
 			time.Since(committed).Round(time.Millisecond))
 	case <-time.After(hangGuard):
+		// An early settle whose record failed keeps that error in the batch, logged only when the
+		// batch returns after the stalled forward's wait, so the rows are what the test can print.
+		_, heldState := settledState(t, rig.database, held.ID)
+		_, liveState := settledState(t, rig.database, liveFirst.ID)
+		_, _, liveDestinations := eventState(t, rig.database, liveFirst.ID)
 		t.Fatalf("the live holder never received its issue's later forward within %s, while the "+
 			"stalled holder's %s acknowledgement wait was still running: the owner was held in "+
-			"flight until its batch ended", hangGuard, stalledForwardWait)
+			"flight until its batch ended; the stalled holder's event %d: %s; the live holder's first event %d: %s, published_destinations %v",
+			hangGuard, stalledForwardWait, held.ID, heldState, liveFirst.ID, liveState, liveDestinations)
 	}
 }
 
@@ -118,6 +130,10 @@ func TestAnOwnerOfTheStalledHoldersBatchIsReleasedBeforeTheBatchEnds(t *testing.
 // the stream's acknowledgement of a forward it never gets, the batch keeps that owner in flight,
 // so no batch beside it reads the owner's second event and the holder receives the first forward
 // alone.
+//
+// Serial: the first forward waits the product's roleForwardAckTimeout (5 s, role.go:30) for an
+// acknowledgement, and once that wait ends the owner is released and the second event forwarded:
+// the first forward's arrival, the commit and the 2 s quiet window must all fit inside it.
 func TestAnOwnersSecondEventDoesNotOvertakeItsFirstWhileItsForwardIsUnacknowledged(t *testing.T) {
 	const stalledRole, stalledHolder = "stalled-reviewer", "ses_never_acknowledged"
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -129,14 +145,14 @@ func TestAnOwnersSecondEventDoesNotOvertakeItsFirstWhileItsForwardIsUnacknowledg
 
 	deps := rig.deps()
 	deps.Listen = rig.database.Pool.Listener
-	stop := runDeps(t, deps, 15*time.Second)
+	stop := runDeps(t, deps)
 	defer stop()
 
 	first := rig.routedEvent(t, "T-1", stalledRole, alice)
 	var forward contracts.Envelope
 	select {
 	case forward = <-silent.arrived:
-	case <-time.After(10 * time.Second):
+	case <-time.After(eventWait):
 		t.Fatal("the stalled holder never received its forward")
 	}
 	if forward.SourceEventID != fmt.Sprint(first.ID) {
@@ -179,12 +195,17 @@ func backOffIn(t *testing.T, database *store.Store, id int64, attempts int, wait
 // acknowledges, so neither owner is settled before its batch ends and neither release wakes the
 // scan; with the second event unread, the scan's retry timer is armed to the two back-offs
 // alone, minutes out.
+//
+// Real time, at roleForwardAckTimeout: the forwards it waits out are publishes to a live NATS
+// server over TCP, which no synctest bubble can hold.
 func TestAnEventCommittedWhileItsOwnerIsInFlightIsReadWhenThatOwnerIsBack(t *testing.T) {
+	t.Parallel()
 	const (
 		stalledRole, stalledHolder = "stalled-reviewer", "ses_never_acknowledged"
-		// The attempt count both events carry: their next back-off is retry.Delay(7), 64 s, so a
-		// scan that waits for one misses the bound below by a minute.
-		attempts   = 6
+		// The attempt count both events carry: their next back-off is retry.Delay(11), capped at
+		// retry.MaxDelay, five minutes, so a scan that waits for one misses the bound below,
+		// eventWait, by minutes.
+		attempts   = 10
 		issueTopic = "notifications.dispatch.issue.T-1.message.created"
 	)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -205,12 +226,12 @@ func TestAnEventCommittedWhileItsOwnerIsInFlightIsReadWhenThatOwnerIsBack(t *tes
 
 	deps := rig.deps()
 	deps.Listen = rig.database.Pool.Listener
-	stop := runDeps(t, deps, 15*time.Second)
+	stop := runDeps(t, deps)
 	defer stop()
 
 	select {
 	case <-silent.arrived:
-	case <-time.After(10 * time.Second):
+	case <-time.After(eventWait):
 		t.Fatal("the stalled holder never received the first issue's forward")
 	}
 	// The first issue is in flight on its wait for an acknowledgement. The second issue falls
@@ -222,8 +243,11 @@ func TestAnEventCommittedWhileItsOwnerIsInFlightIsReadWhenThatOwnerIsBack(t *tes
 	second := rig.laterEvent(t, "T-1", alice)
 
 	// That batch waits out its own forward, so the second event's copy follows the later of the
-	// two waits for an acknowledgement, both of which began at or before this commit.
-	within := roleForwardAckTimeout + 3*time.Second
+	// two waits for an acknowledgement, both of which began at or before this commit. The wait for
+	// it is the package's give-up on an event, eventWait: what tells a scan that read past its
+	// owner from one that read again at its release is the back-off it would wait for instead,
+	// minutes past that, not a margin of seconds over roleForwardAckTimeout.
+	within := eventWait
 	deadline := time.After(within)
 	for {
 		select {
@@ -266,6 +290,9 @@ func (p *answeringTopics) WindowUntil(deadline func() time.Time) bus.Sender {
 // batch, so the send its later event was owed is never made: that owner is left for the batch's
 // end, where the connection decides what its sends came to, rather than settled now and settled
 // again there.
+//
+// Serial: it swaps process-wide state, the default logger it counts the failure's line in
+// (docs/testing.md).
 func TestAnOwnerLeftForTheBatchsEndLogsItsFailureOnce(t *testing.T) {
 	var logged lockedBuffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))

@@ -111,11 +111,16 @@ type listenerDeliveryHandlerConfig struct {
 	// unplaceableRetryWindow is how long an agent delivery this listener cannot place is held
 	// in the stream and redelivered before it is given up with a record of its own
 	// (agentSubjectDelivery). main.go reads it from ENVOY_UNPLACEABLE_RETRY_WINDOW, defaulting
-	// to defaultUnplaceableRetryWindow. It is spent as whole deferrals of unplaceableRetryDelay
+	// to defaultUnplaceableRetryWindow. It is spent as whole deferrals of the retry delay below
 	// each, counted from the message's first delivery, so a window shorter than one delay - a
 	// zero one, what a caller that does not set this field asks for - retries nothing: every
 	// unplaceable delivery is given up on its first attempt.
 	unplaceableRetryWindow time.Duration
+	// unplaceableRetryDelay is the NAK delay a deferral of such a delivery asks for, which the
+	// window above is spent in whole steps of. main.go leaves it unset and the handler then
+	// takes defaultUnplaceableRetryDelay; a test sets a short one so the redelivery it must see
+	// comes in milliseconds (listenerDeliveryHandlerConfig.retryDelay).
+	unplaceableRetryDelay time.Duration
 	// deferredUnplaceable is the set of agent deliveries this listener is holding deferred right
 	// now, the budget unplaceableDeferralCap bounds. It is required: main.go makes one and sets
 	// it once, in its deliveryConfig, so every handler built from that config - the role lane's
@@ -814,6 +819,18 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	// read that did not answer fails and is NAKed.
 	entry, _, entryErr := liveSessionEntry(context.Background(), cfg.sessions, sessionID, deliverySessionReadTimeout, notGone)
 	gone := errors.Is(entryErr, nats.ErrKeyNotFound)
+	// What follows is handed a missing entry and never this read's error, so the hold, the NAK
+	// and the give-up name no cause of their own: the error is logged here. The cache answers a
+	// session it holds with no read and a session the bucket holds no record of is gone, so the
+	// line is a read that did not answer within its bound, never one a healthy bus writes per
+	// message.
+	if entryErr != nil && !gone {
+		cfg.logger.Warn("listener agent delivery could not read the session's record within its bound",
+			slog.String("session_id", sessionID),
+			slog.String("event_id", item.EventID),
+			slog.Duration("bound", deliverySessionReadTimeout),
+			slog.String("error", entryErr.Error()))
+	}
 	var entryPtr *session.SessionEntry
 	if entryErr == nil {
 		entryPtr = &entry

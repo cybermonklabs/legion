@@ -1,7 +1,6 @@
 package delivery
 
 import (
-	"context"
 	"net/http"
 	"strings"
 	"testing"
@@ -15,6 +14,7 @@ import (
 // the run on the backfill's list, so the rest of its jobs are read; jobs read after it ended take
 // it off.
 func TestJobsReadBeforeARunEndsLeaveItForTheBackfill(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	if err := UpsertRun(ctx, pool, changeTestRun(800, DeliveryRunKindDeploy, started, started)); err != nil {
@@ -63,6 +63,7 @@ func TestJobsReadBeforeARunEndsLeaveItForTheBackfill(t *testing.T) {
 // TestACompleteJobsWriteRefusesARunningJob: complete is the monotonic run-level flag, so a caller
 // cannot set it from a list that still holds a job without its completion.
 func TestACompleteJobsWriteRefusesARunningJob(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	if err := UpsertRun(ctx, pool, changeTestRun(802, DeliveryRunKindDeploy, started, started)); err != nil {
@@ -87,6 +88,7 @@ func TestACompleteJobsWriteRefusesARunningJob(t *testing.T) {
 // TestALateReadNeverUndoesAFinishedJob: a read taken while the run ran, landing after one taken
 // once it ended, keeps every finished job and the run's completeness, and logs no change.
 func TestALateReadNeverUndoesAFinishedJob(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	if err := UpsertRun(ctx, pool, changeTestRun(801, DeliveryRunKindDeploy, started, started)); err != nil {
@@ -133,6 +135,7 @@ func TestALateReadNeverUndoesAFinishedJob(t *testing.T) {
 // monotonic upsert rule: a later finished listing replaces a running listing, while a stale
 // running listing cannot erase the finished result.
 func TestRunJobApplyStepRoundTripsAndResistsALateRead(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	if err := UpsertRun(ctx, pool, changeTestRun(806, DeliveryRunKindDeploy, started, started)); err != nil {
@@ -173,6 +176,7 @@ func TestRunJobApplyStepRoundTripsAndResistsALateRead(t *testing.T) {
 // and the one statement that writes a run's jobs folds them by the rule a write follows, so a
 // finished one wins over an unfinished one whichever GitHub listed first.
 func TestAListingThatRepeatsAJobNameStoresItAsWritingEachInTurn(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	if err := UpsertRun(ctx, pool, changeTestRun(804, DeliveryRunKindDeploy, started, started)); err != nil {
@@ -199,6 +203,7 @@ func TestAListingThatRepeatsAJobNameStoresItAsWritingEachInTurn(t *testing.T) {
 // them yet. Such a listing writes no job, but it is still a successful listing: it clears the run's
 // jobs-unfetchable mark, and its complete flag reaches the run row.
 func TestAnEmptyListingStillWritesTheRunRow(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	if err := UpsertRun(ctx, pool, changeTestRun(805, DeliveryRunKindDeploy, started, started)); err != nil {
@@ -246,9 +251,10 @@ func TestAnEmptyListingStillWritesTheRunRow(t *testing.T) {
 // change log's lock while it waits for the row the run write holds, and Postgres refuses one of
 // them as a deadlock (40P01).
 func TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock(t *testing.T) {
+	t.Parallel()
+	// No bound on the whole test: each wait below on a write gives up at eventWait of its own, and
+	// one total span over setup and both lock waits left the later waits less than that.
 	pool, ctx := deliveryTestPool(t)
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	run := changeTestRun(803, DeliveryRunKindDeploy, started, started)
 	if err := UpsertRun(ctx, pool, run); err != nil {
@@ -273,22 +279,29 @@ func TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock(t *testing.T) {
 	}
 	jobsDone := make(chan error, 1)
 	go func() { jobsDone <- UpsertRunJobs(ctx, pool, "acme/widgets", 803, jobs, true) }()
-	if waiting := storetest.WaitForLockWaiters(t, gate, 1, 10*time.Second); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, gate, 1, eventWait); waiting < 1 {
 		t.Fatalf("the jobs write never waited for the change log's lock: %d waiting", waiting)
 	}
 	runDone := make(chan error, 1)
 	go func() { runDone <- UpsertRun(ctx, pool, run) }()
-	if waiting := storetest.WaitForLockWaiters(t, gate, 2, 10*time.Second); waiting < 2 {
+	if waiting := storetest.WaitForLockWaiters(t, gate, 2, eventWait); waiting < 2 {
 		t.Fatalf("the run write never waited behind the jobs write: %d waiting", waiting)
 	}
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("release the change log's lock: %v", err)
 	}
-	if err := <-jobsDone; err != nil {
-		t.Errorf("UpsertRunJobs: %v", err)
-	}
-	if err := <-runDone; err != nil {
-		t.Errorf("UpsertRun: %v", err)
+	for _, write := range []struct {
+		name string
+		done <-chan error
+	}{{"UpsertRunJobs", jobsDone}, {"UpsertRun", runDone}} {
+		select {
+		case err := <-write.done:
+			if err != nil {
+				t.Errorf("%s: %v", write.name, err)
+			}
+		case <-time.After(eventWait):
+			t.Fatalf("%s did not return within %s of the change log's lock being let go", write.name, eventWait)
+		}
 	}
 	stored, err := ListRunJobs(ctx, pool, "acme/widgets", 803)
 	if err != nil || len(stored) != 2 {
@@ -307,8 +320,11 @@ func TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock(t *testing.T) {
 // TestReconcilePrunesChangesOlderThanADay: a successful pass deletes the changes recorded more than
 // ChangeRetention ago and keeps the rest.
 func TestReconcilePrunesChangesOlderThanADay(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
+	// seedDeliverySettings' own write records a settings change: clear it, so the two rows below
+	// are the whole log this pass prunes.
 	if _, err := pool.Exec(ctx, `delete from delivery_changes`); err != nil {
 		t.Fatalf("clear the change log: %v", err)
 	}

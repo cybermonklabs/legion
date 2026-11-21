@@ -73,8 +73,9 @@ func fakeHelperWithPids(t *testing.T, canned helper.Response) (string, <-chan pe
 // pins is the very pid the command runs as — and that is unchanged by the launcher ancestor the
 // other forms now name.
 func TestRegisterExecStillPinsTheReplacedProcess(t *testing.T) {
+	t.Parallel()
 	sock, requests := fakeHelperWithPids(t, helper.Response{OK: true, State: "enrolling", RuntimeID: "session-exec"})
-	cmd := exec.Command("go", "run", ".", "register", "--session-id", "exec", "--exec", "--", "sh", "-c", "echo $$")
+	cmd := exec.Command(buildAgentSecrets(t), "register", "--session-id", "exec", "--exec", "--", "sh", "-c", "echo $$")
 	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock)
 	out, err := cmd.Output()
 	if err != nil {
@@ -128,6 +129,7 @@ func helperSessions(t *testing.T, sock string) []helper.SessionInfo {
 // from an unregistered process is. nocredential_linux_test.go covers identity inside a
 // registered session.
 func TestIdentityAsksARealHelperWithoutRegistering(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock := realHelper(t)
 	env := append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock, "AGENT_SECRETS_KEY_DIR=", "XDG_RUNTIME_DIR="+t.TempDir(), "HOME="+t.TempDir())
@@ -464,6 +466,9 @@ func fixedLauncher(t *testing.T) int {
 
 // TestRegisterWithoutExecPrintsRuntimeEnrollmentState covers register's contract without
 // --exec: "<runtime_id>\t<enrollment_id>\t<state>" on stdout, exit 0.
+// Serial: it sets a process-wide variable, AGENT_SECRETS_HELPER_SOCK, which helperSocket
+// (identity.go) reads the helper's address from, and assigns the package-level nearestLauncher
+// (fixedLauncher); t.Setenv panics under t.Parallel.
 func TestRegisterWithoutExecPrintsRuntimeEnrollmentState(t *testing.T) {
 	launcher := fixedLauncher(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolled", RootPID: launcher})
@@ -623,6 +628,9 @@ func TestRegisterRefusesARootThatIsNotAnAncestor(t *testing.T) {
 
 // TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled covers "exits 1 if --wait was given
 // and state isn't enrolled": the state is printed, and stderr says it is not enrolled yet and why.
+// Serial: it sets a process-wide variable, AGENT_SECRETS_HELPER_SOCK, which helperSocket
+// (identity.go) reads the helper's address from, and assigns the package-level nearestLauncher
+// (fixedLauncher); t.Setenv panics under t.Parallel.
 func TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled(t *testing.T) {
 	launcher := fixedLauncher(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolling", Error: "waiting on approver", RootPID: launcher})
@@ -638,6 +646,9 @@ func TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled(t *testing.T) {
 // other helper-mode form, reaches a helper listening on its default socket
 // ($XDG_RUNTIME_DIR/agent-secrets/helper.sock) with AGENT_SECRETS_HELPER_SOCK unset: a machine set
 // up by starting the helper with no settings registers its sessions without exporting the variable.
+// Serial: it sets process-wide variables, AGENT_SECRETS_HELPER_SOCK and XDG_RUNTIME_DIR, which
+// helperSocket (identity.go) reads the helper's default socket from, and assigns the
+// package-level nearestLauncher (fixedLauncher); t.Setenv panics under t.Parallel.
 func TestRegisterFindsTheHelperOnItsDefaultSocket(t *testing.T) {
 	launcher := fixedLauncher(t)
 	runtimeDir := shortTempDir(t)

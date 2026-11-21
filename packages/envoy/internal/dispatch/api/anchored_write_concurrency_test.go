@@ -13,15 +13,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-const requestDeadline = 20 * time.Second
-
 // withDeadline bounds every request the handler serves. A wedged pool would otherwise hold its
 // connections until the package timeout kills the process, which reports no failing test and
 // leaves the pool cleanup unrun; with a deadline the request aborts, the connections go back,
 // and the test says which scenario wedged.
 func withDeadline(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), requestDeadline)
+		ctx, cancel := context.WithTimeout(r.Context(), concurrentWait)
 		defer cancel()
 		handler.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -33,6 +31,7 @@ func withDeadline(handler http.Handler) http.Handler {
 // needs a second connection waits for one its own peers can only release by finishing, and the
 // server never recovers. Real callers reach this whenever enough agents comment on one issue.
 func TestConcurrentAnchoredWritesDoNotWedgeTheirPool(t *testing.T) {
+	t.Parallel()
 	const maxConns = 4
 	for _, writers := range []int{maxConns, maxConns * 2} {
 		t.Run(fmt.Sprintf("writers=%d", writers), func(t *testing.T) {
@@ -106,6 +105,7 @@ func (g *gatedMarkQuote) MarkQuote(
 // pins closes at any size and four reaches it with four callers - so the write in the middle
 // must finish without asking that pool for anything else.
 func TestSettlementsBehindAnAnchoredWriteDoNotWedgeThePool(t *testing.T) {
+	t.Parallel()
 	const maxConns = 4
 	gate := &gatedMarkQuote{entered: make(chan struct{}), release: make(chan struct{})}
 	handler, service, database := pooledDocumentHandlerWith(t, maxConns, 10*time.Millisecond,
@@ -184,7 +184,7 @@ func TestSettlementsBehindAnAnchoredWriteDoNotWedgeThePool(t *testing.T) {
 // the holders it arranged are in place before it releases the write they are queued behind.
 func waitForAcquiredConns(t *testing.T, database *store.Store, want int32) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(concurrentWait)
 	for time.Now().Before(deadline) {
 		if database.Pool.Stat().AcquiredConns() >= want {
 			return

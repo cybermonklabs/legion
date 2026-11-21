@@ -369,6 +369,21 @@ def setup_go(job, gomod, workflow=""):
     return reads((gomod, f"{at(job, 'actions/setup-go', workflow)} go-version-file"))
 
 
+# The read-back of a job's Postgres service settings: one script, which every ci.yaml job whose
+# service starts on the lane's disposable settings runs from a step of this name
+# (.github/scripts/postgres-service-settings.sh's head says why it is a script).
+SETTINGS_SCRIPT = ".github/scripts/postgres-service-settings.sh"
+SETTINGS_STEP = "Read the disposable service's settings back"
+
+
+def service_settings(job, *steps):
+    """The script the job's read-back step runs, or each of `steps` where the job has more than
+    one service and a step for each."""
+    steps = steps or (SETTINGS_STEP,)
+    runs = "runs it" if len(steps) == 1 else "each run it"
+    return reads((SETTINGS_SCRIPT, " and ".join(at(job, step) for step in steps) + f" {runs}"))
+
+
 # Every job reads ci.yaml, where its `if:` is, and .github/ci-filters.yaml, where the filter that
 # selects it is: ci.yaml's `changes` job hands that file to dorny/paths-filter by its path, so a
 # change to it reaches every job as a change to ci.yaml does. The docs and dispatch_browser gates
@@ -815,10 +830,12 @@ RULES = {
          "referencesMarkdown :661 os.ReadFile")),
     # cmd/dispatch/memory_profile_test.go:147-148 reads three documents only when
     # DISPATCH_EDIT_PROFILE_OUT is set (line 125), which CI never sets: not a CI read.
-    f"{ENVOY}/cmd/dispatch/pod_grace_period_test.go": reads((f"{INFRA}/gcp/testdata/dispatch-pod.golden", "cmd/dispatch/pod_grace_period_test.go:53")),
+    f"{ENVOY}/cmd/dispatch/pod_grace_period_test.go": reads((f"{INFRA}/gcp/testdata/dispatch-pod.golden", "cmd/dispatch/pod_grace_period_test.go:54")),
     f"{ENVOY}/cmd/listener/api_test.go": reads(
-        (f"{FIX}/dispatch-targeted-delivery.json", "cmd/listener/api_test.go:176,421,465"),
-        (f"{FIX}/envoy-session-no-interests.json", "cmd/listener/api_test.go:4605")),
+        (f"{FIX}/dispatch-targeted-delivery.json",
+         "cmd/listener/api_test.go: TestDispatchClientSendUsesListenerWireContract, "
+         "TestSendHandlerRefusesUnadvertisedModeFromDerivedPayload and TestDispatchClientSendFrameModeIsGuardedEndToEnd"),
+        (f"{FIX}/envoy-session-no-interests.json", "cmd/listener/api_test.go, readNoInterestRecordFixture")),
     f"{ENVOY}/cmd/listener/grace_margin_doc_test.go": reads(
         (f"{INFRA}/README.md", "cmd/listener/grace_margin_doc_test.go:17"),
         (f"{INFRA}/docs/nats-hub.md", "cmd/listener/grace_margin_doc_test.go:18")),
@@ -849,8 +866,8 @@ RULES = {
     f"{ENVOY}/internal/contracts/plan_rating_test.go": reads(
         (f"{FIX}/daemon-api/plan-rating-cases.json", "internal/contracts/plan_rating_test.go:21")),
     f"{ENVOY}/internal/dispatch/api/copy_lock_order_test.go": [
-        run(ENVOY, ["./cmd/dispatch"], "internal/dispatch/api/copy_lock_order_test.go:264 go list -deps -export ./cmd/dispatch in packages/envoy", mode="build")],
-    f"{ENVOY}/internal/dispatch/api/delivery_live_diff_test.go": reads((f"{FIX}/live/*", "internal/dispatch/api/delivery_live_diff_test.go:982,1016")),
+        run(ENVOY, ["./cmd/dispatch"], "internal/dispatch/api/copy_lock_order_test.go:270 go list -deps -export ./cmd/dispatch in packages/envoy", mode="build")],
+    f"{ENVOY}/internal/dispatch/api/delivery_live_diff_test.go": reads((f"{FIX}/live/*", "internal/dispatch/api/delivery_live_diff_test.go:1031,1053")),
     f"{ENVOY}/internal/dispatch/api/delivery_measures_test.go": reads(
         (f"{ENVOY}/internal/dispatch/delivery/measures/testdata/dora-fixture.json", "internal/dispatch/api/delivery_measures_test.go:82")),
     f"{ENVOY}/internal/dispatch/api/delivery_test.go": reads(
@@ -864,9 +881,9 @@ RULES = {
          "emitter's bytes with)")),
     f"{ENVOY}/internal/dispatch/api/session_answers_test.go": reads(
         (f"{FIX}/ask-reply-recipients.json",
-         "internal/dispatch/api/session_answers_test.go:1496 os.ReadFile (askReplyRecipientsFixture :1167, "
-         "../../../../contracts/fixtures): TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers compares "
-         "the copies the outbox published with the committed fixture, which :1489 writes under -update")),
+         "internal/dispatch/api/session_answers_test.go: TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers "
+         "reads askReplyRecipientsFixture (../../../../contracts/fixtures) with os.ReadFile and compares the copies "
+         "the outbox published with that committed fixture, which the same test writes under -update")),
     f"{ENVOY}/internal/dispatch/api/lock_level_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/api/issue_route_writer_guard_test.go": MODULE_SOURCES,
@@ -887,7 +904,7 @@ RULES = {
         (f"{ENVOY}/scripts/fixtures/github/push.json", "internal/dispatch/delivery/intake_push_test.go:55 os.ReadFile(pushFixture)")),
     f"{ENVOY}/internal/dispatch/docs/approval_carry_test.go": reads((f"{FIX}/decision-blocks/*", "internal/dispatch/docs/approval_carry_test.go:26")),
     f"{ENVOY}/internal/dispatch/docs/history_fold_test.go": reads(
-        (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "internal/dispatch/docs/history_fold_test.go:518")),
+        (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "internal/dispatch/docs/history_fold_test.go:535")),
     f"{ENVOY}/internal/dispatch/legion/golden_state_test.go": reads(
         (f"{FIX}/daemon-api/state.json",
          "internal/dispatch/legion/golden_state_test.go:29 os.ReadFile (goldenStatePath :16, "
@@ -903,7 +920,7 @@ RULES = {
          "internal/dispatch/outbox/expects_reply_never_false_test.go:137-138 globs ../../../../contracts/src/dispatch-api*.ts "
          "and :149 reads each module the glob finds (the .test.ts files :146 skips apart)")),
     f"{ENVOY}/internal/dispatch/pmdoc/update_test.go": [
-        Read(g, "internal/dispatch/pmdoc/update_test.go:236-238 bun run gen/<script> (imports @legion/proof-editor)") for g in PMDOC_GEN],
+        Read(g, "internal/dispatch/pmdoc/update_test.go:316-320 bun run gen/<script> (imports @legion/proof-editor)") for g in PMDOC_GEN],
     f"{ENVOY}/internal/dispatch/pmdoc/render_readback_test.go": [
         Read(g, "internal/dispatch/pmdoc/render_readback_test.go:34 bun run gen/differential.ts") for g in PMDOC_GEN],
     f"{ENVOY}/internal/dispatch/specgraph/imports_test.go": [
@@ -924,8 +941,8 @@ RULES = {
         (f"{ENVOY}/deploy/scripts/autodeploy_test.sh",
          "internal/dispatch/store/deployer_key_test.go:44 reads it the same way (:31)")),
     f"{ENVOY}/internal/dispatch/store/search_text_test.go": reads(
-        (f"{ENVOY}/**/*.md", "internal/dispatch/store/search_text_test.go:104-120 walks packages/envoy (infra included, "
-                             "node_modules and out passed over) and :114 opens each .md file, and no other")),
+        (f"{ENVOY}/**/*.md", "internal/dispatch/store/search_text_test.go:84-111 walks packages/envoy (infra included, "
+                             "node_modules and out passed over) and :96 opens each .md file, and no other")),
     f"{ENVOY}/internal/dispatch/store/counts_in_documents_test.go": reads(
         ("docs/site/src/content/docs/dispatch/running-dispatch.md",
          "internal/dispatch/store/counts_in_documents_test.go reads it: the connection counts it "
@@ -962,10 +979,10 @@ RULES = {
             mode="build", env={"CGO_ENABLED": "0", "GOOS": "linux"}),
         Read(f"{ENVOY}/docker/rds-global-bundle.pem", "internal/smoke/rdsbundle_test.go:62")],
     f"{ENVOY}/internal/testnats/nats_test.go": [
-        run(ENVOY, ["./..."], "internal/testnats/nats_test.go:871-872 go list -f ... ./... in packages/envoy", mode="build"),
-        *[Read(g, "internal/testnats/nats_test.go:904-917 walks packages/envoy but infra, node_modules and testdata, "
-                  "and :917 reads every .go file it finds, test files included (dockerDriverFiles, called at :832 by "
-                  "TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime at :825)")
+        run(ENVOY, ["./..."], "internal/testnats/nats_test.go:911-912 go list -f ... ./... in packages/envoy", mode="build"),
+        *[Read(g, "internal/testnats/nats_test.go:944-957 walks packages/envoy but infra, node_modules and testdata, "
+                  "and :957 reads every .go file it finds, test files included (dockerDriverFiles, called at :871 by "
+                  "TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime at :861)")
           for g in envoy_go_files_but_infra()]],
     f"{ENVOY}/internal/textcheck/claims_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/claims_doc_test.go:43,50 reads it under ../../../.."),
@@ -1053,15 +1070,61 @@ def go_notices_runs():
     return out
 
 
-# The steps whose go commands are not in the simple form, pinned whole: envoy-go-checks'
-# pack step, envoy-smoke's schema step, and the tag steps below.
+# The two jq filters a `go test -json` stream is replayed to the log through: the package result
+# lines of a green run, the whole stream of a red one. Both the steps that write one stream
+# (json_stream_script) and envoy-go's unit step, which writes eight and replays each in a group
+# of its own (UNIT_TEST_SCRIPT), are built from these, so the two shapes cannot spell the replay
+# differently.
+REPLAY_GREEN = "jq -rj 'select(.Action == \"build-output\" or (.Action == \"output\" and .Test == null)) | .Output'"
+REPLAY_RED = "jq -rj 'select(.Action == \"build-output\" or .Action == \"output\") | .Output'"
+
+
+def json_stream_script(command: str, stream: str) -> str:
+    """A test step whose one go command writes its `go test -json` stream to a file under
+    $RUNNER_TEMP/go-test-json and replays it to the log: the package result lines of a green run,
+    the whole stream of a red one (the envoy-go unit step in ci-job-envoy-go.yaml says why). The
+    race lane's envoy-go-race, the alone steps of envoy-go-race and envoy-go-checks
+    (ALONE_STEPS), and envoy-go-checks' architecture-note tests, listenerwire tests and
+    display-tree fixture check, are the steps of this shape; envoy-go's unit step runs nine calls
+    and builds its own (UNIT_TEST_SCRIPT), and envoy-go-race-api's step and envoy-go's count step
+    keep theirs through database-skips.sh's --keep (RACE_API_SCRIPT, DATABASE_SKIPS_RUN)."""
+    return f"""\
+mkdir -p "$RUNNER_TEMP/go-test-json"
+s=0
+{command} > "$RUNNER_TEMP/go-test-json/{stream}" || s=$?
+if [ "$s" -eq 0 ]; then
+  {REPLAY_GREEN} "$RUNNER_TEMP/go-test-json/{stream}"
+else
+  {REPLAY_RED} "$RUNNER_TEMP/go-test-json/{stream}"
+fi
+exit $s"""
+
+
+# The steps whose go commands are not in the simple form, pinned whole: envoy-go-checks' pack
+# step, envoy-smoke's schema step, the tag steps below, and every step that writes a `go test
+# -json` stream - envoy-go's unit step, which writes the streams of eight of its nine calls,
+# envoy-go-checks' architecture-note tests, listenerwire tests and display-tree fixture check, the
+# race lane's envoy-go-race, and the alone steps of envoy-go-race and envoy-go-checks - since
+# neither -json nor the redirect that keeps the stream is a form the check reduces. Three are
+# pinned for a reason of their own: envoy-go-race-docs' two lines make a directory and run the
+# package under .github/scripts/race_memory.py (RACE_DOCS_SCRIPT below), and envoy-go-race-api's
+# race step and envoy-go's database-skips step run their go test inside database-skips.sh, which
+# keeps each one's stream through --keep (RACE_API_SCRIPT, DATABASE_SKIPS_RUN).
 PACK_STEP = "Pack envoy binaries"
 PACK_SCRIPT = """\
+pids=()
 for arch in $(jq -r '.envoy[]' ../../.github/go-release-targets.json); do
   out="../../out/pr-artifacts/envoy-$arch"
   mkdir -p "$out"
-  GOOS=linux GOARCH=$arch go build -buildvcs=false -o "$out/envoy-listener" ./cmd/listener
-  GOOS=linux GOARCH=$arch ../../scripts/go-third-party-notices.sh "$out/THIRD_PARTY_NOTICES" ./cmd/listener
+  (
+    GOOS=linux GOARCH=$arch go build -buildvcs=false -o "$out/envoy-listener" ./cmd/listener
+    GOOS=linux GOARCH=$arch ../../scripts/go-third-party-notices.sh "$out/THIRD_PARTY_NOTICES" ./cmd/listener
+  ) &
+  pids+=("$!")
+done
+for pid in "${pids[@]}"; do wait "$pid"; done
+for arch in $(jq -r '.envoy[]' ../../.github/go-release-targets.json); do
+  out="../../out/pr-artifacts/envoy-$arch"
   tar czf "../../out/pr-artifacts/legion-envoy-$arch.tar.gz" -C "$out" envoy-listener THIRD_PARTY_NOTICES
   tar tzvf "../../out/pr-artifacts/legion-envoy-$arch.tar.gz"
 done"""
@@ -1072,23 +1135,16 @@ SCHEMA_SCRIPT = (
     "# shellcheck disable=SC2016 # ${VERSION} is Pulumi's placeholder, not a shell expansion\n"
     """pulumi package get-schema "$RUNNER_TEMP/pr" | jq -e '.version == "1.2.3" and .pluginDownloadURL == "https://github.com/cybermonklabs/legion/releases/download/envoy-infra-v${VERSION}"'"""
 )
-# The six steps that run only what their build tag adds. A tag adds files to a package and
+# The five steps, and the three go test commands of envoy-go's natslive call (UNIT_TEST_SCRIPT), that
+# run only what their build tag adds. A tag adds files to a package and
 # subtracts none, so `go test -tags T ./pkg` would run the untagged tests another job already
-# ran: each step takes its -run from .github/scripts/go-tagged-tests.sh, which reads the names
+# ran: each takes its -run from .github/scripts/go-tagged-tests.sh, which reads the names
 # off the source at run time. The assignment is a line of its own, so that under bash -e an empty
 # or refused list fails the step instead of running -run "", which matches every test. That
 # substitution and quote are outside the simple form, so each step is pinned whole here. A -run
 # moves no closure: the whole package compiles under the tag, whichever tests the run selects, so
 # each entry's Run is the plain tagged go test the step ran before.
 TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
-NATS_MATRIX_STEP = "Test the container-backed NATS matrix (natslive)"
-NATS_MATRIX_SCRIPT = f"""\
-rig=$(../../{TAGGED_TESTS} natslive ./internal/testnats)
-go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
-cap=$(../../{TAGGED_TESTS} natslive ./internal/bus)
-go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
-callout=$(../../{TAGGED_TESTS} natslive ./internal/cipher/natscallout)
-go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/cipher/natscallout/"""
 # One call per package, never one union -run over the three: a name an untagged test of one
 # package shares with a natslive test of another would then run a second time unremarked.
 INFRA_NATSLIVE_STEP = "Live tests of envoy-infra against nats-server (natslive)"
@@ -1114,12 +1170,16 @@ TWO_BUILDS_JOB = "dispatch-two-builds"
 TWO_BUILDS_STEP = "Two-build tests of the Dispatch server"
 TWO_BUILDS_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} twobuild ./cmd/dispatch)
-go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch"""
+go test -tags twobuild -count=1 -timeout 18m -run "$pattern" ./cmd/dispatch"""
 # The same suite in the same file's dispatch-two-builds-same job, with this tree's own build as
 # the previous build, which a merge-group run alone runs (that job's comment says why). Its gates
-# and its TAG_RUNS entry are the Go step's.
+# and its TAG_RUNS entry are the Go step's, and its script is the Go step's but for the -timeout,
+# which is the one that job's step carries.
 TWO_BUILDS_SAME_JOB = "dispatch-two-builds-same"
 TWO_BUILDS_SAME_STEP = "Two-build tests of the Dispatch server against its own build"
+TWO_BUILDS_SAME_SCRIPT = f"""\
+pattern=$(../../{TAGGED_TESTS} twobuild ./cmd/dispatch)
+go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch"""
 BROKER_MP_STEP = "Two-process tests of the secrets broker"
 BROKER_MP_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} multiprocess ./cmd/cipherd)
@@ -1143,15 +1203,20 @@ AIRLOCK_AXIOMS_STEP = "Print the theorems' axioms"
 AIRLOCK_AXIOMS_SCRIPT = f"{ENVOY}/scripts/airlock-lean-axioms.sh"
 # The document service's race step runs under .github/scripts/race_memory.py, which fails it with
 # a log when the race binary's memory passes RACE_MEM_LIMIT_KB (the step's comment in
-# ci-job-envoy-go-race-docs.yaml says why), so its line is a shell assignment and a script, not a
-# go command the simple form reduces.
+# ci-job-envoy-go-race-docs.yaml says why), so its lines are a mkdir, a shell assignment and a
+# script, not a go command the simple form reduces. RACE_MEM_JSON_PATH is where the sampler keeps
+# the `go test -json` stream it unwraps to the log, so this job uploads one as its three siblings
+# do; the file is named as race_stream() names theirs, which that function cannot do here because
+# it, and the lane entry it would be called with, are both declared below.
 RACE_DOCS_STEP = "Race-test the document service"
-RACE_DOCS_SCRIPT = ("RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py "
-                    "go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/")
+RACE_DOCS_SCRIPT = ('mkdir -p "$RUNNER_TEMP/go-test-json"\n'
+                    'RACE_MEM_LIMIT_KB=8388608 RACE_MEM_JSON_PATH="$RUNNER_TEMP/go-test-json/race-docs.json" '
+                    "../../.github/scripts/race_memory.py "
+                    "go test -json -race -count=1 -parallel 2 -timeout 55m ./internal/dispatch/docs/")
 # The same package under Go's cleanup detector. GODEBUG is a GO* name, which is outside
 # ENV_ALLOWED wherever it is set, so this step too is pinned whole rather than reduced.
 FINALIZERS_STEP = "Test the document service under the cleanup detector"
-FINALIZERS_SCRIPT = "GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 34m ./internal/dispatch/docs/"
+FINALIZERS_SCRIPT = "GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 28m ./internal/dispatch/docs/"
 # Every lane whose tests start a Dispatch process sizes its Postgres service in its CEILING_STEP,
 # which runs .github/scripts/pg-connection-ceiling.sh. The check reads the step's run: line, not
 # what the script runs, so each such gate declares the script, and the go run on the script's line
@@ -1185,7 +1250,7 @@ def two_builds_go_step():
 def two_builds_same_step():
     """The same-build job's Go step, pinned whole for the Go step's reason, in both of the Go
     step's gates for the same reason."""
-    return pinned_step(TWO_BUILDS_SAME_JOB, TWO_BUILDS_SAME_STEP, ENVOY, TWO_BUILDS_SCRIPT, [
+    return pinned_step(TWO_BUILDS_SAME_JOB, TWO_BUILDS_SAME_STEP, ENVOY, TWO_BUILDS_SAME_SCRIPT, [
         (ENVOY, ["./cmd/dispatch"], "go test -tags twobuild ./cmd/dispatch", {"tags": "twobuild"}),
     ], workflow=job_file(TWO_BUILDS_JOB))
 
@@ -1600,7 +1665,8 @@ hold_supervise_table_tests()
 # once: each job's step name, its -timeout, and the packages the step names, in the order it names
 # them. Everything the lane decides is built from this list - the three steps' own texts, the
 # envoy-go unit step's `grep -Ev`, which leaves out exactly what the lane runs, and the -run lists
-# of the plain step that runs what a race build cannot (RACE_IMPOSSIBLE_SCRIPT below) - and
+# of the plain call that runs what a race build cannot (RACE_IMPOSSIBLE_CALL below) and of the
+# steps that run its wall-clock tests alone (ALONE_STEPS below) - and
 # check-ci-filters.sh fails when ci.yaml's text for any of them differs from the text built here,
 # so a package added to the lane reaches all of them or the check goes red. internal/dispatch/pmdoc
 # is not in the lane: it runs plain only.
@@ -1622,16 +1688,35 @@ class RaceJob(NamedTuple):
     packages: tuple
 
 
+# The lane's three jobs and envoy-go are sized by R6 from the final measurement pair, two
+# workflow_dispatch runs of ci.yaml at one head, runs 44657322918 and 44657415021 at 8cfd2682
+# (dispatch://INFRA-1075, check 6224bb0e), and from the dispatch run at each later head, which
+# may raise a limit and never lower one (the architect's rule of 2026-11-20, the issue's
+# open-items.md). Each -timeout is the smallest whole minute at which that call's slowest
+# package's slowest reading takes at most half of it: cmd/listener 829.4 s (run 44846096964 at
+# 28ce7c74, job 136669775371), against 825.0 s in run 44790111577 at 85f6b018 (job
+# 136476756188), 812.3 s in run 44717243297 at 66058706 (job 136223826856), which raised it from
+# the pair's 23m, and 680.5 s and 686.0 s in the pair (jobs 136026780235 and 136039518500),
+# 829.4 / 30 = 27.65, so 28m; internal/dispatch/api 1,154.1 s (run 44687712471 at 56f4dabc, job
+# 136126011060), against 1,123.8 s and 1,118.6 s in the pair (jobs 136026779922 and
+# 136039518473), 1,105.3 s in run 44790111577 (job 136476756266) and 1,120.9 s in run
+# 44846096964 (job 136669775497), 1,154.1 / 30 = 38.47, so 39m; and internal/dispatch/docs
+# 1,630.5 s (run 44846096964, job 136669775477), against 1,613.4 s in run 44790111577 (job
+# 136476756178), 1,609.7 s in run 44717243297 (job 136223826761) and 1,603.9 s and 1,590.7 s in
+# the pair, 1,630.5 / 30 = 54.35, so 55m, which run 44846096964 raised from 54m. Each figure
+# is read from that job's own `go test -json` artifact. envoy-go-race-api's step runs its
+# package through
+# database-skips.sh (main's #4456), which takes that -timeout as its --timeout (RACE_API_SCRIPT).
 ENVOY_RACE_LANE = (
     RaceJob("envoy-go-race",
             "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the "
             "NATS credentials, the NATS auth service and the sign-in code flow",
-            "30m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
+            "28m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
                     RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
                     RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True),
                     RacePackage("natscred"), RacePackage("internal/cipher/natscallout"), RacePackage("internal/oidc"))),
-    RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "70m", (RacePackage("internal/dispatch/api"),)),
-    RaceJob("envoy-go-race-docs", "Race-test the document service", "60m", (RacePackage("internal/dispatch/docs"),)),
+    RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "39m", (RacePackage("internal/dispatch/api"),)),
+    RaceJob("envoy-go-race-docs", "Race-test the document service", "55m", (RacePackage("internal/dispatch/docs"),)),
 )
 RACE_JOBS = {job.job: job for job in ENVOY_RACE_LANE}
 
@@ -1641,34 +1726,56 @@ def race_pkgs(job):
     return [f"./{p.name}/..." if p.tree else f"./{p.name}/" for p in job.packages]
 
 
+def race_stream(job):
+    """The file a race job's `go test -json` stream is written to: the job's name less the
+    envoy-go- the lane shares, so envoy-go-race writes race.json and envoy-go-race-api
+    race-api.json."""
+    return f"{job.job.removeprefix('envoy-go-')}.json"
+
+
 def race_step(job):
-    """The one go command of a race job's step, pinned to the text this declaration builds."""
+    """A race job's step, pinned whole: the go command this declaration builds, wrapped in the
+    `go test -json` stream the lane's per-package times are read from (json_stream_script), which
+    is why the step is pinned rather than reduced. Its one Run stands for what that command
+    compiles. envoy-go-race-docs's step is not built from this: it runs the package under
+    .github/scripts/race_memory.py, which writes that job's stream itself, and its gate pins
+    those lines whole (RACE_DOCS_SCRIPT). Nor is envoy-go-race-api's: it runs the package
+    through database-skips.sh, whose --keep keeps the stream (RACE_API_SCRIPT)."""
     pkgs = race_pkgs(job)
-    text = f"go test -count=1 -race -timeout {job.timeout} " + " ".join(pkgs)
-    return step_run(job.job, job.step, text, ENVOY, pkgs, race=True)
+    command = f"go test -json -race -count=1 -timeout {job.timeout} " + " ".join(pkgs)
+    return pinned_step(job.job, job.step, ENVOY, json_stream_script(command, race_stream(job)), [
+        (ENVOY, pkgs, f"go test -race {' '.join(pkgs)}", {"race": True}),
+    ])
 
 
 # The architecture-note and spec-file rules and the commands that run them, which envoy-go-checks
 # tests in a step of their own: they need no database, so they run there on every push, and that
 # step is their one run. Both that step's package list and the unit step's exclusion of them are
 # built from this list, so go-test-step-expansion.py finds no pair the two steps both run and
-# neither step can come to name a package the other does not leave out.
+# neither step can come to name a package the other does not leave out. The step writes a `go test
+# -json` stream (json_stream_script), so it is pinned whole rather than reduced, and its -timeout
+# is the call's own, from the step's measured time (the comment on the step in
+# ci-job-envoy-go-checks.yaml).
 NOTE_AND_SPEC_PACKAGES = ["internal/dispatch/architecture/notes", "internal/runnerlog", "internal/dispatch/specgraph",
                           "cmd/architecture-check", "cmd/spec-check"]
 NOTE_AND_SPEC_STEP = "Test the architecture-note and spec-file rules and their commands"
 NOTE_AND_SPEC_PKGS = [f"./{p}/" for p in NOTE_AND_SPEC_PACKAGES]
-NOTE_AND_SPEC_TEXT = "go test -count=1 " + " ".join(NOTE_AND_SPEC_PKGS)
+NOTE_AND_SPEC_SCRIPT = json_stream_script(
+    "go test -json -count=1 -timeout 1m " + " ".join(NOTE_AND_SPEC_PKGS), "architecture-notes.json")
 
 # listenerwire's tests and wirecheck's, the tool its clients test runs, which envoy-go-checks runs
 # in a step of their own, their one run. clients_test.go type-checks the daemon's listener clients
 # (its RULES entry), so run in envoy-go's unit step a change to one of those daemon packages would
-# start that whole job, its database and its 20-minute unit step, for one type check. They need no
+# start that whole job, its database and its unit step of nine calls, for one type check. They need no
 # database. As with the architecture-note and spec-file packages, that step's package list and the
-# unit step's exclusion are built from this one list.
+# unit step's exclusion are built from this one list. The step writes a `go test -json` stream
+# (json_stream_script), as the architecture-note step does, and its -timeout is the call's own,
+# from the step's measured time (the comment on the step in ci-job-envoy-go-checks.yaml).
 LISTENERWIRE_PACKAGES = ["listenerwire", "internal/wirecheck"]
 LISTENERWIRE_STEP = "Test the listener's wire package, its clients and wirecheck"
 LISTENERWIRE_PKGS = [f"./{p}/" for p in LISTENERWIRE_PACKAGES]
-LISTENERWIRE_TEXT = "go test -count=1 " + " ".join(LISTENERWIRE_PKGS)
+LISTENERWIRE_SCRIPT = json_stream_script(
+    "go test -json -count=1 -timeout 1m " + " ".join(LISTENERWIRE_PKGS), "listenerwire.json")
 
 # The packages envoy-go's step "Count the database broker suites' skips" runs with `go test -json`
 # through packages/envoy/scripts/database-skips.sh, its default table (DEFAULT_PACKAGES there):
@@ -1691,17 +1798,25 @@ DATABASE_SKIPS_SCRIPT = "packages/envoy/scripts/database-skips.sh"
 DATABASE_SKIPS_PATTERN = "|".join(
     f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages
     if p.name == DATABASE_SKIPS_TREE or p.name.startswith(f"{DATABASE_SKIPS_TREE}/"))
-# The -timeout of envoy-go's unit step, which the count step passes the counter too: cmd/cipherd
-# ran under it in the unit step before it moved to the count, so its limit does not fall.
-UNIT_TEST_TIMEOUT = "20m"
+# The count step's --timeout, by R6 from the pair at 8cfd2682: cmd/cipherd, then cmd/broker, the
+# step's slowest package on the slower run, 263.2 s (run 44657322918, job 136026779841), which the
+# step's own stream (DATABASE_SKIPS_STREAM, below) holds, and 263.2 / 30 = 8.77, so 9m (the
+# comment on the step in ci-job-envoy-go.yaml).
+UNIT_TEST_TIMEOUT = "9m"
+# Its --keep copies that run's `go test -json` stream to broker.json under
+# $RUNNER_TEMP/go-test-json, which envoy-go's upload step, after it, uploads with the unit step's
+# streams: the step's go test is one of envoy-go's, so it writes its stream as a job artifact as
+# the others do, and every broker test's name and result are in the artifact (dispatch://INFRA-1075).
+DATABASE_SKIPS_STREAM = "broker.json"
 
 # The tests envoy-go's step "Count the store-form rows on each backend" runs through
 # packages/envoy/scripts/backend-count.sh, by package, counting each one's `aws` and `gcp` passes
 # (the verification's check c8). It runs them in the same job, on the same runner and env, with
-# no -tags and no -race, as the unit step runs cmd/cipher and the database-skips step runs
-# internal/cipher/api, so a second run in either asked nothing the count does not: each skips
-# them by name, and the count is their one run (O15 of dispatch://INFRA-1408, which
-# go-test-step-expansion.py's duplicate verdict reads; its BACKEND_COUNT_TESTS is this list).
+# no -tags and no -race, as the unit step's package list runs cmd/cipher and the
+# database-skips step runs internal/cipher/api, so a second run in either asked nothing the count
+# does not: each skips them by name, and the count is their one run (O15 of
+# dispatch://INFRA-1408, which go-test-step-expansion.py's duplicate verdict reads; its
+# BACKEND_COUNT_TESTS is this list).
 BACKEND_COUNT_AGENT_SECRETS = "cmd/cipher"
 BACKEND_COUNT_BROKER_API = f"{DATABASE_SKIPS_TREE}/api"
 BACKEND_COUNT_TESTS = {
@@ -1722,7 +1837,8 @@ def names_pattern(names):
 
 
 DATABASE_SKIPS_RUN = (f"{DATABASE_SKIPS_SCRIPT} --timeout {UNIT_TEST_TIMEOUT} "
-                      f"--skip {names_pattern(BACKEND_COUNT_TESTS[BACKEND_COUNT_BROKER_API])}")
+                      f"--skip {names_pattern(BACKEND_COUNT_TESTS[BACKEND_COUNT_BROKER_API])} "
+                      f'--keep "$RUNNER_TEMP/go-test-json/{DATABASE_SKIPS_STREAM}"')
 # The counter's own test, which envoy-go runs before the count: its five controls run the counter
 # on these three packages, one at a time, each narrowed to its planted and expected tests.
 DATABASE_SKIPS_TEST_STEP = "Test the database skip counter"
@@ -1752,30 +1868,41 @@ def hold_database_skips_packages():
 
 hold_database_skips_packages()
 
-# The unit step runs the module less six things: the lane's packages, which the three race jobs
-# run under the detector, internal/integration, which envoy-go's integration step runs, the text
-# checks, which the text-check job runs, the architecture-note and spec-file packages and
-# LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which envoy-go-checks runs, and the
-# broker's tree and command, which envoy-go's database-skips step runs. Its `grep -Ev` is
-# `/integration`, then the text checks, then those packages, each the package alone, then the
-# broker's tree and its command, then, in the lane's own order, each package in the form go
-# list's import paths need - a tree matching the package and everything under it, any other the
-# package alone.
+# The package list of the unit step runs the module less nine things: the lane's packages,
+# which the three race jobs run under the detector, internal/integration, which the integration
+# call of the same step runs, the text checks, which the text-check job runs, the
+# architecture-note and spec-file packages and LISTENERWIRE_PACKAGES (listenerwire and
+# internal/wirecheck), which envoy-go-checks runs, the broker's tree and command, which envoy-go's
+# database-skips step runs, and internal/dispatch/routes, internal/pgmigrate and
+# internal/dispatch/events, which the routes call, the pgmigrate call and the events call of the
+# same step run against Postgres services of their own (the comments on those calls and services
+# in ci-job-envoy-go.yaml say why). Its `grep -Ev` is `/integration`, then the text checks, then
+# the architecture-note and spec-file packages and LISTENERWIRE_PACKAGES, each the package alone,
+# then the broker's tree and its command, then, in the lane's own order, each package in the form
+# go list's import paths need - a tree matching the package and everything under it, any other
+# the package alone - and the three packages with a service of their own last.
+ROUTES_PACKAGE = "internal/dispatch/routes"
+PGMIGRATE_PACKAGE = "internal/pgmigrate"
+EVENTS_PACKAGE = "internal/dispatch/events"
 UNIT_TEST_STEP = "Unit test envoy Go package"
 UNIT_TEST_PATTERN = "|".join(
     ["/integration", f"/{TEXT_CHECK_PACKAGE}$"]
     + [f"/{p}$" for p in NOTE_AND_SPEC_PACKAGES + LISTENERWIRE_PACKAGES]
     + [f"/{DATABASE_SKIPS_TREE}($|/)", f"/{DATABASE_SKIPS_COMMAND}$"]
-    + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages])
+    + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages]
+    + [f"/{ROUTES_PACKAGE}$", f"/{PGMIGRATE_PACKAGE}$", f"/{EVENTS_PACKAGE}$"])
 
 # envoy-go-race-api's step runs its package through database-skips.sh, which counts the skips of
 # that same run, so the package's contract tests, which skip without BROKER_TEST_DATABASE_URL, and
 # the rest, which skip without DISPATCH_TEST_DATABASE_URL, cannot skip unseen in a step that runs
 # without -v. Its text is built from the lane's declaration: the race job's packages, and its
-# -timeout as the counter's --timeout.
+# -timeout as the counter's --timeout. Its --keep copies that run's `go test -json` stream to the
+# file race_stream() names, under $RUNNER_TEMP/go-test-json, which the job uploads as the lane's
+# other jobs upload theirs, so the count and the stream come from one run.
 RACE_API = RACE_JOBS["envoy-go-race-api"]
 RACE_API_SCRIPT = ("scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL "
-                   f"--race --timeout {RACE_API.timeout} " + " ".join(race_pkgs(RACE_API)))
+                   f"--race --timeout {RACE_API.timeout} "
+                   f'--keep "$RUNNER_TEMP/go-test-json/{race_stream(RACE_API)}" ' + " ".join(race_pkgs(RACE_API)))
 
 
 # ---------------------------------------------------------------- the web app's display fixture
@@ -1784,45 +1911,51 @@ RACE_API_SCRIPT = ("scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL -
 # whose subject it is. Its `--check` is a flag of its own (web_fixtures_test.go:13-21): with it
 # the test compares the committed fixture with what this build makes and fails where they
 # differ, and without it it writes that fixture and asserts nothing. So the fixture step below is
-# the run with a requirement behind it, and the envoy-go unit step - which runs every package of
-# the module the race lane, internal/integration and the text checks leave it, pmdoc among them -
-# skips the test by name: a second run there would rewrite the committed file and pass whatever
-# that file held, so the pair would run twice per run of the router with nothing asked of the
-# second (dispatch://INFRA-1413). TestTheWebFixtureFindsItsFilesFromAnyDirectory
+# the run with a requirement behind it, and the package list of the envoy-go unit step - which
+# runs every package of the module the race lane, internal/integration, the text checks, the
+# architecture-note packages and the three packages with a call of their own leave it, pmdoc
+# among them - skips the test by name: a second run there would rewrite the committed file and
+# pass whatever that file held, so the pair would run twice per run of the router with nothing
+# asked of the second (dispatch://INFRA-1413). TestTheWebFixtureFindsItsFilesFromAnyDirectory
 # (web_fixtures_test.go:248-255) stats that the same file exists, and an existence check is a
 # read by this table's own rule (the contracts gate declares skills/dispatch-writing-specs/SKILL.md
 # for an existsSync alone), so it runs in the fixture step too and the unit step skips it, which
 # leaves the fixture a read of the fixture step alone.
-# Both step texts are built from this one list, and check-ci-filters.sh pins each step's whole
-# script, so the -skip and the -run cannot come to name different tests.
+# Both step texts are built from this one list (the -skip through UNIT_TEST_SKIP, below), and
+# check-ci-filters.sh pins each step's whole script, so the -skip and the -run cannot come to name
+# different tests.
 WEB_FIXTURE_TESTS = ["TestWebDisplayFixture", "TestTheWebFixtureFindsItsFilesFromAnyDirectory"]
 WEB_FIXTURE_PACKAGE = "internal/dispatch/pmdoc"
 WEB_FIXTURE_SOURCE = f"{ENVOY}/{WEB_FIXTURE_PACKAGE}"
 FIXTURE_STEP = "Check the web app's display-tree fixture is up to date"
 WEB_FIXTURE_PATTERN = names_pattern(WEB_FIXTURE_TESTS)
-# The fixture check's `-run` and its `-args --check` are not flags the simple form reduces, and
-# they move no closure: the whole pmdoc package compiles, whichever test the run selects.
-FIXTURE_SCRIPT = f"go test -count=1 -run {WEB_FIXTURE_PATTERN} ./{WEB_FIXTURE_PACKAGE}/ -args --check"
-# The skip belongs to the step that would otherwise run these tests, so the two are held together
-# here rather than by a reader noticing: the unit step runs every package of the module its
-# `grep -Ev` does not take out, and pmdoc taken out of it - moved into the race lane, say - while
-# the skip stayed here would skip the test in a step that no longer runs it, and the step that
-# did run it would write the committed fixture unchecked. Each alternative of UNIT_TEST_PATTERN
-# is written against the tail of what `go list` prints, so the package's own path is what they
-# are tried against here.
+# The fixture check writes a `go test -json` stream (json_stream_script), and its `-run` and its
+# `-args --check` are not flags the simple form reduces either. None of them moves the closure:
+# the whole pmdoc package compiles, whichever test the run selects. Its -timeout is the call's
+# own, from the step's measured time (the comment on the step in ci-job-envoy-go-checks.yaml).
+FIXTURE_SCRIPT = json_stream_script(
+    f"go test -json -count=1 -timeout 1m -run {WEB_FIXTURE_PATTERN} ./{WEB_FIXTURE_PACKAGE}/ -args --check",
+    "web-fixture.json")
+# The skip belongs to the call that would otherwise run these tests, so the two are held together
+# here rather than by a reader noticing: the unit step's package list runs every package of the
+# module its `grep -Ev` does not take out, and pmdoc taken out of it - moved into the race lane,
+# say - while the skip stayed here would skip the test in a call that no longer runs it, and the
+# call that did run it would write the committed fixture unchecked. Each alternative of
+# UNIT_TEST_PATTERN is written against the tail of what `go list` prints, so the package's own
+# path is what they are tried against here.
 if re.search(UNIT_TEST_PATTERN, f"/{WEB_FIXTURE_PACKAGE}"):
     raise ValueError(f"the display-tree fixture tests are in {WEB_FIXTURE_PACKAGE}, which the unit step's "
                      f"`grep -Ev` takes out, so that step does not run them and the -skip below skips nothing; "
                      f"name the step that runs that package now and move the -skip to it")
-# The backend count's tests of cmd/cipher (BACKEND_COUNT_TESTS above) are skipped here by
-# the same rule, and held to this step the same way.
+# The backend count's tests of cmd/cipher (BACKEND_COUNT_TESTS above) are skipped by the
+# package list, the one call of the unit step that runs that package, by the same rule, and held
+# to that call the same way.
 if re.search(UNIT_TEST_PATTERN, f"/{BACKEND_COUNT_AGENT_SECRETS}"):
-    raise ValueError(f"the backend count's tests of {BACKEND_COUNT_AGENT_SECRETS} are skipped by the unit step, "
-                     f"whose `grep -Ev` takes that package out, so the -skip below skips nothing; name the step "
-                     f"that runs that package now and move the skip to it")
-UNIT_TEST_SCRIPT = (f"go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | "
-                    f"xargs go test -count=1 -timeout {UNIT_TEST_TIMEOUT} "
-                    f"-skip {names_pattern(WEB_FIXTURE_TESTS + BACKEND_COUNT_TESTS[BACKEND_COUNT_AGENT_SECRETS])}")
+    raise ValueError(f"the backend count's tests of {BACKEND_COUNT_AGENT_SECRETS} are skipped by the unit step's "
+                     f"package list, whose `grep -Ev` takes that package out, so the -skip below skips nothing; "
+                     f"name the call that runs that package now and move the skip to it")
+# UNIT_TEST_SCRIPT, the step's whole text, is built further down, below the walk the
+# race-impossible call's -run comes from.
 
 
 def hold_web_fixture_tests():
@@ -1879,6 +2012,61 @@ def hold_web_fixture_tests():
 
 
 hold_web_fixture_tests()
+
+
+def service_dsn(port):
+    """The DSN of one of the envoy-go job's Postgres services, which differ in their port alone:
+    every service of that job starts from the same image with the same superuser, password and
+    postgres database (the services: of ci-job-envoy-go.yaml)."""
+    return f"postgres://postgres:ci@localhost:{port}/postgres?sslmode=disable"
+
+
+# The routes call's own DSN, the envoy-go job's second Postgres service: it names 5433 on that
+# one call and nowhere else, which is what keeps the event log's safe horizon off the other
+# calls' transactions (ci-job-envoy-go.yaml's postgres_routes service). It is on the call rather
+# than in the step's env:, where it would reach the other eight.
+ROUTES_DSN = service_dsn(5433)
+# The third service, 5434, and the one untagged test of cmd/dispatch that reads a live event
+# feed: it waits on events_start as the routes package does, and the horizon is instance-wide, so
+# it runs where no other test opens a transaction. The name is unique in the module, so the
+# package list below skips it by that one name (dispatch://INFRA-1075).
+SHUTDOWN_DSN = service_dsn(5434)
+SHUTDOWN_PACKAGE = "cmd/dispatch"
+SHUTDOWN_TESTS = ["TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument"]
+SHUTDOWN_PATTERN = "^(" + "|".join(sorted(SHUTDOWN_TESTS)) + ")$"
+# The fourth service, 5435, and the package whose round trips the shared one pays most for:
+# internal/pgmigrate. Its redaction oracle asks a server about 158,364 (text, setting) pairs, and
+# a round trip of it cost 2.16 ms in this lane against 0.16 ms against an idle server, so the
+# load is the service's queue rather than the package's own arithmetic - and that queue is one
+# every other package of this job waits in too (ci-job-envoy-go.yaml's postgres_pgmigrate
+# service, dispatch://INFRA-1075).
+PGMIGRATE_DSN = service_dsn(5435)
+# The fifth service, 5436, and internal/dispatch/events: its horizon tests wait for the event
+# log's safe horizon as the routes package does, and the horizon is instance-wide, so on the
+# shared service one of them took 27.07 s and 53.94 s and then failed at its one-minute give-up
+# (run 43596122521). Its own tests hold transaction ids on purpose, so it shares no other call's
+# service either (ci-job-envoy-go.yaml's postgres_events service, dispatch://INFRA-1075).
+EVENTS_DSN = service_dsn(5436)
+# The package list's one -skip, which go test reads once and so must name every test the list
+# leaves to another run: the shutdown feed test, which the shutdown call runs on a service of
+# its own, WEB_FIXTURE_TESTS, which the fixture step of envoy-go-checks runs under `--check`,
+# and the backend count's tests of cmd/cipher (BACKEND_COUNT_TESTS), which the count step
+# runs in this same job and env as their one run. Each name is built from its own list, so the
+# -skip cannot drift from the -run of the call or the step that runs the test. The package list
+# is the one call of the step that runs cmd/cipher, so it is the one that skips them.
+UNIT_TEST_SKIP = names_pattern(SHUTDOWN_TESTS + WEB_FIXTURE_TESTS + BACKEND_COUNT_TESTS[BACKEND_COUNT_AGENT_SECRETS])
+# -p 8 and -parallel 12, the nine calls the step starts in the background, and the streams
+# and logs they write, are ci-job-envoy-go.yaml's own comments' to explain. The text itself is
+# UNIT_TEST_SCRIPT, built below the walk the race-impossible call's -run comes from.
+# UNIT_TEST_LEAD is the five packages that file's comment names as the longest, which lead the
+# list for the reason it gives: go test starts the packages in the order its arguments name them,
+# so a long package must lead or it ends the step alone. Their order among themselves is not a
+# ranking. The names are import paths because that is what `go list ./...` prints, and the
+# lines of the workflow's own block carry its indentation, which YAML strips before the shell
+# sees them.
+UNIT_TEST_LEAD = ["internal/dispatch/pmdoc", "cmd/dispatch-seed", "internal/dispatch/outbox",
+                  "cmd/dispatch", "cmd/cipher"]
+UNIT_TEST_LEAD_TEXT = "\n".join(f"github.com/sjawhar/envoy/{p}" for p in UNIT_TEST_LEAD)
 
 
 # Every top-level function declaration, test or not: a gofmt'd file puts the `func` of one in
@@ -2103,6 +2291,45 @@ def race_impossible_tests(root, packages=None) -> dict:
     return found
 
 
+# The race-impossible call's -timeout: the one place it is written, so the call this module
+# derives and check-ci-filters.test.sh's expected text of that call cannot disagree (the test
+# reads it from here). By R6 from the pair at 8cfd2682: internal/dispatch/docs, the call's
+# slowest package on the slower run, 216.1 s (run 44657322918, job 136026779841), and
+# 216.1 / 30 = 7.20, so 8m; the table in the comment on the envoy-go job holds every call's
+# reading (dispatch://INFRA-1075).
+RACE_IMPOSSIBLE_TIMEOUT = "8m"
+
+
+def race_impossible_call(packages) -> str:
+    """envoy-go's plain run of the tests the detector makes impossible but those that run alone
+    (alone_split, below): one `go test` over every package of `packages` (the rest alone_split
+    leaves of race_impossible_tests), their tests anchored and sorted in one -run.
+    It is a call of the unit step, started in the background beside the package list, so it
+    carries -json like the step's other calls and its stream and log are added where
+    UNIT_TEST_SCRIPT places it.
+
+    One command rather than one per package, because go then builds the test binaries together
+    and runs each package's tests as soon as its own binary is linked. One command per package
+    waited out each package's build and its run before the next package's build began, which,
+    while the API package's source guards were still among these tests, was 96 s of envoy-go for
+    44 s of tests: the API package's 40 s build ran while nothing else did, and the documents
+    package's 37 s of tests ran after it rather than beside it (run 42307926510,
+    dispatch://INFRA-1075). Those guards are the text-check job's now (TEXT_CHECK_TESTS).
+
+    The -run holds every package's names, so a name two of these packages both declared would
+    run in both. That adds a plain run of a test this call did not mean to run there and leaves
+    none out, and these names are whole sentences - no two of the lane's are the same today - so
+    the call is not held to a guard that would cost a parse of every test file of every package
+    it names.
+
+    -timeout RACE_IMPOSSIBLE_TIMEOUT, the constant above."""
+    if not packages:
+        return ""
+    names = sorted(set().union(*packages.values()))
+    return (f"go test -json -count=1 -timeout {RACE_IMPOSSIBLE_TIMEOUT} -run '^({'|'.join(names)})$' "
+            + " ".join(f"./{under}" for under in packages))
+
+
 def race_impossible_script(packages) -> str:
     """A plain run of the tests the detector makes impossible: one `go test` per package
     of `packages` (race_impossible_tests), each naming that package's own tests, anchored and
@@ -2111,11 +2338,407 @@ def race_impossible_script(packages) -> str:
                      for under, names in packages.items())
 
 
-# The step as the lane and packages/envoy's own source make it, so a test added under
-# `//go:build !race` or behind raceEnabled changes this text and ci.yaml stops matching it.
-RACE_IMPOSSIBLE_STEP = "Test what the race build cannot run at all or at full size"
-RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(ENVOY)
-RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
+# The tests of the walk that run alone on a runner, as main runs them, rather than in envoy-go's
+# race-impossible call: the tests whose assertion is a wall-clock time measured in the test's own
+# process, which the load of the unit step's other calls moves. Main runs them in a step of its
+# own, one package at a time, with nothing else running on the runner (its ci-job-envoy-go.yaml,
+# step "Test what the race build cannot run at all or at full size"). This branch folded that
+# step into the unit step's race-impossible call, and each run of the measurement pair at
+# c3e93e7e failed one xid window test there: TestXidWindowIssueAskRepairRestoration (run
+# 44476496859, job 135398348168) and TestXidWindowAskBlockEditThenIssueClose/
+# issue_close_with_open_asks, whose largest gap was 24.836 ms (run 44476544762, job
+# 135411145948). So each runs in an alone step (ALONE_STEPS below), and the call runs the rest.
+#
+# Every xid window test is one by its name, so a TestXidWindow* test main adds later lands here
+# by itself: each judges the largest statement-free gap in a transaction's xid window against
+# storetest.XidMaxGap (5 ms, internal/dispatch/store/storetest/xidwindow.go). ALONE_TESTS names the
+# others, keyed by the directory of their package in this repository, each for its reason:
+#   * internal/cipher/natscallout's restart storm asserts that the slowest of its decisions took
+#     less than decideBudget (storm_test.go), and at full size its setup fails on a loaded runner
+#     (race_disabled_test.go).
+# A name ALONE_TESTS holds that the walk no longer finds in its package is refused (alone_split),
+# as a TEXT_CHECK_TESTS row the walk never reads is, so a rename cannot put the test back beside
+# the load with every check green.
+ALONE_PREFIX = "TestXidWindow"
+ALONE_TESTS = {
+    f"{ENVOY}/internal/cipher/natscallout": {"TestACalloutStormAfterAServerRestartAdmitsEveryConnection"},
+}
+
+
+def alone_split(root, packages) -> tuple:
+    """`packages` (race_impossible_tests over `root`) in two, each per package in its order: the
+    tests that run alone - every name that starts with ALONE_PREFIX, and each name ALONE_TESTS
+    holds for a package under `root` - and the rest, which envoy-go's race-impossible call runs.
+    A name ALONE_TESTS holds under `root` that `packages` does not hold for that package is
+    refused: the row would otherwise go on naming a test that was renamed, moved or deleted, and
+    the test it meant would run in the call, beside the load."""
+    named = {key.removeprefix(f"{root}/"): names for key, names in ALONE_TESTS.items()
+             if key.startswith(f"{root}/")}
+    gone = sorted(f"{name} in {under}" for under, names in named.items()
+                  for name in names - packages.get(under, set()))
+    if gone:
+        raise ValueError(f"ALONE_TESTS names {', '.join(gone)}, which the lane's walk of {root} does not find "
+                         "there (race_impossible_tests): the test was renamed, moved or deleted, or no longer "
+                         "runs smaller under the detector, and the row now keeps nothing out of the "
+                         "race-impossible call; follow the test, or drop the name")
+    alone, rest = {}, {}
+    for under, names in packages.items():
+        timed = {name for name in names if name.startswith(ALONE_PREFIX)} | named.get(under, set())
+        if timed:
+            alone[under] = timed
+        if names - timed:
+            rest[under] = names - timed
+    return alone, rest
+
+
+def alone_call(packages, timeout) -> str:
+    """A plain run of alone tests: one `go test` over every package of `packages` (an alone step's
+    share of alone_split's first half), their tests anchored and sorted in one -run, as
+    race_impossible_call builds the call it leaves them out of. -p 1 runs the packages one at a
+    time, each one's build and tests before the next one's, as main's one call per package did, so
+    no package's measurement runs beside another package's build or tests. -timeout `timeout`,
+    the step's own (AloneStep)."""
+    if not packages:
+        return ""
+    names = sorted(set().union(*packages.values()))
+    return (f"go test -json -count=1 -p 1 -timeout {timeout} -run '^({'|'.join(names)})$' "
+            + " ".join(f"./{under}" for under in packages))
+
+
+class AloneStep(NamedTuple):
+    """An alone step: the ci.yaml job whose step it is, the race job whose packages' alone tests
+    it runs, the file its `go test -json` stream is written to, and its one go test's -timeout."""
+
+    job: str
+    lane: str
+    stream: str
+    timeout: str
+
+
+# The alone steps. Each is the first test step of its job, after that job's Postgres read-back and
+# sizing steps, so the job's Postgres service is quiet and nothing else runs on the runner while it
+# does. envoy-go-race runs the alone tests of the packages it race-tests, delivery's and the auth
+# service's. The API's run in envoy-go-checks, not in envoy-go-race-api: the API's plain test
+# binary compiles its eight `//go:build !race` guard files whatever -run selects, and their RULES
+# rows read every non-test file of packages/envoy (MODULE_SOURCES), which envoy-go-checks' filter
+# covers already (packages/envoy/**), as envoy_go_race_api's, the closure of the API's race build,
+# does not; and that job is off envoy-go's critical path, as envoy-go-race-api is.
+# Each step's -timeout is by R6 from the pair at 8cfd2682, the smallest whole minute at which its
+# slowest package on the slower run takes at most half of it: envoy-go-race's is
+# internal/cipher/natscallout, then internal/broker/natscallout, 16.9 s (run 44657415021, job
+# 136039518500), 16.9 / 30 = 0.56, so 1m, and envoy-go-checks' is internal/dispatch/api, 49.6 s
+# (run 44657415021, job 136039517954), 49.6 / 30 = 1.65, so 2m.
+ALONE_STEP = "Test the wall-clock measurements alone"
+ALONE_STEPS = (
+    AloneStep("envoy-go-race", "envoy-go-race", "alone.json", "1m"),
+    AloneStep("envoy-go-checks", "envoy-go-race-api", "alone-api.json", "2m"),
+)
+ALONE_STEP_OF = {step.job: step for step in ALONE_STEPS}
+
+
+def race_job_of(under) -> str:
+    """The lane's job whose race step runs the package `under`, a path under packages/envoy: the
+    first, in the lane's order, that names the package alone or as a tree holding it, as
+    race_lane_packages() reads a package once, for the first job that names it."""
+    for job in ENVOY_RACE_LANE:
+        for package in job.packages:
+            if under == package.name or (package.tree and under.startswith(f"{package.name}/")):
+                return job.job
+    raise ValueError(f"{under} is no package of the race lane")
+
+
+def alone_jobs(alone) -> dict:
+    """Each AloneStep -> its share of `alone` (alone_split's first half): the alone tests of the
+    packages its lane job race-tests, per package in `alone`'s order. Refuses an alone test of a
+    race job no AloneStep names, which would then run in no step, and an AloneStep with no test,
+    whose step would run none."""
+    shares = {step: {} for step in ALONE_STEPS}
+    for under, names in alone.items():
+        lane = race_job_of(under)
+        step = next((s for s in ALONE_STEPS if s.lane == lane), None)
+        if step is None:
+            raise ValueError(f"{under} holds alone tests ({', '.join(sorted(names))}) and is race-tested by {lane}, "
+                             "which no AloneStep names, so no step would run them: add an alone step for that job "
+                             "to ALONE_STEPS")
+        shares[step][under] = names
+    empty = [f"{step.job}'s (for {step.lane})" for step, share in shares.items() if not share]
+    if empty:
+        raise ValueError(f"the alone step {', '.join(empty)} has no test to run: drop it from ALONE_STEPS and "
+                         "from its workflow")
+    return shares
+
+
+def alone_step(step):
+    """An alone step, pinned whole as race_step() pins a race step: alone_call over the step's
+    share of ALONE_PACKAGES, under the step's own -timeout, in the `go test -json` stream
+    json_stream_script writes. One plain Run per package, since the step compiles each package's
+    plain test binary whichever tests its -run then selects."""
+    share = ALONE_SHARES[step]
+    return pinned_step(step.job, ALONE_STEP, ENVOY, json_stream_script(alone_call(share, step.timeout), step.stream), [
+        (ENVOY, [f"./{under}"], f"go test -run of the wall-clock measurements in ./{under}", {})
+        for under in share
+    ])
+
+
+# The call and the alone steps as the lane and packages/envoy's own source make them, so a test
+# added under `//go:build !race` or behind raceEnabled changes one of these texts and the workflow
+# holding it stops matching it.
+ALONE_PACKAGES, RACE_IMPOSSIBLE_PACKAGES = alone_split(ENVOY, race_impossible_tests(ENVOY))
+ALONE_SHARES = alone_jobs(ALONE_PACKAGES)
+RACE_IMPOSSIBLE_CALL = race_impossible_call(RACE_IMPOSSIBLE_PACKAGES)
+
+
+# The whole unit step, comments and all: nine calls started in the background, the long ones
+# longest first,
+# a wait for each, and one replay group per call. It is built here rather than beside
+# UNIT_TEST_PATTERN above because the race-impossible call's -run comes from the walk over
+# packages/envoy that this file does just above. ci-job-envoy-go.yaml holds this text exactly,
+# indentation aside, and check-ci-filters.sh fails when the two differ.
+UNIT_TEST_SCRIPT = f"""\
+mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
+# The three long calls first, longest first; the short calls after them, in any order.
+# The nine calls share this runner's four cores, so the step is over
+# when its longest call is, and a call that starts late ends as late as it started.
+# Measured on run 42716398877, job 129499072292, every stream on one clock whose zero
+# is the first event of any of them: natslive 0.0 s to 61.0 s, integration 20.8 s to
+# 24.1 s, the race-impossible call 35.9 s to 397.2 s, the package list 76.4 s to
+# 524.5 s, routes 94.9 s to 130.6 s, the shutdown call 110.7 s to 166.4 s. The step
+# was 543 s and the package list was its critical path at 448 s: it started 76.4 s in,
+# after three other calls had begun building and were competing for the cores, and
+# internal/dispatch/pmdoc, its own longest package, started with it. So the list is
+# started first and the race-impossible call, 361 s and the next longest, second
+# (dispatch://INFRA-1075). The `go list` that builds the list's arguments runs ahead of
+# every call for the same reason: what the longest call needs waits on nothing.
+# The pgmigrate call is third because it is the third longest. The run above had its
+# package inside the package list; on a server of its own it took 298.8 s and 223.3 s
+# in the pair at fae4eab5 (runs 43654965125 and 43657875798), against the
+# race-impossible call's 381.3 s and 292.5 s, each from the first event of its stream
+# to the last. The short calls follow it: the longest of them, natslive, took 73.0 s
+# and 65.6 s in that pair.
+#
+# -timeout 19m, by R6 from the pair at 8cfd2682 and the dispatch runs since (the table on
+# this job): this call's slowest package's slowest reading is cmd/cipher, then
+# cmd/agent-secrets, 555.3 s (run 44790111577 at 85f6b018, job 136476756402), against
+# 522.8 s and 506.9 s in the pair, and 555.3 / 30 = 18.51, so 19m. The limit leaves
+# 652.5 s above internal/dispatch/pmdoc's 487.5 s in that run, its slowest reading, over
+# the 60 s of pmdoc's perCallReportMargin, which is the floor a package that reads the
+# test binary's deadline sets for itself.
+lead="{UNIT_TEST_LEAD_TEXT}"
+rest=$(go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | grep -vxF "$lead")
+printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip {UNIT_TEST_SKIP} -timeout 19m > "$RUNNER_TEMP/go-test-json/unit.json" &
+unit=$!
+# The tests the race detector makes impossible, which the race job of each of these
+# packages therefore cannot make, so envoy-go keeps a plain run of them:
+# internal/bus counts HoldsSeed's allocations, which the race runtime's own
+# allocations would be counted into, and the documents package measures the heap a
+# room keeps, which the detector's shadow memory and instrumentation move. Those are
+# out of the race build altogether (//go:build !race), and the two render-reuse storms
+# run fewer seeds and fewer edits under it (raceEnabled), so this is their full-size
+# run. The API's mention sender claim model is out of the race build too, and runs in
+# a job of its own, envoy-go-claim-model; the API's eight source guards, and
+# one_expression_guard_test.go beside them, carry that tag as well and are
+# deliberately not here: they read the module's source, the text-check job runs their
+# seventeen tests by name, and ci_job_reads.py's CLAIM_MODEL_TESTS and
+# TEXT_CHECK_TESTS leave exactly those tests out of this call rather than have each of
+# them run twice. Nor are the tests whose assertion is a wall-clock time measured in
+# their own process: the API's and delivery's xid window tests, which judge a
+# window's gaps against storetest.XidMaxGap, and the NATS auth service's restart
+# storm, which judges its slowest decision against decideBudget. Beside this step's
+# other calls the load moved those times, and each run of the pair at c3e93e7e failed
+# an xid window test here (runs 44476496859 and 44476544762). So they run as main
+# runs them, alone on a runner: delivery's and the storm in envoy-go-race and the
+# API's in envoy-go-checks, each job's first test step (ci_job_reads.py's
+# ALONE_PREFIX, ALONE_TESTS and ALONE_STEPS).
+# It was a step of its own before this one until dispatch://INFRA-985's condition for
+# running it here was measured: the three documents memory bounds read this process's
+# own heap after two forced collections, and the question was whether a slow mark
+# under contention lets the heap overshoot before the reading is taken. Run
+# 42526940781 ran all three sixty times in this shape - beside pmdoc's CPU-budget
+# tests, under busy loops at twice the runner's cores, against a Postgres service
+# exactly like this job's - and every run passed, the worst of them using 36.1 per
+# cent of its bound, where the condition was no failure and no run within 15 per cent.
+# The other half of that step's old reason went with the API package, whose live-feed
+# and delivery-hub tests wait for the event log's safe horizon and run in
+# envoy-go-race-api now. The one -run list is derived in
+# .github/scripts/ci_job_reads.py from the race lane's own packages and those files'
+# //go:build !race and raceEnabled, less the tests that run alone, so a test added to
+# either and missing here fails the ci-filters job naming this step.
+# -timeout 8m, by R6 from the pair at 8cfd2682
+# (the table on this job): this call's slowest package on the slower run is
+# internal/dispatch/docs, 216.1 s (run 44657322918, job 136026779841), and
+# 216.1 / 30 = 7.20, so 8m. The limit leaves 263.9 s above that time, over the 30 s
+# of the documents package's roomWaitMargin. A run that missed the Go build cache on
+# x64 has read 537.3 s there (run 44097184245), more than the 8m.
+#
+# One go test over its packages rather than one per package: go builds the test
+# binaries together and runs each package's tests as soon as its own binary is
+# linked, so one package's tests run beside another's build instead of after it.
+# Three commands in a row, while the API package's source guards were still among
+# them, cost 96 s for 44 s of tests - 40 s of them the API package's build, with
+# nothing running beside it (run 42307926510, dispatch://INFRA-1075). The bus and
+# documents packages each measure their own process's heap or allocations, so running
+# them at the same time changes no number either of them asserts on.
+{RACE_IMPOSSIBLE_CALL} > "$RUNNER_TEMP/go-test-json/race-impossible.json" 2> "$RUNNER_TEMP/go-test-logs/race-impossible.log" &
+impossible=$!
+# internal/pgmigrate, on a Postgres service of its own: its redaction oracle holds
+# scanl.go's transcription of PostgreSQL's scan.l to a real PostgreSQL, which is
+# 158,364 (text, setting) pairs asked over two connections, and what a pair costs is a
+# round trip rather than arithmetic. Measured on run 42774209109: 2.16 ms a round trip
+# in this lane against 0.16 ms against an idle server, the package 166.1 s contended there for
+# 53.7 s of wall alone on four idle cores and 63.8 s of CPU. The instance pays for
+# both halves of that - the queue this package waits in, and the 158,364 round trips
+# it puts into the queue every other package of the job waits in - so
+# DISPATCH_TEST_DATABASE_URL names 5435 on this call and nowhere else, as the three
+# calls below name 5433, 5436 and 5434. The package list above leaves the package out.
+#
+# -timeout 10m, from the call's own measured times rather than from its CPU. The
+# first arithmetic took the half rule on 120 s - 63.8 s of CPU at about half a core -
+# and 4m was too small: the call measured 159.7 s and 183.2 s on two runs and then
+# ran past 240 s on a slower one, where go killed it mid-test ("panic: test timed out
+# after 4m0s, running tests: TestRedactionAgainstServerOutcomes (3m20s)", run
+# 42856652273). By R6 from the pair at 8cfd2682 (the table on this job): this call's
+# one package on the slower run is internal/pgmigrate, 278.2 s (run 44657322918, job
+# 136026779841), and 278.2 / 30 = 9.27, so 10m. No floor stands above that rule
+# here: no test of internal/pgmigrate reads the test binary's deadline, so it declares
+# no margin of its own the way the documents package's roomWaitMargin (30 s) and
+# pmdoc's perCallReportMargin (60 s) are theirs.
+DISPATCH_TEST_DATABASE_URL='{PGMIGRATE_DSN}' go test -json -count=1 -timeout 10m ./{PGMIGRATE_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
+pgmigrate=$!
+# The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
+# 5433 on this call and nowhere else, so the only transactions its horizon waits on are
+# its own tests'. It is on the call rather than in the step's env:, which would reach
+# every call; the calls that name no server of their own run against 5432. -timeout
+# 2m, by R6 from the pair at 8cfd2682 (the table on this job): this call's one package
+# on the slower run is internal/dispatch/routes, 58.7 s (run 44657322918, job
+# 136026779841), and 58.7 / 30 = 1.96, so 2m.
+DISPATCH_TEST_DATABASE_URL='{ROUTES_DSN}' go test -json -count=1 -timeout 2m ./{ROUTES_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
+routes=$!
+# internal/dispatch/events, on the fifth Postgres service, for the reason the routes
+# call gives: its horizon tests wait for the event log's safe horizon, which any
+# transaction open anywhere on the instance holds back, and in the package list one
+# of them failed at its one-minute give-up (run 43596122521, job 132450917326). Its
+# own tests hold transaction ids on purpose, so it shares no other call's service:
+# 5436 is named on this call and nowhere else, and the package list above leaves the
+# package out (dispatch://INFRA-1075). -timeout 2m, by R6 from the pair at 8cfd2682
+# (the table on this job): this call's one package on the slower run is
+# internal/dispatch/events, 38.6 s (run 44657322918, job 136026779841), and
+# 38.6 / 30 = 1.29, so 2m.
+DISPATCH_TEST_DATABASE_URL='{EVENTS_DSN}' go test -json -count=1 -timeout 2m ./{EVENTS_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/events.json" 2> "$RUNNER_TEMP/go-test-logs/events.log" &
+events=$!
+# The one untagged test of cmd/dispatch that reads a live event feed, on the third
+# Postgres service: the horizon it waits on is instance-wide, so in run 42581214577 it
+# timed out on events_start while another package's database held a transaction open,
+# the server naming that holder. It cannot share the routes service in either
+# direction - routes' own tests hold transaction ids on purpose, and its horizon loop
+# has been blown by a sibling's clone before - so 5434 is named on this call and
+# nowhere else. The package list above skips this test by name, which is unique in the
+# module (dispatch://INFRA-1075). -timeout 2m, by R6 from the pair at 8cfd2682 (the
+# table on this job): this call's one package on the slower run is cmd/dispatch,
+# 50.2 s (run 44657322918, job 136026779841), and 50.2 / 30 = 1.67, so 2m. The limit
+# leaves 69.8 s above that time, over the 30 s of horizontest.Drain that the test's
+# wait for its event feed leaves of the deadline.
+DISPATCH_TEST_DATABASE_URL='{SHUTDOWN_DSN}' go test -json -count=1 -timeout 2m -run '{SHUTDOWN_PATTERN}' ./{SHUTDOWN_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" &
+shutdown=$!
+# internal/testnats runs its server in the test process, so the package list above
+# starts no container. The real-server tests, a rendered authorization on the image the
+# hub runs among them, are the one thing an in-process server cannot reproduce: they sit
+# behind the natslive tag, and this call is where they run (INFRA-250). internal/bus has
+# tests of its own there. One is the consumer cap: the module links nats-server v2.15.1
+# in process, which caps a stream that sets no cap at a default of its own and takes a
+# change of MaxConsumers on a stream that already exists, so the raise of an uncapped
+# ENVOY_NOTIFICATIONS to the consumer cap this binary compiles and the keeper's restore of
+# a cap an operator lowered or unset are proved in process. What is left for a real image
+# is the pair of 2.10 cases - the stream with no cap the binary must leave alone, and the
+# refusal of the raise of a lower cap, naming the field, the cap and the first server
+# taking the change - and the hub's own reconcile on the nats:2.15.1-alpine image the
+# deployment runs (INFRA-1384). The others are a session consumer's own messages behind
+# other sessions' traffic on the hub's image, the listener's refusal of nats:2.10
+# (natsversion), and that refusal's control: on 2.10, stepped past, the consumer loses
+# its old-form message. internal/cipher/natscallout has one too: that the image the hub
+# runs lets a user with an empty publish allow list publish anywhere, the fail-open its
+# guard refuses, so the guard is shown able to fail on the server production runs. Each
+# package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run the
+# package's untagged tests, which already run elsewhere - internal/testnats in the
+# package list above, and internal/bus and internal/cipher/natscallout in
+# envoy-go-race, which that list's grep -Ev leaves out - so
+# the -run comes from .github/scripts/go-tagged-tests.sh, which reads the names off the
+# source at run time, and no test name is spelled here. Each assignment is a line of
+# its own and runs before the command it feeds: under bash -e it carries the script's
+# exit status, so an empty or refused list fails the step instead of running -run "",
+# which matches every test. -timeout 1m on each command, by R6 from the pair at
+# 8cfd2682 (the table on this job): on the slower run of each, internal/testnats took
+# 4.7 s (run 44657322918, job 136026779841) and internal/bus 20.5 s and
+# internal/cipher/natscallout, then internal/broker/natscallout, 5.1 s (run 44657415021,
+# job 136039517737), and 4.7 / 30 = 0.16, 20.5 / 30 = 0.68 and 5.1 / 30 = 0.17, so 1m
+# each, the smallest whole minute there is.
+rig=$(../../{TAGGED_TESTS} natslive ./internal/testnats)
+cap=$(../../{TAGGED_TESTS} natslive ./internal/bus)
+callout=$(../../{TAGGED_TESTS} natslive ./internal/cipher/natscallout)
+{{ go test -json -count=1 -timeout 1m -tags natslive -run "$rig" ./internal/testnats/ &&
+  go test -json -count=1 -timeout 1m -tags natslive -run "$cap" -v ./internal/bus/ &&
+  go test -json -count=1 -timeout 1m -tags natslive -run "$callout" ./internal/cipher/natscallout/; }} > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
+natslive=$!
+# The integration suite, which runs a real NATS server in the test process.
+# -timeout 1m, by R6 from the pair at 8cfd2682 (the table on this job): this call's
+# one package on the slower run is internal/integration, 7.7 s (run 44657415021, job
+# 136039517737), and 7.7 / 30 = 0.26, so 1m, the smallest whole minute there is.
+go test -json -count=1 -timeout 1m ./internal/integration/ > "$RUNNER_TEMP/go-test-json/integration.json" 2> "$RUNNER_TEMP/go-test-logs/integration.log" &
+integration=$!
+# agentloop's live proof makes a real model call, so it sits behind a build tag and CI
+# never runs it. Vetting it keeps it compiling as the package changes. It writes no
+# stream: its log is everything it prints.
+go vet -tags modellive ./agentloop/ > "$RUNNER_TEMP/go-test-logs/agentloop-vet.log" 2>&1 &
+vet=$!
+s=0
+wait "$unit" || s=$?
+p=0
+wait "$impossible" || p=$?
+m=0
+wait "$pgmigrate" || m=$?
+r=0
+wait "$routes" || r=$?
+e=0
+wait "$events" || e=$?
+d=0
+wait "$shutdown" || d=$?
+n=0
+wait "$natslive" || n=$?
+i=0
+wait "$integration" || i=$?
+v=0
+wait "$vet" || v=$?
+# One group per call, in the order the calls were started: the package list first,
+# then the rest. Each is its own log, then its stream - the package result lines
+# when it passed, the whole stream when it failed - and an ::error:: naming it when it
+# failed. The step's status is the first non-zero of the nine, and the package list,
+# which prints as it goes, writes no log of its own.
+status=0
+replay() {{
+  echo "::group::$1 (exit $2)"
+  [ ! -s "$RUNNER_TEMP/go-test-logs/$3.log" ] || cat "$RUNNER_TEMP/go-test-logs/$3.log"
+  if [ "$2" -eq 0 ]; then
+    {REPLAY_GREEN} "$RUNNER_TEMP/go-test-json/$3.json"
+  else
+    {REPLAY_RED} "$RUNNER_TEMP/go-test-json/$3.json"
+  fi
+  echo "::endgroup::"
+  [ "$2" -eq 0 ] || echo "::error::$1 failed (exit $2)"
+  [ "$status" -ne 0 ] || status=$2
+}}
+replay "the package list" "$s" unit
+replay "the race-impossible run" "$p" race-impossible
+replay "the pgmigrate package" "$m" pgmigrate
+replay "the routes package" "$r" routes
+replay "the events package" "$e" events
+replay "the shutdown feed test" "$d" shutdown
+replay "the natslive matrix" "$n" natslive
+replay "the integration suite" "$i" integration
+echo "::group::the agentloop vet (exit $v)"
+cat "$RUNNER_TEMP/go-test-logs/agentloop-vet.log"
+echo "::endgroup::"
+[ "$v" -eq 0 ] || echo "::error::the agentloop vet failed (exit $v)"
+[ "$status" -ne 0 ] || status=$v
+exit "$status\""""
 
 
 def daemon_race_packages() -> list:
@@ -2684,7 +3307,8 @@ GATES = [
         (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS test container images")),
         (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} consts Image, SkippingImage"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const HubImage"),
-    ) + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")),
+    ) + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")
+      + service_settings("daemon-go")),
 
     # The plugin-pack job: the three tests of internal/daemon in PLUGIN_PACK_TESTS, which the
     # daemon-go race step skips by name - the one that packs the two plugin releases and loads
@@ -2805,7 +3429,7 @@ GATES = [
     gate("sessions_script", SESSIONS_JOB, reads=reads(
         ("scripts/sessions/**", f"{at(SESSIONS_JOB, SESSIONS_STEP)}: the suite, and message-wait.ts, which "
                                 "scripts/sessions/__tests__/message-wait.test.ts:219 spawns (SCRIPT :18)"),
-    ) + setup_bun(SESSIONS_JOB)),
+    ) + setup_bun(SESSIONS_JOB) + service_settings(SESSIONS_JOB)),
 
     # The test job's guide-layout step, gated on a filter of its own: the test spawns the
     # checker over five guides, and no other step of the job reads one of them. The job's own
@@ -3205,43 +3829,77 @@ GATES = [
     ) + biome(at("claude-envoy", "Lint Claude Envoy plugin")) + bun_job("claude-envoy")),
 
     gate("envoy_go", "envoy-go", runs=[
-        step_run("envoy-go", "Integration test envoy (a real NATS server, in the test process)",
-                 "go test ./internal/integration/ -timeout 300s -count=1", ENVOY, ["./internal/integration/"]),
-        step_run("envoy-go", "Vet agentloop's live proof (no model call)", "go vet -tags modellive ./agentloop/", ENVOY,
-                 ["./agentloop/"], tags="modellive", mode="vet"),
         step_run("envoy-go", "Vet agent-secrets' moto run (no moto)", "go vet -tags moto ./cmd/cipher/", ENVOY,
                  ["./cmd/cipher/"], tags="moto", mode="vet"),
         ceiling_run("envoy-go"),
     ], exact=[
-        # One go test per package of the plain run the race lane cannot make (RACE_IMPOSSIBLE_*),
-        # each selecting that package's own tests with -run.
-        pinned_step("envoy-go", RACE_IMPOSSIBLE_STEP, ENVOY, RACE_IMPOSSIBLE_SCRIPT, [
-            (ENVOY, [f"./{under}"], f"go test -run of what the race build cannot run in ./{under}", {})
-            for under in RACE_IMPOSSIBLE_PACKAGES
-        ]),
-        # The module but the race lane's packages, internal/integration, which the integration
-        # step tests, the text checks, which the text-check job runs, the architecture-note and
-        # spec-file packages and LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which
-        # envoy-go-checks runs, and the broker's tree, which the database-skips step below runs.
-        # The Run names the packages the step's own `grep -Ev` keeps (packages_kept over
-        # UNIT_TEST_PATTERN), so it is read from the pattern the step runs rather than claimed
-        # beside it. A Run saying more would credit this job with tests other jobs run: the race
-        # lane's are envoy-go-race's, envoy-go-race-api's and envoy-go-race-docs', the text checks
-        # are the text-check job's, those packages are envoy-go-checks', and the closure of ./...
-        # would put their test files and the files only those tests read on this job's filter, so a
-        # change to one of them would start a job that does not run the test it touches.
-        # Its -skip takes WEB_FIXTURE_TESTS out of this step: without `--check`
-        # TestWebDisplayFixture writes the committed web display fixture rather than checking it,
-        # so a second run here asks nothing and can only pass, and
-        # TestTheWebFixtureFindsItsFilesFromAnyDirectory stats that same file, a read this job
-        # need not carry; the fixture step of envoy-go-checks runs both, with the check that
-        # makes the first a requirement. It also takes the backend count's tests of
-        # cmd/cipher out (BACKEND_COUNT_TESTS), which the count step runs in this same job
-        # and environment. The tests stay compiled into this step's binary, which is what a
-        # skipped test is.
+        # This job has one `go test` step, and every `go test` call of it writes a `go test
+        # -json` stream to a file and replays it to the log, so none of them is in the simple
+        # form: -json is not a flag the check reduces and a redirect is not in that form either.
+        # The step's ninth call is a `go vet`, which writes a log and no stream
+        # (dispatch://INFRA-1075).
+        #
+        # The unit step, whose nine calls run at the same time (ci-job-envoy-go.yaml says why):
+        # the package list, which starts first, and the plain run of what the race build cannot
+        # make, internal/pgmigrate, the routes package, the events package, the shutdown feed
+        # test, the natslive call, whose three go test commands run one after the other, the
+        # integration suite and the agentloop vet beside it. Its Runs together are everything the
+        # step compiles:
+        #   * the package list is the module but the race lane's packages, internal/integration,
+        #     the text checks, the architecture-note and spec-file packages and
+        #     LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which envoy-go-checks
+        #     runs, the broker's tree, which the database-skips step below runs,
+        #     internal/dispatch/routes, internal/pgmigrate and internal/dispatch/events. Its Run
+        #     names the packages the list's own `grep -Ev` keeps (packages_kept over
+        #     UNIT_TEST_PATTERN), so it is read from the pattern the step runs rather than claimed
+        #     beside it. A Run saying more would credit this job with tests other jobs run: the
+        #     race lane's are envoy-go-race's, envoy-go-race-api's and envoy-go-race-docs', the
+        #     text checks are the text-check job's, the architecture-note and spec-file packages
+        #     and LISTENERWIRE_PACKAGES are envoy-go-checks', and the closure of ./... would put
+        #     their test files and the files only those tests read on this job's filter, so a
+        #     change to one of them would start a job that does not run the test it touches. Its
+        #     -skip (UNIT_TEST_SKIP) takes out the shutdown feed test, which the shutdown call
+        #     runs, and WEB_FIXTURE_TESTS: without `--check` TestWebDisplayFixture writes the
+        #     committed web display fixture rather than checking it, so a second run here asks
+        #     nothing and can only pass, and TestTheWebFixtureFindsItsFilesFromAnyDirectory stats
+        #     that same file, a read this job need not carry; the fixture step of envoy-go-checks
+        #     runs both, with the check that makes the first a requirement. It also takes the
+        #     backend count's tests of cmd/cipher out (BACKEND_COUNT_TESTS), which the
+        #     count step runs in this same job and environment; the list is the one call of the
+        #     step that runs that package. The tests stay compiled into the list's binaries, which
+        #     is what a skipped test is;
+        #   * the race-impossible call is one go test over every package of the plain run the
+        #     race lane cannot make, the tests that run alone apart (RACE_IMPOSSIBLE_*,
+        #     alone_split), selecting their tests with one -run, so it gets a Run per package of
+        #     what that split leaves;
+        #   * internal/pgmigrate, internal/dispatch/routes, internal/dispatch/events and
+        #     internal/integration, which the list leaves to calls of their own, get a Run each,
+        #     and so does the shutdown call, whose package cmd/dispatch the list runs too, so a
+        #     call left out of the step is a Run with no command;
+        #   * the natslive call's three commands run only what their tag adds, one package each:
+        #     the rig's own matrix, the one test of internal/bus that needs a real server image,
+        #     and the auth service's check that the deployed server lets an empty allow list
+        #     through, which its guard refuses. The rest of internal/testnats runs in the package
+        #     list beside them; the rest of internal/bus and internal/cipher/natscallout runs in
+        #     envoy-go-race, since UNIT_TEST_PATTERN leaves the race lane's packages out of that
+        #     list, and the envoy_go entry of TAG_RUNS, one entry per step, checks the testnats
+        #     half alone;
+        #   * the agentloop vet compiles the package behind the modellive tag, which no test
+        #     run of this module reaches.
         pinned_step("envoy-go", UNIT_TEST_STEP, ENVOY, UNIT_TEST_SCRIPT, [
             (ENVOY, packages_kept(ENVOY, UNIT_TEST_PATTERN),
              "go list ./... piped into go test, counted as go test over the packages its grep -Ev keeps", {}),
+            *[(ENVOY, [f"./{under}"], f"go test -run of what the race build cannot run in ./{under}", {})
+              for under in RACE_IMPOSSIBLE_PACKAGES],
+            (ENVOY, [f"./{PGMIGRATE_PACKAGE}/"], f"go test ./{PGMIGRATE_PACKAGE}/", {}),
+            (ENVOY, [f"./{ROUTES_PACKAGE}/"], f"go test ./{ROUTES_PACKAGE}/", {}),
+            (ENVOY, [f"./{EVENTS_PACKAGE}/"], f"go test ./{EVENTS_PACKAGE}/", {}),
+            (ENVOY, [f"./{SHUTDOWN_PACKAGE}/"], f"go test -run of the live-feed test in ./{SHUTDOWN_PACKAGE}/", {}),
+            (ENVOY, ["./internal/integration/"], "go test ./internal/integration/", {}),
+            (ENVOY, ["./internal/testnats/"], "go test -tags natslive ./internal/testnats/", {"tags": "natslive"}),
+            (ENVOY, ["./internal/bus/"], "go test -tags natslive ./internal/bus/", {"tags": "natslive"}),
+            (ENVOY, ["./internal/cipher/natscallout/"], "go test -tags natslive ./internal/cipher/natscallout/", {"tags": "natslive"}),
+            (ENVOY, ["./agentloop/"], "go vet -tags modellive ./agentloop/", {"tags": "modellive", "mode": "vet"}),
         ]),
         # The counter's test: its controls run database-skips.sh on DATABASE_SKIPS_TEST_PKGS, one
         # at a time, from packages/envoy (and the API package once more from a temporary checkout
@@ -3264,46 +3922,43 @@ GATES = [
              f"packages/envoy/scripts/database-skips.sh's go test -json -timeout {UNIT_TEST_TIMEOUT} of the broker's "
              "packages, less the race lane's, and its command", {}),
         ]),
-        # Only what the natslive tag adds, one package at a time: the rig's own matrix, the one
-        # test of internal/bus that needs a real server image, and the auth service's check that
-        # the deployed server lets an empty allow list through, which its guard refuses. The rest
-        # of internal/testnats runs in the unit step; the rest of internal/bus and
-        # internal/cipher/natscallout runs in envoy-go-race, since UNIT_TEST_PATTERN leaves the
-        # race lane's packages out of the unit step, and the envoy_go entry of TAG_RUNS, one entry
-        # per step, checks the testnats half alone.
-        pinned_step("envoy-go", NATS_MATRIX_STEP, ENVOY, NATS_MATRIX_SCRIPT, [
-            (ENVOY, ["./internal/testnats/"], "go test -tags natslive ./internal/testnats/", {"tags": "natslive"}),
-            (ENVOY, ["./internal/bus/"], "go test -tags natslive ./internal/bus/", {"tags": "natslive"}),
-            (ENVOY, ["./internal/cipher/natscallout/"], "go test -tags natslive ./internal/cipher/natscallout/", {"tags": "natslive"}),
-        ]),
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-go", "Pull test container images")),
-        (TAGGED_TESTS, f"{at('envoy-go', NATS_MATRIX_STEP)} takes its -run from it"),
+        (TAGGED_TESTS, f"{at('envoy-go', UNIT_TEST_STEP)} takes the -run of its natslive call's three commands from it"),
         (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go', DATABASE_SKIPS_STEP)} runs it, and "
                                 f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it and copies it"),
         (DATABASE_SKIPS_TEST, f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it"),
-    ) + ceiling_reads("envoy-go") + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go")),
+    ) + ceiling_reads("envoy-go") + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go")
+      + service_settings("envoy-go", SETTINGS_STEP, "Read the routes service's settings back",
+                         "Read the shutdown service's settings back", "Read the pgmigrate service's settings back",
+                         "Read the events service's settings back")),
 
-    # envoy-go's fast half: its format and generated-code checks, the shell-script tests,
+    # envoy-go's fast half: its format and generated-code checks, the twelve shell-script tests,
     # the vet of the module as darwin compiles it, and the build and pack of the envoy commands
     # (.github/ci-notes/ci.md#envoy-gos-fast-half-the-go-format-check-the-two-generated-code-checks-the
     # says why they are split out), with the tests of the
     # architecture-note and spec-file rules and their commands, the note check over this
     # repository's notes through the composite action, the spec-file check over its spec
     # directory through the other one, and the guard that no CI file compares the spec files with
-    # the approved spec. Its gofmt step reads the whole module, so no closure stands for it.
+    # the approved spec, and the API's alone tests (ALONE_STEPS), on a Postgres service of the
+    # job's own that its read-back and sizing steps read as the race jobs' steps read theirs. Its
+    # gofmt step reads the whole module, so no closure stands for it.
     gate("envoy_go_checks", "envoy-go-checks", runs=[
         step_run("envoy-go-checks", "Build envoy services", "go build ./cmd/dispatch ./cmd/listener", ENVOY,
                  ["./cmd/dispatch", "./cmd/listener"], mode="build"),
-        # The architecture-note and spec-file rules and their commands: the closure of the five
-        # packages, tests, testdata and all, built from the list the unit step's `grep -Ev` leaves
-        # them out by.
-        step_run("envoy-go-checks", NOTE_AND_SPEC_STEP, NOTE_AND_SPEC_TEXT, ENVOY, NOTE_AND_SPEC_PKGS),
+        ceiling_run("envoy-go-checks"),
+    ], exact=[
+        # The API's xid window tests, alone on the runner (ALONE_STEPS says why they run in this
+        # job): one plain go test, which writes a `go test -json` stream, so the step is pinned
+        # whole rather than reduced.
+        alone_step(ALONE_STEP_OF["envoy-go-checks"]),
         # LISTENERWIRE_PACKAGES' tests (listenerwire's, its clients test's type check of the daemon's
         # listener clients among them, and internal/wirecheck's), built from the list the unit
-        # step's `grep -Ev` leaves them out by.
-        step_run("envoy-go-checks", LISTENERWIRE_STEP, LISTENERWIRE_TEXT, ENVOY, LISTENERWIRE_PKGS),
-    ], exact=[
+        # step's `grep -Ev` leaves them out by. The step writes a `go test -json` stream, so it is
+        # pinned whole rather than reduced.
+        pinned_step("envoy-go-checks", LISTENERWIRE_STEP, ENVOY, LISTENERWIRE_SCRIPT, [
+            (ENVOY, LISTENERWIRE_PKGS, "go test " + " ".join(LISTENERWIRE_PKGS), {}),
+        ]),
         # `go run` is not one of the three forms the reducer reads, so the step is pinned whole
         # and this Run stands for the command it compiles.
         pinned_step("envoy-go-checks", "Check the OpenAPI document is generated from the route table", ENVOY,
@@ -3330,6 +3985,12 @@ GATES = [
             (ENVOY, ["./cmd/listener"], f"GOOS=linux GOARCH={arch} go build ./cmd/listener",
              {"mode": "build", "env": {"GOOS": "linux", "GOARCH": arch}})
             for arch in targets(GO_TARGETS, "envoy")
+        ]),
+        # The architecture-note rules and their command: the closure of the two packages, tests,
+        # testdata and all, built from the list the unit step's `grep -Ev` leaves them out by. The
+        # step writes a `go test -json` stream, so it is pinned whole rather than reduced.
+        pinned_step("envoy-go-checks", NOTE_AND_SPEC_STEP, ENVOY, NOTE_AND_SPEC_SCRIPT, [
+            (ENVOY, NOTE_AND_SPEC_PKGS, "go test " + " ".join(NOTE_AND_SPEC_PKGS), {}),
         ]),
         # The display-tree fixture check: one test of pmdoc, which compiles that package.
         pinned_step("envoy-go-checks", FIXTURE_STEP, ENVOY, FIXTURE_SCRIPT, [
@@ -3404,7 +4065,8 @@ GATES = [
                  "spec-check guard reads every file under it")
           for glob in (".github/workflows/**", ".github/actions/**", ".github/scripts/**", "scripts/**")],
     ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks")
-      + darwin_vet_reads("envoy-go-checks", ENVOY_DARWIN_VET, ENVOY)),
+      + darwin_vet_reads("envoy-go-checks", ENVOY_DARWIN_VET, ENVOY)
+      + ceiling_reads("envoy-go-checks") + service_settings("envoy-go-checks")),
 
 
     gate("envoy_infra_go", "envoy-infra-go", runs=[
@@ -3472,17 +4134,26 @@ GATES = [
         pinned_step(CLAIM_MODEL_JOB, CLAIM_MODEL_STEP, ENVOY, CLAIM_MODEL_SCRIPT, [
             (ENVOY, [CLAIM_MODEL_PACKAGE], f"go test -run of the sender claim model's two tests in {CLAIM_MODEL_PACKAGE}", {}),
         ]),
-    ], reads=setup_go(CLAIM_MODEL_JOB, f"{ENVOY}/go.mod")),
+    ], reads=setup_go(CLAIM_MODEL_JOB, f"{ENVOY}/go.mod") + service_settings(CLAIM_MODEL_JOB)),
 
     # The lane's three jobs: each step's text and packages come from ENVOY_RACE_LANE, which the
-    # envoy-go unit step and its plain companion are built from too. Two steps are not race_step's
-    # text, and each gate pins its whole line: envoy-go-race-api's runs its package through
-    # database-skips.sh (RACE_API_SCRIPT), which counts that run's skips, and envoy-go-race-docs'
-    # runs the package under .github/scripts/race_memory.py
+    # envoy-go unit step and its plain companion are built from too. envoy-go-race is pinned
+    # whole rather than reduced, because its step writes a `go test -json` stream to a file and
+    # replays it to the log, which is outside the simple form (dispatch://INFRA-1075, as
+    # envoy-go's own steps). Two steps are not race_step's text at all, and each gate pins its
+    # whole line: envoy-go-race-api's runs its package through database-skips.sh
+    # (RACE_API_SCRIPT), which counts that run's skips and keeps its `go test -json` stream
+    # (--keep), and envoy-go-race-docs' runs the package under .github/scripts/race_memory.py
     # (dispatch://INFRA-1085), so its gate pins that whole line while the lane table still names
-    # the package, which is what keeps it out of the unit step.
-    gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")],
-         reads=ceiling_reads("envoy-go-race") + setup_go("envoy-go-race", f"{ENVOY}/go.mod")),
+    # the package, which is what keeps it out of the unit step. envoy-go-race also runs the alone
+    # tests of the packages it race-tests, in a plain step before its race step (alone_step,
+    # pinned whole for the same reason), and restores go-envoy for that plain build, as
+    # envoy-go-docs-finalizers does: the restore's key is the Go version setup-go read from
+    # packages/envoy/go.mod, which is the read setup_go() declares, so the restore adds none.
+    gate("envoy_go_race", "envoy-go-race", runs=[ceiling_run("envoy-go-race")],
+         exact=[alone_step(ALONE_STEP_OF["envoy-go-race"]), race_step(RACE_JOBS["envoy-go-race"])],
+         reads=ceiling_reads("envoy-go-race") + setup_go("envoy-go-race", f"{ENVOY}/go.mod")
+         + service_settings("envoy-go-race")),
 
     gate("envoy_go_race_api", "envoy-go-race-api", runs=[ceiling_run("envoy-go-race-api")], exact=[
         pinned_step("envoy-go-race-api", RACE_API.step, ENVOY, RACE_API_SCRIPT, [
@@ -3491,24 +4162,27 @@ GATES = [
         ]),
     ], reads=reads(
         (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go-race-api', RACE_API.step)} runs the package through it"),
-    ) + ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod")),
+    ) + ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod")
+      + service_settings("envoy-go-race-api")),
 
     gate("envoy_go_race_docs", "envoy-go-race-docs", runs=[ceiling_run("envoy-go-race-docs")], exact=[
         pinned_step("envoy-go-race-docs", RACE_DOCS_STEP, ENVOY, RACE_DOCS_SCRIPT, [
-            (ENVOY, ["./internal/dispatch/docs/"], "go test -race -count=1 -timeout 60m ./internal/dispatch/docs/", {"race": True}),
+            (ENVOY, ["./internal/dispatch/docs/"], "go test -race -count=1 -timeout 55m ./internal/dispatch/docs/", {"race": True}),
         ]),
     ], reads=reads(
         (".github/scripts/race_memory.py", f"{at('envoy-go-race-docs', RACE_DOCS_STEP)} runs the package under it"),
-    ) + ceiling_reads("envoy-go-race-docs") + setup_go("envoy-go-race-docs", f"{ENVOY}/go.mod")),
+    ) + ceiling_reads("envoy-go-race-docs") + setup_go("envoy-go-race-docs", f"{ENVOY}/go.mod")
+      + service_settings("envoy-go-race-docs")),
 
     # A second gate on envoy_go_race_docs: this job runs the same package, so it reads that
     # closure and no other, and check-ci-filters.sh keys a claim by (job, step), so the two gates
     # claim different steps and do not collide.
     gate("envoy_go_race_docs", "envoy-go-docs-finalizers", runs=[ceiling_run("envoy-go-docs-finalizers")], exact=[
         pinned_step("envoy-go-docs-finalizers", FINALIZERS_STEP, ENVOY, FINALIZERS_SCRIPT, [
-            (ENVOY, ["./internal/dispatch/docs/"], "go test -v -count=1 -timeout 34m ./internal/dispatch/docs/", {}),
+            (ENVOY, ["./internal/dispatch/docs/"], "go test -v -count=1 -timeout 28m ./internal/dispatch/docs/", {}),
         ]),
-    ], reads=ceiling_reads("envoy-go-docs-finalizers") + setup_go("envoy-go-docs-finalizers", f"{ENVOY}/go.mod")),
+    ], reads=ceiling_reads("envoy-go-docs-finalizers") + setup_go("envoy-go-docs-finalizers", f"{ENVOY}/go.mod")
+       + service_settings("envoy-go-docs-finalizers")),
 
     gate("dispatch_memory", "dispatch-memory", runs=[ceiling_run("dispatch-memory")], exact=[
         pinned_step("dispatch-memory", MEMORY_STEP, ENVOY, MEMORY_SCRIPT, [
@@ -3516,7 +4190,8 @@ GATES = [
         ]),
     ], reads=reads(
         (TAGGED_TESTS, f"{at('dispatch-memory', MEMORY_STEP)} takes its -run from it"),
-    ) + ceiling_reads("dispatch-memory") + setup_go("dispatch-memory", f"{ENVOY}/go.mod")),
+    ) + ceiling_reads("dispatch-memory") + setup_go("dispatch-memory", f"{ENVOY}/go.mod")
+      + service_settings("dispatch-memory")),
 
     gate("dispatch_multiprocess", "dispatch-multiprocess", runs=[ceiling_run("dispatch-multiprocess")], exact=[
         pinned_step("dispatch-multiprocess", DISPATCH_MP_STEP, ENVOY, DISPATCH_MP_SCRIPT, [
@@ -3524,7 +4199,8 @@ GATES = [
         ]),
     ], reads=reads(
         (TAGGED_TESTS, f"{at('dispatch-multiprocess', DISPATCH_MP_STEP)} takes its -run from it"),
-    ) + ceiling_reads("dispatch-multiprocess") + setup_go("dispatch-multiprocess", f"{ENVOY}/go.mod")),
+    ) + ceiling_reads("dispatch-multiprocess") + setup_go("dispatch-multiprocess", f"{ENVOY}/go.mod")
+      + service_settings("dispatch-multiprocess")),
 
     # Its "Build the Dispatch server" step names an output (-o), which the simple form does not
     # reduce, so the step is pinned whole, as dispatch-browser-multiprocess's is. The Go step is a
@@ -3563,7 +4239,7 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds the server's port through it"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
-    ) + two_builds_go_reads()),
+    ) + two_builds_go_reads() + service_settings(TWO_BUILDS_JOB)),
 
     # The two-build job's Go step alone, behind a gate of its own, so the TAG_RUNS pairing below
     # holds envoy_go to what this step reads - cmd/dispatch's twobuild closure, the CLI
@@ -3586,7 +4262,7 @@ GATES = [
         ]),
     ], reads=reads(
         (TAGGED_TESTS, f"{at('broker-multiprocess', BROKER_MP_STEP)} takes its -run from it"),
-    ) + setup_go("broker-multiprocess", f"{ENVOY}/go.mod")),
+    ) + setup_go("broker-multiprocess", f"{ENVOY}/go.mod") + service_settings("broker-multiprocess")),
 
     gate("airlock_lean", AIRLOCK_JOB, exact=[
         pinned_step(AIRLOCK_JOB, AIRLOCK_SEED_STEP, ENVOY, AIRLOCK_SEED_SCRIPT, [
@@ -3721,7 +4397,7 @@ GATES = [
         ("packages/pi-shared/src/**", "packages/pi-envoy and packages/claude-envoy import @legion/pi-shared/*"),
         ("packages/contracts/**", at(STALL, "Build contracts for the stall suites")),
         (BROKER_CLIENT_SRC, f"{at(STALL, 'Stall test of claude-envoy')} runs packages/claude-envoy/bin/envoy-channel.ts, whose bun build loads six of @legion/cipher-client's seven modules through packages/envoy-client/src/broker-credential.ts's imports of brokerTokenClient, chooseSignIn and isFinalRefusal"),
-    ) + ceiling_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL)),
+    ) + ceiling_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL) + service_settings(STALL)),
 
     gate("go_notices", "lint", step=NOTICES_STEP, runs=go_notices_runs(), reads=reads(
         (NOTICES_LOOPS, f"{at('lint', NOTICES_STEP)} runs it; it holds the loops"),
@@ -3927,9 +4603,10 @@ GATES = [
 # whose untagged run of that package the -run leans on, which check-ci-filters.sh holds to running
 # in every run the tag step runs (check_tag_runs). The note says which step runs the untagged
 # tests, the judgement the check cannot derive. The last two entries pair a job with itself: the
-# untagged run is a step of the same job, so the filters are the same one and the subset holds
-# trivially; they are here all the same, so the rule covers every -run step and a later move of
-# one to another job is caught. What the check holds an untagged job's filter to is what the tag
+# untagged run is a step of the same job - for envoy-go the same step, whose package list runs
+# beside its natslive call - so the filters are the same one and the subset holds trivially;
+# they are here all the same, so the rule covers every -run step and a later move of one to
+# another job is caught. What the check holds an untagged job's filter to is what the tag
 # step's gate reads and the tag step filter's listed block, never what the tag filter selects, so
 # these two hold their filter to nothing its own gate does not read already, and rules 9 and 17
 # judge it as they judge any other.
@@ -3956,8 +4633,9 @@ TAG_RUNS = [
     TagRun("listener_server_change", "listener-server-change", SOAK_STEP, "envoy_go_race", "envoy-go-race",
            f"envoy-go-race's \"{RACE_JOBS['envoy-go-race'].step}\" runs ./cmd/listener's untagged tests",
            job_file("listener-server-change")),
-    TagRun("envoy_go", "envoy-go", NATS_MATRIX_STEP, "envoy_go", "envoy-go",
-           f"envoy-go's own \"{UNIT_TEST_STEP}\" runs ./internal/testnats's untagged tests",
+    TagRun("envoy_go", "envoy-go", UNIT_TEST_STEP, "envoy_go", "envoy-go",
+           f"the package list of envoy-go's own \"{UNIT_TEST_STEP}\", the step the natslive call "
+           f"runs in, runs ./internal/testnats's untagged tests",
            job_file("envoy-go")),
     TagRun("envoy_infra_go", "envoy-infra-go", INFRA_NATSLIVE_STEP, "envoy_infra_go", "envoy-infra-go",
            f"envoy-infra-go's own \"Unit test envoy-infra\" runs {', '.join(INFRA_NATSLIVE_PACKAGES)} untagged",

@@ -293,6 +293,31 @@ func TestDiagnoseHoldersReturnsWhenTheCleanupCannotFinish(t *testing.T) {
 	}
 }
 
+// A runner that configures no Locking applies production's: five seconds, three attempts, two
+// seconds apart, with the watch reading every 200 ms. Every test of the bound, the retry and the
+// give-up now runs under a Locking of its own (internal/dispatch/store's testLocking), so this is
+// the one place that holds the zero value to the constants a deployment gets.
+func TestAZeroLockingIsProductionsDiscipline(t *testing.T) {
+	zero := Locking{}.resolve()
+	if want := (Locking{Timeout: LockTimeout, Attempts: LockTimeoutAttempts, RetryPause: LockTimeoutRetryPause}); zero != want {
+		t.Errorf("a zero Locking resolves to %+v, want the package's constants %+v", zero, want)
+	}
+	if zero.Timeout != 5*time.Second || zero.Attempts != 3 || zero.RetryPause != 2*time.Second {
+		t.Errorf("production's discipline is %+v, want a five-second timeout, three attempts and two-second pauses", zero)
+	}
+	if got := (Locking{}).Setting(); got != "5000ms" {
+		t.Errorf("lock_timeout is set to %q, want 5000ms", got)
+	}
+	if got := (Locking{}).watchInterval(); got != 200*time.Millisecond {
+		t.Errorf("the watch reads every %s, want the 200ms it has always read at", got)
+	}
+	// A runner on a short timeout still reads many times inside it, which is what names the
+	// holder of the lock it gave up on.
+	if got := (Locking{Timeout: 500 * time.Millisecond}).watchInterval(); got != 20*time.Millisecond {
+		t.Errorf("a 500ms timeout reads every %s, want 20ms", got)
+	}
+}
+
 // Exec reads a migration as the census read it, whatever the runner's connection carries, because
 // it sets the text settings (textSettings) transaction-local before the migration runs. Each row
 // gives the runner's connection one setting at a value the census does not read under: a session
@@ -305,6 +330,7 @@ func TestDiagnoseHoldersReturnsWhenTheCleanupCannotFinish(t *testing.T) {
 // connection must still carry the row's setting after the commit, since Exec's settings end with
 // its transaction.
 func TestExecReadsAMigrationAsTheCensusReadsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// The census's parser reads each text below as one insert of the one constant after it. Under
 	// standard_conforming_strings off, \' escapes the quote after it: 'a\'' is a', and the rest of
@@ -408,7 +434,7 @@ func TestExecReadsAMigrationAsTheCensusReadsIt(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := Exec(ctx, tx, Migration{Version: 1, Name: "0001_r.up.sql", SQL: row.sql}, nil); err != nil {
+			if err := (Locking{}).Exec(ctx, tx, Migration{Version: 1, Name: "0001_r.up.sql", SQL: row.sql}, nil); err != nil {
 				t.Fatalf("Exec: %v", err)
 			}
 			if err := tx.Commit(ctx); err != nil {
@@ -449,6 +475,7 @@ func TestExecReadsAMigrationAsTheCensusReadsIt(t *testing.T) {
 // the two rows that set it skip when it is not, except on GitHub Actions, where they fail
 // (testdb.SkipOutsideCI).
 func TestExecResolvesNamesUnderTheValuesResetGives(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	url := testpg.URL(t)
 	config, err := pgx.ParseConfig(url)
@@ -526,7 +553,7 @@ func TestExecResolvesNamesUnderTheValuesResetGives(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := Exec(ctx, tx, Migration{Version: 1, Name: "0001_seen.up.sql", SQL: "insert into public.seen select current_setting('search_path'), current_user, session_user"}, nil); err != nil {
+			if err := (Locking{}).Exec(ctx, tx, Migration{Version: 1, Name: "0001_seen.up.sql", SQL: "insert into public.seen select current_setting('search_path'), current_user, session_user"}, nil); err != nil {
 				t.Fatalf("Exec: %v", err)
 			}
 			if err := tx.Commit(ctx); err != nil {

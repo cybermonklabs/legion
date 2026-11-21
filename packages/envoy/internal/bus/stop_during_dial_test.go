@@ -1,5 +1,8 @@
 package bus_test
 
+// Both tests here point the default slog handler at a writer of their own (logtest.SetDefault), a
+// process-wide swap, so neither is parallel (dispatch://INFRA-1075).
+
 import (
 	"bytes"
 	"log/slog"
@@ -38,7 +41,7 @@ func TestARecoveryStoppedMidDialInstallsNothingAndLogsNoError(t *testing.T) {
 	client.Conn.Close()
 	select {
 	case <-proxy.held:
-	case <-time.After(10 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("the recovery never dialled")
 	}
 	_ = client.Drain(5 * time.Second)
@@ -93,7 +96,7 @@ func TestARecoveryDiallingALostServerEndsAtTheStop(t *testing.T) {
 	client.Conn.Close()
 	select {
 	case <-proxy.held:
-	case <-time.After(10 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("the recovery never dialled")
 	}
 	client.Close()

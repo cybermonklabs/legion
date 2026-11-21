@@ -523,6 +523,7 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   A container log rotates — the production pod's reached back 45 minutes, nine passes — and the question a person asks is usually about a head read hours ago, so the counts live in Postgres as well.
   The pass writes its row when it starts, with its process's `server_processes` instance id and the moment it started, and fills the rest in when it ends: the end time, the eight counts its line carries (`graphql_queries`, `graphql_points`, `rest_requests`, `rest_not_modified`, `heads_over_rest`, `records`, `heads`, `heads_known`), how it ended (`complete`, `deadline`, `rate_limit` or `cancelled`, which are the whole set the column's check allows) and where it left the cursor.
   The end write runs on a bounded context of its own, never the pass's, exactly as a lease's own statements do (`duty.LeaseCall`): the pass's context is the thing that has just expired for the pass this record matters most for, and a write made on it would land nowhere.
+  The start write runs on one too, so a shutdown that cancels the pass while its insert is in flight never parts the pass from a row Postgres has already written: the pass still closes that row, as `cancelled`, and the row never reads as a killed process.
   A pass whose process is not registered yet writes no row at all, which is the first pass or two of a process: the loops start before `processes.Register` returns, since registration waits out a live peer whose signing keys do not match.
   A pass its process's shutdown cancelled records `cancelled`, which its own line does not say (`deadline_reached` names the pass's own bound and nothing else) and the `dispatch duty: leased pass cut short by shutdown` line beside it says only while the log still holds it: the row is read a day later, and a reader of it must not take an interrupted pass for a finished one.
   The pass that ends deletes every row older than 48 hours, so one pass every five minutes leaves about 576 rows and the prune needs no loop of its own.
@@ -714,18 +715,20 @@ cd packages/envoy
 ./scripts/dev-postgres.sh
 ```
 
-It prints the `DATABASE_URL` to use for development and tests.
+It prints the `DATABASE_URL` to use for development.
 Run again, it starts or reuses the same `dispatch-pg` container, which runs its pinned image:
 pgvector on PostgreSQL 18, whose `vector` extension the migrations need.
 It refuses a `dispatch-pg` on any other image or major and prints the commands that dump that container's databases and restore them into a new container on the pinned image.
-The database retains the migrated schema; tests only truncate rows they create.
+The `dispatch` database keeps its migrated schema, and a Go test never writes in it: each test makes a database of its own on the same server and drops it when the test ends, and the templates stay on the server (`docs/testing.md`, "A database a Go test creates").
+Most tests clone a migrated template; a test of the migration runner itself, and a test outside Dispatch's own store that opens a database through `internal/testpg` and migrates it (`cmd/listener/dispatch_resolution_test.go`'s `migratedDispatchDatabase`), start from an empty one instead.
+The test commands under Tests run against a throwaway server instead (`./scripts/dev-postgres.sh --throwaway`), which runs them faster and serves more connections at once; Tests says why.
 
 ## A large test database
 
 `go run ./cmd/dispatch-seed` fills an empty database with the data set a statement measurement is taken on:
 ten times production's row counts at `--scale 1` — 10 projects, 20,000 issues over parent chains and `blocked_by` links, 40,000 documents with 200,000 versions, 80,000 asks, 370,000 comments, 60,000 messages, 1,250,000 events beside the `ask.opened` event every ask is written with, and a vector for half the issues, documents, asks, comments and messages
 — and the same shape times the scale at any other.
-It is deterministic: one fixed base time, one fixed random seed, and a fixed block id generator (`pmdoc.SetBlockIDGenerator`), so two runs at one scale write the same rows and a reading taken before a change and one taken after it read the same data.
+It is deterministic: one fixed base time, one fixed random seed, and block ids from a counter the run itself holds, restarted for each document and handed to the one parse whose ids are stored (`seedRun.blockIDs`, `pmdoc.ParseWithBlockIDs`), so two runs at one scale write the same rows and a reading taken before a change and one taken after it read the same data.
 The text is drawn from a Zipf list of 20,000 words, so the `tsvector` columns carry real lexemes at known frequencies.
 
 ```sh
@@ -1521,10 +1524,10 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
 
 - The suggestion outcome sweep (`api.RunSuggestionOutcomeSweep`) is woken by `dispatch_events` (`0107`), which every event commit notifies whichever process made it.
   Passes start at least 60 s apart.
-  A pass reads the events after its cursor (`suggestion_outcome_cursor`, `0154`) and at or below the event log's safe horizon, as the per-process relay behind a reader's events subscription reads:
+  A pass reads the events after its cursor (`suggestion_outcome_cursor`, `0154`) and at or below the event log's writer floor, the highest id at or below which no event of this database's log can still be open (`eventWriterFloor`, `events.Horizon.WriterFloor`):
   event ids are not commit order, so a cursor moved past an event that could still commit would never judge by it.
-  The pass takes that horizon once (`events.Horizon.Safe`, the server's one `Horizon`;
-  the first pass after a start takes `events.Horizon.Await`, which waits until the transactions holding an event id on the instance end, and ends with its context), and one left with an event above it asks for a pass 60 s on rather than re-reading at once, so a horizon an open transaction holds back costs one pass a minute;
+  The floor counts only the transactions holding a write lock on this database's `events` table, where the safe horizon counts every transaction open anywhere on the instance, so an operator's `psql` session in another database holds the sweep back no longer.
+  The one case the floor cannot bound - a floor of 0 with events in the log, an event write open since before every mark the sweep has taken - falls back to the safe horizon (`events.Horizon.Await`, which waits until the transactions holding an event id on the instance end, and ends with its context), and a pass left with an event above its bound asks for a pass 60 s on rather than re-reading at once;
   the late commit's own `dispatch_events` notification wakes the loop as any other does.
   A pass also reads the suggestions no pass has judged yet (`write_suggestions.swept`, `0155`), in pages of 1,000, each page in a transaction that holds the cursor row `for update`, and judges only the pending suggestions those can resolve:
   the newly recorded ones, against all their events, and those whose source issue, source document or suggested issue a page's event names.
@@ -1733,7 +1736,7 @@ For a file with no `-- replaces:` line that identity is the file's own; for one 
 A row the runner fills, which an earlier runner wrote, records no applied text, since nothing says which text ran.
 The runner adds the nullable columns itself to a table an earlier runner made, in the locked transaction that creates the table (`prepareVersionTable`), reading the columns first so that the `alter table` runs once per database:
 it takes `ACCESS EXCLUSIVE` on `schema_migrations`, and its wait is bounded by `pgmigrate.LockTimeout`, five seconds.
-A wait that outlasts it, behind a `pg_dump` or a census, rolls the transaction back and tries it again, up to `pgmigrate.LockTimeoutAttempts` times with a pause between, as a migration is tried (`pgmigrate.RetryVersionTableLockTimeouts`); a holder that outlives every attempt fails the boot with the lock-timeout error, not a refusal.
+A wait that outlasts it, behind a `pg_dump` or a census, rolls the transaction back and tries it again, up to `pgmigrate.LockTimeoutAttempts` times with a pause between, as a migration is tried (`pgmigrate.Locking.RetryVersionTableLockTimeouts`); a holder that outlives every attempt fails the boot with the lock-timeout error, not a refusal.
 Adding the columns is a catalog change that rewrites no row; where the same boot also widens the version column (above), once, for a table from before the timestamps, the one statement does both, and the widen rewrites the table's few hundred rows.
 Every statement the release before it sends on the table names its columns, so that release serves beside it while it rolls, and the rows it writes record no name.
 In the same transaction, before it applies anything, the runner reads every row and judges it against this build's file of the row's version (`pgmigrate.Reconcile`):
@@ -1794,7 +1797,7 @@ A migration edited in place after this runner's first release needs its replaces
 `envoy-broker versions` is the broker's, signing in as a broker pod does (`docs/site/src/content/docs/broker/operate.md`).
 The pre-deploy census (`envoy-dispatch census`) reads only which versions are recorded, and judges no identity.
 
-A file whose first line is exactly `-- pgmigrate:non-transactional` runs outside a transaction (`pgmigrate.ExecNonTransactional`).
+A file whose first line is exactly `-- pgmigrate:non-transactional` runs outside a transaction (`pgmigrate.Locking.ExecNonTransactional`).
 The loader accepts that marker only on one non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` statement, parsed as PostgreSQL parses it; UNIQUE indexes, multiple statements and other commands refuse the whole set.
 It refuses, naming the line, a file that holds the marker as a comment of its own on any other line, as one does with a replaces line written above it: that file would run in a transaction, and its concurrent index would fail on a fresh database.
 The runner owns and closes that connection and holds the session-level advisory lock on the same migration key through the build and its separate version insert, excluding transactional runners and schema-version readers too.
@@ -1807,9 +1810,9 @@ A relation of that name that is no index at all is refused by name, with its rel
 An index of another name, INVALID or not, is neither dropped nor refused.
 The broker's all-in-one-transaction runner refuses a marked file before applying any migration.
 
-Every migration's lock waits are bounded at five seconds (`pgmigrate.LockTimeout`), set after the runner's advisory lock: transaction-local in `pgmigrate.Exec`, or session-local and restored on return in `pgmigrate.ExecNonTransactional`.
+Every migration's lock waits are bounded by the runner's `pgmigrate.Locking`, whose zero value, the one production runs, bounds them at five seconds (`pgmigrate.LockTimeout`), set after the runner's advisory lock: transaction-local in `pgmigrate.Locking.Exec`, or session-local and restored on return in `pgmigrate.Locking.ExecNonTransactional`.
 A migration queued behind a long transaction gives up instead of holding every read and write of its table behind its request.
-The runner then rolls the transaction back or closes the owned connection, holds nothing for two seconds (`pgmigrate.LockTimeoutRetryPause`) so queued requests run, and tries again, up to three attempts (`pgmigrate.LockTimeoutAttempts`, `pgmigrate.RetryLockTimeouts`).
+The runner then rolls the transaction back or closes the owned connection, holds nothing for two seconds (`pgmigrate.LockTimeoutRetryPause`) so queued requests run, and tries again, up to three attempts (`pgmigrate.LockTimeoutAttempts`, `pgmigrate.Locking.RetryLockTimeouts`).
 A build that failed, or one still running, may leave an INVALID index of the migration's own name, which the next attempt drops and builds again; each of the drop's lock waits is bounded at the same five seconds and watched the same way, so a drop queued behind a lock is a timed-out attempt like any other.
 An attempt is several lock waits, the drop's and the build's, so three attempts bound no total: five seconds bounds each wait, not the migration.
 Each timed-out attempt is logged at WARN.
@@ -1821,7 +1824,7 @@ A migration that needs another bound sets its own `SET LOCAL lock_timeout`, whic
 The secrets broker's runner applies every migration in one transaction, so it does not try again:
 rolling one attempt back would roll back the migrations before it too.
 
-The runner also applies each migration with `standard_conforming_strings` on, `backslash_quote` at `safe_encoding` and `client_encoding` at `UTF8` (`textSettings` in `internal/pgmigrate/lock.go`), set in the statement that sets `lock_timeout`: transaction-local in `pgmigrate.Exec`, or session-local and restored on return in `pgmigrate.ExecNonTransactional`.
+The runner also applies each migration with `standard_conforming_strings` on, `backslash_quote` at `safe_encoding` and `client_encoding` at `UTF8` (`textSettings` in `internal/pgmigrate/lock.go`), set in the statement that sets `lock_timeout`: transaction-local in `pgmigrate.Locking.Exec`, or session-local and restored on return in `pgmigrate.Locking.ExecNonTransactional`.
 So Postgres reads a migration's text as the census reads it ("Pre-deploy census" below), whatever a session setting, a connection option or a database default says.
 A `set` without `local` in a migration stays on its connection after the migration's transaction ends, until the runner resets the connection's session (below).
 So no later migration meets the setting.
@@ -1832,7 +1835,7 @@ The runner needs a database whose encoding holds every character of the migratio
 With `client_encoding` at `UTF8`, Postgres converts the text of each migration to the database's encoding, and it stops at the first character that this encoding does not have.
 On PostgreSQL 18.6, `select 1 -- em dash —` fails on a `LATIN1` database with `character with byte sequence 0xe2 0x80 0x94 in encoding "UTF8" has no equivalent in encoding "LATIN1"`, and it runs on a `SQL_ASCII` database.
 
-At the start of each migration the runner also gives `session_authorization`, `role` and `search_path`, in that order, the values that `reset` gives them (`resetSettings` in `internal/pgmigrate/lock.go`): transaction-local in `pgmigrate.Exec`, or session-local and restored on return in `pgmigrate.ExecNonTransactional`.
+At the start of each migration the runner also gives `session_authorization`, `role` and `search_path`, in that order, the values that `reset` gives them (`resetSettings` in `internal/pgmigrate/lock.go`): transaction-local in `pgmigrate.Locking.Exec`, or session-local and restored on return in `pgmigrate.Locking.ExecNonTransactional`.
 Postgres resolves a name that a migration writes without its schema by these three settings.
 `search_path` lists the schemas that a lookup searches, and its default starts with `"$user"`, the schema named for the session user, which `session_authorization` sets.
 `role` sets the current user, whose privileges decide which of those schemas a lookup can use.
@@ -1846,7 +1849,7 @@ The census reads with the same three values ("Pre-deploy census" below), so a mi
 The value that `reset` gives comes from a connection option, the role's default or the database's default, and never from a session `set`.
 So the census and the runner must connect as the same login with the same connection options, which gives both the same values.
 In a deployment, both take `DATABASE_URL` from the same Secret.
-The runner gives the three these values for its own check and record of a migration's version too: before the check, and again after the migration's statements (`pgmigrate.Pin`), since stored code that a migration runs can change them for the rest of its transaction.
+The runner gives the three these values for its own check and record of a migration's version too: before the check, and again after the migration's statements (`pgmigrate.Locking.Pin`), since stored code that a migration runs can change them for the rest of its transaction.
 Without the second reset, stored code that put another schema with its own `schema_migrations` first in the `search_path` made the runner record the version in that table.
 The runner does not give the three these values between two statements of one migration, so stored code that one statement runs can change what the names of a later statement of the same migration resolve to.
 In a migration that the census exempts, only an added column's default runs code.
@@ -2086,7 +2089,7 @@ Nothing validates it later — every row below the migration carries no sequence
 `0120` also creates `artifact_reviews_by_artifact_event_seq` on `(artifact_id, event_seq desc nulls
 last, created_at desc, id desc)`, `docs.ReviewOrder` per document, so the newest-review reads (`docs.LatestApprovedReview`, `latestReviewBy`) take one index entry rather than sort every review of the document.
 It is a plain `create index`, not `concurrently`:
-this unmarked migration runs inside one transaction (`internal/dispatch/store/store.go`, `pgmigrate.Exec`), where `concurrently` cannot run.
+this unmarked migration runs inside one transaction (`internal/dispatch/store/store.go`, `pgmigrate.Locking.Exec`), where `concurrently` cannot run.
 The build takes no lock the migration does not already hold
 — its `alter table` statements hold `artifact_reviews`' `ACCESS EXCLUSIVE` — and holds it while it reads the table's rows, which the census bounds by its 1 GiB limit;
 the census still answers `0`, since the build refuses and rewrites no row.
@@ -2147,7 +2150,7 @@ A B-tree entry holds at most 2704 bytes, and both indexes keyed the id itself, s
 under the 32-byte key every such write is written.
 `asks_block_id_unique` still keeps `(block_artifact_id, block_id)` unique under its name, and each index keeps the first column every read of it leads with, so the earlier release writes and reads through them as before.
 Each drop holds `asks` `ACCESS EXCLUSIVE` until the migration commits, so every read and write of an ask waits while the two indexes build over its rows.
-Each rebuild is a plain `create index`, not `concurrently`, which cannot run inside this unmarked migration's transaction (`internal/dispatch/store/store.go`, `pgmigrate.Exec`).
+Each rebuild is a plain `create index`, not `concurrently`, which cannot run inside this unmarked migration's transaction (`internal/dispatch/store/store.go`, `pgmigrate.Locking.Exec`).
 How long that wait lasts under production-scale data is unmeasured:
 this entry claims no duration, since a run on a throwaway Postgres gives a number off other disks, another cache and no live workload, which a deployer must not plan a lock window by.
 It refuses and rewrites no row: rows the old unique index held apart differ in their id, so they differ in its SHA-256.
@@ -5438,13 +5441,27 @@ Each item below names a status and code, then its meaning.
 
 ```sh
 cd packages/envoy
-export DISPATCH_TEST_DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch?sslmode=disable'
-go test -timeout 20m ./internal/dispatch/api
-go test -timeout 20m $(go list ./internal/dispatch/... ./cmd/dispatch/... | grep -v '/internal/dispatch/api$')
+./scripts/dev-postgres.sh --throwaway   # prints DATABASE_URL=postgres://postgres@127.0.0.1:55433/dispatch?sslmode=disable
+export DISPATCH_TEST_DATABASE_URL='postgres://postgres@127.0.0.1:55433/dispatch?sslmode=disable'
+go test -timeout 20m -skip '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestTheMentionSenderClaimModel)$' $(go list ./internal/dispatch/... ./cmd/dispatch/... | grep -Ev '/internal/dispatch/(routes|events)$')
+go test ./internal/dispatch/routes/
+go test ./internal/dispatch/events/
+go test -run '^TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument$' ./cmd/dispatch/
 go vet ./...
 ```
 
-`internal/dispatch/api` alone takes close to `go test`'s default ten-minute package deadline (about 600 s), so it runs first and on its own, with 20 minutes, as CI's `envoy-go` job runs it (`docs/testing.md`, "Go's package deadline").
+`internal/dispatch/api` is the module's largest Postgres-backed package by its number of tests and ran past `go test`'s default ten-minute package deadline on its own, 665 s in a CI run that ran it whole without `-race` (run 41703055842; the last two such runs of INFRA-1075's branch before it left `envoy-go`'s package list read 521.3 s and 555.0 s), so every command that includes it passes `-timeout 20m` (`docs/testing.md`, "Go's package deadline").
+Its claim model, `TestTheMentionSenderClaimModel`, took 19 min 18 s on its own and runs by name in the `envoy-go-claim-model` job, so the first command leaves it out.
+It no longer runs first or by itself: its independent tests run in parallel, as the other packages' do (`docs/testing.md`, "A test that calls `t.Parallel()`").
+
+The commands run against the throwaway server `./scripts/dev-postgres.sh --throwaway` starts, not the `dispatch-pg` container on 55432:
+that container keeps the image's default `max_connections` of 100, which several of these packages at once exhaust, and its durability, which makes every test's clone slower (`docs/testing.md`, "A test Postgres's five settings").
+`--throwaway` runs this host's own PostgreSQL binaries rather than a container, so that PostgreSQL must carry pgvector: migration `0072_embeddings_core` runs `create extension if not exists vector`, and without it no database migrates.
+`go test` runs as many package binaries at once, and as many parallel tests of each, as the machine has cores (`-p`, `-parallel`);
+on a machine of more than eight cores pass `-p 8 -parallel 12`, the shape of CI's unit call against the same 500 connections.
+The routes package, the events package and the shutdown feed test run after the rest rather than beside it, for the reason CI gives each of them a Postgres service of its own:
+their tests wait on the event log's safe horizon, which every transaction on the server holds back, other packages' clones included (`docs/testing.md`, "A test that calls `t.Parallel()`").
+The events package shares neither of the other two servers either, because its own tests hold transaction ids on purpose.
 
 `./scripts/dev-postgres.sh` prints the database URL to set (Local Postgres, above).
 One test: `go test -run TestName ./internal/dispatch/api`, which needs no deadline of its own.

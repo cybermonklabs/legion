@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,17 +26,124 @@ import (
 // proxy that ignores the name reaches the server.
 const unresolvable = "nats.example.test:4222"
 
-// waitForConnects waits for the proxy to have received n requests, every one of them want.
-func waitForConnects(t *testing.T, proxy *testsocks5.Server, n int, want testsocks5.Request) {
-	t.Helper()
-	waitFor(t, 15*time.Second, fmt.Sprintf("%d requests at the proxy", n), func() bool { return len(proxy.Requests()) >= n })
-	requireConnects(t, proxy, slices.Repeat([]testsocks5.Request{want}, n))
+// tunnelRecorder is a loopback relay in front of a testsocks5 proxy that records each connection
+// the bus makes to the proxy: when it arrived and how its tunnel ended. testsocks5 records a
+// request's address alone, and a connect attempt the bus cut at its timeout and dialled again
+// reaches the proxy as one more request with nothing to say why; the times here show it as a
+// second connection about that timeout after the first.
+type tunnelRecorder struct {
+	// Addr is the relay's own address, which a case hands the bus as its proxy.
+	Addr string
+	// lastDialError, when a case sets it, is the connect's own record of its latest dial through
+	// the proxy (bus.Client.LastProxyDialError).
+	lastDialError func() error
+
+	mu      sync.Mutex
+	tunnels []string
+	open    []net.Conn
 }
 
-func requireConnects(t *testing.T, proxy *testsocks5.Server, want []testsocks5.Request) {
+// recordTunnels relays every connection made to its Addr on to proxy until the test ends.
+func recordTunnels(t *testing.T, proxy string) *tunnelRecorder {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen in front of the proxy %s: %v", proxy, err)
+	}
+	recorder := &tunnelRecorder{Addr: listener.Addr().String()}
+	var relays sync.WaitGroup
+	accepting := make(chan struct{})
+	go func() {
+		defer close(accepting)
+		for {
+			client, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			arrived := time.Now()
+			recorder.mu.Lock()
+			index := len(recorder.tunnels)
+			recorder.tunnels = append(recorder.tunnels, "arrived "+arrived.Format(time.RFC3339Nano)+", still open")
+			recorder.open = append(recorder.open, client)
+			recorder.mu.Unlock()
+			relays.Go(func() { recorder.relay(index, arrived, client, proxy) })
+		}
+	}()
+	// The bus's own end of each tunnel is closed here, which ends its relay: a case's client is
+	// closed before this runs, and one it left open is closed for it.
+	t.Cleanup(func() {
+		_ = listener.Close()
+		<-accepting
+		recorder.mu.Lock()
+		for _, client := range recorder.open {
+			_ = client.Close()
+		}
+		recorder.mu.Unlock()
+		relays.Wait()
+	})
+	return recorder
+}
+
+// relay carries the connection that arrived at arrived, recorded at index, to proxy and back, and
+// records which side ended it and when.
+func (r *tunnelRecorder) relay(index int, arrived time.Time, client net.Conn, proxy string) {
+	ended := func(how string) {
+		r.mu.Lock()
+		r.tunnels[index] = fmt.Sprintf("arrived %s, ended after %s: %s",
+			arrived.Format(time.RFC3339Nano), time.Since(arrived).Round(time.Millisecond), how)
+		r.mu.Unlock()
+	}
+	// Each end is recorded before the bus's side is closed, so a case that reads the record once
+	// its connection has dropped reads how that connection ended.
+	upstream, err := net.Dial("tcp", proxy)
+	if err != nil {
+		ended(fmt.Sprintf("the proxy was not reached: %v", err))
+		_ = client.Close()
+		return
+	}
+	copied := make(chan string, 2)
+	go func() {
+		_, err := io.Copy(upstream, client)
+		copied <- fmt.Sprintf("the bus's side ended first (%v)", err)
+	}()
+	go func() {
+		_, err := io.Copy(client, upstream)
+		copied <- fmt.Sprintf("the proxy's side ended first (%v)", err)
+	}()
+	ended(<-copied)
+	_ = client.Close()
+	_ = upstream.Close()
+	<-copied
+}
+
+// String is every connection the relay carried, oldest first, for a failure message; a nil
+// recorder is a proxy a case dialled with no relay in front of it.
+func (r *tunnelRecorder) String() string {
+	if r == nil {
+		return "not recorded"
+	}
+	r.mu.Lock()
+	described := "[" + strings.Join(r.tunnels, "; ") + "]"
+	r.mu.Unlock()
+	if r.lastDialError != nil {
+		described += fmt.Sprintf("; the connect's latest dial through the proxy returned %v", r.lastDialError())
+	}
+	return described
+}
+
+// waitForConnects waits for the proxy to have received n requests, every one of them want.
+func waitForConnects(t *testing.T, proxy *testsocks5.Server, tunnels *tunnelRecorder, n int, want testsocks5.Request) {
+	t.Helper()
+	waitFor(t, busWait, fmt.Sprintf("%d requests at the proxy", n), func() bool { return len(proxy.Requests()) >= n })
+	requireConnects(t, proxy, tunnels, slices.Repeat([]testsocks5.Request{want}, n))
+}
+
+// requireConnects fails unless the proxy received exactly want, naming the connections tunnels
+// carried to it.
+func requireConnects(t *testing.T, proxy *testsocks5.Server, tunnels *tunnelRecorder, want []testsocks5.Request) {
 	t.Helper()
 	if got := proxy.Requests(); !slices.Equal(got, want) {
-		t.Fatalf("the proxy received %+v, want %+v", got, want)
+		t.Fatalf("the proxy received %+v, want %+v; the connections it was handed: %s", got, want, tunnels)
 	}
 }
 
@@ -82,17 +191,20 @@ type clientConnect func([]string, ...bus.ConnectOption) (*bus.Client, error)
 // for a Client the replacement its recovery dials once the connection is closed. The name resolves
 // nowhere, so a connection that went around the proxy would reach nothing.
 func TestSOCKS5ProxyCarriesEveryConnectionWithTheHostUnresolved(t *testing.T) {
+	t.Parallel()
 	want := testsocks5.Request{AddressType: 0x03, Address: unresolvable}
 	for name, connect := range map[string]clientConnect{"Connect": bus.Connect, "ConnectOwningStream": bus.ConnectOwningStream} {
 		t.Run(name, func(t *testing.T) {
 			uri := testnats.URL(t)
 			fake := testsocks5.Start(t, hostOf(t, uri))
-			client, err := connect([]string{withHost(t, uri, unresolvable)}, bus.WithEnvironment(proxied(fake.Addr)))
+			tunnels := recordTunnels(t, fake.Addr)
+			client, err := connect([]string{withHost(t, uri, unresolvable)}, bus.WithEnvironment(proxied(tunnels.Addr)))
 			if err != nil {
 				t.Fatalf("connect through the proxy: %v", err)
 			}
 			t.Cleanup(client.Close)
-			requireConnects(t, fake, []testsocks5.Request{want})
+			tunnels.lastDialError = client.LastProxyDialError
+			requireConnects(t, fake, tunnels, []testsocks5.Request{want})
 
 			const topic = "notifications.role.socks5"
 			received := make(chan []byte, 64)
@@ -103,7 +215,7 @@ func TestSOCKS5ProxyCarriesEveryConnectionWithTheHostUnresolved(t *testing.T) {
 				t.Helper()
 				envelope := roleEnvelope(topic)
 				envelope.EventID = marker
-				waitFor(t, 15*time.Second, "a core publish to come back through the proxy "+marker, func() bool {
+				waitFor(t, busWait, "a core publish to come back through the proxy "+marker, func() bool {
 					if err := client.Publish(envelope); err != nil {
 						return false
 					}
@@ -123,14 +235,14 @@ func TestSOCKS5ProxyCarriesEveryConnectionWithTheHostUnresolved(t *testing.T) {
 			roundTrip("after-the-first-connect")
 
 			fake.DropAll()
-			waitForConnects(t, fake, 2, want)
+			waitForConnects(t, fake, tunnels, 2, want)
 			roundTrip("after-the-reconnect-in-place")
 
 			// A connection nats.go has closed is replaced by the client's recovery, which dials
 			// with the same proxy.
 			client.Conn.Close()
-			waitForConnects(t, fake, 3, want)
-			waitFor(t, 15*time.Second, "the replacement connection", client.Connected)
+			waitForConnects(t, fake, tunnels, 3, want)
+			waitFor(t, busWait, "the replacement connection", client.Connected)
 			roundTrip("after-the-replacement")
 		})
 	}
@@ -138,12 +250,13 @@ func TestSOCKS5ProxyCarriesEveryConnectionWithTheHostUnresolved(t *testing.T) {
 	t.Run("Dial", func(t *testing.T) {
 		uri := testnats.URL(t)
 		fake := testsocks5.Start(t, hostOf(t, uri))
-		conn, err := bus.Dial("socks5-test", []string{withHost(t, uri, unresolvable)}, proxied(fake.Addr))
+		tunnels := recordTunnels(t, fake.Addr)
+		conn, err := bus.Dial("socks5-test", []string{withHost(t, uri, unresolvable)}, proxied(tunnels.Addr))
 		if err != nil {
 			t.Fatalf("dial through the proxy: %v", err)
 		}
 		t.Cleanup(conn.Close)
-		requireConnects(t, fake, []testsocks5.Request{want})
+		requireConnects(t, fake, tunnels, []testsocks5.Request{want})
 
 		const subject = "socks5.dial"
 		sub, err := conn.SubscribeSync(subject)
@@ -152,7 +265,7 @@ func TestSOCKS5ProxyCarriesEveryConnectionWithTheHostUnresolved(t *testing.T) {
 		}
 		roundTrip := func(marker string) {
 			t.Helper()
-			waitFor(t, 15*time.Second, "a publish to come back through the proxy "+marker, func() bool {
+			waitFor(t, busWait, "a publish to come back through the proxy "+marker, func() bool {
 				if err := conn.Publish(subject, []byte(marker)); err != nil {
 					return false
 				}
@@ -170,7 +283,7 @@ func TestSOCKS5ProxyCarriesEveryConnectionWithTheHostUnresolved(t *testing.T) {
 		roundTrip("after-the-first-connect")
 
 		fake.DropAll()
-		waitForConnects(t, fake, 2, want)
+		waitForConnects(t, fake, tunnels, 2, want)
 		roundTrip("after-the-reconnect-in-place")
 	})
 }
@@ -179,6 +292,7 @@ func TestSOCKS5ProxyCarriesEveryConnectionWithTheHostUnresolved(t *testing.T) {
 // nats.go resolves a URL's host itself unless told not to, and the address it found would reach
 // nothing through a proxy that knows names this machine's resolver does not.
 func TestSOCKS5ProxyIsHandedANameTheResolverKnows(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	server := hostOf(t, uri)
 	_, port, err := net.SplitHostPort(server)
@@ -186,18 +300,22 @@ func TestSOCKS5ProxyIsHandedANameTheResolverKnows(t *testing.T) {
 		t.Fatalf("read the test server's port from %s: %v", server, err)
 	}
 	fake := testsocks5.Start(t, server)
-	client, err := bus.Connect([]string{withHost(t, uri, net.JoinHostPort("localhost", port))}, bus.WithEnvironment(proxied(fake.Addr)))
+	tunnels := recordTunnels(t, fake.Addr)
+	client, err := bus.Connect([]string{withHost(t, uri, net.JoinHostPort("localhost", port))}, bus.WithEnvironment(proxied(tunnels.Addr)))
 	if err != nil {
 		t.Fatalf("connect through the proxy: %v", err)
 	}
 	t.Cleanup(client.Close)
-	requireConnects(t, fake, []testsocks5.Request{{AddressType: 0x03, Address: "localhost:" + port}})
+	tunnels.lastDialError = client.LastProxyDialError
+	requireConnects(t, fake, tunnels, []testsocks5.Request{{AddressType: 0x03, Address: "localhost:" + port}})
 }
 
 // A connect handed an environment that does not set the proxy dials the server directly, whatever
 // the process environment names; one left on the process environment goes through the proxy it
 // names. The connect's own lookup decides, never the process environment beside it.
 func TestNoProxyIsDialedWhenTheSettingIsUnset(t *testing.T) {
+	// Serial: it sets ENVOY_NATS_SOCKS5_PROXY and ENVOY_ALLOW_REMOTE_NATS with t.Setenv, which
+	// panics the process beside t.Parallel.
 	uri := testnats.URL(t)
 	server := hostOf(t, uri)
 	_, serverPort, err := net.SplitHostPort(server)
@@ -234,7 +352,7 @@ func TestNoProxyIsDialedWhenTheSettingIsUnset(t *testing.T) {
 	if net.ParseIP(host) != nil {
 		addressType = 0x01
 	}
-	requireConnects(t, fake, []testsocks5.Request{{AddressType: addressType, Address: server}})
+	requireConnects(t, fake, nil, []testsocks5.Request{{AddressType: addressType, Address: server}})
 	// The count the direct connect read as zero counts this one, so a direct connect that dialled
 	// the proxy too would have shown there.
 	if accepted := fake.Accepted(); accepted < 1 {
@@ -250,6 +368,7 @@ func TestNoProxyIsDialedWhenTheSettingIsUnset(t *testing.T) {
 // setting. Each connect makes the bus's ten attempts a second apart, so each subtest takes about
 // ten seconds; they run in parallel. Every proxy is a loopback address: nothing is looked up.
 func TestAFailedConnectThroughAProxyNamesIt(t *testing.T) {
+	t.Parallel()
 	urls := []string{"nats://" + unresolvable}
 	silent := testsocks5.Start(t, "127.0.0.1:1")
 	unreachable := testsocks5.StartRefusing(t, 0x04)
@@ -297,6 +416,8 @@ func TestAFailedConnectThroughAProxyNamesIt(t *testing.T) {
 // before the replacement dial has made its ten attempts, and still names the setting and the
 // proxy's address: an operator reads a publish's error first.
 func TestAPublishWhoseDeadlineEndsFirstNamesTheProxy(t *testing.T) {
+	// Serial: its assertion is a time (the publish fails at its 5 s deadline, within 7 s, before
+	// the replacement dial's ten attempts a second apart run out).
 	uri := testnats.URL(t)
 	fake := testsocks5.Start(t, hostOf(t, uri))
 	client, err := bus.Connect([]string{withHost(t, uri, unresolvable)}, bus.WithEnvironment(proxied(fake.Addr)))
@@ -336,6 +457,7 @@ func TestAPublishWhoseDeadlineEndsFirstNamesTheProxy(t *testing.T) {
 // failed dial through a proxy names the setting too, so "at once" is under a second. The server URL
 // is the fake itself, so a connect that ignored the setting and dialled directly would reach it.
 func TestAMalformedProxyIsRefusedBeforeAnyDial(t *testing.T) {
+	// Serial: its assertion is a time (each refusal comes within 1 s, before any dial).
 	fake := testsocks5.Start(t, "127.0.0.1:1")
 	urls := []string{"nats://" + fake.Addr}
 	connects := map[string]func(func(string) (string, bool)) error{
@@ -388,13 +510,14 @@ func TestAMalformedProxyIsRefusedBeforeAnyDial(t *testing.T) {
 		t.Fatalf("dial the server URL: %v", err)
 	}
 	_ = conn.Close()
-	waitFor(t, 5*time.Second, "the server URL to count a dial", func() bool { return fake.Accepted() >= 1 })
+	waitFor(t, busWait, "the server URL to count a dial", func() bool { return fake.Accepted() >= 1 })
 }
 
 // A host:port whose host is an IP address without a zone, or a DNS name as Go's resolver reads one
 // (underscores allowed, as in a Compose service name), passes the check, as does a port written
 // with leading zeros or the highest port.
 func TestAWellFormedProxyIsAccepted(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{
 		"127.0.0.1:1055", "[::1]:1055", "localhost:1055", "localhost.:1055",
 		"127.0.0.1:01055", "127.0.0.1:65535", "proxy.example.test:1080", "tailscale-sidecar:1055",
@@ -412,6 +535,7 @@ func TestAWellFormedProxyIsAccepted(t *testing.T) {
 // refusal prints the value: not the remote-reach refusal of a run that has not opted in, and not
 // the address check's.
 func TestARefusalNeverPrintsTheProxyValue(t *testing.T) {
+	t.Parallel()
 	const secret = "hunter2"
 	for _, value := range []string{
 		"socks5://user:" + secret + "@proxy.example:1080", "user:" + secret + "@127.0.0.1:1055",
@@ -458,7 +582,9 @@ func printsSome(message, secret string) bool {
 // labels by '.', '-' or '_', in lower case, and of any type (bus.HoldsSeed). The check decodes
 // rather than matching a shape: a 58-letter base32 label that is a user seed with one character
 // changed, which its checksum catches, is still a proxy address, whole or split across labels, and
-// a connect through it dials (about ten seconds, the bus's ten attempts). The rows run in parallel.
+// a connect through it dials (about ten seconds, the bus's ten attempts). The control rows run in
+// parallel with each other; the seed rows run one at a time.
+// Serial: it holds each seed row's three refusals to 1 s of wall clock.
 func TestAProxyHoldingAnNkeySeedIsRefused(t *testing.T) {
 	seedOf := func(create func() (nkeys.KeyPair, error)) string {
 		t.Helper()
@@ -491,7 +617,7 @@ func TestAProxyHoldingAnNkeySeedIsRefused(t *testing.T) {
 		{"lower case, split across labels", "sidecar." + lower(user[:25]) + "." + lower(user[25:]) + ".example.test:1055", user},
 	} {
 		t.Run("seed/"+row.name, func(t *testing.T) {
-			t.Parallel()
+			// Serial: each row bounds its three refusals at 1 s of wall clock.
 			if err := bus.CheckSOCKS5Proxy(row.value); err == nil || !strings.Contains(err.Error(), "nkey seed") || printsSome(err.Error(), row.seed) {
 				t.Errorf("CheckSOCKS5Proxy(%q) = %v, want a refusal saying it holds an nkey seed, printing none of it", row.value, err)
 			}

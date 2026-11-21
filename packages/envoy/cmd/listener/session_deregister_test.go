@@ -49,7 +49,7 @@ func (rig *sessionConsumerRig) requireNoConsumer(t *testing.T, sessionID string)
 // comes reads it before the delete.
 func (rig *sessionConsumerRig) awaitNoConsumer(t *testing.T, sessionID string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(listenerWait)
 	for {
 		_, err := rig.consumers.Info(context.Background(), sessionID)
 		if errors.Is(err, bus.ErrSessionConsumerNotFound) {
@@ -194,7 +194,7 @@ func TestAPublishToALaneTheListenerOwnsIsRefused(t *testing.T) {
 			if body := recorder.Body.String(); !strings.Contains(body, lane) {
 				t.Fatalf("the refusal of %s is %q, want it to name the lane %s it lies under", subject, body, lane)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 			defer cancel()
 			if _, err := client.LastStoredMessage(ctx, subject); !errors.Is(err, natsgo.ErrMsgNotFound) {
 				t.Fatalf("the stream holds a message on %s (%v); the refused publish stored nothing", subject, err)

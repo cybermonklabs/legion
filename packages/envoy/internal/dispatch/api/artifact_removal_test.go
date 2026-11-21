@@ -263,6 +263,15 @@ type removedEvent struct {
 // committed; and a settlement of the document that queued behind the removal for the issue's owner
 // lock reads on only after the commit, finds the document gone and ends saying nothing of it.
 func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) {
+	// Serial: three of its cases hold what the tests beside it share. The append in flight holds a
+	// write transaction open, which takes a transaction id and so holds back the event log's safe
+	// horizon (pg_snapshot_xmin) that the package's parallel horizon readers wait on. The room's
+	// case points slog's default logger at a buffer of its own (captureLogs), which every other
+	// test's logging would join, and its assertion is a quiet window: nothing reads the removed
+	// document again within 1 s. The queued settlement's case holds the issue's row `for no key
+	// update` in an open transaction, which takes a transaction id the same way, and points the
+	// default logger at a buffer of its own too (captureLogs).
+
 	// The settlement is held back for the test's duration, so an edit written into a room is
 	// still unsettled when the removal reads it. The room test below runs a server of its own,
 	// which settles.
@@ -762,6 +771,8 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 // The close carries no content: the removal is refused for anything but an untouched document,
 // which the test reads as the document's one empty version before it removes anything.
 func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
+	// Serial: its assertion is a quiet window: after the removal, no append of the document reaches
+	// doc_updates and neither process holds its room again within 1 s.
 	ctx := context.Background()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	removing, ok := deps.Docs.(*docs.Service)
@@ -957,12 +968,14 @@ func documentAppendCount(t *testing.T, database *store.Store, artifactID string)
 // row to naming the document no more: only the cursor, which censusExempt says is a position in
 // the fill, may keep the removed id.
 func TestRemovingTheDocumentTheSearchFillCursorNamesKeepsTheFillsProgressRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, pass := range []struct {
 		state string
 		done  bool
 	}{{"finished", true}, {"running", false}} {
 		t.Run("a "+pass.state+" pass", func(t *testing.T) {
+			t.Parallel()
 			handler, database := newTestHandlerWithStore(t)
 			issue := createInteractionIssue(t, handler, "TEST", "A document the search fill reached last", "# Spec\n\nA passage.\n")
 			document := emptyDocument(t, handler, issue.Key, "Cursor notes")

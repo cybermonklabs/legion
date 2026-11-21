@@ -38,6 +38,7 @@ func TestEndDrainEndsOnlyTheDrainItWasStartedFor(t *testing.T) {
 }
 
 func TestRootFindsSelfAndDescendantOnly(t *testing.T) {
+	t.Parallel()
 	reg := NewRegistry(filepath.Join(t.TempDir(), "sessions.json"))
 	self := os.Getpid()
 	sess, err := newSession(self, 1, "h:1:1", "", nil, nil)
@@ -152,6 +153,7 @@ func TestAdmitRootRefusesARootAboveALiveSession(t *testing.T) {
 }
 
 func TestSaveAndLoadRecordsCarryNoKey(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "sessions.json")
 	reg := NewRegistry(path)
 	sess, err := newSession(4242, 99, "h:4242:99", "", nil, nil)
@@ -188,6 +190,7 @@ func TestSaveAndLoadRecordsCarryNoKey(t *testing.T) {
 // directory, so the caller that closed the registry can remove that directory while the
 // helper's goroutines are still finishing a retire or an enrollment.
 func TestASaveAfterCloseWritesNothing(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sessions.json")
 	reg := NewRegistry(path)
@@ -212,6 +215,7 @@ func TestASaveAfterCloseWritesNothing(t *testing.T) {
 }
 
 func TestStateFollowsEnrollment(t *testing.T) {
+	t.Parallel()
 	sess, err := newSession(1, 1, "h:1:1", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)

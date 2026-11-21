@@ -146,6 +146,7 @@ func (r *outageRig) after(cancel context.CancelFunc, t *testing.T) func(time.Dur
 // session was gone; above it, it renews. The walk it
 // takes is asserted instant by instant against the model config.Load refuses by, so the two can
 // never say different things about the same renewer.
+// Serial: renewalSession sets AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR with t.Setenv (see renewalSession).
 func TestRenewLoopOutlivesAnOutageOnlyAtTheLeaseBound(t *testing.T) {
 	const sweep = 10 * time.Second
 	model := leasetime.Production()
@@ -197,7 +198,7 @@ func TestRenewLoopOutlivesAnOutageOnlyAtTheLeaseBound(t *testing.T) {
 			client.http.Transport = rig
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			if got := renewLoop(ctx, client, signer, enrollmentID, "", io.Discard, rig.after(cancel, t)); got != c.wantExit {
+			if got := renewLoop(ctx, client, signer, enrollmentID, "", io.Discard, rig.after(cancel, t), leasetime.RenewBackoffMax); got != c.wantExit {
 				t.Fatalf("renew loop exit = %d, want %d", got, c.wantExit)
 			}
 			// The renewer reads its lease a few milliseconds after the broker granted it —

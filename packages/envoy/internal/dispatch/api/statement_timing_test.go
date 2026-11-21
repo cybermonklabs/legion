@@ -65,6 +65,10 @@ const (
 // copied a second time: two copies of one statement drift apart, and those oracles are what the
 // package's equality tests are held to.
 func TestStatementTimings(t *testing.T) {
+	// No t.Parallel: this test reads each statement's planning plus execution time from EXPLAIN
+	// ANALYZE on the measurement database and fails a pair whose after median is not below its
+	// before median (benchtime.Pair), so another test's load on the same machine would read as
+	// one side's own time.
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	subjects := runner.Subjects()
 
@@ -351,6 +355,9 @@ func databaseHoldsDocumentSearch(t *testing.T, runner *benchtime.Runner) bool {
 // after it counts every project in full by this build's own rule, and timing that would measure
 // a first-use full build rather than the steady state.
 func TestRelatedTermsRefreshTiming(t *testing.T) {
+	// No t.Parallel: this test times each related-terms refresh pass by the wall clock and fails
+	// one that is not below the released full rebuild's pass, timed the same way in this run, so
+	// another test's CPU and round trips on the same machine would read as a pass's own.
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	project := runner.Subjects().Project
 	database := openRefreshTimingStore(t)

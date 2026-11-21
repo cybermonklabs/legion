@@ -69,6 +69,7 @@ func createSuggestionProject(t *testing.T, handler http.Handler, key string) {
 // whose title and body restate an open issue returns that issue among the three suggestions,
 // with its status and a link.
 func TestCreateIssueSuggestsSimilarOpenIssue(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createSuggestionProject(t, handler, "SUGG")
 
@@ -127,6 +128,7 @@ func TestCreateIssueSuggestsSimilarOpenIssue(t *testing.T) {
 // contriving a genuinely slow query. That context is the caller's, not the check's allowance, so
 // the check says the request ended first rather than that the search ran out of time.
 func TestRelatedCheckReportsNotMadeWhenItsContextIsDone(t *testing.T) {
+	t.Parallel()
 	_, _, deps := newTestServer(t, testServerOptions{})
 	srv := directServer(deps)
 
@@ -170,6 +172,7 @@ func TestRelatedCheckReportsNotMadeWhenItsContextIsDone(t *testing.T) {
 // ask, so this case fails on the bound and not on an empty corpus. The filing's answer then names
 // the ask nowhere. A change that offers it again fails here, and that is what this case is for.
 func TestSuggestionsOfferNoAnsweredAskBehindTheTopThree(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createSuggestionProject(t, handler, "NOOFFER")
 	const question = "Should the billing service public API use REST or GraphQL?"
@@ -209,7 +212,7 @@ func TestSuggestionsOfferNoAnsweredAskBehindTheTopThree(t *testing.T) {
 		"title": {question}, "exclude_issues": open,
 	})
 	if relatedAsk(t, withoutTheThree, settled).ID != settled {
-		t.Fatalf("related = %+v, want the ask %s, which the search does find", withoutTheThree.Related, settled)
+		t.Fatalf("suggestions = %s, want the ask %s, which the search does find", asJSON(t, withoutTheThree), settled)
 	}
 
 	target := createSearchIssue(t, handler, "NOOFFER", "Pick an API transport for the checkout service", "")
@@ -224,7 +227,8 @@ func TestSuggestionsOfferNoAnsweredAskBehindTheTopThree(t *testing.T) {
 		t.Fatalf("advice.suggestions missing: %s", response.Body.String())
 	}
 	if owners := relatedOwners(*created.Advice.Suggestions); len(owners) != suggestionRelatedCount {
-		t.Fatalf("related owners = %v, want the %d open issues %v", owners, suggestionRelatedCount, open)
+		t.Fatalf("related owners = %v, want the %d open issues %v; suggestions = %s",
+			owners, suggestionRelatedCount, open, asJSON(t, created.Advice.Suggestions))
 	}
 	for _, item := range created.Advice.Suggestions.Related {
 		if !slices.Contains(open, item.Owner.Key) {
@@ -463,6 +467,7 @@ func TestCreateAskOnIssueKeepsSuggestionsWhenWriteAdviceFails(t *testing.T) {
 // register had been given a suggestionTimeout of its own, and that drift is what the field makes
 // possible (INFRA-56).
 func TestTheDeploymentsRelatedCheckAllowanceIsTheDocumentedBound(t *testing.T) {
+	t.Parallel()
 	if got := register(http.NewServeMux(), t.Context(), Deps{}).relatedAllowance(); got != 5*time.Second {
 		t.Fatalf("the server a deployment runs allows %s for its related-item check, want 5s as the route descriptions promise", got)
 	}
@@ -492,6 +497,7 @@ func relatedIndex(related []testSuggestionItem, issueKey string) int {
 // already closed as a duplicate shares the new issue's exact title, so keyword search ranks it
 // above the open issue it was closed into. The open issue is the one to act on, so it comes first.
 func TestCreateIssueSuggestsTheOpenSurvivorAboveAClosedDuplicate(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createSuggestionProject(t, handler, "SURV")
 	survivor := createSuggestionIssue(t, handler, map[string]any{
@@ -513,7 +519,7 @@ func TestCreateIssueSuggestsTheOpenSurvivorAboveAClosedDuplicate(t *testing.T) {
 	related := created.Advice.Suggestions.Related
 	open, done := relatedIndex(related, survivor), relatedIndex(related, closed)
 	if open < 0 || (done >= 0 && done < open) {
-		t.Fatalf("related = %+v, want the open %s ahead of the closed %s", related, survivor, closed)
+		t.Fatalf("suggestions = %s, want the open %s ahead of the closed %s", asJSON(t, created.Advice.Suggestions), survivor, closed)
 	}
 }
 
@@ -523,6 +529,7 @@ func TestCreateIssueSuggestsTheOpenSurvivorAboveAClosedDuplicate(t *testing.T) {
 // the own issue and its spec too; only the other may be listed. The term statistics are refreshed
 // once both issues exist, as the periodic refresh would have.
 func TestCreateAskExcludesItsOwnIssue(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createSuggestionProject(t, handler, "OWN")
 	own := createSuggestionIssue(t, handler, map[string]any{
@@ -545,17 +552,18 @@ func TestCreateAskExcludesItsOwnIssue(t *testing.T) {
 	}
 	for _, item := range created.Advice.Suggestions.Related {
 		if item.ID == own || item.Owner.Key == own {
-			t.Fatalf("related = %+v, want nothing owned by the ask's own issue %s", created.Advice.Suggestions.Related, own)
+			t.Fatalf("suggestions = %s, want nothing owned by the ask's own issue %s", asJSON(t, created.Advice.Suggestions), own)
 		}
 	}
 	if relatedIndex(created.Advice.Suggestions.Related, other) < 0 {
-		t.Fatalf("related = %+v, want %s, which shares a word with the question", created.Advice.Suggestions.Related, other)
+		t.Fatalf("suggestions = %s, want %s, which shares a word with the question", asJSON(t, created.Advice.Suggestions), other)
 	}
 }
 
 // TestCreateAskOnProjectDocumentSuggests: an ask on an unlinked project document gets suggestions
 // too, searched within that document's project.
 func TestCreateAskOnProjectDocumentSuggests(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createSuggestionProject(t, handler, "PDOC")
 	match := createSuggestionIssue(t, handler, map[string]any{
@@ -583,7 +591,7 @@ func TestCreateAskOnProjectDocumentSuggests(t *testing.T) {
 		t.Fatalf("advice.suggestions missing on a project-document ask: %s", response.Body.String())
 	}
 	if relatedIndex(created.Advice.Suggestions.Related, match) < 0 {
-		t.Fatalf("related = %+v, want %s from the document's project", created.Advice.Suggestions.Related, match)
+		t.Fatalf("suggestions = %s, want %s from the document's project", asJSON(t, created.Advice.Suggestions), match)
 	}
 }
 
@@ -598,11 +606,15 @@ func seedWriteSuggestion(
 	if suggestedIssueKey != "" {
 		issueKey = suggestedIssueKey
 	}
+	// created_at is written ten milliseconds back rather than left at now(): every caller needs
+	// the writes it makes next to postdate this row, and a row stamped in the past is that gap,
+	// where sleeping ten milliseconds before each write was the test waiting on a clock for a
+	// row it owns.
 	if _, err := srv.deps.Store.Pool.Exec(context.Background(), `
 		insert into write_suggestions
 			(source_kind, source_issue_key, source_ask_id, actor_kind, actor_id, role, rank,
-			 suggested_kind, suggested_id, suggested_issue_key)
-		values ($1, $2, $3, 'user', $4, 'related', 0, $5, $6, $7)
+			 suggested_kind, suggested_id, suggested_issue_key, created_at)
+		values ($1, $2, $3, 'user', $4, 'related', 0, $5, $6, $7, now() - interval '10 milliseconds')
 	`, sourceKind, sourceIssueKey, askID, actorID, suggestedKind, suggestedID, issueKey); err != nil {
 		t.Fatalf("seed write_suggestions: %v", err)
 	}
@@ -629,6 +641,7 @@ func readSuggestionOutcome(t *testing.T, srv *server, sourceIssueKey, suggestedI
 // duplicate of it": a comment on the source issue citing the suggested issue creates a
 // reference-graph edge, which the sweep reads as acted_on.
 func TestSuggestionOutcomeSweepMarksActedOnWhenSourceCitesTarget(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{})
 	srv := directServer(deps)
 	createSuggestionProject(t, handler, "OUT1")
@@ -641,7 +654,6 @@ func TestSuggestionOutcomeSweepMarksActedOnWhenSourceCitesTarget(t *testing.T) {
 	}, "alice"))
 
 	seedWriteSuggestion(t, srv, "issue", source.Key, "", "alice", "issue", target.Key, target.Key)
-	time.Sleep(10 * time.Millisecond) // the citation must postdate the suggestion row
 
 	closing := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+source.Key+"/messages", map[string]any{
 		"body": "Duplicate of dispatch://" + target.Key,
@@ -661,6 +673,7 @@ func TestSuggestionOutcomeSweepMarksActedOnWhenSourceCitesTarget(t *testing.T) {
 // TestSuggestionOutcomeSweepMarksActedOnWhenTargetUpdatedDirectly covers "update the existing
 // issue instead of filing another" done without citing the new issue back.
 func TestSuggestionOutcomeSweepMarksActedOnWhenTargetUpdatedDirectly(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{})
 	srv := directServer(deps)
 	createSuggestionProject(t, handler, "OUT2")
@@ -673,7 +686,6 @@ func TestSuggestionOutcomeSweepMarksActedOnWhenTargetUpdatedDirectly(t *testing.
 	}, "alice"))
 
 	seedWriteSuggestion(t, srv, "issue", source.Key, "", "alice", "issue", target.Key, target.Key)
-	time.Sleep(10 * time.Millisecond)
 
 	updated := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+target.Key+"/messages", map[string]any{
 		"body": "Adding the new detail here instead.",
@@ -693,6 +705,7 @@ func TestSuggestionOutcomeSweepMarksActedOnWhenTargetUpdatedDirectly(t *testing.
 // TestSuggestionOutcomeSweepMarksOverriddenWhenSourceContinuesWithoutCitingTarget covers an
 // agent that saw the suggestion and kept working on what it filed instead.
 func TestSuggestionOutcomeSweepMarksOverriddenWhenSourceContinuesWithoutCitingTarget(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{})
 	srv := directServer(deps)
 	createSuggestionProject(t, handler, "OUT3")
@@ -705,7 +718,6 @@ func TestSuggestionOutcomeSweepMarksOverriddenWhenSourceContinuesWithoutCitingTa
 	}, "alice"))
 
 	seedWriteSuggestion(t, srv, "issue", source.Key, "", "alice", "issue", target.Key, target.Key)
-	time.Sleep(10 * time.Millisecond)
 
 	continued := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+source.Key+"/messages", map[string]any{
 		"body": "This is in fact a separate problem; continuing here.",
@@ -725,6 +737,7 @@ func TestSuggestionOutcomeSweepMarksOverriddenWhenSourceContinuesWithoutCitingTa
 // TestSuggestionOutcomeSweepLeavesSuggestionIgnoredWithNoFurtherActivity is the default: nothing
 // refuses the write and nothing is counted until some signal arrives.
 func TestSuggestionOutcomeSweepLeavesSuggestionIgnoredWithNoFurtherActivity(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{})
 	srv := directServer(deps)
 	createSuggestionProject(t, handler, "OUT4")

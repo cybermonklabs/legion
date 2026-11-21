@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	nats "github.com/nats-io/nats.go"
 
@@ -43,7 +42,7 @@ func newRoleClaimReleaseRig(t *testing.T, sessionID, role, instance string) *rol
 	t.Helper()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	registerInstance(t, sessions, sessionID, holdingProcess)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	if _, err := registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "test-machine"}, []string{releaseKeptTopic}); err != nil {
 		t.Fatalf("register %s's interests: %v", sessionID, err)

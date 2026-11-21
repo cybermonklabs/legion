@@ -10,7 +10,7 @@ import (
 // proofFixture is a migrated database of the test's own and the replay store on it.
 func proofFixture(t *testing.T) *DPoPProofs {
 	t.Helper()
-	database := migratedEmptyStore(t)
+	database := openTestStore(t)
 	return NewDPoPProofs(database.Pool)
 }
 
@@ -77,6 +77,7 @@ func TestTwoPresentationsOfOneProofAtOnceLeaveExactlyOneUnused(t *testing.T) {
 // A record whose proof can no longer be presented is taken over by the next proof of the same
 // key, so a 'jti' a client reuses long after its proof expired is not refused as a replay.
 func TestAnExpiredRecordIsTakenOver(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	proofs := proofFixture(t)
 

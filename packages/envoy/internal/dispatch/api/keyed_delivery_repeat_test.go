@@ -17,6 +17,7 @@ import (
 // Its key holds the message, so the repeat past the lease neither runs the write again nor answers
 // KEY_COMMITTED: it sends what is owed, once, and answers the message with its deliveries.
 func TestARepeatOfAnIssueMessageDeliversWhatItOwesAndWritesNothing(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL})
 	issue := createTestIssue(t, handler, "KEYD", "Keyed issue messages")
@@ -51,10 +52,12 @@ func TestARepeatOfAnIssueMessageDeliversWhatItOwesAndWritesNothing(t *testing.T)
 	answered := decodeBody[model.Message](t, repeat)
 	if answered.ID != messageID || len(answered.Deliveries) != 1 || answered.Deliveries[0].Attempt != 1 ||
 		answered.Deliveries[0].State != "sent" || answered.Deliveries[0].SessionID != "s1" {
-		t.Fatalf("the repeat answered %#v, want message %s with attempt 1 sent to s1", answered, messageID)
+		t.Fatalf("the repeat answered message %s with attempts %s, want message %s with attempt 1 sent to s1",
+			answered.ID, describeAttempts(answered.Deliveries), messageID)
 	}
 	if keys := keysOf(sends); !equalStrings(keys, []string{messageID + ":steer"}) {
-		t.Fatalf("listener sends = %v, want the message once, in its own mode", keys)
+		t.Fatalf("listener sends = %v, want the message once, in its own mode; attempts: %s",
+			keys, describeAttempts(messageAttempts(t, database, messageID)))
 	}
 	if messages := countMessages(t, database); messages != 1 {
 		t.Fatalf("the database holds %d messages, want the one", messages)
@@ -89,6 +92,7 @@ func TestARepeatOfAnIssueMessageDeliversWhatItOwesAndWritesNothing(t *testing.T)
 // attempt's own number, so the listener drops a frame that did land, and answers the comment with
 // its mentions and deliveries; it opens no second attempt and writes no second comment.
 func TestARepeatOfACommentDeliversItsOwedMentionOnce(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL})
 	issue := createTestIssue(t, handler, "KEYD", "Keyed comments")
@@ -127,17 +131,19 @@ func TestARepeatOfACommentDeliversItsOwedMentionOnce(t *testing.T) {
 	answered := decodeBody[model.Comment](t, repeat)
 	if answered.ID != comment.ID || len(answered.Mentions) != 1 || len(answered.Deliveries) != 1 ||
 		answered.Deliveries[0].Attempt != 1 {
-		t.Fatalf("the repeat answered %#v, want comment %s with its one mention on attempt 1", answered, comment.ID)
+		t.Fatalf("the repeat answered comment %s with %d mentions and attempts %s, want comment %s with its one mention on attempt 1",
+			answered.ID, len(answered.Mentions), describeAttempts(answered.Deliveries), comment.ID)
 	}
 	// The repeat queues the owed attempt on the mention sender's lanes, behind its answer.
 	if settled := settledCommentDeliveries(t, database, comment.ID); !allSent(settled) {
-		t.Fatalf("the attempt after the repeat = %#v, want it sent", settled)
+		t.Fatalf("the attempt after the repeat = %s, want it sent", describeAttempts(settled))
 	}
 	// Both sends carry the mention's own key - its target and the mode the comment recorded on it
 	// - which is what makes the second a repeat the stream drops rather than a second frame.
 	key := comment.ID + ":session:s1:steer"
 	if keys := keysOf(sends); !equalStrings(keys, []string{key, key}) {
-		t.Fatalf("listener sends = %v, want the one attempt's key twice", keys)
+		t.Fatalf("listener sends = %v, want the one attempt's key twice; attempts: %s",
+			keys, describeAttempts(commentAttempts(t, database, comment.ID)))
 	}
 	var comments, attempts int
 	if err := database.Pool.QueryRow(context.Background(), `
@@ -155,6 +161,7 @@ func TestARepeatOfACommentDeliversItsOwedMentionOnce(t *testing.T) {
 // comment as it stands. A comment that committed with no mention at all is answered the same way,
 // without a listener call.
 func TestARepeatOfADeliveredCommentSendsNothingMore(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL})
 	issue := createTestIssue(t, handler, "KEYD", "Keyed comments")
@@ -192,7 +199,8 @@ func TestARepeatOfADeliveredCommentSendsNothingMore(t *testing.T) {
 				t.Fatalf("the repeat answered another comment: %s", again.Body.String())
 			}
 			if sent := len(sends.targets()) - before; sent != test.sends {
-				t.Fatalf("%d sends, want %d: a repeat owes nothing", sent, test.sends)
+				t.Fatalf("%d sends, want %d: a repeat owes nothing; attempts: %s",
+					sent, test.sends, describeAttempts(commentAttempts(t, database, comment.ID)))
 			}
 		})
 	}
@@ -202,6 +210,7 @@ func TestARepeatOfADeliveredCommentSendsNothingMore(t *testing.T) {
 // the first answer carried that a fresh read does not - a write's advice, an ask reply's
 // ask_waiting_on - are kept, and everything the fresh read holds is the fresh value.
 func TestAReplayKeepsTheFirstAnswersShape(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createTestIssue(t, handler, "KEYS", "Replay shape")
 	first := keyedRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/comments",

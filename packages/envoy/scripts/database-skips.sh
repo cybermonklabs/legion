@@ -6,7 +6,7 @@
 # variable unset, or with a t.Skip left in one of its tests, reads as green. This script runs
 # `go test -json` and counts the skips in that report, and fails on any.
 #
-#   database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [PACKAGE...]
+#   database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [--keep FILE] [PACKAGE...]
 #   database-skips.sh --report FILE [PACKAGE...]
 #
 # PACKAGE is a pattern under packages/envoy: `./dir/`, that package alone, or `./dir/...`, it
@@ -25,8 +25,12 @@
 # `--skip PATTERN` is go test's -skip, for a test another step of the same job runs in the same
 # build and environment (envoy-go's backend count): go test reports nothing for a test -skip
 # leaves out, so it is neither run twice nor counted as a skip here.
-# `--report FILE` reads FILE instead and runs nothing, which the controls use; the four options
-# that shape a run are refused beside it.
+# `--keep FILE` copies that run's `go test -json` report to FILE, making FILE's directory first
+# when it does not exist yet, as soon as go test has written it, so FILE holds the report the
+# count was read from even when the count is UNKNOWN; a relative FILE is the caller's path.
+# `--report FILE` reads FILE instead and runs nothing, which the controls use; the five options
+# that shape or keep a run of its own are refused beside it, and a relative FILE is the caller's
+# path too.
 #
 # It prints each skipped test of a package the patterns name (as `go list` names them under the
 # run's own flags) as `SKIP PACKAGE TEST`, then `database_skips=N`, and for a run of its own
@@ -146,7 +150,7 @@ unknown() {
 }
 
 usage() {
-  echo "database-skips.sh: $1 (usage: database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [PACKAGE...], or --report FILE [PACKAGE...])" >&2
+  echo "database-skips.sh: $1 (usage: database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [--keep FILE] [PACKAGE...], or --report FILE [PACKAGE...])" >&2
   exit 1
 }
 
@@ -160,6 +164,7 @@ vars=()
 race=()
 skip=()
 timeout=""
+keep=""
 packages=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -182,6 +187,14 @@ while [ $# -gt 0 ]; do
       skip=(-skip "$2")
       shift 2
       ;;
+    --keep)
+      [ -n "${2:-}" ] || usage "--keep needs the file to copy the run's go test -json report to"
+      case "$2" in
+        /*) keep="$2" ;;
+        *) keep="$caller/$2" ;;
+      esac
+      shift 2
+      ;;
     --report)
       [ -n "${2:-}" ] || usage "--report needs the go test -json report to read"
       case "$2" in
@@ -194,8 +207,8 @@ while [ $# -gt 0 ]; do
     *) usage "unknown argument $1: a package is a pattern under packages/envoy that starts with ./" ;;
   esac
 done
-if [ -n "$report" ] && { [ ${#vars[@]} -gt 0 ] || [ ${#race[@]} -gt 0 ] || [ -n "$timeout" ] || [ ${#skip[@]} -gt 0 ]; }; then
-  usage "--report reads a run made elsewhere, so --var, --race, --timeout and --skip, which shape a run of its own, are refused beside it"
+if [ -n "$report" ] && { [ ${#vars[@]} -gt 0 ] || [ ${#race[@]} -gt 0 ] || [ -n "$timeout" ] || [ ${#skip[@]} -gt 0 ] || [ -n "$keep" ]; }; then
+  usage "--report reads a run made elsewhere, so --var, --race, --timeout, --skip and --keep, which shape or keep a run of its own, are refused beside it"
 fi
 # runs is what the go list and go test below are given: the patterns as written, or for the
 # default table the import paths go list prints for it under the run's own flags, less
@@ -238,6 +251,9 @@ if [ -z "$report" ]; then
   report="$work/report.json"
   go_test_exit=0
   go test -json -count=1 "${race[@]}" "${skip[@]}" -timeout "${timeout:-${GO_TEST_TIMEOUT:-15m}}" "${runs[@]}" >"$report" 2>"$work/stderr" || go_test_exit=$?
+  if [ -n "$keep" ]; then
+    { mkdir -p -- "$(dirname -- "$keep")" && cp -- "$report" "$keep"; } || unknown "--keep could not copy the report to $keep"
+  fi
 fi
 
 [ -e "$report" ] || unknown "the report $report does not exist"

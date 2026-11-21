@@ -66,7 +66,8 @@ func (h *holderSignIns) signIn(authority *cipherclient.Authority) {
 
 // waitUpTo polls cond every 10 ms for as long as d, and fails with why when it never holds. It
 // is waitFor with a deadline of the test's own, because the attempt that enrols here waits out
-// the held ladder first and that outlasts waitFor's five seconds.
+// the held ladder first, whose steps double from a second, and that can outlast waitFor's ten
+// seconds.
 func waitUpTo(t *testing.T, d time.Duration, cond func() bool, why string) {
 	t.Helper()
 	if !testwait.Holds(d, 10*time.Millisecond, cond) {
@@ -75,6 +76,7 @@ func waitUpTo(t *testing.T, d time.Duration, cond func() bool, why string) {
 }
 
 func TestAnEnrollRefusedSessionHeldBacksOffAndEnrolsWhenThePrincipalChanges(t *testing.T) {
+	t.Parallel()
 	const heldName = "99999999-8888-4777-8666-555555555555"
 	f := newFakeBroker(t)
 	f.heldSessions = map[string]bool{heldName: true}
@@ -113,12 +115,20 @@ func TestAnEnrollRefusedSessionHeldBacksOffAndEnrolsWhenThePrincipalChanges(t *t
 	}
 	srv.Registry.Add(sess)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	done := make(chan struct{})
 	go func() {
 		srv.enrollLoop(ctx, sess)
 		close(done)
 	}()
+	// The loop writes the registry's file under t.TempDir(), so it must have ended before the
+	// directory goes: a cancel alone leaves the attempt in flight, and t.TempDir's own
+	// RemoveAll then fails the test with "directory not empty" (dispatch://INFRA-1075, run
+	// 42846844681). Cleanups run in reverse order of registration and t.TempDir registered
+	// its removal above, so this one runs first and the loop is over before it.
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 
 	// It asks again: a loop that read the refusal as the name's final answer would send one
 	// POST and return, and this session would sign nothing ever again.

@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
+	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
@@ -21,21 +22,43 @@ import (
 )
 
 const (
-	// ciReconcileCursorHeads is how many open pull requests the cursor stand-in holds. Ten heads
-	// are twenty head reads, and at the fastest gap a pass may leave between two requests
-	// (cireconcile.FastestRequestPace, 100ms) twenty reads take two seconds, so no pass covers
-	// them within the one-second interval this test runs the loop on: every pass ends on its own
-	// bound, and the passes take the order up from one another.
-	ciReconcileCursorHeads = 10
+	// ciReconcileCursorPassReads is the most REST reads one pass of ciReconcilePassInterval can
+	// send, which is what the size of this test's order is measured against. A pass waits the
+	// gap it set itself before every REST read but its first, and that gap is never shorter
+	// than cireconcile.FastestRequestPace whatever the arithmetic says (cireconcile/pacing.go,
+	// gap), so a five-second bound holds one read and fifty gaps of a tenth of a second each.
+	//
+	// The arithmetic lands on that floor here too, once a cycle has been walked: nine tenths of
+	// the bound over the 2*ciReconcileCursorHeads+1 REST reads the pass before it learned there
+	// is comes to 73ms. The passes before then know of less work and so leave a longer gap --
+	// after a first pass that read k heads it is 4.5s/(2k+1), capped at the
+	// cireconcile.RequestPace the process configures -- which is a pass that reads fewer heads,
+	// not one that reads none: every head any pass of a cycle read counts in that work, so the
+	// gap only falls as the cycle goes on.
+	ciReconcileCursorPassReads = 1 + int(ciReconcilePassInterval/cireconcile.FastestRequestPace)
+
+	// ciReconcileCursorHeads is how many open pull requests the cursor stand-in holds: more of
+	// them than one pass can read, so every pass ends on its own bound and the passes take the
+	// order up from one another. Reading the order takes two reads a head beside the
+	// repository's identity and its one listing of open pull requests, so thirty heads are 62
+	// reads where a pass may send 51: an idle machine's first pass sends 49 of them and stops
+	// at head 23, and the reads between the two numbers are what a pass slower than its own
+	// pacing -- which is every pass on a loaded machine -- is free to lose and still prove what
+	// this test is about. The test holds the two numbers against each other before it waits for
+	// anything.
+	ciReconcileCursorHeads = 30
 
 	// ciReconcileRecordedHead is the head whose completed check run the pass has to record: the
 	// last of the order, which no first pass reaches. The record it changes is the evidence that
 	// a head sitting past where a pass stopped is not starved but read within the cycle.
-	ciReconcileRecordedHead = 10
+	ciReconcileRecordedHead = ciReconcileCursorHeads
 
 	// ciReconcileLimitedHead is the head GitHub answers a rate limit partway through: its check
 	// runs are given, its check suites are refused, so the head was not read whole and the pass
-	// after the limit's reset must read it again rather than carry on past it.
+	// after the limit's reset must read it again rather than carry on past it. It sits early in
+	// the order, so a pass comes round to it within one cycle wherever the cursor stood when
+	// the limit was armed, and it is not ciReconcileRecordedHead: the head a limit stops and
+	// the head the cycle has to record say two different things and are kept apart.
 	ciReconcileLimitedHead = 6
 )
 
@@ -53,8 +76,18 @@ const (
 // the repository's open pull requests listed page by page and each head read with two requests
 // of its own. That is the read a cursor is needed for, and the one this test bounds.
 func TestTheCIReconcileCursorResumesInTheDispatchProcess(t *testing.T) {
+	// The order has to be bigger than one pass of this bound, or there is no cursor to prove.
+	if reads := 2*ciReconcileCursorHeads + 2; reads <= ciReconcileCursorPassReads {
+		t.Fatalf("the order takes %d REST reads and a pass of %s may send %d, so one pass covers it and this test proves no cursor",
+			reads, ciReconcilePassInterval, ciReconcileCursorPassReads)
+	}
 	github := startCIReconcileCursorGitHub(t)
 	process, natsURL := startCIReconcileCursorProcess(t, github)
+	// The loop names the interval every number above is measured from, so the two cannot drift
+	// apart unseen.
+	process.WaitForOutput(t,
+		`msg="dispatch: reconciling the CI records GitHub's webhook never delivered" client_id=Iv1.cireconcile interval=`+
+			ciReconcilePassInterval.String())
 
 	// The passes until the first that covers the whole order, which is the first cycle.
 	cycle := waitForCIReconcilePasses(t, process, "a cycle of bounded passes covering every head",
@@ -77,8 +110,8 @@ func TestTheCIReconcileCursorResumesInTheDispatchProcess(t *testing.T) {
 		}
 	}
 	if cycle[0]["deadline_reached"] != "true" {
-		t.Errorf("the first pass reports deadline_reached = %q, want true: ten heads do not fit one second: %v",
-			cycle[0]["deadline_reached"], cycle[0])
+		t.Errorf("the first pass reports deadline_reached = %q, want true: %d heads are more reads than a pass of %s may send: %v",
+			cycle[0]["deadline_reached"], ciReconcileCursorHeads, ciReconcilePassInterval, cycle[0])
 	}
 	if cycle[0]["last_head"] == ciReconcileHeadName(ciReconcileRecordedHead) {
 		t.Fatalf("the first pass reached the last head of the order, so nothing about this test's starvation is proved: %v", cycle[0])
@@ -97,9 +130,12 @@ func TestTheCIReconcileCursorResumesInTheDispatchProcess(t *testing.T) {
 	requireCIReconcileRecordedRun(t, natsURL, process)
 
 	// A rate limit partway through one head's reads: GitHub gives that head's check runs and
-	// refuses its check suites, so the head was not read whole.
-	github.rateLimitNext(ciReconcileCursorSuitesPath(ciReconcileLimitedHead), 2*time.Second)
-	before := len(ciReconcilePasses(process.Output.String()))
+	// refuses its check suites, so the head was not read whole. The reset it names is shorter
+	// than the loop's period, so the pass after the one the limit stopped reads again rather
+	// than waiting the limit out: a pass that starts inside the reset reads nothing at all,
+	// out of the limit the client recorded in the ledger every Dispatch process shares.
+	github.rateLimitNext(ciReconcileCursorSuitesPath(ciReconcileLimitedHead), ciReconcilePassInterval/2)
+	before := len(ciReconcilePasses(process))
 	after := waitForCIReconcilePasses(t, process, "a pass GitHub's rate limit stopped",
 		func(passes []map[string]string) bool {
 			for _, pass := range passes[min(before, len(passes)):] {
@@ -116,7 +152,7 @@ func TestTheCIReconcileCursorResumesInTheDispatchProcess(t *testing.T) {
 	// The limited head was not read whole, so the pass the limit stopped read up to the head
 	// before it, and read no head at all where that pass began at the limited head itself --
 	// which of the two it is depends on where the pass before it left the cursor, and that is
-	// how many heads a one-second pass got through. Both say the one thing this is about;
+	// how many heads a pass of this bound got through. Both say the one thing this is about;
 	// `last_head` naming the limited head, or a head past it, would be the pass counting a
 	// head whose second listing it never read.
 	if last := after[stopped]["last_head"]; last != "" && ciReconcileHeadNumber(t, last) >= ciReconcileLimitedHead {
@@ -147,22 +183,32 @@ func TestTheCIReconcileCursorResumesInTheDispatchProcess(t *testing.T) {
 	}
 }
 
-// A pass of the process that lists every head and reads none whole -- GitHub slower than the
-// one-second bound leaves, as on a loaded runner -- leaves the passes after it reading the order
-// all the same. That pass learned no page of any head, so the gap the work sets would be the
-// 500ms ceiling, and at 500ms a one-second pass sends three requests: the listing and the first
-// of the two reads a head takes. Every pass after it would then end on its bound with no head
-// read and the cursor where it was, and no cycle would ever close. The process paces the pass
-// after such a pass at the floor instead, which reads heads whole, learns their pages and moves
-// the cursor on.
+// A pass of the process that lists the heads and reads none whole -- GitHub slower than its bound
+// leaves, as on a loaded runner -- leaves the passes after it reading the order all the same.
+// That pass learned no page of any head, so the gap the work sets would be the 500ms ceiling, and
+// under a short bound a pass at 500ms reaches no head: at one second it sends three requests, the
+// listing and the first of the two reads a head takes, and every pass after it would end on its
+// bound with no head read and the cursor where it was, so no cycle would ever close. The process
+// paces the pass after such a pass at the floor instead, which reads heads whole, learns their
+// pages and moves the cursor on.
+//
+// The row runs its process as the cursor row does (startCIReconcileCursorProcess): passes of five
+// seconds (ciReconcilePassInterval) over the stand-in's thirty heads (ciReconcileCursorHeads). A
+// five-second pass at the ceiling still reads four heads and moves the cursor on, so the row's
+// last wait, for a cycle, does not tell the floor apart. The check that does is the pace of the
+// pass after the starved one: the floor, 100ms, where without it that pass paces at 500ms.
 //
 // GitHub holds the first head's check suites, the second of its two reads, until the bound of
-// the pass that asks for them gives the request up, so that pass lists the ten heads and reads
-// none of them whole however fast the machine runs. The row reads the pass after that one,
-// whichever pass of the process it is: in the second case GitHub also holds the process's first
-// query until the first pass's bound gives it up, so the first pass lists nothing and the starved
-// pass is never the first, as a machine too slow to start a pass within its second leaves it.
+// the pass that asks for them gives the request up, so that pass lists the heads of the order's
+// first page (ciReconcileCursorPageHeads) and reads none of them whole however fast the machine
+// runs. The row reads the pass after that one, whichever pass of the process it is: in the second
+// case GitHub also holds the process's first query until the first pass's bound gives it up, so
+// the first pass lists nothing and the starved pass is never the first, as a machine too slow to
+// start a pass within its bound leaves it.
 func TestTheCIReconcileCursorResumesInTheDispatchProcessAfterAPassThatReadNoHead(t *testing.T) {
+	// The row picks out the starved pass by the heads of the first page it listed
+	// (ciReconcileCursorPageHeads), a copy of cireconcile's unexported page size: if that size
+	// moves, the wait below times out naming the heads it looked for.
 	for _, row := range []struct {
 		name string
 		// firstQuery holds the process's first GraphQL query until its pass's bound gives it up.
@@ -179,18 +225,18 @@ func TestTheCIReconcileCursorResumesInTheDispatchProcessAfterAPassThatReadNoHead
 			}
 			process, _ := startCIReconcileCursorProcess(t, github)
 
-			passes := waitForCIReconcilePasses(t, process, "a pass that listed every head and reached none, and the pass after it",
+			passes := waitForCIReconcilePasses(t, process, fmt.Sprintf("a pass that listed the first %d heads and reached none, and the pass after it", min(ciReconcileCursorHeads, ciReconcileCursorPageHeads)),
 				func(passes []map[string]string) bool {
 					starved := starvedCIReconcilePass(passes)
 					return starved >= 0 && starved+1 < len(passes)
 				})
 			starved := starvedCIReconcilePass(passes)
 			if row.firstQuery && starved == 0 {
-				t.Fatalf("the first pass listed every head although GitHub held its query: nothing here is tested: %v", passes[0])
+				t.Fatalf("the first pass listed the first page of heads although GitHub held its query: nothing here is tested: %v", passes[0])
 			}
 			if got, want := passes[starved+1]["pace"], "100ms"; got != want {
-				t.Fatalf("the pass after one that read no head whole paced itself at %s, want the floor %s: at the ceiling a one-second pass reads no head: starved %v, after it %v",
-					got, want, passes[starved], passes[starved+1])
+				t.Fatalf("the pass after one that read no head whole paced itself at %s, want the floor %s: this pace is the row's one check of the floor, since a pass of %s over the stand-in's %d heads reads heads at the 500ms ceiling too: starved %v, after it %v",
+					got, want, ciReconcilePassInterval, ciReconcileCursorHeads, passes[starved], passes[starved+1])
 			}
 			waitForCIReconcilePasses(t, process, "a cycle of bounded passes covering every head",
 				func(passes []map[string]string) bool {
@@ -200,14 +246,23 @@ func TestTheCIReconcileCursorResumesInTheDispatchProcessAfterAPassThatReadNoHead
 	}
 }
 
-// starvedCIReconcilePass is the index of the first pass its own bound ended with every head of
-// the stand-in listed and none reached, and -1 while no pass has. It reads the pass's fields, not
-// its place among the passes: how many passes the process takes to list the heads within its
-// second is the machine's.
+// ciReconcileCursorPageHeads is how many heads the pass reads as one page of the order: the value
+// of cireconcile's pullsPerQuery (internal/dispatch/cireconcile/graphql.go, unexported, 20), by
+// which the pass cuts a repository's open pull requests over GraphQL and over REST alike
+// (cireconcile/pass.go, walk.restPage). heads_known counts the heads of the pages the cycle has
+// listed, so a first-cycle pass that reached no head knows those of the first page alone:
+// min(ciReconcileCursorHeads, ciReconcileCursorPageHeads).
+const ciReconcileCursorPageHeads = 20
+
+// starvedCIReconcilePass is the index of the first pass its own bound ended with the heads of the
+// order's first page listed and none reached, and -1 while no pass has: every head of the stand-in
+// where the order fits one page, and ciReconcileCursorPageHeads of them where it does not. It reads
+// the pass's fields, not its place among the passes: how many passes the process takes to list the
+// heads within its bound is the machine's.
 func starvedCIReconcilePass(passes []map[string]string) int {
 	for i, pass := range passes {
 		if pass["deadline_reached"] == "true" && pass["rate_limited"] == "false" && pass["heads"] == "0" &&
-			pass["heads_known"] == strconv.Itoa(ciReconcileCursorHeads) {
+			pass["heads_known"] == strconv.Itoa(min(ciReconcileCursorHeads, ciReconcileCursorPageHeads)) {
 			return i
 		}
 	}
@@ -244,7 +299,7 @@ func requireCIReconcileRecordedRun(t *testing.T, natsURL string, process *dispat
 
 // startCIReconcileCursorProcess starts the envoy-dispatch process the cursor tests read: one
 // mapped repository whose GitHub is github, a NATS server holding the CI state bucket, and the
-// reconcile loop on a one-second interval, which is each pass's bound as well. It answers the
+// reconcile loop on ciReconcilePassInterval, which is each pass's bound as well. It answers the
 // process and that NATS server's URL.
 func startCIReconcileCursorProcess(t *testing.T, github *cursorGitHub) (*dispatchProcess, string) {
 	t.Helper()
@@ -260,9 +315,10 @@ func startCIReconcileCursorProcess(t *testing.T, github *cursorGitHub) (*dispatc
 			"DISPATCH_APP_PEM_B64":     pemText,
 			"DISPATCH_GITHUB_API_BASE": github.server.URL,
 			"DISPATCH_REVIEWER_APP_ID": ciReconcileReviewerApp,
-			// The pass's bound as well as the loop's period: five minutes is longer than any
-			// test may wait for a pass.
-			"DISPATCH_TEST_CI_RECONCILE_INTERVAL": "1s",
+			// The pass's bound as well as the loop's period, which is the one setting both
+			// rows run their process on (ciReconcilePassInterval): the production five minutes
+			// is longer than any test may wait for a pass.
+			"DISPATCH_TEST_CI_RECONCILE_INTERVAL": ciReconcilePassInterval.String(),
 		},
 	})
 	process.waitHealthy(t)
@@ -312,12 +368,9 @@ func cycleCompleted(passes []map[string]string) int {
 // ciReconcilePasses is every "ci reconcile pass" line the process has logged, oldest first, each
 // as the fields of that line. The process logs in logfmt, and no value of this line holds a
 // space, so a field is what is left and right of the first `=` of each word.
-func ciReconcilePasses(output string) []map[string]string {
+func ciReconcilePasses(process *dispatchProcess) []map[string]string {
 	var passes []map[string]string
-	for line := range strings.Lines(output) {
-		if !strings.Contains(line, `msg="ci reconcile pass"`) {
-			continue
-		}
+	for _, line := range process.logLines(ciReconcilePassMsg) {
 		fields := map[string]string{}
 		for _, word := range strings.Fields(line) {
 			key, value, ok := strings.Cut(word, "=")
@@ -331,14 +384,20 @@ func ciReconcilePasses(output string) []map[string]string {
 	return passes
 }
 
-// waitForCIReconcilePasses waits up to a minute for the pass lines the process has logged to
-// satisfy enough, and answers them. The passes run a second apart, so a cycle of them is
-// several seconds of waiting.
+// ciReconcilePassMsg is what every "ci reconcile pass" line holds: process.logLines of it is
+// every such line, oldest first, the line ciReconcilePasses answers as fields at the same index.
+const ciReconcilePassMsg = `msg="ci reconcile pass"`
+
+// waitForCIReconcilePasses waits for the pass lines the process has logged to satisfy enough,
+// and answers them. The passes run ciReconcilePassInterval apart, and the longest wait either
+// row makes is a cycle of the cursor row's order: two passes where a pass reads at the floor of
+// its pacing, and more where a loaded machine reads fewer heads in a pass. Twelve of those
+// periods -- a minute at the five seconds the rows run on -- is that cycle several times over.
 func waitForCIReconcilePasses(t *testing.T, process *dispatchProcess, what string, enough func([]map[string]string) bool) []map[string]string {
 	t.Helper()
-	deadline := time.Now().Add(time.Minute)
+	deadline := time.Now().Add(12 * ciReconcilePassInterval)
 	for {
-		passes := ciReconcilePasses(process.Output.String())
+		passes := ciReconcilePasses(process)
 		if enough(passes) {
 			return passes
 		}
@@ -385,10 +444,10 @@ func ciReconcileCursorSuitesPath(number int) string {
 const ciReconcileCursorQueryPath = "/graphql"
 
 // cursorGitHub is the loopback GitHub the cursor test's process calls: the installation lookup
-// and the token mint, the repository's identity, its ten open pull requests and each head's two
-// listings, the one-shot rate limit a test arms on one of those reads, and the one-shot hold.
+// and the token mint, the repository's identity, its ciReconcileCursorHeads open pull requests
+// and each head's two listings, the one-shot rate limit a test arms on one of those reads, and
+// the one-shot hold.
 type cursorGitHub struct {
-	t      *testing.T
 	server *httptest.Server
 
 	mu sync.Mutex
@@ -459,7 +518,7 @@ func (g *cursorGitHub) limited(w http.ResponseWriter, r *http.Request) bool {
 // and the webhook redelivery sweep's own listing answers empty.
 func startCIReconcileCursorGitHub(t *testing.T) *cursorGitHub {
 	t.Helper()
-	github := &cursorGitHub{t: t, limits: map[string]time.Duration{}, holds: map[string]bool{}}
+	github := &cursorGitHub{limits: map[string]time.Duration{}, holds: map[string]bool{}}
 	write := func(w http.ResponseWriter, status int, payload any) {
 		body, err := json.Marshal(payload)
 		if err != nil {
@@ -493,7 +552,7 @@ func startCIReconcileCursorGitHub(t *testing.T) *cursorGitHub {
 		// pass then reads that repository's open pull requests and every head of it over REST,
 		// two requests a head, since the token above carries no Commit statuses and so no status
 		// read follows, which is the read this test's cursor walks: a pass every query of which
-		// answered would cover ten heads in one query and leave no cursor to prove.
+		// answered would cover every head in one query and leave no cursor to prove.
 		write(w, http.StatusOK, map[string]any{
 			"data": map[string]any{
 				"rateLimit":  map[string]any{"cost": 1, "remaining": 4999, "resetAt": time.Now().Add(time.Hour).Format(time.RFC3339)},

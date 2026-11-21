@@ -128,7 +128,7 @@ func openKnownSessionsOn(t *testing.T, conn *natsgo.Conn, clock func() time.Time
 		t.Fatalf("open the known-session store: %v", err)
 	}
 	t.Cleanup(known.StopWatch)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	if err := known.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("the known-session cache did not become ready: %v", err)
@@ -278,7 +278,7 @@ func awaitNoRelaySubscriber(t *testing.T, uri, sessionID string) {
 	t.Helper()
 	conn := testnats.Connect(t, uri)
 	defer conn.Close()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWait)
 	for {
 		msg := natsgo.NewMsg(bus.DeliverSubject(sessionID))
 		msg.Header.Set(bus.ConnectionProbeHeader, "1")
@@ -611,7 +611,7 @@ func TestConnectedOnlyRefusesAStoppedTargetAndStoresNothing(t *testing.T) {
 // other report, and fails the test when none arrives within the bound.
 func awaitWake(t *testing.T, wakes *natsgo.Subscription, kind, name string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWait)
 	for {
 		msg, err := wakes.NextMsg(time.Until(deadline))
 		if err != nil {

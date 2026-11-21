@@ -57,6 +57,10 @@ func loginWithOwnersLeft(name string) map[string]string {
 // finds the pair the broker refuses, and reports it: it names the tags it read and the tags it
 // found, and the command that sets the secret right, and it writes nothing, so the other
 // writer's retag stands rather than being taken back.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's and startSecretBrokerWith's t.Setenv),
+// CLOUDSDK_AUTH_ACCESS_TOKEN in its gcp half (useGCPIdentity's t.Setenv), and the package-level
+// seams the secret forms are reached through (awsClients and the gcp* ones).
 func TestAConcurrentRetagIsReportedAndOverwritesNothing(t *testing.T) {
 	t.Run("aws", func(t *testing.T) {
 		secret := policytest.TypeSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
@@ -149,6 +153,9 @@ func TestAConcurrentRetagIsReportedAndOverwritesNothing(t *testing.T) {
 // to be told which type the broker is still serving, because that is what says whether the retag
 // has to be run again or something else wrote the secret. A secret the broker serves with no
 // type at all is named "a stored secret" (typeName), the words the refusal uses for it.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's t.Setenv), and awsClients, the seam the
+// secret forms reach the store through.
 func TestARetagExitsOneWhileTheBrokerServesTheOldType(t *testing.T) {
 	for _, row := range []struct {
 		name, served string

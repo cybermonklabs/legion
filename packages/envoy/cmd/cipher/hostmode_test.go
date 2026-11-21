@@ -36,6 +36,10 @@ import (
 // directory so a helper running on the test machine, at the default socket buildSigner falls back
 // to, cannot change the answer, and the state directory and the broker URL are the test's own, so
 // no sign-in, machine cache or broker of the machine running it can either.
+// Serial: it sets process-wide variables (isolateChain's HOME, XDG_STATE_HOME, XDG_RUNTIME_DIR,
+// AGENT_SECRETS_SIGNIN_DIR, AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY, then
+// AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK), which buildSigner reads for itself;
+// t.Setenv panics under t.Parallel.
 func TestBuildSignerSelectsMode(t *testing.T) {
 	isolateChain(t)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", "")
@@ -97,6 +101,10 @@ func isolateChain(t *testing.T) {
 // enroll that failed), buildSigner's error appends whatever the launcher recorded in
 // enrollment.error, so a caller sees why enrollment failed rather than a bare "no such file";
 // with no enrollment.error file, the message is the bare missing-file error.
+// Serial: it sets process-wide variables with t.Setenv, which panics under t.Parallel:
+// AGENT_SECRETS_KEY_DIR, which buildSigner reads its key dir from, beside XDG_RUNTIME_DIR and
+// AGENT_SECRETS_HELPER_SOCK, which it does not reach here: the key dir's missing enrollment stops
+// the chain at its first source (keyDirSource).
 func TestBuildSignerNamesTheEnrollmentErrorDiagnostic(t *testing.T) {
 	dir := newKeyDir(t)
 	if err := os.Remove(filepath.Join(dir, "enrollment")); err != nil {
@@ -124,6 +132,10 @@ func TestBuildSignerNamesTheEnrollmentErrorDiagnostic(t *testing.T) {
 // buildSigner still finds a box's key dir at $XDG_RUNTIME_DIR/agent-secrets and a host's helper
 // socket at $XDG_RUNTIME_DIR/agent-secrets/helper.sock, and falls back to neither when its file
 // is not there.
+// Serial: it sets process-wide variables (isolateChain's HOME, XDG_STATE_HOME, XDG_RUNTIME_DIR,
+// AGENT_SECRETS_SIGNIN_DIR, AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY, then
+// AGENT_SECRETS_KEY_DIR, AGENT_SECRETS_HELPER_SOCK and XDG_RUNTIME_DIR again), which buildSigner
+// reads for itself; t.Setenv panics under t.Parallel.
 func TestBuildSignerFallsBackToTheRuntimeDirDefaults(t *testing.T) {
 	isolateChain(t)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", "")
@@ -263,6 +275,7 @@ func fakeHelperAnswering(t *testing.T, sock string, answer func(call int) helper
 // TestHelperSignerAsksTheHelper covers both a granted proof and the helper's error code
 // reaching the caller unwrapped.
 func TestHelperSignerAsksTheHelper(t *testing.T) {
+	t.Parallel()
 	sock, _ := fakeHelper(t, helper.Response{OK: true, Proof: "eyJ.fake.proof"})
 	signer := &helperSigner{sock: sock}
 	p, err := signer.Sign(http.MethodGet, "https://s/v1/enrollments/self")
@@ -290,6 +303,7 @@ func TestHelperSignerRefusesAnEmptyProof(t *testing.T) {
 // its own configured broker URL, not a value this peer supplies), return the helper's signed
 // request object verbatim, and surface the helper's error code unwrapped exactly like Sign does.
 func TestHelperSignerSignsRequestObjects(t *testing.T) {
+	t.Parallel()
 	sock, reqs := fakeHelper(t, helper.Response{OK: true, RequestObject: "eyJ.fake.request"})
 	signer := &helperSigner{sock: sock}
 	lifetime := 120
@@ -317,6 +331,9 @@ func TestHelperSignerSignsRequestObjects(t *testing.T) {
 // AGENT_SECRETS_HELPER_SOCK unset and no socket at the default path (a box's runtime dir holds its
 // key dir, never a helper), register is a usage error at once, naming the variable and the path,
 // rather than waiting out the connect patience for a helper that is not there.
+// Serial: it sets process-wide variables, AGENT_SECRETS_HELPER_SOCK and XDG_RUNTIME_DIR, which
+// helperSocket (identity.go) reads the helper's default socket from, and its assertion is also
+// a time: register must refuse within two seconds (dispatch://INFRA-985).
 func TestRegisterRefusesWithNoHelperSocket(t *testing.T) {
 	runtimeDir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
@@ -342,6 +359,7 @@ func TestRegisterRefusesWithNoHelperSocket(t *testing.T) {
 // broker), but it says so on stderr, since the agent then starts with a session whose secrets
 // calls fail until the helper enrolls it. Subprocess: --exec replaces the process image.
 func TestRegisterExecWarnsWhenWaitedButNotEnrolled(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", State: "enrolling", Error: "waiting on approver"})
 	cmd := exec.Command(binary, "register", "--wait", "1", "--exec", "--", "sh", "-c", "echo ran")
@@ -370,10 +388,13 @@ func TestRegisterExecWarnsWhenWaitedButNotEnrolled(t *testing.T) {
 // linux): it needs fakeHelperWithPids, which pins the connecting pid with helper.PeerOf
 // (SO_PEERPIDFD, Linux-only).
 
-// TestRegisterExecWithoutHelperWarnsAndStillExecs waits the client's 10 s connect patience; keep
-// it — it is the launch-ordering case tmux-resurrect hits at boot.
+// TestRegisterExecWithoutHelperWarnsAndStillExecs waits the client's connect patience out — it is
+// the launch-ordering case tmux-resurrect hits at boot — so it passes --connect-patience a short
+// one rather than the production ten seconds, and runs the binary cmdtest built once rather than
+// compiling one of its own with `go run`.
 func TestRegisterExecWithoutHelperWarnsAndStillExecs(t *testing.T) {
-	cmd := exec.Command("go", "run", ".", "register", "--exec", "--", "sh", "-c", "echo ran")
+	t.Parallel()
+	cmd := exec.Command(buildAgentSecrets(t), "register", "--exec", "--connect-patience", "100ms", "--", "sh", "-c", "echo ran")
 	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+filepath.Join(shortTempDir(t), "absent.sock"))
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
@@ -393,6 +414,7 @@ func TestRegisterExecWithoutHelperWarnsAndStillExecs(t *testing.T) {
 // time.Now().Add(...), freshly computed on each of the two separate invocations, so it is
 // compared as "present and parseable" rather than byte-equal.
 func TestWhoamiAlwaysPrintsJSON(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -423,6 +445,10 @@ func TestWhoamiAlwaysPrintsJSON(t *testing.T) {
 
 // TestSignWithoutEnrollmentUsesTheBoxsOwnIdentity proves sign's default path signs a real,
 // verifiable proof for the box's own enrollment id, without making a broker call.
+// Serial: it sets process-wide variables with t.Setenv, which panics under t.Parallel:
+// AGENT_SECRETS_KEY_DIR, which buildSigner (through cmdSign) reads its key dir from, beside
+// AGENT_SECRETS_HELPER_SOCK, which it does not reach here: the key dir's key.pem and enrollment
+// answer first (keyDirSource).
 func TestSignWithoutEnrollmentUsesTheBoxsOwnIdentity(t *testing.T) {
 	keyDir := newKeyDir(t)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", keyDir)
@@ -464,6 +490,9 @@ func TestSignWithoutEnrollmentUsesTheBoxsOwnIdentity(t *testing.T) {
 // TestSignWithEnrollmentOverridesTheEnrollmentID proves --enrollment signs with this box's own
 // key for a caller-supplied id instead of the box's own — the deliberate cross-enrollment
 // substitution the broker must refuse.
+// Serial: it sets process-wide variables, AGENT_SECRETS_KEY_DIR, which sign --enrollment reads
+// the key dir from (fileModeKeyForSign, sign.go), and AGENT_SECRETS_HELPER_SOCK; t.Setenv panics
+// under t.Parallel.
 func TestSignWithEnrollmentOverridesTheEnrollmentID(t *testing.T) {
 	keyDir := newKeyDir(t)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", keyDir)
@@ -505,6 +534,9 @@ func TestSignWithEnrollmentOverridesTheEnrollmentID(t *testing.T) {
 
 // TestSignEnrollmentRefusedInHelperMode covers "--enrollment works only with a key dir; the
 // helper signs only its own enrollment".
+// Serial: it sets process-wide variables, AGENT_SECRETS_KEY_DIR, which sign --enrollment reads
+// the key dir from (fileModeKeyForSign, sign.go), and AGENT_SECRETS_HELPER_SOCK; t.Setenv panics
+// under t.Parallel.
 func TestSignEnrollmentRefusedInHelperMode(t *testing.T) {
 	t.Setenv("AGENT_SECRETS_KEY_DIR", "")
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "/x/h.sock")
@@ -529,6 +561,10 @@ func TestSignEnrollmentRefusedInHelperMode(t *testing.T) {
 // whose stdout is the caller's.
 // Every case runs twice: once with the paths named by AGENT_SECRETS_KEY_DIR and
 // AGENT_SECRETS_HELPER_SOCK, once with both unset and the files at the $XDG_RUNTIME_DIR defaults.
+// Serial: it sets process-wide variables (identityPaths) - AGENT_SECRETS_HELPER_SOCK,
+// AGENT_SECRETS_KEY_DIR, XDG_RUNTIME_DIR, XDG_CONFIG_HOME and HOME, which the identity form reads
+// for itself, and XDG_STATE_HOME, which it does not - and its slow case's assertion is also a
+// time: a silent helper is given up on after about two seconds (dispatch://INFRA-985).
 func TestIdentity(t *testing.T) {
 	for _, mode := range []string{"named", "defaults"} {
 		for _, tc := range identityCases() {
@@ -580,6 +616,11 @@ func TestIdentity(t *testing.T) {
 // neither is asked anything: it reads neither the sign-in, nor the machine cache, nor the network.
 // A process holding only a machine session, in the machine cache or in the key dir where a client
 // before #4143 kept one, answers 1.
+// Serial: it sets process-wide variables - identityPaths' HOME, XDG_CONFIG_HOME, XDG_RUNTIME_DIR,
+// AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK, which the identity form reads for itself,
+// and identityPaths' XDG_STATE_HOME, then AGENT_SECRETS_URL and GCE_METADATA_HOST
+// (startMetadataServer), which it does not read: they put this row's machine cache, broker and
+// metadata server where a form that read them would find them; t.Setenv panics under t.Parallel.
 func TestIdentityWithoutSourceAsksNothing(t *testing.T) {
 	cases := append(identityCases(),
 		identityCase{name: "only a machine cache", setup: func(t *testing.T, p identityRowPaths) {
@@ -764,6 +805,7 @@ func installHelperUnit(t *testing.T, home string) {
 // on PATH exits 127 naming it and asks the helper nothing, so a mistyped command makes no
 // enrolment.
 func TestRegisterExecLooksTheCommandUpBeforeItRegisters(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock, requests := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", State: "enrolled"})
 	const missing = "agent-secrets-test-command-on-no-path"

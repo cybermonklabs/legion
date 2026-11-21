@@ -160,6 +160,7 @@ func readJobsComplete(t *testing.T, ctx context.Context, pool *store.Pool, runID
 // burst goes quiet. The production job is stored finished, another job in that same listing is
 // still running, so the run's jobs stay incomplete, and the change log holds a run_job change.
 func TestAJobOfATrackedDeployRunRecordsItsJobsWhileItRuns(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
@@ -182,13 +183,13 @@ func TestAJobOfATrackedDeployRunRecordsItsJobsWhileItRuns(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); jobs.Run(runCtx) }()
 	t.Cleanup(func() { cancel(); <-done })
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchJobDurable)
 		return err == nil && info.PushBound
 	}, func() string { return "the job intake never bound its durable" })
 
 	publishGitHubEnvelope(t, natsClient, "notifications.github.acme.widgets.job.500.completed", jobPayload("acme/widgets", 500))
-	waitFor(t, 20*time.Second, func() bool { return clock.armed() == 1 }, func() string { return "the job event scheduled no read" })
+	waitFor(t, eventWait, func() bool { return clock.armed() == 1 }, func() string { return "the job event scheduled no read" })
 	if calls := fake.calls.Load(); calls != 0 {
 		t.Fatalf("read the jobs %d times before the burst went quiet", calls)
 	}
@@ -223,6 +224,7 @@ func TestAJobOfATrackedDeployRunRecordsItsJobsWhileItRuns(t *testing.T) {
 // keeps the configuration observed with the event through the delayed listing and stores that
 // listed job's configured step.
 func TestAJobIntakeRecordsTheConfiguredProductionApplyStep(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	const step = "Run ./.github/actions/apply"
@@ -262,6 +264,7 @@ func TestAJobIntakeRecordsTheConfiguredProductionApplyStep(t *testing.T) {
 // TestAJobOfAnUntrackedRunCostsNoGitHubCall: a job of a run Dispatch does not store schedules
 // nothing and asks GitHub for nothing, not even a token.
 func TestAJobOfAnUntrackedRunCostsNoGitHubCall(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	fake := newJobsFake(t)
@@ -277,6 +280,7 @@ func TestAJobOfAnUntrackedRunCostsNoGitHubCall(t *testing.T) {
 // TestAJobOfAnotherRepositoryIsIgnored: a job of a repository other than the deploy repository
 // schedules nothing, even when a run of that number is stored.
 func TestAJobOfAnotherRepositoryIsIgnored(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
@@ -293,6 +297,7 @@ func TestAJobOfAnotherRepositoryIsIgnored(t *testing.T) {
 // TestABurstOfJobsOfOneRunReadsItsJobsOnce: thirty job events of one run within a second are one
 // read.
 func TestABurstOfJobsOfOneRunReadsItsJobsOnce(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
@@ -338,6 +343,7 @@ func TestABurstThatKeepsComingStillReadsWithinTenSeconds(t *testing.T) {
 // stale listing is the first job-row write, so it must leave the run available for the completion
 // listing rather than permanently mark it complete.
 func TestAStaleJobsReadStaysForTheBackfill(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedRunningDeployRun(t, ctx, pool)
 	fake := newJobsFake(t)
@@ -394,6 +400,7 @@ func TestAStaleJobsReadStaysForTheBackfill(t *testing.T) {
 // writes every job finished -- answers with the production job still running, and lands after:
 // the stored jobs stay finished and the run's jobs stay complete.
 func TestAReadThatLandsAfterTheRunEndedUndoesNothing(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
@@ -532,6 +539,11 @@ func (c *concurrentJobClock) fireAll() *sync.WaitGroup {
 // opened one listing per run at once, which past GitHub's 100 concurrent requests rate-limits the
 // App.
 func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
+	// Serial: a product timer is under its steps. The GitHub client gives an unanswered call up
+	// at githubapp.RequestTimeout (20 s, shorter than eventWait) and asks again, while the fake
+	// still counts the abandoned read in flight, so the wait for the bounded reads and the count
+	// below must finish inside 20 s of the first read, and a parallel test's load is what would
+	// stretch them past it.
 	pool, ctx := deliveryTestPool(t)
 	const runs = 3 * reconcilePartialConcurrency
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
@@ -571,7 +583,7 @@ func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
 		releaseOnce()
 		fired.Wait()
 	})
-	waitFor(t, 20*time.Second, func() bool { return inFlight.Load() >= reconcilePartialConcurrency }, func() string {
+	waitFor(t, eventWait, func() bool { return inFlight.Load() >= reconcilePartialConcurrency }, func() string {
 		return fmt.Sprintf("%d jobs reads in flight, want %d", inFlight.Load(), reconcilePartialConcurrency)
 	})
 	// Every run's burst has ended; give the rest a moment to start reads they should not.
@@ -768,14 +780,14 @@ func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(
 	publishGitHubEnvelope(t, natsClient, "notifications.github.acme.widgets.job.500.completed", jobPayload("acme/widgets", 500))
 	select {
 	case <-clock.armedFirst:
-	case <-time.After(20 * time.Second):
+	case <-time.After(eventWait):
 		t.Fatalf("the first job event never reached the read it schedules: %+v", consumer())
 	}
 
 	// The event under test, waiting behind it on the one key.
 	event := jobPayload("acme/widgets", 501)
 	publishGitHubEnvelope(t, natsClient, "notifications.github.acme.widgets.job.501.completed", event)
-	waitFor(t, 20*time.Second, func() bool { return consumer().Delivered.Consumer >= 2 }, func() string {
+	waitFor(t, eventWait, func() bool { return consumer().Delivered.Consumer >= 2 }, func() string {
 		return fmt.Sprintf("the job event under test was never delivered to the intake: %+v", consumer())
 	})
 
@@ -803,12 +815,12 @@ func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(
 		t.Fatal("the delivery was already stopping, so the row would measure the stop's own guard rather than the moment before it")
 	}
 	close(clock.release)
-	waitFor(t, 20*time.Second, runnerIdle, func() string {
+	waitFor(t, eventWait, runnerIdle, func() string {
 		return fmt.Sprintf("the job event under test was never handled: %+v", consumer())
 	})
 
 	// The stop, which hands back what the delivery held rather than what it acknowledged.
-	stopping, endStop := context.WithTimeout(context.Background(), 20*time.Second)
+	stopping, endStop := context.WithTimeout(context.Background(), eventWait)
 	defer endStop()
 	handedAt := time.Now()
 	jobs.StopDelivering(stopping)

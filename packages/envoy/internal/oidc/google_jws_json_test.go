@@ -18,6 +18,7 @@ import (
 )
 
 func TestRedTeamGoogleIdentityJSONSerialization(t *testing.T) {
+	t.Parallel()
 	const attacker = "attacker@attacker-project.iam.gserviceaccount.com"
 	issuer := oidctest.New(t)
 	signing := oidctest.NewKey(t, "google-signing-key")

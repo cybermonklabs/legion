@@ -80,7 +80,7 @@ func runTaskProgress(t *testing.T, service *Service) <-chan struct{} {
 		defer close(done)
 		service.RunTaskProgressReconciliation(ctx)
 	}()
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		cancel()
 		<-done
 	})
@@ -98,12 +98,12 @@ func TestTaskProgressIsCountedAtStartAndThenNothingRuns(t *testing.T) {
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
 	service := New(Deps{Store: counted, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 
 	done := runTaskProgress(t, service)
 	select {
 	case <-done:
-	case <-time.After(30 * time.Second):
+	case <-time.After(roomWait(t)):
 		t.Fatal("the reconciliation did not return after its boot pass found every row counted")
 	}
 	for index, want := range [][3]int{{1, 2, 1}, {2, 3, 1}} {
@@ -116,7 +116,11 @@ func TestTaskProgressIsCountedAtStartAndThenNothingRuns(t *testing.T) {
 
 // A row another writer holds through the whole boot pass - its own retries included - is left
 // to the retries after it, and the first of those after the writer lets go counts it; the
-// reconciliation then returns.
+// reconciliation then returns, at that retry: a loop that ran out its retries instead logs that it
+// left drift to the next start, which fails the test however soon the short schedule below ends.
+//
+// Serial: it swaps process-wide state, the default slog logger, which is how it reads the pass's
+// own line back (captureLogs).
 func TestTaskProgressLockedThroughTheBootPassIsCountedByARetry(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -134,10 +138,17 @@ func TestTaskProgressLockedThroughTheBootPassIsCountedByARetry(t *testing.T) {
 		t.Fatalf("hold %s: %v", held, err)
 	}
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	// The waits this test spends are its own: the boot pass's five backoffs add up to three
+	// seconds of the package at the step production takes, and its first boot retry to one more.
+	// The schedule it sets still outlasts the steps below - six retries at 200 ms, doubling, are
+	// 12.6 s, and the test holds its row for a fraction of that - so the retries are still
+	// running when the writer lets go, which is what the test is about (dispatch://INFRA-1075).
+	service.taskProgressRetryBackoff = 20 * time.Millisecond
+	service.taskProgressBootRetryFirst = 200 * time.Millisecond
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 
 	done := runTaskProgress(t, service)
-	waitFor(t, 20*time.Second, "the boot pass to give up on the held row", func() bool {
+	waitFor(t, roomWait(t), "the boot pass to give up on the held row", func() bool {
 		return strings.Contains(logs.String(), "issue task progress reconciliation pass left drift")
 	})
 	if tasksDone, total, version := taskCount(t, database, free); tasksDone != 1 || total != 2 || version != 1 {
@@ -155,7 +166,7 @@ func TestTaskProgressLockedThroughTheBootPassIsCountedByARetry(t *testing.T) {
 	if err := writer.Rollback(ctx); err != nil {
 		t.Fatalf("release %s: %v", held, err)
 	}
-	waitFor(t, 10*time.Second, "a retry to count the released row", func() bool {
+	waitFor(t, roomWait(t), "a retry to count the released row", func() bool {
 		_, _, version := taskCount(t, database, held)
 		return version == 1
 	})
@@ -164,7 +175,10 @@ func TestTaskProgressLockedThroughTheBootPassIsCountedByARetry(t *testing.T) {
 	}
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(roomWait(t)):
 		t.Fatal("the reconciliation did not return once no drift was left")
+	}
+	if strings.Contains(logs.String(), "left drift it could not lock to the next start") {
+		t.Fatalf("the reconciliation ran out its retries rather than returning at the one that found no drift left:\n%s", logs.String())
 	}
 }

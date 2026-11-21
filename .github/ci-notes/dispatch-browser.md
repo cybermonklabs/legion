@@ -60,10 +60,11 @@ runs under the calling job's `permissions:`, and a caller that declares none han
 default GITHUB_TOKEN permissions rather than its own workflow's block (GitHub's
 reusable-workflow reference, "Supported keywords for jobs that call a reusable workflow").
 ci.yaml's dispatch-browser job declares what these jobs need: `contents: read` for every job's
-checkout, and the merge job's `actions: read` (it reads the run's jobs through the API) and
-`checks: write` (the ci-ok report it ends with, which only that call turns on).
-dispatch-browser-nightly.yaml's full job declares the first two: its call passes no
-`ci-ok-changes` either, so the report step skips there and no check is posted.
+checkout, `actions: read` for the merge job's read of the run's jobs through the API and for
+the ci-ok report every job ends with, which reads them too, and `checks: write` for that
+report's post, which only that call turns on. dispatch-browser-nightly.yaml's full job
+declares the first two: its call passes no `ci-ok-changes` either, so every report step skips
+there and no check is posted.
 
 ## Why GOPROXY falls through to direct
 
@@ -124,6 +125,9 @@ job 129055096326 of run 42585736615, where this build still sat inside the alone
 the whole envoy module, so it carries every package built here: 4 downloads and a 17 s
 restore of 646 MB in job 129071749416 of run 42590831386, against 9 s of 153 MB. No job
 here saves either one.
+The three paths are the save's exactly, the zip exclusion included: actions/cache keys
+an entry on its path list, so a restore naming two where the save names three misses
+this family's entry every time (dispatch://INFRA-1075).
 
 ## What the binaries build writes, and why it is static
 
@@ -140,6 +144,17 @@ $RUNNER_TEMP, so the checkout stays clean.
 One name for the whole run, with no `github.run_attempt` in it: a re-run of a run's
 failed jobs re-runs a shard or an alone leg without this one, and that attempt must find
 the artifact this job uploaded on the attempt before.
+
+## Why every job of this workflow ends with the ci-ok report
+
+The binaries job's own result decides a merge-group run as any job of ci.yaml does, so it ends
+with the router's report, as every job of this workflow does: a leg that fails posts the
+failing ci-ok at once, where before only the merge job below posted and the queue waited
+for every other leg first - 5.43 minutes late in run 42581083401 (dispatch://INFRA-1066
+R4, dispatch://INFRA-49). The step posts on a merge-group run alone
+(.github/actions/ci-ok-report says how), and the nightly workflow, which passes no
+`ci-ok-changes`, skips it. It is each job's last step, the shape
+.github/scripts/ci_filter_coverage.py's check_ci_ok holds a called workflow to.
 
 ## The shard job, its stacks and its container
 
@@ -792,6 +807,8 @@ go-envoy-test-Linux-go1.27.3, 677,668,128 bytes, 22 s of those 96.
 go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
 this job builds the Dispatch server and the dev OIDC issuer, which only that family's
 entry holds. It saves none.
+The three paths are the save's exactly, for the reason the binaries job's step of this
+name gives (dispatch://INFRA-1075).
 
 ## Why the two-process job builds contracts
 
@@ -1024,6 +1041,8 @@ six columns above, the sixth being run 42614920253 (job 129152410516). So the su
 go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
 this job's run-server.sh builds the Dispatch server, which only that family's entry
 holds. It saves none.
+The three paths are the save's exactly, for the reason the binaries job's step of this
+name gives (dispatch://INFRA-1075).
 
 ## Why the visual job builds contracts
 
@@ -1099,8 +1118,8 @@ Delete it as unused and `test-results` moves to the top of the archive, off that
 
 What the legs together ran. It joins every shard's and every alone leg's blob report into one
 report, publishes four readings of it - the rows, the flake rate, the legs that did not
-succeed and the row durations - and is the one job of this workflow that reports ci-ok, so a run gets one verdict
-and not seven.
+succeed and the row durations - and, as every job of this workflow does, ends with the ci-ok report
+(.github/actions/ci-ok-report).
 
 This job must never be skipped: .github/scripts/ci-ok.sh fails a selected job whose result is
 `skipped`, and a shard leg that failed would otherwise skip it and take ci-ok with it. It
@@ -1252,13 +1271,3 @@ The verdict, which the four readings ("Reading one, the rows", "Reading two, the
 of the job's three failures are here - an upstream job that neither succeeded nor was
 skipped, the binaries job among them, and a failed row in the merged report - and the
 third, a missing blob, is in reading one, where it is found.
-
-## When the merge job posts ci-ok
-
-ci.yaml's call only: on a merge-group run whose group ci.yaml's dispatch-browser job's
-own result decides it posts the failing ci-ok at once, and on every other run it posts
-nothing, the verdict being ci.yaml's `ci-ok` job's own check run
-(.github/actions/ci-ok-report says how). This is the job that posts for that call: it
-needs every other job of this workflow, and the step is its last, which is the shape
-.github/scripts/ci_filter_coverage.py's check_ci_ok holds a called workflow to. The
-nightly workflow passes no `ci-ok-changes`, and the step skips.

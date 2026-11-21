@@ -66,6 +66,7 @@ func TestTheGitHubTokenFlagLeavesAPlainValueAsItIs(t *testing.T) {
 // with no --github-owner it is a usage error that names the flag, and nothing reaches the broker,
 // not even the request a person would approve.
 func TestTheGitHubTokenFlagWithoutAnOwnerExitsTwo(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	b := newNarrowBroker(t, githubTokenReleases)
 	keyDir := newKeyDir(t)
@@ -127,6 +128,7 @@ func TestAGrantWithNoGitHubAppReleaseRunsNothing(t *testing.T) {
 // (packages/daemon/internal/appauth/tokencommand.go, parseRelease): the broker may add one, and it
 // rolls out without this client.
 func TestOnlyAGitHubAppReleaseIsReadAsOne(t *testing.T) {
+	t.Parallel()
 	const entry = `"ada":{"installation_id":8,"token":"ghs_one_installation","expires_at":"2100-01-01T00:00:00Z"}`
 	for _, tc := range []struct {
 		name      string
@@ -177,6 +179,7 @@ func TestOnlyAGitHubAppReleaseIsReadAsOne(t *testing.T) {
 // secret and never that key, which the refusal of a release of two would otherwise list as an
 // account.
 func TestGitHubTokensAloneNamesNoToken(t *testing.T) {
+	t.Parallel()
 	values := map[string]string{"APP": githubTokenReleases["APP"], "PLAIN": githubTokenReleases["PLAIN"]}
 	if err := githubTokensAlone(values); err != nil {
 		t.Fatalf("githubTokensAlone of one release beside a password = %v, want it handed over", err)

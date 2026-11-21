@@ -49,54 +49,53 @@ func (m *fakeMinter) minted() []mintCall {
 }
 
 // passwordRole creates a login role on the BROKER_TEST_DATABASE_URL server whose password is
-// password, dropped when t ends, and returns its name, the name of the schema a test may create
-// for it, which the cleanup drops too, and a URL that signs in as it with no password, as an
+// password, and a database of its own the role may create in, both dropped when t ends, and
+// returns the role's name and a URL that signs in as it to that database with no password, as an
 // IAM-form URL does. Postgres asks the role for a password over TCP (the test server's pg_hba),
-// so only a connection that brings one signs in.
-//
-// The server's login need not be a superuser. One with CREATEROLE is given ADMIN alone on a role
-// it creates (Postgres 16 and later), so it grants the role to itself with SET, which `create
-// schema ... authorization` of the role needs, and INHERIT, which the cleanup's `drop owned by`
-// needs. A role spans the server, and these tests share the database BROKER_TEST_DATABASE_URL
-// names, so no database of the test's own goes and takes what the role owns with it. The cleanup
-// is registered as soon as the role exists, and drops the schema with everything in it first,
-// then what else the role owns and the grants it holds, then the role, each a statement of its
-// own, each run whatever the ones before it did.
-func passwordRole(t *testing.T, password string) (role, schema, databaseURL string) {
+// so only a connection that brings one signs in. The database is its own rather than the
+// server's shared one because these rows create tables and hold locks on them, which no other
+// test on the server has any business seeing (dispatch://INFRA-1075).
+func passwordRole(t *testing.T, password string) (role, databaseURL string) {
 	t.Helper()
 	raw := testDatabaseURL(t)
 	var suffix [8]byte
 	if _, err := rand.Read(suffix[:]); err != nil {
 		t.Fatalf("random role name: %v", err)
 	}
-	role = "broker_iam_test_" + hex.EncodeToString(suffix[:])
-	schema = "broker_iam_schema_" + hex.EncodeToString(suffix[:])
+	name := hex.EncodeToString(suffix[:])
+	role = "broker_iam_test_" + name
 	adminExec(t, raw, "create role "+role+" login password '"+password+"'")
-	t.Cleanup(func() {
-		ctx := context.Background()
-		conn, err := pgx.Connect(ctx, raw)
-		if err != nil {
-			t.Errorf("connect to BROKER_TEST_DATABASE_URL to drop the schema %s and the role %s: %v", schema, role, err)
-			return
-		}
-		defer conn.Close(ctx)
-		for _, statement := range []string{
-			"drop schema if exists " + schema + " cascade",
-			"drop owned by " + role + " cascade",
-			"drop role if exists " + role,
-		} {
-			if _, err := conn.Exec(ctx, statement); err != nil {
-				t.Errorf("%s: %v", statement, err)
-			}
-		}
-	})
-	adminExec(t, raw, "grant "+role+" to current_user with set true, inherit true")
+	// The role owns nothing outside the database below, which goes first, so dropping the role
+	// is all its cleanup owes.
+	t.Cleanup(func() { adminExec(t, raw, "drop role "+role) })
+	// The database is a file copy of template1 (docs/testing.md, "A database a Go test
+	// creates"), and its drop forces off whatever connection a failed row left on it, so the
+	// role that owns nothing in it can then be dropped too. Cleanups run last-registered-first,
+	// so the database goes before the role.
+	database := "broker_iam_db_" + name
+	adminExec(t, raw, "create database "+database+" strategy file_copy")
+	t.Cleanup(func() { adminExec(t, raw, "drop database "+database+" with (force)") })
 	parsed, err := url.Parse(raw)
 	if err != nil {
 		t.Fatalf("parse BROKER_TEST_DATABASE_URL: %v", err)
 	}
+	parsed.Path = "/" + database
+	adminExec(t, parsed.String(), "grant all on schema public to "+role)
 	parsed.User = url.User(role)
-	return role, schema, parsed.String()
+	return role, parsed.String()
+}
+
+// signedInWith is databaseURL carrying password, for a connection that brings a password of its
+// own rather than a minted token: it signs in before the rotation below and owns what it locks,
+// where the server's own user owns nothing the role created.
+func signedInWith(t *testing.T, databaseURL, password string) string {
+	t.Helper()
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed.User = url.UserPassword(parsed.User.Username(), password)
+	return parsed.String()
 }
 
 // endpointOf is the host:port pgx dials for databaseURL, which RDS signs a token for.
@@ -120,7 +119,7 @@ func endpointOf(t *testing.T, databaseURL string) string {
 // on GitHub Actions, where it fails (testdb.SkipOutsideCI).
 func TestOpenSignsEveryNewConnectionInWithAFreshlyMintedToken(t *testing.T) {
 	ctx := context.Background()
-	role, _, databaseURL := passwordRole(t, "fake-iam-token-1")
+	role, databaseURL := passwordRole(t, "fake-iam-token-1")
 	if s, err := Open(ctx, databaseURL); err == nil {
 		s.Pool.Close()
 		testdb.SkipOutsideCI(t, "the test server signed the role %s in with no password (its pg_hba trusts the connection), so it cannot tell a minted token from no password: the test needs a server that asks the role for its password", role)
@@ -171,21 +170,11 @@ func TestOpenSignsEveryNewConnectionInWithAFreshlyMintedToken(t *testing.T) {
 func TestMigrateLockWatchSignsInWithAFreshToken(t *testing.T) {
 	ctx := context.Background()
 	raw := testDatabaseURL(t)
-	role, schema, databaseURL := passwordRole(t, "fake-iam-token-1")
-	adminExec(t, raw, "create schema "+schema+" authorization "+role)
-	withSchema := func(databaseURL string) string {
-		parsed, err := url.Parse(databaseURL)
-		if err != nil {
-			t.Fatal(err)
-		}
-		query := parsed.Query()
-		query.Set("search_path", schema)
-		parsed.RawQuery = query.Encode()
-		return parsed.String()
-	}
+	role, databaseURL := passwordRole(t, "fake-iam-token-1")
+	holderURL := signedInWith(t, databaseURL, "fake-iam-token-1")
 
 	minter := &fakeMinter{token: "fake-iam-token-1"}
-	s, err := Open(ctx, withSchema(databaseURL), WithTokenMinter(minter.mint))
+	s, err := Open(ctx, databaseURL, WithTokenMinter(minter.mint))
 	if err != nil {
 		t.Fatalf("Open with the token minter: %v", err)
 	}
@@ -193,7 +182,7 @@ func TestMigrateLockWatchSignsInWithAFreshToken(t *testing.T) {
 	if _, err := s.Pool.Exec(ctx, "create table guard_held (id integer)"); err != nil {
 		t.Fatalf("create the held table: %v", err)
 	}
-	holder, err := pgx.Connect(ctx, withSchema(raw))
+	holder, err := pgx.Connect(ctx, holderURL)
 	if err != nil {
 		t.Fatalf("connect the holder: %v", err)
 	}

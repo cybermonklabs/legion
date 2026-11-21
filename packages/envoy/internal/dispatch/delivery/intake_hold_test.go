@@ -346,7 +346,7 @@ func consumerState(publisher *bus.Client) string {
 // subscriber: delivered to it, and not yet acknowledged.
 func awaitAckPending(t *testing.T, publisher *bus.Client, want int) {
 	t.Helper()
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.NumAckPending == want
 	}, func() string {
@@ -361,7 +361,7 @@ func awaitAckPending(t *testing.T, publisher *bus.Client, want int) {
 // each process has handled no longer changes.
 func awaitEverythingAcknowledged(t *testing.T, publisher *bus.Client) {
 	t.Helper()
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.NumAckPending == 0 && info.NumPending == 0 && info.AckFloor.Consumer == info.Delivered.Consumer
 	}, func() string {
@@ -374,6 +374,12 @@ func awaitEverythingAcknowledged(t *testing.T, publisher *bus.Client) {
 // standby handles every one of them within seconds, not after the ack wait. The messages it holds
 // are the ones waiting behind their key (intakeKey): one pull request's messages run one after
 // another, so four more of the one its handler is holding wait behind it.
+//
+// Serial: it swaps process-wide state. shrinkIntakeFlowControl and its own assignment of
+// intakeMaxAckPending set package variables every intake in the process reads, and its assertion
+// is also a time: the standby handles the queued messages within 10 s. It also holds the stopping
+// holder's keyed runner to stopping within 20 s of the stop, a wall-clock bound a parallel
+// neighbour's load spends.
 func TestAGracefulStopHandsTheBufferedMessagesToTheStandby(t *testing.T) {
 	shrinkIntakeFlowControl(t)
 	// One message in the holder's handler and four behind it on its key.
@@ -382,7 +388,7 @@ func TestAGracefulStopHandsTheBufferedMessagesToTheStandby(t *testing.T) {
 	t.Cleanup(func() { intakeMaxAckPending = maxAckPending })
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	natsURL := testnats.URL(t)
+	natsURL := deliveryTestNATS(t)
 	publisher := intakeTestClient(t)
 
 	const inFlight = 100
@@ -392,7 +398,7 @@ func TestAGracefulStopHandsTheBufferedMessagesToTheStandby(t *testing.T) {
 	standby := startIntakeProcess(t, pool, natsURL, nil)
 
 	publishMergedPullRequest(t, publisher, inFlight)
-	waitFor(t, 20*time.Second, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
+	waitFor(t, eventWait, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
 		return "the holder never started on the first message: " + consumerState(publisher)
 	})
 	for range queued {
@@ -497,9 +503,13 @@ const withheldHandBack = "dispatch delivery: the hold no longer covers this deli
 // acknowledgements are there to be read beside them, so a recorder that saw nothing at all
 // cannot pass the row by silence.
 func TestAStopPastTheHoldsLapsePublishesNoHandBackAndTheStandbyHandlesEachMessageOnce(t *testing.T) {
+	// Serial: a product timer is under its steps. The GitHub client gives an unanswered call up
+	// at githubapp.RequestTimeout (20 s, shorter than eventWait) and asks again, so the publishes,
+	// the cut and the lapse below must all come inside 20 s of the holder's held fetch, and a
+	// parallel test's load is what would stretch them past it.
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	natsURL := testnats.URL(t)
+	natsURL := deliveryTestNATS(t)
 	publisher := intakeTestClient(t)
 	answers := durableAnswers(t, publisher)
 
@@ -514,7 +524,7 @@ func TestAStopPastTheHoldsLapsePublishesNoHandBackAndTheStandbyHandlesEachMessag
 	standby := startIntakeProcess(t, pool, natsURL, nil)
 
 	publishMergedPullRequest(t, publisher, inFlight)
-	waitFor(t, 20*time.Second, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
+	waitFor(t, eventWait, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
 		return "the holder never started on the first message: " + consumerState(publisher)
 	})
 	for range queued {
@@ -605,11 +615,16 @@ func TestAStopPastTheHoldsLapsePublishesNoHandBackAndTheStandbyHandlesEachMessag
 // read off the ack subject itself (durableAnswers) as the row above reads them, and the line
 // handBack logs for a message it withholds, so a run whose message never reached that callback
 // fails rather than passing on a branch it never ran.
+//
+// Serial: it swaps process-wide state, and its subject is a wall-clock window. captureLogs
+// replaces the default logger, which is where handBack logs the hand-back it withholds, and the
+// row stops the holder stopBeforeLapse before its hold's loss deadline so that the deadline falls
+// inside the holderLinkLatency window, which a parallel test's load would move.
 func TestAMessagePushedToADrainingHolderPastItsHoldsLapseIsLeftToTheStandby(t *testing.T) {
 	records := captureLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	natsURL := testnats.URL(t)
+	natsURL := deliveryTestNATS(t)
 	publisher := intakeTestClient(t)
 	answers := durableAnswers(t, publisher)
 
@@ -707,11 +722,15 @@ func TestAMessagePushedToADrainingHolderPastItsHoldsLapseIsLeftToTheStandby(t *t
 // no longer renewed -- strands the messages it had been delivered. The standby takes the durable
 // over once the hold lapses and is redelivered every one of them at once: within the hold's 15 s
 // TTL, a 2 s bind interval and a margin, not after the 85 s ack wait.
+//
+// Serial: it swaps process-wide state, shrinkIntakeFlowControl's intakeMessageTimeout, which every
+// intake in the process reads, and its assertion is also a time: the standby handles the stranded
+// messages within 25 s, the hold's lapse and a margin.
 func TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse(t *testing.T) {
 	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	natsURL := testnats.URL(t)
+	natsURL := deliveryTestNATS(t)
 	publisher := intakeTestClient(t)
 
 	holder := startIntakeProcess(t, pool, natsURL, func(int) bool { return true })
@@ -746,11 +765,14 @@ func TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse(t *testing
 // When the holder's connection comes back, its client sends its subscription again on the deliver
 // subject it had; the standby's take-over moved the durable to another, so the holder is handed
 // nothing, and each later message is handled by exactly one process.
+//
+// Serial: it swaps process-wide state, shrinkIntakeFlowControl's intakeMessageTimeout, which every
+// intake in the process reads.
 func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) {
 	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	natsURL := testnats.URL(t)
+	natsURL := deliveryTestNATS(t)
 	publisher := intakeTestClient(t)
 
 	relay, relayedURL := startNATSCut(t, natsURL, 0)
@@ -771,7 +793,7 @@ func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) 
 
 	relay.Restore()
 	holder.leases.cut.Store(false)
-	waitFor(t, 20*time.Second, holder.client.Connected, func() string {
+	waitFor(t, eventWait, holder.client.Connected, func() string {
 		return "the holder's NATS connection did not come back"
 	})
 	// Time for the holder's client to send its subscriptions again.
@@ -811,9 +833,10 @@ func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) 
 // moment the server announces its creation finds it bound, even with the taking process's link to
 // the server slow.
 func TestATakeOverCreatesTheDurableAlreadyBound(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	natsURL := testnats.URL(t)
+	natsURL := deliveryTestNATS(t)
 	intakeTestClient(t)
 
 	// The previous build's standby, as fast as it can be: it looks the durable up the moment the
@@ -872,11 +895,14 @@ const intakeConsumerLease = "delivery-consumer-" + bus.DispatchDeliveryDurable
 // of this build changes nothing about it across two settings polls while the newer build holds it,
 // and once that build lets go, the standby's take-over recreates the durable with the newer build's
 // settings, not its own.
+//
+// Serial: it swaps process-wide state, shrinkIntakeFlowControl's intakeMessageTimeout, which every
+// intake in the process reads.
 func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	natsURL := testnats.URL(t)
+	natsURL := deliveryTestNATS(t)
 	publisher := intakeTestClient(t)
 
 	// The newer build's durable: generation 2, with flow control this build does not set.
@@ -937,7 +963,7 @@ func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 		t.Fatalf("release the newer build's hold: %v", err)
 	}
 	var taken *natsgo.ConsumerInfo
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		taken, err = publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && taken.PushBound && taken.Config.DeliverSubject != newer.DeliverSubject
 	}, func() string {
@@ -948,7 +974,7 @@ func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 			taken.Config.AckWait, taken.Config.MaxAckPending, taken.Config.Metadata[generationKey], newer.AckWait, newer.MaxAckPending, "2")
 	}
 	publishMergedPullRequest(t, publisher, 5)
-	waitFor(t, 20*time.Second, func() bool { return standby.fetches(5) == 1 }, func() string {
+	waitFor(t, eventWait, func() bool { return standby.fetches(5) == 1 }, func() string {
 		return "the standby that took the durable over did not handle a message: " + consumerState(publisher)
 	})
 }
@@ -957,11 +983,14 @@ func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 // hold recorded its deliver subject) is never taken from it: this build's standby waits, handles
 // nothing, and changes nothing, until that process lets go. Then it takes the durable over on a
 // deliver subject of its own.
+//
+// Serial: it swaps process-wide state, shrinkIntakeFlowControl's intakeMessageTimeout, which every
+// intake in the process reads.
 func TestANewBuildStandbyWaitsForABindingNoHoldRecorded(t *testing.T) {
 	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	natsURL := testnats.URL(t)
+	natsURL := deliveryTestNATS(t)
 	publisher := intakeTestClient(t)
 
 	// The previous build's durable and its process bound to it.
@@ -995,7 +1024,7 @@ func TestANewBuildStandbyWaitsForABindingNoHoldRecorded(t *testing.T) {
 	standby := startIntakeProcess(t, pool, natsURL, nil)
 	time.Sleep(3 * durableBindInterval)
 	publishMergedPullRequest(t, publisher, 1)
-	waitFor(t, 20*time.Second, func() bool { return received.Load() == 1 }, func() string {
+	waitFor(t, eventWait, func() bool { return received.Load() == 1 }, func() string {
 		return "the previous build's process stopped receiving while the standby stood by: " + consumerState(publisher)
 	})
 	after, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
@@ -1013,14 +1042,14 @@ func TestANewBuildStandbyWaitsForABindingNoHoldRecorded(t *testing.T) {
 	if err := held.Unsubscribe(); err != nil {
 		t.Fatalf("unsubscribe the previous build's process: %v", err)
 	}
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.PushBound && info.Config.DeliverSubject != previous.DeliverSubject
 	}, func() string {
 		return "the standby never took the durable over on a deliver subject of its own once the previous build let go: " + consumerState(publisher)
 	})
 	publishMergedPullRequest(t, publisher, 2)
-	waitFor(t, 20*time.Second, func() bool { return standby.fetches(2) == 1 }, func() string {
+	waitFor(t, eventWait, func() bool { return standby.fetches(2) == 1 }, func() string {
 		return "the standby that took the durable over did not handle a message: " + consumerState(publisher)
 	})
 	if got := received.Load(); got != 1 {
@@ -1080,7 +1109,7 @@ func durablePartWayThrough(t *testing.T, ctx context.Context, publisher *bus.Cli
 	if err != nil {
 		t.Fatalf("look up the durable: %v", err)
 	}
-	batch, err := consumer.Fetch(acknowledged, jetstream.FetchMaxWait(10*time.Second))
+	batch, err := consumer.Fetch(acknowledged, jetstream.FetchMaxWait(eventWait))
 	if err != nil {
 		t.Fatalf("fetch from the durable: %v", err)
 	}
@@ -1139,11 +1168,14 @@ func requireDeliveredFromTheFloor(t *testing.T, publisher *bus.Client, process *
 // create fails after the delete, the take-over gives the consumer lease up with the durable absent,
 // and the next take-over of the same intake finds no durable and creates it at that same floor:
 // none of the acknowledged messages come back, and none of the others are skipped.
+//
+// Serial: it swaps process-wide state. shrinkIntakeFlowControl and failCreatesWhile set package
+// variables every intake in the process reads (intakeMessageTimeout, createDurable).
 func TestATakeOverWhoseCreateFailsCreatesTheDurableAtItsFloorOnTheNextAttempt(t *testing.T) {
 	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	natsURL := testnats.URL(t)
+	natsURL := deliveryTestNATS(t)
 	publisher := intakeTestClient(t)
 	const acknowledged, unacknowledged = 5, 4
 	durablePartWayThrough(t, ctx, publisher, acknowledged, unacknowledged)
@@ -1175,11 +1207,14 @@ func TestATakeOverWhoseCreateFailsCreatesTheDurableAtItsFloorOnTheNextAttempt(t 
 // stopped gracefully before any create succeeded hands the hold on, and a fresh intake, as a
 // restarted process runs one, creates the durable at the old floor: none of the acknowledged
 // messages come back, and none of the others are skipped.
+//
+// Serial: it swaps process-wide state. shrinkIntakeFlowControl and failCreatesWhile set package
+// variables every intake in the process reads (intakeMessageTimeout, createDurable).
 func TestATakeOverWhoseCreateFailsLeavesTheFloorToTheNextHolder(t *testing.T) {
 	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	natsURL := testnats.URL(t)
+	natsURL := deliveryTestNATS(t)
 	publisher := intakeTestClient(t)
 	const acknowledged, unacknowledged = 5, 4
 	durablePartWayThrough(t, ctx, publisher, acknowledged, unacknowledged)
@@ -1188,7 +1223,7 @@ func TestATakeOverWhoseCreateFailsLeavesTheFloorToTheNextHolder(t *testing.T) {
 	failing.Store(true)
 	attempts := failCreatesWhile(t, failing.Load)
 	first := startIntakeProcess(t, pool, natsURL, nil)
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		_, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return attempts.Load() > 0 && errors.Is(err, natsgo.ErrConsumerNotFound)
 	}, func() string {
@@ -1262,11 +1297,14 @@ func previousBuildReconciler(t *testing.T, pool *store.Pool, natsURL string, int
 // consumer lease: that process never finds the durable missing, so it never creates its own,
 // which would replay every message the durable had acknowledged. None of the acknowledged
 // messages come back, none of the others are skipped, and that process finds the durable there.
+//
+// Serial: it swaps process-wide state. shrinkIntakeFlowControl and failCreatesWhile set package
+// variables every intake in the process reads (intakeMessageTimeout, createDurable).
 func TestATakeOverWhoseCreateFailsCreatesTheDurableBeforeAPreviousBuildReconciles(t *testing.T) {
 	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	natsURL := testnats.URL(t)
+	natsURL := deliveryTestNATS(t)
 	publisher := intakeTestClient(t)
 	const acknowledged, unacknowledged = 5, 4
 	durablePartWayThrough(t, ctx, publisher, acknowledged, unacknowledged)
@@ -1298,7 +1336,7 @@ func TestATakeOverWhoseCreateFailsCreatesTheDurableBeforeAPreviousBuildReconcile
 			natsgo.DeliverByStartSequencePolicy, start, consumerConfigGeneration)
 	}
 	before := present.Load()
-	waitFor(t, 10*time.Second, func() bool { return present.Load() > before }, func() string {
+	waitFor(t, eventWait, func() bool { return present.Load() > before }, func() string {
 		return "the previous build's process did not find the durable present after the take-over: " + consumerState(publisher)
 	})
 }

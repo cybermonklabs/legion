@@ -106,9 +106,20 @@ jobs:
       - name: Typecheck pi-legion
         run: bun run typecheck
         working-directory: packages/pi-legion
+      # timeout-minutes 24, the step's own ceiling, so this step fails before the job's limit can
+      # cut the job off: a job its own limit ends reports `cancelled` with every step green, and
+      # the report step below never runs, so the failing ci-ok comes from the end-of-run job
+      # instead - 22.35 and 21.48 minutes late in the merge groups of runs 42534854274 and
+      # 42542630575, whose Test steps ran 524 s and 537 s against a 10-minute job limit
+      # (dispatch://INFRA-1066 R4, dispatch://INFRA-49). It is at least twice the step's largest
+      # reading, as a whole minute: 706 s in run 43814304800 (job 133122820430), 706 * 2 = 1412 s
+      # = 23.5 minutes, so 24. The job's own 28 stands above it with the room the parts below the
+      # step need: that job ran 771 s in all, 65 s of which is every other step, 1.1 minutes, and
+      # the pack, the upload and the ci-ok report are inside that figure.
       - name: Test pi-legion
         run: bun run test
         working-directory: packages/pi-legion
+        timeout-minutes: 24
         env:
           LEGION_TEST_NATS_URL: nats://127.0.0.1:4222
       # The release's pack (release.yaml's pi_legion_build job), which is also this job's build: the

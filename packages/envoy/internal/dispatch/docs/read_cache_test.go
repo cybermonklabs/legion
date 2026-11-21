@@ -98,6 +98,7 @@ func docMarkdown(doc *crdt.Doc) string {
 // stamp after the prune and the append differs from the one before them, and the load shows the
 // new content under it.
 func TestAStampChangesWhenAPruneAndAnAppendRepeatAVersionNumber(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	versioned := NewPgVersioned(database)
 	ctx := context.Background()
@@ -175,6 +176,7 @@ func TestACompactionChangesTheStampAndKeepsTheDocument(t *testing.T) {
 // updates (each pmdoc fixture rewritten into the next and back), a log of one, and a log whose
 // fold parks an update and a delete, which the loaded document parks again.
 func TestALoadedDocumentIsTheLoadedStateDecoded(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	versioned := NewPgVersioned(database)
 	ctx := context.Background()
@@ -212,7 +214,7 @@ func TestALoadedDocumentIsTheLoadedStateDecoded(t *testing.T) {
 	for index, fixture := range fixtures {
 		t.Run("many updates/"+fixture.Name, func(t *testing.T) {
 			artifactID := createDocument(t, database, "history")
-			appendUpdates(t, versioned, artifactID, documentHistory(t, fixture.update, fixtures[(index+1)%len(fixtures)].update)...)
+			appendUpdates(t, versioned, artifactID, fixtureHistoryAt(t, fixtures, index)...)
 			sameAsLoad(t, artifactID)
 		})
 	}
@@ -263,6 +265,10 @@ func TestALoadedDocumentIsTheLoadedStateDecoded(t *testing.T) {
 // A history whose updates merge past ygo's item cap does not decode: LoadDocument names it as the
 // one state a rebuild repairs (ErrDocumentUnloadable), and so does a read of it, not wrapped in
 // the unavailable service any failed room or store answers.
+//
+// Serial, for the reason TestRebuildDocumentRestoresDocumentThatCannotLoad (rebuild_test.go) is:
+// oversizedHistory builds a million-item document, which the race detector shadows at about four
+// bytes a byte, and two such tests at once passed the race job's memory bound.
 func TestAnUndecodableHistoryLoadsAsDocumentUnloadable(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
@@ -272,7 +278,7 @@ func TestAnUndecodableHistoryLoadsAsDocumentUnloadable(t *testing.T) {
 		t.Fatalf("load an over-cap history: %v, want ErrDocumentUnloadable", err)
 	}
 	service := newSchemaRepairService(database)
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocumentUnloadable) || errors.Is(err, ErrServiceUnavailable) {
 		t.Fatalf("read an over-cap history: %v, want ErrDocumentUnloadable and not ErrServiceUnavailable", err)
 	}
@@ -339,7 +345,7 @@ func (s *timeoutLoadStore) LoadDocument(ctx context.Context, room string) (Loade
 
 func newReadCacheService(t *testing.T, database *store.Store, persistence VersionedStore) *Service {
 	t.Helper()
-	service := New(Deps{
+	return newTestServiceWith(t, Deps{
 		Store:       database,
 		Persistence: persistence,
 		Events:      events.NewBroker(),
@@ -347,12 +353,6 @@ func newReadCacheService(t *testing.T, database *store.Store, persistence Versio
 		ServerURL:   "https://dispatch.example",
 		Settle:      time.Hour,
 	})
-	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown read-cache service: %v", err)
-		}
-	})
-	return service
 }
 
 type coldReading struct {
@@ -407,6 +407,7 @@ func cacheEntry(t *testing.T, service *Service, artifactID string) *documentRead
 }
 
 func TestColdReadAfterAnEditSeesTheEdit(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	versioned := NewPgVersioned(database)
 	persistence := &loadCountingStore{VersionedStore: versioned}
@@ -445,6 +446,7 @@ func TestColdReadAfterAnEditSeesTheEdit(t *testing.T) {
 }
 
 func TestRepeatedColdReadsLoadAnUnchangedDocumentOnce(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	persistence := &loadCountingStore{VersionedStore: NewPgVersioned(database)}
 	artifactID := createDocument(t, database, "before")
@@ -466,6 +468,11 @@ func TestRepeatedColdReadsLoadAnUnchangedDocumentOnce(t *testing.T) {
 	}
 }
 
+// Serial: the shared fold runs under the product's coldReadTimeout (60 s, read_cache.go:81), armed
+// as the fold starts, which ends the gated load as the caller's cancellation would and sets
+// canceled: every step from the fold's start to the release must come inside it. It also holds the
+// cancelled leader to returning within 1 s of its cancel, a wall-clock bound a parallel
+// neighbour's load spends.
 func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 	database := storetest.Open(t)
 	persistence := &gatedLoadStore{
@@ -478,7 +485,7 @@ func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 	seedServiceText(t, service, artifactID, "before\n")
 
 	leaderCtx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
+	cleanupAndRelease(t, cancel)
 	leader := make(chan error, 1)
 	go func() {
 		_, err := service.Text(leaderCtx, artifactID)
@@ -486,7 +493,7 @@ func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 	}()
 	select {
 	case <-persistence.entered:
-	case <-time.After(time.Second):
+	case <-time.After(roomWait(t)):
 		t.Fatal("the cold fold never reached LoadDocument")
 	}
 
@@ -531,6 +538,7 @@ func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 }
 
 func TestPanickingColdLoadFailsTheRoomAndRecovers(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	persistence := &panickingLoadStore{VersionedStore: NewPgVersioned(database)}
 	artifactID := createDocument(t, database, "before")
@@ -546,14 +554,13 @@ func TestPanickingColdLoadFailsTheRoomAndRecovers(t *testing.T) {
 }
 
 func TestColdLoadTimeoutIsServiceUnavailable(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	persistence := &timeoutLoadStore{VersionedStore: NewPgVersioned(database), started: make(chan struct{}, 1)}
 	artifactID := createDocument(t, database, "before")
 	service := newReadCacheService(t, database, persistence)
 	seedServiceText(t, service, artifactID, "before\n")
-	oldTimeout := coldReadTimeout
-	coldReadTimeout = 20 * time.Millisecond
-	t.Cleanup(func() { coldReadTimeout = oldTimeout })
+	service.coldReadTimeout = 20 * time.Millisecond
 
 	ctx := context.Background()
 	_, err := service.Text(ctx, artifactID)
@@ -571,6 +578,7 @@ func TestColdLoadTimeoutIsServiceUnavailable(t *testing.T) {
 }
 
 func TestColdReadSeesTheNewContentAfterPruneAndReappend(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	versioned := NewPgVersioned(database)
 	artifactID := createDocument(t, database, "one")
@@ -592,6 +600,7 @@ func TestColdReadSeesTheNewContentAfterPruneAndReappend(t *testing.T) {
 }
 
 func TestColdReadSeesRebuildAndDeleteBetweenReads(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	versioned := NewPgVersioned(database)
 	persistence := &rebuildCaptureStore{VersionedStore: versioned}
@@ -621,6 +630,7 @@ func TestColdReadSeesRebuildAndDeleteBetweenReads(t *testing.T) {
 }
 
 func TestColdReadOnOneServiceSeesAnotherServicesWrite(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	versioned := NewPgVersioned(database)
 	artifactID := createDocument(t, database, "before")
@@ -639,6 +649,7 @@ func TestColdReadOnOneServiceSeesAnotherServicesWrite(t *testing.T) {
 }
 
 func TestColdReadDoesNotLeakCallerMutations(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := newReadCacheService(t, database, NewPgVersioned(database))
@@ -681,6 +692,7 @@ func cacheHas(service *Service, artifactID string) bool {
 }
 
 func TestColdReadCacheEvictsTheLeastRecentlyReadDocument(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	persistence := &loadCountingStore{VersionedStore: NewPgVersioned(database)}
 	service := newReadCacheService(t, database, persistence)

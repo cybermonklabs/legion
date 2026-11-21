@@ -531,7 +531,7 @@ type claimAnswer struct {
 // cancellation cannot is the 500 ms statement timeout below - the same bound, for the same
 // reason, as the one writeAdvice puts on this very predicate (write_advice.go). A connection
 // that dies under the walk still fails the claim, as it fails every other statement in it.
-func claimLegionManagedStatus(ctx context.Context, tx pgx.Tx, key string) *bool {
+func (s *server) claimLegionManagedStatus(ctx context.Context, tx pgx.Tx, key string) *bool {
 	// Detached from the caller's cancellation, so a client hang-up or a write deadline landing
 	// here cannot skip the savepoint's rollback and leave the claim's transaction holding an
 	// aborted savepoint that its COMMIT would then refuse.
@@ -549,7 +549,7 @@ func claimLegionManagedStatus(ctx context.Context, tx pgx.Tx, key string) *bool 
 		slog.Warn("dispatch: claim legion_managed_status omitted", "issue", key, "error", err)
 		return nil
 	}
-	managed, err := legionManagedStatus(walkCtx, walk, key)
+	managed, err := s.legionManagedStatus(walkCtx, walk, key)
 	if err != nil {
 		_ = walk.Rollback(walkCtx)
 		slog.Warn("dispatch: claim legion_managed_status omitted", "issue", key, "error", err)
@@ -622,7 +622,7 @@ func (s *server) claimWrite(
 	// claimLegionManagedStatus runs it in a savepoint, on a context no cancellation reaches,
 	// bounded by its own statement timeout, and a claim is what stops two sessions working one
 	// issue.
-	managed := claimLegionManagedStatus(ctx, tx, key)
+	managed := s.claimLegionManagedStatus(ctx, tx, key)
 	applied := claimApplied{issue: before, legionManagedStatus: managed}
 	if change.changed {
 		// The moment the claim is stamped with, read where the update's own now() would have

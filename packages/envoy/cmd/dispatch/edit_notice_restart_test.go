@@ -18,9 +18,17 @@ import (
 // does: the killed process's registry row is still live when the second starts, and a key the
 // second minted in its own data dir would hold its start up to a live window, until that row
 // lapsed (processes.Register).
+//
+// The quiet window is an hour, far past anything this test waits for, so the kill lands inside it
+// whatever the machine's speed: with the 3 s window this row had, a run slowed past it between
+// the notice's write and the kill had the notice sent before the kill, and failed as a process
+// that did not wait. The window then ends when the test says, once the first process is dead:
+// the test moves the row's due time to now, as the hour running out would. The due time is the
+// row's (openEditNotice), and it is what the second process reads to send (dueEditNotices).
 func TestEditNoticeRestart(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
-	options := dispatchOptions{SigningKey: "edit-notice-restart-key", Env: map[string]string{"DISPATCH_TEST_EDIT_NOTICE_QUIET": "3s"}}
+	options := dispatchOptions{SigningKey: "edit-notice-restart-key", Env: map[string]string{"DISPATCH_TEST_EDIT_NOTICE_QUIET": "1h"}}
 	first := startDispatchProcessWith(t, database.Pool.Config().ConnString(), options)
 	first.waitHealthy(t)
 	key, artifactID := first.createIssue(t)
@@ -45,6 +53,14 @@ func TestEditNoticeRestart(t *testing.T) {
 	}
 	if sentBeforeKill != 0 {
 		t.Fatalf("the first process sent %d notices before it was killed, want none: the quiet window had not ended", sentBeforeKill)
+	}
+	ended, err := database.Pool.Exec(context.Background(),
+		`update document_edit_notices set due_at = now() where artifact_id = $1 and due_at > now()`, artifactID)
+	if err != nil {
+		t.Fatalf("end the notice's quiet window: %v", err)
+	}
+	if ended.RowsAffected() != 1 {
+		t.Fatalf("ended %d open quiet windows of the document's notice, want 1: the killed process left no notice still inside its window", ended.RowsAffected())
 	}
 
 	second := startDispatchProcessWith(t, database.Pool.Config().ConnString(), options)

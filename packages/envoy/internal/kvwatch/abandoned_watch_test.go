@@ -87,6 +87,9 @@ func subscriptionGoroutines() int {
 // when nothing ever closes them, and the watcher's consumer is gone from the server. The cache's
 // own watcher is untouched. A watch under a live run that overtakes still returns with its watcher
 // stopped (TestADiscardedWatcherIsStoppedAtOnceAndReadUntilItEnds).
+//
+// Serial: it reads the whole process's goroutine dump (subscriptionGoroutines), which counts a
+// parallel test's subscription goroutines as its own.
 func TestAnAbandonedWatchersDiscardEnds(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

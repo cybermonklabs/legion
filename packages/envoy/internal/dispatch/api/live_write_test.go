@@ -26,10 +26,12 @@ import (
 // failure, and check that nothing outside the transaction ever sees the write: not the room,
 // not a browser, not a version, not the durable document. While the handler is held the test
 // reads only the resident room and a database connection of its own, because the handler's
-// pool is full of work queued behind the transaction's locks (store.Open sizes it to the CPU
-// count, 4 on CI's runner).
+// pool is full of work queued behind the transaction's locks (storetest gives each test's store
+// sixteen connections, storetest.testPoolSize, where store.Open's own shared pool is
+// store.sharedPoolSize, 64).
 
 func TestEditArtifactRollbackNeverReachesTheRoom(t *testing.T) {
+	t.Parallel()
 	f := newHeldWriteFixture(t, 50*time.Millisecond)
 	f.connectPlainSocket(t)
 	responses := f.startFailingEdit(t)
@@ -63,6 +65,7 @@ func TestEditArtifactRollbackNeverReachesTheRoom(t *testing.T) {
 }
 
 func TestBrowserTypingDuringAHeldEditKeepsOnlyItsOwnText(t *testing.T) {
+	t.Parallel()
 	f := newHeldWriteFixture(t, 50*time.Millisecond)
 	peer := f.connectPeer(t)
 	responses := f.startFailingEdit(t)
@@ -85,6 +88,7 @@ func TestBrowserTypingDuringAHeldEditKeepsOnlyItsOwnText(t *testing.T) {
 }
 
 func TestBrowserTypingNextToAHeldEditKeepsItsText(t *testing.T) {
+	t.Parallel()
 	f := newHeldWriteFixture(t, 50*time.Millisecond)
 	peer := f.connectPeer(t)
 	responses := f.startFailingEdit(t)
@@ -102,6 +106,7 @@ func TestBrowserTypingNextToAHeldEditKeepsItsText(t *testing.T) {
 }
 
 func TestReconnectingBrowserCannotBringBackAHeldEdit(t *testing.T) {
+	t.Parallel()
 	f := newHeldWriteFixture(t, 50*time.Millisecond)
 	peer := f.connectPeer(t)
 	responses := f.startFailingEdit(t)
@@ -121,6 +126,7 @@ func TestReconnectingBrowserCannotBringBackAHeldEdit(t *testing.T) {
 }
 
 func TestCommentQueuedBehindAHeldEditAnchorsOnlyCommittedText(t *testing.T) {
+	t.Parallel()
 	f := newHeldWriteFixture(t, time.Hour)
 	f.connectPlainSocket(t)
 	responses := f.startFailingEdit(t)
@@ -144,6 +150,7 @@ func TestCommentQueuedBehindAHeldEditAnchorsOnlyCommittedText(t *testing.T) {
 }
 
 func TestSuggestionAcceptRollbackNeverReachesTheRoom(t *testing.T) {
+	t.Parallel()
 	f := newHeldWriteFixture(t, 50*time.Millisecond)
 	f.connectPlainSocket(t)
 	earlierResponse := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issue.Key+"/comments", map[string]any{
@@ -163,7 +170,7 @@ func TestSuggestionAcceptRollbackNeverReachesTheRoom(t *testing.T) {
 		t.Fatalf("create suggestion: status=%d body=%s", suggestion.Code, suggestion.Body.String())
 	}
 	comment := decodeBody[model.Comment](t, suggestion)
-	drainDocumentUpdates(f.persistence)
+	drainSignals(f.persistence.updates)
 	closeTestGate(f.failure.releaseBeforeApply)
 	responses := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -195,8 +202,10 @@ func TestSuggestionAcceptRollbackNeverReachesTheRoom(t *testing.T) {
 }
 
 func TestCommentProjectionFailureNeverReachesTheRoom(t *testing.T) {
+	t.Parallel()
 	for _, action := range []string{"reply", "resolve"} {
 		t.Run(action, func(t *testing.T) {
+			t.Parallel()
 			f := newHeldWriteFixture(t, time.Hour, func(failure *postApplyFailureDocs) {
 				failure.failProjectMark = true
 				failure.projectMarkPasses = 1
@@ -239,6 +248,7 @@ func TestCommentProjectionFailureNeverReachesTheRoom(t *testing.T) {
 }
 
 func TestDocumentUploadRollbackNeverReachesTheRoom(t *testing.T) {
+	t.Parallel()
 	f := newHeldWriteFixture(t, time.Hour)
 	f.connectPlainSocket(t)
 	closeTestGate(f.failure.releaseBeforeApply)
@@ -333,7 +343,7 @@ func (f *heldWriteFixture) connectPlainSocket(t *testing.T) {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
 	t.Cleanup(func() { _ = connection.Close() })
-	drainDocumentUpdates(f.persistence)
+	drainSignals(f.persistence.updates)
 }
 
 func (f *heldWriteFixture) connectPeer(t *testing.T) *syncedPeer {
@@ -341,7 +351,7 @@ func (f *heldWriteFixture) connectPeer(t *testing.T) *syncedPeer {
 	peer := &syncedPeer{wsURL: f.wsURL, sockets: f.sockets, headers: f.headers, artifactID: f.issue.PrimaryArtifactID, doc: crdt.New()}
 	peer.connect(t)
 	t.Cleanup(peer.close)
-	drainDocumentUpdates(f.persistence)
+	drainSignals(f.persistence.updates)
 	return peer
 }
 
@@ -363,7 +373,7 @@ func (f *heldWriteFixture) startFailingEdit(t *testing.T) <-chan *httptest.Respo
 		closeTestGate(f.failure.release)
 		select {
 		case <-done:
-		case <-time.After(5 * time.Second):
+		case <-time.After(concurrentWait):
 			t.Error("transactional edit did not exit after releasing test gates")
 		}
 	})
@@ -409,7 +419,7 @@ func (f *heldWriteFixture) waitForLiveText(t *testing.T, want string) {
 // waitForLiveText waits until the live document's text holds want.
 func waitForLiveText(t *testing.T, documentService *docs.Service, artifactID, want string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(concurrentWait)
 	for {
 		text, err := documentService.Text(context.Background(), artifactID)
 		if err != nil {
@@ -460,7 +470,7 @@ func (f *heldWriteFixture) versions(t *testing.T) []string {
 
 func (f *heldWriteFixture) waitForVersionHolding(t *testing.T, text string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(concurrentWait)
 	for {
 		for _, version := range f.versions(t) {
 			if strings.Contains(version, text) {
@@ -498,7 +508,7 @@ func (f *heldWriteFixture) assertNoVersionHolds(t *testing.T, text string) {
 // assertDurableText renders the document the store would load, update by update.
 func (f *heldWriteFixture) assertDurableText(t *testing.T, want string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(concurrentWait)
 	for {
 		got := f.durableText(t)
 		if got == want {
@@ -540,7 +550,7 @@ func (f *heldWriteFixture) durableText(t *testing.T) string {
 // behind the held transaction.
 func (f *heldWriteFixture) waitForLockWaiter(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(concurrentWait)
 	for {
 		var waiting int
 		if err := f.probe.QueryRow(context.Background(), `
@@ -633,21 +643,14 @@ func (s *recordingVersionedStore) signal() {
 	}
 }
 
-func drainDocumentUpdates(store *recordingVersionedStore) {
-	for {
-		select {
-		case <-store.updates:
-		default:
-			return
-		}
-	}
-}
-
+// waitForDocumentUpdate waits for the next document update to reach persistence. Its bound,
+// concurrentWait, guards a hang and asserts nothing: every caller waits for an update that has
+// to come, and the bound only names the wait when it never does.
 func waitForDocumentUpdate(t *testing.T, store *recordingVersionedStore) {
 	t.Helper()
 	select {
 	case <-store.updates:
-	case <-time.After(time.Second):
+	case <-time.After(concurrentWait):
 		t.Fatal("document mutation did not reach persistence")
 	}
 }
@@ -737,7 +740,7 @@ func waitForBeforeApply(t *testing.T, docs *postApplyFailureDocs) {
 	t.Helper()
 	select {
 	case <-docs.beforeApply:
-	case <-time.After(time.Second):
+	case <-time.After(concurrentWait):
 		t.Fatal("document mutation did not reach pre-apply gate")
 	}
 }
@@ -746,7 +749,7 @@ func waitForPostApply(t *testing.T, docs *postApplyFailureDocs) {
 	t.Helper()
 	select {
 	case <-docs.applied:
-	case <-time.After(time.Second):
+	case <-time.After(concurrentWait):
 		t.Fatal("document mutation did not complete")
 	}
 }

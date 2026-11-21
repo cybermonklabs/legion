@@ -114,6 +114,7 @@ func writeFile(t *testing.T, name, contents string) string {
 // other reference to the process environment under cmd/dispatch or internal/dispatch is a reader
 // the table, `envoy-dispatch settings` and the generated configuration reference do not list.
 func TestNoReaderBypassesTheSettingsTable(t *testing.T) {
+	t.Parallel()
 	reads, storetestImporters, err := environmentReads(filepath.Join("..", "..", "cmd", "dispatch"), filepath.Join("..", "dispatch"))
 	if err != nil {
 		t.Fatal(err)
@@ -129,6 +130,7 @@ func TestNoReaderBypassesTheSettingsTable(t *testing.T) {
 // The guard sees a read however the file imports its package: under another name, or with no
 // name at all, where the read is a bare Getenv.
 func TestTheGuardSeesAReadUnderAnyImportName(t *testing.T) {
+	t.Parallel()
 	for name, probe := range map[string]string{
 		"an aliased import":       "package auth\n\nimport environment \"os\"\n\nfunc acceptProbe() string { return environment.Getenv(\"DISPATCH_ACCEPT_PROBE\") }\n",
 		"a dot import":            "package auth\n\nimport . \"os\"\n\nfunc acceptProbe() string { return Getenv(\"DISPATCH_ACCEPT_PROBE\") }\n",

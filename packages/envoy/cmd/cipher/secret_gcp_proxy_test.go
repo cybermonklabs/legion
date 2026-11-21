@@ -83,6 +83,9 @@ func (gcpAirlockGrant) AirlockAccessPlaceholder(context.Context, string, string,
 // it with "tls: no application protocol", as every secret form failed under a GCLOUD_DEMO grant
 // before the proxy carried HTTP/2. The process is the command's own so the SDK's proxy and root
 // certificate caches, each read once per process, read this row's environment.
+// Serial: it sets a process-wide variable, AGENT_SECRETS_URL, which the command it runs reads the
+// broker's address from through os.Environ (startSecretBrokerWith's t.Setenv); t.Setenv panics
+// under t.Parallel.
 func TestGCPSecretListReachesSecretManagerThroughTheAirlockOverGRPC(t *testing.T) {
 	binary := buildAgentSecrets(t)
 

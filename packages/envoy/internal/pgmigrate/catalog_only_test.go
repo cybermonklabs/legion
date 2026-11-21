@@ -651,6 +651,7 @@ func underSearchPath(t *testing.T, ctx context.Context, conn *pgx.Conn, searchPa
 // census is read-only and its catalog state lives inside one call, so the rows share one database
 // and no row reaches the next.
 func TestCensusAdmitsEveryCatalogOnlyForm(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	conn := catalogOnlyDatabase(t, ctx, 1)
 	for _, row := range admittedRows {
@@ -699,6 +700,7 @@ func sizesATableAboveTheLimit(entry MigrationCensus) bool {
 // that the form cost the migration its exemption. A row with a searchPath runs its census under
 // that search_path.
 func TestCensusStillRefusesEveryFormThatReadsOrRewritesRows(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	conn := catalogOnlyDatabase(t, ctx, 1)
 	for _, row := range refusedRows {
@@ -739,6 +741,7 @@ func refusalSays(entry MigrationCensus, texts ...string) bool {
 // exemption, and those three subtests would fail. CREATE EVENT TRIGGER needs a superuser, so the
 // test fails under any other login rather than skip, since a skipped run reports ok.
 func TestCensusEventTriggerOnAnAdmittedKindCancelsItsExemption(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	conn := catalogOnlyDatabase(t, ctx, 1)
 	if _, err := conn.Exec(ctx, "create function noop_event() returns event_trigger language plpgsql as $$ begin end $$"); err != nil {
@@ -897,6 +900,7 @@ func (run premiseRun) fetched(table string) int64 {
 // reading. The controls show that the reading works: each is refused, and each must move its
 // reading, or the test fails.
 func TestEveryAdmittedFormReadsAndRewritesNoRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	conn := catalogOnlyDatabase(t, ctx, 40000)
 	var version string

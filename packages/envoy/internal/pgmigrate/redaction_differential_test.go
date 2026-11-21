@@ -68,7 +68,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -139,6 +141,18 @@ const (
 // so the corpus need not fit in memory.
 func eachText(maxLen int, withMarker bool, visit func(string)) int {
 	n := 0
+	for first := range alphabet {
+		n += eachTextFrom(first, maxLen, withMarker, visit)
+	}
+	return n
+}
+
+// eachTextFrom is eachText over the texts whose first piece is alphabet[first]. Every text of
+// the corpus holds at least one piece, so those walks are the corpus and nothing else, and no
+// two of them build a text in common: that is what lets the corpus leg run one goroutine per
+// first piece over the same search (TestRedactionPrintsNoHiddenByte).
+func eachTextFrom(first, maxLen int, withMarker bool, visit func(string)) int {
+	n := 0
 	var build func(prefix []string, depth int)
 	build = func(prefix []string, depth int) {
 		if len(prefix) > 0 {
@@ -163,41 +177,30 @@ func eachText(maxLen int, withMarker bool, visit func(string)) int {
 			build(append(prefix, piece), depth+1)
 		}
 	}
-	build(nil, 0)
+	prefix := make([]string, 1, maxLen)
+	prefix[0] = alphabet[first]
+	build(prefix, 1)
 	return n
 }
 
 // --- what one reading of a text holds ---
-
-// reading is what scanl.go's transcription reads a text as at one standard_conforming_strings:
-// the spans it does not read as structure, the quoted identifiers it reads as a name, and where
-// scan.l refused it, or -1.
-type reading struct {
-	spans   []sqlToken
-	names   []sqlToken
-	failure int
-}
-
-func readingOf(text string, standardConformingStrings bool) reading {
-	var r reading
-	r.failure = lexSQL(text, standardConformingStrings, func(token sqlToken) {
-		switch token.kind {
-		case sqlString, sqlDollarString, sqlUnicodeEscape, sqlComment:
-			r.spans = append(r.spans, token)
-		case sqlQuotedIdentifier:
-			r.names = append(r.names, token)
-		}
-	})
-	return r
-}
+//
+// A reading is scan.go's own (readingOf): the tokens scanl.go's transcription read the text as
+// at one standard_conforming_strings, and where scan.l refused it, or -1. Both legs below take
+// the two readings of a text once and hand them to redact, since redactedQuery would read the
+// text twice over again. What this file asks of a reading - which of its bytes are inside a
+// literal or a comment, which are inside a name, whether two readings read a text alike - it
+// asks over those tokens, here. The one place that wants a single bit of a text and nothing
+// else of it - the walk that picks the oracle's sample, which asks only whether the marker is
+// hidden - keeps no reading at all (markerHidden).
 
 // isName reports whether this reading holds [from, to) inside a quoted identifier. What is
 // inside one is a name, and the report keeps the names a statement touches on purpose, so the
 // server answering alike whether that name is spelt one way or another says nothing: it never
 // looked the name up.
 func (r reading) isName(from, to int) bool {
-	for _, span := range r.names {
-		if span.start < to && from < span.end {
+	for _, token := range r.tokens {
+		if token.kind == sqlQuotedIdentifier && token.start < to && from < token.end {
 			return true
 		}
 	}
@@ -210,24 +213,53 @@ func (r reading) hides(from, to int) bool {
 	if r.failure >= 0 && r.failure < to {
 		return true
 	}
-	for _, span := range r.spans {
-		if span.start < to && from < span.end {
+	for _, token := range r.tokens {
+		if token.kind.hidden() && token.start < to && from < token.end {
 			return true
 		}
 	}
 	return false
 }
 
+// markerHidden is hides over a reading nothing keeps: whether a session with this
+// standard_conforming_strings holds any byte of [from, to) inside a literal or a comment, or at
+// or past the byte scan.l refused text on. It is for a caller that wants that one bit of a text
+// and nothing else of it, so it reads the text only as far as to (lexSQLTo) and tests each token
+// as it comes rather than collecting them. A caller that goes on to redact the text, or to ask
+// what the two readings make of it, wants the reading itself and takes readingOf.
+func markerHidden(text string, standardConformingStrings bool, from, to int) bool {
+	hidden := false
+	failure := lexSQLTo(text, standardConformingStrings, to, func(token sqlToken) {
+		if token.kind.hidden() && token.start < to && from < token.end {
+			hidden = true
+		}
+	})
+	return hidden || failure >= 0 && failure < to
+}
+
+// same reports whether the two readings were refused alike and hold the same spans hidden. The
+// tokens either reads as structure are not compared: what the caller asks is whether the two
+// disagree over which bytes are a value, which is the question those spans answer.
 func (r reading) same(other reading) bool {
-	if r.failure != other.failure || len(r.spans) != len(other.spans) {
+	if r.failure != other.failure {
 		return false
 	}
-	for i := range r.spans {
-		if r.spans[i] != other.spans[i] {
+	i, j := 0, 0
+	for {
+		for i < len(r.tokens) && !r.tokens[i].kind.hidden() {
+			i++
+		}
+		for j < len(other.tokens) && !other.tokens[j].kind.hidden() {
+			j++
+		}
+		if i == len(r.tokens) || j == len(other.tokens) {
+			return i == len(r.tokens) && j == len(other.tokens)
+		}
+		if r.tokens[i] != other.tokens[j] {
 			return false
 		}
+		i, j = i+1, j+1
 	}
-	return true
 }
 
 // --- the redaction loop, over the whole corpus ---
@@ -235,51 +267,105 @@ func (r reading) same(other reading) bool {
 // corpusDepth is how many pieces of the alphabet a text of the corpus holds.
 const corpusDepth = 4
 
+// corpusTally is what one shard of the corpus leg counts. Each goroutine fills one of its own
+// and shares nothing, so the leg's figures are the sum of the shards and the samples are the
+// shards' own, capped where they are printed.
+type corpusTally struct {
+	texts, refusedTexts, hiddenTexts, leaked, agreedTexts, overHidden int
+	leaks, swallowed                                                  map[string]bool
+}
+
+// add folds one shard's tally into the leg's.
+func (c *corpusTally) add(shard *corpusTally) {
+	c.texts += shard.texts
+	c.refusedTexts += shard.refusedTexts
+	c.hiddenTexts += shard.hiddenTexts
+	c.leaked += shard.leaked
+	c.agreedTexts += shard.agreedTexts
+	c.overHidden += shard.overHidden
+	for e := range shard.leaks {
+		c.leaks[e] = true
+	}
+	for e := range shard.swallowed {
+		c.swallowed[e] = true
+	}
+}
+
 // TestRedactionPrintsNoHiddenByte checks the invariant redactedQuery exists for: no byte a
 // reading holds inside a literal or a comment, and no byte past the one scan.l refused a reading
 // on, survives it. Where the two readings agree and neither is refused it checks the other
 // direction too: a marker neither hides is shape, and shape is what the report keeps.
+//
+// It walks the corpus one goroutine per first piece of the alphabet (eachTextFrom), since the
+// readings and redactedQuery are this process's own arithmetic over one string and the whole
+// walk was a single core's for as long as it took. Every text is still read, under both
+// settings, and the counts below are the shards' sum.
 func TestRedactionPrintsNoHiddenByte(t *testing.T) {
 	if testing.Short() {
 		t.Skip("reads a corpus of millions of texts twice over")
 	}
-	var hiddenTexts, leaked, refusedTexts, agreedTexts, overHidden int
-	leaks := map[string]bool{}
-	swallowed := map[string]bool{}
-	n := eachText(corpusDepth, true, func(text string) {
-		at := strings.Index(text, marker)
-		on, off := readingOf(text, true), readingOf(text, false)
-		if on.failure >= 0 || off.failure >= 0 {
-			refusedTexts++
+	t.Parallel()
+	shards := make([]corpusTally, len(alphabet))
+	next := make(chan int)
+	go func() {
+		defer close(next)
+		for first := range alphabet {
+			next <- first
 		}
-		printed := strings.Contains(redactedQuery(text), marker)
-		if on.hides(at, at+len(marker)) || off.hides(at, at+len(marker)) {
-			hiddenTexts++
-			if printed {
-				leaked++
-				if len(leaks) < 20 {
-					leaks[fmt.Sprintf("%q -> %q", text, redactedQuery(text))] = true
-				}
+	}()
+	var walkers sync.WaitGroup
+	for range min(runtime.GOMAXPROCS(0), len(alphabet)) {
+		walkers.Add(1)
+		go func() {
+			defer walkers.Done()
+			for first := range next {
+				shard := &shards[first]
+				shard.leaks, shard.swallowed = map[string]bool{}, map[string]bool{}
+				shard.texts = eachTextFrom(first, corpusDepth, true, func(text string) {
+					at := strings.Index(text, marker)
+					on, off := readingOf(text, true), readingOf(text, false)
+					if on.failure >= 0 || off.failure >= 0 {
+						shard.refusedTexts++
+					}
+					// The redaction is taken from the two readings this text has already
+					// been given: redactedQuery would lex it twice over again.
+					redaction := redact(text, on, off)
+					printed := strings.Contains(redaction, marker)
+					if on.hides(at, at+len(marker)) || off.hides(at, at+len(marker)) {
+						shard.hiddenTexts++
+						if printed {
+							shard.leaked++
+							if len(shard.leaks) < 20 {
+								shard.leaks[fmt.Sprintf("%q -> %q", text, redaction)] = true
+							}
+						}
+						return
+					}
+					if on.same(off) && on.failure < 0 {
+						shard.agreedTexts++
+						if !printed {
+							shard.overHidden++
+							if len(shard.swallowed) < 20 {
+								shard.swallowed[fmt.Sprintf("%q -> %q", text, redaction)] = true
+							}
+						}
+					}
+				})
 			}
-			return
-		}
-		if on.same(off) && on.failure < 0 {
-			agreedTexts++
-			if !printed {
-				overHidden++
-				if len(swallowed) < 20 {
-					swallowed[fmt.Sprintf("%q -> %q", text, redactedQuery(text))] = true
-				}
-			}
-		}
-	})
-	t.Logf("corpus: %d texts of up to %d pieces, %d refused by scan.l under one reading or the other", n, corpusDepth, refusedTexts)
-	t.Logf("%d texts hold the marker inside a literal, inside a comment, or past a refusal; %d printed it", hiddenTexts, leaked)
-	for e := range leaks {
+		}()
+	}
+	walkers.Wait()
+	total := corpusTally{leaks: map[string]bool{}, swallowed: map[string]bool{}}
+	for i := range shards {
+		total.add(&shards[i])
+	}
+	t.Logf("corpus: %d texts of up to %d pieces, %d refused by scan.l under one reading or the other", total.texts, corpusDepth, total.refusedTexts)
+	t.Logf("%d texts hold the marker inside a literal, inside a comment, or past a refusal; %d printed it", total.hiddenTexts, total.leaked)
+	for e := range total.leaks {
 		t.Logf("  leak: %s", e)
 	}
-	t.Logf("%d texts both readings read alike and neither is refused and the marker is shape; %d lost it", agreedTexts, overHidden)
-	for e := range swallowed {
+	t.Logf("%d texts both readings read alike and neither is refused and the marker is shape; %d lost it", total.agreedTexts, total.overHidden)
+	for e := range total.swallowed {
 		t.Logf("  swallowed: %s", e)
 	}
 	// The floor the two checks below stand on: they can only fail over texts the corpus still
@@ -290,14 +376,14 @@ func TestRedactionPrintsNoHiddenByte(t *testing.T) {
 	// the corpus still forming those two classes rather than about its size, so a round that
 	// deliberately shrinks the corpus moves this number in the same commit and measures the
 	// two counts again.
-	if hiddenTexts+agreedTexts < 500_000 {
-		t.Fatalf("the corpus holds the marker hidden in %d texts and as shape in %d, %d together of %d: it has collapsed and these checks have nothing left to fail on", hiddenTexts, agreedTexts, hiddenTexts+agreedTexts, n)
+	if total.hiddenTexts+total.agreedTexts < 500_000 {
+		t.Fatalf("the corpus holds the marker hidden in %d texts and as shape in %d, %d together of %d: it has collapsed and these checks have nothing left to fail on", total.hiddenTexts, total.agreedTexts, total.hiddenTexts+total.agreedTexts, total.texts)
 	}
-	if leaked > 0 {
-		t.Errorf("%d texts printed a marker a reading holds inside a literal, inside a comment, or past a refusal", leaked)
+	if total.leaked > 0 {
+		t.Errorf("%d texts printed a marker a reading holds inside a literal, inside a comment, or past a refusal", total.leaked)
 	}
-	if overHidden > 0 {
-		t.Errorf("%d texts lost a marker both readings read as shape", overHidden)
+	if total.overHidden > 0 {
+		t.Errorf("%d texts lost a marker both readings read as shape", total.overHidden)
 	}
 }
 
@@ -621,10 +707,15 @@ func probe(ctx context.Context, conn *pgconn.PgConn, text string, ours reading) 
 // scan.l's "invalid Unicode surrogate pair" out of the lexical set and a reading that recovers
 // from a carriage return inside E'\ud83d…\udc00' rather than refusing prints the marker that
 // follows the literal, with both clauses silent on it.
+//
+// It runs beside the corpus leg: it connects twice itself, runs selects and nothing else, and
+// creates nothing a test of this package shares (docs/testing.md, "A test that calls
+// t.Parallel()"), so the package is as long as the slower of the two legs rather than their sum.
 func TestRedactionAgainstServerOutcomes(t *testing.T) {
 	if testing.Short() {
 		t.Skip("asks a server about thousands of statements")
 	}
+	t.Parallel()
 	url := os.Getenv("DISPATCH_TEST_DATABASE_URL")
 	if url == "" {
 		t.Skip("DISPATCH_TEST_DATABASE_URL must be set")
@@ -669,11 +760,27 @@ func TestRedactionAgainstServerOutcomes(t *testing.T) {
 	}
 	for _, entry := range sample {
 		text := entry.text
-		printed := strings.Contains(redactedQuery(text), marker)
+		// settings is on and then off, so readings[i] is the reading of the text the session
+		// behind conns[i] makes, and the redaction is taken from the two of them rather than
+		// lexing the text twice over again (redactedQuery).
+		readings := [2]reading{readingOf(text, true), readingOf(text, false)}
+		redaction := redact(text, readings[0], readings[1])
+		printed := strings.Contains(redaction, marker)
+		// The two settings are asked at the same time. A pair costs a round trip, not
+		// arithmetic - 2.16 ms of one in CI's envoy-go lane against 0.16 ms against an idle
+		// server - and the two connections are already open, one per setting, sharing nothing
+		// but this text: probe reads conns[i], the reading it is handed and the package's own
+		// tables, and writes only its own verdict. What follows the asking is left where it
+		// was, one setting after the other in settings' own order, so every comparison, every
+		// counter and every capped sample below is what a serial sweep made.
 		var verdicts [2]verdict
+		var asking sync.WaitGroup
+		for i := range settings {
+			asking.Go(func() { verdicts[i] = probe(ctx, conns[i], text, readings[i]) })
+		}
+		asking.Wait()
 		for i, setting := range settings {
-			ours := readingOf(text, setting == "on")
-			verdicts[i] = probe(ctx, conns[i], text, ours)
+			ours := readings[i]
 			switch {
 			case ours.failure >= 0 && !verdicts[i].failed:
 				refusalSpurious++
@@ -718,7 +825,7 @@ func TestRedactionAgainstServerOutcomes(t *testing.T) {
 				if printed {
 					uncovered++
 					if len(leaks) < 20 {
-						leaks[fmt.Sprintf("scs=%s %q -> %q: the server's own lexer refused it at byte %d, at or before the marker", setting, text, redactedQuery(text), verdicts[i].coversFrom)] = true
+						leaks[fmt.Sprintf("scs=%s %q -> %q: the server's own lexer refused it at byte %d, at or before the marker", setting, text, redaction, verdicts[i].coversFrom)] = true
 					}
 				}
 			case verdicts[i].name:
@@ -734,7 +841,7 @@ func TestRedactionAgainstServerOutcomes(t *testing.T) {
 			if verdicts[i].conclusive && !verdicts[i].name && !verdicts[i].token && printed {
 				leaked++
 				if len(leaks) < 20 {
-					leaks[fmt.Sprintf("scs=%s %q -> %q: the server answered the same with %s in its place", setting, text, redactedQuery(text), markerReplacement)] = true
+					leaks[fmt.Sprintf("scs=%s %q -> %q: the server answered the same with %s in its place", setting, text, redaction, markerReplacement)] = true
 				}
 			}
 		}
@@ -746,7 +853,7 @@ func TestRedactionAgainstServerOutcomes(t *testing.T) {
 			if !printed {
 				lost++
 				if len(losses) < 20 {
-					losses[fmt.Sprintf("%q -> %q: the server read the marker as a token of its own under both settings", text, redactedQuery(text))] = true
+					losses[fmt.Sprintf("%q -> %q: the server read the marker as a token of its own under both settings", text, redaction)] = true
 				}
 			}
 		}
@@ -974,9 +1081,28 @@ func serverSample() []sampleText {
 				reached[i] = statement
 			}
 		}
-		at := strings.Index(statement, marker)
-		on, off := readingOf(statement, true), readingOf(statement, false)
-		if on.hides(at, at+len(marker)) || off.hides(at, at+len(marker)) {
+		// The classification asks one thing of each reading - whether the marker is hidden
+		// under it - so it is taken over the corpus text rather than over the statement, and
+		// only as far as the marker's span. Both are the same answer the whole reading of the
+		// statement gives, and together they are what keeps this walk from being half the
+		// package's lexing.
+		//
+		// The prefix comes off because "select " is read the same way whatever follows it:
+		// {identifier} takes its six letters and {whitespace} its space, neither of which any
+		// rule of INITIAL matches past, so the scanner is in INITIAL at byte 7 of every
+		// statement, with the one word it has returned ending at byte 6 - before the marker,
+		// which no statement holds before byte 7 - and with nothing refused. From there it
+		// reads the text as it would read that text alone, every offset moved by the seven
+		// bytes; and hides compares offsets with offsets, so moving all of them moves nothing.
+		// A leading space of the text read as part of the prefix's own whitespace run is the
+		// one place the token boundary differs, and whitespace returns no token either way.
+		//
+		// The span comes off the end for the reason lexSQLTo's header gives. Measured over the
+		// whole corpus on 2026-11-08, this walk against the same walk reading each statement
+		// whole: 149.9 s against 553.2 s, the two of them classifying 4,080,589 texts as hidden
+		// and 3,597,781 as shape alike, with 33.0 s of that the enumeration's own.
+		at := strings.Index(text, marker)
+		if markerHidden(text, true, at, at+len(marker)) || markerHidden(text, false, at, at+len(marker)) {
 			if hidden%sampleStride == 0 {
 				sample = append(sample, sampleText{text: statement})
 				strided[statement] = true

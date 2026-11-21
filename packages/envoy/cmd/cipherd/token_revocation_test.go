@@ -54,6 +54,7 @@ const (
 // twice, and ending one under the optional access_token hint, are each answered 200 too. It
 // skips when BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
 func TestTheBinaryRevokesOneOfItsOwnAccessTokens(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
 	clusterKey := cluster.PublishKey(t, "cluster-key")
@@ -139,6 +140,7 @@ func TestTheBinaryRevokesOneOfItsOwnAccessTokens(t *testing.T) {
 // presents that family's own refresh token, so revoking one token of a dev box session does not
 // log that machine out.
 func TestTheBinaryRevokesAMachineLoginsAccessTokenAndLeavesItsLogin(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
 	clusterKey := cluster.PublishKey(t, "cluster-key")
@@ -184,16 +186,27 @@ func (l *liveBroker) machineLoginAs(t *testing.T, key *ecdsa.PrivateKey, bearer,
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The request object is signed here, before the request is sent, so the request is given up
+	// brokerRequestWait after this signing (brokerCall.signed), not only after the send.
+	signed := time.Now()
 	request, err := record.Sign(key, l.base, []record.AuthorizationDetail{
 		{Type: record.KindLauncherCredential, Identifier: host},
-	}, "", who, nil, time.Now())
+	}, "", who, nil, signed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, body := l.post(t, l.plain, "/v1/oauth/device_authorization", url.Values{
+	form := url.Values{
 		"client_id": {oauthwire.ClientID}, "scope": {oauthwire.Scope},
 		"dpop_jkt": {thumbprint}, "request": {request},
-	}, "")
+	}
+	status, answer := l.send(t, l.plain, brokerCall{
+		method: http.MethodPost, path: "/v1/oauth/device_authorization", contentType: formContentType,
+		body: form.Encode(), shown: shownForm(form), signed: signed,
+	})
+	var body map[string]any
+	if err := json.Unmarshal(answer, &body); err != nil {
+		t.Fatalf("POST /v1/oauth/device_authorization answered %d %s, which is not JSON: %v", status, answer, err)
+	}
 	deviceCode, _ := body["device_code"].(string)
 	userCode, _ := body["user_code"].(string)
 	if status != http.StatusOK || deviceCode == "" || userCode == "" {

@@ -18,6 +18,12 @@ import (
 // no home in the password database, the machine's session could be kept nowhere, so every command
 // would trade and enroll again. The machine source refuses that before any trade, naming the
 // identity it found.
+// Serial: it sets process-wide variables - isolateChain's HOME, XDG_STATE_HOME, XDG_RUNTIME_DIR,
+// AGENT_SECRETS_SIGNIN_DIR, AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY, then HOME and
+// XDG_STATE_HOME again, AGENT_SECRETS_KEY_DIR, AGENT_SECRETS_HELPER_SOCK,
+// GOOGLE_APPLICATION_CREDENTIALS, AGENT_SECRETS_URL again and GCE_METADATA_HOST
+// (startMetadataServer) - and passwdHome, the package-level seam it reads the user's home
+// through, which it assigns; t.Setenv panics under t.Parallel.
 func TestAMachineWithNowhereToKeepItsSessionTradesNothing(t *testing.T) {
 	isolateChain(t)
 	original := passwdHome
@@ -46,6 +52,7 @@ func TestAMachineWithNowhereToKeepItsSessionTradesNothing(t *testing.T) {
 // directory but the lock that orders them. keepFirst takes no hard link, so a home on a file system
 // without them keeps an audience too.
 func TestKeepFirstKeepsTheFirstOfManyWriters(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, googleAudienceFile)
 	const writers = 16

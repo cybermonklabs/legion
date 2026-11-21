@@ -194,6 +194,7 @@ func TestTheAgentSecretsBinaryLinksItsListedModules(t *testing.T) {
 // not ship and the README says build without the value prompt, a value piped in standing for it:
 // Windows, FreeBSD, and a 32-bit Linux architecture.
 func TestTheAgentSecretsBinaryBuildsWithoutThePrompt(t *testing.T) {
+	t.Parallel()
 	for _, target := range []struct{ goos, goarch string }{{"windows", "amd64"}, {"freebsd", "amd64"}, {"linux", "386"}} {
 		t.Run(target.goos+"/"+target.goarch, func(t *testing.T) {
 			cmdtest.BuildCommand(t, cmdtest.Command{Name: "agent-secrets", Env: append(os.Environ(), "CGO_ENABLED=0", "GOOS="+target.goos, "GOARCH="+target.goarch)})

@@ -50,6 +50,7 @@ import (
 )
 
 func TestSettingsTableNamesEachVariableOnce(t *testing.T) {
+	t.Parallel()
 	name := regexp.MustCompile(`^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$`)
 	seen := map[string]bool{}
 	for _, row := range settings {
@@ -87,6 +88,7 @@ func TestSettingsTableNamesEachVariableOnce(t *testing.T) {
 // `envoy-dispatch settings` is what the docs site's configuration reference is generated from, so
 // it carries every row whole: the _FILE form by name, and null where a row has no default.
 func TestSettingsSubcommandPrintsEveryRow(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	if code := runSubcommand(context.Background(), []string{"settings"}, envGetter(nil), &stdout, &stderr); code != 0 {
 		t.Fatalf("envoy-dispatch settings: exit %d, stderr %q", code, stderr.String())
@@ -121,6 +123,7 @@ func TestSettingsSubcommandPrintsEveryRow(t *testing.T) {
 }
 
 func TestSettingValuesRefuseAVariableTheTableDoesNotList(t *testing.T) {
+	t.Parallel()
 	defer func() {
 		if recovered := recover(); recovered == nil || !strings.Contains(recovered.(string), "DISPATCH_NOT_A_SETTING") {
 			t.Fatalf("recovered %v, want a panic naming DISPATCH_NOT_A_SETTING", recovered)
@@ -402,6 +405,10 @@ func errorCode(response *httptest.ResponseRecorder) string {
 // Every setting reaches its reader through the table, as it resolved before the table existed:
 // each case hands its variable to the reader main hands it to, through the settings read alone,
 // never the process environment, so a reader that reads around the table fails its case.
+// Serial: it swaps process-wide state, the default slog logger. Its DISPATCH_AGENT_TOKEN case
+// (sharedAgentTokenListReachesTheAPI) reads the line the server logged for a request that
+// authenticated with a previous value, and logtest.SetDefault points that logger at the case's
+// own buffer, which the whole process shares.
 func TestEverySettingReachesItsReader(t *testing.T) {
 	appJSON := func(t *testing.T) string {
 		return filepath.Dir(writeFile(t, "app.json", `{"clientId":"Iv1.file"}`))
@@ -2300,6 +2307,7 @@ func sharedAgentTokenListReachesTheAPI(t *testing.T) {
 // unreachable: what is wrong is Dispatch's own credential, which the operator fixes in Dispatch's
 // deployment, not in the broker's.
 func TestACredentialPageWithAnUnreadableAccountTokenDoesNotBlameTheBroker(t *testing.T) {
+	t.Parallel()
 	for name, tokenFile := range map[string]string{
 		"a path that does not exist": filepath.Join(t.TempDir(), "missing"),
 		"an empty file":              writeFile(t, "account-token", "\n"),

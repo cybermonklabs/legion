@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
@@ -111,13 +110,14 @@ type settlement struct {
 // builds serve one database - in the tree, or in the version a human approved, without which the
 // version write cannot tell whether his approval carries (carryApproval). The settlement writes no
 // version and records no failure, and the document stays unsettled for a later settlement - a
-// repair's, or one on a build that reads the element, which the log names.
-func skipUnreadableSettlement(room string, err error) bool {
+// repair's, or one on a build that reads the element, which the log names. It logs through the
+// service's logger (Service.log).
+func (s *Service) skipUnreadableSettlement(room string, err error) bool {
 	switch {
 	case errors.Is(err, ErrDocNewerContent):
-		slog.Warn("dispatch: settle document holding an element this build cannot read; no version written; a build that reads the element writes it", "room", room, "error", err)
+		s.log().Warn("dispatch: settle document holding an element this build cannot read; no version written; a build that reads the element writes it", "room", room, "error", err)
 	case errors.Is(err, ErrDocSchema):
-		slog.Error("dispatch: settle document outside Proof schema", "room", room, "error", err)
+		s.log().Error("dispatch: settle document outside Proof schema", "room", room, "error", err)
 	default:
 		return false
 	}
@@ -393,7 +393,7 @@ func (st *settlement) endOnRefusedUpdate() settleOutcome {
 	s := st.service
 	s.discardSuppressedPersistence(st.room, st.slots...)
 	s.refuseClosedIssueAppend(st.room, s.instanceOf(st.doc))
-	slog.Info("dispatch: document settlement ended on a room update its closed issue refused; the room closes and the document settles from the store",
+	s.log().Info("dispatch: document settlement ended on a room update its closed issue refused; the room closes and the document settles from the store",
 		"room", st.room)
 	return settleOutcome{}
 }
@@ -446,7 +446,7 @@ func (st *settlement) applyStamp(ctx context.Context) (settleStep, settleOutcome
 		})
 		st.keep(slot, update)
 		if err != nil {
-			if len(st.slots) == 0 && skipUnreadableSettlement(room, err) {
+			if len(st.slots) == 0 && s.skipUnreadableSettlement(room, err) {
 				return settleDone, settleOutcome{}
 			}
 			return settleDone, st.abandon(err)
@@ -699,7 +699,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		markdown, offsets, err = renderTreeWithOffsets(st.versioned)
 	}
 	if err != nil {
-		if len(st.slots) == 0 && skipUnreadableSettlement(room, err) {
+		if len(st.slots) == 0 && s.skipUnreadableSettlement(room, err) {
 			return settleDone, settleOutcome{}
 		}
 		return settleDone, st.abandon(err)
@@ -767,8 +767,10 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// same edits, named none then: each forgets the editor an earlier settlement kept. One on a
 	// closed issue whose credit is only the kept editor (settlementVersionCredit.kept), its version
 	// adding none of their text, keeps that same editor, so the reopen still finds the editor of
-	// the text the closed issue's versions hold. The delete and the keep are queued, as every write
-	// of this settlement is, for its write phase.
+	// the text the closed issue's versions hold. One that finds no row to delete credits no edit,
+	// the document owing it nothing, and leaves the kept editor as the settlement that deleted the
+	// row kept it: it is the settlement armed again while that one committed, which runs after it.
+	// The delete and the keep are queued, as every write of this settlement is, for its write phase.
 	var kept *model.Actor
 	if st.issueClosed && !st.credit.actor.SameAs(SettlementActor) {
 		kept = &st.credit.actor
@@ -795,7 +797,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		if writeErr != nil {
 			// The version a human approved holds an element this build does not know: the version
 			// is left, unwritten, to a build that reads it, as a tree holding one is.
-			if len(st.slots) == 0 && errors.Is(writeErr, ErrDocNewerContent) && skipUnreadableSettlement(room, writeErr) {
+			if len(st.slots) == 0 && errors.Is(writeErr, ErrDocNewerContent) && s.skipUnreadableSettlement(room, writeErr) {
 				return settleDone, settleOutcome{}
 			}
 			return settleDone, st.abandon(writeErr)

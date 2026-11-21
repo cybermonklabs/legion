@@ -94,6 +94,7 @@ func editNoticeRows(t *testing.T, database *store.Store, artifactID string, held
 // edit after the reopen opens a notice that starts at the settled version, so it never carries
 // alice's edit, which the settlement saved while DOC-1 was closed.
 func TestASettlementAfterACloseWakesNobody(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	ctx := context.Background()
@@ -233,6 +234,7 @@ func (f closedSettlementFixture) requireNothingStored(t *testing.T, what string,
 // margin, is refused at the store (gateAppend), and the refusal closes her room. Once no room holds
 // the document, a rebuild carrying markdown of a history that does not load is refused too.
 func TestAClosedIssuesDocumentStillRefusesAPersonsWrite(t *testing.T) {
+	t.Parallel()
 	f := newClosedSettlementFixture(t)
 	ctx := context.Background()
 	alice := f.admitBeforeTheClose(t)

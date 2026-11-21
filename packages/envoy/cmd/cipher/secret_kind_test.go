@@ -28,6 +28,9 @@ import (
 // the value and decodes it as that type, so the value that type decodes is stored first, as a
 // writer other than this client stores it (a retag between two types cannot be preceded by a
 // set, which decodes the value under the type the secret holds).
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
+// the secret forms are reached through (awsClients, secretStdin).
 func TestSecretTypeAndMaxGrantOnAWS(t *testing.T) {
 	local := secrets.NewLocal()
 	startSecretBroker(t, servedBy(local))
@@ -100,6 +103,10 @@ func TestSecretTypeAndMaxGrantOnAWS(t *testing.T) {
 
 // TestSecretTypeAndMaxGrantOnGCP retags one secret through every type, each value stored before
 // the retag that decodes it, as TestSecretTypeAndMaxGrantOnAWS does.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBrokerWith's t.Setenv), CLOUDSDK_AUTH_ACCESS_TOKEN
+// (useGCPIdentity's t.Setenv), and the package-level seams the secret forms are reached through
+// (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestSecretTypeAndMaxGrantOnGCP(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
@@ -175,6 +182,9 @@ func TestSecretTypeAndMaxGrantOnGCP(t *testing.T) {
 	}
 }
 
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
+// the secret forms are reached through (awsClients, secretStdin).
 func TestSecretTypeFlagsRejectInvalidValues(t *testing.T) {
 	local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "value"))
 	startSecretBroker(t, servedBy(local))
@@ -283,6 +293,10 @@ func TestSecretCreateRefusesBadAdminAndScopes(t *testing.T) {
 // TestANoneBesideALoginIsRefusedOnCreateAndRetag: none removes github-owners only alone on retag,
 // so a list that names it beside a login, in any case, is refused before anything is read or
 // written, on create and on retag, rather than written as a login named none.
+// Serial: it shares process-wide state: AGENT_SECRETS_URL, which startSecretBroker sets with
+// t.Setenv, and the package-level seams awsClients and secretStdin, which useAWS and useStdin
+// assign. None of them is read here: checkGitHubOwners refuses every create and retag before
+// openSession, where brokerBaseURL (identity.go) would read the broker's address.
 func TestANoneBesideALoginIsRefusedOnCreateAndRetag(t *testing.T) {
 	local := secrets.NewLocal(typeTaggedSecret(t, "APP_KEY"))
 	startSecretBroker(t, servedBy(local))
@@ -311,6 +325,9 @@ func TestANoneBesideALoginIsRefusedOnCreateAndRetag(t *testing.T) {
 // github-owners tag was written with a comma outside the CLI is refused by the broker as
 // github-owners-malformed, and a retag that leaves the tag as it is says so, not that owners are
 // missing, and writes nothing; naming the owners fixes it.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's t.Setenv), and awsClients, the seam the
+// secret forms reach the store through.
 func TestARetagOfASecretWhoseStoredOwnersAreMalformedNamesTheMalformedTag(t *testing.T) {
 	commas := typeTaggedSecret(t, "APP_KEY")
 	commas.Tags[policy.TagGitHubOwners] = "acme-org,ada"
@@ -337,6 +354,10 @@ func TestARetagOfASecretWhoseStoredOwnersAreMalformedNamesTheMalformedTag(t *tes
 // (policy.GitHubOwnersFor) holds on retag as on create, against the type and owners the secret
 // will hold once the write lands, on both stores, so a retag never writes a github-app secret the
 // broker then refuses as github-owners-missing.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's and startSecretBrokerWith's t.Setenv),
+// CLOUDSDK_AUTH_ACCESS_TOKEN in its gcp half (useGCPIdentity's t.Setenv), and the package-level
+// seams the secret forms are reached through (awsClients and the gcp* ones, secretStdin).
 func TestARetagThatLeavesAGitHubAppSecretWithoutOwnersWritesNothing(t *testing.T) {
 	refusals := [][]string{
 		{"retag", "PLAIN_KEY", "--type", policy.TypeGitHubApp},
@@ -418,6 +439,10 @@ func TestARetagThatLeavesAGitHubAppSecretWithoutOwnersWritesNothing(t *testing.T
 // whether the list names a service or the owner is no person at all, as is dropping the list from
 // a secret that already holds that type. The list is written as the broker reads it, and
 // --requesters none removes it.
+//
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's t.Setenv), and awsClients, the seam the
+// secret forms reach the store through.
 func TestARetagThatLeavesASecretUnservableToItsRequestersWritesNothing(t *testing.T) {
 	// LISTED_KEY holds a service account, which the retag to that type below decodes.
 	listed := policytest.Secret("LISTED_KEY", "ada@example.com", policy.TierAgent, policytest.TypeValue(policy.TypeGoogleServiceAccount))
@@ -477,6 +502,9 @@ func TestARetagThatLeavesASecretUnservableToItsRequestersWritesNothing(t *testin
 // space and no comma, a list of several accounts is written as the broker reads it, lowercased,
 // sorted and single-spaced; a comma anywhere is refused before create or retag writes anything,
 // naming the space-separated form.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
+// the secret forms are reached through (awsClients, secretStdin).
 func TestAGitHubOwnersListIsWrittenSpaceSeparatedAndACommaIsRefused(t *testing.T) {
 	local := secrets.NewLocal(typeTaggedSecret(t, "APP_KEY"))
 	startSecretBroker(t, servedBy(local))
@@ -517,6 +545,12 @@ func TestAGitHubOwnersListIsWrittenSpaceSeparatedAndACommaIsRefused(t *testing.T
 // any case) names no GitHub account. It is not the removal it is on retag, and the github-app
 // secret it would write has no github-owners tag. Such a create is refused with a usage error
 // before anything is written, on both stores, as a create without --github-owners is.
+// Serial: it shares process-wide state: AGENT_SECRETS_URL, which startSecretBroker and
+// startSecretBrokerWith set with t.Setenv, CLOUDSDK_AUTH_ACCESS_TOKEN in its gcp half
+// (useGCPIdentity's t.Setenv), and the package-level seams awsClients, the gcp* ones and
+// secretStdin, which it assigns. None of them is read here: every create passes --github-owners
+// none, which checkGitHubOwners refuses before openSession, where brokerBaseURL (identity.go)
+// would read the broker's address.
 func TestACreateThatNamesNoneAsItsGitHubOwnersWritesNothing(t *testing.T) {
 	owners := []string{"none", "None", "NONE"}
 	t.Run("aws", func(t *testing.T) {
@@ -595,6 +629,9 @@ func typeTaggedSecret(t *testing.T, name string) secrets.LocalSecret {
 // both removes and sets tags is refused before any read or write, since it would take two calls.
 // Each retag reads the secret's tags once, to build the tags it will leave and check them, and a
 // write that lands reads them once more, to find a concurrent writer's (awsBackend.raceCheck).
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's t.Setenv), and awsClients, the seam the
+// secret forms reach the store through.
 func TestSecretRetagRemovalIsOneCallThatChangesNothingElse(t *testing.T) {
 	local := secrets.NewLocal(typeTaggedSecret(t, "APP_KEY"))
 	startSecretBroker(t, servedBy(local))
@@ -650,6 +687,9 @@ func TestSecretRetagRemovalIsOneCallThatChangesNothingElse(t *testing.T) {
 
 // TestSecretRefusedRemovalOnASharedSecretSaysOnlyWhatTheCloudSaid: a removal sends no owner or
 // tier, so the cloud refusing one on a shared secret does not print the owner-and-tier hint.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's t.Setenv), and awsClients, the seam the
+// secret forms reach the store through.
 func TestSecretRefusedRemovalOnASharedSecretSaysOnlyWhatTheCloudSaid(t *testing.T) {
 	shared := typeTaggedSecret(t, "SHARED_APP_KEY")
 	shared.Tags[policy.TagOwner] = policy.OwnerShared
@@ -664,6 +704,10 @@ func TestSecretRefusedRemovalOnASharedSecretSaysOnlyWhatTheCloudSaid(t *testing.
 
 // TestSecretRetagSetsAndRemovesMaxGrant: retag --max-grant sets the tag on both backends and keeps
 // type, and --max-grant none removes it and keeps type.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's and startSecretBrokerWith's t.Setenv),
+// CLOUDSDK_AUTH_ACCESS_TOKEN in its gcp half (useGCPIdentity's t.Setenv), and the package-level
+// seams the secret forms are reached through (awsClients and the gcp* ones, secretStdin).
 func TestSecretRetagSetsAndRemovesMaxGrant(t *testing.T) {
 	t.Run("aws", func(t *testing.T) {
 		local := secrets.NewLocal(typeTaggedSecret(t, "APP_KEY"))
@@ -1116,6 +1160,12 @@ func (s gcpTypeStore) tagReadPermission() string { return "secretmanager.secrets
 // secret holds, since it names none. The broker is asked to reread nothing, but for a create on
 // Secret Manager: that makes the secret before it reads the value and deletes it on the refusal,
 // then asks the broker to reread the name once, which the broker answers absent.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's t.Setenv, through onEachStore), and, in
+// its gcp store, CLOUDSDK_AUTH_ACCESS_TOKEN; and the package-level seams the secret forms are
+// reached through, which it sets: awsClients in the aws store, gcpClientDial, gcpCredentialsFile
+// and gcpUserinfo in the gcp one, secretStdin for the value it types, and stdinTerminal, which it
+// reads.
 func TestSecretCreateSetAndRetagRefuseEveryValueTheTypesMinterRefuses(t *testing.T) {
 	onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
 		for _, row := range refusedTypeValues(t) {
@@ -1179,6 +1229,12 @@ func TestSecretCreateSetAndRetagRefuseEveryValueTheTypesMinterRefuses(t *testing
 // is written; and access denied, and only that, lets the retag write its tags, with one line on
 // stderr saying the value was not checked, naming the permissions the read needs and saying the
 // broker reports such a secret unservable.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's t.Setenv, through onEachStore), and, in
+// its gcp store, CLOUDSDK_AUTH_ACCESS_TOKEN; and the package-level seams retag is reached
+// through, which it sets: awsClients in the aws store and gcpClientDial, gcpCredentialsFile and
+// gcpUserinfo in the gcp one. It types no value, since only create and set read one
+// (readSecretValue, which only cmdSecretCreate and cmdSecretSet in secret.go call).
 func TestSecretRetagReadsTheValueOnlyWhenItChangesTheType(t *testing.T) {
 	noAppID := appValue(t, map[string]string{"private_key": appKeyPEM(t)})
 	says := mintRefusal(t, policy.TypeGitHubApp, noAppID)
@@ -1257,6 +1313,11 @@ func TestSecretRetagReadsTheValueOnlyWhenItChangesTheType(t *testing.T) {
 // TestSecretSetRefusesASecretWhoseTypeTagNamesNoType: the broker refuses a secret whose type tag
 // names no type it mints (type-unknown) and serves no value of it, so set refuses to store one,
 // exiting 2 and naming that reason, before it reads the value.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
+// set is reached through, which it sets: awsClients and secretStdin. The value itself is never
+// read here: set refuses the type tag first (cmdSecretSet's policy.ValidType check, before its
+// readSecretValue).
 func TestSecretSetRefusesASecretWhoseTypeTagNamesNoType(t *testing.T) {
 	local := secrets.NewLocal(policytest.TypeSecret("ODD_KEY", "ada@example.com", policy.TierAgent, "other", "v1"))
 	broker := startSecretBroker(t, servedBy(local))

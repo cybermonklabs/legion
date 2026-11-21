@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -46,11 +45,13 @@ func storeSessionHeartbeat(t *testing.T, client *bus.Client, sessionID string, h
 //
 // A forward the lane reports delivered is one the stream acknowledged storing on the holder's
 // agent subject (startRoleForward), which is a forward's whole answer; the rig's own core
-// subscription of that subject is what puts the copy on forwards, which settled waits for.
+// subscription of that subject is what puts the copy on forwards, which settled reads. Both
+// subscriptions are channels nats.go's reader fills itself (ChanSubscribe), so a message is on
+// its channel the moment the connection has read it, with no callback still to run.
 type staleHolderRig struct {
 	harness    listenerDeliveryHarness
 	forwards   chan *natsgo.Msg
-	exceptions *natsgo.Subscription
+	exceptions chan *natsgo.Msg
 }
 
 func newStaleHolderRig(t *testing.T, role, holder string, since time.Duration) staleHolderRig {
@@ -61,36 +62,44 @@ func newStaleHolderRig(t *testing.T, role, holder string, since time.Duration) s
 		t.Fatalf("claim the role: %v", err)
 	}
 	forwards := make(chan *natsgo.Msg, 4)
-	received, err := harness.client.Conn.Subscribe(contracts.LegacyAgentSubject(holder), func(message *natsgo.Msg) {
-		select {
-		case forwards <- message:
-		default:
-		}
-	})
+	received, err := harness.client.Conn.ChanSubscribe(contracts.LegacyAgentSubject(holder), forwards)
 	if err != nil {
 		t.Fatalf("subscribe the holder's subject: %v", err)
 	}
 	t.Cleanup(func() { _ = received.Unsubscribe() })
-	exceptions, err := harness.client.Conn.SubscribeSync(bus.ExceptionTopicPrefix + contracts.RoleTopicPrefix + role)
+	exceptions := make(chan *natsgo.Msg, 4)
+	lane, err := harness.client.Conn.ChanSubscribe(bus.ExceptionTopicPrefix+contracts.RoleTopicPrefix+role, exceptions)
 	if err != nil {
 		t.Fatalf("subscribe to the exception lane: %v", err)
 	}
-	t.Cleanup(func() { _ = exceptions.Unsubscribe() })
+	t.Cleanup(func() { _ = lane.Unsubscribe() })
 	if err := harness.client.Conn.Flush(); err != nil {
 		t.Fatalf("flush the test's subscriptions: %v", err)
 	}
 	return staleHolderRig{harness: harness, forwards: forwards, exceptions: exceptions}
 }
 
-// settled reads what the delivery just made of the message: the reason the role topic's exception
-// lane carried (empty for none), the forward the holder received (nil for none) and the session
-// the role's claim names now (empty once it is released).
+// settled reads what the delivery made of the message once it has made all of it: the reason the
+// role topic's exception lane carried (empty for none), the forward the holder received (nil for
+// none) and the session the role's claim names now (empty once it is released).
+//
+// The handler publishes an exception of its own before it returns, and hands a forward to the role
+// forwarder, which publishes it and any exception its outcome earns off the handler; so the read
+// first waits for every forward the forwarder holds to have its outcome (roleForwarder.settled,
+// which gives up at listenerWait). Everything the delivery published has then gone out on the
+// harness's connection, and one flush of it brings back every copy the server routed to the
+// rig's subscriptions on it, since the server answers the flush's ping only after what it sent
+// before it. Each read below takes what has already arrived, then, and waits on no clock: with a
+// second's wait for each instead, a forward slower than that through a loaded machine read as no
+// forward at all.
 func (r staleHolderRig) settled(t *testing.T, role string) (exceptionReason string, forwarded *natsgo.Msg, claimant string) {
 	t.Helper()
+	r.harness.config.roleForwards.settled(t)
 	if err := r.harness.client.Conn.Flush(); err != nil {
 		t.Fatalf("flush the delivery's publications: %v", err)
 	}
-	if message, err := r.exceptions.NextMsg(time.Second); err == nil {
+	select {
+	case message := <-r.exceptions:
 		var exception contracts.Envelope
 		if err := json.Unmarshal(message.Data, &exception); err != nil {
 			t.Fatalf("decode the delivery exception envelope: %v", err)
@@ -100,12 +109,11 @@ func (r staleHolderRig) settled(t *testing.T, role string) (exceptionReason stri
 			t.Fatalf("decode the delivery exception payload: %v", err)
 		}
 		exceptionReason = payload.Reason
-	} else if !errors.Is(err, natsgo.ErrTimeout) {
-		t.Fatalf("read the exception lane: %v", err)
+	default:
 	}
 	select {
 	case forwarded = <-r.forwards:
-	case <-time.After(time.Second):
+	default:
 	}
 	claimant, err := r.harness.registry.RoleHolder(role)
 	if err != nil {

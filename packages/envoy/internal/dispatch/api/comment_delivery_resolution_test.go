@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
@@ -15,12 +17,52 @@ import (
 // roleMentionRegistry is the listener state a role-mention retry test moves between requests:
 // who holds the role, whether the session an attempt is pinned to is still live, how many role
 // lookups and how many per-session reads the listener answered, and every send it accepted.
+//
+// Every field is read and written under mu, because the goroutine a lookup runs in and the test
+// goroutine overlap: a comment's creation gives up on a lookup that misses mentionLookupTimeout
+// (comment_delivery.go) and is answered without it, so that lookup's handler is still counting
+// itself while the test reads the counts.
 type roleMentionRegistry struct {
+	mu           sync.Mutex
 	holder       string
 	s1Live       bool
 	lookups      int
 	sessionReads int
 	sent         []map[string]any
+}
+
+// setHolder moves the role to holder.
+func (registry *roleMentionRegistry) setHolder(holder string) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	registry.holder = holder
+}
+
+// setS1Live says whether the listener still answers for s1.
+func (registry *roleMentionRegistry) setS1Live(live bool) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	registry.s1Live = live
+}
+
+// reset starts the counters again from zero, so that what the step after it costs is read on its
+// own. What the creation before it cost is not a fixed number: a lookup the listener answers
+// after mentionLookupTimeout leaves its mention unresolved, and the sender of that mention
+// resolves the target again after the commit (mentionResolutionFor).
+func (registry *roleMentionRegistry) reset() {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	registry.lookups = 0
+	registry.sessionReads = 0
+	registry.sent = nil
+}
+
+// answered is what the listener has done since the last reset: role lookups, per-session reads,
+// and the sends it took.
+func (registry *roleMentionRegistry) answered() (lookups, sessionReads int, sent []map[string]any) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	return registry.lookups, registry.sessionReads, slices.Clone(registry.sent)
 }
 
 // roleMentionListener is the Envoy listener the role-mention retry tests run against: it
@@ -32,20 +74,29 @@ func roleMentionListener(t *testing.T, registry *roleMentionRegistry) *httptest.
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/reviewer":
+			registry.mu.Lock()
 			registry.lookups++
+			holder := registry.holder
+			registry.mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"role": "reviewer", "holder": registry.holder, "title": "reviewer", "capabilities": []string{"steer"},
+				"role": "reviewer", "holder": holder, "title": "reviewer", "capabilities": []string{"steer"},
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
+			registry.mu.Lock()
 			registry.sessionReads++
-			if !registry.s1Live {
+			live := registry.s1Live
+			registry.mu.Unlock()
+			if !live {
 				w.WriteHeader(http.StatusNotFound)
 				_, _ = w.Write([]byte(`{"error":"no live session s1"}`))
 				return
 			}
 			_, _ = w.Write([]byte(`{"session_id":"s1","title":"planner","capabilities":["steer"]}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions":
-			if !registry.s1Live {
+			registry.mu.Lock()
+			live := registry.s1Live
+			registry.mu.Unlock()
+			if !live {
 				_, _ = w.Write([]byte(`[]`))
 				return
 			}
@@ -55,7 +106,9 @@ func roleMentionListener(t *testing.T, registry *roleMentionRegistry) *httptest.
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 				t.Fatalf("decode role mention send: %v", err)
 			}
+			registry.mu.Lock()
 			registry.sent = append(registry.sent, request)
+			registry.mu.Unlock()
 			_, _ = w.Write([]byte(`{"event_id":"mention-envelope","recipient":"s1"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -66,6 +119,7 @@ func roleMentionListener(t *testing.T, registry *roleMentionRegistry) *httptest.
 }
 
 func TestPendingRoleMentionRetryKeepsTheCreateTimeHolder(t *testing.T) {
+	t.Parallel()
 	registry := &roleMentionRegistry{holder: "s1", s1Live: true}
 	listener := roleMentionListener(t, registry)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
@@ -84,9 +138,11 @@ func TestPendingRoleMentionRetryKeepsTheCreateTimeHolder(t *testing.T) {
 	`, comment.ID); err != nil {
 		t.Fatalf("restore pending role delivery: %v", err)
 	}
-	registry.holder = "s2"
-	registry.sent = nil
-	registry.sessionReads = 0
+	// The role moves to s2, and the counters start again from zero (reset), the role lookups with
+	// them: counting from zero is what makes the assertion below about the retry alone, which
+	// must look up no role at all.
+	registry.setHolder("s2")
+	registry.reset()
 	retry := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/deliveries", map[string]any{
 		"delivery": "steer",
 	}, "alice")
@@ -94,12 +150,12 @@ func TestPendingRoleMentionRetryKeepsTheCreateTimeHolder(t *testing.T) {
 		t.Fatalf("retry pending role mention: status=%d body=%s", retry.Code, retry.Body.String())
 	}
 	if attempt := decodeBody[commentDeliveryRead](t, retry); attempt.Attempt != 1 || attempt.SessionID == nil || *attempt.SessionID != "s1" || attempt.State != "sent" {
-		t.Fatalf("pending role retry attempt = %#v, want original-holder attempt 1", attempt)
+		t.Fatalf("pending role retry attempt = %s, want original-holder attempt 1", describeAttempts([]commentDeliveryRead{attempt}))
 	}
-	if registry.lookups != 1 || registry.sessionReads != 1 || len(registry.sent) != 1 ||
-		registry.sent[0]["target_session"] != "s1" {
+	if lookups, sessionReads, sent := registry.answered(); lookups != 0 || sessionReads != 1 || len(sent) != 1 ||
+		sent[0]["target_session"] != "s1" {
 		t.Fatalf("pending role retry = lookups:%d session reads:%d sends:%#v, want the pin rechecked once, no role re-resolution and no s2 delivery",
-			registry.lookups, registry.sessionReads, registry.sent)
+			lookups, sessionReads, sent)
 	}
 	if _, err := database.Pool.Exec(context.Background(), `
 		update comment_deliveries set state = 'pending', envelope_id = null, error = null, claimed_at = null
@@ -107,9 +163,8 @@ func TestPendingRoleMentionRetryKeepsTheCreateTimeHolder(t *testing.T) {
 	`, comment.ID); err != nil {
 		t.Fatalf("restore pending disappeared-holder delivery: %v", err)
 	}
-	registry.s1Live = false
-	registry.sent = nil
-	registry.sessionReads = 0
+	registry.setS1Live(false)
+	registry.reset()
 	missingHolder := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/deliveries", map[string]any{
 		"delivery": "steer",
 	}, "alice")
@@ -122,9 +177,9 @@ func TestPendingRoleMentionRetryKeepsTheCreateTimeHolder(t *testing.T) {
 	}
 	// "no live session" is what a listener take-over answers too, so the retry rechecks the pin
 	// on every try of the take-over window before it settles; each read is of s1 itself.
-	if registry.lookups != 1 || registry.sessionReads < 1 || len(registry.sent) != 0 {
+	if lookups, sessionReads, sent := registry.answered(); lookups != 0 || sessionReads < 1 || len(sent) != 0 {
 		t.Fatalf("absent original holder retry = lookups:%d session reads:%d sends:%#v, want the pin rechecked on each try, no role re-resolution and no send attempt",
-			registry.lookups, registry.sessionReads, registry.sent)
+			lookups, sessionReads, sent)
 	}
 }
 
@@ -138,6 +193,7 @@ func TestPendingRoleMentionRetryKeepsTheCreateTimeHolder(t *testing.T) {
 // reply for the life of the comment, not merely until the next retry: a retry only resumes a
 // still-"pending" attempt, and this one settles "failed" right here.
 func TestStrandedAttemptRetriedDuringAListenerOutageKeepsThePinAndAcceptsTheReply(t *testing.T) {
+	t.Parallel()
 	registryUnavailable := false
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -188,7 +244,7 @@ func TestStrandedAttemptRetriedDuringAListenerOutageKeepsThePinAndAcceptsTheRepl
 	}
 	attempt := decodeBody[commentDeliveryRead](t, retry)
 	if attempt.Attempt != 2 || attempt.State != "failed" || attempt.SessionID == nil || *attempt.SessionID != "s1" {
-		t.Fatalf("attempt settled during the outage = %#v, want the pin kept on a failed attempt", attempt)
+		t.Fatalf("attempt settled during the outage = %s, want the pin kept on a failed attempt", describeAttempts([]commentDeliveryRead{attempt}))
 	}
 
 	// The receipt that settle appended says what its row says, the session holding the frame
@@ -225,6 +281,7 @@ func TestStrandedAttemptRetriedDuringAListenerOutageKeepsThePinAndAcceptsTheRepl
 // original recipient answered first, its reply is the attempt's reply and the new holder's is
 // answered with it.
 func TestStrandedRoleAttemptRetriedDuringAnOutageKeepsThePinAndTheFirstReply(t *testing.T) {
+	t.Parallel()
 	registry := &roleMentionRegistry{holder: "s1", s1Live: true}
 	listener := roleMentionListener(t, registry)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
@@ -250,11 +307,9 @@ func TestStrandedRoleAttemptRetriedDuringAnOutageKeepsThePinAndTheFirstReply(t *
 
 	// The role moves to s2 and s1 goes briefly unreachable, so the retry's recheck of the
 	// pinned session fails without ever consulting the role.
-	registry.holder = "s2"
-	registry.s1Live = false
-	registry.lookups = 0
-	registry.sent = nil
-	registry.sessionReads = 0
+	registry.setHolder("s2")
+	registry.setS1Live(false)
+	registry.reset()
 	retry := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/deliveries", map[string]any{
 		"delivery": "steer",
 	}, "alice")
@@ -263,13 +318,13 @@ func TestStrandedRoleAttemptRetriedDuringAnOutageKeepsThePinAndTheFirstReply(t *
 	}
 	attempt := decodeBody[commentDeliveryRead](t, retry)
 	if attempt.Attempt != 1 || attempt.State != "failed" || attempt.SessionID == nil || *attempt.SessionID != "s1" {
-		t.Fatalf("attempt settled during the outage = %#v, want the pin on s1 kept", attempt)
+		t.Fatalf("attempt settled during the outage = %s, want the pin on s1 kept", describeAttempts([]commentDeliveryRead{attempt}))
 	}
 	// "no live session" is what a listener take-over answers too, so the retry rechecks the pin
 	// on every try of the take-over window before it settles; each read is of s1 itself.
-	if registry.lookups != 0 || registry.sessionReads < 1 || len(registry.sent) != 0 {
+	if lookups, sessionReads, sent := registry.answered(); lookups != 0 || sessionReads < 1 || len(sent) != 0 {
 		t.Fatalf("retry during the outage = lookups:%d session reads:%d sends:%#v, want the pin rechecked directly on each try and no send attempted",
-			registry.lookups, registry.sessionReads, registry.sent)
+			lookups, sessionReads, sent)
 	}
 
 	// Attempt 1 already carried the receipt its creation send recorded; the outage settle pays
@@ -300,6 +355,7 @@ func TestStrandedRoleAttemptRetriedDuringAnOutageKeepsThePinAndTheFirstReply(t *
 }
 
 func TestPendingMentionRetryKeepsItsOriginalDeliveryMode(t *testing.T) {
+	t.Parallel()
 	sentModes := []string{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["btw","steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -350,7 +406,7 @@ func TestPendingMentionRetryKeepsItsOriginalDeliveryMode(t *testing.T) {
 		t.Fatalf("complete pending BTW attempt: status=%d body=%s", completePending.Code, completePending.Body.String())
 	}
 	if attempt := decodeBody[commentDeliveryRead](t, completePending); attempt.Attempt != 1 || attempt.Delivery != "btw" || attempt.State != "sent" {
-		t.Fatalf("completed pending attempt = %#v, want the stored BTW attempt", attempt)
+		t.Fatalf("completed pending attempt = %s, want the stored BTW attempt", describeAttempts([]commentDeliveryRead{attempt}))
 	}
 	if len(sentModes) != 1 || sentModes[0] != "btw" {
 		t.Fatalf("completed pending modes = %#v, want [btw]", sentModes)
@@ -377,6 +433,7 @@ func TestPendingMentionRetryKeepsItsOriginalDeliveryMode(t *testing.T) {
 // a stale "sent" recorded from a capability check that ran before the session's registration
 // changed. This is the observable contract createCommentDelivery must honor for every retry.
 func TestPendingMentionRetryRechecksCapabilityAgainstCurrentRegistration(t *testing.T) {
+	t.Parallel()
 	capabilities := []string{"steer"}
 	sessionReads := 0
 	sends := 0
@@ -405,7 +462,7 @@ func TestPendingMentionRetryRechecksCapabilityAgainstCurrentRegistration(t *test
 		"body": "Created while steer was advertised.", "mentions": []map[string]any{{"target": "session:s1"}}, "delivery": "steer",
 	}))
 	if settled := settledCommentDeliveries(t, database, comment.ID); len(settled) != 1 || settled[0].State != "sent" {
-		t.Fatalf("initial delivery = %#v, want sent", settled)
+		t.Fatalf("initial delivery = %s, want sent", describeAttempts(settled))
 	}
 	if _, err := database.Pool.Exec(context.Background(), `
 		update comment_deliveries set state = 'pending', envelope_id = null, error = null, claimed_at = null
@@ -424,7 +481,8 @@ func TestPendingMentionRetryRechecksCapabilityAgainstCurrentRegistration(t *test
 	attempt := decodeBody[commentDeliveryRead](t, retry)
 	if attempt.Attempt != 1 || attempt.State != "failed" || attempt.Error == nil ||
 		*attempt.Error != "session s1 (planner) does not advertise steer" || sends != 0 {
-		t.Fatalf("pending retry reused stale capability: session reads=%d sends=%d attempt=%#v", sessionReads, sends, attempt)
+		t.Fatalf("pending retry reused stale capability: session reads=%d sends=%d attempt=%s",
+			sessionReads, sends, describeAttempts([]commentDeliveryRead{attempt}))
 	}
 }
 
@@ -435,6 +493,7 @@ func TestPendingMentionRetryRechecksCapabilityAgainstCurrentRegistration(t *test
 // even when nothing else races it, so the initial path must recheck exactly like a retry does,
 // not trust a decision that predates the commit it was made inside of.
 func TestInitialCommentDeliveryRechecksCapabilityAgainstCurrentRegistration(t *testing.T) {
+	t.Parallel()
 	capabilities := []string{"steer"}
 	sessionReads := 0
 	sends := 0
@@ -469,16 +528,18 @@ func TestInitialCommentDeliveryRechecksCapabilityAgainstCurrentRegistration(t *t
 	}))
 	settled := settledCommentDeliveries(t, database, comment.ID)
 	if len(settled) != 1 {
-		t.Fatalf("deliveries = %#v, want one", settled)
+		t.Fatalf("deliveries = %s, want one", describeAttempts(settled))
 	}
 	attempt := settled[0]
 	if attempt.State != "failed" || attempt.Error == nil ||
 		*attempt.Error != "session s1 (planner) does not advertise steer" || sends != 0 {
-		t.Fatalf("initial delivery reused stale capability: session reads=%d sends=%d attempt=%#v", sessionReads, sends, attempt)
+		t.Fatalf("initial delivery reused stale capability: session reads=%d sends=%d attempt=%s",
+			sessionReads, sends, describeAttempts([]model.CommentDelivery{attempt}))
 	}
 }
 
 func TestPendingUnresolvedMentionRetryKeepsTheOriginalError(t *testing.T) {
+	t.Parallel()
 	roleAvailable := false
 	roleLookups := 0
 	sends := 0
@@ -507,7 +568,7 @@ func TestPendingUnresolvedMentionRetryKeepsTheOriginalError(t *testing.T) {
 	}))
 	if settled := settledCommentDeliveries(t, database, comment.ID); len(settled) != 1 || settled[0].Error == nil ||
 		*settled[0].Error != "no holder for role reviewer" {
-		t.Fatalf("initial unresolved delivery = %#v", settled)
+		t.Fatalf("initial unresolved delivery = %s", describeAttempts(settled))
 	}
 	if _, err := database.Pool.Exec(context.Background(), `
 		update comment_deliveries set state = 'pending', envelope_id = null, error = null, claimed_at = null
@@ -515,7 +576,14 @@ func TestPendingUnresolvedMentionRetryKeepsTheOriginalError(t *testing.T) {
 	`, comment.ID); err != nil {
 		t.Fatalf("restore pending unresolved delivery: %v", err)
 	}
+	// The role comes back, and the retry is read from zero lookups as well as zero sends: a
+	// lookup the listener answers after mentionLookupTimeout (comment_delivery.go) leaves the
+	// mention unresolved and its sender resolves the role again after the commit
+	// (mentionResolutionFor), so the creation above makes one lookup or two. What this test
+	// proves is the retry's own count: the error attempt 1 recorded is kept, so the retry asks
+	// the listener nothing.
 	roleAvailable = true
+	roleLookups = 0
 	sends = 0
 	retry := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/deliveries", map[string]any{
 		"delivery": "steer",
@@ -526,9 +594,9 @@ func TestPendingUnresolvedMentionRetryKeepsTheOriginalError(t *testing.T) {
 	if attempt := decodeBody[commentDeliveryRead](t, retry); attempt.Attempt != 1 || attempt.SessionID != nil ||
 		attempt.Delivery != "steer" || attempt.State != "failed" || attempt.Error == nil ||
 		*attempt.Error != "no holder for role reviewer" {
-		t.Fatalf("pending unresolved retry = %#v, want the original failed resolution", attempt)
+		t.Fatalf("pending unresolved retry = %s, want the original failed resolution", describeAttempts([]commentDeliveryRead{attempt}))
 	}
-	if roleLookups != 1 || sends != 0 {
+	if roleLookups != 0 || sends != 0 {
 		t.Fatalf("pending unresolved retry = lookups:%d sends:%d, want no fresh decisions or sends", roleLookups, sends)
 	}
 }
@@ -540,6 +608,7 @@ func TestPendingUnresolvedMentionRetryKeepsTheOriginalError(t *testing.T) {
 // the text the dashboard prints, so wording an unanswered read that way would un-name a
 // recipient that never went anywhere and tell a person to stop waiting on it.
 func TestMentionDuringAnUnanswerableRegistryReadIsNotRecordedAsNoLiveSession(t *testing.T) {
+	t.Parallel()
 	const busSilent = "envoy: the message bus did not answer: no responders available for request"
 	sends := 0
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -588,6 +657,7 @@ func TestMentionDuringAnUnanswerableRegistryReadIsNotRecordedAsNoLiveSession(t *
 // A record the registry itself calls gone is the other half: a 200 is not a live session, and
 // the state, never the status code, says which.
 func TestDeliveryResolvesAnUnresponsiveHolderAndRefusesAGoneOne(t *testing.T) {
+	t.Parallel()
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("include") != "unresponsive" {
 			w.WriteHeader(http.StatusNotFound)

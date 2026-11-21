@@ -37,7 +37,7 @@ func newLegionListener(t *testing.T, client *bus.Client) *legionListener {
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	if err := sessions.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("warm the session cache: %v", err)
@@ -450,10 +450,10 @@ func TestALegionAgentRegistryWhoseFirstOpenFailsServesOnceItsRetryOpensIt(t *tes
 	t.Cleanup(func() { registry.close(context.Background()) })
 	l.deps.legionAgents = registry
 
-	retried := time.Now().Add(10 * time.Second)
+	retried := time.Now().Add(listenerWait)
 	for opens.Load() < 4 {
 		if time.Now().After(retried) {
-			t.Fatalf("the registry opened %d times in 10 s, want its retry to open again", opens.Load())
+			t.Fatalf("the registry opened %d times in %s, want its retry to open again", opens.Load(), listenerWait)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -463,7 +463,7 @@ func TestALegionAgentRegistryWhoseFirstOpenFailsServesOnceItsRetryOpensIt(t *tes
 	}
 
 	failing.Store(false)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWait)
 	for l.do(t, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "").Code != http.StatusOK {
 		if time.Now().After(deadline) {
 			t.Fatalf("the registry still answers 503 after its open recovered\n%s", logs.String())
@@ -533,7 +533,7 @@ func TestALegionAgentRegistryWhoseMoveToANewConnectionFailsOpensAgainOnTheLatest
 	t.Cleanup(func() { started.close(context.Background()) })
 	l.deps.legionAgents = started
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWait)
 	for !strings.Contains(logs.String(), "legion agent registry did not move to the new NATS connection") {
 		if time.Now().After(deadline) {
 			t.Fatalf("the registry did not report the failed move\n%s", logs.String())
@@ -587,7 +587,7 @@ func TestClosingALegionAgentRegistryDoesNotWaitForAnOpenUnderWay(t *testing.T) {
 	})
 	select {
 	case <-inOpen:
-	case <-time.After(10 * time.Second):
+	case <-time.After(listenerWait):
 		t.Fatal("the retry did not open again")
 	}
 
@@ -602,7 +602,7 @@ func TestClosingALegionAgentRegistryDoesNotWaitForAnOpenUnderWay(t *testing.T) {
 	close(release)
 	select {
 	case <-registry.retried:
-	case <-time.After(10 * time.Second):
+	case <-time.After(listenerWait):
 		t.Fatal("the retry did not end once its open returned")
 	}
 	if n := opens.Load(); n != 2 {

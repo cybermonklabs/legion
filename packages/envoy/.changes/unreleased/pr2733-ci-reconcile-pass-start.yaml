@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  A CI reconcile pass whose caller cancels it, as a shutting-down Dispatch process does, records
+  the cancellation. The row's insert ran on the pass's own context, so a cancellation that landed
+  between Postgres committing the row and the pass reading its id back parted the pass from its
+  row, and that row then read as a process killed in the middle of a pass.

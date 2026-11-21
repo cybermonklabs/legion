@@ -82,7 +82,7 @@ func publishedToSession(t *testing.T, deps Deps, issueKey, commentID, sessionID 
 		cancel()
 		<-stopped
 	}()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(concurrentWait)
 	for {
 		var unpublished int
 		if err := deps.Store.Pool.QueryRow(context.Background(),
@@ -289,7 +289,7 @@ func TestAMentionClaimedByAKilledProcessStillReachesItsSessionWhenTheResendFails
 		cancel()
 		<-stopped
 	}()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(concurrentWait)
 	for time.Now().Before(deadline) {
 		var published bool
 		if err := database.Pool.QueryRow(context.Background(), `
@@ -316,7 +316,7 @@ func TestAMentionClaimedByAKilledProcessStillReachesItsSessionWhenTheResendFails
 	})
 
 	copies := 0
-	deadline = time.Now().Add(10 * time.Second)
+	deadline = time.Now().Add(concurrentWait)
 	for {
 		var unpublished, unsettled int
 		if err := database.Pool.QueryRow(context.Background(), `

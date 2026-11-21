@@ -141,6 +141,10 @@ func presentedHeaders(presented *http.Request) http.Header {
 // the cookie resolves, with the token beside it, and closes within a heartbeat of the session's
 // end, while the broker still holds the token live and has not once been asked about it.
 func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *testing.T) {
+	// Serial: this test measures the process. In each row the document socket must stay open
+	// through four 250 ms heartbeats while its cookie resolves and close within a heartbeat and
+	// a second of the session's end, and another test's work on the same machine would stretch
+	// both.
 	const heartbeat = 250 * time.Millisecond
 	for _, beside := range []struct {
 		name   string
@@ -150,6 +154,8 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 		{"a token that writes", liveNamedToken},
 	} {
 		t.Run(beside.name, func(t *testing.T) {
+			// Serial: its assertions are times: the socket outlives four heartbeats, and closes
+			// within a heartbeat and a second of the session's end.
 			rig := newDocumentSocketTokenRig(t, heartbeat)
 			caller := newBrokerCaller(t)
 			const token = "a-token-sent-beside-the-cookie"
@@ -194,6 +200,8 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 // broker does not hold live at all, which the heartbeat never reads and the broker is never asked
 // about.
 func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T) {
+	// Serial: its assertion is a quiet window, in each row: the document socket does not close
+	// within four 250 ms heartbeats while its cookie resolves.
 	const heartbeat = 250 * time.Millisecond
 	for _, beside := range []struct {
 		name    string
@@ -205,6 +213,8 @@ func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T
 		}},
 	} {
 		t.Run(beside.name, func(t *testing.T) {
+			// Serial: its assertion is a quiet window: the socket does not close within four
+			// heartbeats.
 			rig := newDocumentSocketTokenRig(t, heartbeat)
 			peer := rig.openDocument(t, beside.headers(t, rig))
 
@@ -229,6 +239,9 @@ func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T
 // holding it live and the answer it remembered has run out. The heartbeat is a second, so the
 // client's pong meets the pong deadline on a loaded runner.
 func TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat(t *testing.T) {
+	// Serial: its assertions are times: a quiet window, in which the live socket sends nothing but
+	// heartbeats and stays open for three and a half 1 s heartbeats, and a close with 1008 within
+	// AffirmativeCacheTTL (5 s), two heartbeats and a second of the broker's dropping its token.
 	const heartbeat = time.Second
 	rig := newDocumentSocketTokenRig(t, heartbeat)
 	caller := newBrokerCaller(t)

@@ -11,7 +11,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 	"unsafe"
 
 	"github.com/nats-io/nats.go"
@@ -50,7 +49,7 @@ func breakInterestReads(t *testing.T, registry *store.Registry) {
 	watcher.Set(reflect.ValueOf(replacement))
 	t.Cleanup(replacement.Stop)
 	replacement.Start()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	if err := replacement.WaitComplete(ctx); err != nil {
 		t.Fatalf("the watcher reading through the broken handle never completed a read of the bucket: %v", err)
@@ -73,6 +72,7 @@ func breakInterestReads(t *testing.T, registry *store.Registry) {
 // per-key read of it reaches the bucket. The negative control is both requests asked before the
 // reads break: each answers 200 naming the session.
 func TestAnInterestReadFailingWithARawSocketErrorIsTheBusNotAnswering(t *testing.T) {
+	t.Parallel()
 	const missed = "ses_interest_read_broken_pipe"
 	registry, sessions := setupSessionsTest(t, nil, []string{missed})
 	state := &listenerDeps{registry: registry, sessions: sessions}

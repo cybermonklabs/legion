@@ -50,6 +50,9 @@ const (
 	settlementEndedOnRefusal = "dispatch: document settlement ended on a room update its closed issue refused"
 )
 
+// Serial: two of its rows, TheSettlementsStoreWriteIsRefused and TheRoomsPersistenceIsRefusedFirst,
+// swap process-wide state, the default slog logger (logtest.SetDefault), to read the settlement's
+// lines back.
 func TestAClosedIssuesOwedSettlementCompletes(t *testing.T) {
 	t.Run("AppendInsideTheCloseMargin", settleAnAppendInsideTheCloseMargin)
 	t.Run("RoomLoad", settleOnARoomLoad)
@@ -102,11 +105,7 @@ func newClosedSettlementFixture(t *testing.T) closedSettlementFixture {
 		Settle:      time.Hour,
 		TestHooks:   true,
 	})
-	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown document service: %v", err)
-		}
-	})
+	t.Cleanup(func() { shutdownTestService(t, service) })
 	// Cleanups run in reverse, and Shutdown waits for the room's persistence worker this hold parks.
 	t.Cleanup(held.let)
 	server := newTestServer(t, service)
@@ -567,6 +566,7 @@ func (f closedSettlementFixture) requireOneRefusalClose(t *testing.T, watch *ref
 // append is refused too and starts no second close. Once the room has closed, the resumption
 // settles the document from the store, without the refused keystroke.
 func settleAfterItsStoreWriteIsRefused(t *testing.T) {
+	// Serial: it swaps process-wide state, the default slog logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	f := newClosedSettlementFixture(t)
@@ -608,6 +608,7 @@ func settleAfterItsStoreWriteIsRefused(t *testing.T) {
 // while the room stands. Once the room has closed, the resumption settles the document from the
 // store, without the refused keystroke.
 func settleAfterTheRoomsPersistenceIsRefused(t *testing.T) {
+	// Serial: it swaps process-wide state, the default slog logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	f := newClosedSettlementFixture(t)

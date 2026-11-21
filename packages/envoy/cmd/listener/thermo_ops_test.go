@@ -15,6 +15,7 @@ import (
 )
 
 func TestThermoOpsListenerConfigDefaultsToLoopback(t *testing.T) {
+	// Serial: it sets listener settings with t.Setenv, which panics beside t.Parallel.
 	t.Setenv("ENVOY_MACHINE_ID", "thermo-ops")
 	t.Setenv("NATS_URLS", "nats://127.0.0.1:4222")
 	t.Setenv("ENVOY_LISTEN_HOST", "")
@@ -43,6 +44,7 @@ func TestThermoOpsListenerConfigDefaultsToLoopback(t *testing.T) {
 }
 
 func TestThermoOpsListenerConfigAllowsExplicitWidening(t *testing.T) {
+	// Serial: it sets listener settings with t.Setenv, which panics beside t.Parallel.
 	t.Setenv("ENVOY_MACHINE_ID", "thermo-ops")
 	t.Setenv("NATS_URLS", "nats://127.0.0.1:4222")
 	t.Setenv("ENVOY_LISTEN_HOST", "0.0.0.0")
@@ -57,6 +59,7 @@ func TestThermoOpsListenerConfigAllowsExplicitWidening(t *testing.T) {
 }
 
 func TestThermoOpsRoleSetRejectsUnregisteredSession(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	state := &listenerDeps{registry: registry, sessions: sessions}
 

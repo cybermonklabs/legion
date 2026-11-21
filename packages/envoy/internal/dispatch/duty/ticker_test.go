@@ -11,6 +11,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
+// eventWait is how long a test here waits FOR AN EVENT on the real clock: a pass running, a lock
+// being taken, a stopped gate returning. It is where the test gives up, never a measurement - the
+// test still fails when the event never comes, and on an idle machine the wait returns in
+// milliseconds - so it allows for a loaded runner: every package of this module now runs at once,
+// four CI cores to some 3,800 parallel tests, under the race detector besides
+// (dispatch://INFRA-1075). A test whose SUBJECT is a span - a tick's interval, a lease's period -
+// keeps its own number, and the tests of those run on a fake clock (testing/synctest).
+const eventWait = 30 * time.Second
+
 // fixJitter makes every jittered wait draw what draw answers for its bound, until the test ends.
 func fixJitter(t *testing.T, draw func(n time.Duration) time.Duration) {
 	t.Helper()
@@ -44,6 +53,7 @@ func (c *passClock) times() []time.Time {
 // tick lands inside a period its own previous pass served. Each pass is handed the moment its timer
 // fired as its due time, the moment a leased pass buckets its period by (Exclusive).
 func TestRunJitteredWaitsMoreThanNineTenthsAndAtMostOneIntervalAfterEveryPass(t *testing.T) {
+	// Serial: its rows set duty.JitterN (fixJitter), a package variable every jittered wait reads.
 	const interval = 5 * time.Minute
 	period := duty.LeasePeriod(interval)
 	for _, tc := range []struct {
@@ -55,6 +65,7 @@ func TestRunJitteredWaitsMoreThanNineTenthsAndAtMostOneIntervalAfterEveryPass(t 
 		{name: "largest draw", draw: func(n time.Duration) time.Duration { return n - 1 }, gap: interval - interval/10 + 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Serial: it sets duty.JitterN (fixJitter), a package variable every jittered wait reads.
 			fixJitter(t, tc.draw)
 			synctest.Test(t, func(t *testing.T) {
 				var passes passClock
@@ -97,6 +108,7 @@ func TestRunJitteredWaitsMoreThanNineTenthsAndAtMostOneIntervalAfterEveryPass(t 
 
 // A caller with nothing to do never starts the loop.
 func TestRunJitteredDoesNotStartWhenIdle(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		ran := false
 		duty.RunJittered(context.Background(), time.Minute, func() bool { return true }, func(context.Context, time.Time) { ran = true })

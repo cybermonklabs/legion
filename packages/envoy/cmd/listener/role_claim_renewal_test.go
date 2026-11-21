@@ -20,6 +20,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/store"
 )
 
@@ -30,14 +31,14 @@ type roleClaimRenewalRig struct {
 	t         *testing.T
 	registry  *store.Registry
 	roleKV    natsgo.KeyValue
-	logs      *bytes.Buffer
+	logs      *logtest.Buffer
 	subscribe http.Handler
 }
 
 func newRoleClaimRenewalRig(t *testing.T) *roleClaimRenewalRig {
 	t.Helper()
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	logs := &bytes.Buffer{}
+	logs := &logtest.Buffer{}
 	// withRoleClaimDrain, because a registration that makes its session live again hands that
 	// session the kept lane of each role whose claim record it read for it (runKeptRoleDrain),
 	// and the first registration of every holder here is one: the rig's session cache has never
@@ -73,7 +74,7 @@ func (r *roleClaimRenewalRig) seed(role string, claim store.RoleClaim) store.Rol
 	if _, err := r.registry.Upsert(store.Interest{SessionID: claim.HolderSessionID, MachineID: "test-machine"}, []string{contracts.RoleTopicPrefix + role}); err != nil {
 		r.t.Fatalf("register %s's interest in %s's lane: %v", claim.HolderSessionID, role, err)
 	}
-	waitFor(r.t, 5*time.Second, fmt.Sprintf("%s's claim to reach the role claim view", role), func() bool {
+	waitFor(r.t, listenerWait, fmt.Sprintf("%s's claim to reach the role claim view", role), func() bool {
 		held, err := r.registry.RolesHeldBy(claim.HolderSessionID)
 		return err == nil && slices.Contains(held, role)
 	})
@@ -90,6 +91,13 @@ func (r *roleClaimRenewalRig) stored(role string) store.RoleClaim {
 func (r *roleClaimRenewalRig) register(sessionID, instance string) {
 	r.t.Helper()
 	registerThrough(r.t, r.subscribe, sessionID, instance)
+}
+
+// unrenewed is every "left a role claim unrenewed" line the rig's route logged, each carrying the
+// renewal's error: a registration whose renewal ran out of the request's budget is answered 200
+// all the same, so these lines are the only cause a case can print of a claim left unrenewed.
+func (r *roleClaimRenewalRig) unrenewed() string {
+	return r.logs.Lines("left a role claim unrenewed")
 }
 
 // lapsedClaim is the claim a session took an hour ago and has not answered for since, the record
@@ -109,6 +117,7 @@ func lapsedClaim(holder, instance string) store.RoleClaim {
 // which is what keeps a role with the process that holds it: the claim stays renewed for as long
 // as its holder keeps registering, and nothing else on the record moves.
 func TestARegistrationRenewsTheClaimsItsOwnProcessHolds(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_renewing_holder"
@@ -121,8 +130,8 @@ func TestARegistrationRenewsTheClaimsItsOwnProcessHolds(t *testing.T) {
 
 	renewed := rig.stored(role)
 	if renewed.RenewedAt < registered {
-		t.Fatalf("the claim was renewed at %d, want the registration's own moment, %d or later (it was claimed at %d)",
-			renewed.RenewedAt, registered, seeded.ClaimedAt)
+		t.Fatalf("the claim was renewed at %d, want the registration's own moment, %d or later (it was claimed at %d); the route logged %q",
+			renewed.RenewedAt, registered, seeded.ClaimedAt, rig.unrenewed())
 	}
 	if renewed.HolderSessionID != seeded.HolderSessionID || renewed.ClaimedAt != seeded.ClaimedAt ||
 		renewed.PreviousSessionID != seeded.PreviousSessionID || renewed.ClientInstanceID != seeded.ClientInstanceID {
@@ -135,6 +144,7 @@ func TestARegistrationRenewsTheClaimsItsOwnProcessHolds(t *testing.T) {
 // claim to renew. The role was taken when it was taken, by whom it was taken from: adoption
 // writes the process and the renewal, nothing else.
 func TestAnAdoptingRegistrationNamesItsProcessOnAClaimThatNamesNone(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_adopting_holder"
@@ -147,10 +157,12 @@ func TestAnAdoptingRegistrationNamesItsProcessOnAClaimThatNamesNone(t *testing.T
 
 	adopted := rig.stored(role)
 	if adopted.ClientInstanceID != holdingProcess {
-		t.Fatalf("the adopted claim names the process %q, want the registering process %q", adopted.ClientInstanceID, holdingProcess)
+		t.Fatalf("the adopted claim names the process %q, want the registering process %q; the route logged %q",
+			adopted.ClientInstanceID, holdingProcess, rig.unrenewed())
 	}
 	if adopted.RenewedAt < registered {
-		t.Fatalf("the adopted claim was renewed at %d, want the registration's own moment, %d or later", adopted.RenewedAt, registered)
+		t.Fatalf("the adopted claim was renewed at %d, want the registration's own moment, %d or later; the route logged %q",
+			adopted.RenewedAt, registered, rig.unrenewed())
 	}
 	if adopted.HolderSessionID != seeded.HolderSessionID || adopted.ClaimedAt != seeded.ClaimedAt || adopted.PreviousSessionID != seeded.PreviousSessionID {
 		t.Fatalf("the adopted claim is %+v, want %+v with its process and renewal alone written", adopted, seeded)
@@ -172,6 +184,8 @@ func TestAnAdoptingRegistrationNamesItsProcessOnAClaimThatNamesNone(t *testing.T
 // registration was answered 200 and its renewal's claim read ran out of time, so the claim was
 // never renewed while its holder kept registering.
 func TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim(t *testing.T) {
+	// Serial: its assertion is a time (the registration of 1,609 topics must leave its renewal
+	// part of sendRequestBudget's 3.5 s).
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_largest_holder"
@@ -213,14 +227,8 @@ func TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim(t *testin
 	}
 	adopted := rig.stored(role)
 	if adopted.ClientInstanceID != holdingProcess || adopted.RenewedAt < registered.UnixMilli() {
-		var unrenewed []string
-		for line := range strings.Lines(rig.logs.String()) {
-			if strings.Contains(line, "left a role claim unrenewed") {
-				unrenewed = append(unrenewed, strings.TrimSpace(line))
-			}
-		}
 		t.Fatalf("the claim is now %+v, want %+v adopted by the registering process %q and renewed at the registration, %d or later; the route logged %q",
-			adopted, seeded, holdingProcess, registered.UnixMilli(), unrenewed)
+			adopted, seeded, holdingProcess, registered.UnixMilli(), rig.unrenewed())
 	}
 }
 
@@ -229,6 +237,7 @@ func TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim(t *testin
 // - a renewal it could move would keep a role alive for a process that does not hold it, and
 // would hold the role against its real holder once that holder stopped.
 func TestARegistrationFromAnotherProcessRenewsNothing(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_shared_id"
@@ -249,6 +258,7 @@ func TestARegistrationFromAnotherProcessRenewsNothing(t *testing.T) {
 // the claim record names the registering process, and a view that cannot answer is no failure
 // of the renewal, so nothing says the renewal was passed over.
 func TestARegistrationWhoseRoleClaimViewCannotAnswerRenewsTheClaimItsRowNames(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_refilling_view"
@@ -264,7 +274,8 @@ func TestARegistrationWhoseRoleClaimViewCannotAnswerRenewsTheClaimItsRowNames(t 
 
 	stored := rig.stored(role)
 	if stored.RenewedAt <= seeded.RenewedAt || stored.HolderSessionID != sessionID || stored.ClientInstanceID != holdingProcess {
-		t.Fatalf("the claim is now %+v, want %+v renewed by the registration: its row names the role", stored, seeded)
+		t.Fatalf("the claim is now %+v, want %+v renewed by the registration: its row names the role; the route logged %q",
+			stored, seeded, rig.unrenewed())
 	}
 	if strings.Contains(rig.logs.String(), "left a role claim unrenewed") {
 		t.Fatalf("the route logged a renewal failure for a view that cannot answer:\n%s", rig.logs.String())
@@ -294,6 +305,7 @@ func (kv *racingRoleClaimUpdate) Update(key string, value []byte, revision uint6
 // it. The registration is answered 200, since a heartbeat is not the place to report a race it
 // has already lost.
 func TestARegistrationWhoseRenewalLosesItsCompareAndSwapStillRegisters(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_raced_holder"
@@ -317,7 +329,8 @@ func TestARegistrationWhoseRenewalLosesItsCompareAndSwapStillRegisters(t *testin
 	rig.register(sessionID, holdingProcess)
 
 	if racing.updates != 1 {
-		t.Fatalf("the renewal made %d conditional updates, want exactly one: a lost renewal is never retried", racing.updates)
+		t.Fatalf("the renewal made %d conditional updates, want exactly one: a lost renewal is never retried; the route logged %q",
+			racing.updates, rig.unrenewed())
 	}
 	stored := rig.stored(role)
 	stored.Revision = 0

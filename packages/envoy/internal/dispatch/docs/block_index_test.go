@@ -38,8 +38,9 @@ func blockIndexService(t *testing.T) (*store.Store, *Service) {
 		t.Fatalf("seed project CORE: %v", err)
 	}
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
-	t.Cleanup(func() {
-		stop, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	service.srv.RoomIdleTimeout = testRoomIdleTimeout
+	cleanupAndRelease(t, func() {
+		stop, cancel := context.WithTimeout(context.Background(), roomWait(t))
 		defer cancel()
 		_ = service.Shutdown(stop)
 	})
@@ -189,6 +190,7 @@ const shipItSpec = ":::callout{#ship_it kind=\"note\" title=\"\"}\nShip it after
 // version, the mention a block holds, dated from the document's own reference to that target on
 // this first indexing, the mention's excerpt, and the version recorded indexed.
 func TestBlockIndexIndexesAnOwedDocument(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	spec := createOwedDocument(t, database, service, "CORE-1", "", "spec", shipItSpec, "")
@@ -258,6 +260,7 @@ func TestBlockIndexIndexesAnOwedDocument(t *testing.T) {
 // indexing the live text at that version would date the later edit's blocks to it. It is skipped,
 // counted, and left owed.
 func TestBlockIndexSkipsADocumentWhoseLiveTextIsAheadOfItsVersion(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	spec := createOwedDocument(t, database, service, "CORE-1", "", "spec", shipItSpec, "Ship it.\n")
 
@@ -284,6 +287,7 @@ func TestBlockIndexSkipsADocumentWhoseLiveTextIsAheadOfItsVersion(t *testing.T) 
 // text its latest version's byte for byte, it is indexed at that version, where the index is
 // exact. The issue's close changes nothing of that.
 func TestBlockIndexIndexesAClosedDocumentWhoseLiveTextEqualsItsVersion(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	spec := createOwedDocument(t, database, service, "CORE-1", "", "spec", shipItSpec, "")
 	var pending bool
@@ -320,6 +324,7 @@ func TestBlockIndexIndexesAClosedDocumentWhoseLiveTextEqualsItsVersion(t *testin
 // (heldVersionBlocks): with it, the first tick indexes the closed document at version 1, and the
 // tick's assertion reads Documents 1 and LiveAhead 1.
 func TestAClosedIssuesDocumentIsLeftOwedLikeAnOpenOneUntilItSettles(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	const stored = "The paragraph version 1 holds.\n"
@@ -401,6 +406,7 @@ func TestAClosedIssuesDocumentIsLeftOwedLikeAnOpenOneUntilItSettles(t *testing.T
 // indexed in the second batch rather than waiting behind them; they stay owed, and the next tick
 // starts over.
 func TestBlockIndexIsNotHeldByDocumentsItSkips(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	skipped := make([]string, 25)
 	for index := range skipped {
@@ -438,6 +444,7 @@ func TestBlockIndexIsNotHeldByDocumentsItSkips(t *testing.T) {
 // tick. A live update, a new version or a resident room has the next tick read it again, and a
 // document indexed elsewhere is forgotten.
 func TestBlockIndexDoesNotRereadALiveAheadDocumentUntilItMoves(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	edited := createOwedDocument(t, database, service, "CORE-1", "", "edited", "Live text one.\n", "Earlier text one.\n")
@@ -613,6 +620,7 @@ func indexedSpec(t *testing.T, database *store.Store, service *Service) string {
 // no command run: the trigger on artifact_versions marked the document owed. The mention the version
 // added is dated by the version and the event that recorded it.
 func TestAnOlderBuildsVersionWriteIsIndexedWithNoCommand(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	spec := indexedSpec(t, database, service)
 	version, eventID := writeAsAnOlderBuild(t, database, service, spec, "Ship it.", "Ship it after dispatch://CORE-2.")
@@ -643,6 +651,7 @@ func TestAnOlderBuildsVersionWriteIsIndexedWithNoCommand(t *testing.T) {
 // The link a tick moves from the document onto its block keeps its place in an incremental read:
 // GET /api/v1/references?since= lists it past the event before its version's, and not past its own.
 func TestAReconciledLinkKeepsItsPlaceInSince(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	spec := indexedSpec(t, database, service)
@@ -676,6 +685,7 @@ func TestAReconciledLinkKeepsItsPlaceInSince(t *testing.T) {
 // dated when the text was written and by no event. Nothing is left owed, and a second tick changes
 // nothing.
 func TestOlderItemTextCitingABlockIsReindexed(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	commentAt := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
@@ -733,9 +743,12 @@ func TestOlderItemTextCitingABlockIsReindexed(t *testing.T) {
 // comment owed; the next tick indexes the edited text and settles it. Neither waits on the
 // other for good.
 func TestADrainedItemKeepsAConcurrentEdit(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// Each wait below has roomWait of its own - the tick queueing on the edit's row lock, the tick
+	// finishing once the edit commits, the second tick - so none gets only what an earlier one
+	// left; ctx stops a tick still running when the test ends.
+	ctx := t.Context()
 	var comment string
 	if err := database.Pool.QueryRow(ctx, `
 		insert into comments (issue_key, author, body)
@@ -775,13 +788,15 @@ func TestADrainedItemKeepsAConcurrentEdit(t *testing.T) {
 		if err != nil {
 			t.Fatalf("tick beside the edit: %v", err)
 		}
-	case <-ctx.Done():
+	case <-time.After(roomWait(t)):
 		t.Fatal("the tick never finished after the edit committed")
 	}
 	if tick.Items != 0 || tick.OwedItems != 1 {
 		t.Fatalf("tick beside the edit = %#v, want nothing written and the comment still owed", tick)
 	}
-	next, err := service.ReconcileBlockIndex(ctx, BlockIndexCursors{}, liveAheadDocuments{})
+	nextCtx, cancelNext := context.WithTimeout(ctx, roomWait(t))
+	defer cancelNext()
+	next, err := service.ReconcileBlockIndex(nextCtx, BlockIndexCursors{}, liveAheadDocuments{})
 	if err != nil {
 		t.Fatalf("second tick: %v", err)
 	}
@@ -883,6 +898,7 @@ func checkItemBlock(t *testing.T, label string, blocks map[string]itemBlockRow, 
 // moved blocks keep theirs and their changed revision, the reworded block keeps its id at the new
 // revision, and the new block takes the next id. Nothing is left owed.
 func TestTheBlockIndexIndexesItemsAnOlderBuildWrote(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	commentAt := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
@@ -1004,6 +1020,7 @@ func TestTheBlockIndexIndexesItemsAnOlderBuildWrote(t *testing.T) {
 // A comment or message rebuild-refs marks owed, already indexed, is re-indexed by the next tick
 // with nothing about its blocks changed: the same ids at the same revision.
 func TestTheBlockIndexReindexesItemsRebuildRefsOwed(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	var comment string
@@ -1114,6 +1131,7 @@ func seedItemsWithBlocks(t *testing.T, database *store.Store) (comment, message,
 // not - every item written before meaning search moved to windows - take their windows from one
 // tick, and a tick after it rewrites none of them.
 func TestAnItemWrittenBeforeThisChangeGetsWindowsFromOnePass(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	document := createOwedDocument(t, database, service, "CORE-1", "", "notes", "# Notes\n\nA paragraph of the document.\n", "")
@@ -1190,6 +1208,7 @@ func TestAnItemWrittenBeforeThisChangeGetsWindowsFromOnePass(t *testing.T) {
 //
 // and the document is left listed by refs.DocumentsOwedWindows for ever.
 func TestWindowArmWindowsTheStoredVersionOfADocumentWhoseLiveTextIsAhead(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	const stored = "# Notes\n\nThe stored paragraph.\n"
@@ -1976,6 +1995,7 @@ func requireOwnersReadTheWindowIndex(t *testing.T, database *store.Store, owner 
 // document is listed and windowed (its windows being none), or the version write leaves it
 // unmarked.
 func TestNoDocumentKeepsItsWindowMarkerForEver(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	empty := createOwedDocument(t, database, service, "CORE-1", "", "spec", "", "")

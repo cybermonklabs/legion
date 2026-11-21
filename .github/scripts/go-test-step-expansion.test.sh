@@ -64,8 +64,11 @@ check "the variable is dropped" "$(is "$(command_of "$line")" "go test -v -count
 check "the text begins at go" "$(is "$(text_of "$line")" "go test -v -count=1 -timeout 29m ./internal/dispatch/docs/")"
 
 echo "case: a variable and the memory wrapper (the race-docs lane)"
-line='RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/'
-check "both are dropped" "$(is "$(command_of "$line")" "go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/")"
+line='RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 ./internal/dispatch/docs/'
+check "both are dropped" "$(is "$(command_of "$line")" "go test -json -race -count=1 ./internal/dispatch/docs/")"
+line='RACE_MEM_LIMIT_KB=8388608 RACE_MEM_JSON_PATH="$RUNNER_TEMP/go-test-json/race-docs.json" ../../.github/scripts/race_memory.py go test -json -race -count=1 ./internal/dispatch/docs/'
+check "the wrapper's own stream path is dropped though the shell expands it" \
+  "$(is "$(command_of "$line")" "go test -json -race -count=1 ./internal/dispatch/docs/")"
 
 echo "case: more than one variable before the command"
 check "each is dropped" "$(is "$(command_of 'A=1 B=2 go test ./pkg')" "go test ./pkg")"
@@ -88,14 +91,32 @@ check "a wrapper with no go command behind it is left in place" \
   "$(is "$(command_of '../../.github/scripts/race_memory.py --help')" "../../.github/scripts/race_memory.py --help")"
 check "a bare assignment is left in place" "$(is "$(command_of 'NAME=value')" "NAME=value")"
 
-echo "case: the two steps whose lines this harness exists for are read as ci.yaml writes them"
+# unwrap_of <line>: the line less what the shell does around its command.
+unwrap_of() { py 'print(ex.unwrap(sys.argv[1]))' "$1"; }
+
+echo "case: what the streaming steps write around a go command is taken off"
+check "a stream redirect and the status kept in a variable" \
+  "$(is "$(unwrap_of 'go test -json ./pkg > "$RUNNER_TEMP/go-test-json/x.json" || s=$?')" "go test -json ./pkg")"
+check "a background call's stream, its log and its &" \
+  "$(is "$(unwrap_of 'go test -json ./pkg > "$RUNNER_TEMP/a.json" 2> "$RUNNER_TEMP/a.log" &')" "go test -json ./pkg")"
+check "a vet whose output is one log" \
+  "$(is "$(unwrap_of 'go vet ./pkg > "$RUNNER_TEMP/v.log" 2>&1 &')" "go vet ./pkg")"
+check "the open of a group and the && the next line continues" \
+  "$(is "$(unwrap_of '{ go test -run "$rig" ./a/ &&')" 'go test -run "$rig" ./a/')"
+check "the close of a group and the group's redirects" \
+  "$(is "$(unwrap_of 'go test -v ./b/; } > "$RUNNER_TEMP/n.json" 2> "$RUNNER_TEMP/n.log" &')" "go test -v ./b/")"
+check "a -run pattern ending in \$ is no redirect" \
+  "$(is "$(unwrap_of "go test -run '^(TestA|TestB)\$' ./pkg")" "go test -run '^(TestA|TestB)\$' ./pkg")"
+
+echo "case: the two steps whose lines this harness exists for are read as their files write them"
 for file in .github/workflows/ci-job-envoy-go-race-docs.yaml .github/workflows/ci-job-envoy-go-docs-finalizers.yaml; do
   found=$(py 'import pathlib, yaml
 document = yaml.safe_load(pathlib.Path(ex.ROOT / sys.argv[1]).read_text())
-lines = [step["run"].strip()
-         for job in document["jobs"].values() for step in job["steps"] if "run" in step]
+lines = [line.strip()
+         for job in document["jobs"].values() for step in job["steps"] if "run" in step
+         for line in step["run"].splitlines()]
 print(sum(1 for line in lines
-          for words, _ in [ex.go_command(line)]
+          for words, _ in [ex.go_command(ex.unwrap(line))]
           if len(words) > 1 and words[0] == "go" and words[1] == "test"))' "$file")
   check "$file holds a go test line this reader reads" "$(is "$found" "1")"
 done
@@ -155,10 +176,10 @@ else:
     print(read.workdir, read.script)' "$@"; }
 check "envoy-go's count runs the broker's packages less the race lane's, and its command, less the backend count's test" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go.yaml "Count the database broker suites' skips" "")" \
-    "packages/envoy go list ./internal/cipher/... ./cmd/cipherd/ | grep -Ev '/internal/cipher/natscallout$' | xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)\$' -timeout 20m")"
+    "packages/envoy go list ./internal/cipher/... ./cmd/cipherd/ | grep -Ev '/internal/cipher/natscallout$' | xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)\$' -timeout 9m")"
 check "envoy-go-race-api's race step runs the API package under -race through the counter" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" "")" \
-    "packages/envoy go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/")"
+    "packages/envoy go test -json -count=1 -race -timeout 39m ./internal/dispatch/api/")"
 check "the race step with one more argument, which the entry does not list, is refused" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" " --race")" "refused")"
 
@@ -232,7 +253,7 @@ jobs:
   envoy-go:
     steps:
       - name: Count the database broker suites' skips
-        run: packages/envoy/scripts/database-skips.sh --timeout 20m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$'
+        run: packages/envoy/scripts/database-skips.sh --timeout 9m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' --keep "$RUNNER_TEMP/go-test-json/broker.json"
 EOF
 skips=packages/envoy/scripts/database-skips.sh
 { cat "$repo/$skips"; echo '# an edit after the reading its pin is of'; } >"$fixture/$skips"

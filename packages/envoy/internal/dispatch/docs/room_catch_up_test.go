@@ -93,17 +93,29 @@ func waitNote(t *testing.T, notes chan string, artifactID, what string) {
 	}
 }
 
-// countNotes is how many notes for artifactID arrive within quiet of each other.
+// countNotes is how many notes for artifactID arrive within quiet of each other. A zero quiet
+// counts the notes already queued without waiting: time.After(0) is ready as the select starts,
+// and a select with two ready cases picks one at random, so a note already queued would be
+// missed about one run in two.
 func countNotes(notes chan string, artifactID string, quiet time.Duration) int {
 	count := 0
 	for {
-		select {
-		case room := <-notes:
-			if room == artifactID {
-				count++
+		var room string
+		if quiet <= 0 {
+			select {
+			case room = <-notes:
+			default:
+				return count
 			}
-		case <-time.After(quiet):
-			return count
+		} else {
+			select {
+			case room = <-notes:
+			case <-time.After(quiet):
+				return count
+			}
+		}
+		if room == artifactID {
+			count++
 		}
 	}
 }
@@ -332,7 +344,7 @@ func TestARemoteUpdateCreditsNoLocalPeerAndAttributesNoAskBlock(t *testing.T) {
 		":::ask{#bob-ask urgency=\"high\" multiple=\"false\"}\nWhich transport?\n:::\n")
 	room := pair.taskA.srv.GetDoc(pair.artifactID)
 	pair.taskA.addConnection(pair.artifactID, 7, alice)
-	t.Cleanup(func() { pair.taskA.removeConnection(pair.artifactID, 7) })
+	cleanupAndRelease(t, func() { pair.taskA.removeConnection(pair.artifactID, 7) })
 	state := pair.taskA.room(pair.artifactID)
 	state.mu.Lock()
 	before := state.creditSeq.Load()
@@ -615,6 +627,8 @@ func TestACatchUpForADocumentWithNoRoomHereDoesNothing(t *testing.T) {
 	if pair.taskA.srv.GetDoc(elsewhere) != nil {
 		t.Fatal("the catch-up loaded a room for a document nobody here had open")
 	}
+	// catchUp runs afterRead on this goroutine, so a read it made is already queued: the zero
+	// window counts it without waiting (countNotes).
 	if reads := countNotes(notes.reads, elsewhere, 0); reads != 0 {
 		t.Fatalf("the catch-up read %d time(s) for a document with no room here", reads)
 	}
@@ -697,7 +711,7 @@ func TestABurstOfBareAnnouncementsCostsOneCatchUp(t *testing.T) {
 	catchUps.mu.Unlock()
 	held := make(chan struct{})
 	release := sync.OnceFunc(func() { close(held) })
-	t.Cleanup(release)
+	cleanupAndRelease(t, release)
 	lane.push(func(context.Context) { <-held })
 
 	const burst = 5
@@ -761,7 +775,7 @@ func listenForDocumentChanges(t *testing.T, database *store.Store) <-chan docume
 		defer close(done)
 		listener.Run(ctx)
 	}()
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		cancel()
 		<-done
 	})
@@ -892,7 +906,7 @@ func TestARebuildAnnouncesTheDocumentsChange(t *testing.T) {
 	// invalid makes the document's first load unreadable, which is what a rebuild needs to see
 	// before it replaces the history (rebuild_test.go).
 	service := New(Deps{Store: database, Persistence: &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	heard := listenForDocumentChanges(t, database)
 
 	replacement := "Rebuilt.\n"

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -77,6 +78,7 @@ func seedThreeDestinationEvent(t *testing.T, database *store.Store, broker *even
 // the event is released with no attempt counted, to be sent again when a wake comes (a reconnect),
 // rather than sent again and again while NATS stays unreachable.
 func TestAnUnreachableNATSReleasesTheBatchAndSendsNothingAfterIt(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	event := seedThreeDestinationEvent(t, database, broker)
@@ -86,19 +88,30 @@ func TestAnUnreachableNATSReleasesTheBatchAndSendsNothingAfterIt(t *testing.T) {
 	})
 	unreachable := fmt.Errorf("bus: %w: waiting for NATS to reconnect: context deadline exceeded", bus.ErrUnavailable)
 	publisher := &countingPublisher{fail: unreachable}
-	stop := run(t, database, publisher, broker)
+	outbox := outboxOn(t, database, publisher, broker)
+	atRest := restingOutbox(t, outbox)
+	// Every retry timer the holder arms: a released batch arms none, since nothing about it is
+	// due again on a clock, and a batch sent again a back-off later is one that armed one.
+	var armed atomic.Int64
+	outbox.afterRetryArmed = func(time.Duration) { armed.Add(1) }
+	stop := started(t, outbox)
 	defer stop()
 
-	waitFor(t, 5*time.Second, "the first event's three destinations tried", func() bool { return len(publisher.attempted()) >= 3 })
+	waitFor(t, eventWait, "the first event's three destinations tried", func() bool { return len(publisher.attempted()) >= 3 })
 	// The hold's first scan and the LISTEN connection's catch-up each wake one scan; after them
-	// nothing does.
-	time.Sleep(500 * time.Millisecond)
-	settled := len(publisher.attempted())
-	time.Sleep(time.Second)
-	topics := publisher.attempted()
-	if len(topics) != settled {
-		t.Fatalf("sent %d more envelopes with no wake while NATS was unreachable", len(topics)-settled)
+	// nothing does, and this is the reading of that: the outbox parked with nothing pending and
+	// nothing scanned since it parked (restingOutbox), and no retry timer armed on the way there.
+	// A batch sent again while NATS stays unreachable is a wake the outbox gave itself, either at
+	// once, and an outbox that wakes itself never comes to rest at all, or on a retry timer, which
+	// parks the outbox like any rest and is read here as the timer armed. Either defect fails
+	// here rather than on a count read a second after another - two instants a parallel batch's
+	// load can push an honest scan between, which is how this row reached a CI red (run
+	// 42779139068, dispatch://INFRA-1075).
+	atRest("the outbox resting with every send the wakes it was given made")
+	if timers := armed.Load(); timers != 0 {
+		t.Fatalf("the outbox armed %d retry timers while NATS was unreachable, want none: a released batch is sent again on a wake, not on a back-off", timers)
 	}
+	topics := publisher.attempted()
 	firstHeads := []string{"notifications.dispatch.issue.T-1.comment.created", roleTopic, "notifications.agent.writer"}
 	for index, topic := range topics {
 		if topic != firstHeads[index%len(firstHeads)] {
@@ -118,6 +131,7 @@ func TestAnUnreachableNATSReleasesTheBatchAndSendsNothingAfterIt(t *testing.T) {
 // attempt is counted, and once the store records again the event is published with every
 // destination it reached.
 func TestABatchWhoseRecordWriteFailsIsLeftAsItWasRead(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	event := seedThreeDestinationEvent(t, database, broker)
@@ -133,7 +147,7 @@ func TestABatchWhoseRecordWriteFailsIsLeftAsItWasRead(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, 5*time.Second, "the event's three destinations sent", func() bool { return len(publisher.attempted()) >= 3 })
+	waitFor(t, eventWait, "the event's three destinations sent", func() bool { return len(publisher.attempted()) >= 3 })
 	destinations, attempts := publishedDestinations(t, database, event.ID)
 	if len(destinations) != 0 || attempts != 0 || publishedAt(t, database, event.ID) != nil {
 		t.Fatalf("published_destinations = %v, attempt_count = %d, published = %v, though the record write failed",
@@ -152,7 +166,7 @@ func TestABatchWhoseRecordWriteFailsIsLeftAsItWasRead(t *testing.T) {
 		t.Fatalf("let the record write succeed: %v", err)
 	}
 	broker.Publish(model.Event{})
-	waitFor(t, 5*time.Second, "the event published once the store records again", func() bool {
+	waitFor(t, eventWait, "the event published once the store records again", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	if destinations, attempts := publishedDestinations(t, database, event.ID); len(destinations) != 3 || attempts != 0 {
@@ -183,6 +197,7 @@ func denial(subject string) error {
 // An attempt that goes on past a denial and then ends at a connection failure returns both: the
 // denial is not lost behind the error that ended the attempt.
 func TestAnAttemptEndedAfterADenialReturnsBoth(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	event := seedThreeDestinationEvent(t, database, broker)
@@ -204,6 +219,7 @@ func TestAnAttemptEndedAfterADenialReturnsBoth(t *testing.T) {
 // ask's thread reaches the ask's followers, and a claim reaches the previous claimant, each besides
 // the issue's route.
 func TestEveryDenialNamesItsDestination(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	reply := seedThreeDestinationEvent(t, database, broker)

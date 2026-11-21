@@ -137,6 +137,7 @@ func TestAWebSocketUpgradeIsSwappedAndThenJoined(t *testing.T) {
 // net/http's HTTP/2 server answers 400 before any handler runs. The named revert: the refusal
 // taken out of serveBound, which carries both to the service.
 func TestNoProtocolSwitchIsCarriedOnADecryptedConnection(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, request, reason string
 	}{
@@ -478,6 +479,7 @@ func TestAJoinedConnectionIsClosedWhenTheCurrentPolicyRefusesItsGrant(t *testing
 // this, the watcher read the name alone, and the join ran on with the gone installation's token.
 // The named revert: proxy-carry-ignores-slot.
 func TestAJoinedConnectionIsClosedWhenTheBrokerNoLongerReleasesItsSlot(t *testing.T) {
+	t.Parallel()
 	const carried = "a frame while the broker releases this slot"
 	r := newRig(t, Options{Watch: watchFast})
 	r.useGitHubAppGrant()

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
@@ -45,6 +44,7 @@ import (
 // store (testnats.Server.CutStream), and on a one-copy stream, which has no other copy for the
 // server to recover the cut block from.
 func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSequence(t *testing.T) {
+	t.Parallel()
 	srv, url := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
 	if err != nil {
@@ -67,7 +67,7 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 	for range 3 {
 		taken = append(taken, rig.store(t, agent))
 	}
-	pullCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	pullCtx, cancel := context.WithTimeout(ctx, listenerWait)
 	defer cancel()
 	pull, err := rig.consumers.Pull(pullCtx, sessionID)
 	if err != nil {
@@ -76,7 +76,7 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 	for _, seq := range taken {
 		msg, err := pull.Next(pullCtx)
 		if err != nil || msg.StreamSeq != seq {
-			t.Fatalf("the session's consumer handed over seq %d, %v; want the message stored at %d on its agent subject within 5s", msg.StreamSeq, err, seq)
+			t.Fatalf("the session's consumer handed over seq %d, %v; want the message stored at %d on its agent subject within %s", msg.StreamSeq, err, seq, listenerWait)
 		}
 		if err := msg.Ack(); err != nil {
 			t.Fatalf("ack %d: %v", seq, err)
@@ -122,7 +122,7 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 		if _, err := rig.consumers.StreamID(ctx); err != nil {
 			return false
 		}
-		readCtx, cancelRead := context.WithTimeout(ctx, time.Second)
+		readCtx, cancelRead := context.WithTimeout(ctx, listenerWait)
 		defer cancelRead()
 		_, _, err := rig.deps.registry.RefreshAt(readCtx, sessionID)
 		return err == nil || errors.Is(err, natsgo.ErrKeyNotFound)
@@ -157,7 +157,7 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 		"stream_id":       streamID,
 		"consumer_start":  first,
 	})
-	pullCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
+	pullCtx, cancel = context.WithTimeout(ctx, listenerWait)
 	defer cancel()
 	again, err := rig.consumers.Pull(pullCtx, sessionID)
 	if err != nil {
@@ -165,7 +165,7 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 	}
 	defer again.Stop()
 	if msg, err := again.Next(pullCtx); err != nil || msg.StreamSeq != held {
-		t.Fatalf("the session's consumer handed over seq %d, %v; want the message stored at %d after the loss within 5s: a consumer created past the stream's end, or at the sequence after its last, skips it", msg.StreamSeq, err, held)
+		t.Fatalf("the session's consumer handed over seq %d, %v; want the message stored at %d after the loss within %s: a consumer created past the stream's end, or at the sequence after its last, skips it", msg.StreamSeq, err, held, listenerWait)
 	}
 }
 

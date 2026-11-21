@@ -41,6 +41,9 @@ func unsetenv(t *testing.T, name string) {
 	}
 }
 
+// Serial: it sets process-wide variables - HOME (writeClientConfig), AGENT_SECRETS_URL and
+// AGENT_SECRETS_SIGNIN_CLIENT_ID, which it unsets - and clientConfig, the package-level settings
+// loadClientConfig fills; t.Setenv panics under t.Parallel.
 func TestTheConfigFileFillsAnUnsetVariable(t *testing.T) {
 	path := writeClientConfig(t, "# the secrets broker\nAGENT_SECRETS_URL=https://secrets.example/\n\nAGENT_SECRETS_SIGNIN_CLIENT_ID = device-client\n")
 	unsetenv(t, "AGENT_SECRETS_URL")
@@ -59,6 +62,9 @@ func TestTheConfigFileFillsAnUnsetVariable(t *testing.T) {
 	}
 }
 
+// Serial: it sets process-wide variables - HOME (writeClientConfig) and AGENT_SECRETS_URL - and
+// clientConfig, the package-level settings loadClientConfig fills; t.Setenv panics under
+// t.Parallel.
 func TestAVariableWinsOverTheConfigFile(t *testing.T) {
 	writeClientConfig(t, "AGENT_SECRETS_URL=https://from-the-file.example\n")
 	t.Setenv("AGENT_SECRETS_URL", "https://from-the-environment.example")
@@ -70,6 +76,9 @@ func TestAVariableWinsOverTheConfigFile(t *testing.T) {
 	}
 }
 
+// Serial: it sets process-wide variables - HOME (writeClientConfig) and AGENT_SECRETS_URL - and
+// clientConfig, the package-level settings loadClientConfig fills; t.Setenv panics under
+// t.Parallel.
 func TestAnEmptyVariableReadsTheConfigFile(t *testing.T) {
 	writeClientConfig(t, "AGENT_SECRETS_URL=https://from-the-file.example\n")
 	t.Setenv("AGENT_SECRETS_URL", "")
@@ -81,6 +90,9 @@ func TestAnEmptyVariableReadsTheConfigFile(t *testing.T) {
 	}
 }
 
+// Serial: each row sets a process-wide variable, HOME (writeClientConfig), and clientConfig, the
+// package-level settings the identity form's loadClientConfig fills; t.Setenv panics under
+// t.Parallel.
 func TestAnUnknownKeyInTheConfigFileIsAUsageError(t *testing.T) {
 	for name, line := range map[string]string{
 		"a key the file does not take": "AWS_PROFILE=operator",
@@ -104,6 +116,9 @@ func TestAnUnknownKeyInTheConfigFileIsAUsageError(t *testing.T) {
 // TestAConfigFileOthersCanWriteIsRefused: the file names the broker this machine proves its
 // identity to and the identity it proves, so a file its group or others can write is a usage error
 // naming the file and the fix, and nothing in it is read. A file others can only read is taken.
+// Serial: it sets process-wide variables - HOME (writeClientConfig) and AGENT_SECRETS_URL, which
+// it unsets - and clientConfig, the package-level settings loadClientConfig fills; t.Setenv
+// panics under t.Parallel.
 func TestAConfigFileOthersCanWriteIsRefused(t *testing.T) {
 	for name, mode := range map[string]os.FileMode{"its group can write it": 0o620, "anyone can write it": 0o602} {
 		t.Run(name, func(t *testing.T) {
@@ -141,6 +156,9 @@ func TestAConfigFileOthersCanWriteIsRefused(t *testing.T) {
 // TestAConfigFileAnotherUserOwnsIsRefused: a file this user does not own can be changed by its
 // owner whatever its mode, so it is a usage error naming the file and its owner, and nothing in it
 // is read. A file root owns is taken, as OpenSSH takes one: root can change any file anyway.
+// Serial: it sets process-wide variables - HOME (writeClientConfig) and AGENT_SECRETS_URL, which
+// it unsets - and the package-level clientConfig, which loadClientConfig fills, and fileOwner,
+// the seam it reads a file's owner through, which it assigns; t.Setenv panics under t.Parallel.
 func TestAConfigFileAnotherUserOwnsIsRefused(t *testing.T) {
 	owner := func(t *testing.T, uid int) {
 		t.Helper()
@@ -173,6 +191,9 @@ func TestAConfigFileAnotherUserOwnsIsRefused(t *testing.T) {
 	}
 }
 
+// Serial: it sets process-wide variables - HOME, AGENT_SECRETS_URL, XDG_RUNTIME_DIR,
+// AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK - and clientConfig, the package-level
+// settings loadClientConfig fills; t.Setenv panics under t.Parallel.
 func TestNoConfigFileIsNoError(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("AGENT_SECRETS_URL", "https://secrets.example")

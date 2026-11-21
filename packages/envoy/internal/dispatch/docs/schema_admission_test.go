@@ -102,11 +102,11 @@ func sendToken(t *testing.T, connection *gws.Conn, artifactID, token string) {
 	}
 }
 
-// readUntil reads the room's messages, for up to 5 s, until it sends one of kind (Hocuspocus's
+// readUntil reads the room's messages, for up to roomWait, until it sends one of kind (Hocuspocus's
 // message type), and returns the rest of that message.
 func readUntil(t *testing.T, connection *gws.Conn, kind uint64) *encoding.Decoder {
 	t.Helper()
-	_ = connection.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = connection.SetReadDeadline(time.Now().Add(roomWait(t)))
 	defer func() { _ = connection.SetReadDeadline(time.Time{}) }()
 	for {
 		_, message, err := connection.ReadMessage()
@@ -408,10 +408,10 @@ func TestAdmissionRecheckClosesANewerPageOnceNoLiveProcessCreatesWhatItCreates(t
 }
 
 // requireRevokedClose reads connection until it ends, and fails the test unless the server closed
-// it with the admission-revoked code within five seconds.
+// it with the admission-revoked code within roomWait.
 func requireRevokedClose(t *testing.T, connection *gws.Conn, what string) {
 	t.Helper()
-	_ = connection.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = connection.SetReadDeadline(time.Now().Add(roomWait(t)))
 	for {
 		_, _, err := connection.ReadMessage()
 		if err == nil {
@@ -733,7 +733,7 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	// revoked it admits it no other way. What it syncs must be the whole document.
 	address := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/doc/" + artifactID + "?" + slowQuery.Encode()
 	reconnected := docstest.Dial(t, address, http.Header{"X-Dispatch-User": []string{"alice"}}, artifactID, crdt.New())
-	if err := reconnected.WaitForText(peerMarkdown, want, 10*time.Second); err != nil {
+	if err := reconnected.WaitForText(peerMarkdown, want, roomWait(t)); err != nil {
 		t.Fatal(err)
 	}
 }

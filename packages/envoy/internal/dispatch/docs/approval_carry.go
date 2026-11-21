@@ -294,7 +294,7 @@ func CarryRestoredApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 	}
 	if tree == nil {
 		if tree, err = pmdoc.ParseRendering(markdown); err != nil {
-			return skipUnreadableVersion(artifactID, number, err)
+			return skipUnreadableVersion(slog.Default(), artifactID, number, err)
 		}
 	}
 	if _, known, err := versionBlocks(ctx, tx, artifactID, tree); err != nil || !known {
@@ -575,7 +575,7 @@ func (s *Service) carriedReview(ctx context.Context, tx pgx.Tx, artifactID strin
 		}
 		cut, err := cutOnce()
 		if err != nil {
-			return nil, skipUnreadableVersion(artifactID, number, err)
+			return nil, skipUnreadableVersion(s.log(), artifactID, number, err)
 		}
 		if !carryVerdict(carryInput{login: login, approvedAt: review.CreatedAt, blocks: blocks, approved: heldAsItsRow(approved.nodes, blocks), approvedCut: approved.cut, cut: cut}) {
 			continue
@@ -626,7 +626,7 @@ func (s *Service) readApprovedVersion(ctx context.Context, tx pgx.Tx, artifactID
 	}
 	cut, err := renderWithoutAskBlocks(tree)
 	if err != nil {
-		return approvedVersion{}, false, skipUnreadableVersion(artifactID, number, err)
+		return approvedVersion{}, false, skipUnreadableVersion(s.log(), artifactID, number, err)
 	}
 	return approvedVersion{nodes: nodes, cut: cut}, true, nil
 }
@@ -639,14 +639,14 @@ func (s *Service) readApprovedVersion(ctx context.Context, tx pgx.Tx, artifactID
 // build that reads the element (skipUnreadableSettlement). Any other schema refusal is a version
 // an earlier release stored, which is not this write's to fail for: the approval is not carried
 // and the refusal is logged. Any other error is the write's.
-func skipUnreadableVersion(artifactID string, number int, err error) error {
+func skipUnreadableVersion(log *slog.Logger, artifactID string, number int, err error) error {
 	if errors.Is(err, pmdoc.ErrUnknownElement) {
 		return newerContent(fmt.Errorf("version %d: %w", number, err))
 	}
 	if !errors.Is(err, pmdoc.ErrSchema) {
 		return err
 	}
-	slog.Warn("dispatch: skip carrying an approval over a document version outside the Proof schema",
+	log.Warn("dispatch: skip carrying an approval over a document version outside the Proof schema",
 		"room", artifactID, "version", number, "error", err)
 	return nil
 }
@@ -840,7 +840,7 @@ func (s *Service) storedVersionTree(ctx context.Context, tx pgx.Tx, artifactID s
 	}
 	tree, err = pmdoc.ParseRendering(markdown)
 	if err != nil {
-		return nil, false, skipUnreadableVersion(artifactID, number, err)
+		return nil, false, skipUnreadableVersion(s.log(), artifactID, number, err)
 	}
 	return tree, true, nil
 }

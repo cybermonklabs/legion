@@ -40,6 +40,7 @@ func broadcastCount(t *testing.T, handler http.Handler) int {
 // with the first answer's exclusions, so every recipient is handed the message once rather than
 // twice.
 func TestBroadcastRepeatWithItsKeyAnswersTheOriginalAndDeliversOnce(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, broadcastSessions)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	send := func() *httptest.ResponseRecorder {
@@ -81,9 +82,10 @@ func TestBroadcastRepeatWithItsKeyAnswersTheOriginalAndDeliversOnce(t *testing.T
 	if listed := broadcastCount(t, handler); listed != 1 {
 		t.Fatalf("the broadcast list holds %d broadcasts, want the one send", listed)
 	}
-	awaitBroadcastDeliveries(t, handler, original.ID)
+	delivered := awaitBroadcastDeliveries(t, handler, original.ID)
 	if got := sends.targets(); !equalStrings(got, []string{"planner", "tester"}) {
-		t.Fatalf("listener sends = %v, want one frame per recipient", got)
+		t.Fatalf("listener sends = %v, want one frame per recipient; the recipients' attempts: %s",
+			got, recipientAttempts(delivered))
 	}
 	if messages := countMessages(t, database); messages != 2 {
 		t.Fatalf("the database holds %d messages, want one per recipient", messages)
@@ -93,6 +95,7 @@ func TestBroadcastRepeatWithItsKeyAnswersTheOriginalAndDeliversOnce(t *testing.T
 // A retry of a send that landed is answered from the database before the registry is read, so
 // it is answered even while the listener is down, rather than refused as unreachable.
 func TestBroadcastRepeatIsAnsweredWhileTheListenerIsDown(t *testing.T) {
+	t.Parallel()
 	var down atomic.Bool
 	listener, _ := newBroadcastListener(t, broadcastSessions, func(w http.ResponseWriter, _ *http.Request) bool {
 		if down.Load() {
@@ -135,6 +138,7 @@ func TestBroadcastRepeatIsAnsweredWhileTheListenerIsDown(t *testing.T) {
 // retry is told it is in flight and writes nothing; once the first has answered, a retry is its
 // answer. One broadcast is written and each recipient is handed one frame.
 func TestConcurrentBroadcastsWithOneKeyMakeOneBroadcast(t *testing.T) {
+	t.Parallel()
 	reading, release := make(chan struct{}), make(chan struct{})
 	releaseOnce := sync.OnceFunc(func() { close(release) })
 	var reads atomic.Int32
@@ -161,7 +165,7 @@ func TestConcurrentBroadcastsWithOneKeyMakeOneBroadcast(t *testing.T) {
 	go func() { answered <- send() }()
 	select {
 	case <-reading:
-	case <-time.After(10 * time.Second):
+	case <-time.After(concurrentWait):
 		t.Fatal("the first send never read the registry")
 	}
 	retry := send()
@@ -196,10 +200,13 @@ func TestConcurrentBroadcastsWithOneKeyMakeOneBroadcast(t *testing.T) {
 // send does (sendHeldMessageOn). It hands no recipient a second frame: not the one already
 // delivered, and not the one a live sender is delivering right now.
 func TestBroadcastRepeatResumesEveryOwedRecipientAndDeliversEachOnce(t *testing.T) {
+	t.Parallel()
 	const body = "Status before the deploy?"
 	requested := []string{"planner", "tester", "reviewer", "archivist"}
 	listener, sends := newBroadcastListener(t, broadcastSessionsJSON(t, requested))
-	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+	// Each call to the listener gets concurrentWait, the wait below for the recipients to settle,
+	// in place of the client's 5 s: a send cut short settles its attempt failed rather than sent.
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: concurrentWait})
 	direct := directServer(deps)
 	actor := model.Actor{Kind: "user", ID: "alice"}
 	ctx := store.WithTransactionTracking(context.Background())
@@ -247,8 +254,10 @@ func TestBroadcastRepeatResumesEveryOwedRecipientAndDeliversEachOnce(t *testing.
 	}
 	// The tester's sender claimed its attempt and died inside the send: the claim has lapsed.
 	claimed("tester", "5 minutes")
-	// The archivist's sender is alive and inside its claim's lease, so that attempt is its own.
-	claimed("archivist", "0 seconds")
+	// The archivist's sender is alive and inside its claim's lease, so that attempt is its own. The
+	// claim is stamped a day ahead, past any run of the test binary, so the repeat and the resumes
+	// behind it read it inside its lease however long the steps between take.
+	claimed("archivist", "-1 day")
 	// The reviewer's attempt was never claimed at all: the write opened it and nothing took it.
 
 	repeat := postBroadcastKeyed(t, handler, input, "alice", "press-1")
@@ -295,16 +304,27 @@ func TestBroadcastRepeatResumesEveryOwedRecipientAndDeliversEachOnce(t *testing.
 	}
 	want := []string{"archivist 1 pending", "planner 1 sent", "reviewer 1 sent", "tester 1 sent"}
 	var settled []string
-	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(concurrentWait); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
 		if settled = settledStates(); equalStrings(settled, want) {
 			break
 		}
 	}
+	// storedAttempts is every recipient's attempts as their rows hold them, the error each settled
+	// with included: a resume whose send ran out reaches the listener as nothing.
+	storedAttempts := func() string {
+		t.Helper()
+		described := make([]string, 0, len(requested))
+		for _, sessionID := range requested {
+			described = append(described, sessionID+": "+describeAttempts(messageAttempts(t, database, recipient(sessionID).ID)))
+		}
+		return strings.Join(described, "; ")
+	}
 	if !equalStrings(settled, want) {
-		t.Fatalf("the recipients settled as %v, want %v", settled, want)
+		t.Fatalf("the recipients settled as %v, want %v; their attempts: %s", settled, want, storedAttempts())
 	}
 	if got := sends.targets(); !equalStrings(got, []string{"planner", "reviewer", "tester"}) {
-		t.Fatalf("listener sends = %v, want the planner's first frame and one each for the two owed", got)
+		t.Fatalf("listener sends = %v, want the planner's first frame and one each for the two owed; the recipients' attempts: %s",
+			got, storedAttempts())
 	}
 	if messages := countMessages(t, database); messages != len(requested) {
 		t.Fatalf("the database holds %d messages, want one per recipient", messages)

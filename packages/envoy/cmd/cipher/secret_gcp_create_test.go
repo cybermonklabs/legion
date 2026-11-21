@@ -70,6 +70,10 @@ func count(calls []string, method string) int {
 // refusing secretmanager.secrets.create, as it refuses a dev box's own identity the broker's
 // namespace - the create ends before it reads the value, piped or at the prompt, exiting 1 with the
 // store's refusal and the sign-in it refused, having written nothing and asked for no reread.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpMetadataToken, gcpMetadataPrincipal, gcpUserinfo, gcpClientDial,
+// secretStdin, stdinTerminal, readHidden).
 func TestGCPSecretCreateTheStoreRefusesAsksForNoValue(t *testing.T) {
 	for _, terminal := range []bool{false, true} {
 		t.Run(fmt.Sprintf("terminal=%t", terminal), func(t *testing.T) {
@@ -106,6 +110,9 @@ func TestGCPSecretCreateTheStoreRefusesAsksForNoValue(t *testing.T) {
 // lists versions in case another writer added one, and deletes the empty secret it made. It
 // exits as that failure does, says the empty secret it made is deleted and nothing stays, and
 // asks the broker to reread the name once.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretCreateThatStoresNoValueLeavesNoSecret(t *testing.T) {
 	for _, row := range []struct {
 		name   string
@@ -165,6 +172,9 @@ func requireNothingLeft(t *testing.T, fake *fakeSecretManager, broker *secretBro
 // asks the broker to reread the name; with none it says the store showed no version when listed,
 // that a late add may still land, and asks the broker to reread too; where the list is refused it
 // says which state is unknown. Each names the command that settles it and exits 1.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretCreateWhoseStoreAnswerIsAmbiguousNeverDeletesTheValue(t *testing.T) {
 	for _, row := range []struct {
 		name          string
@@ -225,6 +235,9 @@ func TestGCPSecretCreateWhoseStoreAnswerIsAmbiguousNeverDeletesTheValue(t *testi
 // the empty secret too, the create says what it left - an empty secret of that whole name stays in
 // the store - and the command that clears it, and exits 1 even where the value's own refusal is a
 // usage error, since the store now holds something it did not hold before.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretCreateWhoseEmptySecretCannotBeDeletedNamesIt(t *testing.T) {
 	for _, row := range []struct {
 		name, stdin string
@@ -278,6 +291,9 @@ func TestGCPSecretCreateWhoseEmptySecretCannotBeDeletedNamesIt(t *testing.T) {
 // the broker to reread the name, which the broker then serves. The store refuses every
 // UpdateSecret, as IAM refuses a teammate without secretmanager.secrets.update, and the create
 // still succeeds, making no such call: a create needs that permission nowhere.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretCreateMakesTheSecretBeforeItReadsTheValue(t *testing.T) {
 	fake := newFakeSecretManager()
 	fake.refuseMethods = map[string]codes.Code{"UpdateSecret": codes.PermissionDenied}
@@ -341,6 +357,9 @@ func TestGCPSecretCreateMakesTheSecretBeforeItReadsTheValue(t *testing.T) {
 // commands that tell and clear it, and a delete the store refuses names the gcloud command. Each
 // exits 1, never reads the value, and asks the broker to reread only a name whose secret it
 // deleted or left holding a version.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretCreateWhoseCreateAnswerIsAmbiguousSettlesWhatItMade(t *testing.T) {
 	otherCreate := map[string]string{createLabel: "0000000000000000ffffffffffffffff"}
 	describe := "`gcloud secrets describe agent-secrets-new-test --project " + testGCPProject + "`"
@@ -447,6 +466,11 @@ var createLabelValue = regexp.MustCompile(`^[0-9a-f]{32}$`)
 // runs it as that signal would: it deletes the empty secret the create made, once, so the form ends
 // having stored nothing; where the store refuses that delete too, it says so on stderr, naming the
 // secret that stays and the command that clears it. Once the create returns, nothing is left set.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, the package-level seams the GCP backend is
+// reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin), and
+// onSignalDeath, the package-level cleanup the create sets while it reads the value, which it
+// reads.
 func TestGCPSecretCreateEndedBySignalWhileReadingDeletesTheEmptySecret(t *testing.T) {
 	for _, refuseDelete := range []bool{false, true} {
 		t.Run(fmt.Sprintf("delete refused=%t", refuseDelete), func(t *testing.T) {
@@ -489,6 +513,9 @@ func TestGCPSecretCreateEndedBySignalWhileReadingDeletesTheEmptySecret(t *testin
 
 // Installing the watcher before begin must not let an interrupt delete a secret this create
 // never made, even if the requested name already exists.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial).
 func TestCreateInterruptedBeforeBeginNeverDeletesAnExistingSecret(t *testing.T) {
 	fake := newFakeSecretManager()
 	fake.secrets[newTestID] = &fakeSecret{secret: &secretmanagerpb.Secret{Name: newTestID}}
@@ -512,6 +539,9 @@ func TestCreateInterruptedBeforeBeginNeverDeletesAnExistingSecret(t *testing.T) 
 
 // Refusing this create's input must not delete a value another writer added while the prompt
 // was open, or a replacement secret that now holds the name.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretCreateDiscardPreservesConcurrentWriters(t *testing.T) {
 	for _, replace := range []bool{false, true} {
 		t.Run(fmt.Sprintf("replace=%t", replace), func(t *testing.T) {
@@ -550,6 +580,9 @@ func TestGCPSecretCreateDiscardPreservesConcurrentWriters(t *testing.T) {
 
 // Recovery from a lost initial answer can delete a container the broker saw while it waited.
 // That deletion must invalidate the broker just like a discard after the value prompt does.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretCreateLostAnswerCleanupRereadsBroker(t *testing.T) {
 	fake := newFakeSecretManager()
 	fake.answerAfter = map[string]codes.Code{"CreateSecret": codes.Unavailable}
@@ -564,6 +597,9 @@ func TestGCPSecretCreateLostAnswerCleanupRereadsBroker(t *testing.T) {
 	requireNothingLeft(t, fake, broker, "NEW_TEST")
 }
 
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretCreateDiscardRejectsReplacementDuringDelete(t *testing.T) {
 	fake := newFakeSecretManager()
 	fake.beforeCall = func(method string) {
@@ -598,6 +634,10 @@ func (blockedStdin) Read([]byte) (int, error) { select {} }
 // pending, and here shortened: a value that has not come by then ends the read, the empty secret
 // is discarded through the common cleanup, the broker asked to reread the name, and the create
 // exits 1 naming the window and the command to run again, with nothing stored.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, the package-level seams the GCP backend is
+// reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin), and
+// valueReadWindow, the package-level window a create reads its value for, which it shortens.
 func TestGCPSecretCreateValueReadEndsAtItsWindow(t *testing.T) {
 	if valueReadWindow != policy.PendingValueWindow || policy.PendingValueWindow != 10*time.Minute {
 		t.Fatalf("the create reads its value for %s and the broker holds it pending for %s; want both ten minutes", valueReadWindow, policy.PendingValueWindow)
@@ -641,6 +681,9 @@ func TestGCPSecretCreateValueReadEndsAtItsWindow(t *testing.T) {
 // withheld, deletes the empty secret through the common cleanup, asks the broker to reread the
 // name, and exits 1 naming the permission and the sign-in, never reading the value. Where IAM
 // cannot be asked, the create goes on to the prompt, and the add itself is the check.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretCreateWithoutTheRightToAddAValueAsksForNone(t *testing.T) {
 	t.Run("withheld", func(t *testing.T) {
 		fake := newFakeSecretManager()
@@ -680,6 +723,9 @@ func TestGCPSecretCreateWithoutTheRightToAddAValueAsksForNone(t *testing.T) {
 // TestGCPSecretCreatesLabelTheirSecretsDifferently: two creates label the secrets they make with
 // values of their own, so neither can take the other's secret for its own when it settles a lost
 // answer.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretCreatesLabelTheirSecretsDifferently(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
@@ -713,6 +759,11 @@ func TestGCPSecretCreatesLabelTheirSecretsDifferently(t *testing.T) {
 // names, the gcloud configuration CLOUDSDK_ACTIVE_CONFIG_NAME names), and the gcloud line pins the
 // same identity for gcloud (the key file as CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE, the login as
 // CLOUDSDK_CORE_ACCOUNT, the configuration as CLOUDSDK_ACTIVE_CONFIG_NAME) and names it.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, PATH (useGcloud's stub),
+// GOOGLE_APPLICATION_CREDENTIALS, CLOUDSDK_CORE_ACCOUNT and CLOUDSDK_ACTIVE_CONFIG_NAME, which it
+// sets itself, and the other gcloud variables, and the package-level seams the GCP backend is
+// reached through (gcpCredentialsFile in its key-file row, gcpMetadataToken and
+// gcpMetadataPrincipal in its named gcloud login row, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretCreateRecoveryCommandsSignInAsTheCreateDid(t *testing.T) {
 	for _, mode := range []struct {
 		name   string
@@ -789,6 +840,9 @@ func TestGCPSecretCreateRecoveryCommandsSignInAsTheCreateDid(t *testing.T) {
 // before the form prints that failure, so a signal that comes first, whose cleanup the form then
 // never outruns, is the one to print it: the failure, with what it left, prints once, by the
 // signal's cleanup.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial).
 func TestCreateSignalAfterAFailedBeginPrintsItsFailure(t *testing.T) {
 	fake := newFakeSecretManager()
 	fake.answerAfter = map[string]codes.Code{"CreateSecret": codes.Unavailable}
@@ -833,6 +887,11 @@ func (w *signalAtFirstWrite) Write(p []byte) (int, error) {
 // TestCreateFailedBeginPrintsItsFailureOnce: the form prints a failed begin only once the stretch
 // is over, so a signal that comes as it prints finds no cleanup set and prints nothing more: one
 // line, whether the begin left nothing or left the empty secret it could not delete.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, the package-level seams the GCP backend is
+// reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin), and
+// onSignalDeath, the package-level cleanup the create sets, which its stderr runs at the form's
+// first write.
 func TestCreateFailedBeginPrintsItsFailureOnce(t *testing.T) {
 	for _, row := range []struct {
 		name   string
@@ -868,6 +927,9 @@ func TestCreateFailedBeginPrintsItsFailureOnce(t *testing.T) {
 // is asked to reread the name; one whose versions cannot be listed again names the delete only for
 // `versions: none`; a read back that fails says the store may still hold it, with the commands that
 // tell and clear it, and never that it stays.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestGCPSecretCreateWhoseDeleteAnswerIsLostReadsTheSecretBack(t *testing.T) {
 	const (
 		readBackFails   = "the read back refused"
@@ -959,6 +1021,10 @@ func TestGCPSecretCreateWhoseDeleteAnswerIsLostReadsTheSecretBack(t *testing.T) 
 // (valueDeadlineNotice): Enter, and the interrupt key, by its name, where it ends the process; with
 // no such key, ending the process; inside an open paste, where Ctrl-C is pasted text, finishing the
 // paste first. The prompt is stubbed to give that notice, then end as the entry's Enter does.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, CLOUDSDK_AUTH_ACCESS_TOKEN and the
+// other gcloud and application-credential variables, and the package-level seams the GCP backend
+// is reached through (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin,
+// stdinTerminal, readHidden).
 func TestGCPSecretCreateDeadlineNoticeSaysTheEmptySecretStaysUntilEnter(t *testing.T) {
 	for _, row := range []struct {
 		name      string

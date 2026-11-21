@@ -8,7 +8,9 @@
 #   1. a skipped test planted in ./internal/cipher/api/, ./cmd/cipherd/ and
 #      ./internal/dispatch/api/, one at a time, through a Go overlay (GOFLAGS=-overlay) that adds
 #      zz_planted_skip_test.go, is printed as `SKIP <package> TestPlantedSkip` and fails the
-#      counter; the same run without the overlay passes;
+#      counter; the same run without the overlay passes; and the ./internal/cipher/api/ run with
+#      `--keep streams/kept.json`, from a directory that holds no streams/, leaves there the report
+#      it counted, which --report then counts the same;
 #   2. with its variable unset or empty, the counter prints `database_skips=UNKNOWN` naming it,
 #      runs no test and fails;
 #   3. --report of a report that shows no run prints `database_skips=UNKNOWN` and fails: one
@@ -21,8 +23,9 @@
 #      passes in the other has its failure's lines printed, whichever run failed, and none of the
 #      passing run's own, and one that passed in the first run and was running when the second
 #      timed out is printed as unfinished; a package spelled other than canonically
-#      (`./cmd/./cipherd/`, `.//cmd/cipherd/`, `./cmd/cipherd/../cipherd/`) is still counted; and a
-#      report of the broker's tests whose only skips are the expected ones passes;
+#      (`./cmd/./cipherd/`, `.//cmd/cipherd/`, `./cmd/cipherd/../cipherd/`) is still counted; a
+#      report of the broker's tests whose only skips are the expected ones passes; and --keep
+#      beside --report is refused, keeping nothing;
 #   4. --timeout 1s on ./internal/cipher/api/, beside a planted parallel test that runs three
 #      seconds and one that passes first, ends the package's binary on its timeout: the counter
 #      prints a go_test_exit that is not 0, the timeout's panic (which test2json files under the
@@ -158,6 +161,19 @@ for row in "internal/cipher/api ^(TestPlantedSkip|TestHealthzIsPublic)$" \
     grep -qxF 'go_test_exit=0' "$WORK/$name-none.out" && echo 0 || echo 1)" \
     "control 1: the same run of ./$dir/ without the planted test passes" "$(seen "$name-none")"
 done
+# --keep, given a FILE relative to the caller under a directory that does not exist yet: the
+# planted run of ./internal/cipher/api/ again, from a directory that holds no streams/, leaves at
+# streams/kept.json the report the counter read, so --report of that file prints the run's own
+# lines (less go_test_exit, which only a run of its own has) and fails as the run did.
+kept_run="^(TestPlantedSkip|TestHealthzIsPublic)$"
+mkdir "$WORK/caller"
+(cd "$WORK/caller" && count kept env GOFLAGS="-overlay=$WORK/planted-internal-cipher-api.overlay -run=$kept_run" \
+  bash "$COUNTER" --keep streams/kept.json ./internal/cipher/api/)
+count kept-report bash "$COUNTER" --report "$WORK/caller/streams/kept.json" ./internal/cipher/api/
+judge "$([ "$(code kept)" = 1 ] && grep -qxF 'database_skips=1' "$WORK/kept.out" && [ -s "$WORK/caller/streams/kept.json" ] &&
+  [ "$(code kept-report)" = 1 ] && [ "$(grep -v '^go_test_exit=' "$WORK/kept.out")" = "$(out kept-report)" ] && echo 0 || echo 1)" \
+  "control 1: --keep streams/kept.json, from a directory without streams/, leaves there the report the count was read from" \
+  "run: $(seen kept); --report of the kept file: $(seen kept-report)"
 
 echo "database-skips.test.sh: control 2, the variable unset" >&2
 # Narrowed like every run here, so a counter that ran with the variable unset would take seconds,
@@ -292,6 +308,12 @@ grep -v '"FuzzAirlock"' "$WORK/quiet.json" >"$WORK/stale.json"
 count stale bash "$COUNTER" --report "$WORK/stale.json" "${QUIET[@]}"
 unknown_report stale "EXPECTED_SKIPS names $airlock FuzzAirlock" \
   "an EXPECTED_SKIPS line whose test a report of its package does not hold is UNKNOWN"
+# --keep copies a run of the counter's own, so beside --report, which runs nothing, it is refused
+# as the options that shape a run are, and no file is kept.
+count keep-report bash "$COUNTER" --keep "$WORK/never/kept.json" --report "$WORK/quiet.json" "${QUIET[@]}"
+judge "$([ "$(code keep-report)" = 1 ] && [ -z "$(out keep-report)" ] && said keep-report '--report reads a run made elsewhere' &&
+  [ ! -e "$WORK/never" ] && echo 0 || echo 1)" \
+  "control 3: --keep beside --report is refused, and nothing is kept" "$(seen keep-report)"
 
 echo "database-skips.test.sh: control 4, --timeout" >&2
 plant wait internal/cipher/api "$WAIT_BODY"

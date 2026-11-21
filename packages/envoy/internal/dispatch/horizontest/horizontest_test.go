@@ -1,11 +1,15 @@
 package horizontest
 
 import (
+	"context"
 	"log"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -23,6 +27,8 @@ var processDefault = slog.Default()
 // slog's handler and the log package take the log package's lock in turn - slog.SetDefault points
 // the log package at the new handler, which hands the record to slog's handler, which writes
 // through the log package - and the first record logged deadlocks every goroutine that logs.
+// Serial: it swaps process-wide state - the default logger (slog.SetDefault) and the log
+// package's output - and logs through both, which a test beside it would read as its own.
 func TestListenOverSlogsOwnDefaultHandlerPassesEveryRecordOn(t *testing.T) {
 	written := &logtest.Buffer{}
 	previous, output, flags := slog.Default(), log.Writer(), log.Flags()
@@ -296,10 +302,126 @@ func TestVerdictOfKeysTheWaitOnTheStallWarning(t *testing.T) {
 	}
 }
 
+// TestAWatchReadsTheHolderBehindAWarningThatNamesNone: the horizon keeps warning inside
+// Extension, but each warning's diagnosis failed (warnStall's diagnosis_error arm), so none names
+// a holder the own-hold rule could judge. The watch reads the instance's holder itself, as it does
+// once the horizon falls silent, and fails the wait on a transaction of the test's own database
+// that has stood OwnHoldBound (dispatch://INFRA-636); a foreign holder, or a transaction of that
+// database that began a moment ago, still extends the wait. A watch that read the holder only
+// when the horizon fell silent waited the first row out for as long as the failed diagnoses kept
+// coming. It needs no server and no Postgres: the probe is a fake.
+func TestAWatchReadsTheHolderBehindAWarningThatNamesNone(t *testing.T) {
+	t.Parallel()
+	const ownDatabase = "dispatch_test_ab"
+	diagnosisFailed := FromLine(stallWarningHead(2*OwnHoldBound) + ` diagnosis_error="timeout: context deadline exceeded"`)
+	for _, row := range []struct {
+		name     string
+		database string
+		held     time.Duration
+		ownHold  bool
+	}{
+		{"a transaction of the test's own database that has stood the own-hold bound fails the wait", ownDatabase, 2 * OwnHoldBound, true},
+		{"a transaction of the test's own database that began a moment ago extends it", ownDatabase, 100 * time.Millisecond, false},
+		{"a foreign holder extends it however long it has stood", "postgres", 2 * OwnHoldBound, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			var warnings []Warning
+			probe := &holderProbe{database: row.database, held: row.held}
+			watch := NewWatch(t, func() []Warning { return warnings }, ownDatabase, probe)
+			warnings = append(warnings, diagnosisFailed, diagnosisFailed)
+			failure := watch.Failure("the event feed's events_start")
+			if probe.reads != 1 {
+				t.Errorf("the watch read the holder %d times behind a warning that named none, want once", probe.reads)
+			}
+			switch {
+			case !row.ownHold && failure != "":
+				t.Errorf("Failure = %q, want the wait to go on: the holder read is no hold of the test's own database that has stood %v", failure, OwnHoldBound)
+			case row.ownHold && !strings.Contains(failure, "a client of the test's own database "+ownDatabase):
+				t.Errorf("Failure = %q after warnings whose diagnosis failed, with the instance's holder a transaction of %s that has stood %v; want the own-hold failure", failure, ownDatabase, row.held)
+			case row.ownHold && !strings.Contains(failure, "diagnosis_error="):
+				t.Errorf("Failure = %q, want it to name the horizon's newest warning, whose diagnosis failed, beside the holder the watch read", failure)
+			}
+		})
+	}
+}
+
+// holderProbe is a Querier whose every read of the holder (readHolder) finds a transaction of
+// database that began held before the read, and counts the reads.
+type holderProbe struct {
+	database string
+	held     time.Duration
+	reads    int
+}
+
+func (p *holderProbe) QueryRow(context.Context, string, ...any) pgx.Row {
+	p.reads++
+	return holderRow{database: p.database, held: p.held}
+}
+
+// holderRow is the row holderProbe answers, in the columns readHolder scans: kind, pid, started,
+// state, application_name, database, query and the database's clock.
+type holderRow struct {
+	database string
+	held     time.Duration
+}
+
+func (r holderRow) Scan(dest ...any) error {
+	at := time.Now().Round(0) // a time read from Postgres carries no monotonic reading
+	started := at.Add(-r.held)
+	*dest[0].(*string) = "backend"
+	*dest[1].(*int32) = 4242
+	*dest[2].(**time.Time) = &started
+	*dest[3].(*string) = "idle in transaction"
+	*dest[4].(*string) = ""
+	*dest[5].(*string) = r.database
+	*dest[6].(*string) = "insert into events (type) values ($1)"
+	*dest[7].(*time.Time) = at
+	return nil
+}
+
+// TestAWatchReadsTheHolderOnceForEachWarningThatNamesNone: a read of the holder behind a warning
+// that names none, which found none open, is not made again until the horizon warns again, so a
+// wait that polls every few milliseconds behind failed diagnoses does not query the instance at
+// each poll. It needs no server and no Postgres: the probe is a fake.
+func TestAWatchReadsTheHolderOnceForEachWarningThatNamesNone(t *testing.T) {
+	t.Parallel()
+	diagnosisFailed := FromLine(stallWarningHead(2*OwnHoldBound) + ` diagnosis_error="timeout: context deadline exceeded"`)
+	var warnings []Warning
+	probe := &noHolderProbe{}
+	watch := NewWatch(t, func() []Warning { return warnings }, "dispatch_test_ab", probe)
+	warnings = append(warnings, diagnosisFailed)
+	for range 2 {
+		if failure := watch.Failure("the event feed's events_start"); failure != "" {
+			t.Fatalf("Failure = %q, want the wait to go on behind a warning inside Extension", failure)
+		}
+	}
+	if probe.reads != 1 {
+		t.Errorf("the watch read the holder %d times in two polls behind one warning that named none, the first read finding none; want once", probe.reads)
+	}
+	warnings = append(warnings, diagnosisFailed)
+	if failure := watch.Failure("the event feed's events_start"); failure != "" {
+		t.Fatalf("Failure = %q, want the wait to go on behind a warning inside Extension", failure)
+	}
+	if probe.reads != 2 {
+		t.Errorf("the watch read the holder %d times after a second warning that named none, want twice: once behind each", probe.reads)
+	}
+}
+
+// noHolderProbe is a Querier whose every read of the holder (readHolder) finds none open, and
+// counts the reads.
+type noHolderProbe struct{ reads int }
+
+func (p *noHolderProbe) QueryRow(context.Context, string, ...any) pgx.Row {
+	p.reads++
+	return failedRow{pgx.ErrNoRows}
+}
+
 // TestFromLineMatchesTheWholeDatabaseField holds the trap a field read exists to avoid: a prefix
 // match would read a foreign hold as the test's own and fail the wait at once on a database the
 // test does not own.
 func TestFromLineMatchesTheWholeDatabaseField(t *testing.T) {
+	t.Parallel()
 	const ownDatabase = "dispatch_test_ab"
 	for _, row := range []struct {
 		name     string
@@ -329,6 +451,7 @@ func TestFromLineMatchesTheWholeDatabaseField(t *testing.T) {
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			warning := FromLine(row.warning)
 			if got := warning.Named && warning.Database == row.database; got != row.want {
 				t.Errorf("FromLine(%q) names %q: %t, want %t", row.warning, row.database, got, row.want)
@@ -349,6 +472,7 @@ func TestFromLineMatchesTheWholeDatabaseField(t *testing.T) {
 // read a value a client chose, opening with a backquote, as a raw literal running across the
 // fields after it.
 func TestFieldTakesAQuotedValueWhole(t *testing.T) {
+	t.Parallel()
 	const ownDatabase = "dispatch_test_ab"
 	const foreignDatabase = "dispatch_test_cd"
 	// The client of the backquote row: an application_name opening with a backquote, which slog
@@ -404,6 +528,7 @@ func TestFieldTakesAQuotedValueWhole(t *testing.T) {
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			got, found := Field(row.warning, row.key)
 			if got != row.value || found != row.found {
 				t.Errorf("Field(%q, %q) = %q, %t; want %q, %t", row.warning, row.key, got, found, row.value, row.found)
@@ -422,6 +547,7 @@ func TestFieldTakesAQuotedValueWhole(t *testing.T) {
 // TestFromRecordReadsWhatWarnStallLogged reads a record's own attributes, typed as warnStall
 // logged them, and renders it as the deployment's text handler would for a failure to print.
 func TestFromRecordReadsWhatWarnStallLogged(t *testing.T) {
+	t.Parallel()
 	warning := FromRecord(heldRecord(7*time.Second, "dispatch_test_ab"))
 	if warning.PendingFor != 7*time.Second || !warning.Named || warning.Database != "dispatch_test_ab" {
 		t.Errorf("FromRecord = %+v, want pending_for 7s in database dispatch_test_ab", warning)
@@ -441,6 +567,8 @@ func TestFromRecordReadsWhatWarnStallLogged(t *testing.T) {
 // belongs to a test that captures its own records: the stall warning is kept, every record still
 // reaches the test's own handler, and once stopped nothing more is kept and the test's handler is
 // the default again.
+// Serial: it swaps process-wide state - the default logger (logtest.SetDefault) - and logs
+// through it, which a test beside it would read as its own.
 func TestListenKeepsEachStallWarningAndPassesEveryRecordOn(t *testing.T) {
 	captured := &logtest.Recorder{}
 	logtest.SetDefault(t, captured)
@@ -461,5 +589,54 @@ func TestListenKeepsEachStallWarningAndPassesEveryRecordOn(t *testing.T) {
 	}
 	if want := []string{"dispatch: request", events.StallWarning, events.StallWarning}; strings.Join(messages, "|") != strings.Join(want, "|") {
 		t.Fatalf("the test's own handler got %q, want %q", messages, want)
+	}
+}
+
+// TestListensStoppedInTheCrossedOrderEachKeepWhatWasLoggedWhileTheyListened starts two listeners
+// and stops the first one first, as two parallel tests do when the one that began first ends
+// first: A, B, stop A, stop B. Each keeps exactly the stall warnings logged while it listened,
+// every record still reaches the test's own handler once, and after the last stop that handler's
+// logger is the default again. A Listen that swapped slog's default for itself and put back the
+// one it found would fail all three: stopping A would put back the test's own logger while B
+// still listened, so B would miss the third warning, and stopping B would then put back A's
+// handler, which would go on keeping the fourth.
+// Serial: it swaps process-wide state - the default logger (logtest.SetDefault) - and logs
+// through it, which a test beside it would read as its own.
+func TestListensStoppedInTheCrossedOrderEachKeepWhatWasLoggedWhileTheyListened(t *testing.T) {
+	captured := &logtest.Recorder{}
+	logtest.SetDefault(t, captured)
+	original := slog.Default()
+	pendingFor := func(warnings []Warning) []time.Duration {
+		var ages []time.Duration
+		for _, warning := range warnings {
+			ages = append(ages, warning.PendingFor)
+		}
+		return ages
+	}
+
+	warningsA, stopA := Listen(t)
+	slog.Warn(events.StallWarning, "pending_for", 1*time.Second)
+	warningsB, stopB := Listen(t)
+	slog.Warn(events.StallWarning, "pending_for", 2*time.Second)
+	stopA()
+	slog.Warn(events.StallWarning, "pending_for", 3*time.Second)
+	stopB()
+	slog.Warn(events.StallWarning, "pending_for", 4*time.Second)
+
+	if kept, want := pendingFor(warningsA()), []time.Duration{time.Second, 2 * time.Second}; !slices.Equal(kept, want) {
+		t.Errorf("A, which listened through the first two warnings, kept %v, want %v", kept, want)
+	}
+	if kept, want := pendingFor(warningsB()), []time.Duration{2 * time.Second, 3 * time.Second}; !slices.Equal(kept, want) {
+		t.Errorf("B, which listened through the second and third warnings, kept %v, want %v", kept, want)
+	}
+	if slog.Default() != original {
+		t.Errorf("after both listeners stopped the default logger is %T, want the test's own again", slog.Default().Handler())
+	}
+	var messages []string
+	for _, record := range captured.Records() {
+		messages = append(messages, record.Message)
+	}
+	if want := slices.Repeat([]string{events.StallWarning}, 4); !slices.Equal(messages, want) {
+		t.Errorf("the test's own handler got %q, want each of the four warnings once", messages)
 	}
 }

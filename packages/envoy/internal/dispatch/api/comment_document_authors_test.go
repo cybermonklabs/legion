@@ -16,6 +16,7 @@ import (
 // sessions and people, comments on them, and runs the real outbox over each comment's event to read
 // which sessions' own topics it reached.
 func TestAPersonsCommentOnADocumentReachesTheSessionsThatWroteIt(t *testing.T) {
+	t.Parallel()
 	writer := map[string]any{"kind": "session", "id": "session-writer"}
 	editor := map[string]any{"kind": "session", "id": "session-editor"}
 	reviewer := map[string]any{"kind": "session", "id": "session-reviewer"}
@@ -177,7 +178,8 @@ func TestAPersonsCommentOnADocumentReachesTheSessionsThatWroteIt(t *testing.T) {
 		sendsMu.Lock()
 		defer sendsMu.Unlock()
 		if sends["session-writer"] != 1 || sends["session-editor"] != 0 {
-			t.Fatalf("mention sends = %v, want one to session-writer", sends)
+			t.Fatalf("mention sends = %v, want one to session-writer; attempts: %s",
+				sends, describeAttempts(commentAttempts(t, database, id)))
 		}
 	})
 	t.Run("a session a reply mentions hears it once, from the mention", func(t *testing.T) {
@@ -193,7 +195,8 @@ func TestAPersonsCommentOnADocumentReachesTheSessionsThatWroteIt(t *testing.T) {
 		sendsMu.Lock()
 		defer sendsMu.Unlock()
 		if sends["session-editor"] != 1 {
-			t.Fatalf("mention sends = %v, want one to session-editor", sends)
+			t.Fatalf("mention sends = %v, want one to session-editor; attempts: %s",
+				sends, describeAttempts(commentAttempts(t, database, reply)))
 		}
 	})
 }

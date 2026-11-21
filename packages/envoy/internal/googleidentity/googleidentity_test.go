@@ -36,6 +36,8 @@ func stubMetadata(t *testing.T, handler http.HandlerFunc) *[]*http.Request {
 // TestTokenAsksTheMetadataServerForAFullFormatIdentityToken: the reader asks the default service
 // account's identity path for the audience it was given, with format=full and the header Google
 // requires, and answers the token with no whitespace around it.
+// Serial: it sets a process-wide variable, GCE_METADATA_HOST, which the reader takes the metadata
+// server's address from (stubMetadata's t.Setenv); t.Setenv panics under t.Parallel.
 func TestTokenAsksTheMetadataServerForAFullFormatIdentityToken(t *testing.T) {
 	asked := stubMetadata(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("header.payload.signature\n"))
@@ -70,6 +72,9 @@ func TestTokenAsksTheMetadataServerForAFullFormatIdentityToken(t *testing.T) {
 // whose environment names one hands that proxy nothing. The proxy here answers every request
 // with a token of its own, so a reader that honoured it would pass the first check below and
 // fail the count.
+// Serial: it sets process-wide variables - HTTP_PROXY, http_proxy, HTTPS_PROXY and ALL_PROXY,
+// and GCE_METADATA_HOST (stubMetadata), which the reader takes the metadata server's address
+// from; t.Setenv panics under t.Parallel.
 func TestTokenIgnoresEveryProxyVariable(t *testing.T) {
 	var proxied atomic.Int64
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -98,6 +103,8 @@ func TestTokenIgnoresEveryProxyVariable(t *testing.T) {
 
 // TestTokenRefusesWhatItCannotRead names each refusal, and none of them repeats a token: the
 // server that answers a status, and the one that answers nothing at all.
+// Serial: it sets a process-wide variable, GCE_METADATA_HOST, which the reader takes the metadata
+// server's address from (stubMetadata's t.Setenv, in each row); t.Setenv panics under t.Parallel.
 func TestTokenRefusesWhatItCannotRead(t *testing.T) {
 	for _, refusal := range []struct {
 		name    string
@@ -128,6 +135,8 @@ func TestTokenRefusesWhatItCannotRead(t *testing.T) {
 // TestTokenNamesTheHostItCouldNotReach: a metadata server that answers nothing is a fault of the
 // machine's own link, and the refusal names the variable an operator sets to point the reader
 // somewhere else.
+// Serial: it sets a process-wide variable, GCE_METADATA_HOST, which the reader takes the metadata
+// server's address from; t.Setenv panics under t.Parallel.
 func TestTokenNamesTheHostItCouldNotReach(t *testing.T) {
 	t.Setenv(MetadataHostVar, "127.0.0.1:1")
 
@@ -140,6 +149,8 @@ func TestTokenNamesTheHostItCouldNotReach(t *testing.T) {
 // TestProbeAnswersTheEmailOfAGoogleMetadataServer: the probe asks the default service account's
 // email path with the header Google requires, and answers the email a server that says it is
 // Google's metadata server names.
+// Serial: it sets a process-wide variable, GCE_METADATA_HOST, which the reader takes the metadata
+// server's address from (stubMetadata's t.Setenv); t.Setenv panics under t.Parallel.
 func TestProbeAnswersTheEmailOfAGoogleMetadataServer(t *testing.T) {
 	asked := stubMetadata(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Metadata-Flavor", "Google")
@@ -234,6 +245,8 @@ func (r *deadlineRecorder) RoundTrip(req *http.Request) (*http.Response, error) 
 // TestProbeRefusesAServerWithoutTheGoogleFlavor: an answer that does not carry the
 // Metadata-Flavor: Google header is not Google's metadata server, so the probe answers
 // ErrNoMetadataServer, saying so, rather than an email it cannot vouch for.
+// Serial: it sets a process-wide variable, GCE_METADATA_HOST, which the probe takes the metadata
+// server's address from (stubMetadata's t.Setenv); t.Setenv panics under t.Parallel.
 func TestProbeRefusesAServerWithoutTheGoogleFlavor(t *testing.T) {
 	stubMetadata(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("someone@example.com"))
@@ -248,6 +261,9 @@ func TestProbeRefusesAServerWithoutTheGoogleFlavor(t *testing.T) {
 // TestAccessTokenSourceReadsTheMetadataToken: the token source asks the default service
 // account's token path with the header Google requires, and answers the token the metadata
 // server handed out, expiring when that answer's expires_in says.
+// Serial: it sets a process-wide variable, GCE_METADATA_HOST, which the token source takes the
+// metadata server's address from (stubMetadata's t.Setenv), and its assertion is also a time: the
+// token expires within 10 s either side of 600 s after the request began.
 func TestAccessTokenSourceReadsTheMetadataToken(t *testing.T) {
 	asked := stubMetadata(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Metadata-Flavor", "Google")
@@ -275,6 +291,8 @@ func TestAccessTokenSourceReadsTheMetadataToken(t *testing.T) {
 // the Metadata-Flavor: Google header is not Google's metadata server, as a resolver that sends
 // every name to one web server would bring it, so the token source answers ErrNoMetadataServer,
 // saying so, and never a token it cannot vouch for.
+// Serial: it sets a process-wide variable, GCE_METADATA_HOST, which the token source takes the
+// metadata server's address from (stubMetadata's t.Setenv); t.Setenv panics under t.Parallel.
 func TestAccessTokenSourceRefusesAServerWithoutTheGoogleFlavor(t *testing.T) {
 	for _, status := range []int{http.StatusOK, http.StatusNotFound} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
@@ -292,6 +310,8 @@ func TestAccessTokenSourceRefusesAServerWithoutTheGoogleFlavor(t *testing.T) {
 
 // TestAccessTokenSourceNamesAGoogleFaultAsAFault: a Google metadata server that answers the token
 // read with an error is present and broken, so its error is not ErrNoMetadataServer.
+// Serial: it sets a process-wide variable, GCE_METADATA_HOST, which the token source takes the
+// metadata server's address from (stubMetadata's t.Setenv); t.Setenv panics under t.Parallel.
 func TestAccessTokenSourceNamesAGoogleFaultAsAFault(t *testing.T) {
 	stubMetadata(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Metadata-Flavor", "Google")
@@ -307,6 +327,9 @@ func TestAccessTokenSourceNamesAGoogleFaultAsAFault(t *testing.T) {
 // connection reaches - here 192.0.2.1, an address no network routes (RFC 5737), as a laptop's
 // resolver or captive network can leave the metadata server's name - is no metadata server within
 // ProbeTimeout plus a margin, not after the token read's whole 10 s.
+// Serial: it sets a process-wide variable, GCE_METADATA_HOST, which the token source takes the
+// metadata server's address from, and its assertion is also a time: no metadata server within
+// ProbeTimeout and a 2 s margin.
 func TestAccessTokenSourceSaysNoMetadataServerWhenNoConnectionComesWithinTheProbeTimeout(t *testing.T) {
 	t.Setenv(MetadataHostVar, "192.0.2.1")
 	started := time.Now()

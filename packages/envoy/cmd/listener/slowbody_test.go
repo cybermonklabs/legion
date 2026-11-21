@@ -1,5 +1,8 @@
 package main
 
+// TestAGitHubBodyReadFailureIsLogged swaps the standard log package's writer (log.SetOutput), a
+// process-wide default, so it is not parallel (dispatch://INFRA-1075).
+
 import (
 	"bufio"
 	"context"
@@ -89,7 +92,7 @@ func serveSlowly(t *testing.T, path string, handler http.Handler, headers map[st
 			break // the server closed the connection: read whatever it answered
 		}
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(listenerWait))
 	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err != nil {
 		return 0
@@ -101,6 +104,7 @@ func serveSlowly(t *testing.T, path string, handler http.Handler, headers map[st
 // A GitHub delivery whose body takes longer than the server's 10 s to arrive is read whole and
 // published, not cut off with no answer.
 func TestAGitHubDeliveryWhoseBodyArrivesOverMoreThanTenSecondsIsPublished(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("sends a body over 12 s")
 	}
@@ -138,7 +142,7 @@ func TestAGitHubBodyReadFailureIsLogged(t *testing.T) {
 	}
 	_, _ = io.WriteString(conn, "POST /webhook/github HTTP/1.1\r\nHost: listener\r\nX-GitHub-Delivery: delivery-cut\r\nX-GitHub-Event: push\r\nContent-Length: 1000\r\n\r\n"+strings.Repeat("x", 300))
 	conn.Close() // the sender goes away with 700 bytes still owed
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(listenerWait)
 	for !strings.Contains(logged.String(), "github body read failed") && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -153,6 +157,7 @@ func TestAGitHubBodyReadFailureIsLogged(t *testing.T) {
 // Every other route keeps the server's 10 s bound on its body: a Slack body that takes longer to
 // arrive is cut off.
 func TestASlackBodyStillHasTheServersReadTimeout(t *testing.T) {
+	// Serial: its assertion is a time (the Slack body is cut off between 10 s and 11.5 s).
 	if testing.Short() {
 		t.Skip("sends a body over 12 s")
 	}

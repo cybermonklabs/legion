@@ -27,6 +27,7 @@ import (
 // after the client's own records each run; this asks that a run begins within 3 s of the
 // connection being back.
 func TestASecondReconnectRunsItsHooksWithoutWaitingOutTheFirstRunsRequest(t *testing.T) {
+	// Serial: its assertion is a time (the hooks run within 3 s of the connection being back).
 	_, uri := testnats.Start(t)
 	proxy := newFlapProxy(t, strings.TrimPrefix(uri, "nats://"))
 	client, err := ConnectOwningStream([]string{"nats://" + proxy.addr()}, WithName(t.Name()))

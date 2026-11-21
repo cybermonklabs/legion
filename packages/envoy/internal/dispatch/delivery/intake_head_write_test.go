@@ -20,7 +20,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // A pull-request envelope whose head row could not be stored at all is handed back for
@@ -205,11 +204,15 @@ func durableAnswers(t *testing.T, client *bus.Client) func() []string {
 // anything, so the keeper's handling is the ordinary one: it writes the head row the holder
 // could not, acknowledges the envelope, and is handed it exactly once.
 func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelopeOnce(t *testing.T) {
+	// Serial: a product timer is under its steps. The GitHub client gives an unanswered call up
+	// at githubapp.RequestTimeout (20 s, shorter than eventWait) and asks again, so the release of
+	// the holder's held commit read below must come inside 20 s of that read, and a parallel
+	// test's load is what would stretch the steps between past it.
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedDeliveryProject(t, ctx, pool)
 	restoreBranchCommits := withoutBranchCommits(t, ctx, pool)
-	natsURL := testnats.URL(t)
+	natsURL := deliveryTestNATS(t)
 	publisher := intakeTestClient(t)
 	answers := durableAnswers(t, publisher)
 
@@ -297,6 +300,7 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 // sequence cannot separate, since an intake stops delivering within intakeHoldMargin of
 // reporting its hold lost.
 func TestADeliveryWhoseHoldHasLapsedAnswersNothingOfItsOwn(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	hold, err := duty.TryHold(ctx, deliveryTestLeases(t, pool), "delivery-test-lapsing-hold", uuid.New(),
 		duty.HoldOptions{TTL: intakeHoldTTL, Renew: intakeHoldRenew, Margin: intakeHoldMargin})

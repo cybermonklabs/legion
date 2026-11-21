@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fakeRoster is the live-session list a route-status test's listener answers: session id to
@@ -28,6 +29,9 @@ type fakeRoster struct {
 	lookups   atomic.Int32
 	down      atomic.Bool
 	refilling atomic.Bool
+	// calls is every GET the listener served, with its arrival, how long it took and how its
+	// context stood once it was answered, which cachedRouteStatusServer prints when a test fails.
+	calls listenerLookups
 }
 
 func (r *fakeRoster) set(sessionID string, roles ...string) {
@@ -59,9 +63,19 @@ func routeStatusServer(t *testing.T, roster *fakeRoster) (http.Handler, *store.S
 
 // cachedRouteStatusServer is routeStatusServer keeping the TTLs register sets, and also returns
 // the server, so a test can shorten them before its first read.
+//
+// A route reads unknown, reason unreachable, both when the listener is down and when its answer
+// came after routeRosterTimeout (2 s, issue_route_status.go), and the read says nothing of which.
+// So a test that fails on this server prints every call its listener served beside its failure:
+// a call that took past the bound, or whose context had ended, is that bound firing.
 func cachedRouteStatusServer(t *testing.T, roster *fakeRoster) (http.Handler, *store.Store, *server) {
 	t.Helper()
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the listener's GET /v1/sessions calls (the roster read gives up after %s): %s", routeRosterTimeout, &roster.calls)
+		}
+	})
+	listener := httptest.NewServer(roster.calls.recording(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/sessions" {
 			http.NotFound(w, r)
 			return
@@ -82,7 +96,7 @@ func cachedRouteStatusServer(t *testing.T, roster *fakeRoster) (http.Handler, *s
 		}
 		roster.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(rows)
-	}))
+	})))
 	t.Cleanup(listener.Close)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	return handler, database, served
@@ -184,6 +198,7 @@ func requireReach(t *testing.T, handler http.Handler, key, status, holder, reaso
 }
 
 func TestRoleRouteReadsNoHolderUntilASessionClaimsTheRole(t *testing.T) {
+	t.Parallel()
 	roster := &fakeRoster{}
 	roster.set("ses-other", "reviewer")
 	handler, _ := routeStatusServer(t, roster)
@@ -200,6 +215,7 @@ func TestRoleRouteReadsNoHolderUntilASessionClaimsTheRole(t *testing.T) {
 }
 
 func TestSessionRouteReadsLiveOnlyWhileTheSessionIsListed(t *testing.T) {
+	t.Parallel()
 	roster := &fakeRoster{}
 	roster.set("ses-worker")
 	handler, _ := routeStatusServer(t, roster)
@@ -212,6 +228,7 @@ func TestSessionRouteReadsLiveOnlyWhileTheSessionIsListed(t *testing.T) {
 }
 
 func TestRouteStatusIsUnknownWhenTheListenerDoesNotAnswer(t *testing.T) {
+	t.Parallel()
 	roster := &fakeRoster{}
 	roster.set("ses-sre", "sre")
 	handler, _ := routeStatusServer(t, roster)
@@ -226,6 +243,7 @@ func TestRouteStatusIsUnknownWhenTheListenerDoesNotAnswer(t *testing.T) {
 // route reads unknown with the reason, never no_holder, and reads live again once the list is
 // back.
 func TestRouteStatusIsUnknownWhileTheListenerRefills(t *testing.T) {
+	t.Parallel()
 	roster := &fakeRoster{}
 	roster.set("ses-sre", "sre")
 	handler, _ := routeStatusServer(t, roster)
@@ -240,12 +258,14 @@ func TestRouteStatusIsUnknownWhileTheListenerRefills(t *testing.T) {
 }
 
 func TestRouteStatusIsUnknownWithoutAConfiguredListener(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	key := routedIssueKey(t, handler, "role:sre")
 	requireReach(t, handler, key, "unknown", "", "unreachable")
 }
 
 func TestUnroutedIssueHasNoRouteStatusAndCostsNoListenerCall(t *testing.T) {
+	t.Parallel()
 	roster := &fakeRoster{}
 	handler, _ := routeStatusServer(t, roster)
 	key := routedIssueKey(t, handler, "")
@@ -274,6 +294,7 @@ func seedRoutedIssues(t *testing.T, handler http.Handler, database *store.Store,
 }
 
 func TestIssueListResolvesEveryRouteWithOneListenerCall(t *testing.T) {
+	t.Parallel()
 	roster := &fakeRoster{}
 	roster.set("ses-sre", "sre")
 	handler, database := routeStatusServer(t, roster)
@@ -310,6 +331,7 @@ func TestIssueListResolvesEveryRouteWithOneListenerCall(t *testing.T) {
 }
 
 func TestRouteStatusFilterListsOnlyOpenIssuesInThatState(t *testing.T) {
+	t.Parallel()
 	roster := &fakeRoster{}
 	roster.set("ses-sre", "sre")
 	handler, _ := routeStatusServer(t, roster)
@@ -424,6 +446,7 @@ func stateRosterServer(t *testing.T, rows []map[string]any) *server {
 // reads as "nobody is working this", and which would have a person hand the work to someone
 // else). Both kinds of route answer the same way, since both reach one session.
 func TestRouteReachNamesAnUnresponsiveHolderRatherThanDroppingIt(t *testing.T) {
+	t.Parallel()
 	served := stateRosterServer(t, []map[string]any{
 		{"session_id": "ses-live", "state": "live", "last_seen": 1700000000000, "roles": []string{"legion-merger"}},
 		{"session_id": "ses-stalled", "state": "unresponsive", "last_seen": 1699999000000, "roles": []string{"legion-planner"}},
@@ -455,6 +478,7 @@ func TestRouteReachNamesAnUnresponsiveHolderRatherThanDroppingIt(t *testing.T) {
 // whose holder has stopped answering - and no_holder, which is the filter an audit uses to find
 // unworked issues, keeps excluding them.
 func TestRouteStatusFilterTakesHolderUnresponsive(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{"live", "holder_unresponsive", "no_holder", "unknown", ""} {
 		if got, err := parseRouteStatusFilter(value); err != nil || got != value {
 			t.Errorf("route_status=%q: %q, %v; want it accepted", value, got, err)
@@ -471,6 +495,7 @@ func TestRouteStatusFilterTakesHolderUnresponsive(t *testing.T) {
 // does not list as gone; takeable_at is the instant another agent may take the claim without a
 // person, which is only ever answered for a holder that will come free.
 func TestClaimLivenessDatesWhenAnUnresponsiveHoldersClaimComesFree(t *testing.T) {
+	t.Parallel()
 	const lastSeen = 1700000000000
 	served := stateRosterServer(t, []map[string]any{
 		{"session_id": "ses-live", "state": "live", "last_seen": lastSeen},
@@ -533,6 +558,7 @@ func TestClaimLivenessDatesWhenAnUnresponsiveHoldersClaimComesFree(t *testing.T)
 // stores names a state on every session it carries - and never gone, which is a session the
 // list does not carry at all - so a state it does name is read as it stands.
 func TestAStoredRowFromBeforeSessionStatesReadsItsSessionsLive(t *testing.T) {
+	t.Parallel()
 	const lastSeen = 1700000000000
 	stored := []byte(`[
 		{"session_id":"ses-old","title":"worker ses-old","roles":["sre"],"last_seen":1700000000000},
@@ -575,6 +601,7 @@ func TestAStoredRowFromBeforeSessionStatesReadsItsSessionsLive(t *testing.T) {
 // - points an operator at the listener). A read that only shows a route still serves the issue,
 // with its route unknown.
 func TestARouteStatusFilterAnswersAFailedRosterReadAsTheDatabases(t *testing.T) {
+	t.Parallel()
 	roster := &fakeRoster{}
 	roster.set("ses-sre", "sre")
 	handler, database := routeStatusServer(t, roster)
@@ -696,6 +723,7 @@ func TestARefillOneServerMetIsARefillOnTheOther(t *testing.T) {
 // stored, and the reads waiting on it are served that newer answer. The listener holds its first
 // call and answers it with nobody; every later call lists ses-sre holding sre.
 func TestAnOlderListenerAnswerNeverReplacesANewerOne(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	gate := make(chan struct{})
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -715,14 +743,24 @@ func TestAnOlderListenerAnswerNeverReplacesANewerOne(t *testing.T) {
 	// Release before the close, which waits for every request in flight to finish.
 	t.Cleanup(listener.Close)
 	t.Cleanup(release)
-	_, _, _, first := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: time.Minute})
-	first.rosters.ttl, first.rosters.timeout = time.Minute, time.Minute
+	// The client's window, the fetch's bound and the TTL outlast any run of the test binary, so
+	// only release() ends the held fetch and no stored answer expires before the reads below,
+	// however long the steps between take; each wait for an answer still gives up at
+	// concurrentWait.
+	_, _, _, first := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: testwait.PastTheRun})
+	first.rosters.ttl, first.rosters.timeout = testwait.PastTheRun, testwait.PastTheRun
 	_, second := secondRouteStatusServer(t, first)
+	// A read the test waits on itself gives up at concurrentWait, as the held read's wait does.
+	boundedRead := func(served *server) routeRoster {
+		ctx, cancel := context.WithTimeout(context.Background(), concurrentWait)
+		defer cancel()
+		return readRoster(t, served, ctx)
+	}
 
 	older := make(chan routeRoster, 1)
 	go func() { older <- readRoster(t, first, context.Background()) }()
 	awaitCalls(t, &calls, 1)
-	if got := sreReach(readRoster(t, second, context.Background())); got != "live ses-sre" {
+	if got := sreReach(boundedRead(second)); got != "live ses-sre" {
 		t.Fatalf("the second server's own fetch reads %s, want live ses-sre", got)
 	}
 	release()
@@ -731,10 +769,10 @@ func TestAnOlderListenerAnswerNeverReplacesANewerOne(t *testing.T) {
 		if got := sreReach(roster); got != "live ses-sre" {
 			t.Fatalf("the read waiting on the older fetch reads %s, want the newer stored live ses-sre", got)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(concurrentWait):
 		t.Fatal("the read waiting on the older fetch never returned")
 	}
-	if got := sreReach(readRoster(t, first, context.Background())); got != "live ses-sre" {
+	if got := sreReach(boundedRead(first)); got != "live ses-sre" {
 		t.Fatalf("the first server's next read reads %s, want the newer stored live ses-sre", got)
 	}
 	if got := calls.Load(); got != 2 {

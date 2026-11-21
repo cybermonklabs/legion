@@ -3013,8 +3013,8 @@ check "and reads the .yml spelling GitHub reads too" \
 
 # derived <root> <lane>: the step script ci_job_reads.py's walk builds over <root>, with the race
 # lane replaced by <lane>, a space-separated list of package paths under <root> ("pkg" for the
-# package alone, "pkg/..." for the tree). Echoes "RAISED: <what it refused>" when the walk
-# refuses what it reads.
+# package alone, "pkg/..." for the tree): the race-impossible call over what alone_split leaves.
+# Echoes "RAISED: <what it refused>" when the walk refuses what it reads.
 derived() {
   (cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 -c '
 import sys
@@ -3025,11 +3025,49 @@ root, lane = sys.argv[1], sys.argv[2].split()
 reads.ENVOY_RACE_LANE = (reads.RaceJob("a-race-job", "Race-test the packages", "30m", tuple(
     reads.RacePackage(p.removesuffix("/..."), tree=p.endswith("/...")) for p in lane)),)
 try:
-    print(reads.race_impossible_script(reads.race_impossible_tests(root)))
+    print(reads.race_impossible_call(reads.alone_split(root, reads.race_impossible_tests(root))[1]))
 except ValueError as refusal:
     print("RAISED:", refusal)
 ' "$1" "$2")
 }
+
+# split_alone <root> <lane> <named> [<steps>]: the two halves alone_split makes of the walk over
+# <root> with the race lane <lane>, as derived reads it (its one job is a-race-job), and ALONE_TESTS
+# replaced by <named>, a space-separated list of <package under root>:<test>. Echoes "alone: " and
+# the alone call over the first half, under a -timeout of 30m as the lane's one job has, then
+# "rest: " and the race-impossible call over the second, then "steps: " and the share alone_jobs
+# gives each alone step of <steps>, a space-separated list of <job>:<race job> that replaces
+# ALONE_STEPS, each as <job>=<its packages>. Echoes "RAISED: <what it refused>" where a refusal
+# ends it.
+split_alone() {
+  (cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 -c '
+import sys
+
+import ci_job_reads as reads
+
+root, lane, named, steps = sys.argv[1], sys.argv[2].split(), sys.argv[3].split(), sys.argv[4].split()
+reads.ENVOY_RACE_LANE = (reads.RaceJob("a-race-job", "Race-test the packages", "30m", tuple(
+    reads.RacePackage(p.removesuffix("/..."), tree=p.endswith("/...")) for p in lane)),)
+reads.ALONE_TESTS = {}
+for entry in named:
+    package, test = entry.split(":")
+    reads.ALONE_TESTS.setdefault(f"{root}/{package}", set()).add(test)
+reads.ALONE_STEPS = tuple(reads.AloneStep(*entry.split(":"), "alone.json", "30m") for entry in steps)
+try:
+    alone, rest = reads.alone_split(root, reads.race_impossible_tests(root))
+    print("alone:", reads.alone_call(alone, "30m"))
+    print("rest:", reads.race_impossible_call(rest))
+    print("steps:", " ".join(step.job + "=" + ",".join(share) for step, share in reads.alone_jobs(alone).items()))
+except ValueError as refusal:
+    print("RAISED:", refusal)
+' "$1" "$2" "$3" "${4:-}")
+}
+
+# The race-impossible call's -timeout as ci_job_reads.py writes it, read rather than repeated: these
+# cases are about the -run list the walk derives, and a limit copied here went stale twice when the
+# lane raised it (the test job of runs at 08eb0094 and at ca715109).
+impossible_timeout=$(cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts \
+  python3 -c 'import ci_job_reads as reads; print(reads.RACE_IMPOSSIBLE_TIMEOUT)')
 
 # race_tree: a lane of two packages, one of them a tree, holding every form the walk reads. Echoes
 # its root.
@@ -3121,20 +3159,95 @@ GO
   echo "$root"
 }
 
-echo "case: the plain step's -run lists are what the lane's packages hold"
+echo "case: the plain call's -run list is what the lane's packages hold"
 root=$(race_tree)
 out=$(derived "$root" "lane/a/... lane/b")
-check "names every test of a !race file, sorted, TestMain aside, and the raceEnabled ones" \
-  "$(is "$out" "$(printf '%s\n%s' \
-    "go test -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a" \
-    "go test -count=1 -timeout 10m -run '^(TestTheta)\$' ./lane/a/sub")")"
+check "names every test of a !race file, sorted, TestMain aside, and the raceEnabled ones, over every package that has one" \
+  "$(is "$out" "go test -json -count=1 -timeout $impossible_timeout -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon|TestTheta)\$' ./lane/a ./lane/a/sub")"
 check "passes over the testdata package" "$(is "$(contains "$out" 'TestIgnored')" false)"
 check "and leaves out a package with no such test" "$(is "$(contains "$out" './lane/b')" false)"
 
 echo "case: a package the lane names alone does not reach the packages under it"
 out=$(derived "$root" "lane/a")
 check "names the package alone" \
-  "$(is "$out" "go test -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a")"
+  "$(is "$out" "go test -json -count=1 -timeout $impossible_timeout -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a")"
+
+# The walk's tests whose assertion is a wall-clock time run alone, in steps of their own, and the
+# race-impossible call runs the rest: every name that starts with ALONE_PREFIX, so an xid window
+# test added later lands in the alone half by itself, and each name ALONE_TESTS holds for its
+# package. race_alone: a lane of two packages holding both kinds. Echoes its root.
+race_alone() {
+  local root="$work/race-alone"
+  mkdir -p "$root/lane/a" "$root/lane/b"
+  cat > "$root/lane/a/norace_test.go" <<'GO'
+//go:build !race
+
+package a
+
+import "testing"
+
+func TestAlpha(t *testing.T)           {}
+func TestXidWindowBeta(t *testing.T)   {}
+func TestXidWindowsGamma(t *testing.T) {}
+GO
+  cat > "$root/lane/b/race_disabled_test.go" <<'GO'
+//go:build !race
+
+package b
+
+const raceEnabled = false
+GO
+  cat > "$root/lane/b/storm_test.go" <<'GO'
+package b
+
+import "testing"
+
+func TestStorm(t *testing.T) {
+	if raceEnabled {
+		t.Skip("smaller")
+	}
+}
+
+func TestQuiet(t *testing.T) {
+	if raceEnabled {
+		t.Skip("smaller")
+	}
+}
+GO
+  echo "$root"
+}
+
+echo "case: the walk's wall-clock tests run alone and the call runs the rest"
+root=$(race_alone)
+out=$(split_alone "$root" "lane/a lane/b" "lane/b:TestStorm" "a-job:a-race-job")
+check "the alone half is every xid window test and each named one, over their packages, one at a time" \
+  "$(contains "$out" "^alone: go test -json -count=1 -p 1 -timeout 30m -run '.(TestStorm|TestXidWindowBeta|TestXidWindowsGamma).' ./lane/a ./lane/b$")"
+check "the call runs the rest" \
+  "$(contains "$out" "^rest: go test -json -count=1 -timeout $impossible_timeout -run '.(TestAlpha|TestQuiet).' ./lane/a ./lane/b$")"
+check "and the alone step of the race job that runs those packages takes both" \
+  "$(contains "$out" '^steps: a-job=lane/a,lane/b$')"
+
+echo "case: a name the alone list holds that the walk does not find"
+out=$(split_alone "$root" "lane/a lane/b" "lane/b:TestGone" "a-job:a-race-job")
+check "refuses rather than keeping nothing out of the call" \
+  "$(contains "$out" 'RAISED: ALONE_TESTS names TestGone in lane/b, which the lane.s walk of .* does not find there')"
+
+echo "case: alone tests of a race job that no alone step names"
+out=$(split_alone "$root" "lane/a lane/b" "lane/b:TestStorm")
+check "refuses rather than running them in no step" \
+  "$(contains "$out" 'RAISED: lane/a holds alone tests (TestXidWindowBeta, TestXidWindowsGamma) and is race-tested by a-race-job, which no AloneStep names')"
+
+echo "case: an alone step whose race job holds no alone test"
+out=$(split_alone "$root" "lane/a lane/b" "lane/b:TestStorm" "a-job:a-race-job b-job:another-race-job")
+check "refuses rather than keeping a step that runs nothing" \
+  "$(contains "$out" "RAISED: the alone step b-job's (for another-race-job) has no test to run")"
+
+echo "case: the repository's race-impossible call holds none of the tests that run alone"
+impossible_call=$(cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts \
+  python3 -c 'import ci_job_reads as reads; print(reads.RACE_IMPOSSIBLE_CALL)')
+check "no xid window test" "$(is "$(contains "$impossible_call" 'TestXidWindow')" false)"
+check "and not the auth service's restart storm" \
+  "$(is "$(contains "$impossible_call" 'TestACalloutStormAfterAServerRestartAdmitsEveryConnection')" false)"
 
 echo "case: a raceEnabled no top-level function encloses"
 root="$work/race-unattributable"

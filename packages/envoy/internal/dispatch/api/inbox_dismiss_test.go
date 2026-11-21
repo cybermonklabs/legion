@@ -747,7 +747,7 @@ func TestDismissRacingAnotherDismissAndAMarkAll(t *testing.T) {
 		held := holdGateThread(t, database, gate)
 		queued := make(chan int, 1)
 		go func() {
-			queued <- storetest.WaitForLockWaiters(t, held.tx, 2, 10*time.Second)
+			queued <- storetest.WaitForLockWaiters(t, held.tx, 2, concurrentWait)
 			held.release()
 		}()
 		mark := time.Now()

@@ -1,5 +1,8 @@
 package bus_test
 
+// Every test here captures the default slog handler (captureBusLogs, restart_test.go), a
+// process-wide swap, so none of them is parallel (dispatch://INFRA-1075).
+
 import (
 	"encoding/json"
 	"net/http"
@@ -41,7 +44,7 @@ func TestWithNameNamesEveryConnectionTheClientDials(t *testing.T) {
 
 	// Closed underneath it, the client dials a replacement (recover).
 	named.Conn.Close()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(busWait)
 	for {
 		listed = connections()
 		if replaced := listed["dispatch-intake"]; len(replaced) == 1 && replaced[0] != first[0] {

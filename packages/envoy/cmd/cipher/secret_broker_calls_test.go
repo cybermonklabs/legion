@@ -47,6 +47,12 @@ func recordBrokerCalls(t *testing.T) func() []string {
 // TestNoSecretFormAsksTheBrokerForACredential: every secret form, on each store, asks the broker
 // for its settings and for a reread and for nothing else: no request (POST /v1/requests) and no
 // grant route, which is how a credential leaves the broker.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
+// reads the broker's address from (startSecretBroker's t.Setenv, through onEachStore, and
+// recordBrokerCalls' own), and, in its gcp store, the gcloud and credential variables
+// useGCPIdentity sets; and the package-level seams the secret forms are reached through, which
+// it sets: awsClients in the aws store, gcpClientDial, gcpCredentialsFile and gcpUserinfo in the
+// gcp one, and secretStdin for the values it types.
 func TestNoSecretFormAsksTheBrokerForACredential(t *testing.T) {
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		store.put(t, "HELD_TEST", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent}, "v1")

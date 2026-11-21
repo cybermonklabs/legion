@@ -101,7 +101,7 @@ func TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet(t *testi
 	if _, err := kv.Get(key); err != nil {
 		t.Fatalf("Get(%s): %v", key, err)
 	}
-	direct := requestFor(t, directGets, stream, 5*time.Second)
+	direct := requestFor(t, directGets, stream, busWait)
 	if direct == nil {
 		t.Fatalf("Get(%s) sent no direct get of %s; this read is the one the leader need not answer", key, stream)
 	}
@@ -112,12 +112,12 @@ func TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet(t *testi
 		t.Errorf("Get(%s) sent %s too, want the direct get alone", key, sent.Subject)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), busWait)
 	defer cancel()
 	if _, err := kv.GetFromLeader(ctx, key); err != nil {
 		t.Fatalf("GetFromLeader(%s): %v", key, err)
 	}
-	leader := requestFor(t, streamMsgGets, stream, 5*time.Second)
+	leader := requestFor(t, streamMsgGets, stream, busWait)
 	if leader == nil {
 		t.Fatalf("GetFromLeader(%s) sent no stream message get of %s; a direct get would be answered by a copy that is behind", key, stream)
 	}
@@ -139,7 +139,7 @@ func TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet(t *testi
 func TestTheLeaderReadAnswersAKeyAsGetDoes(t *testing.T) {
 	const bucket = "kv_leader_answers"
 	_, kv := leaderReadBucket(t, bucket)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), busWait)
 	defer cancel()
 
 	revision, err := kv.Put("ses_live", []byte("live"))

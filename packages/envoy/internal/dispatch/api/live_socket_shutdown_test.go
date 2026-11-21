@@ -25,6 +25,8 @@ import (
 // liveSocketCloseWait more, waiting for the answer, so the set read before the page lets it go
 // finds it there.
 func TestSocketsOpeningAsDispatchShutsDownCloseWithServiceRestart(t *testing.T) {
+	// Serial: it holds the shutdown's wait for the sockets to returning within 10 s of the signal,
+	// a wall-clock bound a parallel neighbour's load spends.
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 
 	const pages = 16
@@ -124,7 +126,7 @@ func TestSocketsOpeningAsDispatchShutsDownCloseWithServiceRestart(t *testing.T) 
 		t.Fatalf("%d sockets in the server's set after its wait returned", len(open))
 	}
 	for i, client := range serving {
-		if code, _ := client.closeCode(t, 5*time.Second); code != gws.CloseServiceRestart {
+		if code, _ := client.closeCode(t, eventFeedWait); code != gws.CloseServiceRestart {
 			t.Errorf("socket %d, open at the signal, closed with %d, want 1012", i, code)
 		}
 	}
@@ -146,7 +148,7 @@ func dialLiveSocketAsAlice(url string) (*gws.Conn, error) {
 // endsWithServiceRestart reads conn until Dispatch ends it, answering nil for a close with 1012
 // (service restart) and an error for any other end.
 func endsWithServiceRestart(conn *gws.Conn) error {
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(eventFeedWait))
 	for {
 		if _, _, err := conn.ReadMessage(); err != nil {
 			if gws.IsCloseError(err, gws.CloseServiceRestart) {

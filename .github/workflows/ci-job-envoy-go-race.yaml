@@ -32,16 +32,35 @@ env:
 jobs:
   envoy-go-race:
     runs-on: ubuntu-24.04-arm
-    # The step's -timeout 30m must fire before the runner cancels the job, so a hung test prints
-    # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race
-    # binaries, then the step's own 30 minutes, which is 36. natscred and the NATS auth service
-    # (internal/cipher/natscallout) add two test binaries to that compile and two packages,
-    # natscallout and natsgrant, since the rest of their race build (`go list -deps -test -race`)
-    # is the other packages' already, and they measured 28 s and 46 s under -race on a dev box,
-    # where cmd/listener took 785 s here (run 43875539224), so the sum stands. The sign-in code
-    # flow (internal/oidc) adds one test binary and one package, whose run under -race took 11 s
-    # on a dev box, all of it in-process against oidctest's issuer.
-    timeout-minutes: 45
+    # R6 sizes both numbers from the final measurement pair, runs 44657322918 and 44657415021 at
+    # 8cfd2682 (dispatch://INFRA-1075, check 6224bb0e), and the dispatch run at each later head,
+    # which may raise a limit and never lower one (the architect's rule of 2026-11-20, the issue's
+    # open-items.md). The step's -timeout is the smallest whole minute at which its slowest
+    # package's slowest reading takes at most half of it: cmd/listener, 829.4 s in run
+    # 44846096964 at 28ce7c74 (job 136669775371), 829.4 / 30 = 27.65, so 28m, against 825.0 s
+    # in run 44790111577 at 85f6b018 (job 136476756188). Run 44717243297 at 66058706 (job
+    # 136223826856) raised it to that 28m from the pair's 23m: it read 812.3 s,
+    # 812.3 / 30 = 27.08, against 680.5 s and 686.0 s in the pair (run 44657322918, job
+    # 136026780235, and run 44657415021, job 136039518500). The package grew because main's #4387
+    # added 22 top-level tests to it, 135.4 s of summed elapsed time in run 44717243297's stream,
+    # while the 646 tests that run and the pair both hold took 793.3 s against 797.4 s and
+    # 804.1 s. Run 44687712471 at 56f4dabc (job 136126011379) read cmd/listener at 679.7 s and
+    # the job at 920 s, under the pair's. The job's bound is its slowest time, 1,085 s (run
+    # 44846096964, job 136669775371), against 1,080 s in run 44790111577 (job 136476756188),
+    # 1,048 s in run 44717243297 (job 136223826856) and 916 s and 939 s in the pair (jobs
+    # 136026780235 and 136039518500), 18.08 minutes, plus that -timeout plus 6:
+    # 18.08 + 28 + 6 = 52.08, so 53. Run 44846096964 raised it from the 52 that run 44717243297
+    # set (17.47 + 28 + 6 = 51.47) and run 44790111577 met exactly (18.00 + 28 + 6 = 52.00). The
+    # limit must fire before the runner cancels the job, so a hung test prints the dump that names
+    # it. The pair and the four dispatch runs since it ran this job on arm64 (ubuntu-24.04-arm);
+    # the pair at 4f1f4436 read cmd/listener at 585.3 s at most, on x64 (ubuntu-24.04). natscred
+    # and the NATS auth service (internal/cipher/natscallout, then internal/broker/natscallout),
+    # which main added to the step after that earlier pair (#4139), are in this pair: 31.1 s and
+    # 101.3 s at most. So is the step that tests the wall-clock measurements alone, whose comment
+    # gives its reading. The sign-in code flow (internal/oidc) adds one test binary and one
+    # package, whose run under -race took 11 s on a dev box, all of it in-process against
+    # oidctest's issuer.
+    timeout-minutes: 53
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -49,26 +68,101 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # The settings these tests need, as the server's own command line, so it starts with them
+        # and no step has to restart it; envoy-go's own service says what each of them buys and
+        # why this container can do without durability (dispatch://INFRA-1075).
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
         options: >-
           --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
+          --health-interval 1s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 50
     env:
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
+      # go-envoy, restored only, for the plain build of the step that tests the wall-clock
+      # measurements alone: its modules are the envoy module's, but this job builds delivery's and
+      # the auth service's test binaries, not the listener and natsd of
+      # .github/workflows/ci-caches.yaml's envoy job, which is what fills this family, so it saves
+      # none. The race step's build reads none of its plain entries and is as it was.
+      - id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      # The settings the service's command: asks for, read back from the server itself; envoy-go's
+      # own read-back step says why a command is worth reading back.
+      - name: Read the disposable service's settings back
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
-      - name: Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow
-        run: go test -count=1 -race -timeout 30m ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... ./natscred/ ./internal/cipher/natscallout/ ./internal/oidc/
+      # The tests whose assertion is a wall-clock time measured in the test's own process, of the
+      # packages this job race-tests: delivery's xid window tests, which judge each gap of a
+      # transaction's xid window against storetest.XidMaxGap (5 ms), and the NATS auth service's
+      # restart storm, whose slowest decision must take less than decideBudget (storm_test.go). Main
+      # runs them in a step of their own with nothing else on the runner; run beside envoy-go's
+      # other calls, an xid window test failed in each run of the pair at c3e93e7e (runs
+      # 44476496859 and 44476544762). So they run here, alone, as the first test step, while the
+      # job's Postgres service is quiet, one package at a time (-p 1) as main ran them, and plain:
+      # the detector stretches the gaps past any bound, and the storm opens five hundred
+      # connections only without it. The -run list is derived in .github/scripts/ci_job_reads.py
+      # (ALONE_PREFIX, ALONE_TESTS and ALONE_STEPS) from the race lane's packages and their source,
+      # so a test added there that this step lacks fails the ci-filters job naming it. The
+      # `go test -json` stream goes to its own file beside the race step's, for the reason that
+      # step gives. With the xid window tests in one call, delivery took 4.106 s on a two-vCPU pod
+      # (INFRA-636), and the restart storm 17 s on a dev box. -timeout 1m, by R6 from the pair at
+      # 8cfd2682 (envoy-go's comment gives the rule): this call's slowest package on the slower run
+      # is internal/cipher/natscallout, then internal/broker/natscallout, 16.9 s (run 44657415021,
+      # job 136039518500), and 16.9 / 30 = 0.56, so 1m, the smallest whole minute there is.
+      - name: Test the wall-clock measurements alone
+        run: |
+          mkdir -p "$RUNNER_TEMP/go-test-json"
+          s=0
+          go test -json -count=1 -p 1 -timeout 1m -run '^(TestACalloutStormAfterAServerRestartAdmitsEveryConnection|TestXidWindowAttributionMoveRecorded|TestXidWindowDeployedEventRecorded)$' ./internal/dispatch/delivery ./internal/cipher/natscallout > "$RUNNER_TEMP/go-test-json/alone.json" || s=$?
+          if [ "$s" -eq 0 ]; then
+            jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/alone.json"
+          else
+            jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/alone.json"
+          fi
+          exit $s
         working-directory: packages/envoy
+      # The `go test -json` stream goes to a file the upload step below publishes, as every test
+      # step of envoy-go does and for the same reason: .github/scripts/go-test-times.py ranks the
+      # packages and tests of such a stream, and this lane's per-package times are what the next
+      # change to it is measured against (dispatch://INFRA-1075). The log keeps the package result
+      # lines of a green run and the whole stream of a red one, race report included. -count=1
+      # keeps a restored build cache from replaying a stored result as `(cached)`.
+      - name: Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow
+        run: |
+          mkdir -p "$RUNNER_TEMP/go-test-json"
+          s=0
+          go test -json -race -count=1 -timeout 28m ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... ./natscred/ ./internal/cipher/natscallout/ ./internal/oidc/ > "$RUNNER_TEMP/go-test-json/race.json" || s=$?
+          if [ "$s" -eq 0 ]; then
+            jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/race.json"
+          else
+            jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/race.json"
+          fi
+          exit $s
+        working-directory: packages/envoy
+      # Always, and one artifact per run attempt, for the reasons envoy-go's own upload step gives.
+      - name: Upload the go test -json stream
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: envoy-go-race-test-json-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/go-test-json/
+          if-no-files-found: warn
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

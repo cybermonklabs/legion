@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -22,6 +23,7 @@ var registerDefaultMuxSentinel = sync.OnceFunc(func() {
 
 // Unset or empty, DISPATCH_PPROF_PORT names no address, and startPprof listens on nothing.
 func TestPprofUnsetStartsNoListener(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{"", "  "} {
 		addr, err := pprofAddress(envGetter(map[string]string{"DISPATCH_PPROF_PORT": value}))
 		if err != nil || addr != "" {
@@ -37,6 +39,7 @@ func TestPprofUnsetStartsNoListener(t *testing.T) {
 // A valid port binds 127.0.0.1 alone, and nothing else: the address it names is the loopback
 // one, whatever the port. 0 is the port the kernel chooses at the bind.
 func TestPprofAddressIsLoopbackOnly(t *testing.T) {
+	t.Parallel()
 	for _, port := range []string{"0", " 0 ", "1", "6060", "65535", " 6060 "} {
 		addr, err := pprofAddress(envGetter(map[string]string{"DISPATCH_PPROF_PORT": port}))
 		want := "127.0.0.1:" + strings.TrimSpace(port)
@@ -48,6 +51,7 @@ func TestPprofAddressIsLoopbackOnly(t *testing.T) {
 
 // A value that is neither 0 nor a port 1-65535 refuses startup, naming the variable.
 func TestPprofInvalidPortRefusesStartup(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{"00", "65536", "-1", "-0", "+6060", "abc", "6060x", "127.0.0.1:6060", "18446744073709552616"} {
 		if _, err := pprofAddress(envGetter(map[string]string{"DISPATCH_PPROF_PORT": value})); err == nil || !strings.Contains(err.Error(), "DISPATCH_PPROF_PORT") {
 			t.Errorf("DISPATCH_PPROF_PORT=%q: err = %v; want a refusal naming DISPATCH_PPROF_PORT", value, err)
@@ -60,6 +64,8 @@ func TestPprofInvalidPortRefusesStartup(t *testing.T) {
 // process's shutdown context ends. It binds port 0, so the kernel chooses a port no other program
 // holds, and the address startPprof reports is the one it bound; the address DISPATCH_PPROF_PORT
 // builds is TestPprofAddressIsLoopbackOnly's.
+// Serial: it holds the listener's close to 2 s after the context ends, a wall-clock bound a
+// parallel neighbour's load spends.
 func TestPprofServesTheIndexOnLoopbackAndStopsWithTheContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -94,20 +100,27 @@ func TestPprofServesTheIndexOnLoopbackAndStopsWithTheContext(t *testing.T) {
 	cancel()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
+		if time.Now().After(deadline) {
+			t.Fatal("the pprof listener did not refuse a connection after the shutdown context ended: a closed listener refuses at once")
+		}
 		conn, err := net.DialTimeout("tcp", bound.String(), 100*time.Millisecond)
+		var timeout net.Error
+		if errors.As(err, &timeout) && timeout.Timeout() {
+			// A dial this machine did not answer in 100 ms says nothing about the listener, so
+			// the poll goes on; only a refusal is the listener gone.
+			continue
+		}
 		if err != nil {
 			break
 		}
 		conn.Close()
-		if time.Now().After(deadline) {
-			t.Fatal("the pprof listener still accepts connections after the shutdown context ended")
-		}
 		time.Sleep(10 * time.Millisecond)
 	}
 }
 
 // A port another process holds is a startup error naming the variable, never a silent skip.
 func TestPprofPortInUseIsAnError(t *testing.T) {
+	t.Parallel()
 	held, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

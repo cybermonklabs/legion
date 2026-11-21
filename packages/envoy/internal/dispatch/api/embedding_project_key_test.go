@@ -231,7 +231,7 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 	}()
 	select {
 	case <-taken:
-	case <-time.After(20 * time.Second):
+	case <-time.After(concurrentWait):
 		t.Fatal("the other process never took the embeddings-project-key-fill lease")
 	}
 

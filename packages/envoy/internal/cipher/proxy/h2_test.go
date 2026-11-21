@@ -69,6 +69,7 @@ func noPlaceholder(t *testing.T, header http.Header) {
 // proxy offering http/1.1 alone (connectBound's NextProtos), which fails this client's handshake
 // with "tls: no application protocol", as every gRPC client's failed before HTTP/2 was carried.
 func TestAClientOfferingOnlyH2IsAnsweredInHTTP2(t *testing.T) {
+	t.Parallel()
 	r := newRig(t, Options{})
 	r.protocol = protocolH2
 	answer, body := r.get(r.client(workerPlaceholder), "https://"+boundHost+"/v1/things", "Authorization", "Bearer "+workerPlaceholder)
@@ -94,6 +95,7 @@ func TestAClientOfferingOnlyH2IsAnsweredInHTTP2(t *testing.T) {
 // client offering h2 alone moves to HTTP/2. The named revert: h2 first in connectBound's
 // NextProtos, which answers this client in HTTP/2.
 func TestAClientOfferingBothProtocolsStaysOnHTTP11(t *testing.T) {
+	t.Parallel()
 	r := newRig(t, Options{})
 	var both http.Protocols
 	both.SetHTTP1(true)
@@ -119,6 +121,7 @@ func TestAClientOfferingBothProtocolsStaysOnHTTP11(t *testing.T) {
 // the request ReverseProxy stripped (pr.Out.Header = header in serveBound's Rewrite), which
 // forwards both hop-by-hop headers and answers this call 502.
 func TestAHopByHopHeaderTheCommandNamesStopsAtTheProxy(t *testing.T) {
+	t.Parallel()
 	r := newRig(t, Options{})
 	// A client of HTTP/1.1, the only one that has a Connection header to send.
 	r.protocol = protocolHTTP1
@@ -155,6 +158,7 @@ func TestAHopByHopHeaderTheCommandNamesStopsAtTheProxy(t *testing.T) {
 // header names, which ReverseProxy itself drops. The named revert: the forwarding headers set back
 // whatever the Connection header names, which carries the three named ones to the service.
 func TestAForwardingHeaderTheCommandNamesInConnectionStopsAtTheProxy(t *testing.T) {
+	t.Parallel()
 	r := newRig(t, Options{})
 	// A client of HTTP/1.1, the only one that has a Connection header to send.
 	r.protocol = protocolHTTP1
@@ -351,6 +355,7 @@ func withPlaceholder(t *testing.T) context.Context {
 // handshake; and statusWriter flushing an answer with no body (whole), which turns some of the
 // failing calls into Internal.
 func TestAGRPCClientIsCarriedWithItsMetadataStreamsAndTrailers(t *testing.T) {
+	t.Parallel()
 	r := newRig(t, Options{Rules: grpcRules()})
 	stand, health := grpcThrough(t, r)
 	ctx := withPlaceholder(t)
@@ -546,6 +551,7 @@ func TestACarriedStreamEndsWhenItsGrantStopsCarryingIt(t *testing.T) {
 // The named revert: no watcher for a call that is not an upgrade, which leaves the command waiting
 // until its client gives up.
 func TestACallWaitingForItsAnswerIsRefusedWhenItsGrantEnds(t *testing.T) {
+	t.Parallel()
 	r := newRig(t, Options{Watch: watchFast})
 	ended := make(chan error, 1)
 	r.answerWith(func(_ http.ResponseWriter, request *http.Request, _ proxyrulestest.Request) bool {
@@ -650,6 +656,7 @@ func serveBoundHost(t *testing.T, r *rig, handler http.HandlerFunc) {
 // command's side (proxy-cut-leaves-upload-open), which leaves the service reading the upload, and
 // the command waiting, until the row's deadline.
 func TestACallStillUploadingIsCutWhenItsGrantEnds(t *testing.T) {
+	t.Parallel()
 	r := newRig(t, Options{Watch: watchFast})
 	uploading := make(chan struct{})
 	var firstBytes sync.Once
@@ -799,6 +806,7 @@ func TestACarriedCallEndsWhenTheBrokerNoLongerReleasesItsSlot(t *testing.T) {
 // scheduler lets it. The named revert: FlushError flushing every answer
 // (proxy-trailers-only-flushed), which sends the headers alone and the end of the stream after.
 func TestAnAnswerWithNoBodyReachesTheCommandWhole(t *testing.T) {
+	t.Parallel()
 	r := newRig(t, Options{})
 	r.answerWith(func(w http.ResponseWriter, _ *http.Request, _ proxyrulestest.Request) bool {
 		w.Header().Set("Content-Length", "0")
@@ -965,6 +973,7 @@ func h2Fields(method, scheme, authority, path string, rest ...hpack.HeaderField)
 // decision's Host read from the request's host header field (r.Header.Get("Host")) rather than
 // from :authority (r.Host), which carries the stream naming another authority to the bound host.
 func TestEachStreamOfOneH2ConnectionIsDecidedOnItsOwn(t *testing.T) {
+	t.Parallel()
 	r := newRig(t, Options{Rules: proxyrules.Rules{Secrets: []proxyrules.SecretRule{{
 		Name: workerName, Hosts: []string{boundHost}, Headers: []string{"authorization"},
 	}}}})
@@ -1099,6 +1108,7 @@ func (c *h2Conn) readFrame(deadline time.Time) http2.Frame {
 // the reset (proxy-cut-leaves-command-open), which leaves the stream open and hands the command
 // the service's bytes when it opens the window.
 func TestAGrantCutResetsAFlowControlledH2StreamAndLeavesItsSiblings(t *testing.T) {
+	t.Parallel()
 	const (
 		betaName        = "BETA_TOKEN"
 		betaValue       = "the-real-beta-token"

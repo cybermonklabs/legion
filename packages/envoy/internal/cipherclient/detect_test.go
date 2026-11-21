@@ -97,6 +97,10 @@ func reasons(skipped []Skipped) []string {
 	return out
 }
 
+// Serial: each row sets process-wide variables, GOOGLE_APPLICATION_CREDENTIALS and
+// GCE_METADATA_HOST (externalAccountFile, startDetectMetadata), which DetectMachineIdentity reads
+// for itself; t.Setenv panics under t.Parallel. Its "none" row's assertion is also a time: a
+// machine with no identity learns it within 2 s.
 func TestMachineIdentityIsFoundWithNoSetting(t *testing.T) {
 	t.Run("external_account", func(t *testing.T) {
 		var mintPath, mintBearer string

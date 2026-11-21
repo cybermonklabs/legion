@@ -37,21 +37,26 @@ func disconnectedUnderName(output, name string) bool {
 // production builds. A test that connected with bus.WithSilentCutDetection itself would report
 // the cut within seconds whether or not that call site carries the option, and would prove
 // nothing.
+//
+// Serial: its assertion is a time - the listener's client reports the cut within silentCutBound
+// (5 s) of the freeze, against the two to three seconds the detection takes, and a parallel test's
+// load would stretch that report past the bound.
 func TestTheListenersNATSClientReportsASilentCutWithinSeconds(t *testing.T) {
 	server, uri := testnats.Start(t)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "silent-cut")
 	listener.waitHealthy(t)
 
-	freezeUntilTheClientReportsTheCut(t, server, listener)
+	freezeUntilTheClientReportsTheCut(t, server, listener, silentCutBound)
 }
 
 // freezeUntilTheClientReportsTheCut freezes the hub under a healthy listener and returns once the
-// listener's stream client has logged the dropped connection, within silentCutBound. It fails the
-// test with what the listener logged. It returns the thaw, which the caller runs itself when it
-// needs the traffic back, and a reader of everything the listener logged from the freeze on: a
-// line from the listener's start, or from before the cut, could otherwise stand in for one the
-// cut caused.
-func freezeUntilTheClientReportsTheCut(t *testing.T, server *testnats.Server, listener *listenerProcess) (thaw func(), output func() string) {
+// listener's stream client has logged the dropped connection, inside the within it is given:
+// silentCutBound for the test whose subject is how soon the cut is reported, listenerWait for a
+// test that only needs the cut reported. It fails the test with what the listener logged. It
+// returns the thaw, which the caller runs itself when it needs the traffic back, and a reader of
+// everything the listener logged from the freeze on: a line from the listener's start, or from
+// before the cut, could otherwise stand in for one the cut caused.
+func freezeUntilTheClientReportsTheCut(t *testing.T, server *testnats.Server, listener *listenerProcess, within time.Duration) (thaw func(), output func() string) {
 	t.Helper()
 	logged := len(listener.Output.String())
 	output = func() string { return listener.Output.String()[logged:] }
@@ -61,7 +66,7 @@ func freezeUntilTheClientReportsTheCut(t *testing.T, server *testnats.Server, li
 	t.Cleanup(thaw)
 	cut := time.Now()
 
-	if !testwait.Holds(silentCutBound, 50*time.Millisecond, func() bool { return disconnectedUnderName(output(), "envoy") }) {
+	if !testwait.Holds(within, 50*time.Millisecond, func() bool { return disconnectedUnderName(output(), "envoy") }) {
 		t.Fatalf("no disconnect line for the listener's client %s into a silent cut:\n%s",
 			time.Since(cut).Round(time.Millisecond), output())
 	}

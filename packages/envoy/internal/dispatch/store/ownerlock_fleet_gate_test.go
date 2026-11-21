@@ -191,7 +191,7 @@ func pauseFleetReadsAt(t *testing.T, s *Store, instance string) (role string, pa
 // what a test grants it or lets it own is in the test database, so once that database is gone
 // nothing depends on the role and its drop takes it, whatever the test left there: a table the
 // role owns that a view of the login depends on refuses `drop owned by` of the role (2BP01) and a
-// drop of the role, and not the database's drop. The test database's own drop (testdb.DatabaseOn)
+// drop of the role, and not the database's drop. The test database's own drop (pgtemplate.Harness.drop)
 // was registered before the role existed, so it runs after this cleanup and finds the database
 // gone. A database whose drop fails is still there, and so are the role's grants in it, which
 // refuse the role's drop: the cleanup then drops them first (`drop owned by`, in that database).

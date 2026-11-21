@@ -35,16 +35,13 @@ func fullDisk(b *Broker) (restore func()) {
 	return func() { mu.Lock(); full = false; mu.Unlock() }
 }
 
-// loggedInBrokerLogging is loggedInBroker with log set before the login starts, so the login's
-// own goroutines never race a later write of b.Log.
+// loggedInBrokerLogging is loggedInBroker with log set before the credential is installed, so
+// the goroutines the install starts never race a later write of b.Log.
 func loggedInBrokerLogging(t *testing.T, f *fakeBroker, log *slog.Logger) *Broker {
 	t.Helper()
 	b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(), Log: log}
 	t.Cleanup(b.Close)
-	if _, err := b.Login(context.Background(), "helper-host"); err != nil {
-		t.Fatalf("login: %v", err)
-	}
-	waitFor(t, func() bool { return b.LoginStatus().State == "issued" })
+	installLogin(t, f, b)
 	return b
 }
 
@@ -55,6 +52,7 @@ func (f *fakeBroker) refreshCount() int { f.mu.Lock(); defer f.mu.Unlock(); retu
 // memory, and every later attempt retries the save alone at the fixed retry, never another token
 // request; a save that lands writes the file back and spends no rotation.
 func TestARefreshWhoseSaveFailsRemovesTheFileAndRetriesOnlyTheSave(t *testing.T) {
+	t.Parallel()
 	var out syncBuffer
 	f := newFakeBroker(t)
 	b := loggedInBrokerLogging(t, f, slog.New(slog.NewJSONHandler(&out, nil)))
@@ -101,6 +99,7 @@ func TestARefreshWhoseSaveFailsRemovesTheFileAndRetriesOnlyTheSave(t *testing.T)
 // login hands it to settleRefused, which retries its save and makes no token request while that
 // save fails.
 func TestASettlementOfAnUnsavedLoginRetriesOnlyTheSave(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	restore := fullDisk(b)
@@ -127,6 +126,7 @@ func TestASettlementOfAnUnsavedLoginRetriesOnlyTheSave(t *testing.T) {
 // login (login-status none) and makes no token request, so the rotated-away token is never
 // presented.
 func TestAHelperRestartedAfterAFailedSaveAsksNothing(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	fullDisk(b)
@@ -142,7 +142,7 @@ func TestAHelperRestartedAfterAFailedSaveAsksNothing(t *testing.T) {
 		t.Fatalf("login-status after the restart: %+v; want none", ls)
 	}
 	f.mu.Lock()
-	arrivals := f.refreshArrivals
+	arrivals := len(f.refreshArrivals)
 	f.mu.Unlock()
 	if arrivals != 1 {
 		t.Fatalf("token requests by then = %d; want only the first refresh's", arrivals)
@@ -153,6 +153,7 @@ func TestAHelperRestartedAfterAFailedSaveAsksNothing(t *testing.T) {
 // read-only filesystem), the helper says at ERROR that a restart before the disk is writable
 // again presents a spent token, which the broker revokes as a reuse.
 func TestAFailedSaveOnAReadOnlyDiskSaysARestartWillBeAReuse(t *testing.T) {
+	t.Parallel()
 	var out syncBuffer
 	f := newFakeBroker(t)
 	b := loggedInBrokerLogging(t, f, slog.New(slog.NewJSONHandler(&out, nil)))
@@ -172,6 +173,7 @@ func TestAFailedSaveOnAReadOnlyDiskSaysARestartWillBeAReuse(t *testing.T) {
 // again after it, the disk still full both times. Neither restart presents a token: the
 // credential is not revoked, the box's enrollment stays live, and no reuse is audited.
 func TestContractASaveFailingThroughTwoRestartsRevokesNothing(t *testing.T) {
+	t.Parallel()
 	cr := newContractRig(t, ciphertest.WithLease(time.Hour))
 	credentialID := cr.login(t)
 	boxKey, err := proof.NewKey()

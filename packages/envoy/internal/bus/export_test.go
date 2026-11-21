@@ -18,3 +18,13 @@ func WithReconnectWaitTick(tick func()) ConnectOption {
 func WithBeforeRequestFlush(before func()) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.beforeRequestFlush = before })
 }
+
+// LastProxyDialError is the error the client's latest dial through its SOCKS5 proxy returned, nil
+// for a client that dials directly or whose latest dial connected, so a test outside the package
+// can print what its connect met. It is compiled into the package's tests only.
+func (c *Client) LastProxyDialError() error {
+	if c.dialer == nil {
+		return nil
+	}
+	return c.dialer.LastError()
+}

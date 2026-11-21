@@ -281,6 +281,7 @@ func TestADrainStopsWhenTheRoleChangesHolderUnderIt(t *testing.T) {
 // answered 202 kept and a live holder waiting - was stranded until it expired too. A walk that
 // moved the role's cursor made progress, so the handover goes on to the copies behind them.
 func TestAHandoverWalksPastMoreExpiredCopiesThanItsIdleWalksAllow(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role    = "kept-handover-expired"
@@ -367,6 +368,9 @@ func TestAHandoverRetriesMoreFailedWalksThanItsIdleWalksAllow(t *testing.T) {
 // (roleKeepDrainHolds), so either check ends it: no copy reaches the session that released the
 // role inside the pause.
 func TestAHandoverResolvesTheHolderOfAWalkAfterThePauseBeforeIt(t *testing.T) {
+	// Serial: its release lands on a wall-clock schedule: the holder gives the role up
+	// roleKeepDrainRetryPause / 2 (500 ms) into the handover's 1 s pause, and the walk after that
+	// pause must find the role released.
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-handover-released"
@@ -453,7 +457,7 @@ func sweepOnce(ctx context.Context, cfg listenerDeliveryHandlerConfig) {
 // alone.
 func sweptRoleWakes(t *testing.T, client *bus.Client, role string) []contracts.Envelope {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	reports, err := readStored(ctx, client, bus.LegionWakeTopic)
 	if err != nil {
@@ -484,6 +488,7 @@ func sweptRoleWakes(t *testing.T, client *bus.Client, role string) []contracts.E
 // its copy, inside its hour, reaches nobody, and it wakes its role again (raiseKeptRoleWake),
 // where the claimed lane, whose holder is live, wakes nothing.
 func TestTheSweepHandsOverALaneNoHandoverIsDraining(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-sweep-stranded"
@@ -836,6 +841,65 @@ func TestAHandoverOfAClaimedRoleRetriesAHolderResolutionThatFailed(t *testing.T)
 	}
 }
 
+// A resolution of the role's holder that did not answer still walks the lane with no holder, and
+// where that walk drains the lane the handover ends there, with no read of the role's claim record
+// (handOverKeptRole). Here the copy's hour has ended, so the walk ends it with a dead letter that
+// says no session held the role, while the claim names a live holder. The handover used to end
+// with nothing logged above Debug, so a test that read that dead letter could print no cause; it
+// now says at WARN that it walked with no holder, naming the resolution that did not answer, its
+// bound and its error.
+func TestAHandoverWhoseHolderResolutionDidNotAnswerSaysSoWhereItsWalkDrainedTheLane(t *testing.T) {
+	t.Parallel()
+	harness := newListenerDeliveryHarness(t)
+	const (
+		role   = "kept-holder-unresolved-drained"
+		holder = "ses_kept_holder_unresolved_drained"
+		sender = "ses_kept_holder_unresolved_sender"
+		walked = "listener kept role drain walked the role's copies with no holder because the holder lookup did not answer"
+	)
+	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-00")
+	item.SourceSession = sender
+	held, err := keepRoleMessage(harness.config, role, item)
+	if err != nil {
+		t.Fatalf("keep the copy: %v; the listener log says why:\n%s", err, harness.logs.String())
+	}
+	claimRoleBeyondTheSessionCache(t, harness, holder, role)
+	// Every read of the session bucket fails from here, so the handover's own resolution of the
+	// holder does not answer whichever other reader of the registry reads the bucket first.
+	unanswered := errors.New("the session bucket's read did not answer")
+	swapSessionBucket(t, harness.sessions, func(kv natsgo.KeyValue) natsgo.KeyValue {
+		return bucketThatFails{KeyValue: kv, err: unanswered}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
+	defer cancel()
+	// The copy's hour ended a minute ago and its sender is owed a dead letter for it.
+	pastItsHour := func() time.Time { return time.Now().Add(roleKeepWindow + time.Minute) }
+	if _, err := handOverKeptRole(ctx, harness.config, role, pastItsHour); err != nil {
+		t.Fatalf("hand over role %s's kept lane: %v\n%s", role, err, harness.logs.String())
+	}
+	stored, err := harness.client.ReadKeptRoleCursor(ctx, role)
+	if err != nil {
+		t.Fatalf("read role %s's drain cursor: %v", role, err)
+	}
+	if stored.Cursor.Kept < held.sequence {
+		t.Fatalf("role %s's drain cursor is at %d, want it past the copy at %d: the walk with no holder did not drain the lane:\n%s",
+			role, stored.Cursor.Kept, held.sequence, harness.logs.String())
+	}
+
+	lines := linesIn(harness.logs.String(), walked, map[string]any{"role": role})
+	if len(lines) != 1 {
+		t.Fatalf("the handover logged %d lines %q for role %s, want 1:\n%s", len(lines), walked, role, harness.logs.String())
+	}
+	line := lines[0]
+	message, _ := line["error"].(string)
+	if line["level"] != "WARN" || line["unanswered"] != "listener kept role message could not resolve the role's holder" ||
+		line["bound"] != float64(roleKeepHolderWindow) || !strings.Contains(message, unanswered.Error()) {
+		t.Fatalf("the line is %v, want it at WARN naming the resolution of the holder, its bound %s (%d ns) and its error %q",
+			line, roleKeepHolderWindow, roleKeepHolderWindow, unanswered)
+	}
+}
+
 // bucketThatFails is a bucket no read of which answers: err is what each read answers with, and
 // before runs first, which is where a test ends the context of the handover making that read, or
 // counts the read (failRoleClaimReads).
@@ -884,6 +948,9 @@ func (kv *sessionBucketThatStalls) Get(string) (natsgo.KeyValueEntry, error) {
 // a pause. Quieting that read too ended ten minutes of a claimed role's lane failing with nothing
 // above Debug, where the same failure whose window ended in a pause was reported at Error.
 func TestAHandoverReportsAHolderReadThatFailedAndNotOneItsShutdownCancelled(t *testing.T) {
+	// Serial: its stalled row holds a wall-clock window: that row is about a deadline that lands
+	// inside a read, and its 3 s window (3 * roleKeepDrainRetryPause) ends inside its second read
+	// only when its first read and the 1 s pause that read earns end inside the window.
 	for _, test := range []struct {
 		name           string
 		shutdown       bool
@@ -896,6 +963,8 @@ func TestAHandoverReportsAHolderReadThatFailedAndNotOneItsShutdownCancelled(t *t
 		{name: "stalled", stalled: true, wantErr: true, wantErrorLines: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			// Serial: in its stalled row the 3 s window ends inside the second read, the row's
+			// subject, only when the first read and its 1 s pause end inside it.
 			harness := newListenerDeliveryHarness(t)
 			role := "kept-shutdown-" + test.name
 			holder := "ses_kept_shutdown_" + test.name

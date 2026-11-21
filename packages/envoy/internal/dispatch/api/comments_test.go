@@ -26,9 +26,11 @@ func createThreadComment(t *testing.T, handler http.Handler, issueKey string, in
 	return decodeBody[model.Comment](t, response)
 }
 func TestMentionedCommentDeliversAndProjectsResolvedMention(t *testing.T) {
+	t.Parallel()
 	sent := []map[string]any{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["aside","btw","steer"]}]`
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	lookups := &listenerLookups{}
+	listener := httptest.NewServer(lookups.recording(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
 			writeSessionRecord(t, w, sessions, "s1")
@@ -44,7 +46,7 @@ func TestMentionedCommentDeliversAndProjectsResolvedMention(t *testing.T) {
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
-	}))
+	})))
 	defer listener.Close()
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Comment mentions", "before")
@@ -73,7 +75,8 @@ func TestMentionedCommentDeliversAndProjectsResolvedMention(t *testing.T) {
 	if len(created.Mentions) != 1 || created.Mentions[0].Target != "session:s1" ||
 		created.Mentions[0].Delivery != "steer" || created.Mentions[0].SessionID == nil ||
 		*created.Mentions[0].SessionID != "s1" {
-		t.Fatalf("created mentions = %#v, want the resolved default-steer session mention", created.Mentions)
+		t.Fatalf("the create answered %s, want its mention resolved to s1 with the default steer; the listener served: %s",
+			response.Body.String(), lookups)
 	}
 	if len(created.Deliveries) != 1 || created.Deliveries[0].Target != "session:s1" ||
 		created.Deliveries[0].State != "pending" {
@@ -81,10 +84,11 @@ func TestMentionedCommentDeliversAndProjectsResolvedMention(t *testing.T) {
 	}
 	if settled := settledCommentDeliveries(t, database, created.ID); len(settled) != 1 ||
 		settled[0].Target != "session:s1" || settled[0].State != "sent" {
-		t.Fatalf("settled deliveries = %#v, want one sent session:s1 attempt", settled)
+		t.Fatalf("settled deliveries = %s, want one sent session:s1 attempt", describeAttempts(settled))
 	}
 	if len(sent) != 1 {
-		t.Fatalf("listener sends = %#v, want exactly one mention delivery", sent)
+		t.Fatalf("listener sends = %#v, want exactly one mention delivery; attempts: %s",
+			sent, describeAttempts(commentAttempts(t, database, created.ID)))
 	}
 	frame, ok := sent[0]["payload"].(string)
 	if !ok {
@@ -117,7 +121,7 @@ func TestMentionedCommentDeliversAndProjectsResolvedMention(t *testing.T) {
 		*delivered.Event.Payload.Mentions[0].SessionID != "s1" || delivered.Delivery.Attempt != 1 ||
 		delivered.Delivery.Mode != "steer" || delivered.Delivery.Comment != created.ID ||
 		delivered.Delivery.Target != "session:s1" {
-		t.Fatalf("mention delivery frame = %#v", delivered)
+		t.Fatalf("mention delivery frame = %s; the create answered %s; the listener served: %s", frame, response.Body.String(), lookups)
 	}
 
 	reloaded := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/comments", nil, "alice")
@@ -191,6 +195,7 @@ func countCommentRows(t *testing.T, handler http.Handler, issueKey string) int {
 }
 
 func TestReopenCommentClearsResolutionAndReprojects(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Reopen comment", "before")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{
@@ -232,6 +237,7 @@ func TestReopenCommentClearsResolutionAndReprojects(t *testing.T) {
 }
 
 func TestReplyToResolvedRootReopensIt(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Reply reopens root", "before")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "root"}, "alice")
@@ -258,8 +264,10 @@ func TestReplyToResolvedRootReopensIt(t *testing.T) {
 // Accepting or rejecting a suggestion takes its mark out of the document. A reply still joins
 // that thread, and it leaves the decision as it was: who decided it and when, with no reopen.
 func TestReplyToADecidedSuggestionLandsAndKeepsTheDecision(t *testing.T) {
+	t.Parallel()
 	for _, action := range []string{"accept", "reject"} {
 		t.Run(action, func(t *testing.T) {
+			t.Parallel()
 			handler := newTestHandler(t)
 			issue := createInteractionIssue(t, handler, "TEST", "Reply after "+action, "The quick brown fox")
 			root := createThreadComment(t, handler, issue.Key, map[string]any{
@@ -292,6 +300,7 @@ func TestReplyToADecidedSuggestionLandsAndKeepsTheDecision(t *testing.T) {
 }
 
 func TestReplyToNestedCommentUsesThreadRoot(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Thread root replies", "before")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "root"}, "alice")
@@ -316,6 +325,7 @@ func TestReplyToNestedCommentUsesThreadRoot(t *testing.T) {
 }
 
 func TestReplyToAskClarificationContinuesAskThread(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Ask clarification", "before")
 	askResponse := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
@@ -491,6 +501,7 @@ func TestAReplyUnderAClosedAskJoinsItsThreadAndRecordsNoTurn(t *testing.T) {
 }
 
 func TestCreateCommentSeparatesMalformedAndWrongOwnerThreadIDs(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Thread IDs", "before")
 	otherResponse := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
@@ -556,6 +567,7 @@ func TestCreateCommentSeparatesMalformedAndWrongOwnerThreadIDs(t *testing.T) {
 }
 
 func TestCommentReplyToNumberedAskListsOpenAsks(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Reply target", "A spec")
 	first := createEditableAsk(t, handler, issue.Key)
@@ -577,6 +589,7 @@ func TestCommentReplyToNumberedAskListsOpenAsks(t *testing.T) {
 }
 
 func TestCreateCommentRejectsReplySuggestions(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Reply suggestions", "before")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "root"}, "alice")
@@ -615,6 +628,7 @@ func TestCreateCommentRejectsReplySuggestions(t *testing.T) {
 }
 
 func TestEditCommentIsAuthorOnly(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Edit comment", "before")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{
@@ -653,6 +667,7 @@ func TestEditCommentIsAuthorOnly(t *testing.T) {
 }
 
 func TestResolveRecordsWhoAndWhen(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Resolution metadata", "before")
 	started := time.Now().UTC().Add(-time.Minute)
@@ -700,6 +715,7 @@ func TestResolveRecordsWhoAndWhen(t *testing.T) {
 // created_at - so a host in another zone answering "2026-10-01T17:00:01.12-07:00" where this one
 // answers "2026-10-02T00:00:01.12Z" is a different server to every one of those readers.
 func TestAPIWritesStoredTimestampsInUTC(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Timestamps", "The quick brown fox")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "written first"}, "alice")

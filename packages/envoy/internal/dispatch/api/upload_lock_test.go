@@ -24,6 +24,7 @@ import (
 // load. Holding the owner lock here must therefore stop the upload before the room lock, leaving
 // the room free to take behind it.
 func TestProjectDocumentUploadTakesItsOwnerRowBeforeTheRoomLock(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
@@ -77,6 +78,8 @@ func TestProjectDocumentUploadTakesItsOwnerRowBeforeTheRoomLock(t *testing.T) {
 // commit (Ledger.Commit's recordLatestEditSource), after its event, would wait for the answer and
 // then finish; what fails this test is a lock the two come to share in opposite orders.
 func TestAnUploadOfACopyAndAnAnswerToItsSourceBothTakeTheCopysPendingRowBeforeTheirEvents(t *testing.T) {
+	// No t.Parallel: this test reads what the process's own default logger was handed, which
+	// every other test running beside it would write into too.
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	logs := &storetest.LockedLog{}
@@ -224,7 +227,7 @@ func awaitLockWaits(t *testing.T, ctx context.Context, database *store.Store, ne
 		}
 		return count
 	}
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(concurrentWait)
 	for !reached(waiting) {
 		if time.Now().After(deadline) {
 			t.Fatal(never)
@@ -237,7 +240,7 @@ func awaitLockWaits(t *testing.T, ctx context.Context, database *store.Store, ne
 // settlement.
 func awaitCopyShows(t *testing.T, ctx context.Context, database *store.Store, copy, want string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(concurrentWait)
 	for {
 		var markdown string
 		var pending int
@@ -262,6 +265,10 @@ func awaitCopyShows(t *testing.T, ctx context.Context, database *store.Store, co
 // doc_updates' foreign key: while the owner lock was a `for update` row lock that key share
 // conflicted and the two deadlocked. The owner's advisory lock takes no row lock at all.
 func TestProjectDocumentUploadOwnerLockLeavesTheForeignKeyFree(t *testing.T) {
+	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
+	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
+	// transaction id running anywhere on the instance (internal/dispatch/events,
+	// horizon.go), so a hold here stalls every parallel test reading that feed.
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})

@@ -89,6 +89,7 @@ func runDocumentRoomSyncDialing(
 // the request - a client that has hung up included - can keep a room taking edits from the
 // browsers connected to it.
 func TestClosingAnIssueClosesItsRoomsFromItsCommit(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{
@@ -183,7 +184,7 @@ func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("the close left the browser's room on the other process open")
 	}
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(concurrentWait); ; time.Sleep(20 * time.Millisecond) {
 		stored := storedDocumentText(t, database, issue.PrimaryArtifactID)
 		if strings.Contains(stored, "typed during the close") {
 			break
@@ -193,7 +194,7 @@ func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 		}
 	}
 	peer.reconnect(t)
-	scope, err := peer.connection().Authenticate(strconv.Itoa(pmdoc.SchemaVersion()), 10*time.Second)
+	scope, err := peer.connection().Authenticate(strconv.Itoa(pmdoc.SchemaVersion()), concurrentWait)
 	if err != nil {
 		t.Fatalf("authenticate the reconnected browser: %v", err)
 	}
@@ -203,10 +204,10 @@ func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 }
 
 // waitForDocumentLockWaiter returns once a session of database waits on a document's advisory lock
-// (a room's append, lockRoom), failing the test after ten seconds.
+// (a room's append, lockRoom), failing the test after concurrentWait.
 func waitForDocumentLockWaiter(t *testing.T, database *store.Store) {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(concurrentWait); ; time.Sleep(10 * time.Millisecond) {
 		waiting, err := storetest.CountLockWaits(context.Background(), database, "%pg_advisory%lock(hashtext($1))%")
 		if err != nil {
 			t.Fatal(err)
@@ -243,7 +244,7 @@ func storedDocumentText(t *testing.T, database *store.Store, artifactID string) 
 // waitForDocumentConnectionClose waits for the server to close a connected client's connection.
 func waitForDocumentConnectionClose(t *testing.T, connection *gws.Conn) {
 	t.Helper()
-	connection.SetReadDeadline(time.Now().Add(10 * time.Second))
+	connection.SetReadDeadline(time.Now().Add(concurrentWait))
 	for {
 		if _, _, err := connection.ReadMessage(); err != nil {
 			var networkError net.Error

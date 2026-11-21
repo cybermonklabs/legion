@@ -232,7 +232,7 @@ func (claimedRole) TTL() time.Duration { return 5 * time.Minute }
 
 // runOutboxUntilSettled runs the outbox through publisher until every event of issueKey is
 // published and every copy of commentID it held back for a resent mention is settled, for at most
-// 10 s.
+// concurrentWait.
 func runOutboxUntilSettled(t *testing.T, deps Deps, publisher outbox.Publisher, issueKey, commentID string) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -249,7 +249,7 @@ func runOutboxUntilSettled(t *testing.T, deps Deps, publisher outbox.Publisher, 
 		cancel()
 		<-stopped
 	}()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(concurrentWait)
 	for {
 		var unpublished, unsettled int
 		if err := deps.Store.Pool.QueryRow(context.Background(), `
@@ -415,14 +415,14 @@ func fallbackCopiesOf(t *testing.T, database *store.Store, commentID string) []h
 	return copies
 }
 
-// awaitFallbackCopies waits, for at most 10 s, until the comment has a fallback row for every
-// destination in want and each of them reads settled, and answers the rows then. want is the
-// copies the outbox is to hold; settled says whether to wait for a pass to decide them.
+// awaitFallbackCopies waits, for at most concurrentWait, until the comment has a fallback row for
+// every destination in want and each of them reads settled, and answers the rows then. want is
+// the copies the outbox is to hold; settled says whether to wait for a pass to decide them.
 func awaitFallbackCopies(
 	t *testing.T, database *store.Store, commentID string, want []string, settled bool,
 ) []heldCopy {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(concurrentWait)
 	for {
 		copies := fallbackCopiesOf(t, database, commentID)
 		destinations := make([]string, 0, len(copies))
@@ -441,11 +441,11 @@ func awaitFallbackCopies(
 	}
 }
 
-// awaitPublishedCommentCreated waits, for at most 10 s, until the outbox has published the
-// comment.created event of commentID, and answers the destinations it reached.
+// awaitPublishedCommentCreated waits, for at most concurrentWait, until the outbox has published
+// the comment.created event of commentID, and answers the destinations it reached.
 func awaitPublishedCommentCreated(t *testing.T, database *store.Store, commentID string) []string {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(concurrentWait)
 	for {
 		var destinations []string
 		var publishedAt *time.Time

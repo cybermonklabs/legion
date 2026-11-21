@@ -20,6 +20,7 @@ import (
 // that one copy and adds no second. A window whose deadline has passed writes nothing at all: its
 // forward answers ErrWindowDeadline before anything is sent, and the stream holds nothing of it.
 func TestAForwardRequestTheFullClusterStreamRefusedIsStoredOnceTheStreamHasRoom(t *testing.T) {
+	t.Parallel()
 	const limit = 16 << 10
 	cluster := testnats.StartCluster(t, 3)
 	client := startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(limit))
@@ -69,14 +70,14 @@ func TestAForwardRequestTheFullClusterStreamRefusedIsStoredOnceTheStreamHasRoom(
 		}
 		return info.State.Subjects[subject]
 	}
-	// answer waits for outcome's answer, far longer than any request's own timeout here.
+	// answer waits for outcome's answer, failing the test when none comes.
 	answer := func(outcome <-chan error) error {
 		t.Helper()
 		select {
 		case err := <-outcome:
 			return err
-		case <-time.After(30 * time.Second):
-			t.Fatal("no answer within 30 s")
+		case <-time.After(busWait):
+			t.Fatalf("no answer within %s", busWait)
 			return nil
 		}
 	}
@@ -100,7 +101,7 @@ func TestAForwardRequestTheFullClusterStreamRefusedIsStoredOnceTheStreamHasRoom(
 
 	holder := contracts.LegacyAgentSubject("ses_forward_stored")
 	item := forward("stored")
-	opts := RequestOptions{MsgID: ForwardMsgID(item.DedupeKey, holder), Timeout: 2 * time.Second}
+	opts := RequestOptions{MsgID: ForwardMsgID(item.DedupeKey, holder), Timeout: busWait}
 	refused(1, holder, item, opts)
 	if err := answer(client.WindowUntil(nil).Request(holder, item, opts)); err != nil {
 		t.Fatalf("the forward retried once the stream had room = %v, want nil", err)

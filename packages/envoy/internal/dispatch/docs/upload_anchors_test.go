@@ -90,6 +90,7 @@ func sameAttrs(t *testing.T, got, want pmdoc.Attrs) bool {
 // the anchor had. An anchor whose quote the upload deleted leaves the document, and its row
 // orphans at settlement.
 func TestAnUploadLeavesTheAnchorsOnTheTextItKeeps(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, seed, upload string
 		anchors            []uploadAnchor
@@ -209,6 +210,7 @@ func TestAnUploadLeavesTheAnchorsOnTheTextItKeeps(t *testing.T) {
 // order, so one pass over the markdown resolves it, never as a document outside its schema (a 500
 // or a repair), and the room keeps the tree it held.
 func TestAnUploadMovingAnAnchorsQuoteWhereItsMarkIsNotAllowedIsRefused(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, seed, upload, quote, want string
 		kind                            MarkKind
@@ -275,6 +277,7 @@ func TestAnUploadMovingAnAnchorsQuoteWhereItsMarkIsNotAllowedIsRefused(t *testin
 // original: its nearest occurrence that may carry the mark, even where a copy stands nearer to
 // where the anchor stood.
 func TestAnUploadCopyingAnAnchorsQuoteWhereItsMarkIsNotAllowedKeepsTheAnchorOnTheOriginal(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, seed, upload, quote, holder string
 		kind                              MarkKind
@@ -327,6 +330,7 @@ func holderType(at pmdoc.TextblockAt) string {
 // a document outside its schema that a route would offer to repair, and never an invalid-markdown
 // answer.
 func TestAReanchorErrorIsTheCallersOnlyWhenTheMarkIsNotAllowed(t *testing.T) {
+	t.Parallel()
 	ask := anchoredMark{markType: string(MarkAsk), anchor: model.Anchor{Quote: "run the tests"}}
 	notAllowed := &pmdoc.MarkNotAllowedError{Mark: string(MarkAsk), Textblock: "code_block", At: 40}
 	inAnotherCodeBlock := &pmdoc.MarkNotAllowedError{Mark: string(MarkAsk), Textblock: "code_block", At: 70}

@@ -68,6 +68,7 @@ func dormantRecordFor(t *testing.T, pid int, sessionID, enrollmentID string, key
 // record whose pid and start ticks match that very process just as exactly — but which names
 // another boot, or no boot at all — must not, however alive that process is.
 func TestOnlyARecordOfThisBootRePinsItsProcess(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		bootID   func(this string) string
@@ -127,6 +128,7 @@ func TestOnlyARecordOfThisBootRePinsItsProcess(t *testing.T) {
 // locks — LiveSessionID, then an insert — both would pass the check and both would sign as the
 // session.
 func TestTwoRootsRacingForOneNameLeaveOneWinner(t *testing.T) {
+	t.Parallel()
 	for range 100 {
 		reg := NewRegistry(filepath.Join(t.TempDir(), "sessions.json"))
 		reg.parent = rootingParent
@@ -183,6 +185,7 @@ func TestTwoRootsRacingForOneNameLeaveOneWinner(t *testing.T) {
 // returning process a fresh identity and the old one parked beside it where nothing could
 // reclaim it and only the sweep could end it.
 func TestAProcessComingBackWhileItsSessionRetiresFindsTheIdentity(t *testing.T) {
+	t.Parallel()
 	key, err := proof.NewKey()
 	if err != nil {
 		t.Fatal(err)
@@ -311,6 +314,7 @@ func TestAReclaimedIdentityKeepsItsEnrollmentID(t *testing.T) {
 // record; dropping it for want of an id would leave an identity nothing could ever reclaim,
 // which is the gap retire's own fix left behind in the recovery path.
 func TestANamedRecordWithNoEnrollmentIsStillParked(t *testing.T) {
+	t.Parallel()
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	gone := sleeper(t)
 	gonePID := gone.Process.Pid
@@ -351,6 +355,7 @@ func TestANamedRecordWithNoEnrollmentIsStillParked(t *testing.T) {
 // of these three registers fails AFTER the point the old code had already deleted the record,
 // and each must leave the identity reclaimable by the session it belongs to.
 func TestARegisterThatFailsLeavesTheIdentityWhereItWas(t *testing.T) {
+	t.Parallel()
 	t.Run("a draining helper", func(t *testing.T) {
 		state := filepath.Join(t.TempDir(), "sessions.json")
 		key := parkedRecord(t, state)
@@ -451,16 +456,17 @@ func parkedRecord(t *testing.T, state string) *ecdsa.PrivateKey {
 // The gate is taken after the rig starts, as testGate asks: the open it registers for cleanup
 // then runs before the fake server's own Close, which waits for any request still held at the
 // gate.
-func reclaimedIdentityRig(t *testing.T) (*rig, *ecdsa.PrivateKey, string, func()) {
+func reclaimedIdentityRig(t *testing.T, tune ...func(*rig)) (*rig, *ecdsa.PrivateKey, string, func()) {
 	t.Helper()
-	return reclaimedIdentityRigAmending(t, nil)
+	return reclaimedIdentityRigAmending(t, nil, tune...)
 }
 
 // reclaimedIdentityRigAmending is reclaimedIdentityRig's body, with amend — when it is not nil
 // — changing the parked record after parkedRecord has written it and before the rig recovers
 // it. It is how a variant gets a record parkedRecord does not write, such as one carrying a
-// lapsed enrollment beside the one to reclaim.
-func reclaimedIdentityRigAmending(t *testing.T, amend func(*Record)) (*rig, *ecdsa.PrivateKey, string, func()) {
+// lapsed enrollment beside the one to reclaim. tune is passed to newRig, so a row sets a Server
+// field, such as the production enroll backoff, before the rig recovers the record.
+func reclaimedIdentityRigAmending(t *testing.T, amend func(*Record), tune ...func(*rig)) (*rig, *ecdsa.PrivateKey, string, func()) {
 	t.Helper()
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	key := parkedRecord(t, state)
@@ -472,7 +478,7 @@ func reclaimedIdentityRigAmending(t *testing.T, amend func(*Record)) (*rig, *ecd
 		amend(&recs[0])
 		writeRecords(t, state, recs)
 	}
-	r := newRig(t, state)
+	r := newRig(t, state, tune...)
 	gate, release := testGate(t)
 	// The confirming renew this gate holds is a FIRST confirmation, so the helper bounds it
 	// (Server.FirstConfirmBound, DefaultFirstConfirmBound = 3 s in production). The rows here
@@ -592,6 +598,7 @@ func requireReclaimable(t *testing.T, r *rig, key *ecdsa.PrivateKey) {
 // knew the session id. The admission's own ancestry walk is as much the kernel's to invalidate
 // as the walk before an insert.
 func TestTheAncestryWinnerIsRefusedToAPeerWhosePIDChanged(t *testing.T) {
+	t.Parallel()
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	key := parkedRecord(t, state)
 	r := startRig(t, state)
@@ -635,6 +642,7 @@ func TestTheAncestryWinnerIsRefusedToAPeerWhosePIDChanged(t *testing.T) {
 // speaks for the enrollment that is gone, not for the one just taken back — and lapsing the new
 // one would have enrollLoop revoke it, destroying the very grants the reclaim exists to keep.
 func TestARefusedRenewOfAnOldEnrollmentLeavesTheReclaimedOneAlone(t *testing.T) {
+	t.Parallel()
 	sess, err := newSession(1000, 1, "testhost:1000:1", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -681,6 +689,7 @@ func TestARefusedRenewOfAnOldEnrollmentLeavesTheReclaimedOneAlone(t *testing.T) 
 // instead. Reversed, an outage lasting through three bounded tries leaves the session unable to
 // enrol at all until the blocking row's lease ends.
 func TestTheBlockingEnrollmentTakesTheLapsedSlot(t *testing.T) {
+	t.Parallel()
 	sess := namedSession(t, 1000, testSessionID, nil)
 	sess.adoptLapsed("enr-old-pid") // what a rename retired: the old runtime's enrollment
 	orphans := takeLapsed(sess, []string{"enr-blocking", "enr-other"}, true)
@@ -706,6 +715,7 @@ func TestTheBlockingEnrollmentTakesTheLapsedSlot(t *testing.T) {
 // let a launcher run on believing its session has an identity, and leave the one kept for that
 // name to the sweep.
 func TestNamingASessionThatHasLeftIsNotASuccess(t *testing.T) {
+	t.Parallel()
 	r := startRig(t, "")
 	sess, err := newSession(4242, 1, "testhost:4242:1", "", nil, nil)
 	if err != nil {
@@ -730,6 +740,7 @@ func TestNamingASessionThatHasLeftIsNotASuccess(t *testing.T) {
 // timeout — none of them says anything about the row, and reading one as a refusal costs the
 // session every pending request and grant the enrollment carries.
 func TestATransientRenewFailureDoesNotCostTheInheritedEnrollment(t *testing.T) {
+	t.Parallel()
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	key := parkedRecord(t, state)
 	r := startRig(t, state)
@@ -769,6 +780,7 @@ func TestATransientRenewFailureDoesNotCostTheInheritedEnrollment(t *testing.T) {
 // enrolls again and abandons the live enrollment the session has just proved — the very loss
 // this change exists to prevent. A wake counts only while the identity has in fact moved on.
 func TestAWakeRaisedBeforeThisEnrollmentDoesNotEnrollAgain(t *testing.T) {
+	t.Parallel()
 	r := startRig(t, "")
 	sess, err := newSession(1000, 1, "testhost:1000:1", "", nil, nil)
 	if err != nil {
@@ -798,7 +810,7 @@ func TestAWakeRaisedBeforeThisEnrollmentDoesNotEnrollAgain(t *testing.T) {
 		if !again {
 			t.Fatal("a rename's wake must send the session to the enroll, not end its loops")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWait):
 		t.Fatal("a rename's wake did not reach the renew loop")
 	}
 }
@@ -809,6 +821,7 @@ func TestAWakeRaisedBeforeThisEnrollmentDoesNotEnrollAgain(t *testing.T) {
 // finished revoke, or filling it with a stale enroll's id, drops that blocker: the next enroll is
 // refused 409 ALREADY_ENROLLED for as long as its row lives, and nothing is left to revoke it.
 func TestARevokeFinishingAfterARenameLeavesTheBlockingID(t *testing.T) {
+	t.Parallel()
 	sess := namedSession(t, 1000, testSessionID, nil)
 	sess.adoptLapsed("enr-old") // the id whose revoke is in flight
 	takeLapsed(sess, []string{"enr-blocking"}, true)
@@ -839,6 +852,7 @@ func TestARevokeFinishingAfterARenameLeavesTheBlockingID(t *testing.T) {
 // and the new runtime enrols; with it overwritten, the new runtime's
 // enroll meets the live blocker and loops on 409 ALREADY_ENROLLED.
 func TestAStaleEnrollArrivingAfterARenameIsNotKeptOverTheBlocker(t *testing.T) {
+	t.Parallel()
 	r := startRig(t, filepath.Join(t.TempDir(), "sessions.json"))
 	// enr-blocking is live under the runtime id the session is about to be renamed to, so a
 	// fresh enroll for that runtime is refused until it is revoked.
@@ -957,6 +971,7 @@ func TestARenameDuringTheOldRevokeRevokesTheNewBlockerFirst(t *testing.T) {
 // paths must refuse rather than tell a launcher its session holds a broker identity that
 // nothing live holds and the sweep is about to revoke.
 func TestARegisterForASessionTheRegistryNoLongerHoldsIsRefused(t *testing.T) {
+	t.Parallel()
 	r := startRig(t, "")
 	for _, tc := range []struct {
 		name      string
@@ -982,6 +997,8 @@ func TestARegisterForASessionTheRegistryNoLongerHoldsIsRefused(t *testing.T) {
 // closing its stop. The reply must then be NOT_A_SESSION, not OK with the identity of a session
 // nothing live holds and the sweep is about to revoke.
 func TestARegisterWaitingWhenItsSessionRetiresIsNotASuccess(t *testing.T) {
+	// Serial: it holds the reply's return to 5 s after the retire closes its stop, a wall-clock
+	// bound a parallel neighbour's load spends.
 	r := startRig(t, "") // logged in, so the reply actually waits
 	sess, err := newSession(4242, 1, "testhost:4242:1", testSessionID, nil, nil)
 	if err != nil {
@@ -989,8 +1006,13 @@ func TestARegisterWaitingWhenItsSessionRetiresIsNotASuccess(t *testing.T) {
 	}
 	r.srv.Registry.Add(sess) // live and unenrolled, so the wait does not return at once
 	done := make(chan Response, 1)
-	go func() { done <- r.srv.registerReply(sess, 5*time.Second) }()
-	// Retire it while the reply is mid-wait; Remove closes its stop, which wakes the wait.
+	// The reply's own wait is an hour, so nothing ends it but the retire: the Remove below may land
+	// before the wait begins or during it, and either way the wait's select finds the session's
+	// stop closed. With a 5 s wait, Remove had to land inside those 5 s or the reply found the
+	// session still held and answered OK; and a reply that never woke on the stop raced the 5 s
+	// guard below with an answer of its own 5 s later, which found the session gone and passed.
+	// The guard is now the only bound, at 5 s: a reply the retire does not wake fails there.
+	go func() { done <- r.srv.registerReply(sess, time.Hour) }()
 	r.srv.Registry.Remove(sess)
 	select {
 	case resp := <-done:

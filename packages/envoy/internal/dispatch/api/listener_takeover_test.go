@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // takeOverRoute is a listener route a take-over listener's script names: the registry read, the
@@ -40,6 +41,8 @@ type takeOverAnswer struct {
 // send it published, a late answer's included, and how many requests reached each route.
 type takeOverListener struct {
 	server *httptest.Server
+	// lookups is every read the listener served, a refused one included, for a failure message.
+	lookups listenerLookups
 
 	mu       sync.Mutex
 	script   []takeOverAnswer
@@ -54,7 +57,7 @@ type takeOverListener struct {
 func startTakeOverListener(t *testing.T) *takeOverListener {
 	t.Helper()
 	listener := &takeOverListener{requests: map[takeOverRoute]int{}}
-	listener.server = httptest.NewServer(http.HandlerFunc(listener.serve))
+	listener.server = httptest.NewServer(listener.lookups.recording(http.HandlerFunc(listener.serve)))
 	t.Cleanup(listener.server.Close)
 	return listener
 }
@@ -179,22 +182,50 @@ func deliveryReceiptsOf(t *testing.T, database *store.Store, receiptType, field,
 // a few seconds. A send that meets one of those waits out the take-over under the attempt it
 // holds and its own key, and reaches the session once the listener answers. Anything else the
 // listener says - the session does not take this mode, the send itself is refused - is its
-// answer, and the attempt settles failed on that first try. The server's window is a short one
-// of its own, which still fits every try a case's take-over takes: a receipt timeout's 300 ms try
-// and its retry, and the starting gate's two retries 250 ms and 750 ms after the first try.
+// answer, and the attempt settles failed on that first try. The listener client's window is this
+// test's own: nothing here is answered on a timer any more, so the window only has to be longer
+// than an answer of this listener takes, and the one try nothing answers in time - the receipt
+// timeout's - is all it costs this table. The take-over window is the generous one for the same
+// reason, so every try a case takes still starts inside it: that missed try's retry, and the
+// starting gate's two retries 250 ms and 750 ms after the first try.
 func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
+	// Serial: this test measures the process. Each answer of the listener must come back
+	// inside the client's 1.5 s window, where a later one is a receipt timeout the send retries,
+	// and each retry must start inside the 6 s take-over window: another test's work on the same
+	// machine would read as a listener that did not answer.
 	listener := startTakeOverListener(t)
 	handler, database, _ := newTestServer(t, testServerOptions{
-		envoyURL: listener.server.URL, envoyTimeout: 300 * time.Millisecond, takeoverWindow: 3 * time.Second,
+		envoyURL: listener.server.URL, envoyTimeout: 1500 * time.Millisecond, takeoverWindow: 6 * time.Second,
 	})
 
+	// The retry's send is this test's own evidence that the first try's window has ended: a
+	// sender tries again only after a try it recorded failed, and the only thing that ends the
+	// try below is that window. answered is closed when the retry arrives, and the first try,
+	// which this listener is still holding, answers then: late, as the answer of a listener that
+	// published and lost its client is, but ordered on an event the test can observe. A sleep
+	// longer than the window ordered the two by wall clock instead, and a runner stalled for
+	// longer than the sleep left the client's expiry and this answer both due at the same moment:
+	// an answer taken inside the window settles attempt 1 sent on its first try, where this case
+	// wants that receipt missed and the retry answered duplicate. released lets a held try go
+	// when no retry came, so Close waits on no request.
+	answered, released := make(chan struct{}), make(chan struct{})
+	defer close(released)
 	lateAnswer := func(l *takeOverListener, w http.ResponseWriter, _ *http.Request, send resumeSend) {
 		// The listener publishes before it answers, and this answer misses the client's window.
 		l.mu.Lock()
 		l.sends = append(l.sends, send)
 		l.mu.Unlock()
-		time.Sleep(600 * time.Millisecond)
+		select {
+		case <-answered:
+		case <-released:
+		}
 		_, _ = w.Write([]byte(`{"event_id":"takeover-late","recipient":"s1"}`))
+	}
+	// The retry of that send, which frees the try still held before it answers as the listener
+	// does once it holds the session: the key and recipient were published above, so duplicate.
+	answerTheRetry := func(l *takeOverListener, w http.ResponseWriter, _ *http.Request, send resumeSend) {
+		close(answered)
+		l.publish(w, send)
 	}
 	for _, tc := range []struct {
 		name   string
@@ -224,7 +255,9 @@ func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
 				w.WriteHeader(http.StatusBadGateway)
 			}},
 		}},
-		{name: "the send's receipt timed out", script: []takeOverAnswer{{takeOverSend, lateAnswer}}, wantDuplicate: true},
+		{name: "the send's receipt timed out", script: []takeOverAnswer{
+			{takeOverSend, lateAnswer}, {takeOverSend, answerTheRetry},
+		}, wantDuplicate: true},
 		{name: "the session does not take the mode", script: []takeOverAnswer{
 			{takeOverRegistry, answerJSON(http.StatusOK, `{"session_id":"s1","title":"planner","capabilities":["btw"]}`)},
 		}, failure: "session s1 (planner) does not advertise steer", triesRoute: takeOverRegistry},
@@ -279,6 +312,8 @@ func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
 // With no listener configured there is no take-over to wait out: the send settles failed at once,
 // well inside the production window the server runs.
 func TestASendWithNoListenerConfiguredSettlesAtOnce(t *testing.T) {
+	// Serial: this test measures the process. It bounds the whole database-backed send
+	// at 3 s, and another test's work on the same machine would read as a send that waited.
 	handler, _, _ := newTestServer(t, testServerOptions{takeoverWindow: listenerTakeoverWindow})
 	started := time.Now()
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/agents/s1/messages",
@@ -301,9 +336,11 @@ func TestASendWithNoListenerConfiguredSettlesAtOnce(t *testing.T) {
 // reaches its session once, under attempt 1, with one receipt. The listener refuses until two
 // tries have found the attempt held and a sweep pass has run, so the fourth try - 1.75 s of
 // backoff after the first - is the one it answers, and the claim is read at four points across
-// three renewals. The server's window is 3 s: it still admits that fourth try with over a second
-// to spare, and the production twelve would only lengthen a failure.
+// three renewals. The server's window outlasts any run of the test binary, a give-up bound rather
+// than a measurement: what ends the wait here is the listener answering the fourth try, and a
+// window tight around that try is a window a loaded machine runs out before the try arrives.
 func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, table, column, receipt, path string
 		body                               map[string]any
@@ -330,8 +367,15 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			listener := startTakeOverListener(t)
+			// The take-over window outlasts any run of the test binary: what ends the sender's
+			// wait is the listener answering after refuse(false), and the test's own waits for the
+			// tries and the answer give up at concurrentWait.
+			// Each call to the listener gets concurrentWait too, in place of the client's 5 s:
+			// every one runs this test's observe read of the attempt row before it is answered,
+			// and a call cut short is a try the sender makes again - after a send that landed, a
+			// second send to s1, which the one-send check below fails.
 			handler, database, deps := newTestServer(t, testServerOptions{
-				envoyURL: listener.server.URL, takeoverWindow: 3 * time.Second,
+				envoyURL: listener.server.URL, envoyTimeout: concurrentWait, takeoverWindow: testwait.PastTheRun,
 			})
 			path := tc.path
 			if path == "" {
@@ -368,7 +412,7 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 				answered <- response
 			}()
 			// Two tries the sender made while holding the attempt.
-			deadline := time.Now().Add(10 * time.Second)
+			deadline := time.Now().Add(concurrentWait)
 			for {
 				claimsMu.Lock()
 				seen := len(claims)
@@ -405,7 +449,7 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 			var response *httptest.ResponseRecorder
 			select {
 			case response = <-answered:
-			case <-time.After(15 * time.Second):
+			case <-time.After(concurrentWait):
 				t.Fatal("the request never answered after the take-over ended")
 			}
 			if response.Code != http.StatusCreated {
@@ -417,19 +461,30 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 			claimsMu.Lock()
 			observed := slices.Clone(claims)
 			claimsMu.Unlock()
+			// storedAttempts is the attempt as its row holds it, the error it settled with included:
+			// a try cut short by the client's window reaches the listener as nothing.
+			storedAttempts := func() string {
+				t.Helper()
+				if tc.table == "comment_deliveries" {
+					return describeAttempts(commentAttempts(t, database, id))
+				}
+				return describeAttempts(messageAttempts(t, database, id))
+			}
 			if len(observed) < 4 {
-				t.Fatalf("claimed_at was read %d times, want at least four: at the two refused tries, then at the answered try's registry read and its send", len(observed))
+				t.Fatalf("claimed_at was read %d times, want at least four: at the two refused tries, then at the answered try's registry read and its send; attempts: %s",
+					len(observed), storedAttempts())
 			}
 			for index := 1; index < len(observed); index++ {
 				if !observed[index].After(observed[index-1]) {
-					t.Fatalf("claimed_at as each try found it = %v, want it later at every try: the claim is renewed before each", observed)
+					t.Fatalf("claimed_at as each try found it = %v, want it later at every try: the claim is renewed before each; attempts: %s",
+						observed, storedAttempts())
 				}
 			}
 			if states := attemptStates(t, database, tc.table, tc.column, id); !slices.Equal(states, []string{"1:sent"}) {
-				t.Fatalf("attempts = %v, want attempt 1 alone, sent on the claim renewed last", states)
+				t.Fatalf("attempts = %s, want attempt 1 alone, sent on the claim renewed last", storedAttempts())
 			}
 			if sends := listener.published(); len(sends) != 1 || sends[0] != (resumeSend{key: tc.key(id), target: "s1"}) {
-				t.Fatalf("published %#v, want one send to s1 under %q", sends, tc.key(id))
+				t.Fatalf("published %#v, want one send to s1 under %q; attempts: %s", sends, tc.key(id), storedAttempts())
 			}
 			if receipts := deliveryReceiptsOf(t, database, tc.receipt, tc.column, id); receipts != 1 {
 				t.Fatalf("attempt 1 has %d receipts, want one", receipts)

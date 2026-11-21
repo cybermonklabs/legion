@@ -194,6 +194,10 @@ func (r *listenerRelay) close() {
 // During a deploy, a reconnect can interrupt the replacement's durable bind. The reconnect must
 // leave that bind to finish, keep the role lane forwarding, then make SIGTERM an ordered shutdown.
 func TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles(t *testing.T) {
+	// Serial: a product deadline is under its steps. The old task holds the durable for the whole
+	// row, so the replacement's bind stays in flight only until durableBindDeadline (135 s), at
+	// which its start ends; every step from the listener's start to SIGTERM must land inside it,
+	// and a parallel test's load is what would stretch them past it.
 	const (
 		machineID = "reconnect-bind-sigterm"
 		holderID  = "ses_reconnect_bind_sigterm_holder"
@@ -218,17 +222,17 @@ func TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles(t *testi
 	relay.arm("$JS.API.CONSUMER.INFO.", 2)
 	select {
 	case <-relay.swallowed:
-	case <-time.After(10 * time.Second):
+	case <-time.After(listenerWait):
 		t.Fatal("the listener's durable bind never reached the controlled relay")
 	}
 	relay.drop()
 	// The role lane holds a connection of its own (bus.ConnectRoleLane), which reconnects, and sends
 	// its subscription again, beside the main client's.
-	waitFor(t, 10*time.Second, "the listener and its role lane to reconnect", func() bool {
+	waitFor(t, listenerWait, "the listener and its role lane to reconnect", func() bool {
 		output := listener.Output.String()
 		return strings.Contains(output, "envoy nats reconnected name=envoy ") && strings.Contains(output, "envoy nats reconnected name=envoy-role-lane ")
 	})
-	waitFor(t, 10*time.Second, "the restore to report the bind in flight", func() bool {
+	waitFor(t, listenerWait, "the restore to report the bind in flight", func() bool {
 		output := listener.Output.String()
 		return strings.Contains(output, "envoy nats resubscribe left to the bind in flight") ||
 			strings.Contains(output, "envoy nats resubscribe failed")
@@ -275,7 +279,7 @@ func TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles(t *testi
 			if !strings.HasPrefix(frame.DedupeKey, roleForwardDedupePrefix) {
 				t.Fatalf("role message %d forwarded with dedupe key %q, want %s prefix", received, frame.DedupeKey, roleForwardDedupePrefix)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(listenerWait):
 			t.Fatalf("the listener forwarded %d of %d routed role messages during the reconnect:\n%s", received, messages, listener.Output.String())
 		}
 	}

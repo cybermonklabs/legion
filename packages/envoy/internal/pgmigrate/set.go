@@ -14,6 +14,8 @@ package pgmigrate
 
 import (
 	"cmp"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -191,6 +193,51 @@ func Load(fsys fs.FS, dir string) ([]Migration, error) {
 		return nil, errors.Join(problems...)
 	}
 	return migrations, nil
+}
+
+// Fingerprint names what a loaded set would leave in a database: a hex digest over every
+// migration's version, name and SQL, in the order Load returns them, and over what a runner
+// records of each beside its version (Record): the version table's identity columns
+// (IdentityColumnNames), the identity it records of the file (Migration.RecordedIdentity) and the
+// checksum of the text it applies. Two processes embedding the same set agree on it, and a set
+// that gains, loses or edits a migration gets a digest of its own; so does the same set under a
+// runner that records other facts of each migration, as every runner before the identity check
+// recorded its version alone. What no runner runs — a rollback script, a census — is left out,
+// since it changes no database.
+//
+// Its caller is the Postgres test harness of each runner (internal/testpg/pgtemplate, through
+// internal/dispatch/store/storetest and internal/cipher/store/storetest), which names the migrated
+// template database every test clones after it, so the test processes of one run share the one
+// template rather than each migrating a template of its own, and a run whose set differs builds a
+// template of its own rather than cloning a stale one (dispatch://INFRA-1075). A template an
+// earlier runner left on a server that outlives a run holds that runner's version table, which
+// another runner reads differently, so its name must differ too: a template built before the
+// identity check has a schema_migrations with no identity columns, and a clone of it under this
+// runner's name would hand every test a version table this runner never leaves
+// (TestATemplateAnEarlierRunnerLeftForTheSameSetIsNotCloned, internal/testpg/pgtemplate). The
+// digest is 32 hex characters, the first half of the SHA-256, so that a prefix and it together
+// stay inside the 63 bytes a Postgres identifier holds — a longer name is silently cut, and a
+// harness looking for a name the server cut would find no template and build one every time. 128
+// bits is far more than the handful of sets a server ever holds.
+func Fingerprint(migrations []Migration) string {
+	digest := sha256.New()
+	// Each field is written with its length, so no two sets differing only in where one field
+	// ends and the next begins hash alike.
+	field := func(value string) { fmt.Fprintf(digest, "%d\x00%s\x00", len(value), value) }
+	fmt.Fprintf(digest, "%d\x00", len(IdentityColumnNames))
+	for _, column := range IdentityColumnNames {
+		field(column)
+	}
+	for _, migration := range migrations {
+		recorded := migration.RecordedIdentity()
+		fmt.Fprintf(digest, "%d\x00", migration.Version)
+		field(migration.Name)
+		field(migration.SQL)
+		field(recorded.Name)
+		field(recorded.Checksum)
+		field(migration.Checksum)
+	}
+	return hex.EncodeToString(digest.Sum(nil)[:16])
 }
 
 // collisionRemedy reads the naming rule from the sorted set rather than a caller's directory or

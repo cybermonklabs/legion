@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  The Dispatch server's live delivery hub cancels an event feed subscription handed to it as one
+  of its generations ended. The hand-over and the end could land together, and the subscription
+  was then left open with no reader, while the event stream relay kept its generation running
+  for that feed.

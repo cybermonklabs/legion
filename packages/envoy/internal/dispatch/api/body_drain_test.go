@@ -50,7 +50,7 @@ func sendPartOfBody(t *testing.T, address, target string, header http.Header, si
 		t.Fatalf("dial %s: %v", address, err)
 	}
 	t.Cleanup(func() { connection.Close() })
-	if err := connection.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+	if err := connection.SetDeadline(time.Now().Add(throughputWait(t))); err != nil {
 		t.Fatal(err)
 	}
 	var head bytes.Buffer
@@ -133,6 +133,7 @@ func createClosedIssue(t *testing.T, handler http.Handler) model.Issue {
 // upload sent again, its file the same and its boundary its own, since a repeat is judged by its
 // body once it has arrived (TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived).
 func TestAnEarlyAnswerToAnUploadReachesAClientThatSendsItsWholeBodyFirst(t *testing.T) {
+	t.Parallel()
 	held := &heldFileStore{Memory: filestest.NewMemory(), reached: make(chan struct{})}
 	handler, _, _ := newTestServer(t, testServerOptions{files: held})
 	release, releaseOnce := heldUntilReleased(t)
@@ -149,14 +150,14 @@ func TestAnEarlyAnswerToAnUploadReachesAClientThatSendsItsWholeBodyFirst(t *test
 	go func() { first <- sendUpload(t, handler, running.Key, "running-upload", file) }()
 	select {
 	case <-held.reached:
-	case <-time.After(10 * time.Second):
+	case <-time.After(concurrentWait):
 		t.Fatal("the first upload never reached the file store")
 	}
 	t.Cleanup(func() {
 		releaseOnce()
 		select {
 		case <-first:
-		case <-time.After(10 * time.Second):
+		case <-time.After(concurrentWait):
 			t.Error("the first upload never answered once released")
 		}
 	})
@@ -240,6 +241,7 @@ func (b repeatedByte) Read(p []byte) (int, error) {
 // judged. A client that asked to be told to continue before sending its body is answered with none
 // of it read.
 func TestAnEarlyAnswerDrainsTheBodyUpToTheRoutesLimit(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory()})
 	open := createArtifactIssue(t, handler)
 	closed := createClosedIssue(t, handler)
@@ -381,6 +383,7 @@ type keyedAnswered struct {
 // to ask again, 409 KEY_IN_FLIGHT, since the repeat's body was read and not kept: that ask runs the
 // request.
 func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		key         string
@@ -442,12 +445,16 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 			t.Cleanup(release)
 			firstAnswer := make(chan keyedAnswered, 1)
 			go func() {
-				status, body, _, err := keyedPost(server, path, `{"n":1}`, judged.key, 30*time.Second)
+				// The first request stays open across the waits below: its run starting, the repeat
+				// found in flight and its own answer once released, each bounded at concurrentWait,
+				// and the repeat's answer, bounded by its connection's throughputWait
+				// (sendPartOfBody). Its own bound is theirs together.
+				status, body, _, err := keyedPost(server, path, `{"n":1}`, judged.key, 3*concurrentWait+throughputWait(t))
 				firstAnswer <- keyedAnswered{status: status, body: body, err: err}
 			}()
 			select {
 			case <-first.running:
-			case <-time.After(10 * time.Second):
+			case <-time.After(concurrentWait):
 				t.Fatal("the first request never ran")
 			}
 			header := http.Header{}
@@ -457,7 +464,7 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 			repeat := sendPartOfBody(t, server.Listener.Addr().String(), path, header, len(judged.repeat), []byte(judged.repeat[:5]))
 			select {
 			case <-found:
-			case <-time.After(10 * time.Second):
+			case <-time.After(concurrentWait):
 				t.Fatal("the repeat never found its key in flight")
 			}
 			finishFirst := func() keyedAnswered {
@@ -469,7 +476,7 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 						t.Fatalf("the first request: %v", answered.err)
 					}
 					return answered
-				case <-time.After(10 * time.Second):
+				case <-time.After(concurrentWait):
 					t.Fatal("the first request never answered once released")
 				}
 				return keyedAnswered{}
@@ -501,7 +508,7 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 				if firstGot.status != http.StatusServiceUnavailable {
 					t.Fatalf("the first request answered %d %s, want its 503", firstGot.status, firstGot.body)
 				}
-				status, again, header, err := keyedPost(server, path, judged.repeat, judged.key, 10*time.Second)
+				status, again, header, err := keyedPost(server, path, judged.repeat, judged.key, concurrentWait)
 				if err != nil || status != http.StatusCreated || header.Get(contracts.IdempotencyReplayedHeader) != "" {
 					t.Fatalf("the ask after the 409: %d %s replayed=%q (%v), want the request run",
 						status, again, header.Get(contracts.IdempotencyReplayedHeader), err)
@@ -526,6 +533,9 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 // soon as its answer is out, and a body that stalls just past the limit is answered 413 within the
 // deadline and closed after it, as a 4 MiB body, of which net/http reads nothing more, always was.
 func TestADrainStopsWaitingForABodyThatStalls(t *testing.T) {
+	// No t.Parallel: this test measures the process. Its assertion is a time: the answer within
+	// 10 s (a 1 s drain and the request's own database reads), and the server's close within the
+	// drain's 1 s of the answer.
 	const drainLimit = time.Second
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{files: filestest.NewMemory()})
 	served.drainReadLimit = drainLimit
@@ -616,6 +626,7 @@ func TestADrainStopsWaitingForABodyThatStalls(t *testing.T) {
 // found in flight at once rather than reading it to judge its digest. A read would have net/http
 // send 100 Continue and wait for the whole body before the refusal went out.
 func TestAnEarlyAnswerToAClientWaitingToContinueAsksForNoBody(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory()})
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
@@ -658,7 +669,7 @@ func TestAnEarlyAnswerToAClientWaitingToContinueAsksForNoBody(t *testing.T) {
 			if response.StatusCode != http.StatusConflict || refusalCode(answer) != early.code {
 				t.Fatalf("status=%d body=%s, want 409 %s", response.StatusCode, answer, early.code)
 			}
-			if !response.Close || !body.closedByServer(5*time.Second) {
+			if !response.Close || !body.closedByServer(concurrentWait) {
 				t.Fatalf("the refusal left open a connection whose body was never sent (Connection: %q)", response.Header.Get("Connection"))
 			}
 		})

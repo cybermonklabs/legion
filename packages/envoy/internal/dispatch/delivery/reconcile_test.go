@@ -26,6 +26,7 @@ import (
 // delivery -- no envelope is published anywhere in this test) is found and stored by reconcile's
 // own merged-PR search, complete, through the same upsert intake uses.
 func TestReconcileCatchesAMissedPullRequest(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 
@@ -88,6 +89,7 @@ func TestReconcileCatchesAMissedPullRequest(t *testing.T) {
 // found by the deploy workflow's run listing and upserted with its jobs, and with GitHub's
 // created_at beside run_started_at, which a re-run moves past it.
 func TestReconcileCatchesAMissedDeployRun(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	settings.ProductionApplyStepName = new("Run ./.github/actions/apply")
@@ -153,6 +155,7 @@ func TestReconcileCatchesAMissedDeployRun(t *testing.T) {
 // delivery_settings.last_error, and last_reconcile_at is left exactly as it was -- never advanced
 // as if the pass had actually done something. Blocking per the acceptance gate.
 func TestReconcileRecordsAMissingPermissionByNameAndDoesNotAdvanceLastReconcileAt(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	before, err := GetSettings(ctx, pool)
@@ -186,6 +189,7 @@ func TestReconcileRecordsAMissingPermissionByNameAndDoesNotAdvanceLastReconcileA
 // completed with real session/issue attribution survives a reconcile pass that re-finds the same
 // PR via its merged-PR search, which carries no session data at all.
 func TestReconcileNeverWipesACompletePullRequestsAttribution(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 
@@ -235,6 +239,7 @@ func TestReconcileNeverWipesACompletePullRequestsAttribution(t *testing.T) {
 // RecordReconcileSuccess's own "last_error = null" is exercised here through the real reconcile
 // path, not just the bare SQL statement.
 func TestReconcileClearsLastErrorOnceItSucceedsAgain(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	if err := RecordReconcileError(ctx, pool, "the installation lacks Actions: read on acme/widgets"); err != nil {
@@ -272,6 +277,7 @@ func TestReconcileClearsLastErrorOnceItSucceedsAgain(t *testing.T) {
 // whose completing fetch answers a permanent 404 is marked unfetchable (not retried every pass
 // forever), and a later successful fetch of the same pull request clears it again.
 func TestReconcileMarksA404PullRequestUnfetchableAndSkipsItUntilItRecovers(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 
@@ -345,6 +351,7 @@ func TestReconcileMarksA404PullRequestUnfetchableAndSkipsItUntilItRecovers(t *te
 // a healthy pass -- last_reconcile_at must not advance past a window this pass left incompletely
 // fetched.
 func TestReconcileWorkflowFailureStopsThePassFromReportingSuccess(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	before, err := GetSettings(ctx, pool)
@@ -418,6 +425,7 @@ func TestReconcileWorkflowFailureStopsThePassFromReportingSuccess(t *testing.T) 
 // independent successful write of its jobs -- here, standing in for intake.go's own live-webhook
 // UpsertRunJobs call, which already runs through the same shared upsert.
 func TestReconcileMarksA404RunJobsUnfetchableAndSkipsItUntilItRecovers(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 
@@ -509,6 +517,7 @@ func TestReconcileMarksA404RunJobsUnfetchableAndSkipsItUntilItRecovers(t *testin
 // starting (never more than the ones already in flight when it happened), and the pass must be
 // reported failed, not successful.
 func TestReconcilePartialPullRequestsStopsOnRateLimitInsteadOfRetryingAtFullConcurrency(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 
@@ -576,6 +585,7 @@ func TestReconcilePartialPullRequestsStopsOnRateLimitInsteadOfRetryingAtFullConc
 // rate limit (reverting to "log and keep going") makes this red: the third run's jobs endpoint
 // would be called, defeating the "no further GitHub request" assertion below.
 func TestReconcileWorkflowStopsAtTheFirstRateLimitAndCapsLastError(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 

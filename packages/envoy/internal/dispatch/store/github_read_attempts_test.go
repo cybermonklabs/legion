@@ -16,7 +16,7 @@ import (
 // failed attempt's cause, then a succeeded attempt's none, at a later time.
 func TestGitHubReadAttemptsKeepOneRowPerReadWithTheNewestValues(t *testing.T) {
 	ctx := context.Background()
-	attempts := NewGitHubReadAttempts(migratedEmptyStore(t).Pool)
+	attempts := NewGitHubReadAttempts(openTestStore(t).Pool)
 	if rows, err := attempts.All(ctx); err != nil || len(rows) != 0 {
 		t.Fatalf("an empty record reads %v, %v; want no row", rows, err)
 	}
@@ -70,7 +70,7 @@ func readAttempts(t *testing.T, attempts *GitHubReadAttempts) map[githubreads.Re
 // 1,024 bytes, a cause exactly when the attempt failed.
 func TestTheGitHubReadAttemptsTableRefusesARowHealthCannotAnswer(t *testing.T) {
 	ctx := context.Background()
-	database := migratedEmptyStore(t)
+	database := openTestStore(t)
 	cases := []struct {
 		name       string
 		read       string
@@ -125,7 +125,7 @@ func TestTheGitHubReadAttemptsTableRefusesARowHealthCannotAnswer(t *testing.T) {
 func TestRecordingAGitHubReadAttemptNotifiesItsChannel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	database := migratedEmptyStore(t)
+	database := openTestStore(t)
 	listener := connectForTest(t, ctx, database)
 	if _, err := listener.Exec(ctx, "listen "+githubreads.Channel); err != nil {
 		t.Fatalf("listen on %s: %v", githubreads.Channel, err)

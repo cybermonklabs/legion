@@ -361,6 +361,8 @@ func TestAPassCancelledByItsCallerRecordsThatItWasCancelled(t *testing.T) {
 		h.reconciler.Pass(shutting)
 	}()
 	// The row the pass opened, which says the pass has started; the stalled page holds it there.
+	// Once the row is there the pass holds its id, wherever the cancellation below lands: the
+	// insert runs on a context no cancellation reaches (beginPass).
 	id := waitForRow(t, h.pool, instance)
 	shutdown()
 	<-ended

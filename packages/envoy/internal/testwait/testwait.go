@@ -4,8 +4,9 @@
 // binary's own deadline rather than a fixed span: on a loaded machine a step that is merely slow
 // is not a failure, and a condition that never holds still fails, naming what it waited for.
 // Eventually is the wait a test usually wants; WithinPolling takes a bound and a pace of its
-// own; Holds answers rather than fails, for a caller whose failure text is its own; and Bounded
-// is the clamp alone, for a wait that holds the rest itself.
+// own; Holds answers rather than fails, for a caller whose failure text is its own; Bounded is
+// the clamp alone, for a wait that holds the rest itself; and PastTheRun is the bound of a wait
+// or a lifetime that no run may reach.
 //
 // Until and Receive take no bound at all, not even Eventually's minute: each gives up margin (30 s)
 // before the test binary's deadline, the one go test's -timeout sets, and at no other moment, so
@@ -34,6 +35,9 @@ import (
 // Poll is how often a condition is asked. It is short enough that a test which passes in
 // milliseconds still does, and long enough that a waiting test costs a loaded machine little.
 const Poll = 10 * time.Millisecond
+
+// PastTheRun is a bound no run of a test binary reaches: go test's -timeout ends every run first.
+const PastTheRun = 24 * time.Hour
 
 // Eventually waits for condition, failing the test with what it waited for when the deadline
 // passes. The deadline is a minute, or the test binary's own less a second when that is sooner,

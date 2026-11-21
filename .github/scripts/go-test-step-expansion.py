@@ -91,8 +91,10 @@ How it reads a step:
     cannot read stops the run, since silently skipping a `go test` would hide both a duplicate
     and a function that step is the only one to compile;
   * `-run "$pattern"` assigned from a `$(…)` call of `.github/scripts/go-tagged-tests.sh` is run,
-    in the step's own directory, and its output used; a step looping over packages
-    (`for pkg in ./core ./seed ./gcp`) is one `go test` per package, each with its own call;
+    in the step's own directory, and its output used; so is a `name=$(go list …)` assignment,
+    and a `name="…"` assignment of literal text, which may run over several lines, is taken as it
+    stands; a step looping over packages (`for pkg in ./core ./seed ./gcp`) is one `go test` per
+    package, each with its own call;
   * a `-skip '^(Name|Name|…)$'` names tests the step leaves out, which are subtracted from what
     the step runs and left in what it compiles, since the binary holds a skipped test and never
     runs it; every other `-skip` pattern is refused rather than read (SKIP_ALTERNATION says why);
@@ -100,12 +102,25 @@ How it reads a step:
     flags and the pattern `.*`, run where the step carries a `-run`, because `-list` answers the
     pattern it is given and a `-run` listing names only the functions the step runs. The second
     listing reuses the first's build, so it costs the test binaries' own run and no compile;
-  * `go list … | grep -Ev '…' | xargs go test …` is run as written, in the step's own directory,
-    and the packages it prints are the command's packages;
+  * `go list … | grep -Ev '…' | xargs go test …`, and any other lister piped into `xargs go
+    test`, is run as written, in the step's own directory, and the packages it prints are the
+    command's packages;
   * a line that sets variables before its command (`GODEBUG=checkfinalizers=1 go test …`) or runs
     it under one of the wrappers GO_WRAPPERS names (`race_memory.py go test …`) is the go command
-    behind them: neither changes which test functions run. A value holding `$` and a wrapper that
-    tuple does not name are refused rather than guessed at;
+    behind them: neither changes which test functions run. A value holding `$` is refused rather
+    than guessed at, unless the variable is one of WRAPPER_VARIABLES, which the wrapper reads and
+    go never does, and so is a wrapper that tuple does not name;
+  * what the shell does around a go command is not part of it: a trailing `&` that starts it in
+    the background, a trailing `&&` the next line continues, a `|| name=$?` that keeps its
+    status, its redirections to files, and the braces of a `{ …; }` group are taken off before
+    the line is read. The steps that keep a `go test -json` stream (ci_job_reads.py's
+    json_stream_script, and envoy-go's unit step, whose nine calls run at once) are written so;
+  * a line that starts no go command and opens with one of the commands the streaming steps write
+    around their go commands (STEP_PLUMBING: `mkdir`, the `jq` replay, `echo`, `cat`, `wait`,
+    `exit`, the `if`/`else`/`fi` and `[ … ]` of a status test, a closing `}`), with a function
+    the step defines (`replay() {`), with a call of such a function, or that assigns a literal or
+    `$!`, runs no test and is skipped. Any line naming a go command stays the go command's to
+    read, whatever it opens with;
   * a step whose run: is the path of a script AUDITED_SCRIPTS names
     (`packages/envoy/scripts/database-skips.sh`, `packages/envoy/scripts/backend-count.sh`), alone
     or followed by one of the argument lists
@@ -198,7 +213,7 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
+            (".github/workflows/ci-job-envoy-go.yaml", "Unit test envoy Go package"),
             (".github/workflows/ci-job-envoy-go-race-docs.yaml", "Race-test the document service"),
             (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "Test the document service under the cleanup detector"),
         }),
@@ -209,14 +224,15 @@ EXCEPTIONS = (
         ),
         requirement=(
             "R2 (dispatch://INFRA-1408/spec): the two render-reuse storms run fewer seeds and "
-            "fewer edits under the race detector (raceEnabled), so envoy-go's plain step is their "
+            "fewer edits under the race detector (raceEnabled), so envoy-go's plain run of them "
+            "(the race-impossible call of its unit step) is their "
             "full-size run and envoy-go-race-docs is the detector's run of the shrunk one. The "
             "third step is the cleanup detector's, declared with the rest of the package below."
         ),
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
+            (".github/workflows/ci-job-envoy-go-race.yaml", "Test the wall-clock measurements alone"),
             (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow"),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/natscallout",
@@ -225,8 +241,10 @@ EXCEPTIONS = (
             "c-callout-available (the NATS auth service's verification): five hundred "
             "connections reconnect at once after a server restart and every one is admitted. The "
             "restart storm opens two hundred under the race detector (raceEnabled), whose cost per "
-            "in-process connect fails the setup at five hundred on a loaded runner, so envoy-go's "
-            "plain step is its full-size run and envoy-go-race the detector's run of the smaller one."
+            "in-process connect fails the setup at five hundred on a loaded runner, so "
+            "envoy-go-race's plain run of it (its step that tests the wall-clock measurements "
+            "alone, before the race step) is its full-size run and the race step the detector's "
+            "run of the smaller one."
         ),
     ),
     Exception_(
@@ -247,7 +265,7 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
+            (".github/workflows/ci-job-envoy-go.yaml", "Unit test envoy Go package"),
             (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "Test the document service under the cleanup detector"),
         }),
         package="github.com/sjawhar/envoy/internal/dispatch/docs",
@@ -259,7 +277,8 @@ EXCEPTIONS = (
         requirement=(
             "R2 (dispatch://INFRA-1408/spec) and A3 (dispatch://INFRA-1413): these three bound a "
             "room's memory, which the race build cannot measure, so the race listing does not "
-            "hold them and envoy-go's plain step is their one measured run. The finalizers lane "
+            "hold them and envoy-go's plain run of them (the race-impossible call of its unit "
+            "step) is their one measured run. The finalizers lane "
             "runs them as part of the package under its own mode, for the reason above."
         ),
     ),
@@ -379,21 +398,24 @@ AUDITED_SCRIPTS = {
     # race lane's packages under the tree, ci_job_reads.DATABASE_SKIPS_PATTERN), with no -tags,
     # -race, -run or -skip, under -timeout "${GO_TEST_TIMEOUT:-15m}". A package argument replaces
     # those packages, `--race` adds -race, `--skip P` adds -skip P, `--timeout D` sets the -timeout,
-    # and `--var NAME` decides only whether it runs at all. With `--report FILE` it reads a report
-    # and runs no test. envoy-go's count step passes the first argument list below, whose command
-    # is that run in the listing form this script reads, and envoy-go-race-api's race step the
-    # second. The first's --skip leaves out the backend count's test of ./internal/cipher/api/.
+    # `--var NAME` decides only whether it runs at all, and `--keep FILE` copies the run's report to
+    # FILE (making its directory) and changes no test it runs. With `--report FILE` it reads a
+    # report and runs no test. envoy-go's count step passes the first argument list below, whose
+    # command is that run in the listing form this script reads, and envoy-go-race-api's race step
+    # the second. The first's --skip leaves out the backend count's test of ./internal/cipher/api/.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         commands={
-            "--timeout 20m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$'":
+            "--timeout 9m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' "
+            "--keep \"$RUNNER_TEMP/go-test-json/broker.json\"":
                 "go list ./internal/cipher/... ./cmd/cipherd/ | grep -Ev '/internal/cipher/natscallout$' | "
                 "xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' "
-                "-timeout 20m",
-            "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
-                "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
+                "-timeout 9m",
+            "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 39m "
+            "--keep \"$RUNNER_TEMP/go-test-json/race-api.json\" ./internal/dispatch/api/":
+                "go test -json -count=1 -race -timeout 39m ./internal/dispatch/api/",
         },
-        sha256="668c7223b926bbad0066b0866b8f308f7c08db55ae4db167ea33bf8769401e6d",
+        sha256="59fdcfa7225b116bbc60b0ddff66cbd28add159223820b5b3885d130e03a5f4f",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
@@ -418,6 +440,37 @@ ENV_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^$]*$")
 # this tuple does not name is refused rather than guessed at. Matched by the end of the word,
 # since a step writes the path from its own working directory.
 GO_WRAPPERS = (".github/scripts/race_memory.py",)
+# The variables those wrappers read and nothing else does: neither go nor a test binary reads
+# them, so one is dropped before the command even where its value is the shell's to expand
+# (RACE_MEM_JSON_PATH="$RUNNER_TEMP/…", where race_memory.py keeps the stream it unwraps).
+WRAPPER_VARIABLES = ("RACE_MEM_LIMIT_KB", "RACE_MEM_JSON_PATH")
+# What the shell does around a go command, taken off the end of a line one at a time until none
+# is left: a `&&` the next line continues, a `&` that starts the command in the background, a
+# `|| name=$?` that keeps its status, a `2>&1`, a redirection to a file, and the `; }` that closes
+# a group. None of them changes which test functions the command runs. The `{ ` that opens a
+# group is taken off the front (GROUP_OPEN).
+SHELL_TRAILERS = (
+    re.compile(r"\s*&&$"),
+    re.compile(r"\s*(?<!&)&$"),
+    re.compile(r"\s*\|\|\s*[A-Za-z_][A-Za-z0-9_]*=\$\?$"),
+    re.compile(r"\s+[0-9]?>&[0-9]$"),
+    re.compile(r"""\s+[0-9]?>\s*(?:"[^"]*"|'[^']*'|[^\s"'|&;<>]+)$"""),
+    re.compile(r"\s*;\s*}$"),
+)
+GROUP_OPEN = re.compile(r"^{\s+")
+# The commands the streaming steps write around their go commands, which start no go command of
+# their own: the directory the streams go into, the replay of a stream through jq, the log lines,
+# the waits for the background calls, the step's exit, and the status test those are chosen by.
+# A line opening with one of them is skipped only when it names no go command anywhere (GO_WORD).
+STEP_PLUMBING = ("mkdir", "jq", "echo", "cat", "wait", "exit", "if", "then", "else", "fi", "[", "}")
+GO_WORD = re.compile(r"(?:^|[\s;&|({$])go\s")
+# A variable a step sets to literal text, on one line or over several, and to the pid of the
+# background job it just started.
+LITERAL_ASSIGNMENT = re.compile(r"""^([A-Za-z_][A-Za-z0-9_]*)=(?:"([^"$`\\]*)"|([A-Za-z0-9_./:-]*))$""")
+OPEN_LITERAL = re.compile(r"""^([A-Za-z_][A-Za-z0-9_]*)="([^"$`\\]*)$""")
+CLOSE_LITERAL = re.compile(r"""^([^"$`\\]*)"$""")
+PID_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\$!$")
+FUNCTION_OPEN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\(\)\s*{$")
 # go commands that run no test, so a step may hold one and this script need not read it.
 NO_TEST_GO = ("build", "vet", "list", "install", "mod", "work", "env", "generate", "tool", "run")
 # go test flags whose value is the next argument.
@@ -612,10 +665,11 @@ def commands_of(step: Step) -> list[GoTest]:
 
 
 def read_block(step: Step, lines: list[str], variables: dict[str, str],
-               found: list[GoTest]) -> None:
+               found: list[GoTest], functions: set[str] | None = None) -> None:
+    functions = set() if functions is None else functions
     index = 0
     while index < len(lines):
-        line = lines[index].strip()
+        line = unwrap(lines[index].strip())
         index += 1
         if not line or line.startswith("#") or line.startswith("set "):
             continue
@@ -624,15 +678,45 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
         if loop:
             body, index = loop_body(step, lines, index)
             for value in shlex.split(expand(loop.group(2), variables)):
-                read_block(step, body, {**variables, loop.group(1): value}, found)
+                read_block(step, body, {**variables, loop.group(1): value}, found, functions)
+            continue
+
+        opened = OPEN_LITERAL.match(line)
+        if opened:
+            value = [opened.group(2)]
+            while True:
+                if index >= len(lines):
+                    raise Refused(f"{step.label}: `{line}` opens a quoted value no line of the step closes")
+                following = lines[index].strip()
+                index += 1
+                closing = CLOSE_LITERAL.match(following)
+                if closing:
+                    value.append(closing.group(1))
+                    break
+                if any(c in following for c in '"$`\\'):
+                    raise Refused(f"{step.label}: the value `{line}` opens holds `{following}`, which is "
+                                  "the shell's to read rather than literal text")
+                value.append(following)
+            variables[opened.group(1)] = "\n".join(value)
+            continue
+
+        literal = LITERAL_ASSIGNMENT.match(line)
+        if literal:
+            variables[literal.group(1)] = literal.group(2) if literal.group(2) is not None else literal.group(3)
+            continue
+        if PID_ASSIGNMENT.match(line):
+            continue
+        function = FUNCTION_OPEN.match(line)
+        if function:
+            functions.add(function.group(1))
             continue
 
         assignment = ASSIGNMENT.match(line)
         if assignment:
             name, inner = assignment.group(1), expand(assignment.group(2), variables)
-            if TAGGED_TESTS not in inner:
+            if TAGGED_TESTS not in inner and not inner.startswith("go list "):
                 raise Refused(f"{step.label}: this script runs only a $(…) call of "
-                              f"{TAGGED_TESTS}, not `{inner}`")
+                              f"{TAGGED_TESTS} or of `go list`, not `{inner}`")
             variables[name] = shell(inner, step.directory, f"{step.label}: {inner}").strip()
             continue
 
@@ -651,7 +735,25 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
         if len(words) > 1 and words[0] == "go" and words[1] == "test":
             found.append(parse_go_test(step, expand(command, variables), []))
             continue
+        if words and (words[0] in STEP_PLUMBING or words[0] in functions) and not GO_WORD.search(line):
+            continue
         raise Refused(f"{step.label}: this script cannot read `{line}`")
+
+
+def unwrap(line: str) -> str:
+    """A line less what the shell does around its command (SHELL_TRAILERS, GROUP_OPEN): the
+    `&`, `&&`, `|| s=$?`, redirections and group braces the streaming steps write around a go
+    command, none of which changes which test functions it runs. Taken off before the line is
+    read, so a redirection's `$RUNNER_TEMP` never reaches expand(), which would refuse it."""
+    text = GROUP_OPEN.sub("", line, count=1)
+    while True:
+        for trailer in SHELL_TRAILERS:
+            stripped = trailer.sub("", text)
+            if stripped != text:
+                text = stripped
+                break
+        else:
+            return text
 
 
 def go_command(line: str) -> tuple[list[str], str]:
@@ -659,17 +761,19 @@ def go_command(line: str) -> tuple[list[str], str]:
     under dropped: its words, and its text with those words removed.
 
     A step writes `GODEBUG=checkfinalizers=1 go test …` and
-    `RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test …`. Neither the
-    variables nor the wrapper changes which test functions the command runs, which is all this
-    script reads, so both are dropped and what is left is the go command. A value holding `$`,
-    and a wrapper GO_WRAPPERS does not name, are left where they are, so the caller refuses the
-    line rather than guessing. The text is cut word by word off the line itself, so the quoting
-    of what is left - a `-run` pattern above all - is the line's own.
+    `RACE_MEM_LIMIT_KB=8388608 RACE_MEM_JSON_PATH="$RUNNER_TEMP/…" ../../.github/scripts/race_memory.py
+    go test …`. Neither the variables nor the wrapper changes which test functions the command
+    runs, which is all this script reads, so both are dropped and what is left is the go
+    command. A value holding `$`, unless its variable is one of WRAPPER_VARIABLES, and a wrapper
+    GO_WRAPPERS does not name, are left where they are, so the caller refuses the line rather
+    than guessing. The text is cut word by word off the line itself, so the quoting of what is
+    left - a `-run` pattern above all - is the line's own.
     """
     rest = line.strip()
     while True:
         head = rest.split(None, 1)
-        if len(head) == 2 and ENV_PREFIX.match(head[0]):
+        if len(head) == 2 and (ENV_PREFIX.match(head[0])
+                               or head[0].split("=", 1)[0] in WRAPPER_VARIABLES and "=" in head[0]):
             rest = head[1]
             continue
         break

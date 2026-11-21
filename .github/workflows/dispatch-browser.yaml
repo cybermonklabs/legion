@@ -16,7 +16,7 @@ on:
         required: true
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the merge job with ci-ok's report
+          ci.yaml's `toJSON(needs.changes)`: end every job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends, for its dispatch-browser
           job. Empty for the nightly workflow, which reports no check.
         type: string
@@ -50,6 +50,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
+            !~/go/pkg/mod/cache/download/**/*.zip
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       # why: .github/ci-notes/dispatch-browser.md#what-the-binaries-build-writes-and-why-it-is-static
@@ -74,6 +75,14 @@ jobs:
           name: dispatch-e2e-binaries
           path: ${{ runner.temp }}/dispatch-e2e-bin
           if-no-files-found: error
+      # why: .github/ci-notes/dispatch-browser.md#why-every-job-of-this-workflow-ends-with-the-ci-ok-report
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always() && inputs.ci-ok-changes != ''
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: dispatch-browser
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
 
   shard:
     needs: binaries
@@ -181,6 +190,14 @@ jobs:
           name: dispatch-browser-test-results-shard-${{ matrix.shard }}-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
           if-no-files-found: ignore
+      # The router's report, for the reason the binaries job's report step gives.
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always() && inputs.ci-ok-changes != ''
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: dispatch-browser
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
 
   alone:
     needs: binaries
@@ -273,6 +290,14 @@ jobs:
           name: dispatch-browser-test-results-alone-${{ matrix.project }}-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
           if-no-files-found: ignore
+      # The router's report, for the reason the binaries job's report step gives.
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always() && inputs.ci-ok-changes != ''
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: dispatch-browser
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
 
   # why: .github/ci-notes/dispatch-browser.md#what-the-two-process-job-runs
   multiprocess:
@@ -297,6 +322,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
+            !~/go/pkg/mod/cache/download/**/*.zip
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
@@ -351,6 +377,14 @@ jobs:
         with:
           name: dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
+      # The router's report, for the reason the binaries job's report step gives.
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always() && inputs.ci-ok-changes != ''
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: dispatch-browser
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
 
   # why: .github/ci-notes/dispatch-browser.md#the-embedder-job-the-lanes-it-runs-on-and-its-budgets
   # 4 + 4 + 2 min plus 135 s and 120 s = 14 min 15 s -> 15 min.
@@ -418,6 +452,14 @@ jobs:
         with:
           name: dispatch-browser-embedder-test-results-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
+      # The router's report, for the reason the binaries job's report step gives.
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always() && inputs.ci-ok-changes != ''
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: dispatch-browser
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
 
   # why: .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets
   # 240 + 333 + 120 = 693 s -> 12 min; 12 + 4 = 16 min with the reverse-order step.
@@ -441,6 +483,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
+            !~/go/pkg/mod/cache/download/**/*.zip
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
@@ -502,6 +545,14 @@ jobs:
             packages/dispatch/e2e/__screenshots__
             ${{ runner.temp }}/dispatch-e2e-run-*/worker-*/log/*.log
           if-no-files-found: ignore
+      # The router's report, for the reason the binaries job's report step gives.
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always() && inputs.ci-ok-changes != ''
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: dispatch-browser
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
 
   # why: .github/ci-notes/dispatch-browser.md#what-the-merge-job-reports-and-why-it-is-never-skipped
   merge:
@@ -575,7 +626,7 @@ jobs:
           .github/scripts/dispatch-browser-verdict.sh "${{ needs.binaries.result }}"
           "${{ needs.shard.result }}" "${{ needs.alone.result }}"
           "${{ needs.multiprocess.result }}" "${{ needs.visual.result }}"
-      # why: .github/ci-notes/dispatch-browser.md#when-the-merge-job-posts-ci-ok
+      # The router's report, for the reason the binaries job's report step gives.
       - name: Report ci-ok when this job decides a merge-group run
         if: always() && inputs.ci-ok-changes != ''
         uses: ./.github/actions/ci-ok-report

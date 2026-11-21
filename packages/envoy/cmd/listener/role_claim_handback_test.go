@@ -18,7 +18,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -112,7 +111,7 @@ func (r *roleClaimHandBackRig) send(method, target, body string) *httptest.Respo
 // stored is the role's claim as the bucket holds it now.
 func (r *roleClaimHandBackRig) stored() store.RoleClaim {
 	r.t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	claim, err := r.deps.registry.RoleClaim(ctx, r.role)
 	if err != nil {
@@ -124,7 +123,7 @@ func (r *roleClaimHandBackRig) stored() store.RoleClaim {
 // topics is the session's interest record as the routes have left it.
 func (r *roleClaimHandBackRig) topics() []string {
 	r.t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	item, err := r.deps.registry.Get(ctx, r.session)
 	if err != nil {

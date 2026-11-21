@@ -48,12 +48,12 @@ func failCreates(t *testing.T, rig *relayRig, sessionID string, n int) <-chan st
 	return failed
 }
 
-// awaitCreateFailure waits up to 10 s for the next failure failCreates reports.
+// awaitCreateFailure waits up to listenerWait for the next failure failCreates reports.
 func awaitCreateFailure(t *testing.T, failed <-chan struct{}) {
 	t.Helper()
 	select {
 	case <-failed:
-	case <-time.After(10 * time.Second):
+	case <-time.After(listenerWait):
 		t.Fatal("the relay's restart never reached its create")
 	}
 }
@@ -84,11 +84,11 @@ func sessionWithAHeldFrame(t *testing.T, prefix string) (*relayRig, string, *ses
 	})
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	written, floor := rig.storeEvent(t, agent)
-	requireFrames(t, standIn.collect(t, 1, 5*time.Second), written)
+	requireFrames(t, standIn.collect(t, 1, listenerWait), written)
 	awaitAcked(t, rig.consumers, sessionID, floor)
 	holdNext.Store(true)
 	held, _ := rig.storeEvent(t, agent)
-	requireFrames(t, standIn.collect(t, 1, 5*time.Second), held)
+	requireFrames(t, standIn.collect(t, 1, listenerWait), held)
 	awaitAckState(t, rig.consumers, sessionID, 1, floor)
 	// Every caller's next step restarts the relay at the ack floor, which deletes the consumer
 	// holding that message and creates it again.
@@ -290,6 +290,7 @@ func awaitPulled(t *testing.T, consumers *bus.SessionConsumers, sessionIDs []str
 // (relayRestartLimit) and their calls' timeout starts only once they hold it, so none times out
 // waiting, and none leaves its consumer missing.
 func TestSessionConsumerBurstOfRestartsDeliversEveryBacklog(t *testing.T) {
+	// Serial: every session's backlog must arrive within 10 s of the restart (wall clock).
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
 	const machineID = "relay-burst"

@@ -79,6 +79,9 @@ func closeIssueAgo(t *testing.T, database *store.Store, issueKey string, ago tim
 // behind the comment's 201, and then every write to the document answered 503 until the room
 // recovered. The settlement is held as it starts until the test has read the row the comment's
 // write left, so the row's going is the settlement's doing.
+//
+// Serial: it swaps process-wide state, the default slog logger (logtest.SetDefault), to read the
+// settlement's WARN and ERROR lines back.
 func TestAnAnchoredCommentOnAClosedIssueWithNoRoomFailsNoRoom(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))

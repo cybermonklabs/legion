@@ -65,6 +65,7 @@ func TestAThreadAuthorsCopyWaitsForAnUnnamedMentionPastItsLease(t *testing.T) {
 	seedDelivery(t, rig.database, commentID, target, "", "resumed")
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	wrote.drained(t)
 
 	eventKey := fmt.Sprintf("dispatch-%d", comment.ID)
 	mentionKey := contracts.AgentSendDedupeKey(author, model.CommentMentionIdempotencyKey(commentID, target, "steer"))
@@ -90,7 +91,7 @@ func TestAThreadAuthorsCopyWaitsForAnUnnamedMentionPastItsLease(t *testing.T) {
 	// The pass that reads that row waits on it: the resend is still owed, and whichever session
 	// it pins is a session this read cannot name (mentionHolds.state).
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
-	time.Sleep(time.Second)
+	wrote.drained(t)
 	if got := wrote.received(); len(got) != 0 {
 		t.Fatalf("the fallback pass sent %s %v while the resend of the mention of %s is still owed: the resend can pin this very author, and that send lands under %q, which this copy does not claim",
 			author, keysOf(got), target, mentionKey)

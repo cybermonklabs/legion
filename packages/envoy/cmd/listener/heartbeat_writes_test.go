@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -23,9 +24,10 @@ import (
 // the interest, session and role buckets' streams moved over the M-1 heartbeats after each
 // session's first registration. It logs all three rates and asserts two of them: the session row
 // is written once per heartbeat, which a heartbeat always does, and the interest row not at all,
-// since every heartbeat here lands well inside store.InterestRefreshAge of the registration that
-// wrote the row. A regression of the skip on the route path (subscribeHandler through
-// store.Registry.UpsertWithin) fails this test, where it was only logged.
+// since every heartbeat here lands inside store.InterestRefreshAge of the registration that wrote
+// the row: the interest registry's clock stands still, so each heartbeat reads the row as written
+// that very moment however long the rounds took. A regression of the skip on the route path
+// (subscribeHandler through store.Registry.UpsertWithin) fails this test, where it was only logged.
 //
 // The role bucket's rate is measured and logged, not asserted: it is the price of a claim saying
 // when its holder last answered for it (store.Registry.RenewRoleClaims, which subscribeHandler
@@ -33,6 +35,7 @@ import (
 // and a number to read rather than a bound to hold. The read each renewal makes first costs no
 // write and so moves no stream.
 func TestHeartbeatKVWritesPerHeartbeat(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionCount = 20
 		heartbeats   = 5
@@ -43,15 +46,18 @@ func TestHeartbeatKVWritesPerHeartbeat(t *testing.T) {
 	)
 	sessionOf := func(index int) string { return fmt.Sprintf("ses_heartbeat_%02d", index) }
 	roleOf := func(index int) string { return fmt.Sprintf("heartbeat-role-%02d", index) }
-	registry, sessions := setupSessionsTest(t, nil, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := registry.WaitForCacheReady(ctx); err != nil {
-		t.Fatalf("interest cache not ready: %v", err)
+	client := setupPublishTestClient(t)
+	stamped := time.Now()
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1), store.WithClock(func() time.Time { return stamped }))
+	if err != nil {
+		t.Fatalf("open the interest registry: %v", err)
 	}
-	if err := sessions.WaitForCacheReady(ctx); err != nil {
-		t.Fatalf("session cache not ready: %v", err)
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open the session registry: %v", err)
 	}
+	waitForRegistry(t, registry)
+	waitForSessions(t, sessions)
 	routes := http.NewServeMux()
 	// withRoleClaimDrain, because each session's first registration here makes it live and so
 	// hands it the kept lane of the role whose claim record it read (runKeptRoleDrain). That
@@ -89,7 +95,10 @@ func TestHeartbeatKVWritesPerHeartbeat(t *testing.T) {
 	// and before anything is counted: the heartbeats counted below are identical to each other.
 	for index := range sessionCount {
 		claim := store.RoleClaimRequest{SessionID: sessionOf(index), MachineID: "test-machine", ClientInstanceID: instance, Role: roleOf(index)}
-		if _, err := registry.SetRoleWithPrevious(ctx, claim); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
+		_, err := registry.SetRoleWithPrevious(ctx, claim)
+		cancel()
+		if err != nil {
 			t.Fatalf("claim %s for %s: %v", roleOf(index), sessionOf(index), err)
 		}
 	}

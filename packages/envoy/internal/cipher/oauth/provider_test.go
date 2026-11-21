@@ -126,11 +126,25 @@ func newFixtureOn(t *testing.T, dsn string, adjust func(*oauth.Config)) *fixture
 	return f
 }
 
+// fixtureProofWait bounds a post that carries a DPoP proof, from before the proof is signed to
+// the moment the answer's headers arrive. The provider accepts a proof while its clock is within
+// ProofSkew (10 s, newFixtureOn) of the proof's iat, which the proof carries in whole seconds, so
+// a post that ends within 8 s of its signature never meets that window closed, however loaded the
+// machine. The package keeps no other guard for a request.
+const fixtureProofWait = 8 * time.Second
+
 // post posts form to path with a DPoP proof signed by key for that path (none when key is nil),
-// and decodes the JSON answer.
+// and decodes the JSON answer. A post with a proof that has no answer within fixtureProofWait
+// fails the test naming that bound.
 func (f *fixture) post(t *testing.T, path string, form url.Values, key *ecdsa.PrivateKey) (int, http.Header, map[string]any) {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, f.url+path, strings.NewReader(form.Encode()))
+	ctx := context.Background()
+	if key != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, fixtureProofWait)
+		defer cancel()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, f.url+path, strings.NewReader(form.Encode()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,6 +154,9 @@ func (f *fixture) post(t *testing.T, path string, form url.Values, key *ecdsa.Pr
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			t.Fatalf("POST %s had no answer within fixtureProofWait (%s), the bound that keeps it inside the provider's proof skew: %v", path, fixtureProofWait, err)
+		}
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()

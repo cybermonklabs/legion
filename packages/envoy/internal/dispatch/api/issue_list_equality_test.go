@@ -163,6 +163,7 @@ const mainProjectList = `
 // which is what those rows are compared without. Main's statement has no closed window, so the
 // listing's are passed none.
 func TestTheIssueListAnswersWhatMainsStatementDid(t *testing.T) {
+	t.Parallel()
 	fixture := newIssueListFixture(t)
 	filters := []any{"LIST", "", "", nil, []string{}, false, []int16{}, false}
 	for _, listing := range []struct {
@@ -217,6 +218,7 @@ func TestTheIssueListAnswersWhatMainsStatementDid(t *testing.T) {
 // The comparison above only proves it while such an issue is in the listing, so this says the
 // fixture holds one.
 func TestTheListedClosedIssueHoldsAnOpenAsk(t *testing.T) {
+	t.Parallel()
 	fixture := newIssueListFixture(t)
 	var open int
 	if err := fixture.database.Pool.QueryRow(context.Background(),
@@ -239,6 +241,7 @@ func TestTheListedClosedIssueHoldsAnOpenAsk(t *testing.T) {
 // the delivery timeline's facts. Each is read through the code's own function, so the
 // comparison covers the statement the server runs rather than a copy of it.
 func TestTheOtherResolvedReadsAnswerWhatMainsLateralsDid(t *testing.T) {
+	t.Parallel()
 	fixture := newIssueListFixture(t)
 	ctx := context.Background()
 	pool := fixture.database.Pool
@@ -348,6 +351,7 @@ func TestTheOtherResolvedReadsAnswerWhatMainsLateralsDid(t *testing.T) {
 // counted them, 0 for a project with no open ask included: a left join answers that one null,
 // which is what the coalesce is for.
 func TestTheProjectListCountsWhatMainsSubqueryDid(t *testing.T) {
+	t.Parallel()
 	fixture := newIssueListFixture(t)
 	rows, err := fixture.database.Pool.Query(context.Background(), mainProjectList)
 	if err != nil {
@@ -386,6 +390,7 @@ func TestTheProjectListCountsWhatMainsSubqueryDid(t *testing.T) {
 // Envoy roster answers: its page is the same slice of its own unpaged listing, and its total the
 // length of that listing.
 func TestARouteStatusPageIsStillCutAfterTheRosterFilter(t *testing.T) {
+	t.Parallel()
 	roster := &fakeRoster{}
 	handler, _ := routeStatusServer(t, roster)
 	keys := createListedIssues(t, handler, "ROUTED", 6)
@@ -422,6 +427,7 @@ func TestARouteStatusPageIsStillCutAfterTheRosterFilter(t *testing.T) {
 // the page it asked for; the unpaged listing still fails for any issue it matches, which is what
 // it did before this change.
 func TestAPagedListingFailsOnlyOnABadChainOfItsOwnRows(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	keys := createListedIssues(t, handler, "LOOP", 6)
 	bad := keys[len(keys)-1]

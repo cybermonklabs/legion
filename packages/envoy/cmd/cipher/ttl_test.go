@@ -178,6 +178,7 @@ func TestTTLReachesTheSignedRequestObject(t *testing.T) {
 // the broker records, is a usage error (exit 2) on `request` and on the exec form, and nothing
 // reaches the broker or runs.
 func TestABadTTLExitsTwo(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	b := newTTLBroker(t)
 	keyDir := newKeyDir(t)

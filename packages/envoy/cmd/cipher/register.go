@@ -26,13 +26,16 @@ import (
 
 // helperConnectPatience is how long cmdRegister retries connecting to a still-starting helper
 // before giving up (or, under --exec, warning and launching anyway) — the launch-ordering case
-// tmux-resurrect hits at boot.
+// tmux-resurrect hits at boot. It is the default of --connect-patience, which a test that starts
+// no helper at all passes a short one, since it waits the whole patience out
+// (dispatch://INFRA-1075).
 const helperConnectPatience = 10 * time.Second
 
 func cmdRegister(args []string, stdout, stderr io.Writer) int {
 	flags := newFlagSet("register", stderr)
 	wait := flags.Int("wait", 0, "wait up to this many seconds for the helper to enroll the session (0 returns at once, as does a helper holding no launcher credential)")
 	doExec := flags.Bool("exec", false, "after registering, exec the command that follows as this same process")
+	patience := flags.Duration("connect-patience", helperConnectPatience, "how long to retry connecting to a still-starting helper before giving up")
 	// --session-id is what makes a broker identity outlive the process. Without it the helper
 	// names the session <hostname>:<pid>:<start ticks since boot>, which is a different string
 	// after a restart and necessarily a different one after a reboot, so the session enrols
@@ -73,6 +76,12 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 	if !*doExec && len(command) > 0 {
 		return refuseUnexpectedArgument(stderr, "register")
 	}
+	// A zero or negative patience would give a still-starting helper no retry at all: the loop
+	// would give up on its first refused dial, which is not what "wait less" means.
+	if *patience <= 0 {
+		fmt.Fprintln(stderr, "agent-secrets register: --connect-patience must be positive")
+		return exitUsageError
+	}
 
 	// --exec looks its command up before it asks the helper anything, so a command that is not on
 	// PATH makes no enrolment for a session that never starts.
@@ -111,7 +120,7 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 		req.RootPID, launcherErr = nearestLauncher()
 	}
 
-	resp, err := registerWithPatience(sock, req, helperConnectPatience)
+	resp, err := registerWithPatience(sock, req, *patience)
 	if !*doExec {
 		if err != nil {
 			fmt.Fprintf(stderr, "agent-secrets register: %v\n", err)

@@ -245,7 +245,7 @@ func (s *server) legionManagedStatusAdvice(ctx context.Context, tx pgx.Tx, route
 	if row != nil {
 		managed, err = legionManagedStatusOfRow(ctx, walk, issueKey, row.parent, row.labels)
 	} else {
-		managed, err = legionManagedStatus(ctx, walk, issueKey)
+		managed, err = s.legionManagedStatus(ctx, walk, issueKey)
 	}
 	if err != nil {
 		_ = walk.Rollback(ctx)

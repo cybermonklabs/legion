@@ -254,6 +254,12 @@ func forceMetadataMachine(t *testing.T) {
 // the name to, so it must ask under cipherclient.SessionFor and never under
 // AGENT_SECRETS_SESSION — which is unset on most boxes, and on the rest is the name this machine
 // trades its own identity under.
+// Serial: it sets process-wide variables - the cipherclient sign-in ones (SignInDirVar,
+// BrokerURLVar, and loginIssuer's SignInIssuerVar, SignInClientIDVar and
+// SignInClientSecretFileVar) and forceMetadataMachine's IdentityVar, MachineAudienceVar and
+// GCE_METADATA_HOST, which login and cipherclient.SignIns read for themselves, and
+// AGENT_SECRETS_KEY_DIR and SessionVar, which neither reads (the rows set SessionVar to show that
+// login asks under no name it holds); t.Setenv panics under t.Parallel.
 func TestLoginTradesUnderThePersonsOwnSessionName(t *testing.T) {
 	const person = "ada@example.com"
 	for _, machineSession := range []string{"", "machine-of-this-box"} {
@@ -298,6 +304,13 @@ func TestLoginTradesUnderThePersonsOwnSessionName(t *testing.T) {
 // somebody ran `agent-secrets login` again — which made a second box key and a second sign-in
 // on that person's own list. The box registers the session again under the same box key
 // instead, once, and writes the fresh id into the record it already has.
+// Serial: it sets process-wide variables - the cipherclient sign-in ones (SignInDirVar,
+// BrokerURLVar, and loginIssuer's SignInIssuerVar, SignInClientIDVar and
+// SignInClientSecretFileVar) and forceMetadataMachine's IdentityVar, MachineAudienceVar and
+// GCE_METADATA_HOST, which login and cipherclient.SignIns read for themselves, and
+// AGENT_SECRETS_KEY_DIR, AGENT_SECRETS_HELPER_SOCK and SessionVar, which nothing in-process reads
+// here: login reads none of them, and selectSigner takes the key dir as its argument and its
+// sign-in source answers before the helper is asked; t.Setenv panics under t.Parallel.
 func TestASignInWhoseLeaseLapsedRegistersItselfAgain(t *testing.T) {
 	const person = "ada@example.com"
 	broker := newLoginBroker(t)
@@ -374,6 +387,7 @@ func writeLoginFile(t *testing.T, name, content string) string {
 // and the box key's thumbprint, which is what tells two boxes of one person apart, and which
 // registerSignInSession and SignInAuthority.Current ask under too.
 func TestLoginsSessionNameIsTheOneEveryLaterTradeAsks(t *testing.T) {
+	t.Parallel()
 	record := cipherclient.SignInRecord{Person: "ada@example.com", Thumbprint: "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"}
 	if got, want := cipherclient.SessionFor(record), "signin-ada@example.com-abcdefghijkl"; got != want {
 		t.Fatalf("SessionFor = %q, want %q", got, want)
@@ -453,6 +467,11 @@ func TestASignInsFailedTradeNamesOnlyTheCureOfItsClass(t *testing.T) {
 // configures, and `agent-secrets login` finds it from the broker's exchange audience: the trade
 // carries the metadata server's identity token as its actor. A broker that names no exchange
 // audience is refused naming that, since a sign-in has no machine to act on.
+// Serial: each row sets process-wide variables - loginIssuer's SignInIssuerVar, SignInClientIDVar
+// and SignInClientSecretFileVar, GCE_METADATA_HOST (startMetadataServer), HOME, SignInDirVar,
+// BrokerURLVar, SessionVar, IdentityVar and GOOGLE_APPLICATION_CREDENTIALS - and clientConfig,
+// the package-level settings the login form's loadClientConfig fills; t.Setenv panics under
+// t.Parallel.
 func TestLoginFindsTheMachineWithNoSetting(t *testing.T) {
 	for _, row := range []struct {
 		name     string

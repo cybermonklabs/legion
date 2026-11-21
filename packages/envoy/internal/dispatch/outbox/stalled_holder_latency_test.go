@@ -6,6 +6,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A role forward the stream never acknowledges holds back only its own chain: another issue's
@@ -26,17 +27,23 @@ import (
 // wait this bound replaces: with two issues routed to a holder that never answered, 24 of 30
 // comments on a third issue reached their holder more than 1 s late (median 2.8 s, max 5.0 s),
 // against 3 of 30 on main's build.
+//
+// The row reads no window of the process - its verdict is the order above, not a clock - so it
+// runs beside the rest of the package (docs/testing.md).
 func TestAForwardTheStreamDoesNotAcknowledgeDoesNotDelayAnotherIssuesEvents(t *testing.T) {
+	t.Parallel()
 	const (
 		stalledRole, stalledHolder = "stalled-reviewer", "ses_never_acknowledged"
 		liveRole, liveHolder       = "live-reviewer", "ses_acknowledged"
 		// What the outbox waits for the stalled forward's acknowledgement (Deps.forwardAckWait).
-		// It outlasts the whole test, so the wait the live holder's send must not queue behind is
-		// still running when the verdict below is read, however slow the machine is.
-		stalledForwardWait = 10 * time.Minute
+		// It outlasts the whole test - past any run of the test binary - so the wait the
+		// live holder's send must not queue behind is still running when the verdict below is
+		// read, however slow the machine is. Nothing here waits for it to run out: the stop
+		// cancels the batch's wait (sendChains) and the rig's cleanup closes the client it waits on.
+		stalledForwardWait = testwait.PastTheRun
 		// A hang guard on each wait for a forward, not a bound this row measures anything
 		// against: a healthy run reaches both of them in milliseconds, and a send queued behind
-		// the stalled forward's wait arrives only after stalledForwardWait, ten times this.
+		// the stalled forward's wait arrives only after stalledForwardWait.
 		hangGuard = 60 * time.Second
 	)
 	rig := newRoleRig(t)
@@ -51,7 +58,7 @@ func TestAForwardTheStreamDoesNotAcknowledgeDoesNotDelayAnotherIssuesEvents(t *t
 	deps := rig.deps()
 	deps.Listen = rig.database.Pool.Listener
 	deps.forwardAckWait = stalledForwardWait
-	stop := runDeps(t, deps, 15*time.Second)
+	stop := runDeps(t, deps)
 	defer stop()
 
 	held := rig.routedEvent(t, "T-1", stalledRole, model.Actor{Kind: "user", ID: "alice"})

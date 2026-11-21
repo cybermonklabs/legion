@@ -31,7 +31,7 @@ func TestARelayHandsOverALapsedSessionsMessagesToTheConsumerThatStands(t *testin
 
 	requireHandOverOfAGoneSession(t, rig, sessionID, "lapsed")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	if _, err := rig.consumers.Info(ctx, sessionID); err != nil {
 		t.Fatalf("read the consumer of %s after the hand-over: %v; want it standing, which is what a lapse leaves and what holds the naked message", sessionID, err)

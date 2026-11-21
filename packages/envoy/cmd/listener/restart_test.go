@@ -21,6 +21,12 @@ import (
 // that window deletes a consumer the server no longer has, which the watcher's end reports at WARN
 // because the consumer is gone either way (kvwatch.Watcher.End, LEGION-278). Every ERROR line
 // fails the test.
+//
+// Serial: its assertion is a time - after each reconnect's warm-up, a subscription another
+// listener writes must reach this listener's cache within 3 s (subscribe). A watcher the reconnect
+// left in place sees it only once nats.go replaces its lost ordered consumer, 10 to 20 s later
+// (two missed 5 s idle heartbeats), so a give-up wait of tens of seconds would pass that defect,
+// and a parallel test's load is what would stretch a healthy cache past the 3 s.
 func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 	server, uri := testnats.Start(t)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "restart-test")
@@ -106,7 +112,7 @@ func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 // cache answers while the read it waits for runs.
 func interestWarmUp(t *testing.T, p *listenerProcess, n int, while func()) map[string]any {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWait)
 	for {
 		while()
 		var lines []map[string]any
@@ -120,7 +126,7 @@ func interestWarmUp(t *testing.T, p *listenerProcess, n int, while func()) map[s
 			return lines[n-1]
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no interest registry warm-up line %d within 10s:\n%s", n, p.Output.String())
+			t.Fatalf("no interest registry warm-up line %d within %s:\n%s", n, listenerWait, p.Output.String())
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

@@ -17,8 +17,9 @@ import (
 // a person that sign-in does not name. The table's own check (person = lower(person)) refuses the
 // Kelvin login instead, and kate holds no sign-in.
 func TestAKelvinLoginIsRefusedNotFoldedOntoAnother(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
-	err := record(t, st, "\u212aate@example.com", signInBoxOne, signInMachine)
+	err := recordSignIn(t, st, "\u212aate@example.com", signInBoxOne, signInMachine)
 	var refused *pgconn.PgError
 	if !errors.As(err, &refused) || refused.Code != "23514" || refused.ConstraintName != "person_signins_person_check" {
 		t.Errorf("recording a login holding U+212A answered %v, want the table's person check (23514 person_signins_person_check) to refuse it", err)

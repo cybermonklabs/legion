@@ -36,6 +36,7 @@ func lastIssueEventPayload(t *testing.T, database *store.Store, key string) map[
 // resolved one. Its own is any `owner/name`, whether or not a mapping of its project names it.
 // Only a value that is not `owner/name` is refused.
 func TestIssueRepoResolvesThroughParentsThenTheProjectDefault(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
 	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "CORE", "default": true}, "alice")
@@ -130,6 +131,7 @@ func TestIssueRepoResolvesThroughParentsThenTheProjectDefault(t *testing.T) {
 // A project with no default and an issue chain naming none resolves to none: null on list, detail and
 // events, never an error.
 func TestIssueRepoResolvesToNoneWithoutADefault(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
 	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "CORE"}, "alice")
@@ -167,6 +169,7 @@ func createChain(t *testing.T, handler http.Handler, project, parent string, len
 // resolves to the repository its root names, in its detail, every list row and its creation
 // event; an issue one link deeper is refused, 409 PARENT_INPUT.
 func TestIssueCreateRefusesAParentPastTheDepthCap(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
 	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "CORE", "default": true}, "alice")
@@ -199,6 +202,7 @@ func TestIssueCreateRefusesAParentPastTheDepthCap(t *testing.T) {
 // A reparent counts the moved issue's subtree: it is refused when the subtree's deepest issue
 // would sit more than 32 links below its new root, even though neither chain alone is that deep.
 func TestIssuePatchRefusesAReparentPastTheDepthCap(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
 	top := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Top"}, "alice"))
@@ -219,6 +223,7 @@ func TestIssuePatchRefusesAReparentPastTheDepthCap(t *testing.T) {
 // migration 0113 refuses to apply while one exists, so after it only a direct database write, or an
 // earlier release left serving against the rollout rule, makes one. This test writes one directly.
 func TestIssueParentRefusalPastTheCapSaysMoreThan32Links(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "LEG", "name": "Legacy"}, "alice")
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -249,6 +254,7 @@ func TestIssueParentRefusalPastTheCapSaysMoreThan32Links(t *testing.T) {
 // 0113 refuses to apply while one exists, so after it only a direct database write, or an earlier
 // release left serving against the rollout rule, makes one. This test writes one directly.
 func TestIssueRepoWalkStopsAtTheDepthCap(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "DEEP", "name": "Deep"}, "alice")
@@ -314,6 +320,7 @@ func TestIssueRepoWalkStopsAtTheDepthCap(t *testing.T) {
 // A parent chain that loops (which no API write can make) has no answer: the read fails loudly
 // rather than giving the project's default.
 func TestIssueRepoRefusesToResolveALoopedParentChain(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
 	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "CORE", "default": true}, "alice")
@@ -331,6 +338,7 @@ func TestIssueRepoRefusesToResolveALoopedParentChain(t *testing.T) {
 
 // The claim and its release are issue events too, and carry the repository as the others do.
 func TestIssueRepoRidesTheClaimEvents(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
 	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "CORE", "default": true}, "alice")
@@ -348,6 +356,7 @@ func TestIssueRepoRidesTheClaimEvents(t *testing.T) {
 
 // A closed issue takes no repository write, as it takes no other field but its rank and components.
 func TestIssueRepoIsRefusedOnAClosedIssue(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
 	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "CORE"}, "alice")

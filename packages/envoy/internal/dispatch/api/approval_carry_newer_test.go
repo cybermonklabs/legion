@@ -91,7 +91,7 @@ func TestAVersionWhoseApprovedVersionHoldsNewerContentIsWrittenByABuildThatReads
 
 	answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
 	refusal := ""
-	for deadline := time.Now().Add(10 * time.Second); refusal == ""; {
+	for deadline := time.Now().Add(concurrentWait); refusal == ""; {
 		for line := range strings.Lines(logged.String()) {
 			if strings.Contains(line, newerAskAttribute) {
 				refusal = line

@@ -22,6 +22,7 @@ import (
 // names an id holds the one it names, and a repeat live carries is kept for its first holder
 // alone.
 func TestAnUploadKeepsTheIDsOfTheBlocksItLeavesUnchanged(t *testing.T) {
+	t.Parallel()
 	spec, _, _ := docstest.LoadSpec(rand.New(rand.NewPCG(715, 1)), "LOAD-1", 25_000)
 
 	// The ask each case below starts from, as the document holds it before the upload: the id is

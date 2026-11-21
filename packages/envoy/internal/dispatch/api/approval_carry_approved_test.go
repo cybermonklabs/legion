@@ -16,11 +16,13 @@ import (
 // he approved, so nothing is carried. The same sequence over a stored version whose block is as
 // its row has it carries, so what the stored block shows is what refuses.
 //
-// Each test approves inside the window a live write opens, so each guards the race it could lose:
-// the review route pins the latest version, and a settlement that fires first writes the row back
-// and moves the latest on. The review's version must be the one the test meant, and that
-// version's markdown must show what the test put there, or the test fails as setup rather than
-// passing over a version that was as its row has it all along.
+// Each test approves a version a live write left unsettled, so no settlement may run between its
+// steps: the review route pins the latest version, and a settlement that fired first would write
+// the row back and move the latest on. The window is an hour rather than one sized to those
+// steps, which a loaded runner outlasts (dispatch://INFRA-1075), and every settlement these
+// tests need runs on their own goroutine (settledDecisionBlocks, settledVersion). approveVersion
+// still holds the review to the version the test meant, so a test that ever loses that ordering
+// fails as setup rather than passing over a version that was as its row has it all along.
 
 // approveVersion approves the document as login through the review route, which pins its latest
 // version, and fails t unless that is version number: the version the test meant.
@@ -44,6 +46,7 @@ func approveVersion(t *testing.T, handler http.Handler, artifactID, login string
 // the row's - and his answer to it predates his approval, so nothing is carried. The row-true
 // control, which approves the version settlement wrote from the row, carries.
 func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		attribute string
 		shown     any
@@ -55,7 +58,8 @@ func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesNothing(t *test
 		{"copied_from_document", "dispatch://TEST/artifact/other", `copied_from_document="dispatch://TEST/artifact/other"`},
 	} {
 		t.Run(tc.attribute, func(t *testing.T) {
-			handler, database, documents := settlingCarryDocuments(t, 2*time.Second)
+			t.Parallel()
+			handler, database, documents := settlingCarryDocuments(t, time.Hour)
 			issue := createInteractionIssue(t, handler, "TEST", "Approved "+tc.attribute+" other than the row's", "Context\n\n"+regionAsk)
 			asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 			answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
@@ -92,7 +96,8 @@ func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesNothing(t *test
 		})
 	}
 	t.Run("row-true", func(t *testing.T) {
-		handler, _, documents := settlingCarryDocuments(t, 2*time.Second)
+		t.Parallel()
+		handler, _, documents := settlingCarryDocuments(t, time.Hour)
 		issue := createInteractionIssue(t, handler, "TEST", "Approved as the row has it", "Context\n\n"+regionAsk)
 		asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 		answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
@@ -119,7 +124,8 @@ func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesNothing(t *test
 // nobody decided, so the block is not as he approved it, and his answer to it predates his
 // approval: nothing is carried.
 func TestAnApprovedVersionShowingADecidedBlockUnderOtherWordingCarriesNothing(t *testing.T) {
-	handler, _, documents := settlingCarryDocuments(t, 2*time.Second)
+	t.Parallel()
+	handler, _, documents := settlingCarryDocuments(t, time.Hour)
 	issue := createInteractionIssue(t, handler, "TEST", "Approved under other wording", "Context\n\n"+regionAsk)
 	asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 	answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)

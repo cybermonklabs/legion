@@ -39,7 +39,7 @@ func newRoomPeer(t *testing.T, service *Service, artifactID string, conn uint64,
 		t.Fatalf("warm the room for %s: %v", actor.ID, err)
 	}
 	service.addConnection(artifactID, conn, actor)
-	t.Cleanup(func() { service.removeConnection(artifactID, conn) })
+	cleanupAndRelease(t, func() { service.removeConnection(artifactID, conn) })
 	if sent == nil {
 		sent = map[string]bool{}
 	}

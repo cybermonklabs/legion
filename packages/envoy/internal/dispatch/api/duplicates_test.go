@@ -588,6 +588,9 @@ func (s *gateBoundStandIn) read(ctx context.Context) error {
 // (newDuplicateTestHandler), and nothing in it waits on the machine's speed: the read never
 // answers, however fast the machine is.
 func TestCreateIssueGoesInUncheckedWhenTheGateRunsPastItsBound(t *testing.T) {
+	// Serial: this test swaps process-wide state. captureLogs points slog's default logger at a
+	// buffer of its own and reads the gate's WARN line from it, which every other test's logging
+	// would join.
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createDuplicateTestProject(t, handler, "BOUND")
 	const title = "Astrolabe calibration drifts after a reseat"

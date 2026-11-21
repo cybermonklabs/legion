@@ -186,6 +186,18 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return s.migrate(ctx, migrationFiles)
 }
 
+// MigrationsFingerprint is pgmigrate.Fingerprint of the set Migrate applies, and the error
+// Migrate would refuse that set with. The test harness names the template database every test's
+// database is cloned from after it (internal/cipher/store/storetest), so the test processes of
+// one run share one migrated template; nothing in production reads it.
+func MigrationsFingerprint() (string, error) {
+	migrations, err := pgmigrate.Load(migrationFiles, "migrations")
+	if err != nil {
+		return "", fmt.Errorf("migrations refused, none applied: %w", err)
+	}
+	return pgmigrate.Fingerprint(migrations), nil
+}
+
 // versionTable is the table this runner records each applied migration in.
 const versionTable = "broker_schema_migrations"
 
@@ -203,8 +215,8 @@ const versionTable = "broker_schema_migrations"
 // and the release before ignores them. Every statement an earlier runner sends on the table names
 // its columns, so a pod of the release before this one serves beside it while the Deployment rolls,
 // and its rows record no name. A lock wait that outlasts its bound rolls that transaction back and
-// tries it again, as a migration is tried (pgmigrate.RetryVersionTableLockTimeouts), so a boot that
-// starts while a pg_dump holds the table waits it out rather than fail on its first wait.
+// tries it again, as a migration is tried (pgmigrate.Locking.RetryVersionTableLockTimeouts), so a
+// boot that starts while a pg_dump holds the table waits it out rather than fail on its first wait.
 //
 // The second creates the table with those columns where there is none, judges every row before it
 // applies anything (pgmigrate.ReconcileRecorded, whose rule pgmigrate.Reconcile states: a refusal
@@ -231,7 +243,7 @@ func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 		return err
 	}
 	defer releaseMigrationConn(ctx, conn)
-	if err := pgmigrate.RetryVersionTableLockTimeouts(ctx, versionTable, func(ctx context.Context) error {
+	if err := (pgmigrate.Locking{}).RetryVersionTableLockTimeouts(ctx, versionTable, func(ctx context.Context) error {
 		return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 			if err := lockAndPin(ctx, tx); err != nil {
 				return err
@@ -271,7 +283,7 @@ func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 			if applied[migration.Version] {
 				continue
 			}
-			if err := pgmigrate.Exec(ctx, tx, migration, s.Pool.Config().BeforeConnect); err != nil {
+			if err := (pgmigrate.Locking{}).Exec(ctx, tx, migration, s.Pool.Config().BeforeConnect); err != nil {
 				return err
 			}
 			if err := pgmigrate.Record(ctx, tx, versionTable, migration); err != nil {
@@ -289,19 +301,19 @@ func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 
 // lockAndPin takes the broker's migration lock in tx, a transaction-level advisory lock every
 // broker boot takes, so concurrent boots serialize instead of racing on the version table, and
-// then pins tx (pgmigrate.Pin): lock_timeout at LockTimeout, the text settings, and
-// session_authorization, role and search_path at the values that RESET gives them, so every later
-// statement of tx is bounded by LockTimeout and resolves broker_schema_migrations under those
-// values, whatever session the pooled connection brings. Exec pins the transaction again after
-// each migration's statements, so each later insert runs pinned too. The pin comes after the
-// advisory lock and not before it, because lock_timeout bounds the wait for an advisory lock too:
-// a pin before the lock would make a second broker process that starts while another one migrates
-// give up after LockTimeout, where it must wait its turn.
+// then pins tx (pgmigrate.Locking.Pin): lock_timeout at LockTimeout (a zero Locking's timeout),
+// the text settings, and session_authorization, role and search_path at the values that RESET
+// gives them, so every later statement of tx is bounded by LockTimeout and resolves
+// broker_schema_migrations under those values, whatever session the pooled connection brings.
+// Exec pins the transaction again after each migration's statements, so each later insert runs
+// pinned too. The pin comes after the advisory lock and not before it, because lock_timeout bounds
+// the wait for an advisory lock too: a pin before the lock would make a second broker process that
+// starts while another one migrates give up after LockTimeout, where it must wait its turn.
 func lockAndPin(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1)`, int64(8330001)); err != nil {
 		return fmt.Errorf("lock migrations: %w", err)
 	}
-	if err := pgmigrate.Pin(ctx, tx); err != nil {
+	if err := (pgmigrate.Locking{}).Pin(ctx, tx); err != nil {
 		return fmt.Errorf("pin the runner's settings: %w", err)
 	}
 	return nil

@@ -104,7 +104,9 @@ import (
 // pointer, so it adds no resident memory: the next collection takes it, and a first run that
 // starts after that renders what it starts from, as every run after a recover does.
 type renderedReplica struct {
-	mu sync.Mutex
+	// logger is where the replica writes its lines, the service's that keeps it (Service.log).
+	logger func() *slog.Logger
+	mu     sync.Mutex
 	// waiting counts the update observers waiting for mu (lockForUpdate).
 	waiting atomic.Int32
 	log     *crdt.UpdateLog
@@ -388,13 +390,13 @@ func (r *renderedReplica) takeLocked(room string, base []byte, updates []crdt.Lo
 		}
 		r.touched.reset()
 		if err := crdt.ApplyUpdateV1(r.doc, update.Update, nil); err != nil {
-			slog.Error("dispatch: apply a committed update to the document's rendered copy", "room", room, "error", err)
+			r.logger().Error("dispatch: apply a committed update to the document's rendered copy", "room", room, "error", err)
 			r.recover(room, updates[i:], note)
 			return settles, changed, local
 		}
 		if update.Parked != nil {
 			if err := crdt.ApplyUpdateV1(r.doc, update.Parked, nil); err != nil {
-				slog.Error("dispatch: apply what a committed update parked to the document's rendered copy", "room", room, "error", err)
+				r.logger().Error("dispatch: apply what a committed update parked to the document's rendered copy", "room", room, "error", err)
 				r.recover(room, updates[i:], note)
 				return settles, changed, local
 			}
@@ -557,7 +559,7 @@ func (r *renderedReplica) standsAt(mark forkReadMark) bool {
 func (r *renderedReplica) start(room string, base []byte) {
 	doc := newDocumentCopy()
 	if err := crdt.ApplyUpdateV1(doc, base, nil); err != nil {
-		slog.Error("dispatch: make the document's rendered copy", "room", room, "error", err)
+		r.logger().Error("dispatch: make the document's rendered copy", "room", room, "error", err)
 		r.loaded = weak.Pointer[replicaRendering]{}
 		r.doc, r.fragment, r.rendering = nil, nil, nil
 		r.verdict.Store(int32(verdictUnknown))
@@ -647,7 +649,7 @@ func (r *renderedReplica) recover(room string, unplaced []crdt.LoggedUpdate, not
 	for _, update := range unplaced {
 		r.consumed(update)
 	}
-	slog.Error("dispatch: the document's rendered copy starts again at the room's next commit; updates it could not place count as content changes",
+	r.logger().Error("dispatch: the document's rendered copy starts again at the room's next commit; updates it could not place count as content changes",
 		"room", room, "updates", len(unplaced))
 	for _, update := range unplaced {
 		note(update, true, nil)
@@ -765,7 +767,7 @@ func (r *renderedReplica) drainedSeq(room string) (seq uint64, settles bool) {
 // only weakly, for its first run to take in place of rendering its base (start): once the caller
 // drops it, nothing holds it, so it adds no resident memory and the next collection takes it.
 func (s *Service) keepReplica(live *crdt.Doc, log *crdt.UpdateLog, loaded *replicaRendering) *renderedReplica {
-	replica := &renderedReplica{log: log, paths: &s.renderPaths, loaded: weak.Make(loaded)}
+	replica := &renderedReplica{logger: s.log, log: log, paths: &s.renderPaths, loaded: weak.Make(loaded)}
 	replica.epoch.Store(replicaEpochs.Add(1))
 	listResident(&s.replicas, live, weak.Make(replica))
 	return replica
@@ -919,11 +921,11 @@ func (r *renderedReplica) updateChangesMarkdown(room string) (bool, func() map[s
 		r.rendering = nil
 		switch {
 		case errors.Is(err, ErrDocOutsideSchema):
-			slog.Warn("dispatch: updated document outside Proof schema", "room", room, "error", err)
+			r.logger().Warn("dispatch: updated document outside Proof schema", "room", room, "error", err)
 		case errors.Is(err, ErrDocNewerContent):
-			slog.Warn("dispatch: updated document holds an element this build cannot read", "room", room, "error", err)
+			r.logger().Warn("dispatch: updated document holds an element this build cannot read", "room", room, "error", err)
 		default:
-			slog.Error("dispatch: read updated document", "room", room, "error", err)
+			r.logger().Error("dispatch: read updated document", "room", room, "error", err)
 		}
 		return true, nil
 	}
@@ -977,7 +979,7 @@ func (r *renderedReplica) spliceTouched(room string) (changed bool, asks func() 
 		for _, index := range layout.AskBlocks() {
 			block, err := read(index)
 			if err != nil {
-				slog.Error("dispatch: read a block of the updated document to list its ask blocks", "room", room, "error", err)
+				r.logger().Error("dispatch: read a block of the updated document to list its ask blocks", "room", room, "error", err)
 				return nil
 			}
 			addAskBlockIDs(ids, block)

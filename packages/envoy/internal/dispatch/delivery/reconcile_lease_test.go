@@ -16,6 +16,7 @@ import (
 // - the other envoy-dispatch process, inside a pass of its own - this process's pass asks GitHub
 // for nothing and leaves the settings' freshness untouched.
 func TestAReconcilePassWhoseLeaseIsHeldElsewhereAsksGitHubNothing(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	leases := deliveryTestLeases(t, pool)
 	seedDeliverySettings(t, ctx, pool)
@@ -35,7 +36,7 @@ func TestAReconcilePassWhoseLeaseIsHeldElsewhereAsksGitHubNothing(t *testing.T) 
 	}()
 	select {
 	case <-taken:
-	case <-time.After(20 * time.Second):
+	case <-time.After(eventWait):
 		t.Fatal("the other caller never took the delivery-reconcile lease")
 	}
 

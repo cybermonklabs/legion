@@ -44,6 +44,11 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # The settings these tests need, as the server's own command line, so it starts with them
+        # and no step has to restart it; envoy-go's own service says what each of them buys and
+        # why this container can do without durability (dispatch://INFRA-1075). The harness clones
+        # a database a test here too, and a clone and its drop are what force the checkpoints.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 10s
@@ -66,14 +71,22 @@ jobs:
           cache: false
       # go-envoy-test, restored only: this job builds the test binary of internal/dispatch/api,
       # which the entry .github/workflows/ci-caches.yaml fills with the test binary of every
-      # package of the envoy module holds. It saves none.
+      # package of the envoy module holds. It saves none. The three paths are the save's exactly,
+      # the zip exclusion included: actions/cache keys an entry on its path list, so a restore
+      # naming two where the save names three misses this family's entry every time
+      # (dispatch://INFRA-1075).
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
+            !~/go/pkg/mod/cache/download/**/*.zip
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # The settings the service's command: asks for, read back from the server itself; envoy-go's
+      # own read-back step says why a command is worth reading back.
+      - name: Read the disposable service's settings back
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
       # The mention sender's claim model (TestTheMentionSenderClaimModel): every order, within
       # three claim-refresh periods, of the real sender's locked sections, statements and timers
       # with two comments' attempt rows, the delivery sweep and the outbox, the sender as built

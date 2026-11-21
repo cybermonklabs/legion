@@ -21,6 +21,7 @@ import (
 // operator's machine login, and that key's own proof is accepted; unenroll-session-key ends it, so
 // the same proof is refused.
 func TestEnrollSessionKeyEnrollsAndRevokesAnExternalKey(t *testing.T) {
+	t.Parallel()
 	cr := newContractRig(t)
 	b := cr.srv.Broker
 	code, err := b.Login(context.Background(), cr.srv.Hostname)
@@ -69,6 +70,7 @@ func TestEnrollSessionKeyEnrollsAndRevokesAnExternalKey(t *testing.T) {
 // legion-envoy 10 asked, are gone: the helper answers each as any op it does not know, BAD_REQUEST
 // `unknown op <op>`.
 func TestTheBoxOpsAreUnknown(t *testing.T) {
+	t.Parallel()
 	cr := newContractRig(t)
 	for _, op := range []string{"enroll-box", "unenroll-box"} {
 		line := fmt.Sprintf(`{"op":%q,"runtime_id":"box-%s","thumbprint":"tp","enrollment_id":"e","kind":"box"}`, op, t.Name())
@@ -127,12 +129,13 @@ func TestSignRequestSignsTheLifetimeItIsAsked(t *testing.T) {
 // a key enroll-session-key brings, as box, so no session loses the broker while the helper ships
 // ahead of the broker.
 func TestABrokerBeforeTheSessionKindStillEnrollsEverySession(t *testing.T) {
+	t.Parallel()
 	r := startRig(t, "")
 	r.fake.mu.Lock()
 	r.fake.refuseKinds = map[string]bool{"session": true}
 	r.fake.mu.Unlock()
 
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	reg := r.call(t, Request{Op: "register", WaitSeconds: 10})
 	if !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register against a broker before the session kind: %+v", reg)
 	}

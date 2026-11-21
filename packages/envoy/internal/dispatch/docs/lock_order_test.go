@@ -17,8 +17,8 @@ import (
 func lockOrderServiceFor(t *testing.T, database *store.Store) *Service {
 	t.Helper()
 	service := New(Deps{Store: database, Settle: time.Hour})
-	t.Cleanup(func() {
-		stop, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	cleanupAndRelease(t, func() {
+		stop, cancel := context.WithTimeout(context.Background(), roomWait(t))
 		defer cancel()
 		_ = service.Shutdown(stop)
 	})
@@ -36,7 +36,7 @@ func lockOrderService(t *testing.T) (*store.Store, *Service, string) {
 // the waiting operation's result if it returns first.
 func waitForLockWait(t *testing.T, ctx context.Context, database *store.Store, like string, returned <-chan error) {
 	t.Helper()
-	if !testwait.Holds(10*time.Second, 2*time.Millisecond, func() bool {
+	if !testwait.Holds(roomWait(t), 2*time.Millisecond, func() bool {
 		select {
 		case err := <-returned:
 			t.Fatalf("the operation returned (%v) before any statement matching %s waited on a lock", err, like)
@@ -60,8 +60,10 @@ func lockWaits(t *testing.T, ctx context.Context, database *store.Store, like st
 }
 
 func TestConditionalEditDoesNotInvertTheRoomLockOrder(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
+	t.Parallel()
+	// Each wait below has roomWait of its own (the lock wait and the two selects): one 120 s
+	// context over all three left the later waits what the earlier ones had not spent.
+	ctx := t.Context()
 	database, service, id := lockOrderService(t)
 	seedServiceText(t, service, id, "first\n\nsecond")
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -116,7 +118,7 @@ func TestConditionalEditDoesNotInvertTheRoomLockOrder(t *testing.T) {
 		}
 	case err := <-secondDone:
 		t.Fatalf("second edit returned before first transaction released its lock: %v", err)
-	case <-time.After(15 * time.Second):
+	case <-time.After(roomWait(t)):
 		t.Fatal("lock-order inversion: a conditional edit holds the document mutex while waiting for the advisory lock another writer holds")
 	}
 
@@ -132,7 +134,7 @@ func TestConditionalEditDoesNotInvertTheRoomLockOrder(t *testing.T) {
 		if err != nil {
 			t.Fatalf("second edit once the first transaction ended: %v", err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(roomWait(t)):
 		t.Fatal("second edit did not finish once the first transaction ended")
 	}
 }
@@ -146,7 +148,7 @@ func ownerLockedTransaction(t *testing.T, ctx context.Context, database *store.S
 	if err != nil {
 		t.Fatalf("begin the owner-locked transaction: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	cleanupAndRelease(t, func() { _ = tx.Rollback(context.Background()) })
 	if _, _, err := lockArtifactOwner(ctx, tx, id); err != nil {
 		t.Fatalf("lock the document owner: %v", err)
 	}
@@ -165,8 +167,9 @@ func lockOrderDocument(t *testing.T) (*store.Store, *Service, string) {
 	return database, lockOrderServiceFor(t, database), id
 }
 
-// awaitUnblocked runs op and fails if it has not returned within the window a blocked writer
-// would exceed. subject names the writer in the lock-order-inversion message.
+// awaitUnblocked runs op and fails if it has not returned within roomWait. A writer the owner
+// lock blocks never returns at all - the lock is held for the test's whole run - so the wait is
+// generous rather than tight; subject names the writer in the lock-order-inversion message.
 func awaitUnblocked(t *testing.T, subject string, op func() error) {
 	t.Helper()
 	done := make(chan error, 1)
@@ -176,7 +179,7 @@ func awaitUnblocked(t *testing.T, subject string, op func() error) {
 		if err != nil {
 			t.Fatalf("run %s while the owner's lock and row are held: %v", subject, err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(roomWait(t)):
 		t.Fatalf("lock-order inversion: %s is blocked by the document's owner lock", subject)
 	}
 }
@@ -191,8 +194,10 @@ func awaitUnblocked(t *testing.T, subject string, op func() error) {
 // advisory lock and the append's row lock is `for no key update`: they still serialise the
 // writers that take them, including the event sequence allocation, and do not block a foreign key.
 func TestDurableAppendIsNotBlockedByTheOwnerLock(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
+	t.Parallel()
+	// Each wait has roomWait of its own - the writer unblocked (awaitUnblocked) and the room lock
+	// taken behind it.
+	ctx := t.Context()
 	database, service, id := lockOrderDocument(t)
 	settling := ownerLockedTransaction(t, ctx, database, id)
 
@@ -213,14 +218,18 @@ func TestDurableAppendIsNotBlockedByTheOwnerLock(t *testing.T) {
 		t.Fatalf("commit the append: %v", err)
 	}
 	// And the owner-locked transaction can still take the room lock behind it.
-	if err := lockDocumentRoom(ctx, settling, id); err != nil {
+	locking, cancelLocking := context.WithTimeout(ctx, roomWait(t))
+	defer cancelLocking()
+	if err := lockDocumentRoom(locking, settling, id); err != nil {
 		t.Fatalf("take the room lock behind the append: %v", err)
 	}
 }
 
 func TestSnapshotIsNotBlockedByTheOwnerLock(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
+	t.Parallel()
+	// Each wait has roomWait of its own - the snapshot unblocked (awaitUnblocked) and the room lock
+	// taken behind it.
+	ctx := t.Context()
 	database, service, id := lockOrderDocument(t)
 	settling := ownerLockedTransaction(t, ctx, database, id)
 
@@ -231,7 +240,9 @@ func TestSnapshotIsNotBlockedByTheOwnerLock(t *testing.T) {
 		_, err := service.persistence.(*PgVersioned).CaptureSnapshot(ctx, id, "live", []byte{0})
 		return err
 	})
-	if err := lockDocumentRoom(ctx, settling, id); err != nil {
+	locking, cancelLocking := context.WithTimeout(ctx, roomWait(t))
+	defer cancelLocking()
+	if err := lockDocumentRoom(locking, settling, id); err != nil {
 		t.Fatalf("take the room lock behind the snapshot: %v", err)
 	}
 }
@@ -244,8 +255,10 @@ func TestSnapshotIsNotBlockedByTheOwnerLock(t *testing.T) {
 // loser is failRoom - it evicts the room and drops the in-flight update rather than returning
 // an error to anyone.
 func TestLiveUpdateIsNotBlockedByTheOwnerLock(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
+	t.Parallel()
+	// Each wait has roomWait of its own - the update unblocked (awaitUnblocked) and the room lock
+	// taken behind it.
+	ctx := t.Context()
 	database, service, id := lockOrderDocument(t)
 	settling := ownerLockedTransaction(t, ctx, database, id)
 
@@ -257,7 +270,9 @@ func TestLiveUpdateIsNotBlockedByTheOwnerLock(t *testing.T) {
 		)
 		return err
 	})
-	if err := lockDocumentRoom(ctx, settling, id); err != nil {
+	locking, cancelLocking := context.WithTimeout(ctx, roomWait(t))
+	defer cancelLocking()
+	if err := lockDocumentRoom(locking, settling, id); err != nil {
 		t.Fatalf("take the room lock behind the live update: %v", err)
 	}
 }

@@ -105,11 +105,13 @@ func TestSettingsAnswersTheGCPStore(t *testing.T) {
 // identity it can trade with no setting of its own, beside that store's own key field. A broker
 // that accepts no machine identity names no audience at all, and none ever names a Kubernetes one.
 func TestSettingsNameTheGoogleExchangeAudienceOnEitherStore(t *testing.T) {
+	t.Parallel()
 	for _, store := range []struct{ name, kind, prefix, key, keyField string }{
 		{"aws", secrets.StoreAWS, policytest.Prefix, policytest.KeyARN, "kms_key_arn"},
 		{"gcp", secrets.StoreGCP, "projects/000000000000/secrets/agent-secrets-", "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets", "kms_key_name"},
 	} {
 		t.Run(store.name, func(t *testing.T) {
+			t.Parallel()
 			read := func(t *testing.T, google string) (map[string]any, string) {
 				t.Helper()
 				cur, err := policy.NewCurrent(t.Context(), policytest.Loader(secrets.NewLocal()), time.Hour)

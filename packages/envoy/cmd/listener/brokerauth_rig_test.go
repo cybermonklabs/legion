@@ -59,7 +59,7 @@ func newBrokerRig(t *testing.T) *brokerRig {
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
-	ready, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ready, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	if err := sessions.WaitForCacheReady(ready); err != nil {
 		t.Fatalf("warm the session cache: %v", err)
@@ -348,6 +348,7 @@ const v1RoutePatterns = 15
 // same, since apiAuth wraps the whole of /v1 once (main.go); TestAPIAuthBrokerToken holds that
 // apiAuth refuses the token before any handler runs.
 func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerRig(t)
 	const (
 		reader        = "ses_rig_reader"
@@ -482,6 +483,7 @@ func TestSpentProofsRefuseAProofTheBucketAlreadyHolds(t *testing.T) {
 // memory — would let a proof captured from one replica be presented to another, so there is no
 // fallback to refuse into.
 func TestBrokerTokensRefuseABusWithNoJetStream(t *testing.T) {
+	t.Parallel()
 	// A server of this test's own with no -js, connected to directly: testnats.Connect waits for
 	// JetStream, which this one will never have.
 	_, uri := testnats.StartConfig(t, "", nil, true)

@@ -21,6 +21,12 @@ func architectureLeases(t *testing.T, database *store.Store) duty.Leases {
 // limit, so one process imports however many tick: with the architecture-import lease held by
 // another caller - the other envoy-dispatch process, inside an import of its own - this process's
 // pass reads nothing from GitHub and writes no component.
+//
+// Serial: the lease is its subject, and duty.Exclusive gives each statement on the lease's own
+// connection duty's leaseCallTimeout (5 s, internal/dispatch/duty/exclusive.go), a constant no
+// test can raise: the other caller's take must answer inside it for that caller to hold the lease
+// at all, and the last pass's take and period read must answer inside it for that pass to run, so
+// a parallel neighbour's load that stretches one of them past five seconds fails the row.
 func TestAnImportPassWhoseLeaseIsHeldElsewhereReadsNothing(t *testing.T) {
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: map[string]string{"core.md": "# Core\n"}}
@@ -40,8 +46,8 @@ func TestAnImportPassWhoseLeaseIsHeldElsewhereReadsNothing(t *testing.T) {
 	}()
 	select {
 	case <-taken:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the other caller never took the architecture-import lease")
+	case <-time.After(heldReadWait):
+		t.Fatalf("the other caller never took the architecture-import lease within %v, the bound waitHeld gives a held read", heldReadWait)
 	}
 
 	syncAllLeased(ctx, importer, leases, time.Now())

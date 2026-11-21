@@ -59,6 +59,7 @@ func TestAQueuedDeliveryIsListedAsASentOneIs(t *testing.T) {
 // the generic plan Postgres caches for it afterwards, which knows neither the session nor the
 // window's start.
 func TestTheReadOfASessionsMessageDeliveriesReadsItsWindowsRange(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	var messageID string

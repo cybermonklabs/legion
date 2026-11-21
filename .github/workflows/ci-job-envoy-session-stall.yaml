@@ -37,14 +37,28 @@ jobs:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
         image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        # A service container dies with its job, so it need not survive a crash: these are the
+        # lane's disposable settings (dispatch://INFRA-1075), read back by the step of that name
+        # below, which fails the job when the server reports anything else.
+        command: >-
+          postgres
+          -c fsync=off
+          -c full_page_writes=off
+          -c synchronous_commit=off
+          -c max_connections=500
+          -c max_prepared_transactions=20
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # One second, as every other Postgres service of this file probes: docker runs the first
+        # health check an interval after the container starts, so at ten a server ready at about
+        # a second is reported healthy at fourteen and the job's first step waits that out
+        # (dispatch://INFRA-1075, and the measurement on envoy-go's own service above).
         options: >-
           --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
+          --health-interval 1s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 50
     env:
       LEGION_E2E_ENVOY_STACK: "1"
       LEGION_E2E_DISPATCH_STACK: "1"
@@ -53,6 +67,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Read the disposable service's settings back
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - id: setup-go

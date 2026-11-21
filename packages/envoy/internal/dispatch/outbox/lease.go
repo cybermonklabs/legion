@@ -351,7 +351,7 @@ func (o *Outbox) answering() bool {
 // statements), and holdRetry when the database did not answer.
 func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 	pool := o.deps.Store.Pool
-	options := publisherHoldOptions
+	options := o.deps.holdOptionsOrProduction()
 	options.Token = o.token
 	hold, err := duty.TryHold(ctx, pool, publisherHold, o.instance, options)
 	if err == nil && hold != nil {

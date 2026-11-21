@@ -1231,6 +1231,12 @@ def reduce_line(line: str) -> tuple:
 ENV_ALLOWED = frozenset({
     "AIRLOCK_MODEL",
     "BROKER_TEST_DATABASE_URL", "CI_OK_ALWAYS_RUN", "CI_OK_EXEMPT", "CI_OK_PULL_REQUEST_ONLY", "CI_OK_SELECTED_BY",
+    # The count each of envoy-go-checks' two composite actions hands the job, which the step after
+    # it reads through its env: and echoes. env_reason reads every step's block whatever its order,
+    # so without this name here the go run of that job's pg-connection-ceiling.sh, the sizing step
+    # of the Postgres service its alone step tests against, would count as unreduced and
+    # envoy_go_checks would have to match every Go file of the repository. go reads it nowhere.
+    "COUNT",
     "DATABASE_URL",
     "DISPATCH_E2E_FILE_STORE_BUCKET", "DISPATCH_E2E_FILE_STORE_ENDPOINT", "DISPATCH_FIRST_ROLLOUT_BUILD",
     "DISPATCH_PREVIOUS_BUILD", "DISPATCH_TEST_DATABASE_URL", "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",

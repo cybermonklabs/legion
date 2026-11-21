@@ -32,20 +32,23 @@ env:
 jobs:
   envoy-go-docs-finalizers:
     runs-on: ubuntu-24.04-arm
-    # The step's -timeout 34m must fire before the runner cancels the job, so a hung test prints
-    # the dump that names it. Both numbers come from this job's own green runs, the slowest of
-    # them 128761197501: 1136.829 s in the package, against 1016.966 s in 128809181011,
-    # 1012.796 s in 128790317116 and 864.037 s in 128751128912, and about 71 s of checkout,
-    # setup and compile before any of them. The package has grown three times under this pull
-    # request, first when main took in #2414's tests (953 services built to 1068), again on the
-    # merge of #2870, which moved work into this lane, and now with #2960's wedged-commit row,
-    # measured at 56 s in series in an issue pod (the row's own 47.69 s, and 8.29 s more in the
-    # residency case, which gives each of its trials a connection of its own). The step's
-    # deadline is the smallest whole minute at which the slowest package time, that growth
-    # included, is at most 60 % of it, and this limit is six minutes above that. Measure again
-    # before changing either, and from the slowest run rather than the newest: a package that
-    # has grown past 60 % of its deadline is a deadline to raise, not a flake to re-run.
-    timeout-minutes: 40
+    # The step's -timeout 28m must fire before the runner cancels the job, so a hung test prints
+    # the dump that names it. Both numbers come from the final measurement pair, runs 44657322918
+    # and 44657415021 at 8cfd2682 (dispatch://INFRA-1075, check 6224bb0e), and the dispatch run at
+    # each later head, which may raise a limit and never lower one (the architect's rule of
+    # 2026-11-20, the issue's open-items.md), by this job's own rule: the step's deadline is the
+    # smallest whole minute at which the package's slowest time is at most 60 % of it, and the
+    # job's bound is six minutes above that. The package's `ok` line read 1,004.5 s in run
+    # 44717243297 at 66058706 (job 136223826640), whose job took 1,064 s, against 926.9 s in run
+    # 44657415021 (job 136039518265) and 920.3 s in run 44657322918 (job 136026780616), the pair,
+    # and 951.6 s in run 44687712471 at 56f4dabc (job 136126010942); 1,004.5 / 36 = 27.90, so 28m
+    # (1,004.5 s is 59.8 % of 28m and would be 62.0 % of 27m), and 28 + 6 = 34. Run 44790111577
+    # at 85f6b018 (job 136476756355) read the `ok` line at 914.3 s, whose job took 971 s, and run
+    # 44846096964 at 28ce7c74 (job 136669775984) at 999.4 s, 59.5 % of 28m, whose job took
+    # 1,056 s; both are under those, so neither raised either limit. Measure again before
+    # changing either: a package that has grown past 60 % of its deadline is a deadline to raise,
+    # not a flake to re-run.
+    timeout-minutes: 34
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -53,15 +56,21 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # The settings these tests need, as the server's own command line, so it starts with them
+        # and no step has to restart it; envoy-go's own service says what each of them buys and
+        # why this container can do without durability (dispatch://INFRA-1075). This job runs the
+        # document service's own package, as envoy-go-race-docs does, so it takes that job's
+        # service settings with it.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
         options: >-
           --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
+          --health-interval 1s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 50
     # Load-bearing, not boilerplate: this package's TestMain is storetest.Main
-    # (internal/dispatch/docs/persistence_test.go:19), and storetest.Open skips every test that
+    # (internal/dispatch/docs/persistence_test.go:31-32), and storetest.Open skips every test that
     # opens the store when DISPATCH_TEST_DATABASE_URL is unset
-    # (internal/dispatch/store/storetest/storetest.go:67-71). A skip is a pass, so without the
+    # (internal/dispatch/store/storetest/storetest.go, serverURL). A skip is a pass, so without the
     # service this job would be green having run almost nothing.
     env:
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
@@ -86,6 +95,10 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      # The settings the service's command: asks for, read back from the server itself; envoy-go's
+      # own read-back step says why a command is worth reading back.
+      - name: Read the disposable service's settings back
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # -v, because the package's leak check prints its line from TestMain after the tests have
@@ -94,7 +107,7 @@ jobs:
       # and the count of services the tests left alive is the half of this job that no detector
       # of Go's reports.
       - name: Test the document service under the cleanup detector
-        run: GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 34m ./internal/dispatch/docs/
+        run: GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 28m ./internal/dispatch/docs/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

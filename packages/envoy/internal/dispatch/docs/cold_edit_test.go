@@ -20,6 +20,7 @@ import (
 // (audit finding 11): the write keeps no fork, its verdict on what it inserted is judged on the
 // store (nothing was lost), and the next read loads the room from the store, holding the write.
 func TestAColdWriteLoadsNoRoom(t *testing.T) {
+	t.Parallel()
 	for _, conditional := range []bool{false, true} {
 		name := "unconditional"
 		if conditional {
@@ -148,6 +149,7 @@ func (s *insideFirstLoadStore) Load(ctx context.Context, room string) (persisten
 // no copy of the document beside the room's own; one that loads after the read meets the write at
 // its publish (LEGION-504).
 func TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits(t *testing.T) {
+	t.Parallel()
 	for _, during := range []bool{true, false} {
 		name := "after the store read"
 		if during {
@@ -157,18 +159,13 @@ func TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits(t *testing.T) {
 			database := storetest.Open(t)
 			artifactID := createDocument(t, database, "# First")
 			store := &insideFirstLoadStore{VersionedStore: NewPgVersioned(database), room: artifactID}
-			service := New(Deps{
+			service := newTestServiceWith(t, Deps{
 				Store:       database,
 				Persistence: store,
 				Events:      events.NewBroker(),
 				Identity:    headerIdentity(database),
 				ServerURL:   "https://dispatch.example",
 				Settle:      time.Hour,
-			})
-			t.Cleanup(func() {
-				if err := service.Shutdown(context.Background()); err != nil {
-					t.Errorf("shutdown document service: %v", err)
-				}
 			})
 			seedServiceText(t, service, artifactID, "Alpha paragraph.\n\nBravo paragraph.\n")
 			closeDocumentRoom(t, service, artifactID)

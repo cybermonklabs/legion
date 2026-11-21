@@ -9,7 +9,6 @@ import (
 	"errors"
 	"log/slog"
 	"os"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -122,6 +121,7 @@ func (et *expiryTimers) fire(t *testing.T, cred *machineCredential, n int) time.
 // the broker will refuse. The watch's timers are the test's, so it checks how long each waits
 // instead of waiting for them.
 func TestTheHelperWarnsBeforeItsLauncherCredentialExpiresAndDropsItThen(t *testing.T) {
+	t.Parallel()
 	var out syncBuffer
 	f := newFakeBroker(t)
 	b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
@@ -129,14 +129,24 @@ func TestTheHelperWarnsBeforeItsLauncherCredentialExpiresAndDropsItThen(t *testi
 	t.Cleanup(b.Close)
 	timers := installExpiryTimers(b)
 
+	loggingIn := time.Now()
 	cred := expiryLogin(t, b)
 	status := b.LoginStatus()
 	if !status.CredentialHeld || !status.CredentialExpiresAt.Equal(cred.expiresAt) {
 		t.Fatalf("login-status after the login: %+v; want the credential held until %s", status, cred.expiresAt)
 	}
-	left := time.Until(cred.expiresAt)
-	if d := timers.fire(t, cred, 0); d > left-2*time.Hour+time.Second || d < left-2*time.Hour-time.Minute {
-		t.Fatalf("the warning waits %s; want %s less the 2 h warning", d, left)
+	// Each timer asks for the time from the moment its watch reads the clock to its deadline, and
+	// that moment lies between two readings taken here however long any step took, as
+	// TestTheHelperWarnsADayBeforeTheExpiry reads the warning: the warning's read comes after the
+	// login began and before its timer is fired, and the expiry's after the warning's timer is
+	// fired and before its own is. So each wait lies between its deadline less the later reading
+	// and its deadline less the earlier one. Against one reading taken before both, give or take a
+	// second, a test slowed past that second between the watch's read and that reading failed.
+	warnAt := cred.expiresAt.Add(-2 * time.Hour)
+	firingTheWarning := time.Now()
+	warning := timers.fire(t, cred, 0)
+	if shortest, longest := warnAt.Sub(time.Now()), warnAt.Sub(loggingIn); warning < shortest || warning > longest {
+		t.Fatalf("the warning waits %s; want the time to 2 h before the expiry, %s to %s", warning, shortest, longest)
 	}
 	warned := waitForRecord(t, &out, expiresSoonMsg)
 	expiresAt := cred.expiresAt.Format(time.RFC3339)
@@ -146,8 +156,9 @@ func TestTheHelperWarnsBeforeItsLauncherCredentialExpiresAndDropsItThen(t *testi
 	if !b.HasCredential() {
 		t.Fatal("the warning dropped the credential")
 	}
-	if d := timers.fire(t, cred, 1); d > left+time.Second || d < left-time.Minute {
-		t.Fatalf("the expiry waits %s; want %s", d, left)
+	expiry := timers.fire(t, cred, 1)
+	if shortest, longest := cred.expiresAt.Sub(time.Now()), cred.expiresAt.Sub(firingTheWarning); expiry < shortest || expiry > longest {
+		t.Fatalf("the expiry waits %s; want the time to the expiry, %s to %s", expiry, shortest, longest)
 	}
 	expired := waitForRecord(t, &out, expiredMsg)
 	if expired["level"] != "ERROR" || expired["credential_id"] != cred.id || expired["expires_at"] != expiresAt {
@@ -163,8 +174,10 @@ func TestTheHelperWarnsBeforeItsLauncherCredentialExpiresAndDropsItThen(t *testi
 
 // TestTheHelperWarnsADayBeforeTheExpiry: with no lead set, as in production, the warning comes a
 // day before the credential lapses. A credential with less than a day left warns at once; one
-// with more than a day left does not warn yet.
+// with more than a day left does not warn yet. The watch's timers are the test's, so it checks
+// how long the warning waits instead of waiting for it.
 func TestTheHelperWarnsADayBeforeTheExpiry(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		lifetime time.Duration
 		warns    bool
@@ -181,16 +194,24 @@ func TestTheHelperWarnsADayBeforeTheExpiry(t *testing.T) {
 			b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
 				Log: slog.New(slog.NewJSONHandler(&out, nil))}
 			t.Cleanup(b.Close)
-			expiryLogin(t, b)
-			warned := func() bool {
-				return slices.ContainsFunc(logRecords(t, &out), func(rec map[string]any) bool { return rec["msg"] == expiresSoonMsg })
+			timers := installExpiryTimers(b)
+			loggingIn := time.Now()
+			cred := expiryLogin(t, b)
+			// The watch asks its warning timer for the time from its own start to a day before the
+			// expiry, and it starts after the login began and before its timer is fired here, so
+			// the wait it asked for lies between the two readings below, however long either
+			// step took. A wait of zero or less warns at once; a positive one is not due yet.
+			wait := timers.fire(t, cred, 0)
+			warnAt := cred.expiresAt.Add(-24 * time.Hour)
+			if shortest, longest := warnAt.Sub(time.Now()), warnAt.Sub(loggingIn); wait < shortest || wait > longest {
+				t.Fatalf("a credential expiring in %s: the warning waits %s; want the time to a day before its expiry, %s to %s",
+					tc.lifetime, wait, shortest, longest)
 			}
-			deadline := time.Now().Add(300 * time.Millisecond)
-			for !warned() && time.Now().Before(deadline) {
-				time.Sleep(10 * time.Millisecond)
+			if atOnce := wait <= 0; atOnce != tc.warns {
+				t.Fatalf("a credential expiring in %s: the warning waits %s, at once %v; want %v", tc.lifetime, wait, atOnce, tc.warns)
 			}
-			if got := warned(); got != tc.warns {
-				t.Fatalf("a credential expiring in %s: warned within 300 ms %v; want %v (log: %s)", tc.lifetime, got, tc.warns, out.String())
+			if warned := waitForRecord(t, &out, expiresSoonMsg); warned["level"] != "WARN" || warned["credential_id"] != cred.id {
+				t.Fatalf("the warning its timer gives: %v; want a WARN naming %s", warned, cred.id)
 			}
 		})
 	}
@@ -200,6 +221,7 @@ func TestTheHelperWarnsADayBeforeTheExpiry(t *testing.T) {
 // credential before the old one lapses; the old one's warning and expiry must then say nothing,
 // and above all must not drop the credential that replaced it.
 func TestANewerLoginSilencesTheExpiryOfTheCredentialItReplaces(t *testing.T) {
+	t.Parallel()
 	var out syncBuffer
 	f := newFakeBroker(t)
 	b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
@@ -233,6 +255,7 @@ func TestANewerLoginSilencesTheExpiryOfTheCredentialItReplaces(t *testing.T) {
 // credential's expiry is not a login the helper can keep or watch. It installs nothing, writes no
 // machine file, says so at ERROR, and the login reads expired, so `machine login` exits 1.
 func TestATokenAnswerWithoutTheCredentialIsNotKept(t *testing.T) {
+	t.Parallel()
 	var out syncBuffer
 	f := newFakeBroker(t)
 	f.mu.Lock()

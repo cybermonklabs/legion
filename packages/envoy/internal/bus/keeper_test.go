@@ -47,16 +47,21 @@ func readOf(js nats.JetStreamContext, stream string) infoRead {
 	return infoRead{info: info, err: err}
 }
 
-// awaitKept waits until kept reports the stream holds what the keeper restores, and returns its
-// info. The wait ends on that fact alone: a keeper pass and the cluster's change of the stream take
-// what they take on a loaded machine, and the test binary's deadline is the one bound
-// (testwait.UntilPolling).
+// awaitKept polls the stream until kept reports it holds what the keeper restores, at the latest
+// for busWait, and returns its info.
 func awaitKept(t *testing.T, js nats.JetStreamContext, stream, what string, kept func(*nats.StreamInfo) bool) *nats.StreamInfo {
 	t.Helper()
-	return testwait.UntilPolling(t, streamReadPoll, stream+": "+what+" kept", func() (infoRead, bool) {
-		read := readOf(js, stream)
-		return read, read.err == nil && kept(read.info)
-	}).info
+	deadline := time.Now().Add(busWait)
+	for {
+		info, err := js.StreamInfo(stream)
+		if err == nil && kept(info) {
+			return info
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: %s not kept within %s: %+v (%v)", stream, what, busWait, info, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // answeredRead reads stream until the server answers, and returns that answer, an error included:
@@ -156,15 +161,22 @@ func (js *interleavedJetStream) UpdateStream(cfg *nats.StreamConfig, opts ...nat
 	return info, err
 }
 
-// awaitRestoredLog waits until the keeper's restore lines name every one of wants. The keeper logs
-// a restore after the server applied it, so a test that reads the stream as kept can get there
-// before the line is written.
+// awaitRestoredLog waits, within busWait, until the keeper's restore lines name every one of wants.
+// The keeper logs a restore after the server applied it, so a test that reads the stream as kept
+// can get there before the line is written.
 func awaitRestoredLog(t *testing.T, logs *capturedLogs, wants ...string) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("the keeper's lines to restore %q", wants), func() (string, bool) {
+	deadline := time.Now().Add(busWait)
+	for {
 		logged := restoredLog(t, logs)
-		return logged, !slices.ContainsFunc(wants, func(want string) bool { return !strings.Contains(logged, want) })
-	})
+		if !slices.ContainsFunc(wants, func(want string) bool { return !strings.Contains(logged, want) }) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the keeper's lines restored %q within %s, want %q among them", logged, busWait, wants)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // restoredLog is every field the keeper's restore lines logged so far, joined.
@@ -188,6 +200,7 @@ func restoredLog(t *testing.T, logs *capturedLogs) string {
 // keeper periods the setting program's keeper puts the three copies and the byte limit back and
 // logs both, and the stream keeps its id, on every run.
 func TestTheKeeperEndsTheMixedSettingsRaceAtThreeCopiesTheByteLimitAndTheID(t *testing.T) {
+	// Serial: it captures the default slog handler (captureLogs), a process-wide swap.
 	cluster, js := startClusterJetStream(t)
 	logs := captureLogs(t)
 	const id = "deployed-id"
@@ -240,6 +253,7 @@ func TestTheKeeperEndsTheMixedSettingsRaceAtThreeCopiesTheByteLimitAndTheID(t *t
 // and logs it, and a pass of the first program's keeper, whose binary does not compile the subject,
 // leaves it there.
 func TestEachReleasesKeeperAddsBackItsOwnSubjectAConcurrentWriteTookAway(t *testing.T) {
+	t.Parallel()
 	js := streamTestJetStream(t)
 	const added = "notifications.newer.>"
 	limited := parseConnectOptions([]ConnectOption{WithStreamMaxBytes(keeperByteLimit)}).streamConfig()
@@ -290,6 +304,7 @@ func TestEachReleasesKeeperAddsBackItsOwnSubjectAConcurrentWriteTookAway(t *test
 // before the start's move. Its next pass, on the stream the start moved them off, restores the
 // byte limit with no role lane in the list.
 func TestTheKeeperNeverPutsBackARoleLaneAStartMovedOffTheStream(t *testing.T) {
+	t.Parallel()
 	js := streamTestJetStream(t)
 	roleLane := contracts.RoleTopicPrefix + ">"
 	legacy := *streamCfg
@@ -330,6 +345,7 @@ func TestTheKeeperNeverPutsBackARoleLaneAStartMovedOffTheStream(t *testing.T) {
 // lacks and that overlap none deployed: it keeps every deployed subject, a foreign one, a widened
 // one and a narrowed one included.
 func TestTheKeepersSubjectsAddOnlyItsOwnThatOverlapNothingDeployed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		deployed, own []string
@@ -353,6 +369,7 @@ func TestTheKeepersSubjectsAddOnlyItsOwnThatOverlapNothingDeployed(t *testing.T)
 // adds its new subject once and leaves the first's wide subject in place, and from then on neither
 // keeper sends an update, with both new subjects in the list.
 func TestTwoKeepersWithDifferentSubjectListsNeverSwitchTheStream(t *testing.T) {
+	t.Parallel()
 	js := streamTestJetStream(t)
 	alpha := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 	alpha.Subjects = append(slices.Clone(streamCarriedSubjects), "notifications.alpha.>")
@@ -390,6 +407,7 @@ func TestTwoKeepersWithDifferentSubjectListsNeverSwitchTheStream(t *testing.T) {
 // over the passes after. The removed subject comes back at the end of the list, and the foreign
 // subject stays: the keeper only adds subjects.
 func TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject(t *testing.T) {
+	// Serial: it captures the default slog handler (captureLogs), a process-wide swap.
 	cluster, js := startClusterJetStream(t)
 	logs := captureLogs(t)
 	keeper := startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval))
@@ -443,6 +461,7 @@ func TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject(t *testi
 // nothing, and a start with that setting writes nothing. Once an operator lowers the limit below
 // the setting, the keeper raises it back to the setting and logs it.
 func TestTheKeeperKeepsAnOperatorsRaiseOfTheByteLimitAndRaisesALowerOne(t *testing.T) {
+	// Serial: it captures the default slog handler (captureLogs), a process-wide swap.
 	cluster, js := startClusterJetStream(t)
 	logs := captureLogs(t)
 	settings := []ConnectOption{WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval)}
@@ -490,6 +509,7 @@ func TestTheKeeperKeepsAnOperatorsRaiseOfTheByteLimitAndRaisesALowerOne(t *testi
 // for a feature it has not configured, is skipped: the keeper creates nothing, updates nothing and
 // logs nothing about it.
 func TestTheKeeperRaisesTheBucketsItsProgramNamesBackToTheirCopies(t *testing.T) {
+	// Serial: it captures the default slog handler (captureLogs), a process-wide swap.
 	cluster, js := startClusterJetStream(t)
 	logs := captureLogs(t)
 	const listed, unlisted, missing = "envoy_keeper_listed", "envoy_keeper_unlisted", "envoy_keeper_missing"
@@ -553,6 +573,7 @@ func TestTheKeeperRaisesTheBucketsItsProgramNamesBackToTheirCopies(t *testing.T)
 // keeper's own connection sends after them has reached the watch, so every update those passes
 // sent is in the count.
 func TestAKeeperWithTheDefaultSettingsSendsNoUpdate(t *testing.T) {
+	// Serial: its assertion is a quiet window: no stream update in six keeper periods (1.5 s).
 	const marker = "envoy.keeper.test.marker"
 	cluster, js := startClusterJetStream(t)
 	startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(keeperByteLimit))
@@ -603,10 +624,13 @@ func TestAKeeperWithTheDefaultSettingsSendsNoUpdate(t *testing.T) {
 	if _, err := js.UpdateStream(&info.Config); err != nil {
 		t.Fatalf("update the stream: %v", err)
 	}
-	testwait.Until(t, "the watch to see the update sent to the stream", func() (int, bool) {
-		n := sent()
-		return n, n > 0
-	})
+	deadline := time.Now().Add(busWait)
+	for sent() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the watch did not see an update sent to the stream")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // Close and Drain end the keeper before they return, and a pass the stop interrupts logs nothing:
@@ -614,6 +638,7 @@ func TestAKeeperWithTheDefaultSettingsSendsNoUpdate(t *testing.T) {
 // so the update fails as a pass in flight at a shutdown does, and the keeper logs no failure for
 // it. Once the client stops, its keeper has ended, so nothing raises the stream from its one copy.
 func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
+	// Serial: it captures the default slog handler (captureLogs), a process-wide swap.
 	for _, stop := range []struct {
 		name string
 		stop func(*Client)
@@ -630,14 +655,11 @@ func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
 			entered := make(chan struct{})
 			client.mu.Lock()
 			conn := client.Conn
-			// The update is held until the stop has closed the connection: a gate the
-			// connection's own close opens. Removing the listener at the row's end closes the gate
-			// too, so a stop that never closed the connection leaves no keeper held.
-			closed := conn.StatusChanged(nats.CLOSED)
-			t.Cleanup(func() { conn.RemoveStatusListener(closed) })
 			client.js = &interleavedJetStream{JetStreamContext: client.js, beforeUpdate: func() {
 				close(entered)
-				<-closed
+				for deadline := time.Now().Add(busWait); !conn.IsClosed() && time.Now().Before(deadline); {
+					time.Sleep(5 * time.Millisecond)
+				}
 			}}
 			client.mu.Unlock()
 			lowered := info.Config
@@ -645,7 +667,11 @@ func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
 			if _, err := js.UpdateStream(&lowered); err != nil {
 				t.Fatalf("lower the stream to one copy: %v", err)
 			}
-			testwait.Receive(t, "the keeper's update of the lowered stream", entered)
+			select {
+			case <-entered:
+			case <-time.After(busWait):
+				t.Fatalf("the keeper sent no update for the lowered stream within %s", busWait)
+			}
 
 			stopped := make(chan struct{})
 			go func() {
@@ -680,6 +706,7 @@ func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
 // races it on most runs; with the gate the replaced subject is still gone after a hundred passes,
 // and no keeper pass fails on a stream not reconciled yet.
 func TestTheKeeperOfABackgroundClientRunsNoPassBeforeItsFirstReconcile(t *testing.T) {
+	// Serial: it captures the default slog handler (captureLogs), a process-wide swap.
 	const replaced, replacing = "notifications.github.*", "notifications.github.>"
 	srv, uri := testnats.Start(t)
 	deploy := testnats.Connect(t, uri)
@@ -713,10 +740,16 @@ func TestTheKeeperOfABackgroundClientRunsNoPassBeforeItsFirstReconcile(t *testin
 	reconciled := func(info *nats.StreamInfo) bool {
 		return slices.Contains(info.Config.Subjects, replacing) && !slices.Contains(info.Config.Subjects, replaced)
 	}
-	testwait.UntilPolling(t, streamReadPoll, fmt.Sprintf("the first connection's reconcile to replace %s with %s", replaced, replacing), func() (infoRead, bool) {
-		read := readOf(js, Stream)
-		return read, read.err == nil && reconciled(read.info)
-	})
+	for deadline := time.Now().Add(busWait); ; {
+		info, err := js.StreamInfo(Stream)
+		if err == nil && reconciled(info) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the first connection's reconcile did not replace %s with %s within %s: %+v (%v)", replaced, replacing, busWait, info, err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	// A hundred keeper passes begun after the reconcile was read: a pass that read the stream
 	// before the reconcile has ended by then, and the subject it put back would stay, since the
 	// keeper only adds subjects.
@@ -731,6 +764,7 @@ func TestTheKeeperOfABackgroundClientRunsNoPassBeforeItsFirstReconcile(t *testin
 
 // An owning client that connects in the background and stops before its server ever answered
 // started no keeper, and Close and Drain return at once rather than wait for one.
+// Serial: its assertion is a time (Close and Drain return within stopsAtOnce).
 func TestStoppingABackgroundClientBeforeItsFirstConnectionStartsNoKeeper(t *testing.T) {
 	for _, stop := range []struct {
 		name string
@@ -740,6 +774,7 @@ func TestStoppingABackgroundClientBeforeItsFirstConnectionStartsNoKeeper(t *test
 		{name: "drain", stop: func(client *Client) { _ = client.Drain(5 * time.Second) }},
 	} {
 		t.Run(stop.name, func(t *testing.T) {
+			// Serial: it checks that the stop returns within stopsAtOnce.
 			srv, uri := testnats.Start(t)
 			srv.Stop(t)
 			client, err := ConnectOwningStream([]string{uri}, WithConnectInBackground(), WithKeepInterval(time.Millisecond))
@@ -752,7 +787,11 @@ func TestStoppingABackgroundClientBeforeItsFirstConnectionStartsNoKeeper(t *test
 				stop.stop(client)
 				close(stopped)
 			}()
-			testwait.Receive(t, stop.name+" of a client that never connected to return", stopped)
+			select {
+			case <-stopped:
+			case <-time.After(stopsAtOnce):
+				t.Fatalf("%s of a client that never connected did not return within %s", stop.name, stopsAtOnce)
+			}
 			client.mu.Lock()
 			started := client.keeperDone != nil
 			client.mu.Unlock()
@@ -763,12 +802,21 @@ func TestStoppingABackgroundClientBeforeItsFirstConnectionStartsNoKeeper(t *test
 	}
 }
 
+// stopsAtOnce is how soon Close and Drain of a client that never connected must return: "at
+// once", with room for a loaded machine. It is the subject of the test above, so it keeps its
+// own number rather than busWait's minute. It is under the 5 s of a background connect's dial
+// (connectTimeout) and of the drain row's own Drain, and under a stream call's 10 s MaxWait, so a
+// stop that waits out any of them fails. The test is serial, so no parallel test's load takes up
+// the room this leaves a stop that returns at once.
+const stopsAtOnce = 2 * time.Second
+
 // The keeper names the consumer cap it raised, with the deployed value and the new one, so an
 // operator who lowered the cap reads what put it back within a period instead of finding it
 // raised with nothing saying so. A stream already at the cap has it named for nothing, and so
 // has a stream with no cap on a server that caps no such stream itself, which the keeper leaves
 // as it is.
 func TestRestoredFieldsNamesTheConsumerCapTheKeeperRaised(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name     string
 		deployed int

@@ -16,6 +16,7 @@ import (
 // methods decode it, and an answer carrying none (DENY_ME, as a broker from before the field
 // answers every denial) decodes as nil rather than as an empty sentence no line could tell from a
 // real one.
+// Serial: renewalSession sets AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR with t.Setenv (see renewalSession).
 func TestTheClientDecodesARefusalsDetail(t *testing.T) {
 	broker, _ := fakeBroker(t)
 	defer broker.Close()

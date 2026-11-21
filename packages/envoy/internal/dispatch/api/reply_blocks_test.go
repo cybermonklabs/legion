@@ -121,9 +121,11 @@ func sendFrame(t *testing.T, send map[string]any) (string, *model.ReplyBlock) {
 // block with no comment are refused; a comment an older build wrote is indexed first; an edit
 // that removes the block leaves the reply reading it removed, with its last text.
 func TestAReplyNamesTheBlockItAnswers(t *testing.T) {
+	t.Parallel()
 	live := true
 	sent := []map[string]any{}
-	listener := sessionListener(t, &live, &sent)
+	lookups := &listenerLookups{}
+	listener := httptest.NewServer(lookups.recording(sessionListenerHandler(t, &live, &sent)))
 	defer listener.Close()
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Reply blocks", "before")
@@ -240,6 +242,15 @@ func TestAReplyNamesTheBlockItAnswers(t *testing.T) {
 	mentioned := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "Can this ship?\n\nOr should it wait?", "mentions": []map[string]any{{"target": "session:s1"}},
 	}))
+	// A callback refused 403 names no cause: the creation's lookup of s1 left the attempt unpinned
+	// when it ran past mentionLookupTimeout, so a failure from here on prints the attempt as
+	// stored and the lookups the listener served.
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the mentioned comment's attempts as stored: %s; the listener served: %s",
+				describeAttempts(commentAttempts(t, database, mentioned.ID)), lookups)
+		}
+	})
 	callback := func(input map[string]any) *httptest.ResponseRecorder {
 		input["actor"] = map[string]any{"kind": "session", "id": "s1"}
 		input["attempt"] = 1
@@ -300,6 +311,7 @@ func TestAReplyNamesTheBlockItAnswers(t *testing.T) {
 // delivery; a follow-up names no block; and a message whose stored body differs from the one its
 // blocks were indexed from is indexed first.
 func TestAMessageReplyNamesTheBlockItAnswers(t *testing.T) {
+	t.Parallel()
 	live := true
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
@@ -395,10 +407,10 @@ func TestAMessageReplyNamesTheBlockItAnswers(t *testing.T) {
 	}
 	personReply := decodeBody[model.Message](t, personReplied)
 	requireReplyBlock(t, "the agent route's answer", personReply.ReplyBlock, more)
-	requireFrame := func(step string, sendsBefore int) {
+	requireFrame := func(step string, sendsBefore int, attempts []model.MessageDelivery) {
 		t.Helper()
 		if len(sent) != sendsBefore+1 {
-			t.Fatalf("%s: listener sends = %d, want %d", step, len(sent), sendsBefore+1)
+			t.Fatalf("%s: listener sends = %d, want %d; the step's attempts: %s", step, len(sent), sendsBefore+1, describeAttempts(attempts))
 		}
 		body, block := sendFrame(t, sent[sendsBefore])
 		if body != "And more." {
@@ -406,13 +418,13 @@ func TestAMessageReplyNamesTheBlockItAnswers(t *testing.T) {
 		}
 		requireReplyBlock(t, step, block, more)
 	}
-	requireFrame("the person's reply's frame", sendsBefore)
+	requireFrame("the person's reply's frame", sendsBefore, personReply.Deliveries)
 	sendsBefore = len(sent)
 	retry := dispatchRequest(t, handler, http.MethodPost, "/api/v1/messages/"+personReply.ID+"/deliveries", map[string]any{"delivery": "steer"}, "alice")
 	if retry.Code != http.StatusCreated {
 		t.Fatalf("retry the person's reply: status=%d body=%s", retry.Code, retry.Body.String())
 	}
-	requireFrame("the retried frame", sendsBefore)
+	requireFrame("the retried frame", sendsBefore, []model.MessageDelivery{decodeBody[model.MessageDelivery](t, retry)})
 	conversations := decodeBody[[]messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/agents/s1/messages", nil, "alice"))
 	var conversation *messageRead
 	for index := range conversations {
@@ -451,6 +463,7 @@ func TestAMessageReplyNamesTheBlockItAnswers(t *testing.T) {
 // reconciliation indexes it: under the comment it answers and under the ask, on the comment read,
 // the ask read and ?to=, each naming no block.
 func TestRepliesWrittenBeforeThisChangeStillShow(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Older replies", "before")
 	x := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Alpha.\n\nBeta."}, "alice")

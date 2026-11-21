@@ -26,6 +26,11 @@ func sleeper(t *testing.T) *exec.Cmd {
 	return cmd
 }
 
+// waitExitReturns bounds a wait for WaitExit to see its process exit. It guards a hang and asserts
+// nothing: a pidfd turns readable as its process exits, so this only names a WaitExit that never
+// sees the exit.
+const waitExitReturns = 30 * time.Second
+
 // ompTree starts a session launcher with no session — a process whose kernel comm is `omp`, as a
 // real launcher's is: sh started through a symlink of that name — and n `sleep` children of it,
 // and returns the launcher's pid and the children's. It fails, rather than going on, when the
@@ -125,6 +130,7 @@ func TestOpenAncestorPinsAStrictAncestorOfThePeer(t *testing.T) {
 // a process from itself, never a parent from its child or pid 1 from anything, and every one of
 // those real walks reaches root or init without an error.
 func TestDescendsFromRealProcesses(t *testing.T) {
+	t.Parallel()
 	child := sleeper(t)
 	self := os.Getpid()
 	for _, tc := range []struct {
@@ -144,6 +150,7 @@ func TestDescendsFromRealProcesses(t *testing.T) {
 }
 
 func TestStartTicksNamesOneIncarnation(t *testing.T) {
+	t.Parallel()
 	child := sleeper(t)
 	ticks, err := StartTicks(child.Process.Pid)
 	if err != nil || ticks == 0 {
@@ -155,6 +162,7 @@ func TestStartTicksNamesOneIncarnation(t *testing.T) {
 }
 
 func TestPinnedPeerReportsExit(t *testing.T) {
+	t.Parallel()
 	child := sleeper(t)
 	peer, err := PinPID(child.Process.Pid)
 	if err != nil {
@@ -173,8 +181,8 @@ func TestPinnedPeerReportsExit(t *testing.T) {
 		if !ok {
 			t.Fatal("WaitExit returned false for an exited process")
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("WaitExit did not observe the exit within 3 s")
+	case <-time.After(waitExitReturns):
+		t.Fatalf("WaitExit did not observe the exit within %s", waitExitReturns)
 	}
 	if got := peer.PID(); got != 0 {
 		t.Fatalf("a dead pinned process must read as pid 0, got %d", got)
@@ -203,6 +211,7 @@ func TestWaitExitStops(t *testing.T) {
 }
 
 func TestPeerOfUnixConnIsTheDialer(t *testing.T) {
+	t.Parallel()
 	sock := filepath.Join(shortTempDir(t), "h.sock")
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
 	if err != nil {
@@ -230,6 +239,7 @@ func TestPeerOfUnixConnIsTheDialer(t *testing.T) {
 }
 
 func TestCallRoundTrip(t *testing.T) {
+	t.Parallel()
 	sock := filepath.Join(shortTempDir(t), "h.sock")
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
 	if err != nil {
@@ -245,7 +255,7 @@ func TestCallRoundTrip(t *testing.T) {
 		_, _ = bufio.NewReader(conn).ReadBytes('\n')
 		_, _ = conn.Write([]byte(`{"ok":true,"proof":"p","enrollment_id":"e"}` + "\n"))
 	}()
-	resp, err := Call(sock, Request{Op: "sign", Method: "GET", URL: "https://x/v1/enrollments/self"}, 2*time.Second)
+	resp, err := Call(sock, Request{Op: "sign", Method: "GET", URL: "https://x/v1/enrollments/self"}, eventWait)
 	if err != nil || !resp.OK || resp.Proof != "p" || resp.EnrollmentID != "e" {
 		t.Fatalf("round trip: %+v %v", resp, err)
 	}

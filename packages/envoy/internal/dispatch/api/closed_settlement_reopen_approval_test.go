@@ -26,6 +26,7 @@ import (
 // person's Inbox. The browser suite drives the same path (e2e/close-withdraws-asks.e2e.ts, whose
 // "Waiting on you (3)" counts this request).
 func TestAReopenedIssuesApprovalRequestStillWaitsOnThePersonOnceItsDocumentsSettle(t *testing.T) {
+	t.Parallel()
 	f := newCloseAsksFixtureSettlingAfter(t, time.Hour)
 	ctx := context.Background()
 	before := readBlockAsk(t, f.handler, f.approvalAsk)
@@ -153,6 +154,9 @@ func describeApproval(read approvalRead) string {
 // open issue leaves it. alice's approval from the request then reviews the latest version, and
 // the spec reads approved.
 func TestAReopenedApprovalRequestNamesTheVersionAClosedSettlementWrote(t *testing.T) {
+	// Serial: closeIssueThroughPatch moves the close a minute ahead, and the store takes a
+	// browser's update after the close only while that minute and its close margin (2 s) have not
+	// passed, so the steps from the close to the edit settleClosedEdit makes must finish inside them.
 	handler, database, documentService := newClosedSettlementHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Approval and a margin edit", "Context\n")
 	f := closedEditFixture{handler: handler, database: database, documents: documentService, spec: issue.PrimaryArtifactID}
@@ -177,7 +181,7 @@ func TestAReopenedApprovalRequestNamesTheVersionAClosedSettlementWrote(t *testin
 
 	reopenAndSettle(t, f, issue.Key)
 	var restored carriedAsk
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(concurrentWait); ; time.Sleep(20 * time.Millisecond) {
 		if restored = readCarriedAsk(t, handler, request.ID); restored.Approval.Version == closed {
 			break
 		}
@@ -370,6 +374,7 @@ func TestAReopenKeepsTheRequestWithThePersonWhenAClosedSettlementWroteBackItsTex
 // named version's text again, which leaves the request waiting on the person, now naming and
 // requesting that version. The settle delay is an hour, so the test runs each settlement itself.
 func TestOnlyASettlementsVersionKeepsAnApprovalRequestWithThePerson(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		spec string
@@ -470,6 +475,7 @@ func TestOnlyASettlementsVersionKeepsAnApprovalRequestWithThePerson(t *testing.T
 // PATCH: the reopen appends the restored request's ask.opened and its own issue.updated and
 // nothing else, and the request names version N+1, requested at N, as before the close.
 func TestAReopenWithNoClosedVersionMovesAndCarriesNothing(t *testing.T) {
+	t.Parallel()
 	handler, database, documentService := newClosedSettlementHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A reopen with no closed version", "Context\n")
 	spec := issue.PrimaryArtifactID
@@ -515,6 +521,7 @@ func TestAReopenWithNoClosedVersionMovesAndCarriesNothing(t *testing.T) {
 // through PATCH: the spec still reads approved at version N+2 with the reviews it had, and the
 // reopen appends no artifact.approved, only its own issue.updated.
 func TestAReopenWritesNoSecondReviewForAnApprovalAlreadyCarriedToTheLatestVersion(t *testing.T) {
+	t.Parallel()
 	handler, database, documentService := newClosedSettlementHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "An approval carried before the close", "Context\n")
 	spec := issue.PrimaryArtifactID
@@ -586,6 +593,7 @@ const reopenDecisionSpec = "Context\n\n" +
 // so her approval stood. The settle delay is an hour, so the test runs each settlement itself
 // (SettleIssueDocuments), and nothing settles between the reopen and alice's review.
 func TestAnApprovalGivenBetweenTheReopenAndItsSettlementStaysApproved(t *testing.T) {
+	t.Parallel()
 	handler, database, documentService := settlingCarryDocuments(t, time.Hour)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "An approval between the reopen and its settlement", reopenDecisionSpec)

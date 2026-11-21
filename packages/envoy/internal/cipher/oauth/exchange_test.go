@@ -305,6 +305,7 @@ func (f *exchangeFixture) readPodForm(t *testing.T) url.Values {
 // literal below is the answer every resource server reads a read-only token by, and a test of a
 // build that predates the read entry copies it with its words spelled out.
 func TestAReadEntrysPodExchangesForATokenThatOnlyReads(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	answer := f.introspected(t, f.exchanged(t, f.readPodForm(t), key))
@@ -326,6 +327,7 @@ func TestAReadEntrysPodExchangesForATokenThatOnlyReads(t *testing.T) {
 // under a named entry the same request is granted no scope at all, as it was before read entries
 // existed. The scope is the entry's to decide, never the request's.
 func TestTheEntryDecidesTheScopeAndARequestNamingMachineWidensNothing(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	read := f.readPodForm(t)
@@ -347,6 +349,7 @@ func TestTheEntryDecidesTheScopeAndARequestNamingMachineWidensNothing(t *testing
 // exchange decides anything, under a named entry and under the read entry alike, and stores no
 // token. The same request naming no scope is then answered, so what refused it was the scope.
 func TestARequestNamingTheReadScopeIsRefusedUnderEveryEntry(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
@@ -379,6 +382,7 @@ func TestARequestNamingTheReadScopeIsRefusedUnderEveryEntry(t *testing.T) {
 // names, so a pod of it that asks for any other is refused, and the refusal names the session the
 // entry fixes; no token is stored.
 func TestAReadEntrysPodNamingAnotherSessionIsRefused(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	before := f.count(t, "oauth_access_tokens")
@@ -401,6 +405,7 @@ func TestAReadEntrysPodNamingAnotherSessionIsRefused(t *testing.T) {
 // nothing is minted from it: the token the exchange client was issued is not one it may trade
 // again, and a read token names no machine credential either.
 func TestAReadTokenIsNoSubjectTokenForAnotherExchange(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	read := f.exchanged(t, f.readPodForm(t), key)
@@ -420,6 +425,7 @@ func TestAReadTokenIsNoSubjectTokenForAnotherExchange(t *testing.T) {
 // entries existed, holding no OAuth scope. TestAPodExchangesItsTokenForOneThatIntrospects holds
 // the named pod's answer the same way.
 func TestEveryOtherEntryMintsTheTokenItDidAndNoScope(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	deploy := func(claims map[string]any) {
@@ -925,6 +931,7 @@ func TestAnUnregisteredPodOfTheSameAccountIsRefusedTheName(t *testing.T) {
 // for good. It names the session, and the same pod's next trade under that name, once its
 // deployment has registered it, is answered.
 func TestAnUnregisteredPodSessionIsRetryable(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	const role, uid = "implementer-g1", "pod-uid-early"
@@ -1124,6 +1131,7 @@ func TestIntrospectingATokenTheBrokerCannotStandBehind(t *testing.T) {
 // hands the broker everything after the first space of `Authorization: DPoP  <token>`, tells the
 // caller of such a header that the broker cannot be reached and to try again.
 func TestIntrospectingALiveTokenWithACharacterAddedIsNotLive(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	ctx := context.Background()
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
@@ -1241,6 +1249,7 @@ func TestAnIntrospectionFailureNamesItsCause(t *testing.T) {
 // row the broker cannot read would be answered as a token nobody issued, denying a sound token
 // and hiding the fault.
 func TestIntrospectingATokenWhoseRowDoesNotDecodeIsABrokerFailure(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	ctx := context.Background()
 	f.registers(t, account, "pod-uid-1", "implementer-g1")

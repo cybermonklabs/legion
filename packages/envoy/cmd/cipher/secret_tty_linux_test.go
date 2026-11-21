@@ -81,10 +81,17 @@ type promptRead struct {
 	err  error
 }
 
+// readerAnswerWait bounds a wait for readHidden's answer once everything it needs has been typed.
+// It guards a hang and asserts nothing: the reader answers once its own windows have passed (the
+// 200 ms quiet after a line, the second a split paste mark gets), and this only names a reader
+// that never answers. It is longer than maxPasteDrain, so a reader stuck in an open paste gives
+// it up (errPasteCutShort) before the wait does, and the test's own check of the answer fails.
+const readerAnswerWait = 30 * time.Second
+
 // typeAtPrompt starts readHidden at a fresh terminal and, once it has turned echo off, writes typed
 // to the controller as a terminal emulator does for a person's keys or a paste. It answers the
-// pseudo-terminal and the reader's answer, failing t if the reader has not answered within two
-// seconds.
+// pseudo-terminal and the reader's answer, failing t if the reader has not answered within
+// readerAnswerWait.
 func typeAtPrompt(t *testing.T, typed string) (*os.File, int, promptRead) {
 	t.Helper()
 	return typeAtPromptInWrites(t, 0, typed)
@@ -112,17 +119,18 @@ func typeAtPromptInWrites(t *testing.T, gap time.Duration, writes ...string) (*o
 	select {
 	case got := <-answer:
 		return controller, terminal, got
-	case <-time.After(2 * time.Second):
-		t.Fatalf("the reader did not return within 2s of %q being typed", writes)
+	case <-time.After(readerAnswerWait):
+		t.Fatalf("the reader did not return within %s of %q being typed", readerAnswerWait, writes)
 		return nil, 0, promptRead{}
 	}
 }
 
-// awaitEchoOff waits until the prompt has turned the terminal's echo off, failing t after ten
-// seconds: a prompt in a process of its own may take a while to start on a loaded machine.
+// awaitEchoOff waits until the prompt has turned the terminal's echo off, failing t after
+// awaitTerminalWait: a prompt in a process of its own may take a while to start on a loaded
+// machine.
 func awaitEchoOff(t *testing.T, terminal int) {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); lflag(t, terminal)&unix.ECHO != 0; time.Sleep(5 * time.Millisecond) {
+	for deadline := time.Now().Add(awaitTerminalWait); lflag(t, terminal)&unix.ECHO != 0; time.Sleep(5 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the reader never turned echo off")
 		}
@@ -325,15 +333,41 @@ func shown(t *testing.T, controller *os.File) []byte {
 	}
 }
 
+// shownThrough is what the terminal wrote back to the controller, read until it holds mark or
+// readerAnswerWait has passed, whichever is first: the read waits on the bytes it looks for rather
+// than on a window they must arrive in. It is for bytes the reader writes before it returns, which
+// can still be on their way to the controller once it has: the pseudo-terminal hands the
+// controller what the terminal side wrote after that write has returned.
+func shownThrough(t *testing.T, controller *os.File, mark []byte) []byte {
+	t.Helper()
+	if err := controller.SetReadDeadline(time.Now().Add(readerAnswerWait)); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	buf := make([]byte, 4096)
+	for !bytes.Contains(out.Bytes(), mark) {
+		n, err := controller.Read(buf)
+		out.Write(buf[:n])
+		if err != nil {
+			break
+		}
+	}
+	return out.Bytes()
+}
+
 // TestPromptReadsOneTypedLineWithEchoOff: Enter ends the value, which is never echoed; the reader
 // asks the terminal to bracket pastes while it reads and to stop once it is done, and leaves it as
-// it was, echo on.
+// it was, echo on. What the terminal showed is read through the reader's last mark, the request to
+// stop bracketing, which it writes after the line it read: an echo of the line would come ahead of
+// it. Read for a fixed 300 ms instead, a pseudo-terminal slower than that to hand the marks over
+// failed the row as a reader that never asked.
 func TestPromptReadsOneTypedLineWithEchoOff(t *testing.T) {
+	t.Parallel()
 	controller, terminal, got := typeAtPrompt(t, "typed value\r")
 	if got.err != nil || string(got.line) != "typed value" {
 		t.Fatalf("readHidden = %q, %v; want %q", got.line, got.err, "typed value")
 	}
-	echoed := shown(t, controller)
+	echoed := shownThrough(t, controller, []byte("\x1b[?2004l"))
 	if bytes.Contains(echoed, []byte("typed")) {
 		t.Fatalf("the terminal showed %q: the value was echoed", echoed)
 	}
@@ -352,6 +386,7 @@ func TestPromptReadsOneTypedLineWithEchoOff(t *testing.T) {
 // back. On Linux n_tty lowercases input under IUCLC only while IEXTEN is set, even outside
 // canonical mode, so this checks the mode itself.
 func TestPromptClearsIEXTENWhileItReads(t *testing.T) {
+	t.Parallel()
 	controller, terminal := openPTY(t)
 	if lflag(t, terminal)&unix.IEXTEN == 0 {
 		t.Fatal("a fresh pseudo-terminal has IEXTEN off; the test needs it on")
@@ -373,8 +408,8 @@ func TestPromptClearsIEXTENWhileItReads(t *testing.T) {
 		if got.err != nil || string(got.line) != "value" {
 			t.Fatalf("readHidden = %q, %v; want %q", got.line, got.err, "value")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the reader did not return within 2s")
+	case <-time.After(readerAnswerWait):
+		t.Fatalf("the reader did not return within %s", readerAnswerWait)
 	}
 	if lflag(t, terminal)&unix.IEXTEN == 0 {
 		t.Fatal("IEXTEN is off after the prompt returned")
@@ -384,6 +419,7 @@ func TestPromptClearsIEXTENWhileItReads(t *testing.T) {
 // TestPromptCtrlDEndsTheValue: Ctrl-D ends the read, with nothing typed (an empty value) and after
 // typing (the value typed).
 func TestPromptCtrlDEndsTheValue(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ typed, want string }{{"\x04", ""}, {"typed\x04", "typed"}} {
 		_, terminal, got := typeAtPrompt(t, tc.typed)
 		if got.err != nil || string(got.line) != tc.want {
@@ -400,6 +436,7 @@ func TestPromptCtrlDEndsTheValue(t *testing.T) {
 // or without), is refused rather than cut at its first line, and none of it is left for the shell
 // to read once the form exits, nor echoed.
 func TestPromptRefusesAPasteOfMoreThanOneLineAndLeavesNothingForTheShell(t *testing.T) {
+	t.Parallel()
 	for _, paste := range []string{
 		"-----BEGIN KEY-----\rline two\recho line three",
 		"-----BEGIN KEY-----\nline two\nline three\n",
@@ -456,6 +493,7 @@ func TestPromptAcceptsABracketedPasteOfOneLine(t *testing.T) {
 // TestPromptWordEraseAndControlBytes: the terminal's configured word erase removes the word it
 // would in canonical mode, and another control byte cannot become an invisible byte in a secret.
 func TestPromptWordEraseAndControlBytes(t *testing.T) {
+	t.Parallel()
 	_, terminal, got := typeAtPrompt(t, "abc def\x17ghi\r")
 	if got.err != nil || string(got.line) != "abc ghi" {
 		t.Fatalf("word erase: readHidden = %q, %v; want %q", got.line, got.err, "abc ghi")
@@ -474,6 +512,7 @@ func TestPromptWordEraseAndControlBytes(t *testing.T) {
 // that names the Tab, says it is at the end of the value, and says that a paste often adds one
 // there; the terminal is left with nothing unread.
 func TestPromptNamesATabAPasteEndsWith(t *testing.T) {
+	t.Parallel()
 	_, terminal, got := typeAtPromptInWrites(t, 50*time.Millisecond, "\x1b[200~sk-live-key\t\x1b[201~", "\r")
 	var refused promptControlByteError
 	if got.line != nil || !errors.As(got.err, &refused) || refused.c != '\t' || !refused.textBefore || refused.textAfter {
@@ -491,6 +530,7 @@ func TestPromptNamesATabAPasteEndsWith(t *testing.T) {
 // than stopping and starting the terminal's output, so a paste holding one is refused, never stored
 // without it, and never leaves the prompt waiting with its output suspended.
 func TestPromptRefusesFlowControlBytes(t *testing.T) {
+	t.Parallel()
 	for _, c := range []byte{0x13, 0x11} {
 		_, _, got := typeAtPrompt(t, "val"+string(c)+"ue\r")
 		want := fmt.Sprintf("the control byte 0x%02x cannot be typed at the prompt", c)
@@ -504,6 +544,8 @@ func TestPromptRefusesFlowControlBytes(t *testing.T) {
 // when its window or ssh session closes mid-paste, the reader answers an error rather than what it
 // has read, so nothing is stored. The hang-up lands while the reader is between reads, where its
 // next read of the hung-up terminal answers end of input.
+// Serial: it assigns a package-level var the prompt reads its input through (readTerminal),
+// which the whole process shares.
 func TestPromptRefusesAPasteCutShortByAHangUp(t *testing.T) {
 	for _, tc := range []struct {
 		paste string
@@ -565,6 +607,7 @@ func TestPromptRefusesAPasteCutShortByAHangUp(t *testing.T) {
 // TestPromptSignalHelper is the process the signal tests start: the value prompt's reader on its
 // standard input, its controlling terminal. It names only the reader's error, never its value.
 func TestPromptSignalHelper(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("AGENT_SECRETS_PROMPT_HELPER") == "" {
 		t.Skip("subprocess helper")
 	}

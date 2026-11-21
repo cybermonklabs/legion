@@ -70,7 +70,7 @@ func TestTheLiveHubKeepsASessionsNameWhenAnEventCarriesNoTitle(t *testing.T) {
 	}
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
-	held := conn.snapshot(t, 5*time.Second, "t").Body
+	held := conn.snapshot(t, eventFeedWait, "t").Body
 	rig.settle(t)
 	if got := hubSessionTitles(t, held); got[named] != named || got[nameless] != nameless {
 		t.Fatalf("the snapshot's session_titles = %v, want both sessions by their bare ids", got)
@@ -82,7 +82,7 @@ func TestTheLiveHubKeepsASessionsNameWhenAnEventCarriesNoTitle(t *testing.T) {
 	rig.waitForEvent(t, start, "the titled write on the hub's feed", func(note deliveryHubNote) bool {
 		return note.what == "event" && note.eventID == titled.ID
 	})
-	delta := conn.delta(t, 5*time.Second, "t")
+	delta := conn.delta(t, eventFeedWait, "t")
 	if got := liveMapValues(t, delta, "session_titles"); got[named] != "Release sender" {
 		t.Fatalf("the delta's session_titles = %v, want %s under the title it stamped", got, named)
 	}
@@ -111,7 +111,7 @@ func TestTheLiveHubKeepsASessionsNameWhenAnEventCarriesNoTitle(t *testing.T) {
 	}
 	point.proceed()
 
-	again := conn.delta(t, 5*time.Second, "t")
+	again := conn.delta(t, eventFeedWait, "t")
 	if title, changed := liveMapValues(t, again, "session_titles")[named]; changed && title != "Release sender" {
 		t.Fatalf("the delta renames %s to %v, want the name it stamped kept", named, title)
 	}

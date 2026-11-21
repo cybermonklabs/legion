@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
 	ygsync "github.com/reearth/ygo/sync"
@@ -25,14 +24,15 @@ import (
 // nothing of the refused update, then reaches the other peer, and the room and that peer must read
 // the same document.
 func TestARefusedPeerUpdateLeavesTheRoomAsItsOtherPeersHoldIt(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	shrinkPendingItems(t, service, nil)
 	seedServiceText(t, service, artifactID, "hello world")
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	cleanupAndRelease(t, server.Close)
 	alpha := connectPeer(t, server.URL, artifactID, "alice")
 	beta := connectPeer(t, server.URL, artifactID, "alice")
-	waitFor(t, 10*time.Second, "both peers to hold the room's document", func() bool {
+	waitFor(t, roomWait(t), "both peers to hold the room's document", func() bool {
 		return strings.TrimSpace(peerMarkdown(alpha)) == "hello world" && strings.TrimSpace(peerMarkdown(beta)) == "hello world"
 	})
 
@@ -73,7 +73,7 @@ func TestARefusedPeerUpdateLeavesTheRoomAsItsOtherPeersHoldIt(t *testing.T) {
 	if err := alpha.Write(ygsync.EncodeUpdate(after)); err != nil {
 		t.Fatalf("send the keystroke after it: %v", err)
 	}
-	waitFor(t, 10*time.Second, "the other peer to receive the keystroke sent after the refused update", func() bool {
+	waitFor(t, roomWait(t), "the other peer to receive the keystroke sent after the refused update", func() bool {
 		return strings.HasPrefix(peerMarkdown(beta), "after")
 	})
 

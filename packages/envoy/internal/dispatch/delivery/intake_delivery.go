@@ -591,10 +591,12 @@ func (d *intakeDelivery) mayAnswer() bool {
 // subject -- checks, comments, issues, a push of a tag (push.tag.<tag>), job events -- is not
 // wanted, and is decided with no decode at all.
 //
-// Every wanted message is decoded, and one whose subject names a repository other than the one
-// its payload names is not wanted. That message is the second copy the listener publishes of a
-// renamed repository's envelopes, under the repository's former name (internal/ghrename): the
-// same event_id, the same dedupe_key and the same payload as the original, differing only in its
+// Every wanted message is decoded, through the intake's own decode (Intake.decode, handed in
+// here rather than read from a package variable, so two intakes of one test process never swap
+// each other's), and one whose subject names a repository other than the one its payload names
+// is not wanted. That message is the second copy the listener publishes of a renamed
+// repository's envelopes, under the repository's former name (internal/ghrename): the same
+// event_id, the same dedupe_key and the same payload as the original, differing only in its
 // topic. Keyed by its own subject it would key differently from the original, so keyedRunner
 // would start a goroutine for each and two handlers would run at once on one pull request's row,
 // each doing the full FetchPullRequest and paging the same commits, where the older answer can
@@ -622,7 +624,7 @@ func (d *intakeDelivery) mayAnswer() bool {
 // push are keyed by their subjects whatever the payload holds. A workflow message whose envelope
 // or payload does not decode is keyed by its subject, and its handler logs it; an envelope that
 // does not decode is handed on undecoded, so deliver reports the decode failure.
-func intakeKey(msg *natsgo.Msg) (key string, envelope *contracts.Envelope, wanted bool) {
+func intakeKey(msg *natsgo.Msg, decode func([]byte) (contracts.Envelope, error)) (key string, envelope *contracts.Envelope, wanted bool) {
 	tokens := strings.Split(msg.Subject, ".")
 	if len(tokens) < 5 || tokens[0] != "notifications" || tokens[1] != "github" {
 		return "", nil, false
@@ -633,7 +635,7 @@ func intakeKey(msg *natsgo.Msg) (key string, envelope *contracts.Envelope, wante
 	if !pullRequest && !workflow && !branchPush {
 		return "", nil, false
 	}
-	decoded, err := decodeEnvelope(msg.Data)
+	decoded, err := decode(msg.Data)
 	if err != nil {
 		return subjectKey(msg.Subject, tokens), nil, true
 	}
@@ -683,8 +685,9 @@ func subjectNamesRepo(tokens []string, repo string) bool {
 		strings.EqualFold(contracts.SanitizeSubjectSegment(name), tokens[3])
 }
 
-// decodeEnvelope decodes one message's envelope. A var so a test can count the decodes.
-var decodeEnvelope = func(data []byte) (contracts.Envelope, error) {
+// decodeEnvelope decodes one message's envelope. Each intake holds it as its decode field, which
+// a test replaces on the intake it is about (Intake.decode).
+func decodeEnvelope(data []byte) (contracts.Envelope, error) {
 	var envelope contracts.Envelope
 	err := json.Unmarshal(data, &envelope)
 	return envelope, err

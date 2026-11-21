@@ -80,6 +80,8 @@ func readChecks(t *testing.T, database *store.Store, issueKey string) checksStat
 // whether it creates the document, replaces it or edits it. A target the same write adds is read
 // as the write leaves it, and a target no document holds is refused too.
 func TestAWriteRefusesABlockPointerToADisallowedType(t *testing.T) {
+	// No t.Parallel: pmdoctest.UseBlockSchema swaps pmdoc's package-level block schema,
+	// which every test in this process parses against.
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
 	issue, paragraph := pointerSpec(t, handler)
@@ -159,6 +161,8 @@ func TestANewDocumentIsRefusedAPointerToItsOwnDisallowedBlock(t *testing.T) {
 // the attribute does not allow blocks neither the retype nor an unrelated edit of the citing
 // document, while a new pointer to the retyped target is refused.
 func TestAnUnchangedPointerIsNotRefusedWhenItsTargetIsRetyped(t *testing.T) {
+	// No t.Parallel: pmdoctest.UseBlockSchema swaps pmdoc's package-level block schema,
+	// which every test in this process parses against.
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, _ := blockIndexHandler(t)
 	issue, _ := pointerSpec(t, handler)
@@ -184,6 +188,8 @@ func TestAnUnchangedPointerIsNotRefusedWhenItsTargetIsRetyped(t *testing.T) {
 // a type the attribute does not allow is refused before anything is written, and one to an
 // allowed block is rebuilt.
 func TestARebuildFromMarkdownRefusesABlockPointerToADisallowedType(t *testing.T) {
+	// No t.Parallel: pmdoctest.UseBlockSchema swaps pmdoc's package-level block schema,
+	// which every test in this process parses against.
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database, broken := newBrokenTestServer(t)
 	issue, _ := pointerSpec(t, handler)
@@ -213,6 +219,8 @@ func TestARebuildFromMarkdownRefusesABlockPointerToADisallowedType(t *testing.T)
 // its project holds points only inside itself. Every refusal names the reference and writes
 // nothing.
 func TestAWriteRefusesABlockPointerOutsideItsIssueOrDocument(t *testing.T) {
+	// No t.Parallel: pmdoctest.UseBlockSchema swaps pmdoc's package-level block schema,
+	// which every test in this process parses against.
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -339,6 +347,8 @@ func TestASeededSpecPointsIntoItsParentsSpec(t *testing.T) {
 // document holds writes its version and stores the pointer, which stays an unresolved reference,
 // as any citation of an absent block is.
 func TestABrowserWritePointingAtAMissingBlockIsSavedAndUnresolved(t *testing.T) {
+	// No t.Parallel: pmdoctest.UseBlockSchema swaps pmdoc's package-level block schema,
+	// which every test in this process parses against.
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	documents, handler, database := browserDocumentService(t)
 	issue, _ := pointerSpec(t, handler)
@@ -404,6 +414,8 @@ func setBlockAttributes(database *store.Store, documentService docs.API, artifac
 // reach). The room keeps nothing of a refused write, and the block carries an allowed pointer
 // afterwards.
 func TestSetBlockAttributesRefusesABlockPointerInTheLiveRoom(t *testing.T) {
+	// No t.Parallel: pmdoctest.UseBlockSchema swaps pmdoc's package-level block schema,
+	// which every test in this process parses against.
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	// newTestServer, not blockIndexHandler: the document service this test calls is the
 	// dependencies', the very one the handlers write through. Its documents never settle during

@@ -63,11 +63,11 @@ func TestTheBootProbeOutlastsTheWarmProbesBoundAndLeavesTheFirstHealthzWarm(t *t
 	dsn.Host = slowPostgres(t, dsn.Host, bootProbeDialDelay)
 
 	process := startDispatchProcessWith(t, dsn.String(), dispatchOptions{})
-	// waitHealthy's own 30 s is a budget this boot has no reason to meet: it pays
-	// bootProbeDialDelay once for each of the three rounds of connections it opens, each round
-	// waiting on the one before it, and every other step it takes is as slow as the machine is.
-	// So the row waits on a hang guard instead, far from the 9.6-9.8 s the boot took here, which
-	// fails only a process that never serves at all.
+	// waitHealthy's bootWait is a hang guard this boot's own extra cost argues for twice over: it
+	// pays bootProbeDialDelay once for each of the three rounds of connections it opens, each
+	// round waiting on the one before it, and every other step it takes is as slow as the machine
+	// is. So the row waits the same guard on the listening line, far from the 9.6-9.8 s the boot
+	// took here, which fails only a process that never serves at all.
 	//
 	// A probe that ran out of its bound exits the process with 1 before it serves anything, so
 	// the wait below fails with an output holding bootProbeDeadline: this names that failure,
@@ -77,7 +77,7 @@ func TestTheBootProbeOutlastsTheWarmProbesBoundAndLeavesTheFirstHealthzWarm(t *t
 			t.Logf("the boot probe ran out of its bound at a dial of %s", bootProbeDialDelay)
 		}
 	}()
-	process.waitForLog(t, 2*time.Minute, process.listeningLine())
+	process.waitForLog(t, bootWait, process.listeningLine())
 
 	status, health := process.health(t)
 	if status != http.StatusOK || !health.DB {
@@ -100,12 +100,15 @@ func TestTheBootProbeOutlastsTheWarmProbesBoundAndLeavesTheFirstHealthzWarm(t *t
 // process with a key set of its own, so its row keeps heartbeating and the wait does not end on
 // its own before the signal.
 func TestAProcessStoppedWhileWaitingForAdmissionExitsCleanly(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	peer := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{SigningKey: "the-live-peers-key"})
 	peer.waitHealthy(t)
 
 	waiting := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{SigningKey: "a-key-the-peer-does-not-share"})
-	waiting.WaitForOutput(t, "a live server process refuses this one's signing keys; waiting for its heartbeat to lapse")
+	// The refusal is written where Register runs, which is the end of the boot: this wait carries
+	// the whole of it, migrations and all, so it is bootWait's rather than WaitForOutput's 30 s.
+	waiting.waitForLog(t, bootWait, "a live server process refuses this one's signing keys; waiting for its heartbeat to lapse")
 	waiting.Terminate(t)
 	waiting.WaitExit(t, "SIGTERM")
 

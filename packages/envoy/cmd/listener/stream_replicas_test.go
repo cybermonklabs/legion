@@ -55,8 +55,12 @@ func startListenerStream(t *testing.T, cfg config.Service) *bus.Client {
 // in its subjects, its age or its duplicate window keeps the three copies, the byte limit and the
 // id, and corrects the subjects, the age, the window and discard, to DiscardNew.
 func TestAListenerStartKeepsAThreeCopyStreamsCopiesByteLimitAndIDAsItCorrectsTheStream(t *testing.T) {
+	// Serial: listenerSettings sets the listener's settings with t.Setenv, which panics the
+	// process beside t.Parallel.
 	for _, drift := range bustest.StreamDrifts() {
 		t.Run(drift.Name, func(t *testing.T) {
+			// Serial: listenerSettings sets the listener's settings with t.Setenv, which panics
+			// the process beside t.Parallel.
 			cluster := testnats.StartCluster(t, 3)
 			js := cluster.JetStream(t)
 			deployed := bustest.DeployedThreeCopyStream(drift.Change)
@@ -77,6 +81,8 @@ func TestAListenerStartKeepsAThreeCopyStreamsCopiesByteLimitAndIDAsItCorrectsThe
 // created, and the durable the listener's start created and bound on it (bindListenerDurable),
 // which sets no replica count of its own, moves to three copies with it.
 func TestRaisingTheStreamMovesTheListenersDurableToThreeCopies(t *testing.T) {
+	// Serial: listenerSettings sets the listener's settings with t.Setenv, which panics the
+	// process beside t.Parallel.
 	cluster := testnats.StartCluster(t, 3)
 	js := cluster.JetStream(t)
 	first := listenerSettings(t, cluster.URL(), nil)
@@ -109,6 +115,7 @@ func TestRaisingTheStreamMovesTheListenersDurableToThreeCopies(t *testing.T) {
 // state; the GitHub route opens the last) at one copy, and its next start creates and updates
 // nothing.
 func TestADefaultListenerOnASingleServerCreatesEverythingAtOneCopyAndItsNextStartWritesNothing(t *testing.T) {
+	t.Parallel()
 	const machineID = "replicas-default"
 	uri := testnats.URL(t)
 	binary := cmdtest.Build(t, "envoy-listener")

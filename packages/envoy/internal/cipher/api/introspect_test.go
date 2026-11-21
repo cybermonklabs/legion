@@ -62,6 +62,7 @@ func introspect(t *testing.T, rig *ciphertest.Rig, token, bearer string) (int, w
 // machine's own key and naming the OAuth client — and then introspects a string the broker never
 // issued, which must read back as not live and disclose nothing else.
 func TestIntrospectionAnswersALiveTokenAndAnUnknownOne(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	_, tok, _ := approvedLogin(t, rig)
 
@@ -85,6 +86,7 @@ func TestIntrospectionAnswersALiveTokenAndAnUnknownOne(t *testing.T) {
 // TestIntrospectionAnswersARevokedTokenAsNotLive: once a person revokes the machine, its access
 // token reads back as simply not live, a 200 like an unknown token's, not as the broker's failure.
 func TestIntrospectionAnswersARevokedTokenAsNotLive(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	_, tok, credentialID := approvedLogin(t, rig)
 	if status, body := rig.UI(t, http.MethodPost, "/v1/launcher-credentials/"+credentialID+"/revoke-by-approver", map[string]any{"approver": rig.Operator}); status != http.StatusOK {
@@ -134,6 +136,7 @@ func TestIntrospectionAnswersAStorageOutage503(t *testing.T) {
 // an operator at the database: it is answered 500 STORED_CLAIM_MALFORMED, naming the launcher
 // credential whose token it is.
 func TestIntrospectionAnswersAMalformedStoredClaimAsSuch(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	_, tok, credentialID := approvedLogin(t, rig)
 	tag, err := rig.Store.Pool.Exec(context.Background(), `update oauth_access_tokens

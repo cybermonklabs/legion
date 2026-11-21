@@ -33,6 +33,7 @@ import (
 // and confirmed, so it is not handed over twice, and the two copies after it were never read by
 // the drain that failed and must still be delivered.
 func TestADrainThatFailedAForwardLeavesThatCopyAndTheRestToTheNextDrain(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-forward-failed"
@@ -110,6 +111,7 @@ func TestADrainThatFailedAForwardLeavesThatCopyAndTheRestToTheNextDrain(t *testi
 // killed there and is deterministic. Nothing released that claim, so the role's next drain takes
 // it over once it is past bus.KeptRoleClaimWindow.
 func TestADrainThatEndedBetweenItsForwardAndItsConfirmLeavesTheHolderOneStoredCopy(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-confirm-lost"
@@ -130,16 +132,26 @@ func TestADrainThatEndedBetweenItsForwardAndItsConfirmLeavesTheHolderOneStoredCo
 	defer cancel()
 	claimRoleWith(t, harness, holder, role, entry)
 	var handed []string
+	// forwards is each forward the drains made with its outcome: a drain retries a forward whose
+	// stored copy was not acknowledged within its wait and drops that error once a later walk
+	// succeeds, so this is the only record of why a key was forwarded more often than expected.
+	var forwards []string
 	record := func(cfg listenerDeliveryHandlerConfig, after func()) func(string, contracts.Envelope, string, time.Duration) (func() error, error) {
 		forward := cfg.forwardRole
 		return func(subject string, forwarded contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
 			wait, err := forward(subject, forwarded, msgID, timeout)
 			if err != nil {
+				forwards = append(forwards, fmt.Sprintf("%s: not published: %v", forwarded.DedupeKey, err))
 				return nil, err
 			}
 			return func() error {
 				err := wait()
 				handed = append(handed, forwarded.DedupeKey)
+				outcome := "stored"
+				if err != nil {
+					outcome = err.Error()
+				}
+				forwards = append(forwards, fmt.Sprintf("%s: %s", forwarded.DedupeKey, outcome))
 				after()
 				return err
 			}, nil
@@ -174,7 +186,7 @@ func TestADrainThatEndedBetweenItsForwardAndItsConfirmLeavesTheHolderOneStoredCo
 		t.Fatalf("the next drain of role %s's kept lane: %v", role, err)
 	}
 	if !slices.Equal(handed, []string{key, key}) {
-		t.Fatalf("the two drains forwarded %v, want the one copy under %s forwarded once by each: the copy is not lost, and at most one more is sent", handed, key)
+		t.Fatalf("the two drains forwarded %v, want the one copy under %s forwarded once by each: the copy is not lost, and at most one more is sent; each forward's outcome: %q", handed, key, forwards)
 	}
 
 	first, err := harness.client.NextStoredMessage(ctx, subject, 1)
@@ -196,6 +208,9 @@ func TestADrainThatEndedBetweenItsForwardAndItsConfirmLeavesTheHolderOneStoredCo
 // wrote it can still be forwarding that copy, no other drain forwards it a second time, and once
 // it cannot be, the copy reaches the role's holder rather than nobody.
 func TestAClaimNoDrainReleasedHoldsTheLaneUntilItsWindowHasPassed(t *testing.T) {
+	// Serial: its assertion is a time (the drain that finds the claim outstanding reaches its wait
+	// out of bus.KeptRoleClaimWindow within its 3 s context; a deadline inside one of its reads is
+	// that drain's error).
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-claim-abandoned"

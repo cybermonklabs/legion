@@ -89,7 +89,7 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	pool, ctx := deliveryTestPool(t)
 	row.pool = pool
 	seedDeliverySettings(t, ctx, pool)
-	natsURL := testnats.URL(t)
+	natsURL := deliveryTestNATS(t)
 	link := testnats.StartHandshakeHold(t, natsURL)
 	t.Cleanup(link.Restore)
 	publisher := intakeTestClient(t)

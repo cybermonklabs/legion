@@ -279,7 +279,7 @@ func (l *mentionListener) awaitSend(t *testing.T) string {
 	select {
 	case session := <-l.arrived:
 		return session
-	case <-time.After(10 * time.Second):
+	case <-time.After(concurrentWait):
 		t.Fatal("no mention send reached the listener")
 		return ""
 	}
@@ -1077,10 +1077,11 @@ func ageQueuedClaims(t *testing.T, database *store.Store, sender *mentionSender,
 }
 
 // awaitRefreshedClaims waits until every comment's attempt for target is under a claim written in
-// the last 5 s, for at most 10 s: the sender's refresh loop has written the claims it holds again.
+// the last 5 s, for at most concurrentWait: the sender's refresh loop has written the claims it
+// holds again.
 func awaitRefreshedClaims(t *testing.T, database *store.Store, commentIDs []string, target string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(concurrentWait)
 	for {
 		var refreshed int
 		if err := database.Pool.QueryRow(context.Background(), `

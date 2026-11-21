@@ -12,9 +12,11 @@ package cipherclient
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/url"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -115,11 +117,37 @@ func unregisteredLines(records []slog.Record) []slog.Record {
 // unregisteredLogLine is what the loop logs while the broker has no registration for its session.
 const unregisteredLogLine = "the secrets broker has no registration for this pod's session yet; trading again until it lands"
 
+// describeTrades is each trade the stub saw and what it answered, and describeRecords each record
+// the loop logged with its attributes, for a failure message: a trade the client gave up on before
+// the broker answered is logged as "did not answer a trade" with its error, and leaves the trade
+// count one more than the answers the test scripted.
+func describeTrades(trades []stubRequest) string {
+	described := make([]string, len(trades))
+	for index, trade := range trades {
+		described[index] = fmt.Sprintf("trade %d: %d %v", index, trade.Status, trade.Answer)
+	}
+	return strings.Join(described, "\n")
+}
+
+func describeRecords(records []slog.Record) string {
+	described := make([]string, len(records))
+	for index, record := range records {
+		line := record.Level.String() + " " + record.Message
+		record.Attrs(func(attr slog.Attr) bool {
+			line += " " + attr.String()
+			return true
+		})
+		described[index] = line
+	}
+	return strings.Join(described, "\n")
+}
+
 // TestAPodTradesOnceItsSessionIsRegistered: the broker refuses the pod's session seven times as
 // unregistered, across more than five minutes of the loop's own clock, and then answers it. The
 // loop trades again after each refusal, 15 s doubling to its 5-minute cap, hands its caller the
 // token the eighth trade lands, and logs the wait once, naming the session.
 func TestAPodTradesOnceItsSessionIsRegistered(t *testing.T) {
+	t.Parallel()
 	const refusals = 7
 	landed, err, trades, waits, records := waitForRegistration(t, refusals)
 	if err != nil || landed == nil || landed.AccessToken != landedToken {
@@ -127,7 +155,8 @@ func TestAPodTradesOnceItsSessionIsRegistered(t *testing.T) {
 			err, landed, registeredSession, refusals)
 	}
 	if len(trades) != refusals+1 {
-		t.Fatalf("the broker saw %d trades of the session %s, want %d: each refusal and the trade that landed", len(trades), registeredSession, refusals+1)
+		t.Fatalf("the broker saw %d trades of the session %s, want %d: each refusal and the trade that landed; the trades:\n%s\nthe loop logged:\n%s",
+			len(trades), registeredSession, refusals+1, describeTrades(trades), describeRecords(records))
 	}
 	for i, trade := range trades {
 		if got := trade.Form.Get("session"); got != registeredSession {
@@ -192,6 +221,7 @@ func TestTheEndOfAWaitForARegistrationIsLoggedOnce(t *testing.T) {
 // and again 30 minutes after that — three lines across seventeen refusals and 3765 s, rather than
 // one per trade or one for ever.
 func TestAnUnregisteredSessionIsLoggedAgainEveryHalfHour(t *testing.T) {
+	t.Parallel()
 	const refusals = 17
 	landed, err, _, waits, records := waitForRegistration(t, refusals)
 	if err != nil || landed == nil {
@@ -228,6 +258,7 @@ func waitedOf(record slog.Record) time.Duration {
 // error_description, and every other refusal reads as it did — the same words under another
 // code, the words anywhere but at the start, and every other refusal the broker answers.
 func TestEveryOtherRefusalStaysPermanent(t *testing.T) {
+	t.Parallel()
 	_, unregistered := unregisteredAnswer(registeredSession)
 	description := unregistered["error_description"].(string)
 	for _, tc := range []struct {

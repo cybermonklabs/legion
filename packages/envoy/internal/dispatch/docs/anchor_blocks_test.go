@@ -11,6 +11,7 @@ import (
 )
 
 func TestBackfillAnchorBlocksPinsResolvableLegacyRowsOnce(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "Introduction.\n\nTarget passage.\n")
 	askID := insertAnchoredAsk(t, service, artifactID, "Target passage")
@@ -71,6 +72,7 @@ func TestBackfillAnchorBlocksPinsResolvableLegacyRowsOnce(t *testing.T) {
 // that both writes stand: the refresh clears the orphan flag, the backfill pins the block, and
 // the row carries both at the end.
 func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
+	t.Parallel()
 	const holdKey = int64(4815162342)
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -116,7 +118,7 @@ func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("create anchor refresh hold trigger: %v", err)
 	}
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		_, _ = service.store.Pool.Exec(context.Background(), `drop trigger if exists dispatch_test_hold_anchor_refresh on events`)
 		_, _ = service.store.Pool.Exec(context.Background(), `drop function if exists dispatch_test_hold_anchor_refresh()`)
 	})
@@ -124,7 +126,7 @@ func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 	// A content change is what makes the settlement write a version, and a version write is what
 	// refreshes the anchors.
 	editLiveTree(t, service, artifactID, replaceRun("Introduction.", "Intro."))
-	settleCtx, cancelSettle := context.WithTimeout(context.Background(), 10*time.Second)
+	settleCtx, cancelSettle := context.WithTimeout(context.Background(), roomWait(t))
 	defer cancelSettle()
 	if err := service.waitForPendingUpdates(settleCtx, artifactID); err != nil {
 		t.Fatalf("wait for live updates to reach persistence: %v", err)
@@ -180,7 +182,7 @@ func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 			t.Fatalf("backfill anchor blocks after the settlement: %v", result.err)
 		}
 		backfill = result.report
-	case <-time.After(30 * time.Second):
+	case <-time.After(roomWait(t)):
 		t.Fatal("the backfill never finished after the settlement released the comment's owner lock")
 	}
 	if backfill.Asks != 0 || backfill.Comments != 1 {
@@ -205,15 +207,17 @@ func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 
 // waitForHeldAnchorRefresh returns once the settlement is inside its anchor refresh, waiting on
 // the advisory lock the test holds. The lock's own wait queue is the settlement's observable
-// position; nothing here assumes how long a step takes.
+// position; nothing here assumes how long a step takes. It counts the test's own database's
+// waiters alone, for the reason waitForHeldOwnerLock gives.
 func waitForHeldAnchorRefresh(t *testing.T, service *Service, key int64) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(roomWait(t))
 	for time.Now().Before(deadline) {
 		var waiting int
 		if err := service.store.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_locks
 			where locktype = 'advisory' and not granted
+				and database = (select oid from pg_database where datname = current_database())
 				and ((classid::bigint << 32) | objid::bigint) = $1
 		`, key).Scan(&waiting); err != nil {
 			t.Fatalf("read the anchor refresh hold: %v", err)
@@ -229,16 +233,19 @@ func waitForHeldAnchorRefresh(t *testing.T, service *Service, key int64) {
 // waitForHeldOwnerLock returns once a transaction is waiting on owner's lock, which is where a
 // writer that takes it parks while another transaction holds it (store.LockOwner). The lock's own
 // wait queue is that writer's observable position, read as waitForHeldAnchorRefresh reads the
-// test's own key, so nothing here waits a fixed length for a step to happen; the deadline bounds
-// the wait and the failure names the lock it waited for.
+// test's own key, so nothing here waits a fixed length for a step to happen; the wait gives up at
+// the package's guard and the failure names the lock it waited for. It counts the waiters of the
+// test's own database alone: pg_locks lists every database's advisory locks, and a parallel test of
+// another database waiting on its own owner of the same name would end the wait early.
 func waitForHeldOwnerLock(t *testing.T, service *Service, owner store.Owner) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(roomWait(t))
 	for time.Now().Before(deadline) {
 		var waiting int
 		if err := service.store.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_locks
 			where locktype = 'advisory' and not granted and objsubid = 2
+				and database = (select oid from pg_database where datname = current_database())
 				and classid = ($2::bigint & 4294967295)::oid
 				and objid = (hashtext($1)::bigint & 4294967295)::oid
 		`, owner.LockKey(), int64(store.OwnerLockNamespace)).Scan(&waiting); err != nil {
@@ -253,6 +260,7 @@ func waitForHeldOwnerLock(t *testing.T, service *Service, owner store.Owner) {
 }
 
 func TestBlockForQuoteLeavesTopLevelCrossBlockAnchorsUnpinned(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "One.\n\nTwo.\n")
 

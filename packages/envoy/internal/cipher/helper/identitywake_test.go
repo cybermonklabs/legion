@@ -16,9 +16,11 @@ package helper
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -35,12 +37,20 @@ import (
 // scripted refusal refuses it. It answers how many trades have been made.
 func serveTokenExchange(t *testing.T, f *enrolBroker, mux *http.ServeMux, thumbprint string) func() int {
 	t.Helper()
+	answered := serveTimedTokenExchange(t, f, mux, thumbprint)
+	return func() int { return len(answered()) }
+}
+
+// serveTimedTokenExchange is serveTokenExchange answering when each trade was answered, oldest
+// first, for a test whose failure says how long the helper's start waited for its first one.
+func serveTimedTokenExchange(t *testing.T, f *enrolBroker, mux *http.ServeMux, thumbprint string) func() []time.Time {
+	t.Helper()
 	var mu sync.Mutex
-	trades := 0
+	var answered []time.Time
 	mux.HandleFunc("POST /v1/oauth/token", func(w http.ResponseWriter, _ *http.Request) {
 		mu.Lock()
-		trades++
-		id := "credential-of-trade-" + strconv.Itoa(trades)
+		id := "credential-of-trade-" + strconv.Itoa(len(answered)+1)
+		answered = append(answered, time.Now())
 		mu.Unlock()
 		f.mu.Lock()
 		f.credentials[id] = thumbprint
@@ -50,10 +60,10 @@ func serveTokenExchange(t *testing.T, f *enrolBroker, mux *http.ServeMux, thumbp
 			"credential_id": id, "credential_expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
 		})
 	})
-	return func() int {
+	return func() []time.Time {
 		mu.Lock()
 		defer mu.Unlock()
-		return trades
+		return slices.Clone(answered)
 	}
 }
 
@@ -62,6 +72,7 @@ func serveTokenExchange(t *testing.T, f *enrolBroker, mux *http.ServeMux, thumbp
 // otherwise sleep out the hour its token lives — trades again straight away, so the next
 // register finds a credential rather than NO_CREDENTIAL.
 func TestADroppedCredentialInIdentityModeIsTradedAgainAtOnce(t *testing.T) {
+	t.Parallel()
 	f := newEnrolBroker(t)
 	key, err := proof.NewKey()
 	if err != nil {
@@ -72,7 +83,7 @@ func TestADroppedCredentialInIdentityModeIsTradedAgainAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	trades := serveTokenExchange(t, f, mux, thumbprint)
+	trades := serveTimedTokenExchange(t, f, mux, thumbprint)
 	// The enrolment routes stay f's own; this mux only adds the token endpoint in front of them.
 	mux.Handle("/", f.srv.Config.Handler)
 	f.srv.Config.Handler = mux
@@ -97,13 +108,16 @@ func TestADroppedCredentialInIdentityModeIsTradedAgainAtOnce(t *testing.T) {
 	t.Cleanup(b.Close)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	began := time.Now()
 	if err := b.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	started := time.Since(began)
 	if !b.HasCredential() {
-		t.Fatal("the helper listens with no credential, so this test proves nothing about dropping one")
+		t.Fatalf("the helper listens with no credential, so this test proves nothing about dropping one: Start returned %v after it began, against the %v it waits for the first trade (defaultStartRefreshBound); the trades the token endpoint answered, counted from Start's beginning: %s",
+			started.Round(time.Millisecond), defaultStartRefreshBound, sinceBegan(began, trades()))
 	}
-	first := trades()
+	first := len(trades())
 
 	f.mu.Lock()
 	f.enrolRefusals, f.enrolStatus, f.enrolCode = 1, http.StatusUnauthorized, "LAUNCHER_INVALID"
@@ -114,14 +128,10 @@ func TestADroppedCredentialInIdentityModeIsTradedAgainAtOnce(t *testing.T) {
 		t.Fatal("the refused enrolment answered no error")
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for !b.HasCredential() {
-		if time.Now().After(deadline) {
-			t.Fatalf("the helper held no credential 5 s after the drop; it traded %d times, want the drop to wake the trade loop rather than leave every register answering NO_CREDENTIAL until the token's own renewal", trades()-first)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if again := trades() - first; again != 1 {
+	waitForAccounted(t, "the helper holding a credential again after the drop", b.HasCredential, func() string {
+		return fmt.Sprintf("it traded %d times, want the drop to wake the trade loop rather than leave every register answering NO_CREDENTIAL until the token's own renewal", len(trades())-first)
+	})
+	if again := len(trades()) - first; again != 1 {
 		t.Fatalf("the trade loop traded %d times after the drop, want exactly one", again)
 	}
 }

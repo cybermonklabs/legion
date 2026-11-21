@@ -482,6 +482,14 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.main_bypass_check_test == 'true'
         run: .github/scripts/main-bypass-check.test.sh
 
+      - name: Test the go test -json reader the envoy-go measurement is read through
+        run: .github/scripts/go-test-times.test.sh
+
+      # The read-back every job with a disposable Postgres service runs, driven against a fake
+      # docker: the five settings, a server off any of them, and the refusals.
+      - name: Test the Postgres service settings read-back
+        run: .github/scripts/postgres-service-settings.test.sh
+
       # The base envoy-go-checks' edited-migrations check compares a run's tree with, per event,
       # over fixture remotes cloned one commit deep as actions/checkout leaves a run's tree.
       - name: Test the edited-migrations check's choice of base (fixture git remotes; no GitHub)

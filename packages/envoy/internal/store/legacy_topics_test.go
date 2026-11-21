@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 )
@@ -64,6 +63,7 @@ func readLegacyFixture(t *testing.T) legacyFixture {
 // delivers nothing (a role is held through POST /v1/roles/set), so advising one would send the
 // caller to a second topic that delivers nothing either.
 func TestEachOldFormTopicIsNamedWithItsNewFormAndCounted(t *testing.T) {
+	t.Parallel()
 	for _, row := range readLegacyFixture(t).CanonicalTopic {
 		counter := &kindCounter{}
 		r := &Registry{legacySubjects: counter}
@@ -88,6 +88,7 @@ func TestEachOldFormTopicIsNamedWithItsNewFormAndCounted(t *testing.T) {
 // that is counted, since it is a reader the old form still has, and named in no warning, since the
 // caller named no such topic and could do nothing with one.
 func TestTheSessionsOwnOldAgentSubjectIsCountedAndNamedInNoWarning(t *testing.T) {
+	t.Parallel()
 	counter := &kindCounter{}
 	r := &Registry{legacySubjects: counter}
 	if warnings := r.LegacyTopicWarnings("ses_own", []string{contracts.LegacyAgentSubject("ses_own")}); len(warnings) != 0 {
@@ -109,6 +110,7 @@ func TestTheSessionsOwnOldAgentSubjectIsCountedAndNamedInNoWarning(t *testing.T)
 // leaves alone, is not. The session's own agent subject in the old form is never counted there:
 // the listener writes it into every row itself, and counting it would move the counter for ever.
 func TestAStoredOldFormTopicIsCountedEachTimeItIsReadIntoAFilter(t *testing.T) {
+	t.Parallel()
 	for _, row := range readLegacyFixture(t).CanonicalTopic {
 		counter := &kindCounter{}
 		r := &Registry{legacySubjects: counter}
@@ -137,6 +139,7 @@ func TestAStoredOldFormTopicIsCountedEachTimeItIsReadIntoAFilter(t *testing.T) {
 // (kind="role") and named with its new form, project first; a role claimed in the new form is
 // read as its name and neither counted nor named.
 func TestEachOldFormRoleIsReadAsItsNameAndCounted(t *testing.T) {
+	t.Parallel()
 	for _, row := range readLegacyFixture(t).CanonicalRole {
 		counter := &kindCounter{}
 		r := &Registry{legacySubjects: counter}
@@ -159,6 +162,7 @@ func TestEachOldFormRoleIsReadAsItsNameAndCounted(t *testing.T) {
 // as they read it today, and a session that registered the new form is reached by today's
 // publishes.
 func TestAnInterestInEitherFormMatchesAPublishInEitherForm(t *testing.T) {
+	t.Parallel()
 	interests := map[string]Interest{
 		"ses_old": {SessionID: "ses_old", MachineID: "m", Topics: []string{"notifications.dispatch.issue.INFRA-12.>", contracts.LegacyAgentSubject("ses_old")}},
 		"ses_new": {SessionID: "ses_new", MachineID: "m", Topics: []string{contracts.DispatchIssueSubject("INFRA", "INFRA-12", ">"), contracts.AgentSubject("INFRA", "ses_new")}},
@@ -210,6 +214,7 @@ func TestAnInterestInEitherFormMatchesAPublishInEitherForm(t *testing.T) {
 // name and a role's lane under a project are the rows a reading that takes the new form's
 // wildcard (notifications.agent.*.s1) as a literal key leaves behind.
 func TestRemovingATopicRemovesEveryFormOfIt(t *testing.T) {
+	t.Parallel()
 	const kept = "notifications.github.o.r.>"
 	for _, tc := range []struct{ name, stored, removed string }{
 		{"an issue by its old name", "notifications.dispatch.issue.INFRA.INFRA-12.>", "notifications.dispatch.issue.INFRA-12.>"},
@@ -238,6 +243,7 @@ func TestRemovingATopicRemovesEveryFormOfIt(t *testing.T) {
 // A role's lane topic names its role in either form, so a record's roles and a release of named
 // topics read a record that holds the new form as they read one that holds the old.
 func TestARoleTopicInEitherFormNamesItsRole(t *testing.T) {
+	t.Parallel()
 	for topic, want := range map[string]string{
 		"notifications.role.legion-priv-priv-1-architect":                 "legion-priv-priv-1-architect",
 		contracts.RoleSubject("PRIV", "legion-priv-priv-1-architect"):     "legion-priv-priv-1-architect",
@@ -262,6 +268,7 @@ func TestARoleTopicInEitherFormNamesItsRole(t *testing.T) {
 // nowhere, and the record stores each topic as the caller wrote it, whatever its form, as the merge
 // base stored it, read back through the bucket by a second registry.
 func TestARecordStoresEachTopicAsTheCallerWroteIt(t *testing.T) {
+	t.Parallel()
 	counter := &kindCounter{}
 	unmoved := []string{
 		"notifications.github.o.r.>",
@@ -297,5 +304,5 @@ func TestARecordStoresEachTopicAsTheCallerWroteIt(t *testing.T) {
 	if !slices.Equal(row.Topics, want) {
 		t.Fatalf("stored topics = %q, want %q as written", row.Topics, want)
 	}
-	pollMatch(t, reader, "m1", contracts.DispatchIssueSubject("INFRA", "INFRA-12", "comment.created"), 1, 5*time.Second)
+	pollMatch(t, reader, "m1", contracts.DispatchIssueSubject("INFRA", "INFRA-12", "comment.created"), 1, heldWait)
 }

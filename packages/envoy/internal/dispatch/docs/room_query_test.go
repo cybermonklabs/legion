@@ -279,7 +279,7 @@ func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the silent member: %v", err)
 	}
-	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	cleanupAndRelease(t, func() { _ = conn.Close(context.Background()) })
 	logs := captureWarnings(t)
 
 	for _, kind := range []string{roomQueryHolds, roomQueryFlush, roomQueryShare} {

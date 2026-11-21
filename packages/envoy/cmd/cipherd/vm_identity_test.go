@@ -232,6 +232,7 @@ func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
 // BROKER_VM_SERVICES', sorted and each once, so a secret a machine service owns is that
 // service's and not refused as owner-tag-malformed.
 func TestThePolicyServesTheVMServicesSecrets(t *testing.T) {
+	t.Parallel()
 	if got, want := serviceNames(vmConfig(t, "example-vm-audience")), []string{"example-fleet", "example-service"}; !slices.Equal(got, want) {
 		t.Fatalf("serviceNames = %v, want %v", got, want)
 	}
@@ -244,6 +245,7 @@ func TestThePolicyServesTheVMServicesSecrets(t *testing.T) {
 // sign-in needs a VM service for the machine's actor token, even when a Google API caller uses
 // the same audience. The refusal comes before the broker reaches its database or binds.
 func TestDeviceSignInWithNoVMServicesIsRefusedAtBoot(t *testing.T) {
+	t.Parallel()
 	out := runRefusedBroker(t, buildBroker(t),
 		"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
 		"BROKER_PUBLIC_URL=https://secrets.internal.example",
@@ -262,6 +264,7 @@ func TestDeviceSignInWithNoVMServicesIsRefusedAtBoot(t *testing.T) {
 // naming the audience and all three ways to give it a caller, before the broker reaches its
 // database or binds.
 func TestAGoogleAudienceWithNoGoogleCallerIsRefusedAtBoot(t *testing.T) {
+	t.Parallel()
 	out := runRefusedBroker(t, buildBroker(t),
 		"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
 		"BROKER_PUBLIC_URL=https://secrets.internal.example",
@@ -276,6 +279,7 @@ func TestAGoogleAudienceWithNoGoogleCallerIsRefusedAtBoot(t *testing.T) {
 // issuer and no Google audience: it boots, and its boot log names neither Google's issuer nor a VM
 // identity line.
 func TestWithNoGoogleAudienceTheBootLogHoldsNoGoogleLine(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	issuer := oidctest.New(t)
 	issuer.PublishKey(t, "signing-key")
@@ -306,6 +310,7 @@ func TestWithNoGoogleAudienceTheBootLogHoldsNoGoogleLine(t *testing.T) {
 // BROKER_EXCHANGE_K8S_AUDIENCE: a pod's trade there mints no launcher credential, so no machine
 // could register a session under it.
 func TestTheSettingsNameOnlyAnAudienceAMachineCanTradeFor(t *testing.T) {
+	t.Parallel()
 	cluster, github, google := oidctest.New(t), oidctest.New(t), oidctest.New(t)
 	cluster.PublishKey(t, "cluster-key")
 	github.PublishKey(t, "github-key")

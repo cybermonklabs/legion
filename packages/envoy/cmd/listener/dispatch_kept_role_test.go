@@ -106,7 +106,7 @@ func runOutboxThrough(t *testing.T, harness listenerDeliveryHarness, database *d
 		cancel()
 		select {
 		case <-stopped:
-		case <-time.After(10 * time.Second):
+		case <-time.After(listenerWait):
 			t.Error("Dispatch's outbox did not stop")
 		}
 	})
@@ -360,7 +360,7 @@ func takenForwards(t *testing.T, harness listenerDeliveryHarness, sessionID stri
 // the whole of it rather than its last copy (readKeptRoleMessage).
 func keptRoleCopies(t *testing.T, client *bus.Client, role string) []contracts.Envelope {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	var copies []contracts.Envelope
 	for seq := uint64(1); ; {

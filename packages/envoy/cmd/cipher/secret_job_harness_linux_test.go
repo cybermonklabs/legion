@@ -80,6 +80,13 @@ type promptShell struct {
 	wrapperIgnores string
 }
 
+// awaitTerminalWait is this package's give-up on a terminal change another process makes: the
+// prompt's echo-off (awaitEchoOff, secret_tty_linux_test.go). The wait crosses a process boundary,
+// so a loaded machine makes it long without making it wrong. The job-control tests' waits on the
+// terminal (its foreground, the prompt's read of what is queued, bash's line editor taking it, the
+// shell's exit giving it up) are bounded by promptJobWait instead (waitBudget).
+const awaitTerminalWait = 10 * time.Second
+
 // rawFd answers f's file descriptor through its SyscallConn, which, unlike
 // (*os.File).Fd(), never switches f to blocking mode.
 func rawFd(f *os.File) (int, error) {
@@ -356,6 +363,7 @@ func (c *labelCheck) Write(p []byte) (int, error) {
 }
 
 func TestPromptJobHelper(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("AGENT_SECRETS_JOB_HELPER") == "" {
 		t.Skip("subprocess helper")
 	}

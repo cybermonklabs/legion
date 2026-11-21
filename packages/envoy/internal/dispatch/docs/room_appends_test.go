@@ -518,7 +518,7 @@ func TestAGateRefusalOrFailedCommitStoresNothingOfTheBatchAndEachUpdateEndsOnce(
 			letEviction := make(chan struct{})
 			var evictOnce, letOnce sync.Once
 			release := func() { letOnce.Do(func() { close(letEviction) }) }
-			t.Cleanup(release)
+			cleanupAndRelease(t, release)
 			service.beforeFailedEviction = func(room string) {
 				if room != artifactID {
 					return
@@ -529,7 +529,7 @@ func TestAGateRefusalOrFailedCommitStoresNothingOfTheBatchAndEachUpdateEndsOnce(
 
 			bob := model.Actor{Kind: "user", ID: "bob"}
 			service.addConnection(artifactID, 11, bob)
-			t.Cleanup(func() { service.removeConnection(artifactID, 11) })
+			cleanupAndRelease(t, func() { service.removeConnection(artifactID, 11) })
 			updates := make([][]byte, 3)
 			credits := make([]*UpdateCredit, 3)
 			// A browser's update names the peer ygo applied it for; a nil origin is ygo's own
@@ -641,7 +641,7 @@ func TestABatchStopsAtASuppressedUpdateAndAtAnotherRoomInstance(t *testing.T) {
 		live := service.srv.GetDoc(artifactID)
 		before := storedHead(t, database, artifactID)
 		gate := &burstGate{entered: make(chan struct{}), release: make(chan struct{})}
-		t.Cleanup(gate.let)
+		cleanupAndRelease(t, gate.let)
 		appends.mu.Lock()
 		appends.gates = append(appends.gates, gate)
 		appends.mu.Unlock()
@@ -840,7 +840,7 @@ func TestALoneUpdateAndABatchHoldingItStoreItOnce(t *testing.T) {
 				{entered: make(chan struct{}), release: make(chan struct{})},
 				{entered: make(chan struct{}), release: make(chan struct{})},
 			}
-			t.Cleanup(func() {
+			cleanupAndRelease(t, func() {
 				for _, gate := range gates {
 					gate.let()
 				}
@@ -1184,7 +1184,7 @@ func startBlockingProxy(t *testing.T, server string) *blockingProxy {
 		t.Fatalf("listen for the proxy: %v", err)
 	}
 	proxy := &blockingProxy{listener: listener, server: server, blocked: make(chan struct{}), released: make(chan struct{})}
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		proxy.release()
 		_ = listener.Close()
 	})

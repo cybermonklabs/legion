@@ -30,6 +30,8 @@ import (
 // front of the test server: after the first outage it lets the reconnect through and closes the
 // connection when the client's first $JS.API.STREAM request reaches it, unanswered.
 func TestAFlapDuringTheEnsuresRequestRunsTheSecondDisconnectHookAtOnce(t *testing.T) {
+	// Serial: its assertion is a time (the second disconnect hook runs within 2 s of the second
+	// outage).
 	_, uri := testnats.Start(t)
 	proxy := newFlapProxy(t, strings.TrimPrefix(uri, "nats://"))
 	client, err := ConnectOwningStream([]string{"nats://" + proxy.addr()}, WithName(t.Name()))

@@ -254,6 +254,10 @@ func useOrderSources(t *testing.T, dir, tokenURI string, setup orderSetup) {
 // person's chosen gcloud login over the machine's, on a Google VM whose active gcloud
 // configuration is the machine's own (box) and whose person's login is in another (person).
 // Each row adds one source to the row before it and reads the bearer token Secret Manager saw.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL (startSecretBrokerWith's t.Setenv),
+// PATH, HOME, CLOUDSDK_CONFIG and the gcloud and credential variables (useGcloudConfigurations,
+// useOrderSources), GCE_METADATA_HOST (startMetadataServer), and gcpClientDial, the package-level
+// seam the GCP backend dials Secret Manager through (startFakeSecretManager).
 func TestGCPSecretCredentialOrder(t *testing.T) {
 	const (
 		wk           = "wk@example.iam.gserviceaccount.com"
@@ -307,6 +311,9 @@ func TestGCPSecretCredentialOrder(t *testing.T) {
 // command stops within 2 s, before any Secret Manager call, with one refusal that names each of
 // the six sources (the third by both its variables, the well-known file by the setting that
 // names its directory, never its path).
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, PATH, HOME, CLOUDSDK_CONFIG, the
+// gcloud and credential variables and GCE_METADATA_HOST, which it sets, and gcpClientDial - and
+// its assertion is also a time: the command stops within 2 s.
 func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
@@ -343,6 +350,9 @@ func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
 // with its own error, and never falls through to a later source; a store refusal under the first
 // source is never retried under another. The metadata server is there in every row, so a fall
 // through would show as a call under it.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, PATH, HOME, CLOUDSDK_CONFIG, the
+// gcloud and credential variables each row sets (STUB_GCLOUD_REFUSE_TOKEN among them) and
+// GCE_METADATA_HOST, and gcpClientDial.
 func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
 	for _, row := range []struct {
 		name     string
@@ -507,6 +517,10 @@ func startPartialMetadataServer(t *testing.T, token, email metadataAnswer) *meta
 // server that answers neither, and an answer that is not Google's, are no metadata server, so the
 // command lists every source; a Google server that answers the token read with an error is
 // present and broken, so that error stops the command.
+// Serial: it shares process-wide state - AGENT_SECRETS_URL, PATH, HOME, CLOUDSDK_CONFIG, the
+// gcloud and credential variables and GCE_METADATA_HOST (startPartialMetadataServer), and
+// gcpClientDial - and each row's assertion is also a time: the command ends within that row's
+// bound (5 s, or 15 s for a server that answers neither read).
 func TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken(t *testing.T) {
 	for _, row := range []struct {
 		name         string

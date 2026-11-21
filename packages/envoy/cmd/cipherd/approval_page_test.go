@@ -658,6 +658,7 @@ func TestTheBinaryApprovesASecretOnItsOwnPage(t *testing.T) {
 // subcommand that only trimmed its argument would print "ended 0 sessions" and leave her able to
 // decide for the rest of the session's day.
 func TestTheBinaryEndSessionsEndsAMixedCaseLogin(t *testing.T) {
+	t.Parallel()
 	f := newApprovalFixture(t)
 	databaseURL := storetest.URL(t)
 	public := newFront(t)

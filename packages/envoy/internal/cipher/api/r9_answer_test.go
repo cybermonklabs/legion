@@ -15,6 +15,7 @@ import (
 // no generation, as the session watch and dev-broker.sh write it — is answered the fields the merge
 // base answered, and no others: pod_uid, session and expires_at.
 func TestARegistrationNamingNoKeyAndNoGenerationIsAnsweredAsBefore(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, withExchangeAccounts(t, daemonAccount, workerAccount))
 	registrar := ts.accountToken(t, daemonAccount, "", time.Hour)
 	podToken := ts.accountToken(t, workerAccount, "pod-uid-watched", time.Hour)
@@ -38,6 +39,8 @@ func TestARegistrationNamingNoKeyAndNoGenerationIsAnsweredAsBefore(t *testing.T)
 // no key and no generation either, logs the line the merge base logged, with the attributes it
 // had and no others: no thumbprint or generation sent or stored, and none replaced.
 func TestARegistrationNamingNoKeyAndNoGenerationLogsAsBefore(t *testing.T) {
+	// Serial: it swaps the default logger (newRegistrationRig's logtest.SetDefault) to read the
+	// registration's records back.
 	rig := newRegistrationRig(t, "pod-uid-watched")
 	for _, write := range []string{"the first write", "a renewal"} {
 		rig.register(t, map[string]any{"session": "watched-session"})

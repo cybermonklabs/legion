@@ -109,9 +109,15 @@ const prunePasses = `delete from ci_reconcile_passes where started_at < now() - 
 // its line and records nothing, which is honest: a row naming no process could never be read as
 // running or as ended without completing.
 //
-// It writes on the pass's own context, which the end write may not use: this runs at the start of
-// the pass, where the whole interval is still ahead of it.
-func (r *Reconciler) beginPass(ctx context.Context) int64 {
+// It writes on a bounded context of its own, the one endPass writes on (duty.LeaseCall), and
+// never on the pass's. The pass's caller cancels the pass's context when the process shuts down,
+// and a cancellation that lands while the insert is in flight -- after Postgres has committed the
+// row, before the pass has read its id back -- fails that read and parts the pass from its own
+// row: the pass closes nothing, and the row reads as PassStateAbandoned, a process killed in the
+// middle of a pass, where what happened is a pass its caller cancelled, which records
+// outcomeCancelled. On a context no cancellation reaches, a pass whose row was written holds that
+// row's id.
+func (r *Reconciler) beginPass() int64 {
 	if r.Instance == nil {
 		return 0
 	}
@@ -119,6 +125,8 @@ func (r *Reconciler) beginPass(ctx context.Context) int64 {
 	if instance == "" {
 		return 0
 	}
+	ctx, done := duty.LeaseCall()
+	defer done()
 	var id int64
 	if err := r.Pool.QueryRow(ctx, insertPass, instance).Scan(&id); err != nil {
 		r.Logger.Warn("ci reconcile pass recorded no start", "instance", instance, "error", err)

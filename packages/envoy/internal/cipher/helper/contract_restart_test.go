@@ -104,6 +104,7 @@ func TestContractALostRefreshAnswerIsRetriedInsideTheGrace(t *testing.T) {
 // session with no new approval. Its start refreshes the login against the real broker, which
 // rotates the refresh token the file keeps.
 func TestContractALoginSurvivesARestart(t *testing.T) {
+	t.Parallel()
 	first := newContractRig(t)
 	credentialID := first.login(t)
 	info, err := os.Stat(first.machineFile)
@@ -145,6 +146,7 @@ func TestContractALoginSurvivesARestart(t *testing.T) {
 // helper drops the credential with the refresh-refused reason, deletes its machine file, and
 // login-status reads expired, refused for that reason.
 func TestContractARevokedMachinesNextRefreshDropsItsLogin(t *testing.T) {
+	t.Parallel()
 	first := newContractRig(t)
 	credentialID := first.login(t)
 	status, body := first.broker.UI(t, http.MethodPost, "/v1/launcher-credentials/"+credentialID+"/revoke-by-approver",
@@ -178,6 +180,7 @@ func TestContractARevokedMachinesNextRefreshDropsItsLogin(t *testing.T) {
 // cannot reach the token endpoint keeps the login it kept, reports it issued, and enrolls sessions
 // with it; the machine file is unchanged.
 func TestContractARefreshThatCannotReachTheBrokerKeepsTheLogin(t *testing.T) {
+	t.Parallel()
 	first := newContractRig(t)
 	first.login(t)
 	kept, err := LoadMachineFile(first.machineFile)
@@ -208,6 +211,11 @@ func TestContractARefreshThatCannotReachTheBrokerKeepsTheLogin(t *testing.T) {
 // TestContractAnUnrefreshedLoginDropsAtItsExpiry: a helper whose refresh never reaches the broker
 // holds its login until the expiry it kept, then drops it for that reason, as the broker's own
 // lapse would refuse it.
+//
+// Serial: its assertion is a time - the restarted helper must have started and still hold the
+// login it kept within the second from the save to that login's expiry, and must drop it within
+// 5 s past the expiry; a parallel test's load is what would stretch the start or the drop past
+// either bound.
 func TestContractAnUnrefreshedLoginDropsAtItsExpiry(t *testing.T) {
 	first := newContractRig(t)
 	first.login(t)
@@ -242,6 +250,7 @@ func TestContractAnUnrefreshedLoginDropsAtItsExpiry(t *testing.T) {
 // TestContractAReLoginReplacesTheKeptLogin: a machine login while one is held mints a new key and
 // a new login; the machine file names the old login until the new one is issued, then the new one.
 func TestContractAReLoginReplacesTheKeptLogin(t *testing.T) {
+	t.Parallel()
 	cr := newContractRig(t)
 	first := cr.login(t)
 	code, err := cr.srv.Broker.Login(context.Background(), cr.srv.Hostname)

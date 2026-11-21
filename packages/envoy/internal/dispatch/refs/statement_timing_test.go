@@ -34,6 +34,11 @@ import (
 //     The before side is read with ask_followers_session_id present, the index migration
 //     20261101182419 adds for the followed_by arm, which only helps it, so each pair is the
 //     conservative reading of the head text's own gain.
+//
+// Like many of this package's tests, it does not call t.Parallel; unlike them, it says why. Its
+// assertion is a comparison of two timings: each pair fails unless the after text's median is
+// below the before text's (benchtime.Pair), and a reading taken beside another test's work is
+// that test's reading too.
 func TestStatementTimings(t *testing.T) {
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	subjects := runner.Subjects()

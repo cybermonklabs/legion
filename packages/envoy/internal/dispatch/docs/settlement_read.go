@@ -3,7 +3,6 @@ package docs
 import (
 	"context"
 	"fmt"
-	"log/slog"
 )
 
 // documentRemovedStatement reads whether a document's artifacts row has gone.
@@ -45,7 +44,7 @@ func (st *settlement) readLocked(ctx context.Context, parent context.Context) (s
 	st.latest = latest
 	if err := s.lockSettlementCursor(ctx, tx, room); err != nil {
 		if s.shuttingDown(room) {
-			slog.Warn("dispatch: skip shutdown document settlement while cursor lock is held", "room", room, "error", err)
+			s.log().Warn("dispatch: skip shutdown document settlement while cursor lock is held", "room", room, "error", err)
 			return settleDone, settleOutcome{}
 		}
 		return settleDone, st.stoppedShort(fmt.Errorf("lock document cursor: %w", err))
@@ -134,7 +133,7 @@ func (st *settlement) readLocked(ctx context.Context, parent context.Context) (s
 	// generation.
 	first, err := s.readSettlementTree(state, st.doc, room, s.afterSettleAuthorsTake, false)
 	if err != nil {
-		if skipUnreadableSettlement(room, err) {
+		if s.skipUnreadableSettlement(room, err) {
 			return settleDone, settleOutcome{}
 		}
 		return settleDone, st.stoppedShort(err)

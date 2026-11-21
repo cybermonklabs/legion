@@ -488,6 +488,7 @@ func signMachineLoginRequest(t *testing.T, key *ecdsa.PrivateKey, audience, logi
 // and every in-process rig leaves it: a process that never stops is never draining, so the ping
 // alone decides.
 func TestHealthzIsPublic(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	status, _ := ts.req(t, http.MethodGet, "/healthz", nil, nil)
 	if status != http.StatusOK {
@@ -502,6 +503,7 @@ func TestHealthzIsPublic(t *testing.T) {
 // pod goes on serving the requests still being routed to it: GET /v1/settings, a public route of
 // the same mux, must answer exactly as it always does while /healthz is refusing.
 func TestHealthzFailsWhileDrainingAndNothingElseDoes(t *testing.T) {
+	t.Parallel()
 	var draining atomic.Bool
 	ts := newTestServerWith(t, func(d *api.Deps) { d.Draining = draining.Load })
 
@@ -523,6 +525,7 @@ func TestHealthzFailsWhileDrainingAndNothingElseDoes(t *testing.T) {
 // does not name are each refused — never silently open. An expired token and one that lives
 // longer than an hour from its issue are refused too, each by its own code.
 func TestARouteDispatchCallsRefusesAnyOtherCredential(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	longLived := ts.podIssuer.Claims(dispatchAccount, podAudience)
 	longLived["iat"] = time.Now().Add(-time.Hour).Unix()
@@ -556,6 +559,7 @@ func TestARouteDispatchCallsRefusesAnyOtherCredential(t *testing.T) {
 // longer authenticates the enrollment routes at all: only a launcher proof (Proof header, "lid"
 // claim) does now.
 func TestEnrollmentRouteWithOldBearerHeaderIsLauncherInvalid(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	status, body := ts.req(t, http.MethodPost, "/v1/enrollments",
 		map[string]string{"Authorization": "Bearer " + "some-v8-style-launcher-token", "Content-Type": "application/json"},
@@ -633,6 +637,7 @@ func (ts *testServer) mintLauncherCredential(t *testing.T, loginHint, host strin
 // proof merely because it verifies. Without this guard the handler would receive an empty
 // enroll.Credential and either fail differently downstream or, worse, succeed with the zero value.
 func TestSessionProofRejectedOnLauncherAuthRoute(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), "sjawhar")
 
@@ -757,6 +762,7 @@ func TestMachineLoginApprovalMintsAKeyBoundLauncherCredentialForEnrollment(t *te
 // while the routes Dispatch and the Legion daemon call under the same prefix still answer as they
 // did.
 func TestTheHandBuiltMachineLoginRoutesAreGone(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	request := signMachineLoginRequest(t, newSigningKey(t), ts.URL, testApprover, "example-host-devbox", "")
 	if status, body := ts.req(t, http.MethodPost, "/v1/launcher-credentials", nil, map[string]any{"request": request}); status != http.StatusMethodNotAllowed {
@@ -784,6 +790,7 @@ func TestTheHandBuiltMachineLoginRoutesAreGone(t *testing.T) {
 // TestMachineLoginLookupUnknownCodeIsNoSuchCode pins the 404 NO_SUCH_CODE contract for a code that
 // names no pending machine login.
 func TestMachineLoginLookupUnknownCodeIsNoSuchCode(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	status, body := ts.ui(t, http.MethodPost, "/v1/machine-logins/lookup", map[string]any{"code": "ZZZZ-ZZZZ"})
 	if status != http.StatusNotFound {
@@ -1068,6 +1075,7 @@ func TestCreateRequestWithMaxGrantNeedsLifetime(t *testing.T) {
 // operator, naming the secret and the error's class, never the stored value: the refresh token
 // it holds, a canary no JSON or log quoting changes, is in neither.
 func TestAFailedMintIs502MintFailed(t *testing.T) {
+	// Serial: it swaps the standard logger's output (policytest.CaptureLog).
 	logged := policytest.CaptureLog(t)
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.Machine.Minters = map[string]requests.Minter{

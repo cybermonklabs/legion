@@ -52,10 +52,20 @@ const (
 
 // CensusOptions are the census's bounds. A zero field takes its package constant
 // (CensusTableLimit, CensusLongTransaction, CensusStatementTimeout); tests set smaller ones.
+// Locking bounds one wait of the census's own, and the census reads only its timeout: how long the
+// census waits for a touched table's lock before it refuses that table. It resolves as a runner's
+// Locking does, so a zero Locking waits production's five seconds (LockTimeout): the bound
+// production's runner applies a migration under, which gives up after that long behind the same
+// holder. A test of that refusal sets it short rather than waiting five seconds out. The census
+// does not judge a migration's lock holders by it (lockBoundOf, holderRefusal). It judges them by
+// the lock_timeout production's runner applies the migration under: LockTimeout until the
+// migration sets its own (migrationLockTimeouts), whatever Locking says. So a census whose wait a
+// test shortened judges each lock holder as production's census does.
 type CensusOptions struct {
 	TableLimit       int64
 	LongTransaction  time.Duration
 	StatementTimeout time.Duration
+	Locking          Locking
 }
 
 // TableCensus is one table a pending migration touches.
@@ -150,7 +160,8 @@ func (r *Report) Refused() bool { return r.refusals() > 0 }
 //   - a table the migration names above TableLimit, unless its statements only change the
 //     catalog or the transaction's own settings, or take a lock, and read no existing row
 //     (tableSizeExemption), or it is a marked single concurrent index build; or a table the
-//     census cannot read within LockTimeout or the statement timeout;
+//     census cannot read within its Locking's timeout (LockTimeout unless set) or the statement
+//     timeout;
 //   - a lock holder on a touched table that would hold the migration past LockTimeout
 //     (holderRefusal): a transaction at least LongTransaction old, one whose age Postgres hides
 //     from the census's role or does not record (track_activities off), or an autovacuum Postgres
@@ -196,6 +207,7 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 	if options.StatementTimeout == 0 {
 		options.StatementTimeout = CensusStatementTimeout
 	}
+	options.Locking = options.Locking.resolve()
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, fmt.Errorf("census: begin read-only transaction: %w", err)
@@ -211,7 +223,7 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 	// as Load's check read it (censusTokens).
 	set, args := setConfig(true, withTextSettings(
 		setting{"statement_timeout", strconv.FormatInt(options.StatementTimeout.Milliseconds(), 10) + "ms"},
-		setting{"lock_timeout", lockTimeoutSetting},
+		setting{"lock_timeout", options.Locking.Setting()},
 	))
 	if _, err := tx.Exec(ctx, set, args...); err != nil {
 		return nil, fmt.Errorf("census: set timeouts and text settings: %w", err)
@@ -410,11 +422,12 @@ func lockBoundOf(ctx context.Context, tx pgx.Tx, entry *MigrationCensus) (lockBo
 	return bound, nil
 }
 
-// migrationLockTimeouts are the lock_timeout settings a migration's statements wait under: Exec's
-// LockTimeout until the migration's first SET [LOCAL | SESSION] lock_timeout, then each value it
-// sets, as SET would give it to Postgres (a string literal's text, any other value as written). A
-// migration that sets its own before any other statement waits under that alone. Comments and
-// literals are read past as Postgres reads them (scanSQL), and a DO block's body is not read.
+// migrationLockTimeouts are the lock_timeout settings a migration's statements wait under when
+// production's runner applies it: LockTimeout, which a zero Locking's Exec sets, until the
+// migration's first SET [LOCAL | SESSION] lock_timeout, then each value it sets, as SET would give
+// it to Postgres (a string literal's text, any other value as written). A migration that sets its
+// own before any other statement waits under that alone. Comments and literals are read past as
+// Postgres reads them (scanSQL), and a DO block's body is not read.
 func migrationLockTimeouts(sql string) []string {
 	type token struct {
 		kind sqlTokenKind
@@ -583,8 +596,8 @@ func censusTable(ctx context.Context, tx pgx.Tx, touched TouchedTable, options C
 		return nil
 	case errors.As(err, &pgErr) && pgErr.Code == lockNotAvailable:
 		_ = nested.Rollback(ctx)
-		table.Unread = fmt.Sprintf("its lock was not granted within %s", LockTimeout)
-		entry.refuse("could not read %s within %s (SQLSTATE %s); %s%s", name, LockTimeout, pgErr.Code, lockedBy(table.Holders), holderDiagnoses(ctx, tx, table.Holders))
+		table.Unread = fmt.Sprintf("its lock was not granted within %s", options.Locking.Timeout)
+		entry.refuse("could not read %s within %s (SQLSTATE %s); %s%s", name, options.Locking.Timeout, pgErr.Code, lockedBy(table.Holders), holderDiagnoses(ctx, tx, table.Holders))
 		return nil
 	case errors.As(err, &pgErr) && pgErr.Code == queryCanceled:
 		_ = nested.Rollback(ctx)

@@ -1,5 +1,9 @@
 package bus_test
 
+// Every test here sets NATS_NKEY_SEED with t.Setenv (grantedClient, jetStreamGrantedClient),
+// which panics the process beside t.Parallel, so none of them is parallel, nor is any test of
+// another file that calls those helpers (dispatch://INFRA-1075).
+
 import (
 	"context"
 	"errors"
@@ -77,7 +81,7 @@ func TestPublishReportsACorePublishNATSDenies(t *testing.T) {
 	if err := client.Publish(roleEnvelope(grantedRole)); err != nil {
 		t.Fatalf("granted publish after a denial returned %v", err)
 	}
-	if _, err := received.NextMsg(5 * time.Second); err != nil {
+	if _, err := received.NextMsg(busWait); err != nil {
 		t.Fatalf("granted publish was not delivered: %v", err)
 	}
 }
@@ -157,7 +161,7 @@ func TestAWindowRequestReportsAForwardNATSDenies(t *testing.T) {
 		if !errors.Is(err, bus.ErrPublishDenied) || errors.Is(err, bus.ErrNotAcknowledged) {
 			t.Fatalf("denied Request answered %v, want ErrPublishDenied", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("the denied Request was never answered")
 	}
 	if elapsed := time.Since(started); elapsed >= 2*time.Second {
@@ -219,7 +223,7 @@ func TestCoreSubOKIsFalseWhileTheServerRefusesTheResentSubscription(t *testing.T
 	}
 
 	server.Restart(t, testnats.SubscribeGrantConfig(public, "_INBOX.>"))
-	waitFor(t, 30*time.Second, "CoreSubOK to read the restarted server's refusal of the re-sent subscription", func() bool {
+	waitFor(t, busWait, "CoreSubOK to read the restarted server's refusal of the re-sent subscription", func() bool {
 		return client.Connected() && !client.CoreSubOK()
 	})
 	if !held.IsValid() {
@@ -230,7 +234,7 @@ func TestCoreSubOKIsFalseWhileTheServerRefusesTheResentSubscription(t *testing.T
 	}
 
 	server.Restart(t, granted)
-	waitFor(t, 30*time.Second, "CoreSubOK once a server that grants the subscription has it again", func() bool {
+	waitFor(t, busWait, "CoreSubOK once a server that grants the subscription has it again", func() bool {
 		return client.Connected() && client.CoreSubOK()
 	})
 	// The flush returns once the server has handled every protocol line the client sent before it,
@@ -254,7 +258,7 @@ func TestCoreSubOKIsFalseWhileTheServerRefusesTheResentSubscription(t *testing.T
 		if got != topic {
 			t.Fatalf("the subscription received %s, want %s", got, topic)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("the subscription the server granted again received nothing")
 	}
 	if !client.CoreSubOK() {
@@ -296,7 +300,7 @@ func TestCoreSubOKIsFalseOnceAReloadRevokesTheSubscription(t *testing.T) {
 	if err := server.Reload(t, testnats.SubscribeGrantConfig(public, "_INBOX.>")); err != nil {
 		t.Fatalf("reload without the grant: %v", err)
 	}
-	waitFor(t, 30*time.Second, "CoreSubOK to read the reload's revocation of the subscription", func() bool {
+	waitFor(t, busWait, "CoreSubOK to read the reload's revocation of the subscription", func() bool {
 		return !client.CoreSubOK()
 	})
 	if !client.Connected() {
@@ -314,7 +318,7 @@ func TestCoreSubOKIsFalseOnceAReloadRevokesTheSubscription(t *testing.T) {
 	}
 
 	server.Restart(t, granted)
-	waitFor(t, 30*time.Second, "CoreSubOK once a restarted server that grants the subscription has it again", func() bool {
+	waitFor(t, busWait, "CoreSubOK once a restarted server that grants the subscription has it again", func() bool {
 		return client.Connected() && client.CoreSubOK()
 	})
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // holdingListener is a fake Envoy listener that holds the first send of every idempotency key
@@ -143,11 +144,18 @@ var sweepRoutes = map[string]sweepRoute{
 // drops if the first frame did land; a second pass sends nothing more, and the dead sender's late
 // outcome changes nothing.
 func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
+	t.Parallel()
 	for name, route := range sweepRoutes {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			listener := newHoldingListener(t)
+			// The listener client's window outlasts any run of the test binary, so the held send
+			// ends when the test releases it (listener.release), never at the window: a try the
+			// window ended while the attempt was still the sender's would be settled by the sender
+			// itself, and the sweep below would have nothing to resend, however slow the steps
+			// between the send and the lapse of its claim.
 			handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-				envoyURL: listener.url, envoyTimeout: time.Minute,
+				envoyURL: listener.url, envoyTimeout: testwait.PastTheRun,
 			})
 			// The lease of a run that died is not renewed again; this test ages it itself.
 			served.requestKeyRenewal = time.Hour
@@ -187,7 +195,7 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 			var key string
 			select {
 			case key = <-listener.started:
-			case <-time.After(10 * time.Second):
+			case <-time.After(concurrentWait):
 				t.Fatal("the write never sent its attempt")
 			}
 			owner, _, _ := strings.Cut(key, ":")
@@ -267,11 +275,13 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 // connection while a mention is still being sent leaves that send to finish, and its attempt
 // settles as what the listener answered rather than as cut off or pending.
 func TestACommentsMentionFinishesWhenItsClientGivesUp(t *testing.T) {
+	t.Parallel()
 	for name, path := range map[string]func(issue, document string) string{
 		"an issue comment":   sweepRoutes["a comment's mention"].path,
 		"a document comment": sweepRoutes["a document comment's mention"].path,
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			sending, proceed := make(chan struct{}), make(chan struct{})
 			letProceed := sync.OnceFunc(func() { close(proceed) })
 			var once sync.Once
@@ -319,7 +329,7 @@ func TestACommentsMentionFinishesWhenItsClientGivesUp(t *testing.T) {
 			<-sending
 			abort()
 			letProceed()
-			deadline := time.Now().Add(10 * time.Second)
+			deadline := time.Now().Add(concurrentWait)
 			var state string
 			for time.Now().Before(deadline) {
 				if err := database.Pool.QueryRow(context.Background(),
@@ -334,7 +344,13 @@ func TestACommentsMentionFinishesWhenItsClientGivesUp(t *testing.T) {
 			server.Close()
 			served.detached.wait()
 			if state != "sent" || len(keysOf(sends)) != 1 {
-				t.Fatalf("the mention's attempt is %q after %d sends, want it sent once though the client gave up", state, len(keysOf(sends)))
+				var commentID string
+				if err := database.Pool.QueryRow(context.Background(),
+					`select coalesce(min(comment_id::text), '') from comment_deliveries`).Scan(&commentID); err != nil {
+					t.Fatal(err)
+				}
+				t.Fatalf("the mention's attempt is %q after %d sends, want it sent once though the client gave up; attempts: %s",
+					state, len(keysOf(sends)), describeAttempts(commentAttempts(t, database, commentID)))
 			}
 		})
 	}
@@ -344,6 +360,7 @@ func TestACommentsMentionFinishesWhenItsClientGivesUp(t *testing.T) {
 // later retry overtook, one opened inside the last minute that its writer has not claimed yet, and
 // one past the window a repeat is recognised in are each left alone.
 func TestTheDeliverySweepLeavesWhatIsNotOwed(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	author, err := json.Marshal(model.Actor{Kind: "user", ID: "alice"})
@@ -383,14 +400,15 @@ func TestTheDeliverySweepLeavesWhatIsNotOwed(t *testing.T) {
 		t.Fatal(err)
 	}
 	if keys := keysOf(sends); !equalStrings(keys, []string{owed + ":steer"}) {
-		t.Fatalf("the sweep sent %v, want only the owed %s (live %s, overtaken %s, unclaimed %s, old %s)",
-			keys, owed, live, overtaken, unclaimed, old)
+		t.Fatalf("the sweep sent %v, want only the owed %s (live %s, overtaken %s, unclaimed %s, old %s); the owed attempts: %s",
+			keys, owed, live, overtaken, unclaimed, old, describeAttempts(messageAttempts(t, database, owed)))
 	}
 }
 
 // The maintenance loop's pass is what runs the sweep: started as cmd/dispatch starts it, with the
 // server's resume, it sends what a dead process owed without anybody asking.
 func TestTheMaintenanceLoopResumesOwedDeliveries(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	author, err := json.Marshal(model.Actor{Kind: "user", ID: "alice"})
@@ -422,7 +440,7 @@ func TestTheMaintenanceLoopResumesOwedDeliveries(t *testing.T) {
 	<-done
 	served.detached.wait()
 	if keys := keysOf(sends); !equalStrings(keys, []string{id + ":steer"}) {
-		t.Fatalf("the loop sent %v, want the owed attempt of %s", keys, id)
+		t.Fatalf("the loop sent %v, want the owed attempt of %s; attempts: %s", keys, id, describeAttempts(messageAttempts(t, database, id)))
 	}
 }
 
@@ -568,6 +586,7 @@ func (rig sweepRig) strandMentionAttempts(rows pgx.Rows, ago string, mentioned b
 // worth and one more of each cause, all older than the closed issue's three sendable attempts. A
 // second pass changes nothing.
 func TestTheDeliverySweepSettlesWhatItCannotSend(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	rig := sweepRig{t: t, database: database}
@@ -655,8 +674,10 @@ func TestTheDeliverySweepSettlesWhatItCannotSend(t *testing.T) {
 			t.Fatalf("sweep pass %d: %v", pass+1, err)
 		}
 		if keys := keysOf(sends); !slices.Equal(keys, want) {
-			t.Fatalf("after sweep pass %d the listener was sent %v, want the comment's first send and the closed issue's three attempts %v",
-				pass+1, keys, want)
+			t.Fatalf("after sweep pass %d the listener was sent %v, want the comment's first send and the closed issue's three attempts %v; "+
+				"the closed issue's attempts: mention %s; message %s; keyed send %s",
+				pass+1, keys, want, describeAttempts(commentAttempts(t, database, closedMention)),
+				describeAttempts(messageAttempts(t, database, closedMessage)), describeAttempts(messageAttempts(t, database, closedKeyed)))
 		}
 		if got := settled(); !maps.Equal(got, wantSettled) {
 			t.Fatalf("after sweep pass %d: %v, want %v", pass+1, got, wantSettled)
@@ -683,7 +704,9 @@ func TestTheDeliverySweepSettlesWhatItCannotSend(t *testing.T) {
 // retry's to answer, and its sender settles it superseded once its own send has landed
 // (supersedeOvertakenAttempts); a message's is left as it stands.
 func TestTheDeliverySweepSendsTheAttemptItFoundOwed(t *testing.T) {
+	t.Parallel()
 	t.Run("a comment's mention", func(t *testing.T) {
+		t.Parallel()
 		listener, sends := newBroadcastListener(t, agentSessions)
 		handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 		rig := sweepRig{t: t, database: database}
@@ -720,18 +743,20 @@ func TestTheDeliverySweepSendsTheAttemptItFoundOwed(t *testing.T) {
 		want := slices.Concat(before, []string{comment + ":session:s1:steer"})
 		slices.Sort(want)
 		if keys := keysOf(sends); !equalStrings(keys, want) {
-			t.Fatalf("the sweep sent %v after the comment's own send, want %v: the retry's attempt alone", keys, want)
+			t.Fatalf("the sweep sent %v after the comment's own send, want %v: the retry's attempt alone; attempts: %s",
+				keys, want, describeAttempts(commentAttempts(t, database, comment)))
 		}
 		if states := rig.count(`
 			select count(*) from comment_deliveries
 			where comment_id = $1 and ((attempt, state) = (2, 'sent')
 			  or (attempt, state, error) = (1, 'failed', $2))
 		`, comment, mentionSupersededError); states != 2 {
-			t.Fatalf("after the sweep the attempts are not the retry's sent and the one it overtook " +
-				"settled superseded by it")
+			t.Fatalf("after the sweep the attempts are not the retry's sent and the one it overtook "+
+				"settled superseded by it: %s", describeAttempts(commentAttempts(t, database, comment)))
 		}
 	})
 	t.Run("a message", func(t *testing.T) {
+		t.Parallel()
 		listener, sends := newBroadcastListener(t, agentSessions)
 		handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 		rig := sweepRig{t: t, database: database}
@@ -754,13 +779,15 @@ func TestTheDeliverySweepSendsTheAttemptItFoundOwed(t *testing.T) {
 			t.Fatal(err)
 		}
 		if targets := sends.targets(); !slices.Equal(targets, []string{"s2"}) {
-			t.Fatalf("the sweep sent to %v, want the retry's attempt to s2 alone", targets)
+			t.Fatalf("the sweep sent to %v, want the retry's attempt to s2 alone; attempts: %s",
+				targets, describeAttempts(messageAttempts(t, database, message)))
 		}
 		if states := rig.count(`
 			select count(*) from message_deliveries
 			where message_id = $1 and (attempt, state) in ((1, 'pending'), (2, 'sent'))
 		`, message); states != 2 {
-			t.Fatalf("after the sweep the attempts are not the first pending and the retry's sent")
+			t.Fatalf("after the sweep the attempts are not the first pending and the retry's sent: %s",
+				describeAttempts(messageAttempts(t, database, message)))
 		}
 	})
 }
@@ -772,6 +799,7 @@ func TestTheDeliverySweepSendsTheAttemptItFoundOwed(t *testing.T) {
 // whatever its indexes: the assertion is that the index serves the query, as the custom plan a
 // statement's first runs get and as the generic plan Postgres may cache for it afterwards.
 func TestTheSweepsKeyedSendReadUsesItsPartialIndex(t *testing.T) {
+	t.Parallel()
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)

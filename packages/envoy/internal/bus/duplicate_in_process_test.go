@@ -19,6 +19,7 @@ import (
 // mapping sendStored makes fails it. No real cluster gives the code on demand, so the answer is
 // the server's own APIError value.
 func TestAPublishWhoseMessageIDIsStillInProcessIsNamedErrDuplicateInProcess(t *testing.T) {
+	t.Parallel()
 	inProcess := &nats.APIError{Code: 409, ErrorCode: 10158, Description: "duplicate message id is in process"}
 	full := &nats.APIError{Code: 503, ErrorCode: jsStreamStoreFailed, Description: maxBytesExceeded}
 	for _, row := range []struct {

@@ -87,7 +87,7 @@ func newGrantGuardRig(t *testing.T) *grantGuardRig {
 func (r *grantGuardRig) scheduled(t *testing.T) *kvwatchtest.Wait {
 	t.Helper()
 	var wait *kvwatchtest.Wait
-	waitFor(t, 10*time.Second, "the role claim watcher to arm its scheduled read", func() bool {
+	waitFor(t, listenerWait, "the role claim watcher to arm its scheduled read", func() bool {
 		wait = r.reads.Armed()
 		return wait != nil
 	})
@@ -101,7 +101,7 @@ func (r *grantGuardRig) repair(t *testing.T) store.RoleClaimRepairReport {
 	fired := r.scheduled(t)
 	before := r.deps.registry.RoleClaimRepair()
 	fired.Fire()
-	waitFor(t, 10*time.Second, "the fired scheduled read of the role claims to complete", func() bool {
+	waitFor(t, listenerWait, "the fired scheduled read of the role claims to complete", func() bool {
 		next := r.reads.Armed()
 		return next != nil && next != fired && r.deps.registry.RoleClaimRepair().Completed > before.Completed
 	})
@@ -144,7 +144,7 @@ func claimThrough(t *testing.T, set http.Handler, sessionID, role, instance stri
 // storedRoleClaim is role's claim as registry's role bucket holds it now.
 func storedRoleClaim(t *testing.T, registry *store.Registry, role string) store.RoleClaim {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	claim, err := registry.RoleClaim(ctx, role)
 	if err != nil {
@@ -168,7 +168,7 @@ func (r *grantGuardRig) seed(t *testing.T, holder, role string) store.RoleClaim 
 	if recorder := r.claim(t, holder, role, holdingProcess); recorder.Code != http.StatusOK {
 		t.Fatalf("the seed claim of %s by %s: status %d %s, want 200", role, holdingProcess, recorder.Code, recorder.Body.String())
 	}
-	waitFor(t, 10*time.Second, fmt.Sprintf("%s's claim to reach the role claim copy", role), func() bool {
+	waitFor(t, listenerWait, fmt.Sprintf("%s's claim to reach the role claim copy", role), func() bool {
 		held, err := r.deps.registry.RolesHeldBy(holder)
 		return err == nil && slices.Contains(held, role)
 	})

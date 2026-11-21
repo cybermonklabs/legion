@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  When a closed issue's document was settled twice in quick succession, the second settlement,
+  which had nothing to settle, no longer forgets who edited the document while the issue was
+  closed. After the reopen, an ask that person reworded while the issue was closed is updated in
+  their name, and its edit notifies as a person's edit does, where it was credited to the system's
+  document settlement and notified no one.

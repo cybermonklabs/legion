@@ -19,10 +19,13 @@ import (
 // list that holds none is the defect an earlier fix closed (a meaning statement with no bound of
 // its own), and a test that quietly added its own bound would pass on a server that holds none.
 //
-// Swapping a package-level statement is safe only because no test in internal/dispatch/api calls
-// t.Parallel, so no other test's meaning query can read the shortened list before the cleanup
-// puts it back; a test added here that does call t.Parallel breaks these. It is the same seam,
-// under the same constraint, as the claim path's (issue_claim_test.go).
+// Swapping a package-level statement is safe because the tests that swap it are serial (neither
+// caller below calls t.Parallel, nor does TestMeaningScanRollsBackWhenASettingFails, which swaps
+// it by hand), and a package's parallel tests start only once every serial top-level test has
+// returned, so no other test's meaning query can read the shortened list before the cleanup puts
+// it back; a test that swaps it and calls t.Parallel breaks that. The claim path's stand-in walk
+// is no such swap: it is a field of one server (server.legionStatusSQL), which a parallel test
+// may set.
 //
 // The shortened bound alone does not end a meaning statement. On a test database of a few rows
 // the statement itself executes in well under a millisecond (0.14 to 0.53 ms measured on Postgres
@@ -95,6 +98,7 @@ func holdMeaningStatements(t *testing.T, database *store.Store) (release func())
 //
 // The bound is local to the transaction, so the connection goes back to the pool without it.
 func TestMeaningScanAppliesTheServersBoundToItsTransaction(t *testing.T) {
+	t.Parallel()
 	_, database, deps := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	tx, err := directServer(deps).beginMeaningScan(ctx)
@@ -142,6 +146,8 @@ func TestMeaningScanAppliesTheServersBoundToItsTransaction(t *testing.T) {
 // It reads the error's text too. The Go side no longer names which setting failed, since there
 // is one Exec to name; Postgres's own message still does, and that is what the server logs.
 func TestMeaningScanRollsBackWhenASettingFails(t *testing.T) {
+	// Serial: this test swaps process-wide state. It replaces searchMeaningScan, a package
+	// variable every meaning query in the process reads.
 	_, database, deps := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	healthy := searchMeaningScan
@@ -177,6 +183,8 @@ func TestMeaningScanRollsBackWhenASettingFails(t *testing.T) {
 // statement would wait for that lock until the test binary's deadline guard fails the case by
 // name.
 func TestSearchReportsAMeaningStatementTheServerEnded(t *testing.T) {
+	// Serial: this test swaps process-wide state. endMeaningStatementsAt shortens
+	// searchMeaningScan, a package variable every meaning query in the process reads.
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
 		issueEmbeddingText(title, spec): angledVector(0.9, 2),
@@ -227,6 +235,8 @@ func TestSearchReportsAMeaningStatementTheServerEnded(t *testing.T) {
 // thing, so the keyword stage has the item to fall back on and the meaning stage has a reason
 // to be running at all.
 func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing.T) {
+	// Serial: this test swaps process-wide state. endMeaningStatementsAt shortens
+	// searchMeaningScan, a package variable every meaning query in the process reads.
 	const title, spec = "Nightly backups overrun their window", "The backup job runs past six in the morning."
 	const text = "Nightly snapshots finish late"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{

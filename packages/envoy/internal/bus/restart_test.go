@@ -1,5 +1,9 @@
 package bus_test
 
+// Every test here that calls captureBusLogs (below) captures the default slog handler, a
+// process-wide swap, so none of those is parallel, nor is any test of another file that calls it
+// (dispatch://INFRA-1075).
+
 import (
 	"context"
 	"encoding/json"
@@ -23,6 +27,7 @@ import (
 // place rather than closing, so a JetStream handle taken from it before the restart is still bound
 // to a live connection afterwards.
 func TestAServerRestartKeepsJetStreamStateTakenFromTheConnection(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -40,9 +45,9 @@ func TestAServerRestartKeepsJetStreamStateTakenFromTheConnection(t *testing.T) {
 
 	srv.Stop(t)
 	srv.Start(t)
-	waitFor(t, 30*time.Second, "the client to reconnect", client.Connected)
+	waitFor(t, busWait, "the client to reconnect", client.Connected)
 	var putErr error
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(busWait)
 	for time.Now().Before(deadline) {
 		if _, putErr = kv.Put("key", []byte("value")); putErr == nil {
 			return
@@ -56,6 +61,8 @@ func TestAServerRestartKeepsJetStreamStateTakenFromTheConnection(t *testing.T) {
 // callers treat an error as not delivered (a role-lane forward as delivery_failed, a webhook as a
 // 500 for the sender to retry), so a copy held and sent after reconnecting would arrive twice.
 func TestAPublishThatFailedWhileReconnectingIsNeverSent(t *testing.T) {
+	// Serial: its assertion is a quiet window (the failed publish must not arrive in the 2 s after
+	// the reconnect).
 	srv, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -64,7 +71,7 @@ func TestAPublishThatFailedWhileReconnectingIsNeverSent(t *testing.T) {
 	t.Cleanup(client.Close)
 
 	srv.Stop(t)
-	waitFor(t, 15*time.Second, "the client to notice the server is gone", func() bool { return !client.Connected() })
+	waitFor(t, busWait, "the client to notice the server is gone", func() bool { return !client.Connected() })
 	item := contracts.Envelope{
 		EventID:       "evt-publish-while-reconnecting",
 		Source:        "agent",
@@ -87,7 +94,7 @@ func TestAPublishThatFailedWhileReconnectingIsNeverSent(t *testing.T) {
 	if err := observer.Flush(); err != nil {
 		t.Fatalf("flush subscription: %v", err)
 	}
-	waitFor(t, 30*time.Second, "the client to reconnect", client.Connected)
+	waitFor(t, busWait, "the client to reconnect", client.Connected)
 	select {
 	case message := <-received:
 		t.Fatalf("the publish that failed was sent after the reconnect: %s", message.Data)
@@ -99,6 +106,8 @@ func TestAPublishThatFailedWhileReconnectingIsNeverSent(t *testing.T) {
 // rather than failing at once: a webhook that gets an error answers 503, and the sender does not
 // redeliver, so a failure fast enough to beat a one-second NATS restart loses the event.
 func TestAPublishWhileReconnectingWaitsForTheReconnect(t *testing.T) {
+	// Serial: its assertion is a time (a publish rides out a one-second restart inside its 5 s
+	// publishBound).
 	srv, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -107,7 +116,7 @@ func TestAPublishWhileReconnectingWaitsForTheReconnect(t *testing.T) {
 	t.Cleanup(client.Close)
 
 	srv.Stop(t)
-	waitFor(t, 15*time.Second, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
+	waitFor(t, busWait, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
 	restarted := make(chan struct{})
 	go func() {
 		defer close(restarted)
@@ -144,11 +153,8 @@ func TestAReconnectDuringDrainClosesQuietly(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	started := make(chan struct{}, 1)
-	if _, err := client.SubscribeCore("notifications.role.reconnect-during-drain", func(*natsgo.Msg) {
-		started <- struct{}{}
-		time.Sleep(20 * time.Second)
-	}, "reconnect-during-drain"); err != nil {
+	hold, started := heldDelivery(t)
+	if _, err := client.SubscribeCore("notifications.role.reconnect-during-drain", hold, "reconnect-during-drain"); err != nil {
 		t.Fatalf("role subscribe: %v", err)
 	}
 	if err := client.Conn.Publish("notifications.role.reconnect-during-drain", nil); err != nil {
@@ -156,7 +162,7 @@ func TestAReconnectDuringDrainClosesQuietly(t *testing.T) {
 	}
 	select {
 	case <-started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("the delivery never reached its handler")
 	}
 
@@ -292,7 +298,7 @@ func TestAReconnectInPlaceKeepsTheSubscriptionsNATSRestored(t *testing.T) {
 	srv.Start(t)
 	select {
 	case <-reconnected:
-	case <-time.After(30 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("the reconnect never finished restoring the subscriptions")
 	}
 	if !durable.IsValid() || !role.IsValid() {
@@ -303,7 +309,7 @@ func TestAReconnectInPlaceKeepsTheSubscriptionsNATSRestored(t *testing.T) {
 	// until the stream acknowledges it. The message id makes a retry after a late acknowledgement
 	// a duplicate the stream drops, so the stream holds the message once either way.
 	var publishErr error
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(busWait)
 	for time.Now().Before(deadline) {
 		if _, publishErr = client.JS().Publish("notifications.github.test.in-place-reconnect", []byte(`{}`), natsgo.MsgId("in-place-reconnect")); publishErr == nil {
 			break
@@ -316,7 +322,7 @@ func TestAReconnectInPlaceKeepsTheSubscriptionsNATSRestored(t *testing.T) {
 	if err := client.Conn.Publish(roleSubject, []byte(`{}`)); err != nil {
 		t.Fatalf("publish to the role lane: %v", err)
 	}
-	waitFor(t, 10*time.Second, "both deliveries after the restart", func() bool {
+	waitFor(t, busWait, "both deliveries after the restart", func() bool {
 		return durableDeliveries.Load() >= 1 && roleDeliveries.Load() >= 1
 	})
 	time.Sleep(time.Second)
@@ -377,13 +383,13 @@ func TestAReconnectHookFailureIsReportedByItsStallUnlessTheClientStopped(t *test
 			srv.Start(t)
 			select {
 			case <-hooked:
-			case <-time.After(30 * time.Second):
+			case <-time.After(busWait):
 				t.Fatal("the reconnect never ran its hook")
 			}
 			if !tc.stop {
 				const retried = "envoy nats reconnect hook failed; it is retried"
 				const uncovered = "envoy nats reconnect hooks have not succeeded"
-				waitFor(t, 15*time.Second, "the failed run reported at WARN", func() bool {
+				waitFor(t, busWait, "the failed run reported at WARN", func() bool {
 					return logs.lineAt("WARN", retried) != ""
 				})
 				if line := logs.lineAt("WARN", retried); !strings.Contains(line, "connection closed") {
@@ -396,7 +402,7 @@ func TestAReconnectHookFailureIsReportedByItsStallUnlessTheClientStopped(t *test
 				// them again with backoff, up to 30 s between attempts, so the ERROR comes with the
 				// next run rather than at once.
 				clock.Advance(bus.RepairGrace)
-				waitFor(t, 40*time.Second, "the uncovered hooks reported at ERROR past bus.RepairGrace", func() bool {
+				waitFor(t, busWait, "the uncovered hooks reported at ERROR past bus.RepairGrace", func() bool {
 					return logs.lineAt("ERROR", uncovered) != ""
 				})
 				if line := logs.lineAt("ERROR", uncovered); !strings.Contains(line, "connection closed") {
@@ -404,7 +410,7 @@ func TestAReconnectHookFailureIsReportedByItsStallUnlessTheClientStopped(t *test
 				}
 				return
 			}
-			deadline := time.Now().Add(5 * time.Second)
+			deadline := time.Now().Add(busWait)
 			for time.Now().Before(deadline) && !strings.Contains(logs.String(), "reconnect hooks cancelled") && logs.errorLine() == "" {
 				time.Sleep(50 * time.Millisecond)
 			}

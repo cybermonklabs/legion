@@ -2167,6 +2167,7 @@ func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 // twice. An account BROKER_EXCHANGE_ACCOUNTS lists too is refused naming both settings, and the
 // setting needs the cluster issuer and the exchange audience, whose tokens its pods present.
 func TestLoadReadsTheExchangeReadAccounts(t *testing.T) {
+	t.Parallel()
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
 		t.Fatal(err)
@@ -2474,6 +2475,7 @@ func signInOffEnv() map[string]string {
 // holding no sign-in client, which is the broker a deployment runs while how its people sign in
 // is not settled.
 func TestLoadStartsABrokerWithSignInOff(t *testing.T) {
+	t.Parallel()
 	cfg, err := Load(env(signInOffEnv()))
 	if err != nil {
 		t.Fatalf("Load(BROKER_SIGNIN=off, no sign-in setting) = %v, want a broker that starts", err)
@@ -2488,6 +2490,7 @@ func TestLoadStartsABrokerWithSignInOff(t *testing.T) {
 // and a broker with sign-in off builds no page, so without this one it would start on an ftp://
 // URL and name endpoints in its metadata that no client of its own can call.
 func TestLoadRefusesAPublicURLThatIsNotHTTP(t *testing.T) {
+	t.Parallel()
 	for name, base := range map[string]func() map[string]string{"sign-in on": validEnv, "sign-in off": signInOffEnv} {
 		for _, bad := range []string{"ftp://secrets.internal.example", "ws://secrets.internal.example", "unix://secrets.internal.example"} {
 			e := base()
@@ -2510,6 +2513,7 @@ func TestLoadRefusesAPublicURLThatIsNotHTTP(t *testing.T) {
 // or with no scheme, word for word: the http(s) rule is a check of its own, and it does not
 // reword the one a deployment already reads.
 func TestLoadKeepsMainsPublicURLRefusal(t *testing.T) {
+	t.Parallel()
 	for _, bad := range []string{"https://secrets.internal.example/broker", "secrets.internal.example"} {
 		e := validEnv()
 		e["BROKER_PUBLIC_URL"] = bad
@@ -2525,6 +2529,7 @@ func TestLoadKeepsMainsPublicURLRefusal(t *testing.T) {
 // main's Load did, since main refused the scheme only later, in approval.New. The scheme check is
 // Load's last, so every refusal main's Load gave comes first, as it did.
 func TestLoadRefusesTheSignInBeforeThePublicURLsScheme(t *testing.T) {
+	t.Parallel()
 	e := validEnv()
 	e["BROKER_PUBLIC_URL"] = "ftp://secrets.internal.example"
 	delete(e, "BROKER_SIGNIN_DOMAIN")
@@ -2539,6 +2544,7 @@ func TestLoadRefusesTheSignInBeforeThePublicURLsScheme(t *testing.T) {
 // production broker that lost its sign-in settings must not come up without its approval page.
 // An empty BROKER_SIGNIN is the switch unset.
 func TestLoadWithTheSwitchUnsetRefusesAnEmptySignIn(t *testing.T) {
+	t.Parallel()
 	const want = "the broker's approval page needs BROKER_SIGNIN_ISSUER, BROKER_SIGNIN_CLIENT_ID, BROKER_SIGNIN_CLIENT_SECRET_FILE, BROKER_SIGNIN_DOMAIN; missing BROKER_SIGNIN_ISSUER, BROKER_SIGNIN_CLIENT_ID, BROKER_SIGNIN_CLIENT_SECRET_FILE, BROKER_SIGNIN_DOMAIN"
 	for name, value := range map[string]*string{"unset": nil, "empty": new("")} {
 		e := signInOffEnv()
@@ -2556,6 +2562,7 @@ func TestLoadWithTheSwitchUnsetRefusesAnEmptySignIn(t *testing.T) {
 // another: off beside any BROKER_SIGNIN_* setting the broker reads refuses, naming the switch and
 // every such setting that is set, rather than choosing one of the two for the operator.
 func TestLoadRefusesSignInOffBesideASignInSetting(t *testing.T) {
+	t.Parallel()
 	values := map[string]string{
 		"BROKER_SIGNIN_ISSUER":             "https://accounts.example.com",
 		"BROKER_SIGNIN_CLIENT_ID":          "broker-client",
@@ -2584,6 +2591,7 @@ func TestLoadRefusesSignInOffBesideASignInSetting(t *testing.T) {
 // person, and with sign-in off no request waits, so a judge beside off would never run; the
 // broker refuses the pair as it refuses any setting that configures nothing.
 func TestLoadRefusesSignInOffBesideTheJudge(t *testing.T) {
+	t.Parallel()
 	e := judgeEnv()
 	for _, name := range signInSettings {
 		delete(e, name)
@@ -2600,6 +2608,7 @@ func TestLoadRefusesSignInOffBesideTheJudge(t *testing.T) {
 // whether the sign-in settings are there or not, so a misspelled off never starts a broker
 // whose sign-in the operator thought they had turned off, nor one they thought they had kept.
 func TestLoadRefusesAnySignInSwitchButOff(t *testing.T) {
+	t.Parallel()
 	for _, bad := range []string{"OFF", "Off", " off", "off ", "disabled", "false", "0", "no", "none", "on", "true"} {
 		for name, e := range map[string]map[string]string{"beside the sign-in settings": validEnv(), "with none": signInOffEnv()} {
 			e["BROKER_SIGNIN"] = bad

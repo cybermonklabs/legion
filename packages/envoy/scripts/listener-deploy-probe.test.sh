@@ -3,8 +3,11 @@
 # code over two fake listener tasks: one Python process per case that serves 127.0.0.1 and
 # 127.0.0.2 on one port the kernel chose, and a fake getent on PATH that resolves probe.test to
 # both, three ticks a run. The name itself resolves nowhere for curl, so every run also lists
-# probe.test as unreached, which names it without failing the run. Cases (l) to (n) run the probe
-# until a signal to its whole process group stops it.
+# probe.test as unreached, which names it without failing the run. A fake sleep on the same PATH
+# returns at once from the probe's wait between ticks: what each case reads is the per-tick lines,
+# the summary and the exit code of three ticks, never how far apart in time those ticks fell, and
+# a fake task answers by how many /v1 requests it has had, not by the clock. Cases (l) to (n) run
+# the probe until a signal to its whole process group stops it.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -49,6 +52,15 @@ printf '%s\n' '127.0.0.1       STREAM probe.test' '127.0.0.1       DGRAM' '127.0
   '127.0.0.2       STREAM' '127.0.0.2       DGRAM' '127.0.0.2       RAW'
 EOF
 chmod +x "${fake_bin_dir}/getent"
+
+# The fake sleep: the probe waits out the rest of each tick's interval with it (its only sleep), so
+# the ticks of a case follow one another as fast as its requests are answered. Every case here
+# reads what the probe printed and the status it exited with, neither of which the spacing decides.
+cat >"${fake_bin_dir}/sleep" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "${fake_bin_dir}/sleep"
 
 # The probe's sleep between ticks in cases (l) to (n), on its PATH there alone: it writes its PID to
 # $PROBE_SLEEP_MARK, so the case knows the probe is in that sleep, and then becomes the real sleep.

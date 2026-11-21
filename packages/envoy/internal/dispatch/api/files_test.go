@@ -63,6 +63,7 @@ func versionRow(t *testing.T, database *store.Store, artifactID string, number i
 }
 
 func TestUploadsGoToTheFileStoreAndAreServedFromIt(t *testing.T) {
+	t.Parallel()
 	memory := filestest.NewMemory()
 	handler, database, _ := newTestServer(t, testServerOptions{files: memory})
 	issue := fileIssue(t, handler)
@@ -117,6 +118,7 @@ func TestUploadsGoToTheFileStoreAndAreServedFromIt(t *testing.T) {
 // without asking again, privately since the route is authenticated; a document version is the
 // document's JSON read and says nothing of the kind.
 func TestAFileVersionIsCachedForeverAndADocumentVersionIsNot(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory()})
 	issue := fileIssue(t, handler)
 	if upload := multipartRequest(t, handler, "/api/v1/issues/"+issue+"/artifacts", map[string]string{"name": "shot.png"}, "shot.png", "image/png", []byte("png bytes"), "alice"); upload.Code != http.StatusCreated {
@@ -137,6 +139,7 @@ func TestAFileVersionIsCachedForeverAndADocumentVersionIsNot(t *testing.T) {
 }
 
 func TestAnUploadTheStoreRefusesLeavesNoVersionBehind(t *testing.T) {
+	t.Parallel()
 	memory := filestest.NewMemory()
 	memory.SetFailure(errors.New("bucket unreachable"))
 	handler, database, _ := newTestServer(t, testServerOptions{files: memory})
@@ -159,6 +162,7 @@ func TestAnUploadTheStoreRefusesLeavesNoVersionBehind(t *testing.T) {
 }
 
 func TestARowStillHoldingItsBytesIsServedFromTheRow(t *testing.T) {
+	t.Parallel()
 	// An upload made before the store existed keeps its bytes in the row; the store configured
 	// later holds nothing for it, and the route serves the row.
 	handler, database, _ := newTestServer(t, testServerOptions{})
@@ -192,6 +196,7 @@ func TestARowStillHoldingItsBytesIsServedFromTheRow(t *testing.T) {
 }
 
 func TestAClearedRowIsAnsweredByWhatTheStoreSays(t *testing.T) {
+	t.Parallel()
 	memory := filestest.NewMemory()
 	handler, database, _ := newTestServer(t, testServerOptions{files: memory})
 	issue := fileIssue(t, handler)
@@ -247,6 +252,9 @@ func TestAClearedRowIsAnsweredByWhatTheStoreSays(t *testing.T) {
 // bucket, so the bucketless process serves it. A live process with a bucket, or a bucketless one
 // whose row has lapsed, leaves the bytes in the bucket alone.
 func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
+	// No t.Parallel: the process a row inserts reads as live for only 15 s
+	// (processes.LiveWindow), and in the two rows that keep the bytes the upload must find it live,
+	// a span below concurrentWait.
 	for _, tc := range []struct {
 		name, insert string
 		keepsBytes   bool
@@ -257,6 +265,9 @@ func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
 		{"lapsed bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, heartbeat_at) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, now() - interval '1 hour')`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// No t.Parallel: the process this row inserts reads as live for only 15 s
+			// (processes.LiveWindow), and where it keeps the bytes the upload must find it live, a
+			// span below concurrentWait.
 			memory := filestest.NewMemory()
 			handler, database, _ := newTestServer(t, testServerOptions{files: memory})
 			issue := fileIssue(t, handler)
@@ -320,13 +331,15 @@ func (h heldPut) Put(ctx context.Context, sha, mime string, body []byte) error {
 // cannot name is reported as a failure rather than a hang.
 const uploadLockProbeWindow = 20 * time.Second
 
-// issueOwnerLockKey is the pg_locks predicate for an issue's owner lock (store.LockOwner): a
-// two-key advisory lock, the owner namespace as its classid and the hashtext of the owner's lock
-// key as its objid, both read as the unsigned 32-bit values that view carries. The two keys are
-// passed in from store rather than spelled again here (store.OwnerLockNamespace,
-// store.Owner.LockKey), so a change to either reaches this read instead of leaving it looking for
-// a lock nothing takes any more.
+// issueOwnerLockKey is the pg_locks predicate for an issue's owner lock (store.LockOwner) in this
+// test's database: a two-key advisory lock, the owner namespace as its classid and the hashtext of
+// the owner's lock key as its objid, both read as the unsigned 32-bit values that view carries.
+// pg_locks lists every database's locks, and a test of another database holding its own issue of
+// the same key would be named as this one's holder. The two keys are passed in from store rather
+// than spelled again here (store.OwnerLockNamespace, store.Owner.LockKey), so a change to either
+// reaches this read instead of leaving it looking for a lock nothing takes any more.
 const issueOwnerLockKey = `l.locktype = 'advisory' and l.objsubid = 2
+			and l.database = (select oid from pg_database where datname = current_database())
 			and l.classid = ($2::bigint & 4294967295)::oid
 			and l.objid = (hashtext($1)::bigint & 4294967295)::oid`
 
@@ -507,10 +520,11 @@ func TestTheUploadLockProbeNamesAnUploadsOwnTransaction(t *testing.T) {
 // holder of the lock (readIssueOwnerLockHolder) and logs it, so a run that waited names the
 // writer it waited for, and a holder sitting on the statement an upload's transaction makes
 // under that lock fails the test there (uploadLockProbe.uploadHoldsTheLock), where retrying
-// could only spend the window. Most runs are refused nothing and log nothing: the settlement
+// could only spend concurrentWait. Most runs are refused nothing and log nothing: the settlement
 // usually commits while fileIssue's own request is still answering, before there is an upload to
 // hold anything.
 func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
+	t.Parallel()
 	held := heldPut{Memory: filestest.NewMemory(), entered: make(chan struct{}), release: make(chan struct{})}
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(held.release) }) }
@@ -558,12 +572,12 @@ func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
 	case response := <-uploaded:
 		t.Fatalf("the upload answered without writing to the store: status=%d body=%s", response.Code, response.Body.String())
 	}
-	probe := probeIssueOwnerLock(t, database, issue, uploadLockProbeWindow)
+	probe := probeIssueOwnerLock(t, database, issue, concurrentWait)
 	if holding := probe.uploadHoldsTheLock(); holding != "" {
 		t.Fatal(holding)
 	}
 	if !probe.took {
-		t.Fatalf("take the issue's owner lock while its upload's bytes are in flight, over %s of attempts; the first refusal read %s", uploadLockProbeWindow, probe.heldBy())
+		t.Fatalf("take the issue's owner lock while its upload's bytes are in flight, over %s of attempts; the first refusal read %s", concurrentWait, probe.heldBy())
 	}
 	release()
 	if response := <-uploaded; response.Code != http.StatusCreated {
@@ -591,6 +605,7 @@ func (s tampered) Get(ctx context.Context, sha string) (*files.Object, error) {
 // response is cut short of its Content-Length, which a client reports. Over a real connection,
 // since the cut is the connection's.
 func TestATamperedObjectIsNotDeliveredWhole(t *testing.T) {
+	t.Parallel()
 	original := bytes.Repeat([]byte("o"), 300_000)
 	replaced := append(bytes.Repeat([]byte("o"), 299_999), 'x')
 	store := tampered{Store: filestest.NewMemory(), sha: files.SHA256(original), bytes: replaced}

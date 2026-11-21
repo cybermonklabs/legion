@@ -19,6 +19,7 @@ import (
 // matches, wildcards included, with the concrete subject, body and stored time; past the last one
 // it is nats.ErrMsgNotFound, and with no stream nats.ErrStreamNotFound.
 func TestNextStoredMessageReadsByFilterAfterASequence(t *testing.T) {
+	t.Parallel()
 	client, err := ConnectOwningStream([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -35,29 +36,36 @@ func TestNextStoredMessageReadsByFilterAfterASequence(t *testing.T) {
 	}
 	publish("notifications.dispatch.issue.KEY-1.ask.opened", `{"n":1}`)
 	publish("notifications.agent.ses_a", `{"n":2}`)
+	// The stored time is bracketed by the clock read before this publish and the one after the
+	// read below, not held to a span since the publish that the steps between must beat.
+	published := time.Now()
 	third := publish("notifications.dispatch.issue.KEY-1.ask.answered", `{"n":3}`)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// Each read is bounded on its own at busWait, so a slow one leaves the next no less.
+	read := func(subject string, seq uint64) (StoredMessage, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), busWait)
+		defer cancel()
+		return client.NextStoredMessage(ctx, subject, seq)
+	}
 
-	stored, err := client.NextStoredMessage(ctx, "notifications.dispatch.issue.KEY-1.>", 2)
+	stored, err := read("notifications.dispatch.issue.KEY-1.>", 2)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
 	if stored.Sequence != third || stored.Subject != "notifications.dispatch.issue.KEY-1.ask.answered" || string(stored.Data) != `{"n":3}` {
 		t.Fatalf("stored = %+v, want seq %d on the answered subject with its body", stored, third)
 	}
-	if time.Since(stored.Time) > time.Minute || stored.Time.After(time.Now()) {
-		t.Fatalf("stored time %s is not when it was stored", stored.Time)
+	if stored.Time.Before(published) || stored.Time.After(time.Now()) {
+		t.Fatalf("stored time %s is not when it was stored, at or after %s", stored.Time, published)
 	}
 
-	if _, err := client.NextStoredMessage(ctx, "notifications.dispatch.issue.KEY-1.>", third+1); !errors.Is(err, nats.ErrMsgNotFound) {
+	if _, err := read("notifications.dispatch.issue.KEY-1.>", third+1); !errors.Is(err, nats.ErrMsgNotFound) {
 		t.Fatalf("read past the last message = %v, want nats.ErrMsgNotFound", err)
 	}
 
 	if err := js.DeleteStream(Stream); err != nil {
 		t.Fatalf("delete the stream: %v", err)
 	}
-	if _, err := client.NextStoredMessage(ctx, "notifications.agent.ses_a", 1); !errors.Is(err, nats.ErrStreamNotFound) {
+	if _, err := read("notifications.agent.ses_a", 1); !errors.Is(err, nats.ErrStreamNotFound) {
 		t.Fatalf("read without the stream = %v, want nats.ErrStreamNotFound", err)
 	}
 }
@@ -104,7 +112,7 @@ func TestARequestCoreCarriesItsHeaderAndReadsTheThreeAnswers(t *testing.T) {
 		t.Fatalf("flush the subscriptions: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), busWait)
 	defer cancel()
 	reply := SessionReplySubject(nats.NewInbox(), "ses_answers")
 	if _, err := client.RequestCore(ctx, DeliverSubject("ses_answers"), reply, probeHeader); err != nil {
@@ -148,7 +156,7 @@ func TestARequestCoreAllocatesNoSubscriptionChannelOfTheDefaultSize(t *testing.T
 	const requests = 64
 	perRequest := func(request func(ctx context.Context) error) uint64 {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), busWait)
 		defer cancel()
 		if err := request(ctx); err != nil {
 			t.Fatalf("warm-up request: %v", err)
@@ -182,6 +190,7 @@ func TestARequestCoreAllocatesNoSubscriptionChannelOfTheDefaultSize(t *testing.T
 }
 
 func TestSubjectContainsFollowsNATSWildcards(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		pattern, subject string
 		want             bool
@@ -210,6 +219,7 @@ func TestSubjectContainsFollowsNATSWildcards(t *testing.T) {
 }
 
 func TestCheckFilterSubjectRefusesWhatNATSCannotFilterOn(t *testing.T) {
+	t.Parallel()
 	for subject, refused := range map[string]bool{
 		"notifications.dispatch.issue.KEY-1.>": false,
 		"notifications.*.ses_a":                false,
@@ -267,6 +277,7 @@ func TestControllerNoticeRolePairsALaneWithItsRoleToken(t *testing.T) {
 // by both on the next test run and neither can drift from a hand copy. Each case is a session id,
 // a topic, the roles that session holds and the answer.
 func TestReachesPrivateStreamSubjectBoundsInterests(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile(filepath.Join("testdata", "private-stream-subjects.json"))
 	if err != nil {
 		t.Fatalf("read the shared cases: %v", err)

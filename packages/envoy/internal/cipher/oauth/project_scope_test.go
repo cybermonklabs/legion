@@ -27,6 +27,7 @@ import (
 // stops it from falling back to the person scope as the switch did before the none scope
 // existed.
 func TestEveryProjectScopeIsWrittenAsItsOwnWordAndNoOtherIsWritten(t *testing.T) {
+	t.Parallel()
 	const project, stale = "ACME", "STALE"
 	for _, c := range []struct {
 		name    string
@@ -40,6 +41,7 @@ func TestEveryProjectScopeIsWrittenAsItsOwnWordAndNoOtherIsWritten(t *testing.T)
 		{name: "none", scope: exchange.ProjectScopeNone, word: oauthwire.ProjectScopeNone, granted: []string{oauthwire.ScopeRead}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			session := oauthstore.NewExchangeSession()
 			session.Extra[ClaimProjects] = stale
 			session.Extra[claimLegacyProject] = stale
@@ -71,6 +73,7 @@ func TestEveryProjectScopeIsWrittenAsItsOwnWordAndNoOtherIsWritten(t *testing.T)
 	}
 	for _, scope := range []exchange.ProjectScope{exchange.ProjectScopeUnset, exchange.ProjectScope(99)} {
 		t.Run(fmt.Sprintf("unknown %d", int(scope)), func(t *testing.T) {
+			t.Parallel()
 			session := oauthstore.NewExchangeSession()
 			request := &oauth2.Request{Session: session}
 			err := writeProjectScope(request, session, exchange.Claims{Scope: scope, Projects: []string{project}})

@@ -122,7 +122,7 @@ func TestASocketOpenReadsTheIssueAndTheCallerOnce(t *testing.T) {
 	for _, open := range []string{"a cold open", "a warm open"} {
 		since := counter.mark()
 		peer := docstest.Dial(t, url, header, room, crdt.New())
-		scope, err := peer.Authenticate(schemaVersion, 10*time.Second)
+		scope, err := peer.Authenticate(schemaVersion, concurrentWait)
 		if err != nil || scope != "read-write" {
 			t.Fatalf("%s: the socket is authenticated %q (%v), want read-write", open, scope, err)
 		}

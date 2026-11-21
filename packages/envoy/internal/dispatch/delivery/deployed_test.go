@@ -157,6 +157,7 @@ func requireDeployedEvent(t *testing.T, ctx context.Context, pool *store.Pool, i
 // event while no deploy has shipped it: with no deploy run at all, with one created before its
 // merge, and with a failed one created after it.
 func TestDeployedEventWaitsForAShippingRun(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	seedDeployedIssues(t, ctx, pool)
@@ -240,6 +241,7 @@ func TestDeployedEventIsWrittenOncePerPullRequest(t *testing.T) {
 // run listing, as TestReconcileCatchesAMissedDeployRun) ships a pull request stored earlier, and
 // the same pass writes the issue's event.
 func TestReconcileWritesTheDeployedEvent(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedDeployedIssues(t, ctx, pool)
@@ -275,6 +277,7 @@ func TestReconcileWritesTheDeployedEvent(t *testing.T) {
 // durable hands it over) stores the run and its jobs, and the same envelope ends with the issue's
 // event. The envelope names only the run; its facts come from GitHub, as intake.go requires.
 func TestIntakeWritesTheDeployedEvent(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	seedDeployedIssues(t, ctx, pool)

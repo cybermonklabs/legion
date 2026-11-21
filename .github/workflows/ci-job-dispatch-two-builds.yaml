@@ -46,7 +46,23 @@ env:
 jobs:
   dispatch-two-builds:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Both numbers take the largest reading there is of them (dispatch://INFRA-1075, check
+    # 6224bb0e). The -timeout's reading is main's: this job's green runs in the merge groups of
+    # #2461, which added it, and of #3180, the change that landed next, both of the job as #2461
+    # wrote it. The step's -timeout is the smallest whole minute at which its one package takes
+    # at most half of it: cmd/dispatch under the twobuild tag, 526.292 s (merge-group run
+    # 43679411000, job 132706600704, at d7dce730; run 43677717022, job 132701468085, at 76bff46e,
+    # read 489.363 s), 526.292 / 30 = 17.54, so 18m, which it fills to 48.7 per cent (17m it would
+    # fill to 51.6). No green run of the job on this branch read more: its largest is 472.589 s
+    # (run 43797411630, job 133069317386, at da325bf0). The floor
+    # above that rule is horizontest.Drain, 30 s (internal/dispatch/horizontest/horizontest.go, Drain),
+    # which cmd/dispatch's event-feed waits (waitEventsStart, live_events_wait_test.go) leave of
+    # the test binary's deadline, and 18m leaves 553.7 s above that reading. This tree changed
+    # the job's service, so the job's own bound follows its slowest green run on this branch,
+    # 965 s (run 43788835709, job 133042485821, at b5b69524), 16.08 minutes, plus that -timeout
+    # plus 6: 16.08 + 18 + 6 = 40.08, so 41; main's two runs took 878 s and 781 s. The limit must
+    # fire before the runner cancels the job, so a hung test prints the dump that names it.
+    timeout-minutes: 41
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -54,11 +70,16 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # The settings these tests need, as the server's own command line, so it starts with them
+        # and no step has to restart it; envoy-go's own service says what each of them buys and
+        # why this container can do without durability (dispatch://INFRA-1075). The harness clones
+        # a database a test here too, and a clone and its drop are what force the checkpoints.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
         options: >-
           --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
+          --health-interval 1s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 50
     env:
       # The Go half's database. The browser half runs on a Postgres of its own, which the harness
       # starts per step (e2e/harness-postgres.ts) from the same image digest the service runs, so
@@ -113,6 +134,10 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
+      # The settings the service's command: asks for, read back from the server itself; envoy-go's
+      # own read-back step says why a command is worth reading back.
+      - name: Read the disposable service's settings back
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
       - uses: ./.github/actions/setup-bun
       # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).
       - run: bun install --frozen-lockfile
@@ -176,7 +201,7 @@ jobs:
           DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh twobuild ./cmd/dispatch)
-          go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
+          go test -tags twobuild -count=1 -timeout 18m -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
       # dispatch-browser.yaml's shard job's step of this name, for the reason
       # .github/ci-notes/dispatch-browser.md#why-every-job-that-runs-the-suite-builds-contracts-first
@@ -298,11 +323,14 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # The same settings as the job above's service, as the server's own command line, so
+        # every Postgres service of the router runs without durability (dispatch://INFRA-1075).
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
         options: >-
           --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
+          --health-interval 1s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 50
     env:
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
@@ -337,6 +365,10 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
+      # The settings the service's command: asks for, read back from the server itself; envoy-go's
+      # own read-back step says why a command is worth reading back.
+      - name: Read the disposable service's settings back
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
       - uses: ./.github/actions/setup-bun
       # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).
       - run: bun install --frozen-lockfile

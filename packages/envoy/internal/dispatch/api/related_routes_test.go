@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -29,12 +31,33 @@ func relatedWrites(t *testing.T, database *store.Store) map[string]int {
 	return counts
 }
 
-// expectNothingWritten fails when any count relatedWrites reads moved from before.
+// expectNothingWritten fails when any count relatedWrites reads moved from before, and names the
+// related_checks and write_suggestions rows written since: a create before the read records its
+// check behind its answer and again on a retry when the first attempt runs past its 1 s bound
+// (retryRecord, suggestions.go), so a row whose source is an issue the test created earlier is
+// that record landing late, and not the no-write route writing.
 func expectNothingWritten(t *testing.T, database *store.Store, before map[string]int) {
 	t.Helper()
-	if after := relatedWrites(t, database); fmt.Sprint(after) != fmt.Sprint(before) {
-		t.Fatalf("row counts went from %v to %v, want the no-write route to write nothing", before, after)
+	after := relatedWrites(t, database)
+	if fmt.Sprint(after) == fmt.Sprint(before) {
+		return
 	}
+	var written []string
+	for _, table := range []string{"related_checks", "write_suggestions"} {
+		rows, err := database.Pool.Query(context.Background(), `
+			select source_kind || ' of ' || coalesce(source_issue_key, 'no issue') || ' at ' || created_at::text
+			from `+table+` order by created_at desc limit $1`, max(after[table]-before[table], 0))
+		if err != nil {
+			t.Fatalf("read the newest %s rows: %v", table, err)
+		}
+		newest, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read the newest %s rows: %v", table, err)
+		}
+		written = append(written, fmt.Sprintf("%s wrote %q", table, newest))
+	}
+	t.Fatalf("row counts went from %v to %v, want the no-write route to write nothing; the rows written since, newest first: %s",
+		before, after, strings.Join(written, "; "))
 }
 
 // getRelated GETs the no-write route with params, failing unless it answers 200.
@@ -58,6 +81,7 @@ func relatedOwners(suggestions testSuggestions) []string {
 // A title through GET finds the item holding its rare words and none of the thirty sharing only
 // a common one, and the check leaves no row behind.
 func TestRelatedRouteGetWithATitleFindsTheRareWordMatchAndWritesNothing(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "RGET")
 	for index := range 30 {
@@ -80,6 +104,7 @@ func TestRelatedRouteGetWithATitleFindsTheRareWordMatchAndWritesNothing(t *testi
 // A spec longer than a URL may carry goes through POST, is checked whole (the rare words sit at
 // its end) and writes nothing; the same text through GET is over the search cap.
 func TestRelatedRoutePostChecksALongSpec(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "RPOST")
 	target := createSearchIssue(t, handler, "RPOST", "Brewing records", "Our zymurgy fermentation log.")
@@ -112,6 +137,7 @@ func TestRelatedRoutePostChecksALongSpec(t *testing.T) {
 // the items; another issue holding the words is still listed. An issue that is not the project's
 // is refused.
 func TestRelatedRouteExcludeIssueLeavesItsOwnItemsOut(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "REXCL")
 	createSuggestionProject(t, handler, "ROTHER")
@@ -123,18 +149,19 @@ func TestRelatedRouteExcludeIssueLeavesItsOwnItemsOut(t *testing.T) {
 	before := relatedWrites(t, database)
 
 	params := url.Values{"title": {"Zymurgy ledger"}}
-	if owners := relatedOwners(getRelated(t, handler, "REXCL", params)); !slices.Contains(owners, excluded) {
-		t.Fatalf("related owners without exclude_issue = %v, want %s among them", owners, excluded)
+	if unfiltered := getRelated(t, handler, "REXCL", params); !slices.Contains(relatedOwners(unfiltered), excluded) {
+		t.Fatalf("related owners without exclude_issue = %v, want %s among them; suggestions = %s",
+			relatedOwners(unfiltered), excluded, asJSON(t, unfiltered))
 	}
 	params.Set("exclude_issue", excluded)
 	suggestions := getRelated(t, handler, "REXCL", params)
 	for _, item := range suggestions.Related {
 		if item.Owner.Key == excluded || item.ID == excluded {
-			t.Fatalf("related = %+v, want nothing of %s", suggestions.Related, excluded)
+			t.Fatalf("suggestions = %s, want nothing of %s", asJSON(t, suggestions), excluded)
 		}
 	}
 	if !slices.Contains(relatedOwners(suggestions), other) {
-		t.Fatalf("related owners = %v, want %s", relatedOwners(suggestions), other)
+		t.Fatalf("related owners = %v, want %s; suggestions = %s", relatedOwners(suggestions), other, asJSON(t, suggestions))
 	}
 	expectNothingWritten(t, database, before)
 
@@ -151,6 +178,7 @@ func TestRelatedRouteExcludeIssueLeavesItsOwnItemsOut(t *testing.T) {
 // keywords_only skips the meaning search a configured embedder would otherwise answer: the result
 // says it searched by keywords only because that was asked for, and the text is never embedded.
 func TestRelatedRouteKeywordsOnlySkipsMeaning(t *testing.T) {
+	t.Parallel()
 	const title, text = "Nightly backups overrun their window", "Nightly snapshots finish late"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
 		issueEmbeddingText(title, ""): angledVector(0.9, 2),
@@ -190,6 +218,7 @@ func TestRelatedRouteKeywordsOnlySkipsMeaning(t *testing.T) {
 // The bare path, as the deployment's production check GETs it, answers 200 with a check not made
 // for a blank text; an unknown project is 404 as on every {key} route.
 func TestRelatedRouteBareGetIsNotMadeAndAnUnknownProjectIs404(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "RBARE")
 	createSearchIssue(t, handler, "RBARE", "Zymurgy ledger drifts", "")
@@ -278,6 +307,7 @@ func sameTiming(got, want model.RelatedCheckTiming) bool {
 // project and source kind filters narrow it. A check whose request ended first (cancelled) is
 // neither completed nor skipped for time.
 func TestRelatedChecksRouteCountsAndPercentilesOverTheWindow(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "REC")
 	createSuggestionProject(t, handler, "RECB")
@@ -363,6 +393,7 @@ func TestRelatedChecksRouteCountsAndPercentilesOverTheWindow(t *testing.T) {
 // A source kind the table does not hold, or a bound that is not a time or ends the window before
 // it starts, is refused.
 func TestRelatedChecksRouteRefusesABadFilter(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	for _, query := range []string{
 		"source_kind=comment",

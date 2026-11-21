@@ -93,7 +93,7 @@ func (r *roleClaimRelaunchRig) send(method, target, body string) *httptest.Respo
 // stored is the role's claim as the bucket holds it now.
 func (r *roleClaimRelaunchRig) stored() store.RoleClaim {
 	r.t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	claim, err := r.deps.registry.RoleClaim(ctx, r.role)
 	if err != nil {

@@ -66,14 +66,23 @@ var (
 	sharedCleanup *sharedTB
 )
 
-// firstAccounts is how many accounts the shared server starts with. Every time a test asks for
+// FirstAccounts is how many accounts the shared server starts with. Every time a test asks for
 // one past them, the server doubles them by a reload: a server's start time grows faster than its
 // account count (0.9 s for 1,000 on a loaded devbox, 26 s for 5,000). The reload's wait,
 // connectTimeout, caps that growth: at half a CPU, doubling 4,096 accounts took 36 s and 65 s in
-// two measurements, so the test that asks for account 4,097 fails. A package run takes one account
-// for each test and subtest that asks (103 for cmd/listener, 64 for internal/store), so -count=40
-// of cmd/listener in one binary reaches the ceiling.
-const firstAccounts = 256
+// two measurements, so the test that asks for account 4,097 fails.
+//
+// A package whose tests run in parallel sets this above its own demand from its TestMain, before
+// the first URL call, because a reload while another test's client is on the server is a data
+// race inside nats-server: ReloadOptions writes the server's options (server.go:1224) while a
+// client's goroutine reads them (stream.go:6365), which the race detector reports against
+// whichever test is running (run 43640601453, job 132587189318). A package run takes one account
+// for each test and subtest that asks: at this head 519 for cmd/listener, which sets it, 224 for
+// internal/store, 112 for internal/bus and under 100 for each of the six others. A repeat run
+// (-count=N) takes N times as many, because a test's account is freed for its cleanup's delete
+// and never handed out again, so such a run doubles the pool and can meet that race; a package's
+// own CI run, at -count=1, does not.
+var FirstAccounts = 256
 
 // init runs in every test binary that imports this package, whichever helper its tests use. Every
 // server these helpers start has no users unless a test configures some, and nats.go refuses an
@@ -89,8 +98,20 @@ func init() {
 // started it, and returns the exit code. A package whose tests use URL calls it from TestMain:
 // os.Exit(testnats.Main(m)).
 func Main(m *testing.M) int {
+	return MainWith(m, func(m *testing.M) int { return m.Run() })
+}
+
+// MainWith is Main for a package whose tests need another harness's Main as well: it runs the
+// package's tests through run - storetest.Main, which hands out the Postgres databases and drops
+// them after - and shuts the shared NATS server down once run returns. A package whose tests use
+// URL and a Dispatch database calls it from TestMain:
+// os.Exit(testnats.MainWith(m, storetest.Main)).
+//
+// Only one harness can own m.Run, and both harnesses' cleanups must run after it; this is how a
+// package gets both, in place of a server of its own per test (internal/dispatch/redeliver).
+func MainWith(m *testing.M, run func(*testing.M) int) int {
 	mainRuns = true
-	code := m.Run()
+	code := run(m)
 	if sharedCleanup != nil {
 		sharedCleanup.run()
 		if sharedCleanup.failed && code == 0 {
@@ -106,6 +127,15 @@ func Main(m *testing.M) int {
 // often it asks, so every connection it makes reaches the same streams; each subtest is a test of
 // its own and gets its own account, since subtests that each delete and recreate one name in a
 // shared account would race as tests did on a shared server.
+// A test that gives a stream a byte limit (MaxBytes) takes a server of its own (Start) instead:
+// that limit is the server's reservation, not the account's. nats-server adds it to the one
+// jetStream.storeReserved of the whole server when the stream is created and subtracts it when the
+// stream is deleted (reserveStreamResources and releaseStreamResources), so a test that leaves a
+// limit on a shared server takes room from every account's stream creates there. Under
+// nats-server v2.10.29 it was also a data race, which the race detector reported against
+// whichever test was running: the limits check of every other stream create read that field
+// holding the account's lock alone. v2.15.1, which go.mod pins, reads it under the jetStream lock
+// that guards its writes (server/stream.go:939-944, server/jetstream_api.go:4339-4347).
 // When the test ends, its account's streams are deleted to free their storage; nothing creates a
 // stream in that account again, so a delete that leaves files behind reaches no test.
 func URL(t testing.TB) string {
@@ -115,7 +145,7 @@ func URL(t testing.TB) string {
 	}
 	sharedOnce.Do(func() {
 		sharedCleanup = &sharedTB{TB: t}
-		shared = startAccountServer(sharedCleanup, firstAccounts)
+		shared = startAccountServer(sharedCleanup, FirstAccounts)
 	})
 	if shared == nil {
 		t.Fatal("testnats: the package's shared NATS server did not start; the test that first asked for it reports why")
@@ -190,15 +220,17 @@ func (s *accountServer) url(t testing.TB) string {
 	s.handedOut++
 	account := s.handedOut
 	uri := fmt.Sprintf("nats://t%d:t%d@%s", account, account, s.host)
-	// Wait for the account to answer, after the start or the reload that declared it.
-	Connect(t, uri).Close()
+	// Wait for the account to answer, after the start or the reload that declared it. The
+	// connection is kept for the cleanup's delete rather than closed and dialled again: a
+	// second Connect is another dial, handshake and JetStream round trip per test.
+	conn := Connect(t, uri)
 	name := t.Name()
 	s.holders[name] = uri
 	t.Cleanup(func() {
 		s.mu.Lock()
 		delete(s.holders, name)
 		s.mu.Unlock()
-		deleteStreams(t, uri)
+		deleteStreams(t, conn)
 	})
 	return uri
 }
@@ -215,10 +247,13 @@ func accountsConfig(n int) string {
 	return config.String()
 }
 
-// deleteStreams deletes every stream in the account uri names, as its test ends.
-func deleteStreams(t testing.TB, uri string) {
+// deleteStreams deletes every stream in the account conn is connected to, as its test ends, and
+// closes conn. It asks the account for its stream names and nothing else: that one request also
+// answers an account that holds none, so a test that created no stream pays one round trip, the
+// same as a report of the account would have cost, and a test that created some pays no more
+// than its deletes.
+func deleteStreams(t testing.TB, conn *natsgo.Conn) {
 	t.Helper()
-	conn := Connect(t, uri)
 	defer conn.Close()
 	js, err := conn.JetStream()
 	if err != nil {
@@ -845,7 +880,7 @@ func awaitAuth(t testing.TB, uri string, admit bool) {
 	t.Helper()
 	deadline := time.Now().Add(connectTimeout)
 	var err error
-	for time.Now().Before(deadline) {
+	for wait := (backoff{}); time.Now().Before(deadline); wait.next() {
 		var conn *natsgo.Conn
 		conn, err = natsgo.Connect(uri, natsgo.Timeout(dialTimeout), natsgo.NoReconnect())
 		switch {
@@ -861,7 +896,6 @@ func awaitAuth(t testing.TB, uri string, admit bool) {
 			}
 			t.Fatalf("NATS at %s refused a client with no credential: it has no no_auth_user", uri)
 		}
-		time.Sleep(retryInterval)
 	}
 	if admit {
 		t.Fatalf("NATS at %s did not admit a client with no credential within %s: %v", uri, connectTimeout, err)
@@ -893,7 +927,28 @@ const (
 	connectTimeout = 30 * time.Second
 	retryInterval  = 100 * time.Millisecond
 	dialTimeout    = time.Second
+	// retryFirst is the first wait between two tries of a readiness check here, and
+	// retryInterval the longest. A server, an account or JetStream that is not ready at the
+	// first try is usually ready a few milliseconds later, and a fixed retryInterval spends the
+	// whole 100 ms waiting for it: every test of a package that asks for an account pays that
+	// twice, once for the account's own readiness and once for the cleanup's connection. The
+	// wait doubles from retryFirst to retryInterval, so a check that needs longer still costs
+	// one try per interval.
+	retryFirst = 2 * time.Millisecond
 )
+
+// backoff is the wait between two tries of a readiness check: retryFirst, doubling to
+// retryInterval.
+type backoff struct{ wait time.Duration }
+
+// next waits, then lengthens the next wait.
+func (b *backoff) next() {
+	if b.wait == 0 {
+		b.wait = retryFirst
+	}
+	time.Sleep(b.wait)
+	b.wait = min(2*b.wait, retryInterval)
+}
 
 // Connect waits for a test NATS server to accept a real connection and JetStream to answer an
 // operation before returning it. The relay accepts a connection before the server behind it has
@@ -905,12 +960,11 @@ func Connect(t testing.TB, uri string) *natsgo.Conn {
 	deadline := time.Now().Add(connectTimeout)
 	var conn *natsgo.Conn
 	var err error
-	for time.Now().Before(deadline) {
+	for wait := (backoff{}); time.Now().Before(deadline); wait.next() {
 		conn, err = natsgo.Connect(uri, natsgo.Timeout(dialTimeout), natsgo.NoReconnect())
 		if err == nil {
 			break
 		}
-		time.Sleep(retryInterval)
 	}
 	if conn == nil {
 		t.Fatalf("failed to connect to NATS within %s: %v", connectTimeout, err)
@@ -933,11 +987,10 @@ func waitForJetStream(t testing.TB, check func() error) {
 	t.Helper()
 	deadline := time.Now().Add(connectTimeout)
 	var err error
-	for time.Now().Before(deadline) {
+	for wait := (backoff{}); time.Now().Before(deadline); wait.next() {
 		if err = check(); err == nil {
 			return
 		}
-		time.Sleep(retryInterval)
 	}
 	t.Fatalf("JetStream was not ready within %s: %v", connectTimeout, err)
 }

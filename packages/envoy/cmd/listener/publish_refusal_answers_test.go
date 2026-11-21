@@ -53,6 +53,7 @@ func (kv stalledRoleKV) Get(key string) (nats.KeyValueEntry, error) {
 // call ended the request, and answering after it that the resolution waited the call out. A
 // lookup's same case is TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering's.
 func TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget(t *testing.T) {
+	// Serial: its assertion is a time (a 500 ms window after sendRequestBudget).
 	const (
 		role   = "reviewer"
 		holder = "ses_unanswered_holder"
@@ -95,6 +96,8 @@ func TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget(t *tes
 			}
 		}
 		t.Run("publish/"+tc.name, func(t *testing.T) {
+			// Serial: its assertion is a time: the publish answers at sendRequestBudget and inside
+			// within.
 			state := open(t)
 			started := time.Now()
 			recorder, record := serveRecorded(t,
@@ -140,6 +143,8 @@ func TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget(t *tes
 // connected throughout, so nothing but the stalled role-bucket call can end the lookup. A lookup
 // releases nothing, so the claim read is the only role-bucket call it makes.
 func TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering(t *testing.T) {
+	// Serial: its assertion is a time (the lookup answers inside 4 s, and it may spend all of
+	// sendRequestBudget, 3.5 s, on the stalled claim read before it answers).
 	const (
 		role   = "reviewer"
 		holder = "ses_lookup_unanswered_holder"
@@ -153,6 +158,7 @@ func TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering(t *test
 		{name: "the claim read", stallGet: true, unanswered: "read role reviewer's claim: context deadline exceeded"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Serial: its assertion is a time: the lookup answers inside within.
 			client := setupPublishTestClient(t)
 			registry, sessions := setupSessionsTest(t, nil, nil)
 			if _, err := registry.SetRole(holder, "test-machine", role, false); err != nil {
@@ -206,6 +212,7 @@ func TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering(t *test
 // the error is built exactly as confirmPublished builds it and classified by the code the handlers
 // call, so what is pinned is the answer, not the detection.
 func TestADeniedPublishIsRefusedPermanentlyAndNotRecordedAsBusUnavailable(t *testing.T) {
+	t.Parallel()
 	subject := contracts.RoleTopicPrefix + "reviewer"
 	// As internal/bus/confirm.go's confirmPublished names it: ErrPublishDenied around the subject
 	// and the connection's last error, which is nats.go's permissions violation.

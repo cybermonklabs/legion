@@ -41,6 +41,7 @@ func (c *steppedClock) Advance(d time.Duration) {
 // reconnect (afterReconnect) and the recovery's (recoverUntilHealthy). The clock is the client's
 // own (WithReconnectErrClock), which the hook moves past the grace while its run is under way.
 func TestSupersededRunsPastTheRepairGraceRaiseTheStallError(t *testing.T) {
+	// Serial: it captures the default slog handler (captureLogs), a process-wide swap.
 	const (
 		supersededLine = "envoy nats reconnect hooks superseded by a newer connection event"
 		warnLine       = "envoy nats reconnect hook failed; it is retried"
@@ -141,6 +142,7 @@ func TestSupersededRunsPastTheRepairGraceRaiseTheStallError(t *testing.T) {
 // so a hook that failed at once on the connection's loss returns while the context still reads
 // live: the status is what makes that run superseded rather than failed.
 func TestARunWhoseConnectionLeftConnectedIsSuperseded(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	conn, err := nats.Connect(uri, nats.Name(t.Name()), nats.MaxReconnects(-1), nats.ReconnectWait(50*time.Millisecond))
 	if err != nil {
@@ -158,8 +160,8 @@ func TestARunWhoseConnectionLeftConnectedIsSuperseded(t *testing.T) {
 	}
 
 	srv.Stop(t)
-	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool { return conn.Status() == nats.RECONNECTING }) {
-		t.Fatalf("the connection reads %v 10s after its server stopped, want RECONNECTING", conn.Status())
+	if !testwait.Holds(busWait, 10*time.Millisecond, func() bool { return conn.Status() == nats.RECONNECTING }) {
+		t.Fatalf("the connection reads %v %s after its server stopped, want RECONNECTING", conn.Status(), busWait)
 	}
 	err = runSuperseded(context.Background(), conn)
 	if !errors.Is(err, errRunSuperseded) || !errors.Is(err, errRunConnectionLost) {

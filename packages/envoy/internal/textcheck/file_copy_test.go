@@ -17,8 +17,10 @@ import (
 // or in a literal after it (docs/testing.md, "A database a Go test creates"). The check reads every
 // Go file of the module, tests included, since most such statements live in a test's own helper,
 // so a new helper written without the clause, or an edit that drops it, fails here naming its file
-// and line, with no database needed. storetest's own test measures what one clone writes.
+// and line, with no database needed. internal/testpg/pgtemplate's own test measures what one
+// clone writes.
 func TestEveryCreatedDatabaseIsAFileCopy(t *testing.T) {
+	t.Parallel()
 	if offences := creationsWithoutFileCopy(t, "../.."); len(offences) > 0 {
 		t.Fatalf("%d database creations copy their source through the write-ahead log:\n\t%s\n"+
 			"write `strategy file_copy` on the line that opens each one (docs/testing.md, \"A database a Go test creates\")",

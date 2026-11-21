@@ -131,7 +131,7 @@ func (rig goingRoutesRig) streamUnder(t *testing.T, id, token string) *httptest.
 // rendered "<sequence> <name> <data>" as going_test.go renders them.
 func (rig goingRoutesRig) awaitTerminal(t *testing.T, id string) []string {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(concurrentWait)
 	for {
 		stored, _, err := rig.server.readGoingStream(context.Background(), id, 0)
 		if err != nil {
@@ -149,7 +149,7 @@ func (rig goingRoutesRig) awaitTerminal(t *testing.T, id string) []string {
 			return rendered
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the run stored no ending within 10s; it holds %d frames", len(stored))
+			t.Fatalf("the run stored no ending within %s; it holds %d frames", concurrentWait, len(stored))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -452,6 +452,7 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 		var waiting int
 		if err := rig.database.Pool.QueryRow(ctx, `
 			select count(*) from pg_locks where relation = 'going_requests'::regclass and not granted
+			  and database = (select oid from pg_database where datname = current_database())
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("read what is waiting on going_requests: %v", err)
 		}

@@ -55,6 +55,8 @@ func TestIdentityOnAHelperWithoutALauncherCredential(t *testing.T) {
 // helper answers at once instead of holding the launch for the full wait. The launch still execs,
 // warning that the machine is not logged in, what the session's secrets calls do until it is, and
 // the login command. The bound only rules out the 10 s wait.
+// Serial: its assertion is a time. The bound rules out the ten-second wait, and a parallel
+// test's load is what would stretch an at-once answer past it (dispatch://INFRA-985).
 func TestRegisterWaitReturnsAtOnceWithoutALauncherCredential(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	sock := realHelper(t)
@@ -145,6 +147,7 @@ func TestCommandsOnAHelperWithoutALauncherCredentialPrintTheNotice(t *testing.T)
 // own journal line. A helper from before credential_dropped sets login_refused alone, and only for
 // a broker refusal, so that reads as one; with neither, "expired" is a login nobody approved.
 func TestLoginStatusSaysWhyTheHelperDroppedItsCredential(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	for _, tc := range []struct {
 		name    string

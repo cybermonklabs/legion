@@ -11,6 +11,7 @@ import (
 // spent window has always had, which deployed log filters match. The negative control is the same
 // publish and flush with time left, which the server confirms.
 func TestASpentFlushWindowKeepsItsText(t *testing.T) {
+	t.Parallel()
 	client, err := ConnectOwningStream([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -18,7 +19,7 @@ func TestASpentFlushWindowKeepsItsText(t *testing.T) {
 	t.Cleanup(client.Close)
 	const subject = "notifications.team.spent-flush-window"
 	w := client.WindowUntil(nil).(*window)
-	if err := w.pin(publishAcknowledgementTimeout); err != nil {
+	if err := w.pin(busWait); err != nil {
 		t.Fatalf("pin the window's connection: %v", err)
 	}
 	flushWithin := func(deadline time.Time) error {
@@ -29,7 +30,7 @@ func TestASpentFlushWindowKeepsItsText(t *testing.T) {
 		}
 		return confirmFlushed(w.conn, subject, before, deadline)
 	}
-	if err := flushWithin(time.Now().Add(5 * time.Second)); err != nil {
+	if err := flushWithin(time.Now().Add(busWait)); err != nil {
 		t.Fatalf("control: a flush with its window to spend answered %v", err)
 	}
 

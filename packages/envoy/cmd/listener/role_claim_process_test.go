@@ -86,7 +86,7 @@ func (r *roleClaimProcessRig) lookup(role string) *httptest.ResponseRecorder {
 // holdingProcessOf is the process the stored claim names, read from the bucket itself.
 func (r *roleClaimProcessRig) holdingProcessOf(t *testing.T, role string) string {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	claim, err := r.deps.registry.RoleClaim(ctx, role)
 	if err != nil {

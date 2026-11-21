@@ -72,6 +72,9 @@ type lockedBuffer = logtest.Buffer
 // event is marked published instead of backing off forever. A stand-in the bus takes is in
 // event_share_nats_test.go, against a real NATS server, and it is that send that logs the line
 // saying a stand-in went out.
+//
+// Serial: it swaps process-wide state, the default logger it counts its refusal line in
+// (docs/testing.md).
 func TestRunSendsAStandInForARefusedDestinationAndIsDoneOnceThatIsRefusedToo(t *testing.T) {
 	var logged lockedBuffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
@@ -90,7 +93,7 @@ func TestRunSendsAStandInForARefusedDestinationAndIsDoneOnceThatIsRefusedToo(t *
 	deps := withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener})
 	deps.PublishFailures = registry.NewCounter("envoy_dispatch_outbox_publish_failures_total",
 		"Destinations of an outbox publish attempt that did not reach NATS")
-	stop := runDeps(t, deps, time.Second)
+	stop := runDeps(t, deps)
 	defer stop()
 
 	waitFor(t, 7*time.Second, "the event marked published past its refused destination", func() bool {

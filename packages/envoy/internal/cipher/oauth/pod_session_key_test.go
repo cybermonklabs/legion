@@ -46,6 +46,7 @@ func (f *exchangeFixture) podTrade(t *testing.T, session string) url.Values {
 // for B with B's. A trade presenting P's token for B, proved with A's key, is refused
 // invalid_grant naming B; the same trade proved with B's key is admitted, as is A's own with A's.
 func TestASiblingRoleCannotTradeForAnotherRolesSession(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	kA, kB := newKey(t), newKey(t)
 	f.registersBound(t, account, issuePod, roleA, thumbprint(t, kA))
@@ -71,6 +72,8 @@ func TestASiblingRoleCannotTradeForAnotherRolesSession(t *testing.T) {
 // shows this refusal as it shows an expired grant or a registration not yet written. Neither
 // admitted trade logs it, and no line repeats the subject token.
 func TestASiblingRolesRefusedTradeLogsALineOfItsOwn(t *testing.T) {
+	// Serial: it swaps the default logger (capturedLog's slog.SetDefault) to read the refusal's
+	// line back.
 	logs := capturedLog(t)
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	kA, kB := newKey(t), newKey(t)
@@ -111,6 +114,7 @@ func TestASiblingRolesRefusedTradeLogsALineOfItsOwn(t *testing.T) {
 // watch registers a session pod's one session, admits that pod's trade for that session proved
 // with any key, as every registration did before keys were named.
 func TestARegistrationWithNoThumbprintIsPodBound(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	f.registers(t, account, issuePod, roleA)
 	for _, key := range []*ecdsa.PrivateKey{newKey(t), newKey(t)} {

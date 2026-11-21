@@ -113,11 +113,12 @@ func tracedStore(t *testing.T, database *store.Store, tracer pgx.QueryTracer) *s
 	return &store.Store{Pool: pool}
 }
 
-// sendClock is a bus client whose windows record when the first envelope was sent.
+// sendClock is a bus client whose windows report each send's answer to onAnswer as it comes back,
+// before the outbox sees it: a test that must act the moment a send is decided waits on that
+// rather than on a clock of its own.
 type sendClock struct {
 	*bus.Client
-	once  sync.Once
-	first chan struct{}
+	onAnswer func()
 }
 
 func (c *sendClock) WindowUntil(deadline func() time.Time) bus.Sender {
@@ -130,8 +131,14 @@ type sendClockSender struct {
 }
 
 func (s sendClockSender) PublishAsync(item contracts.Envelope) <-chan error {
-	s.clock.once.Do(func() { close(s.clock.first) })
-	return s.Sender.PublishAsync(item)
+	answer := s.Sender.PublishAsync(item)
+	relayed := make(chan error, 1)
+	go func() {
+		err := <-answer
+		s.clock.onAnswer()
+		relayed <- err
+	}()
+	return relayed
 }
 
 // An issue's events each go to its topic family and to session S. S's destination fails for the
@@ -142,12 +149,13 @@ func (s sendClockSender) PublishAsync(item contracts.Envelope) <-chan error {
 // the issue's role, whose first forward fails because the stream, capturing no agent subject,
 // acknowledges nothing of it.
 func TestABackedOffEventHoldsBackOnlyItsDestination(t *testing.T) {
+	t.Parallel()
 	t.Run("a session route the stream does not take", holdsBackASessionRouteTheStreamRefuses)
 	t.Run("a role holder whose forward the stream does not acknowledge", holdsBackARoleHolderWhoseForwardIsNotAcknowledged)
 }
 
 func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
-	_, url := testnats.Start(t)
+	url := testnats.URL(t)
 	client, err := bus.ConnectOwningStream([]string{url})
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
@@ -188,10 +196,43 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 		_, attempts := publishedDestinations(t, database, first.ID)
 		return attempts > 0
 	})
+	// The later events are written while the stream still refuses S's subject, so what holds the
+	// first event back is this row's own doing and not a timer it has to beat: every retry of it
+	// fails for S again, for as long as the subject is refused, exactly as the withheld receipt
+	// holds the first event in the half of this row below.
+	second, third := write("second"), write("third")
+
+	topic := "notifications.dispatch.issue.T-1.message.created"
+	session := contracts.LegacyAgentSubject("S")
+	// The two later events reach the topic family while the first event is still unreached at S:
+	// the back-off holds back its own destination and no other. It is read here, while that hold
+	// is on, and not from where two subjects' copies fell in one stream's sequence afterwards:
+	// the first event's retry falls due on its own back-off, about a second after its failure, so
+	// a run that took longer than that to restore the subject and write these two events saw S's
+	// copy of the first event stored ahead of them and read the owner's order as broken, though
+	// nothing had waited on anything. That is how this row reached a CI red (run 42779139068
+	// attempt 2, dispatch://INFRA-1075).
+	waitFor(t, eventWait, "the later events on the topic family", func() bool {
+		bySubject, _ := streamOrder(t, reader)
+		return slices.Contains(bySubject[topic], second.ID) && slices.Contains(bySubject[topic], third.ID)
+	})
+	for _, event := range []model.Event{first, second, third} {
+		if publishedAt(t, database, event.ID) != nil {
+			t.Fatalf("event %d was published while S's subject was still refused, want it waiting on S", event.ID)
+		}
+	}
+	if bySubject, _ := streamOrder(t, reader); len(bySubject[session]) != 0 {
+		t.Fatalf("S's subject holds %v while the stream refuses it, want nothing", bySubject[session])
+	}
+
+	// S's subject is taken again and the first event is made due, with a wake of its own: an
+	// update of the row notifies nothing, and the outbox's retry timer is armed to the back-off
+	// the refusals grew, which this row would otherwise wait out.
 	if _, err := js.UpdateStream(&capturing); err != nil {
 		t.Fatalf("let the stream capture agent subjects again: %v", err)
 	}
-	second, third := write("second"), write("third")
+	dueNow(t, database, first.ID)
+	broker.Publish(model.Event{})
 
 	waitFor(t, 30*time.Second, "all three events published", func() bool {
 		return publishedAt(t, database, first.ID) != nil && publishedAt(t, database, second.ID) != nil &&
@@ -202,36 +243,13 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 			t.Fatalf("event %d counted %d attempts, want none: it only waited on the first event", event.ID, attempts)
 		}
 	}
-	topic := "notifications.dispatch.issue.T-1.message.created"
-	session := contracts.LegacyAgentSubject("S")
-	order := map[string][]int64{}
-	sequence := map[string]uint64{}
-	stream, err := js.StreamInfo(bus.Stream)
-	if err != nil {
-		t.Fatalf("read the stream: %v", err)
-	}
-	for seq := stream.State.FirstSeq; seq <= stream.State.LastSeq; seq++ {
-		message, err := js.GetMsg(bus.Stream, seq)
-		if err != nil {
-			t.Fatalf("read stream message %d: %v", seq, err)
-		}
-		id := envelopeEventID(t, message.Data)
-		order[message.Subject] = append(order[message.Subject], id)
-		sequence[fmt.Sprintf("%s %d", message.Subject, id)] = seq
-	}
+	bySubject, _ := streamOrder(t, reader)
 	want := []int64{first.ID, second.ID, third.ID}
-	if !slices.Equal(order[topic], want) {
-		t.Fatalf("the topic family holds %v, want %v", order[topic], want)
+	if !slices.Equal(bySubject[topic], want) {
+		t.Fatalf("the topic family holds %v, want %v", bySubject[topic], want)
 	}
-	if !slices.Equal(order[session], want) {
-		t.Fatalf("S's subject holds %v, want %v: each event only after the one before it", order[session], want)
-	}
-	firstAtS := sequence[fmt.Sprintf("%s %d", session, first.ID)]
-	for _, event := range []model.Event{second, third} {
-		if at := sequence[fmt.Sprintf("%s %d", topic, event.ID)]; at > firstAtS {
-			t.Fatalf("event %d reached the topic family at stream sequence %d, after the first event reached S at %d: it waited on S",
-				event.ID, at, firstAtS)
-		}
+	if !slices.Equal(bySubject[session], want) {
+		t.Fatalf("S's subject holds %v, want %v: each event only after the one before it", bySubject[session], want)
 	}
 }
 
@@ -454,7 +472,9 @@ func (r sessionOrderRig) views(t *testing.T, session string) (bySubject map[stri
 // outbox stopped while the first is set not due for an hour, so no retry of it writes a sooner
 // back-off and the batch that reads the second finds the first not due. Then, with the outbox
 // stopped again, both are made due and the stream captures every subject, and an outbox started
-// afresh publishes both in its first scan.
+// afresh publishes both in its first scan. Each outbox after the first takes the hold the one
+// before it released, and would wait out that one's row were the release to fail, so every one
+// takes the hold under production's options (runOutboxUnderProductionsHold), not the rig's day.
 func takesTheOwnersEventsInOrderThroughATopicFailure(t *testing.T, oneBatch bool) {
 	rig := newSessionOrderRig(t)
 	rig.refuse(t, dispatchTopicPrefix)
@@ -464,7 +484,7 @@ func takesTheOwnersEventsInOrderThroughATopicFailure(t *testing.T, oneBatch bool
 	if oneBatch {
 		second = rig.write(t, person, "second, by a person")
 	}
-	stop := runOutbox(t, rig.database, rig.client, rig.broker)
+	stop := runOutboxUnderProductionsHold(t, rig.database, rig.client, rig.broker)
 	defer func() { stop() }()
 	if !oneBatch {
 		waitFor(t, 60*time.Second, "the first event backed off for the topic family", func() bool {
@@ -477,7 +497,7 @@ func takesTheOwnersEventsInOrderThroughATopicFailure(t *testing.T, oneBatch bool
 			t.Fatalf("hold the first event not due: %v", err)
 		}
 		second = rig.write(t, person, "second, by a person")
-		stop = runOutbox(t, rig.database, rig.client, rig.broker)
+		stop = runOutboxUnderProductionsHold(t, rig.database, rig.client, rig.broker)
 	}
 	waitFor(t, 60*time.Second, "a batch settled the second event while the topic family was refused", func() bool {
 		return rig.settled(t, second.ID)
@@ -488,7 +508,7 @@ func takesTheOwnersEventsInOrderThroughATopicFailure(t *testing.T, oneBatch bool
 		t.Fatalf("make both events due: %v", err)
 	}
 	rig.captureAgain(t)
-	stop = runOutbox(t, rig.database, rig.client, rig.broker)
+	stop = runOutboxUnderProductionsHold(t, rig.database, rig.client, rig.broker)
 	waitFor(t, 120*time.Second, "both events published", func() bool {
 		return publishedAt(t, rig.database, first.ID) != nil && publishedAt(t, rig.database, second.ID) != nil
 	})
@@ -727,6 +747,11 @@ func shiftedClock(t *testing.T, database *store.Store) *store.Store {
 // event's next attempt is set on the database's clock, so it is not sent again before then. A
 // connection that is lost instead releases the event with no attempt, and it is sent once NATS is
 // back.
+//
+// Serial: its assertion is a time - in "no responders" the read of the next attempt and the second
+// scan must both fall inside the event's first one-second back-off (retry.BaseDelay), and in "a
+// stream that never answers" the probe after the thaw must answer within probeTimeout (2 s).
+// "a lost connection" measures no span and runs in parallel.
 func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 	seed := func(t *testing.T, database *store.Store) model.Event {
 		t.Helper()
@@ -751,8 +776,10 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 	}
 
 	t.Run("no responders", func(t *testing.T) {
-		_, url := testnats.Start(t)
-		// A client that owns no stream, on a server that has none: no stream captures the subject.
+		// Serial: its assertion is a time - the read of the next attempt and the second scan fall
+		// inside the event's first one-second back-off.
+		url := testnats.URL(t)
+		// A client that owns no stream, in an account that has none: no stream captures the subject.
 		client, err := bus.Connect([]string{url})
 		if err != nil {
 			t.Fatalf("connect: %v", err)
@@ -786,6 +813,7 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 	})
 
 	t.Run("a stream that never answers", func(t *testing.T) {
+		// Serial: its assertion is a time - the probe after the thaw answers within probeTimeout.
 		server, url := testnats.Start(t)
 		client, err := bus.ConnectOwningStream([]string{url})
 		if err != nil {
@@ -794,24 +822,19 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 		t.Cleanup(client.Close)
 		database := storetest.Open(t)
 		event := seed(t, database)
-		clock := &sendClock{Client: client, first: make(chan struct{})}
 		thaw := server.Freeze(t)
-		thawed := make(chan struct{})
-		go func() {
-			defer close(thawed)
-			<-clock.first
-			// Past the five seconds the window waits for an acknowledgement, and well inside
-			// the flush probe that follows, so the connection answers that probe.
-			time.Sleep(5*time.Second + 300*time.Millisecond)
-			thaw()
-		}()
+		// The send's own answer is the thaw's cue: the window gave the acknowledgement up, and the
+		// flush probe that follows has not run yet, so the probe finds the connection answering. A
+		// sleep past the window's five seconds would aim at the same moment by the clock, which a
+		// loaded machine moves.
+		clock := &sendClock{Client: client, onAnswer: sync.OnceFunc(thaw)}
 		holding(t, Deps{Store: database, Publisher: clock}).scan(context.Background(), unfenced{})
-		<-thawed
 		backedOff(t, database, event, bus.ErrNotAcknowledged.Error())
 	})
 
 	t.Run("a lost connection", func(t *testing.T) {
-		_, url := testnats.Start(t)
+		t.Parallel()
+		url := testnats.URL(t)
 		proxy := testnats.StartProxy(t, url)
 		client, err := bus.ConnectOwningStream([]string{proxy.URL()})
 		if err != nil {
@@ -821,7 +844,7 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 		database := storetest.Open(t)
 		event := seed(t, database)
 		proxy.Cut()
-		waitFor(t, 5*time.Second, "the client noticing the cut", func() bool { return !client.Connected() })
+		waitFor(t, eventWait, "the client noticing the cut", func() bool { return !client.Connected() })
 		outbox := holding(t, Deps{Store: database, Publisher: client})
 		outbox.scan(context.Background(), unfenced{})
 		var attempts int
@@ -882,6 +905,7 @@ func (c *countingQueryer) Query(ctx context.Context, sql string, args ...any) (p
 // event, per owner, or once again - fails it. The second issue's events ask a kind the first's
 // ask too (a reply to a message on it), so a read per owner runs that kind's statement twice.
 func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	seedIssue(t, database, "T-1", nil)
@@ -1035,6 +1059,7 @@ func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 // refused half's halves down to that id alone (loadRecipients): at most 2*ceil(log2(n)) more
 // statements for n ids, where a run of each id alone would cost n.
 func TestOneBrokenRowOfARecipientReadCostsTheBatchAboutTwoStatementsPerHalving(t *testing.T) {
+	t.Parallel()
 	const n = 64
 	database := storetest.Open(t)
 	broker := events.NewBroker()
@@ -1092,6 +1117,7 @@ func TestOneBrokenRowOfARecipientReadCostsTheBatchAboutTwoStatementsPerHalving(t
 // An event is written once, when its batch records it: reading the batch writes nothing, so however
 // many destinations it has, a published event costs its row exactly one update.
 func TestAPublishedEventIsWrittenOnce(t *testing.T) {
+	t.Parallel()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	for _, tc := range []struct {
 		destinations int
@@ -1124,6 +1150,7 @@ func TestAPublishedEventIsWrittenOnce(t *testing.T) {
 		}},
 	} {
 		t.Run(fmt.Sprintf("%d destinations", tc.destinations), func(t *testing.T) {
+			t.Parallel()
 			ctx := context.Background()
 			database := storetest.Open(t)
 			broker := events.NewBroker()
@@ -1173,7 +1200,7 @@ func TestAPublishedEventIsWrittenOnce(t *testing.T) {
 					t.Fatalf("event %d reached %v, want %d destinations", event.ID, destinations, tc.destinations)
 				}
 			}
-			waitFor(t, 15*time.Second, "the scan's updates reported", func() bool { return updates()-before >= published })
+			waitFor(t, eventWait, "the scan's updates reported", func() bool { return updates()-before >= published })
 			if written := settled() - before; written != published {
 				t.Fatalf("publishing %d events of %d destinations each updated events %d times, want %d: one write per event",
 					published, tc.destinations, written, published)
@@ -1446,6 +1473,7 @@ func someIDs(ids []int64) string {
 // loops. No one wall-clock bound separates a healthy claim from a broken one on every machine
 // that runs this row, so the row asserts the counts and only logs the time.
 func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
+	t.Parallel()
 	small := measureClaim(t, 5000)
 	big := measureClaim(t, 20000)
 	costs := []claimCost{small, big}
@@ -1502,6 +1530,7 @@ func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
 // destinations its events reached, and the events that reached all of them published - and
 // schedules nothing: no back-off, no attempt, no error, no hold-back.
 func TestARecordFromAProcessThatLostTheHoldWritesNoBackOff(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	broker := events.NewBroker()

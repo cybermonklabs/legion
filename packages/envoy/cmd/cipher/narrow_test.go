@@ -298,6 +298,7 @@ func TestANarrowingTheBrokerAppliedOtherwiseRunsNothing(t *testing.T) {
 // refuses (policy.ParseGitHubNarrowing): the CLI runs that parser itself, so nothing reaches the
 // broker, not even the request a person would approve.
 func TestAGitHubNarrowingTheBrokerWouldRefuseExitsTwo(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	b := newNarrowBroker(t, nil)
 	keyDir := newKeyDir(t)

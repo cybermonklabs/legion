@@ -27,6 +27,9 @@ import (
 // serverDefaultsAnUnsetCap of what the reconnecting connection reports is false, the older
 // server's answer, on a server that caps such a stream.
 func TestAnEnsureHookAcrossAReconnectDecidesNothingOnTheEmptyVersion(t *testing.T) {
+	// Serial: the ensure it starts must read the server version while the connection is still
+	// down, and what puts it there is the 300 ms below, a window a parallel batch's load would
+	// push that read past, failing the row with no defect.
 	server, uri := testnats.Start(t)
 	conn, err := nats.Connect(uri, nats.Name(t.Name()), nats.MaxReconnects(-1), nats.ReconnectWait(50*time.Millisecond))
 	if err != nil {
@@ -98,6 +101,9 @@ func TestAnEnsureHookAcrossAReconnectDecidesNothingOnTheEmptyVersion(t *testing.
 // call after the reconnect stops the server and waits until the connection is down, then reads the
 // version as the client does, so the read sees the second outage every time.
 func TestAFlapRunsTheSecondDisconnectHookAtOnce(t *testing.T) {
+	// Serial: it swaps connectedVersion, the package variable every stream ensure reads the server
+	// version through, and its assertion is a time (the second disconnect hook runs within 2 s of
+	// the second outage).
 	server, uri := testnats.Start(t)
 	client, err := ConnectOwningStream([]string{uri}, WithName(t.Name()))
 	if err != nil {

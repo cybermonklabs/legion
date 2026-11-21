@@ -16,6 +16,11 @@ import (
 // document in memory - for the rest of the binary's run, which is the memory this check exists to
 // catch. The registry holds each service through a weak pointer, so it pins nothing itself: what
 // stays alive stays alive because a test left it so.
+//
+// The registry is read once m.Run has returned (TestMain, persistence_test.go), so it cannot see a
+// service that a finished test's cleanup held through the run: by then the root *testing.T, and
+// every cleanup it reached, are unreachable too, and that service reads as collected. What keeps
+// a cleanup from holding its service that long is cleanupAndRelease (service_test.go).
 
 // leakWaitBudget bounds how long the report waits for the services the tests released to be
 // collected. A service is unreachable the moment its test returns, but it is only reported as

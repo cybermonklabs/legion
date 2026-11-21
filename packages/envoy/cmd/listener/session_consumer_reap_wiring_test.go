@@ -56,7 +56,7 @@ func TestTheSessionReaperAStartedListenerRunsDeletesTheReapedSessionsConsumer(t 
 	if output := listener.Output.String(); !strings.Contains(output, `"session_id":"`+sessionID+`"`) {
 		t.Fatalf("the pass the listener ran names no record of %s:\n%s", sessionID, output)
 	}
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(listenerWait)
 	for {
 		info, err := consumers.Info(ctx, sessionID)
 		if errors.Is(err, bus.ErrSessionConsumerNotFound) {

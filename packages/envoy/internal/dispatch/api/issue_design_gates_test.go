@@ -529,6 +529,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 // the role-holder publish (issue_role_holders.go), whose acceptance found the mix. Twenty rounds,
 // because one round can pass by the order the two happen to run in.
 func TestTwoDesignGatePublishesOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	createAdviceProject(t, handler, "DGATE")
 	issue := createAdviceIssue(t, handler, "DGATE", "Racing publishes", nil).Key

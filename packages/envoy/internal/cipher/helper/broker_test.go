@@ -6,11 +6,13 @@ package helper
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +21,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -120,10 +123,11 @@ type fakeBroker struct {
 	refreshes      int               // refresh grants answered
 	tokens         int               // tokens minted, for unique values
 	// refreshGate, when set, holds every refresh grant until the test closes it, and
-	// refreshArrivals counts every refresh grant on arrival, before the gate, so a test can hold a
-	// refresh in flight for exactly as long as it needs.
+	// refreshArrivals is when each refresh grant arrived, before the gate, so a test can hold a
+	// refresh in flight for exactly as long as it needs, and a failure can say whether a refresh
+	// reached the fake inside the bound the helper put on it.
 	refreshGate     chan struct{}
-	refreshArrivals int
+	refreshArrivals []time.Time
 
 	// refuseRenewNext answers the next N renews 401. renewRefusalCode defaults to
 	// ENROLLMENT_NOT_LIVE, the current broker's terminal renewal verdict; a test names
@@ -416,7 +420,7 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		f.mu.Lock()
 		gate := f.refreshGate
 		if r.PostForm.Get("grant_type") == "refresh_token" {
-			f.refreshArrivals++
+			f.refreshArrivals = append(f.refreshArrivals, time.Now())
 		} else {
 			gate = nil
 		}
@@ -498,16 +502,82 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 	})
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
+	guardAnswers(t, f.srv)
 	return f
+}
+
+// fakeBrokerAnswerWait bounds each call this package's fake brokers answer, from the moment the
+// client sends it to the moment the answer's headers arrive (guardAnswers). Those fakes hold a
+// proof's or a request object's time to their own clock, a minute either way (newFakeBroker's
+// renew verifier and device authorization, enrolBroker.verify), and the helper signs each one
+// just before it sends it, so a call that ends within half that minute never meets the window
+// closed, however loaded the machine. It is no shorter than eventWait, the package's guard for an
+// event.
+const fakeBrokerAnswerWait = 30 * time.Second
+
+// errFakeBrokerAnswerWait is what a call that outlived fakeBrokerAnswerWait fails with.
+var errFakeBrokerAnswerWait = fmt.Errorf("the fake broker gave no answer within fakeBrokerAnswerWait (%s)", fakeBrokerAnswerWait)
+
+// guardAnswers ends every call made through srv's own client, or through a client built on that
+// client's transport, at fakeBrokerAnswerWait, and fails t naming that bound when one ran into
+// it. Every test hands the helper srv.Client() or its transport, so this one place bounds every
+// step between the helper's signature and the fake's check of it.
+func guardAnswers(t *testing.T, srv *httptest.Server) {
+	t.Helper()
+	guard := &answerGuard{base: srv.Client().Transport}
+	srv.Client().Transport = guard
+	t.Cleanup(func() {
+		if guard.fired.Load() {
+			t.Errorf("a call to the fake broker outlived fakeBrokerAnswerWait (%s)", fakeBrokerAnswerWait)
+		}
+	})
+}
+
+// answerGuard is the transport guardAnswers puts on a fake broker's client.
+type answerGuard struct {
+	base  http.RoundTripper
+	fired atomic.Bool
+}
+
+func (g *answerGuard) RoundTrip(req *http.Request) (*http.Response, error) {
+	ctx, cancel := context.WithTimeoutCause(req.Context(), fakeBrokerAnswerWait, errFakeBrokerAnswerWait)
+	resp, err := g.base.RoundTrip(req.WithContext(ctx))
+	if err != nil {
+		if errors.Is(context.Cause(ctx), errFakeBrokerAnswerWait) {
+			g.fired.Store(true)
+			err = fmt.Errorf("%s %s: %w", req.Method, req.URL.Path, errFakeBrokerAnswerWait)
+		}
+		cancel()
+		return nil, err
+	}
+	resp.Body = cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
+}
+
+// CloseIdleConnections passes httptest.Server.Close's call on to the transport answerGuard wraps.
+func (g *answerGuard) CloseIdleConnections() {
+	if c, ok := g.base.(interface{ CloseIdleConnections() }); ok {
+		c.CloseIdleConnections()
+	}
+}
+
+// cancelOnClose ends a guarded call's context once its answer's body is closed.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c cancelOnClose) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+	return err
 }
 
 // writeTokens answers a token grant for credentialID with a fresh access and refresh token and
 // the credential's extras, keeping the refresh token as the one that credential's next refresh
 // spends. With loginLifetime zero it names no expiry. The caller holds f.mu.
 func (f *fakeBroker) writeTokens(w http.ResponseWriter, credentialID string) {
-	f.tokens++
-	refresh := fmt.Sprintf("refresh-%d", f.tokens)
-	f.refreshTokens[refresh] = credentialID
+	refresh := f.mintRefresh(credentialID)
 	answer := map[string]any{
 		"access_token": fmt.Sprintf("access-%d", f.tokens), "token_type": "DPoP", "expires_in": 900,
 		"refresh_token": refresh, "credential_id": credentialID,
@@ -516,6 +586,15 @@ func (f *fakeBroker) writeTokens(w http.ResponseWriter, credentialID string) {
 		answer["credential_expires_at"] = time.Now().Add(f.loginLifetime).UTC().Format(time.RFC3339)
 	}
 	writeJSON(w, 200, answer)
+}
+
+// mintRefresh is the refresh token this fake keeps as the one credentialID's next refresh
+// spends. The caller holds f.mu.
+func (f *fakeBroker) mintRefresh(credentialID string) string {
+	f.tokens++
+	refresh := fmt.Sprintf("refresh-%d", f.tokens)
+	f.refreshTokens[refresh] = credentialID
+	return refresh
 }
 
 // dpopProves reports whether r carries a DPoP proof for POST htu signed by the key whose
@@ -615,28 +694,101 @@ func machineFilePath(t *testing.T) string {
 	return filepath.Join(t.TempDir(), "agent-secrets", "machine.json")
 }
 
-// loggedInBroker builds a Broker against f, logs it in against the fake's default "issued"
-// outcome, and waits for the credential to install, so a test can exercise Enroll/Renew/Revoke
-// without exercising Login itself.
+// loggedInBroker builds a Broker against f and gives it a credential f has issued (installLogin),
+// so a test can exercise Enroll/Renew/Revoke without exercising Login itself.
 func loggedInBroker(t *testing.T, f *fakeBroker, operator string) *Broker {
 	t.Helper()
 	b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, operator), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
-	if _, err := b.Login(context.Background(), "helper-host"); err != nil {
-		t.Fatalf("login: %v", err)
-	}
-	waitFor(t, func() bool { return b.LoginStatus().State == "issued" })
+	installLogin(t, f, b)
 	return b
 }
 
-// waitFor polls cond until it is true or 5s pass, whichever comes first, failing the test on
-// timeout. A login's first token poll comes a second after its device authorization (the
-// interval the fake names).
+// installLogin gives b a launcher credential f issues for a fresh key, kept at b.MachineFile and
+// then installed as an issued login — what an approved login's own keepLogin does, without the
+// device ceremony. That ceremony costs a second whatever the broker and the helper do: RFC 8628
+// names the token-polling interval in whole seconds, the fake names the lowest of them, and
+// oauth2.Config.DeviceAccessToken waits one out before it asks at all. Nearly every test here
+// needs a logged-in helper and almost none has the ceremony for its subject, so that second was
+// the largest single cost of this package (dispatch://INFRA-1075). A test whose subject IS the
+// ceremony — the code a person types, an approval, a denial, an expiry, a re-login — calls
+// Broker.Login itself.
+func installLogin(t *testing.T, f *fakeBroker, b *Broker) {
+	t.Helper()
+	key, err := proof.NewKey()
+	if err != nil {
+		t.Fatalf("the machine key: %v", err)
+	}
+	mf := f.issueCredential(t, key)
+	b.credMu.Lock()
+	defer b.credMu.Unlock()
+	if err := b.saveFile(mf); err != nil {
+		t.Fatalf("keeping the machine file: %v", err)
+	}
+	b.installCredential(mf.credential(), &loginState{State: "issued"})
+}
+
+// issueCredential mints a launcher credential for key as the token endpoint's device grant does,
+// and records it as the login this fake issued: the credential a launcher proof is read against
+// (lastProofSubject), the key every refresh of it must prove, and the refresh token the first of
+// those spends.
+func (f *fakeBroker) issueCredential(t *testing.T, key *ecdsa.PrivateKey) *MachineFile {
+	t.Helper()
+	thumbprint, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatalf("the machine key's thumbprint: %v", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.loginLifetime == 0 {
+		t.Fatal("a credential with no expiry is a token answer the helper cannot keep; drive Login for that")
+	}
+	f.next++
+	f.issuedCredentialID = fmt.Sprintf("lcred-%d", f.next)
+	f.pendingThumbprint = thumbprint
+	return &MachineFile{
+		Key:          key,
+		CredentialID: f.issuedCredentialID,
+		RefreshToken: f.mintRefresh(f.issuedCredentialID),
+		ExpiresAt:    time.Now().Add(f.loginLifetime).UTC().Truncate(time.Second),
+	}
+}
+
+// eventWait is this package's guard for a give-up wait on an event another goroutine or process
+// makes happen. A wait that returns on its event never reaches it.
+const eventWait = 10 * time.Second
+
+// waitFor polls cond until it is true, failing the test when it never becomes true. Its bound is
+// eventWait, the ten seconds this package keeps for the same waits elsewhere: expiryLogin's for the
+// credential a login installs, contractRebootWait for a record reaching the disk. A login's first
+// token poll comes a second after its device authorization (the interval the fake names).
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	if !testwait.Holds(5*time.Second, 5*time.Millisecond, cond) {
+	if !testwait.Holds(eventWait, 5*time.Millisecond, cond) {
 		t.Fatal("condition never became true")
 	}
+}
+
+// waitForAccounted is waitFor for a condition whose failure must say why it never held: it fails
+// naming what it waited for and eventWait, then account's answer, read as it fails.
+func waitForAccounted(t *testing.T, what string, cond func() bool, account func() string) {
+	t.Helper()
+	if !testwait.Holds(eventWait, 5*time.Millisecond, cond) {
+		t.Fatalf("%s did not happen within %v; %s", what, eventWait, account())
+	}
+}
+
+// sinceBegan is each of times as how long after began it came, oldest first, or "none", for a
+// failure message that has to say whether a call came inside a bound counted from began.
+func sinceBegan(began time.Time, times []time.Time) string {
+	if len(times) == 0 {
+		return "none"
+	}
+	offsets := make([]string, len(times))
+	for i, at := range times {
+		offsets[i] = at.Sub(began).Round(time.Millisecond).String()
+	}
+	return strings.Join(offsets, ", ")
 }
 
 func TestLoginHoldsTheKeyAndEnrollSignsLauncherProofs(t *testing.T) {
@@ -731,6 +883,7 @@ func TestNoCredentialAndExpiredCredentialBothNameTheLoginCommand(t *testing.T) {
 // gets the broker's refusal rather than errNoCredential, since the helper holds a credential and
 // its retry can use it.
 func TestALateRejectionOfAnOldCredentialLeavesTheNewLoginAlone(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	old := b.cred.Load()
@@ -797,6 +950,7 @@ func TestLoginStatusReadsARefusalWithTheClearThatCausedIt(t *testing.T) {
 // denied and no longer refused: its outcome is newer than the refusal, and `machine login`, which
 // reads the same answer, must tell the operator it was denied.
 func TestALoginPendingWhenTheCredentialIsRefusedReportsItsOwnOutcome(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	held := b.cred.Load()
@@ -890,6 +1044,7 @@ func TestEnrollSendsKindSessionAndAcceptsBothStatuses(t *testing.T) {
 }
 
 func TestRenewSignsWithTheSessionKeyAndRevokeIsIdempotent(t *testing.T) {
+	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	sess, _ := newSession(1, 1, "h:1:1", "", nil, nil)
@@ -918,6 +1073,7 @@ func TestRenewSignsWithTheSessionKeyAndRevokeIsIdempotent(t *testing.T) {
 }
 
 func TestMissingCredentialNamesTheLoginCommand(t *testing.T) {
+	t.Parallel()
 	b := &Broker{URL: cipheraddr.New("http://127.0.0.1:1"), OperatorFile: filepath.Join(t.TempDir(), "none"), HTTP: http.DefaultClient}
 	sess, _ := newSession(1, 1, "h:1:1", "", nil, nil)
 	_, _, err := b.EnrollIdentity(context.Background(), sess.identity())
@@ -952,6 +1108,7 @@ func TestABrokerErrorNamesOnlyTheFieldsItHas(t *testing.T) {
 // writes into its directory, so the caller that closed the broker can remove that directory
 // while a refresh or an approved login is still finishing.
 func TestASaveAfterTheBrokerClosesWritesNothing(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	b := &Broker{MachineFile: filepath.Join(dir, "machine.json")}
 	b.Close()

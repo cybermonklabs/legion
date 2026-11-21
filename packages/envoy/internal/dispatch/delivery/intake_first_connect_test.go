@@ -17,10 +17,6 @@ import (
 // has landed. The number is this file's own, so the row's fetch count is its own message's.
 const firstConnectNumber = 7
 
-// firstConnectWithin bounds the row's waits: the take-over's bind, and the first-connect callback
-// running once the gate is open.
-const firstConnectWithin = 20 * time.Second
-
 // givingUpLines are the lines heldDurable writes when it stops delivering from a durable it
 // bound: a lost hold (run) and a durable that no longer delivers to it (check).
 var givingUpLines = []string{intakeHoldLost, durableDeliversElsewhere}
@@ -76,7 +72,7 @@ func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBin
 	bound := make(chan firstBind, 1)
 	intake.boundHook = func() {
 		openGate()
-		landed := testwait.Holds(firstConnectWithin, time.Millisecond, func() bool { return !client.AwaitingConnectionForTest() })
+		landed := testwait.Holds(eventWait, time.Millisecond, func() bool { return !client.AwaitingConnectionForTest() })
 		// boundHook runs on the run loop after the take-over set the subject, so it reads it
 		// there. Only the first bind is the row's.
 		select {
@@ -89,11 +85,11 @@ func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBin
 	var first firstBind
 	select {
 	case first = <-bound:
-	case <-time.After(firstConnectWithin):
-		t.Fatalf("the intake never bound its durable within %s; the messages logged were %q", firstConnectWithin, loggedMessages(logs()))
+	case <-time.After(eventWait):
+		t.Fatalf("the intake never bound its durable within %s; the messages logged were %q", eventWait, loggedMessages(logs()))
 	}
 	if !first.landed {
-		t.Fatalf("the first-connect callback did not run within %s of the gate opening inside the bind", firstConnectWithin)
+		t.Fatalf("the first-connect callback did not run within %s of the gate opening inside the bind", eventWait)
 	}
 	boundAt, boundLogged := loggedAt(logs(), "dispatch delivery: NATS consumer bound")
 	connectedAt, connectedLogged := loggedAt(logs(), "envoy nats connected")
@@ -139,7 +135,7 @@ func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBin
 	}
 
 	publishPullRequestEnvelope(t, observer, "acme", "widgets", firstConnectNumber, mergedPullRequest(firstConnectNumber))
-	waitFor(t, firstConnectWithin, func() bool { return fetches.Load() >= 1 }, func() string {
+	waitFor(t, eventWait, func() bool { return fetches.Load() >= 1 }, func() string {
 		return fmt.Sprintf("the intake never handled pull request %d published after the callback; the messages logged were %q", firstConnectNumber, loggedMessages(logs()))
 	})
 	if !intakeHoldsSubscription(intake) {

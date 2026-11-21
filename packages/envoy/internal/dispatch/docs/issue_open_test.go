@@ -244,6 +244,7 @@ func TestClosingAnIssueOnOneProcessClosesEveryProcessesRoomsAndReopeningMakesThe
 // margin alone admits an update of any age, so until it is out the gate's age term, the one this
 // guards, decides nothing.
 func TestAKeystrokeTakenBeforeTheIssueClosedIsStoredWhenItsAppendReachesTheGateAfter(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	taskA, appends := newGatedServiceInstance(t, database)
@@ -260,7 +261,7 @@ func TestAKeystrokeTakenBeforeTheIssueClosedIsStoredWhenItsAppendReachesTheGateA
 	// Registered here, so it runs before every cleanup registered above it: a test that fails
 	// with the gate held leaves neither the room's close nor the service's shutdown waiting on an
 	// append that never comes.
-	t.Cleanup(appends.release)
+	cleanupAndRelease(t, appends.release)
 	typeOver(t, alice, "before", "typed before the close")
 	waitFor(t, roomWait(t), "task A's room to take alice's keystroke and its append to reach the held gate", func() bool {
 		return appends.waiting.Load() > 0 &&
@@ -304,6 +305,7 @@ func TestAKeystrokeTakenBeforeTheIssueClosedIsStoredWhenItsAppendReachesTheGateA
 // edit source first, setRoomIssueOpen); the transaction writes the document and folds its history
 // before it lets go.
 func TestAKeystrokeTakenBeforeTheIssueClosedIsStoredWhenACompactionFoldedTheHistoryItsRoomHeld(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
@@ -441,7 +443,7 @@ func newHeldAppendsService(t *testing.T, database *store.Store) (*Service, *http
 		Settle:    time.Hour,
 		TestHooks: true,
 	})
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -780,6 +782,7 @@ func requireRecordOpen(t *testing.T, service *Service, artifactID string) {
 // before that close (requireRecordClosed): a test that reads only the room resident would pass
 // without that read having marked anything, and the flag it writes is the whole case.
 func TestAnIssuesCloseClosesARoomWhoseRecordAlreadyReadsItsIssueClosed(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service, server := newTestServiceInstance(t, database)
@@ -830,6 +833,7 @@ func TestAnIssuesCloseClosesARoomWhoseRecordAlreadyReadsItsIssueClosed(t *testin
 // browsers' sockets end and they reconnect read-only. The room is closed for its issue rather
 // than failed (beforeFailedEviction).
 func TestTheAppendGateClosesARoomWhoseRecordAlreadyReadsItsIssueClosed(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service, server := newTestServiceInstance(t, database)
@@ -909,6 +913,7 @@ func TestTheAppendGateClosesARoomWhoseRecordAlreadyReadsItsIssueClosed(t *testin
 // readonly, and its keystroke neither taken by the room nor stored (requireRecordClosed,
 // requireScopeAndText, requireKeystrokeDropped).
 func TestTheAppendGatesCloseStandsOverASocketAdmittedWhileItRan(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service, server := newTestServiceInstance(t, database)
@@ -1053,6 +1058,7 @@ func awaitConnectedBrowser(t *testing.T, dialed <-chan dialedBrowser, login stri
 // control, and the room a browser does load into that gap - which such a close must leave
 // standing, and must write nothing of - is the room of the two tests below.
 func TestABurstOfRefusedKeystrokesClosesItsRoomOnce(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service, appends := newGatedServiceInstance(t, database)
@@ -1371,6 +1377,7 @@ func requireRecordLastActor(t *testing.T, service *Service, artifactID string, a
 // leaving the closed room runs one at once (settleLastPeer), which settles the closed issue's
 // document, as it should, and can take the row before the read below gets to it.
 func TestTheAppendGatesCloseMovesTheRecordsLatestEditSourceToThePendingSettlementRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
@@ -1495,6 +1502,7 @@ func TestTheAppendGatesCloseMovesTheRecordsLatestEditSourceToThePendingSettlemen
 // issue's document, as it should, and can load the document into a room of its own before bob's
 // and take the row this test reads.
 func TestACloseForARefusedAppendLeavesThePendingSettlementRowTheRoomThatLoadedInBetweenWrote(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service, server := newTestServiceInstance(t, database)
@@ -1625,6 +1633,7 @@ func TestACloseForARefusedAppendLeavesThePendingSettlementRowTheRoomThatLoadedIn
 // document, as it should, and would load a room of it on task A and clear the record this test
 // reads, or take a row the close wrote back before the read below sees it.
 func TestACloseForARefusedAppendWritesNoPendingSettlementRowASettlementTookWhileItWaited(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	taskA, serverA := newTestServiceInstance(t, database)
@@ -1725,6 +1734,7 @@ func TestACloseForARefusedAppendWritesNoPendingSettlementRowASettlementTookWhile
 // document, as it should, and would clear the record this test reads, or take a row the close
 // wrote back before the read below sees it.
 func TestACloseForARefusedAppendWritesNoPendingSettlementRowWhereItsSnapshotReadNone(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	taskA, serverA := newTestServiceInstance(t, database)
@@ -1837,6 +1847,7 @@ func TestACloseForARefusedAppendWritesNoPendingSettlementRowWhereItsSnapshotRead
 // leaving the closed room runs one at once (settleLastPeer), which settles the closed issue's
 // document, as it should, and can take the row and clear the record this test reads.
 func TestACloseForARefusedAppendWritesNoPendingSettlementRowWhereTheRecordsSourceAloneMoved(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service, server := newTestServiceInstance(t, database)
@@ -2003,6 +2014,7 @@ func clearPendingSettlementRow(t *testing.T, service *Service, artifactID string
 // write leaves both, since clearing is what a written row buys (persistClosedLastActor,
 // lastActorPersisted).
 func TestAnIssuesCloseWritesNoPendingSettlementRowASettlementTookInsideItsSnapshot(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	taskA, _ := newTestServiceInstance(t, database)
@@ -2097,6 +2109,7 @@ func TestAnIssuesCloseWritesNoPendingSettlementRowASettlementTookInsideItsSnapsh
 // leaving the closed room runs one at once (settleLastPeer), which settles the closed issue's
 // document, as it should, and can take carol's row and clear the record this test reads.
 func TestTheAppendGatesCloseWritesNoPendingSettlementRowASettlementTookInsideItsSnapshot(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	taskA, serverA := newTestServiceInstance(t, database)

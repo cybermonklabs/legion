@@ -76,12 +76,22 @@ func getOnConn(t *testing.T, client *http.Client, url string, header http.Header
 	return resp, reused
 }
 
+// idleCause says, for a request that went out on a new connection where the test wanted the
+// connection the previous response came back on, how long that connection sat idle on the real
+// clock. The server closes a connection idle for idleTimeout, and net/http logs nothing when it
+// does, so without this a red run would not show which of the two closed it.
+func idleCause(previous time.Time) string {
+	return fmt.Sprintf("the connection sat idle %v after the previous response, and the server closes one idle for %v (idleTimeout)", time.Since(previous), idleTimeout)
+}
+
 func TestMaxConnAgeKeepsAYoungConnection(t *testing.T) {
+	t.Parallel()
 	clock := &fakeClock{now: time.Unix(1_700_000_000, 0)}
 	server := startConnAgeServer(t, clock)
 	client := server.Client()
 
 	first, reused := getOnConn(t, client, server.URL, nil)
+	answered := time.Now()
 	if reused {
 		t.Fatal("first request reused a connection; want a new one")
 	}
@@ -92,7 +102,7 @@ func TestMaxConnAgeKeepsAYoungConnection(t *testing.T) {
 	clock.advance(maxConnAge - time.Nanosecond)
 	second, reused := getOnConn(t, client, server.URL, nil)
 	if !reused {
-		t.Fatal("request on a connection younger than maxConnAge opened a new connection")
+		t.Fatalf("request on a connection younger than maxConnAge opened a new connection: %s", idleCause(answered))
 	}
 	if second.Close {
 		t.Fatal("response on a connection younger than maxConnAge carried Connection: close")
@@ -100,16 +110,18 @@ func TestMaxConnAgeKeepsAYoungConnection(t *testing.T) {
 }
 
 func TestMaxConnAgeClosesAnAgedConnectionAfterItsResponse(t *testing.T) {
+	t.Parallel()
 	clock := &fakeClock{now: time.Unix(1_700_000_000, 0)}
 	server := startConnAgeServer(t, clock)
 	client := server.Client()
 
 	getOnConn(t, client, server.URL, nil)
+	answered := time.Now()
 	clock.advance(maxConnAge)
 
 	aged, reused := getOnConn(t, client, server.URL, nil)
 	if !reused {
-		t.Fatal("request after the age opened a new connection; want it on the aged one")
+		t.Fatalf("request after the age opened a new connection; want it on the aged one: %s", idleCause(answered))
 	}
 	if !aged.Close {
 		t.Fatal("response on a connection maxConnAge old did not carry Connection: close")
@@ -125,16 +137,18 @@ func TestMaxConnAgeClosesAnAgedConnectionAfterItsResponse(t *testing.T) {
 }
 
 func TestMaxConnAgeClosesAnAgedConnectionAfterARejectedUpgrade(t *testing.T) {
+	t.Parallel()
 	clock := &fakeClock{now: time.Unix(1_700_000_000, 0)}
 	server := startConnAgeServer(t, clock)
 	client := server.Client()
 
 	getOnConn(t, client, server.URL, nil)
+	answered := time.Now()
 	clock.advance(maxConnAge)
 
 	upgrade, reused := getOnConn(t, client, server.URL, http.Header{"Upgrade": {"websocket"}})
 	if !reused {
-		t.Fatal("upgrade request opened a new connection; want it on the aged one")
+		t.Fatalf("upgrade request opened a new connection; want it on the aged one: %s", idleCause(answered))
 	}
 	if !upgrade.Close {
 		t.Fatal("an aged request whose handler did not upgrade did not carry Connection: close")
@@ -153,6 +167,7 @@ func TestMaxConnAgeClosesAnAgedConnectionAfterARejectedUpgrade(t *testing.T) {
 // websocket that takes the connection. ygo's document upgrade (/ws/doc) and /ws/live both upgrade
 // this way: the upgrader hijacks before it writes the 101 itself.
 func TestMaxConnAgeDoesNotDisturbAnAgedHijackedWebsocket(t *testing.T) {
+	t.Parallel()
 	clock := &fakeClock{now: time.Unix(1_700_000_000, 0)}
 	upgraded := make(chan struct{})
 	release := make(chan struct{})
@@ -216,14 +231,17 @@ func TestMaxConnAgeDoesNotDisturbAnAgedHijackedWebsocket(t *testing.T) {
 	if response.Close || strings.EqualFold(response.Header.Get("Connection"), "close") {
 		t.Fatalf("hijacked websocket carried Connection: close: %v", response.Header)
 	}
+	// The handler closes upgraded as soon as the Upgrade that wrote the 101 read above returns, so
+	// this bound guards a hang and asserts nothing: it only names a handler that never got there.
 	select {
 	case <-upgraded:
-	case <-time.After(time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("server did not hold the websocket after the handshake")
 	}
 }
 
 func TestMaxConnAgeHandlerPassesARequestWithNoAcceptTime(t *testing.T) {
+	t.Parallel()
 	clock := &fakeClock{now: time.Unix(1_700_000_000, 0)}
 	handler := maxConnAgeHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -242,6 +260,7 @@ func TestMaxConnAgeHandlerPassesARequestWithNoAcceptTime(t *testing.T) {
 // (keep-alives are off while the server is shutting down), so a draining process sheds every
 // connection as its last response goes out, however young the connection.
 func TestServerClosesConnectionsAfterShutdownBegins(t *testing.T) {
+	t.Parallel()
 	shutdownBegun := make(chan struct{})
 	entered := make(chan struct{})
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

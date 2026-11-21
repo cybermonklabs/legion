@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,14 +28,17 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// TestMain removes the NATS server the package's tests share (testnats.Main) and the databases
-// their pools are cloned on (storetest.Run).
+// TestMain removes the databases the package's pools are cloned on (storetest.Run), and the NATS
+// server the package's tests would share (testnats.Main) were one to take an account on it
+// (testnats.URL). testnats.Main starts no server itself, and each test here starts one of its own
+// (deliveryTestNATS).
 func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats.Main(m) })) }
 
-// deliveryTestPool returns the pool of a database of the test's own, with the test's context:
-// storetest.Open's clone of the template this test process migrated once, dropped after the test,
-// which skips the test (not fails it) when DISPATCH_TEST_DATABASE_URL is unset. A clone holds no
-// row another test or an earlier run wrote, so nothing is truncated or repaired first.
+// deliveryTestPool returns the pool of a database of the test's own, with the test's context: a
+// clone storetest.Open makes, and drops after the test, of the one migrated template that every
+// test process on the server shares and none drops (pgtemplate). storetest.Open skips the test
+// (not fails it) when DISPATCH_TEST_DATABASE_URL is unset. A clone holds no row another test or
+// an earlier run wrote, so nothing is truncated or repaired first.
 //
 // The database is never the one DISPATCH_TEST_DATABASE_URL names. Migrating that one runs each
 // CREATE INDEX CONCURRENTLY there, and a concurrent build waits for every session of its own
@@ -45,6 +49,36 @@ func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats
 func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 	t.Helper()
 	return storetest.Open(t).Pool, t.Context()
+}
+
+// deliveryNATS holds the one NATS server each test has, so a test that asks twice - once for the
+// URL its intakes connect to, once through intakeTestClient - reaches the same server and the
+// same stream.
+var deliveryNATS = struct {
+	mu      sync.Mutex
+	servers map[*testing.T]string
+}{servers: map[*testing.T]string{}}
+
+// deliveryTestNATS is this test's NATS server, started at the first call and the same for every
+// later one: a server of the test's own (testnats.Start), as internal/dispatch/outbox's tests
+// have, rather than an account on the server testnats.URL shares, so no other test's client is
+// on it and no account reload of the shared server's (testnats.FirstAccounts) meets this test's
+// clients.
+func deliveryTestNATS(t *testing.T) string {
+	t.Helper()
+	deliveryNATS.mu.Lock()
+	defer deliveryNATS.mu.Unlock()
+	if url, held := deliveryNATS.servers[t]; held {
+		return url
+	}
+	_, url := testnats.Start(t)
+	deliveryNATS.servers[t] = url
+	t.Cleanup(func() {
+		deliveryNATS.mu.Lock()
+		defer deliveryNATS.mu.Unlock()
+		delete(deliveryNATS.servers, t)
+	})
+	return url
 }
 
 // branchCommitsMigration is the migration that creates branch_commits, the one table a test of
@@ -196,7 +230,7 @@ func awaitAcknowledged(t *testing.T, natsClient *bus.Client) {
 	}
 	last := stream.State.LastSeq
 	var info *natsgo.ConsumerInfo
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		info, err = natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.AckFloor.Stream >= last && info.NumAckPending == 0
 	}, func() string {
@@ -326,7 +360,7 @@ func startIntake(t *testing.T, intake *Intake) {
 // intakeTestClient connects one NATS client for an intake test and closes it with the test.
 func intakeTestClient(t *testing.T) *bus.Client {
 	t.Helper()
-	natsClient, err := bus.ConnectOwningStream([]string{testnats.URL(t)})
+	natsClient, err := bus.ConnectOwningStream([]string{deliveryTestNATS(t)})
 	if err != nil {
 		t.Fatalf("connect NATS: %v", err)
 	}
@@ -339,7 +373,7 @@ func intakeTestClient(t *testing.T) *bus.Client {
 func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 	t.Helper()
 	var err error
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, eventWait, func() bool {
 		var info *natsgo.ConsumerInfo
 		info, err = natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.PushBound && info.Config.MaxAckPending == intakeMaxAckPending

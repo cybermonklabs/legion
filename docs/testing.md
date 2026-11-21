@@ -388,22 +388,27 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
 
 ## Go's package deadline
 
-`go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),
-which reads as a failure of the change under test. `packages/envoy/internal/dispatch/api` alone
-takes close to that, about 600 s on a workstation, so every command that runs that package, on its
-own or in a pattern that includes it (`./...`, `./internal/dispatch/...`), passes `-timeout 20m`:
+`go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`), which reads as a failure of the change under test.
+`packages/envoy/internal/dispatch/api` alone took more than that, 665 s in a CI run that ran it whole without `-race` (`envoy-go-test-json-2` of run 41703055842); the last two CI runs of INFRA-1075's branch to run it so before `c5c7e1e4` took it out of `envoy-go`'s package list read 521.3 s and 555.0 s (runs 42228089025 and 42239459430, the second with one of its tests failing).
+Its claim model, `TestTheMentionSenderClaimModel`, searches every interleaving of the mention sender's code and took 19 min 18 s on its own (`.github/workflows/ci-job-envoy-go-claim-model.yaml`), so it runs by name in a job of its own.
+So every command that runs that package, on its own or in a pattern that includes it (`./...`, `./internal/dispatch/...`), passes `-timeout 20m` and leaves the claim model to its job:
 
 ```sh
 cd packages/envoy
-go test -timeout 20m ./internal/dispatch/api
+go test -timeout 20m -skip '^TestTheMentionSenderClaimModel$' ./internal/dispatch/api
 ```
 
 A Legion issue pod does not run that whole package: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
 
-CI runs that package under `-race` in `envoy-go-race-api`, the job that runs it by itself, which
-gives it 70 minutes (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's
-steps); `envoy-go` leaves it out of its unit step, and `text-checks` runs its fifteen source-guard
-tests by name. `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
+CI leaves that package out of `envoy-go`'s package list and runs it under `-race` in
+`envoy-go-race-api`, the job that runs it by itself, through `packages/envoy/scripts/database-skips.sh`,
+which gives it 39 minutes (`--timeout 39m`) and counts its skips
+(`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's steps); `text-checks`
+runs its seventeen source-guard tests by name, and `envoy-go-claim-model` its two claim model tests.
+`docs` runs under `-race` in `envoy-go-race-docs`, which gives it 55 (`-timeout 55m`).
+A plain run covers, by name, the few tests of those two packages that the race build leaves out or runs smaller.
+`envoy-go` runs those of `docs` in the race-impossible call of its unit step.
+Those of `api` are its xid window tests, whose assertion is a wall-clock time measured in the test's own process, so they run away from that call's load: alone on the runner, as the first test step of `envoy-go-checks` (`.github/workflows/ci-job-envoy-go-checks.yaml`).
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone
 rather than beside the module's other Postgres-backed packages: together they share one database
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
@@ -447,7 +452,7 @@ Go's own detector finds a closure that reaches its object:
 
 ```sh
 cd packages/envoy
-GODEBUG=checkfinalizers=1 go test -count=1 -timeout 34m ./internal/dispatch/docs/
+GODEBUG=checkfinalizers=1 go test -count=1 -timeout 28m ./internal/dispatch/docs/
 ```
 
 It prints `WARNING: LIKELY CLEANUP/FINALIZER ISSUES`, then one `is reachable from cleanup or cleanup argument` line per site naming that site's file and line, and ends the run with `fatal error: detected possible issues with cleanups and/or finalizers`.
@@ -472,15 +477,22 @@ A `runtime.AddCleanup` or `runtime.SetFinalizer` added in another package comes 
 ## A database a Go test creates
 
 A Go test that creates a Postgres database writes `create database … strategy file_copy`, as
-`packages/envoy/internal/dispatch/store/storetest`, the daemon's `internal/testpg` and Envoy's
-`internal/testpg/testdb` do. Without
+`packages/envoy/internal/testpg/pgtemplate` (the harness both of envoy's stores clone their test
+databases through), the daemon's `internal/testpg` and Envoy's `internal/testpg/testdb` do. Without
 it, PostgreSQL 15 and later copy the source database through the write-ahead log, every page of it:
-4.4 MB of log for an empty database made from `template1`, and 6.4 MB for a clone of Dispatch's
-migrated template, which made one run of the `api` and `docs` packages write 16 GiB of log. A file
-copy writes a few hundred bytes. `storetest`'s own test fails when a clone writes more than a
-hundredth of its template's size, and each module's `internal/textcheck` test
+4.5 MB of log for an empty database made from `template1`, and 7.1 MB for a clone of Dispatch's
+migrated template, measured on PostgreSQL 18 against `dev-postgres.sh --throwaway` on a pod at
+0fbf8a3a.
+A file copy writes a few hundred bytes.
+`pgtemplate`'s `TestACloneWritesTheLogOfAFileCopyNotOfTheTemplate`
+fails when a clone writes more than a hundredth of its template's size, and each module's
+`internal/textcheck` test
 `TestEveryCreatedDatabaseIsAFileCopy` fails on any line of the module's Go files that opens a
 database's creation in a string without `strategy file_copy` on the same line.
+A file copy costs checkpoints instead: Postgres forces one before the copy and one after it, and
+the drop at the end of the test forces one more, so each test's database costs three forced
+checkpoints, and what those cost depends on the server's settings ("A test Postgres's five
+settings").
 
 In Envoy, a test that already holds a server's URL makes its database with
 `internal/testpg/testdb`'s `DatabaseOn`, never `internal/testpg`'s: `testpg` links
@@ -497,8 +509,10 @@ test ends, and the package's
 `TestMain` is `testpg.Main("<prefix>", m.Run)`, which drops the template when the run ends and
 composes with the `TestMain` a package already has
 (`testpg.Main(prefix, func() int { return testnats.Main(m) })`).
-`packages/envoy/internal/dispatch/store/storetest`'s `Open` is the same fixture for Dispatch's
-schema.
+`packages/envoy/internal/dispatch/store/storetest`'s `Open` is the same kind of fixture for
+Dispatch's schema, and `packages/envoy/internal/cipher/store/storetest`'s `URL` and `Open` for the
+broker's, each a clone through `pgtemplate`, whose template no process drops (below); a broker
+package whose `TestMain` is not `storetest.Main` migrates a database of its own per test instead.
 `testdb.Database` is still there for a test that wants an empty database: `internal/record`'s own tests
 apply part of the migration set by hand and assert what `Migrate` then returns, which a migrated
 clone would not let them do.
@@ -519,6 +533,121 @@ process and removes the directory when `testbuild.Main` ends the run.
 A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): the server
 `DISPATCH_TEST_DATABASE_URL` names can hold other databases, such as the local Dispatch's on
 `packages/envoy/scripts/dev-postgres.sh`'s container.
+
+**The template stays, and that is the one exception to "a test drops every database it makes".**
+Envoy's two harnesses, Dispatch's and the broker's, each clone from one migrated template per migration set, which every test process on the server shares: `pgtemplate` is the one implementation, held by both `storetest` packages and by `internal/dispatch/store`'s own tests.
+Applying every Dispatch migration, each in its own committed transaction but those marked `-- pgmigrate:non-transactional`, which each build one index concurrently, costs about 5.5 s of every test process that wants a database.
+That was measured on a two-core pod at 0fbf8a3a against a server with durability on: `TestACloneWritesTheLogOfAFileCopyNotOfTheTemplate` (`packages/envoy/internal/testpg/pgtemplate`) ran in 9.7 to 10.0 s building the template and in 4.2 to 4.5 s cloning one already there, three times each.
+A lane runs about thirty packages on the Dispatch harness and sixteen on the broker's.
+The template is named `dispatch_template_<fingerprint>` or `broker_template_<fingerprint>`, where the fingerprint digests the migration set the build embeds and what the build's runner records of each migration beside its version, the version table's identity columns and each file's recorded identity and checksum (`store.MigrationsFingerprint`, `pgmigrate.Fingerprint`): the first process to want it builds it under an advisory lock every process takes on the server's `postgres` database, under a `…_building_<random>` name it is renamed out of only once every migration is applied, and every process after it clones what is already there.
+Postgres tags an advisory lock with the database of the session that takes it, so it is the one database, not the key alone, that makes every test process on the server queue on one lock (`pgtemplate`'s `lock`).
+
+No process drops it.
+The test processes of one run start minutes apart, so a process that dropped the template on its way out would take it from the processes still cloning it, and no process can know it is the last.
+A developer or operator who finds a `dispatch_template_…` or `broker_template_…` database on a server is looking at that: a read-only copy of one migration set's schema, holding no row any test wrote, left for the next test process.
+The exception is a `dispatch_template_keyed_…` database, the template of one key `storetest.OpenFrom` made for the two-build suite (`pgtemplate`'s `CloneOf`), which its process drops once its tests end and leaves only when it was killed first.
+A set that gains, loses or edits a migration gets a template of its own, and so does a set whose runner records other facts of each migration, as every runner before the identity check recorded the version alone, so no run clones a stale schema (`TestATemplateAnEarlierRunnerLeftForTheSameSetIsNotCloned`); what a stale Dispatch template costs is about 14.2 MB on a server that outlives the run.
+CI's Postgres is a container deleted with the job.
+On a long-lived server, such as `packages/envoy/scripts/dev-postgres.sh`'s, reclaim them by hand:
+
+```sh
+psql "$DISPATCH_TEST_DATABASE_URL" -tAc \
+  "select datname from pg_database where datname like 'dispatch\_template\_%' or datname like 'broker\_template\_%'" |
+  xargs -r -n1 -I{} psql "$DISPATCH_TEST_DATABASE_URL" -c 'drop database "{}"'
+```
+
+## A test Postgres's five settings
+
+Every Postgres service a `.github/workflows/ci-job-<job>.yaml` declares, each a job `.github/workflows/ci.yaml` runs, starts with the same five settings, as the server's own command line, so no step has to restart it (`jobs.<job_id>.services.<service_id>.command`):
+
+```sh
+postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off \
+  -c max_connections=500 -c max_prepared_transactions=20
+```
+
+The Postgres services of the other workflows (`dispatch-browser.yaml`'s `multiprocess` and `embedder` jobs, `docs-site.yaml`'s `build` and `e2e.yaml`'s `proof`) carry no `command:` and keep the image's defaults.
+
+Each of those servers is a container deleted with the job, so nothing it holds has to survive a crash:
+with `fsync`, `full_page_writes` and `synchronous_commit` off a forced checkpoint writes nothing durable, which is what makes the three forced checkpoints a test's database costs affordable (above).
+`max_connections` is 500 against the image's default of 100, which a module's package binaries at once exhaust (`FATAL: sorry, too many clients already`).
+500 is five times that default and no bound on what a run can ask for:
+`envoy-go`'s package list runs eight binaries at once (`go test -p 8`), each running up to twelve tests at once (`-parallel 12`), and each test store's shared pool holds up to 16 connections (`testPoolSize`, `packages/envoy/internal/dispatch/store/storetest`), so those stores alone could ask for 8 × 12 × 16 = 1,536 connections at once.
+`max_prepared_transactions` is 20, against the image's default of 0, for `TestNoPreparedTransactionHoldsAnEventIDAndTheFloorTrailsOneAnyway` (`packages/envoy/internal/dispatch/api`), which `envoy-go-race-api` runs: the test prepares a transaction, and in CI it fails on a server that can prepare none rather than skip, since a skip is a pass that proves nothing.
+No other test prepares a transaction.
+Every service carries the setting all the same, because `.github/scripts/postgres-service-settings.sh` reads the same five settings back from each of them.
+
+A developer's throwaway test server is run the same way and for the same reason, and the command it prints deletes its data when it stops it:
+
+```sh
+cd packages/envoy
+./scripts/dev-postgres.sh --throwaway
+```
+
+That starts a PostgreSQL cluster of its own under `TMPDIR`, from this host's server binaries, on port 55433 unless the command names another, with `-c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20`, and prints the `DATABASE_URL` it serves, its data directory, the pid to stop it by and the command that stops it.
+That command is a `kill` of the pid and an `rm -rf` of the directory that holds the data directory and the server's log, and the two take the server and everything it held away.
+The container that same script starts with no argument is the other case and keeps its durability:
+it outlives the run and holds the local Dispatch's databases, which is why a test changes no server setting either (above).
+A test run against that container is slower than one against the throwaway server:
+each test's clone forces two checkpoints and its drop one more, every test on the server queues on its one checkpointer, and with durability on each of those checkpoints flushes every page the server changed since the last one and waits for the disk to hold it (`fsync`), where with it off a checkpoint writes nothing durable.
+That container also keeps the image's default `max_connections` of 100, which several Postgres-backed packages at once exhaust, so a command that runs more than one of them points at the throwaway server (`packages/envoy/cmd/dispatch/README.md`, "Tests").
+
+Two of this repository's learnings are about these settings, and this is what each holds today.
+
+`docs/solutions/database-issues/an-index-only-scan-test-depends-on-the-visibility-map-and-asynchronous-commit-leaves-it-empty-pr2376.md` found that a plan test asserting an `Index Only Scan` is also asserting that the table's pages are marked all-visible:
+the planner costs that scan by `relallvisible/relpages`, so a table whose visibility map is empty is read by a bitmap heap scan over the same index, and the test fails as if the index or the query were wrong.
+That half holds, and so does its first move, which is to read `select relallvisible, relpages from pg_class where relname = '<table>'` before changing the index or the query.
+Its prescription does not hold: it drew from that one failure the rule that such a test is run with `synchronous_commit = on` and that a test Postgres never takes its speed from turning off durable commit, and every Postgres service a `.github/workflows/ci-job-<job>.yaml` declares now runs with the three off.
+What replaced it is that the test states the planner input it is making a claim about rather than taking it from a vacuum:
+`packages/envoy/internal/dispatch/sessionanswers/sessionanswers_test.go` calls `pg_restore_relation_stats(…, 'relallvisible', c.relpages)` inside the transaction its two `EXPLAIN`s run in, and that transaction is rolled back when the test ends, so the harness hands the database on as it found it.
+The cause recorded there is wider than the learning's inference, too:
+a page is marked all-visible only once every transaction on the whole server is past the rows on it, and this module's packages run eight binaries at a time against one Postgres, so another package's open transaction left `relallvisible` at zero whatever the durability settings were.
+The other way in use keeps the vacuum, and is main's #4378 (`39391362`): `measureCoverageAtScale` in `packages/envoy/internal/dispatch/embedqueue/coverage_scale_test.go` and `TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap` in `coverage_stale_statistics_test.go` turn `synchronous_commit` on before their VACUUM, with `alter database … set synchronous_commit = on` on the test's own database only, so every Postgres service still runs with the three off.
+
+`docs/solutions/testing/a-load-recipes-dependency-settings-are-part-of-the-recipe-a-fast-postgres-closes-the-window-pr2517.md` holds as it stands, and these five settings are the server it is now about.
+Its finding is that a load recipe's dependency settings are part of the recipe:
+`TestTwoAnnouncersAtOnceAnnounceAndPublishOnce` (`packages/envoy/internal/dispatch/startup/started_test.go`) races a losing pass against the winner's announcing transaction, and against a Postgres with `fsync`, `full_page_writes` and `synchronous_commit` off the pre-fix binary passed 30 of 30 runs, while the same loop against the same server with its durability on failed 17 of 30.
+What has changed is where that fast server is:
+it is every Postgres service a `.github/workflows/ci-job-<job>.yaml` declares and the throwaway one above, so a reproduction loop run on the shape of server this repository tests on is a recipe that cannot reach a commit window, and a race of that kind is reproduced against a server with its durability left on.
+Read it the other way too: a race of that kind the lane does report is one that survived these settings.
+
+## A test that calls `t.Parallel()`
+
+A Go test of `packages/envoy` calls `t.Parallel()` first when it is independent of the tests that run beside it.
+Sharing a Postgres server does not make a test dependent: each test takes a database of its own ("A database a Go test creates").
+`go test` starts a binary's parallel top-level tests only once every serial top-level test of that binary has ended, and a parallel subtest only once its parent's function has returned, so a serial test never runs beside a parallel test of its own package.
+It still runs beside the tests of every other package binary on the same machine and the same Postgres.
+
+A test stays serial when any of these is true of it:
+
+- Its assertion is a wall-clock window or limit the test itself writes and states as its subject: an answer within a second, or a give-up close to a deadline.
+  Parallel tests' load stretches the time it measures, so it would fail for the machine's load rather than for a defect.
+  It keeps its bound and stays serial: a bound widened to a give-up wait can no longer fail for the defect the test exists for.
+  A quiet window, an assertion that nothing arrives within a span, is the one case where that reason does not hold: load stretches only the span a broken product has to show itself in, so a quiet window can lose its reach under load but cannot fail a correct product.
+  So the rule leaves it to judgment, and INFRA-1075 (#2733) judged each one: some tests are serial for their quiet window, and their `// Serial:` lines say so (the role-keep hour rows of `cmd/listener/role_keep_hour_test.go`, whose windows outlast a sweep the product schedules, among them), while quiet windows stand in tests it made parallel — a `noException`, the quiet argument of `expectFrames`, a `NextMsg` that must time out, or a `select` whose timer case is the passing one — among them tests whose claim is that absence (`TestPublishRouteSendsNothingToASenderHoldingTheRole`'s 300 ms in `cmd/listener/confirmed_test.go`).
+  Each of those tests passed in both runs of each of the fifteen green measurement pairs INFRA-1075 took from 84ca8f33 on, and of the red pair at d58c9ed8: at 84ca8f33 (runs 43514262740 and 43519308059), at bbf87f3e (runs 43602043317 and 43604704027), at fae4eab5 (runs 43654965125 and 43657875798), at ddaa17cc (runs 43673398912 and 43675841985), at d60e5f7b (runs 43720554541 and 43723760337), at cf069e0d (runs 43733795306 and 43737129665), at da325bf0 (runs 43793235477 and 43797411630), at 2e36a371 (runs 43810293311 and 43814304800), at 3f3eefd1 (runs 43882061650 and 43882413752), at 4cc2e266 (runs 44078406008 and 44097184245) and at 4f1f4436 (runs 44175873364 and 44195030350), each on x64 runners, and at d58c9ed8 (runs 44464587674 and 44464631157, where no test failed and `internal/dispatch/store`'s `TestMain` failed `envoy-go-race`), at 43963748 (runs 44525581949 and 44525642277), at 31649808 (runs 44544482617 and 44544557129), at ae055610 (runs 44604816847 and 44604887499) and at 8cfd2682 (runs 44657322918 and 44657415021), whose envoy-go lane ran on arm64 runners but for envoy-go-checks; the red pair at c3e93e7e (runs 44476496859 and 44476544762, on the same runners) failed one of main's xid window tests in `envoy-go`'s unit step in each run and `TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess` in `envoy-go-race-api` in run 2, and in both runs the failed unit step left `envoy-go`'s later steps, the broker suites' count among them, unrun.
+
+- It reads the whole process: a dump of every goroutine (`runtime.Stack(buf, true)`), a goroutine count or `runtime.ReadMemStats`, which count a parallel test's goroutines and allocations as its own.
+
+- It swaps process-wide state: an environment variable (`t.Setenv`, which panics in a test that called `t.Parallel()`), the working directory (`t.Chdir`), the default logger (`slog.SetDefault`, or the standard `log` package's output), or a package variable another test reads, such as a seam a test installs.
+  `horizontest.Listen` is the one swap of the default logger a parallel test may make: it is built for concurrent listeners and hands every record on, as the horizon section below says.
+
+- It holds open a transaction that takes a transaction id - one that writes, or one that takes a row lock with `for update` or `for no key update` - or reads the event log up to its safe horizon.
+  The horizon is proven from `pg_snapshot_xmin`, the oldest transaction running anywhere on the Postgres instance (`packages/envoy/internal/dispatch/events/horizon.go`), so a transaction holding an id stalls every test beside it that reads the event feed, and a test that reads the feed waits on every such transaction beside it, other tests' clones and drops included.
+  An advisory lock is not in this class: Postgres tags one with the database of the session that takes it, as the template section above says, every test has a database of its own, and a lock that takes no transaction id holds the horizon back for nobody.
+
+A serial test says why on the line before its `func` or at the head of its body:
+
+```go
+func TestRunSelfHealthMonitor_TerminatesAfterSustainedDisconnection(t *testing.T) {
+	// Serial: twenty probes at a 1 ms interval must end within 2 s.
+```
+
+A file that already writes `// No t.Parallel: <reason>` keeps that form; every other file writes `// Serial: <reason>`.
+The reason is the true one, named for what the test does: a test whose reason no longer holds is independent, and it calls `t.Parallel()` instead.
+Two kinds of test are the exception, and keep main's text, with neither `t.Parallel()` nor a `// Serial:` line: a test INFRA-1075 (#2733) made parallel and then put back to main's text (`TestAnIdleDeliverySocketIsSentAHeartbeat`, `TestLoadRootCommentAuthorsTerminatesOnACycle` among them), and every test main added that #2733 does not otherwise touch, which stays as main wrote it (dispatch://INFRA-1075/artifact/open-items-md, "Ending the merge treadmill").
+A table test's rows follow the same rules one by one: a row that is independent calls `t.Parallel()` inside its `t.Run`, and a row that is not carries a `// Serial:` line of its own.
+
+Serial tests of one binary still meet every other binary's transactions, which is why CI gives `internal/dispatch/routes`, `internal/dispatch/events` and `cmd/dispatch`'s `TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument`, the three whose horizon waits other packages' transactions held past their deadlines, Postgres services of their own (the `envoy-go` job's `postgres_routes`, `postgres_events` and `postgres_shutdown` in `.github/workflows/ci-job-envoy-go.yaml`).
 
 ## A Go test that opens a NATS client
 
@@ -547,9 +676,10 @@ A since read answers only the edges at or below the event log's safe horizon (`g
 that wait it answers at the horizon it has and leaves the rest to a later read: the route defers,
 it never loses an edge. The horizon is instance-wide,
 so any transaction holding a transaction id on the Postgres instance holds it back, and in
-`packages/envoy/internal/dispatch/api` the holder is the test process itself: `storetest.Open`'s
-`create database … template … strategy file_copy` and `storetest`'s
-`drop database … with (force)` (`packages/envoy/internal/dispatch/store/storetest/storetest.go`).
+`packages/envoy/internal/dispatch/api` the holder is the test process itself: `Harness.Clone`'s
+`create database … template … strategy file_copy` and `Harness.drop`'s plain `drop database if exists`,
+which it tries again while Postgres answers 55006 and ends with `drop database if exists … with (force)`
+only when those tries fail (`packages/envoy/internal/testpg/pgtemplate/pgtemplate.go`).
 
 So a read that answered within `referencesSinceWait` was not held back: what it listed is what it
 owed, and a wrong answer fails the test at once. Only a read held past that wait is read again,
@@ -593,14 +723,16 @@ So the test waits on what the server says about itself.
 The wait is `horizontest.Wait` (`packages/envoy/internal/dispatch/horizontest`), an ordinary package so that the three packages whose tests wait on a horizon share it: `cmd/dispatch`'s `waitEventsStart` (`live_events_wait_test.go`, which `openLiveEvents` calls) reads the warnings out of the Dispatch process's output (`horizontest.Lines`), and `internal/dispatch/api` and `internal/dispatch/routes`, whose servers run in the test's own process, read them as records (`horizontest.WaitInProcess`, `PollInProcess`, `Listen`), so `pending_for` and `database` are typed values there and are not parsed.
 The event feed's frames are read on a goroutine that sets no read deadline, because a gorilla connection is corrupt after a read timeout; while the warning keeps arriving the wait goes on, and it fails when the warning stops.
 Count the warnings, never whether one was seen: a check that latches on the first warning waits for ever.
-In `api` the same wait covers every other wait behind the horizon: a live event, the relay's publishing and a subscription reaching it, the delivery hub's event feed and the deltas it drives, a persisted horizon, and a pass of the suggestion outcome sweep on a log that holds events, which reads only up to the horizon and awaits it on its first pass (`suggestion_outcomes_test.go`; the sweep's own settle is waited out first, on the database's clock, so the wait is on the horizon alone).
+In `api` the same wait covers every other wait behind the horizon: a live event, the relay's publishing and a subscription reaching it, the delivery hub's event feed and the deltas it drives, a persisted horizon, and a pass of the suggestion outcome sweep on a log that holds events, which reads up to the event log's writer floor, the highest id at or below which no event write of this database is still open, read at once without waiting on any transaction, and awaits the safe horizon only when that floor is 0 and the log holds events (`suggestionOutcomeFloor.read` in `suggestion_outcomes.go`, and `suggestion_outcomes_test.go`; the sweep's own settle is waited out first, on the database's clock, so the wait is on the floor alone).
 A sweep over an empty log has nothing above its horizon to wait for, so `sweep_runners_test.go` and the two-process sweep row in `cmd/dispatch` keep their own bounds (measured under a 45 s and a 75 s hold: they pass at once).
 `cmd/dispatch`'s `multiprocess` row that waits on another process's event, on its own process's relay, polls the same way over that process's output (`pollBehindHorizon`).
 `Listen` hands every record on to the handler it replaced, and when that is slog's own default handler it writes as that handler does through a logger of its own: slog's handler writes through the log package, and a record handed to it while `slog.SetDefault` has the log package pointed back at the new handler deadlocks every goroutine that logs (`TestListenOverSlogsOwnDefaultHandlerPassesEveryRecordOn`).
+Any number of tests may listen at once: the first live `Listen` installs one fan-out handler over the default it found, later listeners join it, each stop removes only its own listener, and the last to stop puts that default back (`TestListensStoppedInTheCrossedOrderEachKeepWhatWasLoggedWhileTheyListened`).
 
 The wait still ends in a named failure, rather than holding the run until the package's timeout; the bound is a signal rather than a clock.
 It fails when no warning at all has arrived within a base bound, when no new warning has arrived within an extension window, when a warning names the test's own database for a holder that has held the horizon back at least `horizontest.OwnHoldBound` — a client of Dispatch's own database holding its readers back that long is the defect, not a stall to wait out — and a drain margin before the run's own deadline, so the failure prints rather than being cut off by the package timeout.
 Silence alone does not fail a wait: the warnings come from a goroutine of the horizon's that a loaded machine can put off while a transaction still holds the horizon, so at the base bound or the end of an extension window the wait reads the instance's holder itself, with the query the diagnosis runs (`events.StallHolderSQL`), through the test's own pool or, for a Dispatch process, a connection of its own (`horizontest.Dialed`), and fails only when no transaction holds an id; a holder it finds counts as a warning.
+It reads the holder the same way behind a warning that names none — one whose diagnosis failed (`diagnosis_error`) or found no holder open — once for each such warning, so a hold of the test's own database behind failed diagnoses still fails the wait (`TestAWatchReadsTheHolderBehindAWarningThatNamesNone`, `TestAWatchReadsTheHolderOnceForEachWarningThatNamesNone`).
 Each failure names the newest warning, so the holder is in the output; the own-database failure also names that client's `application_name` and pid out of the warning, because a transaction in that database can be anyone's — an operator's `psql`, another test's fixture — and not only Dispatch's own.
 The base bound and the extension window are each three times a measurement taken under load or read from the server's own constants; `events/horizon.go`'s `horizonDiagnosisTimeout` is in the window between two warnings, because `warnStall` logs after its `pg_stat_activity` diagnosis.
 The other two numbers are neither: `horizontest.Poll` (250 ms) is the rate at which the wait samples the warnings, below a tenth of the extension window so it costs that window nothing, and `horizontest.Drain` (30 s) is what the wait leaves of the run's own deadline so that its failure prints instead of being cut off by the package timeout, which would name no test.
@@ -627,11 +759,13 @@ A fixed 10 s clock on it failed `TestSetAskBlockTextRefusalOfEveryBrokenBodyLead
 At the timeout all 8 connections were in use, with 1449 s of acquire waiting in total, and the same wait issued again returned at once.
 
 `awaitRoomAppends` therefore waits on the room's idle signal and sets no span of its own, so the bound is a signal rather than a clock.
-It fails when the appends have stopped: no append lands anywhere in the service, and the room's own counts do not change, for `appendStall`.
-That bound is 16 s, three times the longest such stall measured: with it lifted to 10 min, the package as CI runs it (`GODEBUG=checkfinalizers=1 go test -v -count=1`, 288 CPUs, load 230 when it began, 2026-11-16) had 927 of these waits go more than 1 s with no append landing and the room's counts unchanged, 231 more than 3 s and 22 for 5 s or more, and the longest went 5.363 s.
-The 9 s of `ShutdownDrainBudget` it was before, the time Shutdown gives the rooms' appends to land, was 1.7 times that stall.
+It fails when the appends have stopped: no append lands anywhere in the service, and the room's own counts do not change, for `roomWait`.
+`roomWait` (`settlement_credit_test.go` in the same package) is the package's give-up for a room's own work: two minutes, or what the run's deadline leaves less 30 s when that is sooner.
+The stall is a give-up for appends that must come and no measurement, so it takes the bound the package's other waits for the same appends use (`waitForLandedAppends`, `waitForPersistedUpdates`) rather than a span of its own.
+The longest such stall measured is far below it: with the bound lifted to 10 min, the package as CI runs it (`GODEBUG=checkfinalizers=1 go test -v -count=1`, 288 CPUs, load 230 when it began, 2026-11-16) had 927 of these waits go more than 1 s with no append landing and the room's counts unchanged, 231 more than 3 s and 22 for 5 s or more, and the longest went 5.363 s.
+Before `roomWait` the bound was `appendStall`, 16 s, three times that stall, and before that the 9 s of `ShutdownDrainBudget`, the time Shutdown gives the rooms' appends to land, 1.7 times that stall.
 It also fails 30 s before the run's own deadline, so that the failure names the wait.
-Two scratch tests checked it, each with the 10 s clock and with this wait:
+Two scratch tests checked it while its bound was 9 s and then 16 s, each with the 10 s clock and with this wait:
 
 - 24 rooms whose appends were each held 4 s on their connection settled in about 12 s. The clock failed 8 of the rooms in each of 2 runs, and this wait passed 3 of 3 with the 9 s bound and 1 of 1 with the 16 s one.
 - An append that another transaction's hold on the document's lock kept from landing failed both: the clock at 10 s, and this wait at 9.1 s with the 9 s bound and at 16.0 and 16.2 s with the 16 s one, naming the stall and the room's counts.

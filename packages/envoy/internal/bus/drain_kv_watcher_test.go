@@ -1,5 +1,8 @@
 package bus_test
 
+// Every test here that calls captureBusLogs (restart_test.go) captures the default slog handler, a
+// process-wide swap, so none of those is parallel (dispatch://INFRA-1075).
+
 import (
 	"context"
 	"encoding/json"
@@ -49,7 +52,7 @@ func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 			}
 			watcher := kvwatch.New("drain-test", kv, discardingCache{})
 			watcher.Start()
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), busWait)
 			defer cancel()
 			if err := watcher.WaitReady(ctx); err != nil {
 				t.Fatalf("wait for the watcher: %v", err)
@@ -94,6 +97,7 @@ func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 // A drain runs its hooks once the delivery subscriptions have drained and before the connection's
 // own drain, within the drain's deadline, so a hook's requests still reach the server.
 func TestDrainRunsItsHooksWhileTheConnectionCarriesRequests(t *testing.T) {
+	t.Parallel()
 	_, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
@@ -114,7 +118,7 @@ func TestDrainRunsItsHooksWhileTheConnectionCarriesRequests(t *testing.T) {
 	}
 	select {
 	case <-started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(busWait):
 		t.Fatal("the delivery never reached its handler")
 	}
 	type observed struct {
@@ -131,7 +135,7 @@ func TestDrainRunsItsHooksWhileTheConnectionCarriesRequests(t *testing.T) {
 			flush:     client.Conn.FlushWithContext(ctx),
 		}
 	})
-	if err := client.Drain(5 * time.Second); err != nil {
+	if err := client.Drain(busWait); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
 	close(ran)

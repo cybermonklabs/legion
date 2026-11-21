@@ -105,7 +105,7 @@ func TestEveryWakeReportCrossesTheBusAsAValidEnvelope(t *testing.T) {
 		{Kind: wakeKindReady},
 	} {
 		publishWakeReport(context.Background(), client, logging.New("test"), report)
-		message, err := subscription.NextMsg(10 * time.Second)
+		message, err := subscription.NextMsg(listenerWait)
 		if err != nil {
 			t.Fatalf("the %s report never reached %s: %v", report.Kind, bus.LegionWakeTopic, err)
 		}

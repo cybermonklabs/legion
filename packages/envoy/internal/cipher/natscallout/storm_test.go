@@ -96,7 +96,7 @@ func reconnectingSession(t *testing.T, url string, s *session, giveUpOnRefusal b
 // more than the service's decision slots, so the reconnects that reach it together queue for a
 // slot. Under the race detector it is two hundred (raceEnabled): the clients and the hub run in the
 // test's own process, and at five hundred under -race on a loaded machine the first connects
-// failed before anything under test had started. envoy-go's plain step runs the five hundred. The
+// failed before anything under test had started. envoy-go-race's plain step runs the five hundred. The
 // first connects are made twenty at a time for the same reason: they set the storm up and are not
 // the storm.
 //
