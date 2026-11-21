@@ -12,8 +12,10 @@ import (
 
 // The two migrations of block_refs' index of targets: blockRefsSourceIndex builds
 // block_refs_to_source on (to_kind, to_id, ((artifact_id)::text)), and dropBlockRefsTargetIndex
-// drops block_refs_to on (to_kind, to_id), the index it replaces. beforeBlockRefsSourceIndex is
-// the migration before them.
+// drops block_refs_to on (to_kind, to_id), the index it replaces. beforeBlockRefsSourceIndex is a
+// version before them, not the one just before: main's 20261120021308_search_text_versions sits
+// between it and blockRefsSourceIndex, so a census from it reads that migration too, and each test
+// reads only the entry of the migration it names.
 const (
 	beforeBlockRefsSourceIndex = 20261118020802
 	blockRefsSourceIndex       = 20261120222732
@@ -37,9 +39,9 @@ const blockRefsReaderHold = 30 * time.Second
 // Migrate runs on context.Background(), as the boot runs it on a context with no deadline. A
 // deadline in the runner shorter than 30 s would end the wait and fail this test through
 // Migrate's error. The test does not hold the reader for the drop's whole 120 s: that nothing ends
-// the wait between 30 s and 120 s is read from the code. The boot's context is
-// signal.NotifyContext (cmd/dispatch/main.go line 329), which carries no deadline, and it reaches
-// database.Migrate(ctx) (line 398) with none added. Migrate and migrate (store.go lines 132-156)
+// the wait between 30 s and 120 s is read from the code. The boot's context is the one main
+// (cmd/dispatch/main.go) makes with signal.NotifyContext, which carries no deadline, and main
+// hands it to database.Migrate(ctx) with none added. Migrate and migrate (store.go lines 132-156)
 // add none. The one context.WithTimeout in store.go, closeBounded's (line 297), bounds only the
 // close of a connection. pgmigrate's bound only a diagnosis of the holders after a lock timeout
 // (lock.go line 394, diagnoseHolders) and the rollback and close after it (line 405), the close of

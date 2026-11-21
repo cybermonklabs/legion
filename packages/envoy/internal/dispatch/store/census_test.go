@@ -1187,11 +1187,12 @@ func TestCensusExemptsTheDropOfTheSentDeliveriesIndexAtAnyTableSize(t *testing.T
 
 // blockRefsIndexCensus is the census of the two migrations of block_refs' index of targets - the
 // build of block_refs_to_source (blockRefsSourceIndex) and the drop of block_refs_to, the index it
-// replaces (dropBlockRefsTargetIndex) - over a database at beforeBlockRefsSourceIndex, the version
-// before them, under options. Only version's entry is read, never the verdict of the whole set,
-// for the reason TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives. It
-// answers that entry, and fails the test when that migration is not pending or touches a table of
-// one byte or less, which no limit the tests set could refuse.
+// replaces (dropBlockRefsTargetIndex) - over a database at beforeBlockRefsSourceIndex, a version
+// before them, under options; main's 20261120021308_search_text_versions is pending there too.
+// Only version's entry is read, never the verdict of the whole set, for the reason
+// TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives. It answers that
+// entry, and fails the test when that migration is not pending or touches a table of one byte or
+// less, which no limit the tests set could refuse.
 func blockRefsIndexCensus(t *testing.T, version int, options pgmigrate.CensusOptions) *pgmigrate.MigrationCensus {
 	t.Helper()
 	store := openEmptyTestStore(t)
