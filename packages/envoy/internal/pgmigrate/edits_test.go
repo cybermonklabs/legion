@@ -123,3 +123,56 @@ func TestCheckEditsHoldsTheFirstReplacesLineOfAChain(t *testing.T) {
 		})
 	}
 }
+
+// A third edit of a file. The version shipped as original; the first edit declares it, and the
+// base, the second edit, declares both. A database the first edit's release created from empty
+// records the version's first identity and the first edit's text, and the base accepts it. A head
+// that drops the first edit's line refuses that database at its next boot, so CheckEdits refuses
+// the head, naming the line; one that keeps every line of the base, in its order, and adds the
+// base's own after them, is accepted by both. On each row CheckEdits judges the head as Reconcile
+// judges that database under it. A head that moves the first edit's line after the base's refuses
+// no database for that line, since Reconcile reads the lines as a set, but every edit keeps the
+// lines before it in their order (Migration.RecordedIdentity), so CheckEdits refuses it too, naming
+// the line. So does a revert to the first edit's text, which accepts that text as its own but not
+// the base's: both are told the lines to begin with.
+func TestCheckEditsHoldsEveryReplacesLineOfTheBase(t *testing.T) {
+	const name = "0002_second.up.sql"
+	originalIdentity := Identity{Name: name, Checksum: sha256Hex("create table second (id integer)")}
+	firstEdit := "create table second (id integer, note text)\n-- replaces: " + originalIdentity.String() + "\n"
+	firstEditIdentity := Identity{Name: name, Checksum: sha256Hex(firstEdit)}
+	baseText := "create table second (id integer, note text, at timestamptz)\n-- replaces: " + originalIdentity.String() + "\n-- replaces: " + firstEditIdentity.String() + "\n"
+	baseIdentity := Identity{Name: name, Checksum: sha256Hex(baseText)}
+	thirdEdit := "create table second (id integer, note text, at timestamptz)\n-- a third edit\n"
+	base := map[string]string{name: baseText}
+	row := Recorded{Version: 2, Identity: originalIdentity, Applied: firstEditIdentity.Checksum}
+	if _, err := Reconcile(loadSet(t, base), []Recorded{row}); err != nil {
+		t.Fatalf("the base's Reconcile of %+v = %v; want it accepted", row, err)
+	}
+	keep := "make its first replaces lines these, in this order: -- replaces: " + originalIdentity.String() + ", -- replaces: " + firstEditIdentity.String() + " and -- replaces: " + baseIdentity.String()
+	for rowName, tc := range map[string]struct {
+		head    string
+		refused bool
+	}{
+		"the first edit's line dropped":             {head: thirdEdit + "-- replaces: " + originalIdentity.String() + "\n-- replaces: " + baseIdentity.String() + "\n", refused: true},
+		"every line of the base kept, in its order": {head: thirdEdit + "-- replaces: " + originalIdentity.String() + "\n-- replaces: " + firstEditIdentity.String() + "\n-- replaces: " + baseIdentity.String() + "\n"},
+	} {
+		t.Run(rowName, func(t *testing.T) {
+			declared, refused := 1, []string(nil)
+			if tc.refused {
+				declared, refused = 0, []string{name + " is " + name + " sha256:" + sha256Hex(tc.head), "drops the base's replaces line -- replaces: " + firstEditIdentity.String(), keep}
+			}
+			checkEdits(t, base, map[string]string{name: tc.head}, 0, declared, refused...)
+			if _, err := Reconcile(loadSet(t, map[string]string{name: tc.head}), []Recorded{row}); (err != nil) != tc.refused {
+				t.Errorf("the head's Reconcile of %+v = %v; want refused %t, as CheckEdits judges the head", row, err, tc.refused)
+			}
+		})
+	}
+	outOfPlace := "does not keep the base's replaces line -- replaces: " + firstEditIdentity.String() + " at its place in the base's order"
+	t.Run("the first edit's line moved after the base's", func(t *testing.T) {
+		head := thirdEdit + "-- replaces: " + originalIdentity.String() + "\n-- replaces: " + baseIdentity.String() + "\n-- replaces: " + firstEditIdentity.String() + "\n"
+		checkEdits(t, base, map[string]string{name: head}, 0, 0, outOfPlace, keep)
+	})
+	t.Run("a revert to the first edit's text", func(t *testing.T) {
+		checkEdits(t, base, map[string]string{name: firstEdit}, 0, 0, outOfPlace, keep)
+	})
+}

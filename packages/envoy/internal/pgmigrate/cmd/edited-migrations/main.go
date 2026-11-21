@@ -3,8 +3,9 @@
 // broker's, it compares every forward migration file the base commit holds with this tree's file
 // of the same version (pgmigrate.CheckEdits). A head file that differs from the base's must keep
 // the base's first identity as its first replaces line (the base file itself, where the base
-// declares none) and must accept the base's text, its own or one a replaces line names; a base
-// file whose version the head has no file for is refused.
+// declares none), must begin its replaces lines with the base's, in the base's order, and must
+// accept the base's text, its own or one a replaces line names; a base file whose version the
+// head has no file for is refused.
 //
 //	go build -o edited-migrations ./internal/pgmigrate/cmd/edited-migrations && ./edited-migrations --base <commit>
 //
