@@ -286,7 +286,7 @@ func TestGhRepoGitConfigRefusalWithNoGitOrAnOldGit(t *testing.T) {
 	none := t.TempDir()
 	old := t.TempDir()
 	script := "#!/bin/sh\nfor arg; do\n  if [ \"$arg\" = --show-scope ]; then\n    echo \"error: unknown option \\`show-scope'\" >&2\n    exit 129\n  fi\ndone\n" +
-		"PATH='" + strings.ReplaceAll(started, "'", `'\''`) + "'\nexec git \"$@\"\n"
+		"PATH=" + shellWord(started) + "\nexec git \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(old, "git"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
