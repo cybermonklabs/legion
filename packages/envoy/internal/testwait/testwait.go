@@ -5,21 +5,34 @@
 // is not a failure, and a condition that never holds still fails, naming what it waited for.
 // Eventually is the wait a test usually wants; WithinPolling takes a bound and a pace of its
 // own; Holds answers rather than fails, for a caller whose failure text is its own; and Bounded
-// is the clamp alone, for a wait that holds the rest itself. Receive and Context take no bound of
-// their own at all: Receive waits for a channel, and Context gives a call that takes a context or
-// a deadline the same end, the test binary's deadline less margin.
+// is the clamp alone, for a wait that holds the rest itself.
+//
+// Until and Receive take no bound at all, not even Eventually's minute: each gives up margin (30 s)
+// before the test binary's deadline, the one go test's -timeout sets, and at no other moment, so
+// only the fact it waits for ends it, and under -timeout 0 it has no end. A wait that begins with
+// 30 s or less of the binary's deadline left, as every wait does under a -timeout of 30 s or less,
+// has already passed that moment: Until asks once, Receive takes only a value already sent or a
+// close, and either fails the test at once when that answer is not there. Until waits until a
+// reading holds and returns it, asking every Poll, and its failure prints the last value it read;
+// UntilPolling is Until at a pace the caller gives, for a reading that costs something, such as a
+// request to a cluster. Receive waits for one receive from a channel. Context is a context whose
+// deadline is that same moment, the test binary's deadline less margin, for a call that takes a
+// context or a socket whose deadline is the context's. A wait that gives up writes
+// "testwait: <test>: gave up waiting for <what> 30s before the test binary's deadline; last read:
+// <reading>" to stderr at once, then fails the test with the same text: without -v, Go's alarm
+// panics without printing a running test's log, so a cleanup that outlasted the margin would
+// otherwise take the message with it. The text is one line: a newline in what or in the reading is
+// written as \n.
 package testwait
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
-
-// margin is how long before the test binary's deadline Receive and Context give up: the time the
-// failing test's cleanups and the failure itself have to run in before Go's alarm panics the
-// binary.
-const margin = 30 * time.Second
 
 // Poll is how often a condition is asked. It is short enough that a test which passes in
 // milliseconds still does, and long enough that a waiting test costs a loaded machine little.
@@ -67,12 +80,51 @@ func Holds(bound, poll time.Duration, condition func() bool) bool {
 	return waitUntil(time.Now().Add(bound), poll, condition)
 }
 
-// Receive waits for one receive from ch (a value, or the close of ch, which gives the zero
-// value), and fails the test with what it waited for once the test binary's deadline less margin
-// has passed. It has no bound of its own, so a send that is merely slow on a loaded machine never
-// fails a test, and one that never comes fails it before the binary's alarm; under -timeout 0 it
-// waits until ch yields. Once the margin has passed it asks ch once more and then fails, a wait
-// in a cleanup included, so the cleanups keep the margin to run in.
+// waitUntil asks condition every poll until it holds or deadline passes, reporting which. It
+// asks once more after the deadline, so a condition that came true during the last sleep is not
+// reported false: the alternative loses a race against the thing it waits for, and the cost is
+// one more question on the path where the wait has already failed.
+func waitUntil(deadline time.Time, poll time.Duration, condition func() bool) bool {
+	for time.Now().Before(deadline) {
+		if condition() {
+			return true
+		}
+		time.Sleep(poll)
+	}
+	return condition()
+}
+
+// margin is how long before the test binary's deadline Until and Receive give up: the time the
+// failing test's cleanups and the failure itself have to run in before Go's alarm panics the
+// binary.
+const margin = 30 * time.Second
+
+// Until waits until read reports true, asking every Poll, and returns what it read then. Its one
+// bound is the test binary's deadline less margin, and its failure prints the last value read.
+func Until[T any](t *testing.T, what string, read func() (T, bool)) T {
+	t.Helper()
+	return UntilPolling(t, Poll, what, read)
+}
+
+// UntilPolling is Until asking every poll, for a reading too costly to ask a hundred times a
+// second (Holds).
+func UntilPolling[T any](t *testing.T, poll time.Duration, what string, read func() (T, bool)) T {
+	t.Helper()
+	var value T
+	end, bounded := giveUpAt(t)
+	holds := func() bool {
+		var ok bool
+		value, ok = read()
+		return ok
+	}
+	if !asked(end, bounded, poll, holds) {
+		gaveUp(t, what, func() string { return fmt.Sprintf("%+v", value) })
+	}
+	return value
+}
+
+// Receive waits for one receive from ch (a value, or the close of ch, which gives the zero value).
+// Its one bound is the test binary's deadline less margin.
 func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 	t.Helper()
 	expired, stop := expiry(t)
@@ -88,7 +140,7 @@ func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 		return value
 	default:
 	}
-	t.Fatalf("timed out waiting for %s", what)
+	gaveUp(t, what, nil)
 	var zero T
 	return zero
 }
@@ -108,6 +160,19 @@ func Context(t *testing.T) context.Context {
 	return ctx
 }
 
+// asked asks holds every poll until it reports true, and reports whether it did. Once end has
+// passed a false answer ends the asking, so the question is asked once after end; with no end
+// (bounded false) it asks until holds reports true.
+func asked(end time.Time, bounded bool, poll time.Duration, holds func() bool) bool {
+	for !holds() {
+		if bounded && !time.Now().Before(end) {
+			return false
+		}
+		time.Sleep(poll)
+	}
+	return true
+}
+
 // expiry is a channel that receives once the moment giveUpAt names for t has passed, nil (which
 // never receives) under -timeout 0, and the function that releases its timer.
 func expiry(t *testing.T) (<-chan time.Time, func() bool) {
@@ -119,7 +184,7 @@ func expiry(t *testing.T) (<-chan time.Time, func() bool) {
 	return timer.C, timer.Stop
 }
 
-// giveUpAt is the moment Receive and Context give up in t: the test binary's deadline less
+// giveUpAt is the moment Until, Receive and Context give up in t: the test binary's deadline less
 // margin, and false when the binary has no deadline (-timeout 0).
 func giveUpAt(t *testing.T) (time.Time, bool) {
 	deadline, bounded := t.Deadline()
@@ -129,16 +194,19 @@ func giveUpAt(t *testing.T) (time.Time, bool) {
 	return deadline.Add(-margin), true
 }
 
-// waitUntil asks condition every poll until it holds or deadline passes, reporting which. It
-// asks once more after the deadline, so a condition that came true during the last sleep is not
-// reported false: the alternative loses a race against the thing it waits for, and the cost is
-// one more question on the path where the wait has already failed.
-func waitUntil(deadline time.Time, poll time.Duration, condition func() bool) bool {
-	for time.Now().Before(deadline) {
-		if condition() {
-			return true
-		}
-		time.Sleep(poll)
+// oneLine writes a newline or a carriage return as its escape, so a failure text is one line.
+var oneLine = strings.NewReplacer("\n", `\n`, "\r", `\r`)
+
+// gaveUp ends a wait in t that the margin ended: it writes the failure's text to stderr at once,
+// in one write, then fails t with the same text. reading is the wait's last reading, or nil for a
+// wait that has none.
+func gaveUp(t *testing.T, what string, reading func() string) {
+	t.Helper()
+	text := fmt.Sprintf("testwait: %s: gave up waiting for %s %s before the test binary's deadline", t.Name(), what, margin)
+	if reading != nil {
+		text += "; last read: " + reading()
 	}
-	return condition()
+	text = oneLine.Replace(text)
+	_, _ = os.Stderr.WriteString(text + "\n")
+	t.Fatalf("%s", text)
 }

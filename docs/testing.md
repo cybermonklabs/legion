@@ -13,7 +13,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 
 - A bounded wait is the module's `internal/testwait`.
   `Eventually` is the wait a test usually wants, a minute or the binary's own deadline less a second, at `Poll`, the package's own pace, failing with what it waited for; `WithinPolling` takes a bound and a pace of its own; `Holds` answers rather than fails, for a caller whose failure text is its own diagnostic dump or is built at give-up; and `Bounded` is that deadline clamp alone, for a wait that keeps a loop or a margin of its own, as the idle rig's do.
-  `Receive` waits for one receive from a channel and `Context` is a context for a call that takes one, or for a socket's deadline: both end at the binary's own deadline less 30 s, the time the failing test's cleanups run in, and take no bound of their own, so a send that is only slow on a loaded machine fails nothing.
+  `Until` waits until a reading holds and returns it, at `Poll`, and `UntilPolling` is `Until` at a pace of the caller's; `Receive` waits for one receive from a channel; and `Context` is a context for a call that takes one, or for a socket's deadline. All four end at the binary's own deadline less 30 s, the time the failing test's cleanups run in, and take no bound of their own, so a step that is only slow on a loaded machine fails nothing.
   A loop that is not a wait-for keeps its body: one that runs its check for a whole span rather than stopping at the first success, one that sends or serves on a tick, one that drives a stand-in process's own main loop, and one that retries a compare-and-set.
 
 - A fixture that runs git or jj takes its runner and its `init` argv from `packages/daemon/internal/fixturegit`.
