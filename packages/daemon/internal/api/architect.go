@@ -540,9 +540,10 @@ func (s *server) documentOfIssue(w http.ResponseWriter, r *http.Request, artifac
 
 // releasableChild accepts an issue of the architect's tree that has not entered the workflow and
 // that the architect owns: a triage, backlog, or icebox issue whose Dispatch parent chain reaches
-// the grant's tree, through the grant's own issue for a sub-architect. The record cannot answer,
-// since it holds a child only once the child is todo, and a root that queued in admission before a
-// person made it a child of the tree is recorded in a tree of its own until the release adopts it
+// the grant's tree through issues of its own project alone, through the grant's own issue for a
+// sub-architect. The record cannot answer, since it holds a child only once the child is todo,
+// and a root that queued in admission before a person made it a child of the tree is recorded in
+// a tree of its own until the release adopts it
 // (adoptReleasedChildren); the shipped daemon checks the same membership over its mirrored issue
 // graph. An issue already in the workflow is refused, since writing todo would move an in-progress
 // child back.
@@ -565,9 +566,17 @@ func (s *server) releasableChild(w http.ResponseWriter, r *http.Request, grant c
 	}
 	// inTree walks the child's Dispatch parent chain up to the tree root and answers a chain that
 	// never reaches it; throughGrant says whether the chain passed the grant's own issue on the way.
+	// The walk ends before the first ancestor of another project than the child's, as the daemon's
+	// own read of a queued root's chain does (daemon's chainOf): that ancestor's own project's
+	// daemon runs its tree, so an issue under it is a root of its own project, outside every tree
+	// above it, and an issue of another project is in no tree of this one.
 	inTree := func() (throughGrant, ok bool) {
+		project, _, _ := strings.Cut(key, "-")
 		seen := map[string]bool{key: true}
 		for parent := child.Parent; parent != nil && !seen[*parent]; {
+			if of, _, _ := strings.Cut(*parent, "-"); of != project {
+				break
+			}
 			if *parent == grant.Tree {
 				return throughGrant, true
 			}
