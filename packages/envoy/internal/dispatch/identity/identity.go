@@ -198,9 +198,10 @@ func WriteError(w http.ResponseWriter, err error) {
 }
 
 // WriteErrorSigningIn is WriteError, with signIn, when not empty, added to a 401 NO_IDENTITY as
-// `sign_in`: how the page at the request's origin signs a person in, "passkey" at the outside
-// origin (GET /auth/whoami), which serves no Google sign-in, so its sign-in page offers no Google
-// sign-in that answers 404 there.
+// `sign_in`: how the page at the request's origin signs a person in. GET /auth/whoami names
+// "passkey" at the outside origin whatever DISPATCH_SIGNIN_PASSKEY says, since that origin serves
+// no Google sign-in either way; with passkey sign-in off its ceremonies answer 404, which the
+// dashboard's sign-in page words as sign-in turned off at this address.
 func WriteErrorSigningIn(w http.ResponseWriter, err error, signIn string) {
 	status := http.StatusInternalServerError
 	body := map[string]string{"error": "identity resolution failed", "code": "IDENTITY_ERROR"}

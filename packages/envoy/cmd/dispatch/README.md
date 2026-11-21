@@ -702,7 +702,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   An internationalized entry is written in Unicode or as its A-labels, and the rule holds it as its A-labels (`idna.Lookup.ToASCII`);
   an address's domain is compared without one trailing dot and, when written in Unicode, also as IDNA lookup maps it, so `bob@bücher.example`, `Bob@BÜCHER.example` and the sign-in domain in fullwidth letters are refused as their A-label spellings are.
   For a domain the Workspace owns that the setting does not list, a restricted member never takes the address of a full member who signed in under another Google account, or under none:
-  `PgPeopleStore.SignInSubject` records nothing in the transaction that would take the address (`auth.ErrAddressHeldByMember`), so the member's sessions and refresh token stand.
+  the passkey store's enrollment (`PgPasskeys.Enroll`) is refused before it writes (`refuseAMembersAddress`) and again under the address's lock (`signInAccountTx`), each `auth.ErrAddressHeldByMember`, which records nothing, so the member's sessions and refresh token stand.
   A restricted member's Google sign-in that an earlier build admitted ends at its next hourly confirmation (below), since the refreshed account is not in the domain.
 
 - With `DISPATCH_SIGNIN_PASSKEY=1` beside the domain, a person outside it whom a project's access list names directly signs in as a restricted member with a passkey, at `DISPATCH_OUTSIDE_ORIGIN` alone, and with no Google account (`identity.PasskeyRule`, `identity.Passkeys`, the `/auth/passkey/*` routes below).
