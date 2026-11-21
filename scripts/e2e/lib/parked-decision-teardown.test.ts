@@ -1,7 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { requireHostTools, skipOutsideCI } from "@legion/test-fixtures/host-tools";
+import { hostGate, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { procRootOf } from "./proc-root";
 import { scriptFunctions } from "./script-functions";
@@ -17,7 +17,7 @@ import { scriptFunctions } from "./script-functions";
 // the pane and leaves all three alive, as the brokers outlived cleanup-is-complete in the devbox
 // run at 6512c7fc. The pane the stand-in broker starts is a real tmux pane, and the teardown this
 // test is about is tmux kill-server's, so a host with no tmux skips the row naming tmux, and under
-// GITHUB_ACTIONS fails it naming tmux (skipOutsideCI). CI's `test` job
+// GITHUB_ACTIONS fails it by its own name, naming tmux (hostGate). CI's `test` job
 // (.github/workflows/ci-job-test.yaml) installs no tmux of its own: the ubuntu-24.04-arm image it
 // runs on already carries it.
 const e2e = join(import.meta.dir, "..");
@@ -28,7 +28,7 @@ const set = readFileSync(scriptPath, "utf8").match(/^set -.*$/m)?.[0];
 if (set === undefined) throw new Error(`${scriptPath} has no top-level set line`);
 
 // Read once, at module scope: a call inside the test body would print the warning per row.
-const skip = skipOutsideCI("tmux");
+const host = hostGate({ programs: ["tmux"] });
 
 const dir = temporaryDirectory("parked-decision-teardown-test");
 const started: number[] = [];
@@ -140,7 +140,7 @@ ${body}`,
   return { code: ran.exitCode, stdout: ran.stdout.toString(), stderr: ran.stderr.toString() };
 }
 
-test.skipIf(skip)(
+host.test(
   "stops a detached broker's session that outlives tmux kill-server, and nothing it cannot tie to one",
   async () => {
     const work = join(dir, "work");

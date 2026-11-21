@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { requireHostTools, skipOutsideCI } from "@legion/test-fixtures/host-tools";
+import { hostGate, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "./arg-max-force";
 import { ownGroup, untilRunning } from "./own-group";
@@ -19,7 +19,7 @@ const force = join(import.meta.dir, "arg-max-force.sh");
 const root = join(import.meta.dir, "..", "..", "..");
 const dir = temporaryDirectory("run-processes-test");
 // perl: every process a row starts, and every harness, runs through ownGroup (lib/own-group.ts).
-const skip = skipOutsideCI("perl");
+const host = hostGate({ programs: ["perl"] });
 // python3: the newline-name row renames its process through prctl (ctypes), and fails by name
 // without it rather than skipping (requireHostTools).
 const bin = join(dir, "bin");
@@ -144,7 +144,7 @@ function rowRoot(): string {
 }
 const pids = (out: string) => out.split("\n").filter(Boolean);
 
-test.skipIf(skip)(
+host.test(
   "names each process that carries the run's mark and none that only works under the run's directory or names it, running no command for each /proc entry",
   () => {
     const work = join(dir, "work");
@@ -195,7 +195,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "names a marked process of the run that left every tree the run started, double-forked to pid 1 or a subreaper",
   () => {
     // run_processes is the run's search for its leftovers: a daemon that forked twice and whose
@@ -234,7 +234,7 @@ test.skipIf(skip)(
 
 // The force cannot hold under gVisor (a Legion pod's kernel), which starts a program past ARG_MAX:
 // there these two rows are skipped, by this name (argMaxForceHolds), rather than failed or passed.
-test.skipIf(skip || !argMaxForceHolds())(
+(argMaxForceHolds() ? host.test : test.skip)(
   "names every marked process of the run where argv and the environment past ARG_MAX would stop a program handed every /proc entry",
   () => {
     // The force (lib/arg-max-force.sh): an exec handed every <pid> entry of the row's proc root as an
@@ -256,7 +256,7 @@ run_processes`
   }
 );
 
-test.skipIf(skip || !argMaxForceHolds())(
+(argMaxForceHolds() ? host.test : test.skip)(
   "listening_holders names the holder of a listening socket where a program handed every /proc/<pid>/fd would not start",
   () => {
     // listening_holders (lib/rig.sh) walks every process for the one holding a socket, held_only_by's
@@ -281,7 +281,7 @@ listening_holders ${listener.port}`
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "a walk whose reader a signal ended after part of its output is no answer: listening_holders and run_processes exit 2",
   () => {
     // A find that writes 2000 bytes and is then SIGKILLed prints no complaint of its own; neither does
@@ -328,7 +328,7 @@ st=0; run_processes >/dev/null 2>"$work/rp.err" || st=$?; echo "run_processes $s
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "a run that has not marked itself has no processes to read: run_processes and stop_marked_processes exit 2",
   () => {
     const work = join(dir, "unmarked");
@@ -345,7 +345,7 @@ st=0; stop_marked_processes "$work" 2>"$work/stop.err" || st=$?; echo "stop_mark
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "an empty run directory names no process: marked_processes, procs_naming and names_dir refuse it with 2",
   () => {
     // With DIR empty and the mark unset, `LEGION_E2E_RUN=` and `XDG_CONFIG_HOME=` followed by any
@@ -373,7 +373,7 @@ st=0; names_dir "" XDG_CONFIG_HOME ${bystander} 2>"$work/nd.err" || st=$?; echo 
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes ends every marked process of the run, an escaped one too, and leaves a person's shell and tail -f under the run's directory running",
   async () => {
     const work = join(dir, "sweep");
@@ -406,7 +406,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes with a grace gives each marked process SIGTERM and the grace to exit, then SIGKILLs only the survivors",
   async () => {
     const work = join(dir, "grace");
@@ -447,7 +447,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes signals no pid whose start time is not the one its walk read, and leaves it running",
   async () => {
     // The walk's pairs stand in for a pid that ended and passed to another marked process between the
@@ -468,7 +468,7 @@ stop_marked_processes "$work"; echo "status $?"`
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes ends a child that cleared its environment with the marked process that started it",
   async () => {
     // A marked bash starts a child under `env -i`, which carries no mark and no other variable of the
@@ -502,7 +502,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes with a grace ends a child that cleared its environment when the marked process that started it exits on its SIGTERM",
   async () => {
     // The marked process exits on the TERM and leaves its child behind; its children were read while
@@ -532,7 +532,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes ends a marked process it froze even where its parent reads otherwise the second time, as when the parent exits after the freeze",
   async () => {
     // proc_parent answers the real parent on its first read of the process and pid 1 on every read
@@ -556,7 +556,7 @@ stop_marked_processes "$work"; echo "status $?"`
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes with a grace leaves running a pid below a marked process whose parent is not the process it was read under, as a pid a stranger took",
   async () => {
     // proc_children answers, for the marked bash's child, the pid of a stranger: an unmarked process
@@ -588,7 +588,7 @@ stop_marked_processes "$work" 1; echo "status $?"`
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes with a grace leaves running the children of a stranger that took the pid of a process below a marked one",
   async () => {
     // The marked bash's child, which carries no mark, is read and printed; then its pid passes to
@@ -629,7 +629,7 @@ stop_marked_processes "$work" 1; echo "status $?"`
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "names and ends a marked process whose name holds a newline and a `) `, which a read of the stat's first line took for another parent and no start",
   async () => {
     requireHostTools("python3");

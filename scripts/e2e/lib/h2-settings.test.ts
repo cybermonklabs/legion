@@ -5,7 +5,7 @@ import https from "node:https";
 import net, { type AddressInfo } from "node:net";
 import { join } from "node:path";
 import tls from "node:tls";
-import { skipOutsideCI } from "@legion/test-fixtures/host-tools";
+import { hostGate } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // The probe runs as an operator runs it, a process of its own, against a local TLS server that
@@ -21,10 +21,10 @@ const keyFile = join(scratch, "key.pem");
 const closers: (() => void)[] = [];
 let tlsFiles: { readonly cert: Buffer; readonly key: Buffer };
 
-const skip = skipOutsideCI("openssl");
+const host = hostGate({ programs: ["openssl"] });
 
 beforeAll(() => {
-  if (skip) return;
+  if (host.missing) return;
   const made = Bun.spawnSync([
     "openssl",
     "req",
@@ -104,7 +104,7 @@ function advertisingServer(): tls.Server {
   return server;
 }
 
-test.skipIf(skip)(
+host.test(
   "a server advertising ENABLE_CONNECT_PROTOCOL prints its SETTINGS and exits 1",
   async () => {
     const port = await listen(advertisingServer());
@@ -120,21 +120,18 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
-  "a server that does not advertise it prints its SETTINGS and exits 0",
-  async () => {
-    const port = await listen(http2.createSecureServer({ ...tlsFiles, settings: {} }));
-    // By address, so the probe sends no SNI and the certificate's IP name is the one checked.
-    const result = await run([`https://127.0.0.1:${port}`]);
-    expect(result.code).toBe(0);
-    expect(result.stderr).toBe("");
-    const answer = JSON.parse(result.stdout);
-    expect(answer).toMatchObject({ alpn: "h2", url: `https://127.0.0.1:${port}/` });
-    expect(answer.settings.enableConnectProtocol).toBe(false);
-  }
-);
+host.test("a server that does not advertise it prints its SETTINGS and exits 0", async () => {
+  const port = await listen(http2.createSecureServer({ ...tlsFiles, settings: {} }));
+  // By address, so the probe sends no SNI and the certificate's IP name is the one checked.
+  const result = await run([`https://127.0.0.1:${port}`]);
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  const answer = JSON.parse(result.stdout);
+  expect(answer).toMatchObject({ alpn: "h2", url: `https://127.0.0.1:${port}/` });
+  expect(answer.settings.enableConnectProtocol).toBe(false);
+});
 
-test.skipIf(skip)("a server that speaks no HTTP/2 exits 0 with no SETTINGS", async () => {
+host.test("a server that speaks no HTTP/2 exits 0 with no SETTINGS", async () => {
   const port = await listen(https.createServer(tlsFiles, (_request, response) => response.end()));
   const result = await run([`https://localhost:${port}`]);
   expect(result.code).toBe(0);
@@ -146,7 +143,7 @@ test.skipIf(skip)("a server that speaks no HTTP/2 exits 0 with no SETTINGS", asy
   });
 });
 
-test.skipIf(skip)("a certificate the probe cannot verify is no answer, exit 2", async () => {
+host.test("a certificate the probe cannot verify is no answer, exit 2", async () => {
   const port = await listen(advertisingServer());
   const result = await run([`https://localhost:${port}`], {});
   expect(result.code).toBe(2);
@@ -157,7 +154,7 @@ test.skipIf(skip)("a certificate the probe cannot verify is no answer, exit 2", 
 // The handshake and the server's first SETTINGS share one 10 s deadline: a server that chooses h2
 // and then sends nothing, and one that accepts the connection and never answers the handshake, are
 // no answer. Both run at once, so the row waits the deadline once.
-test.skipIf(skip)(
+host.test(
   "a server that sends no SETTINGS within 10 s is no answer, exit 2",
   async () => {
     const chosen: (string | false)[] = [];

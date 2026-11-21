@@ -1,7 +1,7 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { hostTool, requireHostTools, skipOutsideCI } from "@legion/test-fixtures/host-tools";
+import { hostGate, hostTool, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "./own-group";
 import { scriptFunctions } from "./script-functions";
@@ -33,7 +33,7 @@ const dir = temporaryDirectory("claude-backend-guards-test");
 // The gate is given every name: it walks each one and names the missing ones in its warning.
 // `found` is the run's own walk, whose real binaries the stand-ins below are copies of.
 const found = new Map(["bash", "sleep", "sh"].map((name) => [name, hostTool(name)] as const));
-const skip = skipOutsideCI("bash", "sleep", "sh", "perl");
+const host = hostGate({ programs: ["bash", "sleep", "sh", "perl"] });
 function tool(name: string): string {
   const path = found.get(name) ?? null;
   if (path === null) throw new Error(`${name} is not on PATH`);
@@ -63,7 +63,7 @@ const claudeWithTool = join(claudeDir, "claude-with-tool");
 const ompTool = join(dir, "real", "omp");
 const cwd = join(dir, "cwd");
 beforeAll(() => {
-  if (skip) return;
+  if (host.missing) return;
   mkdirSync(work);
   copyFileSync(tool("bash"), join(work, "legion"));
   mkdirSync(claudeDir);
@@ -165,7 +165,7 @@ await_below() {
 
 const slow = 60_000;
 
-describe.skipIf(skip)("bridged", () => {
+host.describe("bridged", () => {
   test(
     "accepts the run's legion claude-bridge -- <claude> every time, with a pane-sized multi-line argument",
     () => {
@@ -218,7 +218,7 @@ if bridged "$child"; then echo "other claude: accepted"; else echo "other claude
   );
 });
 
-describe.skipIf(skip)("claude_pid", () => {
+host.describe("claude_pid", () => {
   // A pane stand-in: bash for the pane's own `sh -c`, the run's legion running pane-shim for its
   // `legion worker-shim`, and the run's legion running claude-bridge, whose one child is the run's
   // claude.
@@ -300,7 +300,7 @@ esac`);
   );
 });
 
-describe.skipIf(skip)("endpoint_mismatch", () => {
+host.describe("endpoint_mismatch", () => {
   const rig = [
     "DISPATCH_URL=http://127.0.0.1:1",
     "DISPATCH_TOKEN_FILE=/rig/secrets/dispatch-token",

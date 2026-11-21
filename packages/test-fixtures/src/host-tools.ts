@@ -1,3 +1,5 @@
+import { beforeEach, describe as bunDescribe, test as bunTest } from "bun:test";
+
 /** The path of the program on this host's `PATH`, or null when the host does not have it. */
 export function hostTool(name: string): string | null {
   return Bun.which(name);
@@ -24,40 +26,92 @@ export function skipWithout(...names: string[]): boolean {
   return true;
 }
 
-/**
- * The gate for a test that needs host programs, under the repository's convention for a test a
- * machine cannot run (skipOutsideCI in packages/daemon/internal/launcher/rolenamespace_test.go):
- * outside CI it is `skipWithout`, true with one warning naming every missing program and the
- * file; under GITHUB_ACTIONS a missing program is a broken runner, never a green job with the
- * proof gone from it, so it throws, naming them and the file, and the file fails. With no names,
- * or with every program present, it is false and prints nothing. Call it once, at module scope.
- */
-export function skipOutsideCI(...names: string[]): boolean {
-  const missing = names.filter((name) => hostTool(name) === null);
-  return skipOutsideCIBecause(
-    missing.length === 0 ? "" : `This host does not have: ${missing.join(", ")}.`
-  );
+/** What a host gate needs: programs and a reason under the CI rule, and programs never skipped for. */
+export interface HostGateNeeds {
+  /** Programs a missing one of which skips the gated tests outside CI and fails them in CI. */
+  readonly programs?: readonly string[];
+  /** A sentence of the caller's own that holds the same way, such as "This host has no libpq."; empty for none. */
+  readonly reason?: string;
+  /** Programs a missing one of which fails the gated tests on any host, never skipping them. */
+  readonly never?: readonly string[];
+}
+
+/** A gate's own `test` and `describe`, and whether anything it needs is missing. */
+export interface HostGate {
+  /** True when anything the gate needs is missing: a setup hook of the gated tests skips its work. */
+  readonly missing: boolean;
+  /** `test` under the gate. */
+  readonly test: (
+    name: string,
+    fn: Parameters<typeof bunTest>[1],
+    options?: Parameters<typeof bunTest>[2]
+  ) => void;
+  /** `describe` under the gate. */
+  readonly describe: (name: string, fn: () => void) => void;
 }
 
 /**
- * `skipOutsideCI` for a reason of the caller's own, a sentence such as "This host has no libpq.":
- * an empty reason is false and prints nothing; any other skips outside CI, warning with the reason
- * and the file, and throws them under GITHUB_ACTIONS.
+ * The gate for tests that need host programs, under the repository's rule for a test a machine
+ * cannot run (skipOutsideCI in packages/daemon/internal/launcher/rolenamespace_test.go). Where
+ * nothing it needs is missing, its `test` and `describe` are bun's. Where something is missing,
+ * outside CI each gated test is skipped, with one warning naming what is missing and the file, as
+ * `skipWithout` does; under GITHUB_ACTIONS each gated test fails, by its own name, with an error
+ * naming what is missing, since the job that runs it is set up to run it and a skip there would
+ * be a green job with the proof gone. A missing program of `never` fails each gated test on any
+ * host. Call it once, at module scope, and declare the gated tests with its `test` and
+ * `describe`.
  */
-export function skipOutsideCIBecause(reason: string): boolean {
-  if (reason === "") return false;
+export function hostGate(needs: HostGateNeeds): HostGate {
+  const never = (needs.never ?? []).filter((name) => hostTool(name) === null);
+  const programs = (needs.programs ?? []).filter((name) => hostTool(name) === null);
+  const reasons = [
+    never.length === 0
+      ? ""
+      : `This host does not have: ${never.join(", ")}, which these tests never skip for.`,
+    programs.length === 0 ? "" : `This host does not have: ${programs.join(", ")}.`,
+    needs.reason ?? "",
+  ].filter((reason) => reason !== "");
   const file = callerFile(new Error().stack);
   const where = file === undefined ? "in this file" : `in ${file}`;
-  if (process.env.GITHUB_ACTIONS === "true") {
-    throw new Error(
-      `The tests ${where} cannot run on this CI runner. ${reason} ` +
-        "The job must provide it: under GITHUB_ACTIONS a test this machine cannot run fails, never skips."
+  const fails =
+    never.length > 0 || (reasons.length > 0 && process.env["GITHUB_ACTIONS"] === "true");
+  const skips = reasons.length > 0 && !fails;
+  const failure =
+    `This test cannot run on this host. ${reasons.join(" ")} ` +
+    (never.length > 0
+      ? "It fails rather than skips."
+      : "Under GITHUB_ACTIONS a test this machine cannot run fails, never skips.");
+  if (skips) {
+    console.warn(
+      `Skipped the tests ${where}. ${reasons.join(" ")} Install what is missing and run the tests again.`
     );
   }
-  console.warn(
-    `Skipped the tests ${where}. ${reason} Install what is missing and run the tests again.`
-  );
-  return true;
+  return {
+    missing: reasons.length > 0,
+    test: (name, fn, options) => {
+      if (skips) bunTest.skip(name, fn, options);
+      else if (fails)
+        bunTest(
+          name,
+          () => {
+            throw new Error(failure);
+          },
+          options
+        );
+      else bunTest(name, fn, options);
+    },
+    describe: (name, fn) => {
+      if (skips) bunDescribe.skip(name, fn);
+      else if (fails)
+        bunDescribe(name, () => {
+          beforeEach(() => {
+            throw new Error(failure);
+          });
+          fn();
+        });
+      else bunDescribe(name, fn);
+    },
+  };
 }
 
 /**

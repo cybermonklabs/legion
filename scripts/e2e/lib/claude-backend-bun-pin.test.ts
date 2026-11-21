@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { skipOutsideCIBecause } from "@legion/test-fixtures/host-tools";
+import { hostGate } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // claude-backend-tmux.sh builds claude-envoy with packages/claude-envoy/scripts/build.ts, which
@@ -134,10 +134,10 @@ if ((process.env.HOME ?? "") === "") {
       "version manager's shim"
   );
 }
-// Outside CI the row skips, naming why; under GITHUB_ACTIONS it fails so (skipOutsideCIBecause).
-const skip = skipOutsideCIBecause(
-  reasons.length > 0 ? `The row that runs the rig cannot run: ${reasons.join("; ")}.` : ""
-);
+// Outside CI the row skips, naming why; under GITHUB_ACTIONS it fails so, by its own name (hostGate).
+const host = hostGate({
+  reason: reasons.length > 0 ? `The row that runs the rig cannot run: ${reasons.join("; ")}.` : "",
+});
 const keyFile = join(dir, "model-key");
 
 // The run's own bin, home and scratch, built before the row runs: `dir` is reserved at module
@@ -153,7 +153,7 @@ beforeAll(() => {
   writeFileSync(keyFile, "sk-test\n", { mode: 0o600 });
 });
 
-test.skipIf(skip)(
+host.test(
   "a bun other than the pinned release is refused in prerequisites, naming the pin",
   () => {
     const run = Bun.spawnSync(["bash", script], {

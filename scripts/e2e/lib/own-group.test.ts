@@ -1,9 +1,9 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect } from "bun:test";
 import { realpathSync } from "node:fs";
-import { hostTool, skipOutsideCI } from "@legion/test-fixtures/host-tools";
+import { hostGate, hostTool } from "@legion/test-fixtures/host-tools";
 import { ownGroup, untilRunning } from "./own-group";
 
-const skip = skipOutsideCI("perl", "bash", "sleep", "true");
+const host = hostGate({ programs: ["perl", "bash", "sleep", "true"] });
 
 const started: number[] = [];
 afterEach(() => {
@@ -36,7 +36,7 @@ perl -e "$1"; printf 'environment %s\\n' "$(env | sort | cksum)"
 read -r s </proc/$$/stat; s=\${s##*) }; set -- $s
 printf 'leads its group %s\\nparent %s\\n' "$([ "$3" = $$ ] && echo yes || echo no)" "$2"`;
 
-test.skipIf(skip)(
+host.test(
   "ownGroup's process leads a group of its own, with the runner as its parent, and gets the dispositions and the environment a plain start gets",
   () => {
     const env = { PATH: process.env.PATH ?? "" };
@@ -58,14 +58,14 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)("untilRunning resolves once the pid runs the program", async () => {
+host.test("untilRunning resolves once the pid runs the program", async () => {
   const child = Bun.spawn(ownGroup(["sleep", "60"]), { stdout: "ignore", stderr: "ignore" });
   started.push(child.pid);
   await untilRunning(child.pid, "sleep");
   expect(realpathSync(`/proc/${child.pid}/exe`)).toBe(realpathSync(hostTool("sleep") ?? "sleep"));
 });
 
-test.skipIf(skip)(
+host.test(
   "untilRunning fails at its bound, naming the pid, the program and what the pid runs, when the pid never runs the program",
   async () => {
     const child = Bun.spawn(ownGroup(["sleep", "60"]), { stdout: "ignore", stderr: "ignore" });
