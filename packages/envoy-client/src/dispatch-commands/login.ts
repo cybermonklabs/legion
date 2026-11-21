@@ -172,6 +172,10 @@ export async function loginCommand(
     const lines = [
       `dispatch login: approved. This machine's device login is kept in ${DEVICE_LOGIN_FILE_NAMED}; its launcher credential ${login.credentialId} lasts until ${login.expiresAt.toISOString()}, and each refresh moves that on.`,
     ];
+    if (login.lockLeft !== "") {
+      // The login is kept and in use, so this names no credential to revoke.
+      lines.push(`dispatch login: the login is kept, but ${login.lockLeft}.`);
+    }
     if (login.replaced !== "" && login.replaced !== login.credentialId) {
       lines.push(
         `dispatch login: the earlier login of this machine, launcher credential ${login.replaced}, stays live until it lapses or is revoked, and a copy of its file still works; revoke it in Machine logins on ${started.verificationUri}.`

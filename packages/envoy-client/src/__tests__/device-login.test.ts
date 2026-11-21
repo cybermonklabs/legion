@@ -8,8 +8,9 @@
 // the session; and two processes that trade at once spend one refresh token once, since the
 // broker revokes a login whose rotated refresh token is presented again past its grace.
 
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { chmodSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
 import { DEVICE_LOGIN_COMMAND } from "@legion/cipher-client/token-errors";
@@ -161,6 +162,40 @@ test("a login approved and then not kept names its credential and where to revok
   expect(stdout).not.toContain(file);
   // The save stopped before it wrote anything: no copy of the login and no temporary file.
   expect(readdirSync(path.dirname(file))).toEqual(["device-login.json"]);
+});
+
+test("a login kept whose lock is not let go says so, and asks for no revoke", async () => {
+  const stub = broker({ credentialId: "cred-kept-1" });
+  const file = path.join(tempDir(), "legion", "device-login.json");
+  // The save keeps the login; then letting go of its lock fails, at the move of the lock aside.
+  const real = fsp.rename;
+  const renames = spyOn(fsp, "rename").mockImplementation((async (
+    from: Parameters<typeof fsp.rename>[0],
+    to: Parameters<typeof fsp.rename>[1]
+  ) => {
+    if (String(from) === `${file}.lock`) {
+      throw Object.assign(new Error("refused"), { code: "EIO" });
+    }
+    return await real(from, to);
+  }) as typeof fsp.rename);
+  let ran = { code: -1, stdout: "", stderr: "" };
+  try {
+    ran = await dispatch(["login", "--device", "--person", PERSON], {
+      HOME: tempDir(),
+      AGENT_SECRETS_URL: stub.url,
+      AGENT_SECRETS_DEVICE_LOGIN_FILE: file,
+    });
+  } finally {
+    renames.mockRestore();
+  }
+  // The machine uses this login: the command says it is kept, and why the lock was left, and
+  // tells nobody to revoke it.
+  expect(ran.code, ran.stdout).toBe(0);
+  expect(ran.stdout).toContain("launcher credential cred-kept-1");
+  expect(ran.stdout).toContain("the login is kept, but this process could not let go of the lock");
+  expect(ran.stdout).toContain("EIO");
+  expect(ran.stdout).not.toContain("revoke it");
+  expect(JSON.parse(readFileSync(file, "utf8")).credential_id).toBe("cred-kept-1");
 });
 
 test("dispatch --help names dispatch login, and dispatch login --help says what it reads", async () => {

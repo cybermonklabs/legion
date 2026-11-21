@@ -718,11 +718,15 @@ export async function startDeviceLogin(options: {
   };
 }
 
-/** A login {@link finishDeviceLogin} kept, and `replaced`: the launcher credential of the login
+/** A login {@link finishDeviceLogin} kept, with `replaced`, the launcher credential of the login
  *  its file held just before, which this one replaced, or "" where the file held none that reads
- *  as a login. That credential stays live at the broker until it lapses or is revoked. */
+ *  as a login: that credential stays live at the broker until it lapses or is revoked. `lockLeft`
+ *  says why this process could not let go of the login's lock once the login was kept, or is ""
+ *  where it let go: the login is kept either way, and another process takes such a lock over once
+ *  it is stale. */
 export interface KeptDeviceLogin extends DeviceLogin {
   readonly replaced: string;
+  readonly lockLeft: string;
 }
 
 /**
@@ -740,7 +744,9 @@ export interface KeptDeviceLogin extends DeviceLogin {
  * once, naming the status, rather than polling until the code lapses and saying it expired. Each
  * refusal names {@link DEVICE_LOGIN_COMMAND}, and none writes a file. An approved login that
  * cannot be kept is refused naming its credential, which the broker holds live, and where to
- * revoke it, and a copy of it written whole is kept beside the file ({@link keptCopy}).
+ * revoke it, and a copy of it written whole is kept beside the file ({@link keptCopy}). One kept
+ * whose lock is then not let go is answered as kept: the machine uses that login, so it is not one
+ * to revoke.
  */
 export async function finishDeviceLogin(
   started: DeviceAuthorization,
@@ -796,22 +802,29 @@ export async function finishDeviceLogin(
       continue;
     }
     const login = loginOf(started.key, started.brokerUrl, answered, Date.now());
+    let replaced = "";
+    // Whether the save returned: an error after it is one of letting go of the lock.
+    let saved = false;
     try {
-      const replaced = await withDeviceLoginLock(options.path, async (held) => {
-        const earlier = await readDeviceLogin(options.path).then(
+      await withDeviceLoginLock(options.path, async (held) => {
+        replaced = await readDeviceLogin(options.path).then(
           (kept) => kept.credentialId,
           () => ""
         );
         await saveDeviceLogin(options.path, login, held, true);
-        return earlier;
+        saved = true;
       });
-      return { ...login, replaced };
     } catch (error) {
+      if (saved) {
+        const lockLeft = `this process could not let go of the lock beside ${DEVICE_LOGIN_FILE_NAMED} (${messageOf(error)}); another process takes it over once it is ${DEVICE_LOGIN_STALE_LOCK_MS / 1000} s old`;
+        return { ...login, replaced, lockLeft };
+      }
       throw new Error(
         `${started.person} approved this machine's launcher credential ${login.credentialId}, but this machine could not keep it: ${messageOf(error)}. The credential stays live until it lapses or is revoked: where no copy of it is kept, revoke it in Machine logins on ${started.verificationUri} and log in again with: ${DEVICE_LOGIN_COMMAND}`,
         { cause: error }
       );
     }
+    return { ...login, replaced, lockLeft: "" };
   }
 }
 

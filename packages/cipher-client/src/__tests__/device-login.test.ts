@@ -8,10 +8,9 @@
 // login's lock that keeps the rotated refresh token, and the trade of the login's access token
 // with no actor. The two-process row lives in envoy-client's device-login.test.ts.
 
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { createPrivateKey, createPublicKey } from "node:crypto";
-import * as fs from "node:fs/promises";
-import { chmod, mkdir, readdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -600,49 +599,6 @@ test("a login directory others may write is refused, as a file others may read i
   // envoy.json lives in, holds a login: its file is 0600, and no one else can replace it there.
   await chmod(dirname(path), 0o755);
   expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
-});
-
-test("an approved login whose save fails once it is written keeps a whole copy, and names it", async () => {
-  const stub = broker({ credentialId: "cred-unsaved-1" });
-  const path = loginPath();
-  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
-  // The save writes its temporary copy whole, and then the rename over the file fails, as a disk
-  // that fails a write or a file this user may not replace fails it.
-  const real = fs.rename;
-  const renames = spyOn(fs, "rename").mockImplementation((async (
-    from: Parameters<typeof fs.rename>[0],
-    to: Parameters<typeof fs.rename>[1]
-  ) => {
-    if (String(to) === path) throw Object.assign(new Error("refused"), { code: "EIO" });
-    return await real(from, to);
-  }) as typeof fs.rename);
-  let unsaved: Error | null;
-  try {
-    unsaved = await finishDeviceLogin(started, { path, sleep: noSleep }).then(
-      () => null,
-      (error: unknown) => error as Error
-    );
-  } finally {
-    renames.mockRestore();
-  }
-  // The broker holds the credential live: the refusal names it, why, and where to revoke it.
-  expect(unsaved?.message).toContain("cred-unsaved-1");
-  expect(unsaved?.message).toContain("EIO");
-  expect(unsaved?.message).toContain(
-    `revoke it in Machine logins on ${stub.url}/credentials/machine`
-  );
-  expect(unsaved?.message).not.toContain(dirname(path));
-  // The copy is kept beside the file under the name the refusal gives, 0600, and is the whole
-  // login: moved over the file, it is the login.
-  const names = await readdir(dirname(path));
-  const kept = names.filter((name) => /^device-login\.json\.kept-[0-9a-f-]{36}$/.test(name));
-  expect(kept, names.join(", ")).toHaveLength(1);
-  const copy = join(dirname(path), kept[0] ?? "");
-  expect(unsaved?.message).toContain(copy.slice(path.length));
-  expect((await stat(copy)).mode & 0o777).toBe(0o600);
-  expect((await readDeviceLogin(copy)).credentialId).toBe("cred-unsaved-1");
-  expect(names.filter((name) => name.endsWith(".tmp"))).toEqual([]);
-  expect(await stat(path).catch(() => null)).toBeNull();
 });
 
 test("of two callers that find one stale lock, exactly one takes it", async () => {

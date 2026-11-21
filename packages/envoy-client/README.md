@@ -1075,17 +1075,19 @@ broker's interval, from 1 s and at most 60 s before any `slow_down` (each of whi
 cannot be kept: it names the login's credential, which the broker holds live, and says to revoke
 it in Machine logins on the page the code was typed into; a copy of the login it wrote whole is
 kept beside the file, under the file's name with `.kept-<uuid>` added, and the message names that
-suffix, so the person can move the copy into place instead. A code or an access token is taken to
-live an hour at most, whatever the broker says. What the broker answers for the person to read
-(the page, the code, the credential's id) is refused where it holds a control or format character
-(a right-to-left override), and an OAuth code is shown only where it is one the clients know. The
-host it names is this machine's name in the form the broker takes (`Adas-MacBook-Pro.local` is
-`adas-macbook-pro.local`). A second login of the machine replaces the file, and the earlier
-login's credential stays live at the broker until it lapses or is revoked, so the command names
-that credential and says to revoke it in Machine logins on the page the code was typed into. The
-earlier login is the one the file holds just before the save, read under the lock the save holds,
-so of two logins made at once the one kept second names the other. On a machine whose
-`AGENT_SECRETS_MACHINE_IDENTITY` is not `device-login`, it says to set that variable.
+suffix, so the person can move the copy into place instead. A login kept whose lock the command
+then cannot let go of is kept all the same: it exits 0, says why the lock was left, and names no
+credential to revoke; another process takes that lock over once it is 15 s old. A code or an
+access token is taken to live an hour at most, whatever the broker says. What the broker answers
+for the person to read (the page, the code, the credential's id) is refused where it holds a
+control or format character (a right-to-left override), and an OAuth code is shown only where it
+is one the clients know. The host it names is this machine's name in the form the broker takes
+(`Adas-MacBook-Pro.local` is `adas-macbook-pro.local`). A second login of the machine replaces the
+file, and the earlier login's credential stays live at the broker until it lapses or is revoked,
+so the command names that credential and says to revoke it in Machine logins on the page the code
+was typed into. The earlier login is the one the file holds just before the save, read under the
+lock the save holds, so of two logins made at once the one kept second names the other. On a
+machine whose `AGENT_SECRETS_MACHINE_IDENTITY` is not `device-login`, it says to set that variable.
 
 `runDispatchCli` (`dispatch-cli.ts`) runs one call per process. The host plugin sets
 `DISPATCH_HOST` (`omp` or `claude`) and the session's id (`CLAUDE_CODE_SESSION_ID` under Claude
