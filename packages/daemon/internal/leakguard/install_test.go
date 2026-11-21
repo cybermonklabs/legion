@@ -707,11 +707,8 @@ func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
 			var check string
 			var err error
 			go func() { check, err = Installed(pinned, dir); close(done) }()
-			select {
-			case <-done:
-			case <-time.After(5 * time.Second):
-				t.Fatalf("Installed was still reading %s after 5s", dir)
-			}
+			// A read that waits on the fifo fails by name at the test binary's deadline.
+			testwait.Answer(t, "Installed of "+dir, done)
 			failed := setupFailure(t, err)
 			for _, want := range tc.want {
 				if !strings.Contains(failed.Error(), want) {
@@ -729,29 +726,25 @@ func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
 // its container's PID 1, reads it as it replaces an install. So what a role leaves there is read
 // without following a link and without waiting on a fifo, and bounded: a symlink to /dev/zero, a
 // symlink to a file that holds the pin, a fifo nobody writes and a file past the bound each answer
-// at once as no install, the shim's read (Installed) refuses naming why, and a new install
-// replaces it. A read that followed the link to /dev/zero would read it to the end, one that
-// followed the link to the pin would take it for an install, and one that opened the fifo plainly
-// would wait for ever.
+// as no install, the shim's read (Installed) refuses naming why, and a new install replaces it. A
+// read that followed the link to /dev/zero would read it to the end, one that followed the link
+// to the pin would take it for an install, and one that opened the fifo plainly would wait for
+// ever, and fails the row by name at the test binary's deadline (testwait.Answer).
 func TestTheInstalledTagIsReadWithoutFollowingASymlinkOrWaitingOnAFifo(t *testing.T) {
 	// A role of a deployment that runs a shared leak check, which is told a manifest digest; the
 	// tag file's refusal comes before any digest is compared, so any digest serves.
 	pinned := []string{"PATH=/usr/bin:/bin", TagVariable + "=" + theTag, CheckerVar + "=" + strings.Repeat("5e", 32)}
-	// Each plant makes path one hostile file and answers what releases a read it holds, which the
-	// test calls when the read did not return in time, so its goroutine ends.
-	nothingHeld := func() {}
 	for _, tc := range []struct {
 		name    string
-		plant   func(t *testing.T, path string) (release func())
+		plant   func(t *testing.T, path string)
 		refusal string
 	}{
-		{"a symlink to /dev/zero", func(t *testing.T, path string) func() {
+		{"a symlink to /dev/zero", func(t *testing.T, path string) {
 			if err := os.Symlink("/dev/zero", path); err != nil {
 				t.Fatal(err)
 			}
-			return nothingHeld
 		}, "is a symlink"},
-		{"a symlink to a file that holds the pin", func(t *testing.T, path string) func() {
+		{"a symlink to a file that holds the pin", func(t *testing.T, path string) {
 			pin := filepath.Join(t.TempDir(), "pin")
 			if err := os.WriteFile(pin, []byte(theTag+"\n"), 0o644); err != nil {
 				t.Fatal(err)
@@ -759,24 +752,16 @@ func TestTheInstalledTagIsReadWithoutFollowingASymlinkOrWaitingOnAFifo(t *testin
 			if err := os.Symlink(pin, path); err != nil {
 				t.Fatal(err)
 			}
-			return nothingHeld
 		}, "is a symlink"},
-		{"a fifo", func(t *testing.T, path string) func() {
+		{"a fifo", func(t *testing.T, path string) {
 			if err := syscall.Mkfifo(path, 0o644); err != nil {
 				t.Fatal(err)
 			}
-			// Opening the fifo for writing lets a plain open of it for reading return.
-			return func() {
-				if writer, err := os.OpenFile(path, os.O_WRONLY, 0); err == nil {
-					_ = writer.Close()
-				}
-			}
 		}, "is a fifo"},
-		{"a file past the bound", func(t *testing.T, path string) func() {
+		{"a file past the bound", func(t *testing.T, path string) {
 			if err := os.WriteFile(path, bytes.Repeat([]byte("x"), tagLimit+1), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			return nothingHeld
 		}, "is larger than 256 bytes"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -786,7 +771,7 @@ func TestTheInstalledTagIsReadWithoutFollowingASymlinkOrWaitingOnAFifo(t *testin
 			}
 			tag := filepath.Join(dir, tagFile)
 			remove(t, tag)
-			release := tc.plant(t, tag)
+			tc.plant(t, tag)
 			type read struct {
 				tag     string
 				there   bool
@@ -797,14 +782,9 @@ func TestTheInstalledTagIsReadWithoutFollowingASymlinkOrWaitingOnAFifo(t *testin
 				got, there, refused := installedTag(dir)
 				done <- read{got, there, refused}
 			}()
-			select {
-			case got := <-done:
-				if got.there || got.tag != "" || got.refused == nil || got.refused.Error() != tag+" "+tc.refusal {
-					t.Fatalf("installedTag = %q, %v, %v; want no install, refused as %q", got.tag, got.there, got.refused, tag+" "+tc.refusal)
-				}
-			case <-time.After(5 * time.Second):
-				release()
-				t.Fatalf("installedTag was still reading %s after 5s", tag)
+			got := testwait.Answer(t, "installedTag of "+tag, done)
+			if got.there || got.tag != "" || got.refused == nil || got.refused.Error() != tag+" "+tc.refusal {
+				t.Fatalf("installedTag = %q, %v, %v; want no install, refused as %q", got.tag, got.there, got.refused, tag+" "+tc.refusal)
 			}
 			failed := setupFailure(t, func() error { _, err := Installed(pinned, dir); return err }())
 			if !strings.Contains(failed.Error(), "its tag file is refused ("+tag+" "+tc.refusal+")") {
@@ -822,8 +802,8 @@ func TestTheInstalledTagIsReadWithoutFollowingASymlinkOrWaitingOnAFifo(t *testin
 
 // The install writes its tag into a staging directory under the scratch every role writes, while
 // the body unpacks, so a role can plant a file at the tag's path first. The tag is written as
-// every member is (writeMember): a fifo there fails the write at once rather than holding it until
-// a reader comes, and a symlink there fails it rather than sending the write to the link's target.
+// every member is (writeMember): a fifo there fails the write rather than holding it until a
+// reader comes, and a symlink there fails it rather than sending the write to the link's target.
 // Through the install, a file already at the staged tag's path refuses the install rather than
 // being opened and written over: a served body that carries the tag file stands in for the file a
 // role planted, since it puts one there every time.
@@ -860,16 +840,10 @@ func TestAMemberIsNeverWrittenThroughWhatARoleLeftAtItsPath(t *testing.T) {
 			tc.plant(t, path)
 			done := make(chan error, 1)
 			go func() { done <- writeMember(path, strings.NewReader(theTag+"\n"), 0o644) }()
-			select {
-			case err := <-done:
-				if !errors.Is(err, fs.ErrExist) {
-					t.Fatalf("writeMember over %s = %v, want it refused as existing", tc.name, err)
-				}
-			case <-time.After(5 * time.Second):
-				if reader, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0); err == nil {
-					_ = reader.Close()
-				}
-				t.Fatalf("writeMember was still opening %s after 5s", path)
+			// A write that opened the fifo waits for a reader, and fails by name at the test
+			// binary's deadline.
+			if err := testwait.Answer(t, "writeMember over "+tc.name, done); !errors.Is(err, fs.ErrExist) {
+				t.Fatalf("writeMember over %s = %v, want it refused as existing", tc.name, err)
 			}
 			if _, err := os.Lstat(filepath.Join(filepath.Dir(path), "target")); !errors.Is(err, fs.ErrNotExist) {
 				t.Errorf("writeMember wrote through the symlink to its target (%v)", err)
