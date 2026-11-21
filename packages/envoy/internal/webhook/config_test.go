@@ -1,11 +1,30 @@
 package webhook
 
 import (
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/ghrename"
 )
+
+// clearEnvoyEnvironment unsets, for the rest of the test, every ENVOY_ variable the test process
+// holds, so a row's result depends on the variables the row sets and not on the shell that runs
+// the test. Every variable LoadWebhookConfig reads starts with ENVOY_, so this clears each of
+// them, and any the loader starts reading under that prefix. t.Setenv records the shell's value
+// for the test's cleanup to restore; os.Unsetenv then removes the variable, so each row starts
+// with it unset in every shell, not set to empty in some.
+func clearEnvoyEnvironment(t *testing.T) {
+	t.Helper()
+	for _, entry := range os.Environ() {
+		if name, _, _ := strings.Cut(entry, "="); strings.HasPrefix(name, "ENVOY_") {
+			t.Setenv(name, "")
+			if err := os.Unsetenv(name); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
 
 func TestLoadWebhookConfig(t *testing.T) {
 	cases := []struct {
@@ -113,7 +132,7 @@ func TestLoadWebhookConfig(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("ENVOY_REVIEWER_APP_ID", "")
+			clearEnvoyEnvironment(t)
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
@@ -190,9 +209,7 @@ func TestLoadWebhookConfigRefusesGhostWisprWithoutASecret(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			for _, k := range []string{"ENVOY_GHOSTWISPR_SIGNING_SECRET", "ENVOY_SLACK_SIGNING_SECRET", "ENVOY_GITHUB_WEBHOOK_SECRET"} {
-				t.Setenv(k, "")
-			}
+			clearEnvoyEnvironment(t)
 			t.Setenv("ENVOY_REVIEWER_APP_ID", "1")
 			for k, v := range tc.env {
 				t.Setenv(k, v)
@@ -261,6 +278,7 @@ func TestLoadWebhookConfigRepositoryRenames(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			clearEnvoyEnvironment(t)
 			t.Setenv("ENVOY_WEBHOOKS", "github")
 			t.Setenv("ENVOY_GITHUB_WEBHOOK_SECRET", "s")
 			t.Setenv("ENVOY_REVIEWER_APP_ID", "app123")
