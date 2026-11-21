@@ -72,11 +72,11 @@
 # error line with no number when its exec fails, and a numeric line when it reads; (h)
 # render-nats.sh refuses its vendored chart archive with one byte changed, naming it and both
 # sha256s, before it runs go or writes a render, and, when go is on PATH, re-renders nats.yaml from
-# the unchanged archive with no curl call, equal to the committed file (else it says it skipped
-# that). That render runs helm through `go run`, so it needs go's module proxy, or offline
-# GOPROXY=file://$(go env GOMODCACHE)/cache/download with helm in the module cache; it fails rather
-# than skips without one, so that a helm pin go cannot fetch fails CI; (i) the run's residual
-# notes are replay-residual.md's lines, then the seed
+# the unchanged archive on a PATH with no curl and no jq, equal to the committed file (else it
+# says it skipped that). That render runs helm through `go run`, so it needs go's module proxy, or
+# offline GOPROXY=file://$(go env GOMODCACHE)/cache/download with helm in the module cache; it
+# fails rather than skips without one, so that a helm pin go cannot fetch fails CI; (i) the run's
+# residual notes are replay-residual.md's lines, then the seed
 # check's anchors by placement rule (with the share on the nearest surviving block) and its
 # sign-flipped versions, a count the check lacks written as "not recorded"; (j) stored-order.json
 # holds the checker's fields and a clean run's and a mismatching run's counts, and nulls (never 0)
@@ -2317,25 +2317,36 @@ pass "two starts of one runner job name get directories of their own, a start ne
 )
 pass "render-nats.sh refuses its vendored chart with one byte changed, naming it and both sums, before it runs go or writes a render"
 
-# The render runs on the real PATH for go, behind a curl that records each call and fails it: with
-# --pin-from it fetches nothing but helm, which go fetches itself through its module proxy.
+# The render runs on the real PATH with curl and jq taken off it: with --pin-from it reads no
+# registry, so it needs neither, and it fetches nothing but helm, which go fetches itself through
+# its module proxy. $tmp/no-registry holds a link to each other command on the real PATH, the
+# first of each name as PATH finds it, so a call of curl or jq fails with "command not found".
 # shellcheck disable=SC2031 # (e) to (g) source cluster.sh in subshells; its here and tmp stay there
 if PATH=$real_path command -v go >/dev/null; then
-  mkdir -p "$tmp/no-curl"
-  cat >"$tmp/no-curl/curl" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >>"$FAKE_DIR/no-curl.log"
-exit 1
-EOF
-  chmod +x "$tmp/no-curl/curl"
-  status=0
-  PATH=$tmp/no-curl:$real_path bash "$here/render-nats.sh" --pin-from "$here/manifests/nats.yaml" --out "$tmp/nats.yaml" 2>"$tmp/out" ||
-    status=$?
-  [ ! -s "$fake/no-curl.log" ] || fail "render-nats.sh --pin-from ran curl, which reads the network: $(cat "$fake/no-curl.log")"
-  [ "$status" = 0 ] || fail "render-nats.sh failed; if go could not fetch helm with no network, run with GOPROXY=file://$(PATH=$real_path go env GOMODCACHE)/cache/download"
-  diff -u "$here/manifests/nats.yaml" "$tmp/nats.yaml" >"$tmp/out" ||
-    fail "manifests/nats.yaml differs from a fresh render; run render-nats.sh and commit its output"
-  pass "manifests/nats.yaml equals a fresh render of the vendored chart with nats-values.yaml, which ran no curl"
+  (
+    bare=$tmp/no-registry
+    mkdir -p "$bare"
+    IFS=: read -ra dirs <<<"$real_path"
+    for dir in "${dirs[@]}"; do
+      [[ $dir == /* ]] || continue
+      links=()
+      for cmd in "$dir"/*; do
+        name=${cmd##*/}
+        [ "$name" != curl ] && [ "$name" != jq ] && [ -f "$cmd" ] && [ -x "$cmd" ] && [ ! -e "$bare/$name" ] || continue
+        links+=("$cmd")
+      done
+      [ ${#links[@]} -eq 0 ] || ln -s -t "$bare" -- "${links[@]}"
+    done
+    status=0
+    PATH=$bare bash "$here/render-nats.sh" --pin-from "$here/manifests/nats.yaml" --out "$tmp/nats.yaml" 2>"$tmp/out" ||
+      status=$?
+    ! grep -qE '(curl|jq): command not found$' "$tmp/out" || fail "render-nats.sh --pin-from ran curl or jq, which read a registry"
+    [ "$status" = 0 ] ||
+      fail "render-nats.sh --pin-from failed on a PATH with no curl and no jq; if go could not fetch helm with no network, run with GOPROXY=file://$(PATH=$real_path go env GOMODCACHE)/cache/download"
+    diff -u "$here/manifests/nats.yaml" "$tmp/nats.yaml" >"$tmp/out" ||
+      fail "manifests/nats.yaml differs from a fresh render; run render-nats.sh and commit its output"
+  )
+  pass "manifests/nats.yaml equals a fresh render of the vendored chart with nats-values.yaml, on a PATH with no curl and no jq"
 else
   printf 'SKIP: go is not on PATH, so manifests/nats.yaml was not compared with a fresh render\n'
 fi
