@@ -100,7 +100,9 @@ func TestAProjectedTokenOfASilentKeySetIsAnswered503(t *testing.T) {
 // Discovery and the key read each finish inside their own bounds, 3 s and 7 s, but one after the
 // other they pass the 10 s the server gives a route to write its answer: the request must not wait
 // for both. Its check ends within identityBudget with the 503, and the key read it started carries
-// on in the background and is kept, so a later request verifies against the set it read.
+// on in the background: every later request joins that one read rather than starting its own, and
+// the set it reads is kept, so once a request is admitted the next one is answered at once with no
+// read of its own.
 func TestAProjectedTokenOfASlowIssuerIsAnsweredWithinTheWriteDeadline(t *testing.T) {
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "slow-issuer-key")
@@ -119,8 +121,9 @@ func TestAProjectedTokenOfASlowIssuerIsAnsweredWithinTheWriteDeadline(t *testing
 		t.Fatalf("a projected token of a slow issuer: status %d, Retry-After %q after %s; want 503 with Retry-After: 1 within identityBudget (%s)",
 			status, retryAfter, elapsed.Round(time.Millisecond), identityBudget)
 	}
-	// The key read the first request started is still under way; once it lands, the token is
-	// admitted with no wait for it.
+	// The key read the first request started is still under way. A request until it lands joins it
+	// (cut at its own budget, or admitted when the read lands inside that budget), and none starts
+	// a read of its own.
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		status, _, elapsed, err = sendThroughTheServer(t, auth, token)
@@ -131,6 +134,16 @@ func TestAProjectedTokenOfASlowIssuerIsAnsweredWithinTheWriteDeadline(t *testing
 			t.Fatalf("a projected token once the slow key set was read: status %d after %s, err %v; want 204 within 15 s", status, elapsed.Round(time.Millisecond), err)
 		}
 		time.Sleep(250 * time.Millisecond)
+	}
+	if fetches := issuer.JWKSFetches(); fetches != 1 {
+		t.Fatalf("the key set was read %d times by the time a request was admitted, want 1: every request joins the first one's read", fetches)
+	}
+	status, _, elapsed, err = sendThroughTheServer(t, auth, token)
+	if err != nil || status != http.StatusNoContent || elapsed > time.Second {
+		t.Fatalf("a projected token after the read landed: status %d after %s, err %v; want 204 within 1 s from the kept set", status, elapsed.Round(time.Millisecond), err)
+	}
+	if fetches := issuer.JWKSFetches(); fetches != 1 {
+		t.Fatalf("the key set was read %d times, want 1: the read's set was kept", fetches)
 	}
 }
 

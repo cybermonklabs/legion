@@ -274,8 +274,9 @@ func TestASecondTokenForANewKeyJoinsTheReadUnderWay(t *testing.T) {
 }
 
 // Callers that each carry a keys deadline (WithKeysDeadline) shorter than a slow key set share one
-// read: each leaves at its deadline with ErrKeySet, the read goes on in the background, and the set
-// it reads is kept, so a caller after it is answered with no read of its own.
+// read: each leaves at its deadline with ErrKeySet, its own context still live, the read goes on in
+// the background, and the set it reads is kept, so a plain Key after it is answered from the cache
+// with no read of its own.
 func TestCallersWithAKeysDeadlineShareOneReadThatIsKept(t *testing.T) {
 	issuer := oidctest.New(t)
 	keys, _ := keysFor(t, issuer, "exchange-key")
@@ -283,6 +284,7 @@ func TestCallersWithAKeysDeadlineShareOneReadThatIsKept(t *testing.T) {
 	const callers = 50
 	var wg sync.WaitGroup
 	errs := make([]error, callers)
+	live := make([]error, callers)
 	start := make(chan struct{})
 	for i := range callers {
 		wg.Add(1)
@@ -291,31 +293,54 @@ func TestCallersWithAKeysDeadlineShareOneReadThatIsKept(t *testing.T) {
 			<-start
 			ctx := WithKeysDeadline(context.Background(), time.Now().Add(100*time.Millisecond))
 			_, errs[i] = keys.Key(ctx, "exchange-key", testAlgorithm)
+			live[i] = ctx.Err()
 		}()
 	}
+	began := time.Now()
 	close(start)
 	wg.Wait()
+	if waited := time.Since(began); waited > 400*time.Millisecond {
+		t.Fatalf("the callers took %s to leave, want each at its 100 ms keys deadline, before the 500 ms read ends", waited.Round(time.Millisecond))
+	}
 	for i, err := range errs {
-		if !errors.Is(err, ErrKeySet) {
-			t.Fatalf("caller %d past its keys deadline: err = %v, want ErrKeySet", i, err)
+		if !errors.Is(err, ErrKeySet) || live[i] != nil {
+			t.Fatalf("caller %d past its keys deadline: err = %v and its context %v, want ErrKeySet and a live context", i, err, live[i])
 		}
 	}
 	if fetches := issuer.JWKSFetches(); fetches != 1 {
 		t.Fatalf("key set read %d times for %d callers, want 1", fetches, callers)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		_, err := keys.Key(WithKeysDeadline(context.Background(), time.Now().Add(100*time.Millisecond)), "exchange-key", testAlgorithm)
-		if err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("Key once the background read has landed: %v, want the kept set", err)
-		}
-		time.Sleep(50 * time.Millisecond)
+	time.Sleep(600 * time.Millisecond)
+	issuer.DelayKeys(0)
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+		t.Fatalf("a plain Key once the background read has landed: %v, want the kept set", err)
 	}
 	if fetches := issuer.JWKSFetches(); fetches != 1 {
 		t.Fatalf("key set read %d times, want 1: the background read's set was kept", fetches)
+	}
+}
+
+// Once a set is cached, a refresh that falls due (the set older than Lifetime) and that a keys
+// deadline cuts short is no failure for a key the cached set holds: Key answers from that set, as
+// it does when a refresh fails, rather than making the verification wait for the read or refusing
+// it.
+func TestAKeysDeadlineThatCutsAStaleRefreshServesTheCachedSet(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "exchange-key")
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+		t.Fatalf("the first read: %v", err)
+	}
+	keys.Lifetime = time.Millisecond
+	time.Sleep(5 * time.Millisecond)
+	issuer.DelayKeys(time.Second)
+	ctx := WithKeysDeadline(context.Background(), time.Now().Add(50*time.Millisecond))
+	start := time.Now()
+	key, err := keys.Key(ctx, "exchange-key", testAlgorithm)
+	if err != nil || key == nil {
+		t.Fatalf("Key with a stale set and a keys deadline shorter than the refresh: %v, want the cached key", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("Key answered after %s, want it at its 50 ms keys deadline from the cached set", elapsed.Round(time.Millisecond))
 	}
 }
 
