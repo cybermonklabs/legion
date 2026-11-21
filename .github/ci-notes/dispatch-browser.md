@@ -200,91 +200,83 @@ ci_filter_coverage.py's ENV_ALLOWED and stay in the browser step's `env:`; the
 multiprocess job's pinned build step, "Build the Dispatch server", is read under dispatch-browser.yaml's own `env:` and
 defaults, so neither may grow a name outside that set.
 
-The browser step's budget, its `timeout-minutes: 11`, is measured on main's own full-lane
-runs, read from the jobs API on 2026-11-21: every shard leg of the 149 merge-group runs of
-ci.yaml created from 2026-11-18 to 2026-11-21 whose dispatch-browser job ran its shards, and
-of the 7 dispatch-browser-nightly.yaml runs at main in those days, every attempt. That is 624
-legs, each of whose browser step ended, none at its limit. In seconds:
+The census both of this job's budgets are read from: main's own full-lane runs, read from the
+jobs API on 2026-11-21 near 16:15Z at main 75bd096e02. It takes every run of ci.yaml with
+`event=merge_group`, and every run of dispatch-browser-nightly.yaml on branch `main`, that
+GitHub's `created=2026-11-18..2026-11-21` filter lists and whose head commit is on main's
+first-parent history (`git rev-list --first-parent 75bd096e02`), since the queue merges the
+commit a merge-group run tested; every attempt of each; and every leg of each named
+`dispatch-browser / shard (N)` or `full / shard (N)`. The queries:
+
+  gh api --paginate 'repos/cybermonklabs/legion/actions/workflows/ci.yaml/runs?event=merge_group&created=2026-11-18..2026-11-21&per_page=100'
+  gh api --paginate 'repos/cybermonklabs/legion/actions/workflows/dispatch-browser-nightly.yaml/runs?branch=main&created=2026-11-18..2026-11-21&per_page=100'
+  gh api --paginate 'repos/cybermonklabs/legion/actions/runs/<id>/attempts/<n>/jobs?per_page=100'
+
+545 runs listed, 278 of them on main's first-parent history, and 672 legs in those, every one of
+which passed. The browser step over them, in seconds:
 
   created       legs  median  p95  max
-  2026-11-18     88    353    445  469
+  2026-11-18    188    344    448  510
   2026-11-19    176    363    457  493
-  2026-11-20    176    401    476  516
-  2026-11-21    184    414    506  522
-  all           624    388    491  522
+  2026-11-20    164    404    476  516
+  2026-11-21    144    414    507  531
+  all           672    380    486  531
 
-The maximum is 522 s, shard (2) of run 44907640078 (job 136857307255), so by the rule in
-this file's head 522 x 1.15 = 601 s -> 11 min. The step grows with the suite, not with its
-rows getting slower: run 44423948511 of 2026-11-18 ran 1,453 rows (363, 363, 364 and 363 a
-leg) and run 44909149810 at 67659e611c ran 1,600 (400 a leg), and the 1,260 rows both runs
-passed took 4,345 s and 4,393 s, a ratio of 1.011. So this budget is read again when the
-suite has grown: at the 9 minutes it replaces, derived from the 419 s of the two runs of the
-head that sharded this suite (42334424798 and 42316487530), 42 of the 184 legs of 2026-11-21
-came within 60 s of the limit, and in run 44908680493 of #4613 and run 44903205761 of #4199
-three legs whose every row passed were cut at it.
+The browser step's budget, its `timeout-minutes: 11`, is that maximum by the rule in this file's
+head: 531 s, shard (2) of run 44917245139 (job 136888588252), and 531 x 1.15 = 611 s -> 11 min.
+The step grows with the suite, not with its rows getting slower: run 44423948511 of 2026-11-18
+ran 1,453 rows (363, 363, 364 and 363 a leg) and run 44909149810 at 67659e611c ran 1,600 (400 a
+leg), and the 1,260 rows both runs passed took 4,345 s and 4,393 s, a ratio of 1.011. So this
+budget is read again when the suite has grown: at the 9 minutes it replaces, derived from the
+419 s of the two runs of the head that sharded this suite (42334424798 and 42316487530), 42 of
+the census's legs came within 60 s of the limit, 34 of the 144 of 2026-11-21, and in run
+44908680493 of #4613 and run 44903205761 of #4199 three legs whose every row passed were cut
+at it.
 
-The job budget, the shard job's `timeout-minutes`, is the rule's arithmetic, read on sha256:ba003193, the build of commit
-47a222cd (run 42480325123, job 128730667606), and not on the digest this file pins, which
-every later rewording of a recipe file rebuilds afresh.
-It carries across those rebuilds, because what the pull costs is the size it pulls: each
-build prints its own -- 1,160,268,762 bytes for sha256:ba003193, 1,160,268,675 for the
-rebuild after it (job 128766793614) and 1,160,268,418 for the one after that (job
-128789111286), 344 bytes apart over 1.16 GB. They are not the same bytes: the manifests show
-layers 1 to 7 identical and layers 8 to 10 each at another digest, so no rebuild reproduces
-the image its recipe built before. Only layer 8's difference has a cause read here -- it is
-the apt RUN of .github/docker/browser.Dockerfile:78, whose installs are pinned to no version,
-so a rebuild takes what the mirror serves that minute; layer 9 copies a `weed` binary from a
-stage pinned by digest and layer 10 installs nothing, and why either moved is unread, since
-nothing here needs it. Nothing depends on a rebuild reproducing the previous image -- every
-job pins a digest -- and 344 bytes do not move a pull that took six seconds more when
-build-essential added real bytes to it. A measured table carries the head it was measured at,
-which is worth saying plainly rather than claiming an identity that does not hold.
-The figures it replaces were read at 99bdf09cf435, which pinned the image from before
-build-essential was added to it (dispatch://INFRA-1443), over eight legs of two runs: not one
-of them ran a build carrying build-essential, and none is a leg of the reading below.
-Three steps the job budget carries are higher here - `Initialize containers` 39 -> 45 s,
-which is the larger image to pull, `./.github/actions/setup-bun` 3 -> 19 s and
-`bun install --frozen-lockfile` 10 -> 62 s, those two the slowest download of 24 legs
-rather than of 8, since the 62 s leg installed the same 928 packages and compiled nothing
-(job 128739827223). None of the three carries a budget of its own, so the sum they feed
-is the job's whole margin, and the old one left this job below what the rule gives.
+The job budget, the shard job's `timeout-minutes`, follows the rule over the same census: one
+window for every step. Each step without a budget of its own is counted at its maximum over
+the census's 672 legs, and the image pull, `Initialize containers`, at the larger of that and
+the 355 s busy-hour pull below, since no step holds the pull. The maxima, in seconds, with the
+job of each (`run/job`):
 
-This reading is the jobs API over every containerised leg of this job at the two heads
-that pin sha256:ba003193, every attempt: 24 legs in five runs, CI runs 42481141876 and
-42483222992 (two attempts, so eight legs) and workflow_dispatch runs 42481269619,
-42483357068 and 42487610878 of dispatch-browser-nightly.yaml. The maximum each step
-reached over those 24 legs, in seconds:
+  step                                                 max   leg
+  Set up job                                             2   44917241841/136888799637
+  Initialize containers                                176   44495468251/135462529348   (counted at 355, below)
+  actions/checkout                                      20   44341608906/134936405641
+  actions/download-artifact, first attempt              31   44754421273/136353201422   (carries its own budget)
+  actions/download-artifact, second attempt              0   never ran                  (carries its own budget)
+  Place the binaries of the attempt that completed       1   44917240344/136887948691
+  Make the downloaded binaries executable                1   44917245139/136888588265
+  ./.github/actions/setup-bun                            7   44495468251/135462529348
+  bun install --frozen-lockfile                         52   44495468251/135462529348
+  Build contracts for dispatch e2e                       2   44495468251/135462529348
+  Build dispatch dashboard                              45   44430694686/135248042392
+  Read the lanes' PostgreSQL and time its provider      10   44495468251/135462529348
+  Start an S3-compatible server for uploaded files       1   44917243574/136888280815
+  Wait for the S3-compatible server                     35   44495468251/135462529348
+  Browser-test dispatch dashboard                      531   44917245139/136888588252   (carries its own budget)
+  upload-artifact, this leg's blob report                5   44495468251/135462529269
+  What the run left behind                               1   44909149810/136862590255
+  upload-artifact, the record directory                  3   44318690162/134858314626
+  upload-artifact, the failed rows' traces               8   44727905640/136261054321
+  Post Run ./.github/actions/setup-bun                   6   44869329727/136741454057
+  Post Run actions/checkout                              5   44759465127/136370617001
+  Stop containers                                        5   44490607323/135446360115
+  Complete job                                           1   44917238659/136889169686
 
-  step                                                 max
-  Set up job                                             2
-  Initialize containers                                 45
-  actions/checkout                                       8
-  actions/download-artifact                              5
-  Make the downloaded binaries executable                1
-  ./.github/actions/setup-bun                           19
-  bun install --frozen-lockfile                         62
-  Build dispatch dashboard                              34
-  Read the lanes' PostgreSQL and time its provider       5
-  Start an S3-compatible server for uploaded files       1
-  Wait for the S3-compatible server                     24
-  Browser-test dispatch dashboard                      356   (carries its own budget)
-  upload-artifact, this leg's blob report                3
-  What the run left behind                               1
-  upload-artifact, the record directory                  2
-  upload-artifact, the failed rows' traces               4
-  Post Run ./.github/actions/setup-bun                   1
-  Post Run actions/checkout                              1
-  Stop containers                                        1
-  Complete job                                           0
+The three uploads are three steps of this job and not one, so the sum counts each of them.
+The steps without a budget sum to 565 s with the pull at 355 s.
 
-The three uploads are three steps of this job and not one, so the sum below counts each
-of them: 3 + 2 + 4, not 4.
+The job's budget before this census was 540 s for the browser step plus the maxima of 24 legs
+in five runs at the two heads that pinned sha256:ba003193 (CI runs 42481141876 and
+42483222992, workflow_dispatch runs 42481269619, 42483357068 and 42487610878 of
+dispatch-browser-nightly.yaml), 219 s, then the pull at 355 s, and it left out the contracts
+build and the placing of the binaries, which this census counts. A measured table carries the
+head it was measured at: each rebuild of the image is other bytes (layers 8 to 10 of the
+builds of 47a222cd differ, 344 bytes apart over 1.16 GB), so the census's own legs, on the
+digest each pinned, are the reading.
 
-The browser step was the one step of this job that carried a budget, then 9 minutes, so the
-job's budget was that budget plus the maxima above of every step without one, which summed to
-219 s: 540 + 219 = 759 s, 12 min 39 s, rounded up to 13 minutes.
-
-THE TWO NETWORK READS, AT A BUSY HOUR. That sum read the binaries download at 5 s and the
+THE TWO NETWORK READS, AT A BUSY HOUR. The sum before this census read the binaries download at 5 s and the
 image pull, `Initialize containers`, at 45 s, from quiet runs, and on 2026-11-18 a leg of
 each job stalled on one of them while its siblings did not: in run 44228250420 shard (4)'s
 download of dispatch-e2e-binaries (106 MB, 101 MiB) took 428 s where the run's six other
@@ -296,11 +288,11 @@ pull's time was one layer: the other nine arrived in 6 s and the 122 MB Firefox 
 merge group drops its entry for a cancelled leg as for a failed one, and every group behind
 it is built again. So the download now carries a budget of its own and a second attempt
 (.github/ci-notes/dispatch-browser.md#what-the-shard-job-downloads-in-place-of-a-go-build),
-and the pull is counted at that 355 s: no step holds it, so no step
+and the pull is counted at that 355 s, above the census's 176 s: no step holds it, so no step
 budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
 seconds" in that log) answers a failed read, not a slow one. The job's budget is the
 browser step's 660 s, the two download attempts' 120 s each, and the steps without a
-budget at 219 - 5 - 45 + 355 = 524 s: 1,424 s, 23 min 44 s, rounded up to the 24 minutes
+budget at the census's 565 s: 1,465 s, 24 min 25 s, rounded up to the 25 minutes
 of the shard job's `timeout-minutes`. The browser step's own budget still fires before the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
@@ -346,9 +338,9 @@ run-broker.sh serves from.
 
 ## What the shard job places, and what its budget leaves for it
 
-The step budget note above does not count this step, which is new here. It copies one
-106 MB artifact on the runner's disk (141 ms for those bytes on a pod), and the 16 s
-that rounding up to 24 minutes leaves hold it.
+The census the job's budget is read from counts this step, at its maximum of 1 s (the
+shard job's measured steps above); it copies one 106 MB artifact on the runner's disk (141 ms
+for those bytes on a pod).
 
 ## Why the shard job makes the downloaded binaries executable
 
@@ -466,8 +458,8 @@ checkout would leave it dirty afterwards. The blob report goes beside the list
 reporter's output, so a green run reports what it ran too.
 
 The step's budget, `timeout-minutes: 11`, is the 11 minutes the job's head derives from main's
-own full-lane runs of 2026-11-18 to 2026-11-21, whose maximum is 522 s; the job's head lists
-those runs, and why the budget is read again as the suite grows.
+own full-lane runs of 2026-11-18 to 2026-11-21, whose maximum is 531 s; the job's head gives
+the census's query and why the budget is read again as the suite grows.
 
 ## Why the file store's address is set on the step and not in the environment
 
