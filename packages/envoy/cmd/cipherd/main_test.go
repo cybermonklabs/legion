@@ -679,11 +679,20 @@ const listeningPoll = 20 * time.Millisecond
 // the line a broker opens its database and migrates it, a wait no span on this side measures: its
 // migration waits on the advisory lock every migration of its database takes, as the second
 // process of a pair does on the first's, and on a loaded machine the bind itself comes late. So
-// nothing but the test binary's deadline bounds it: a broker that neither listens nor exits fails
-// t listenWaitMargin before that deadline, naming the broker and its log.
+// nothing but the test binary's deadline bounds it: the wait gives up listenWaitMargin before that
+// deadline, failing t with the broker's log, so the row and its cleanup end before the binary's
+// own timeout does. A deadline nearer than listenWaitMargin leaves the boot no time at all, and t
+// fails at once, naming the deadline rather than the broker. With no deadline (go test -timeout
+// 0) the wait is listenWaitNoDeadline.
 func (p *brokerProcess) AwaitListening(t *testing.T) {
 	t.Helper()
-	within := testwait.Bounded(t, listenWaitNoDeadline, listenWaitMargin)
+	within := listenWaitNoDeadline
+	if deadline, ok := t.Deadline(); ok {
+		left := time.Until(deadline)
+		if within = left - listenWaitMargin; within <= 0 {
+			t.Fatalf("the test binary's deadline is %s away, nearer than the %s AwaitListening keeps for the broker's stop (listenWaitMargin), so no broker boot can be waited for: run with a -timeout longer than that", left.Round(time.Second), listenWaitMargin)
+		}
+	}
 	if !testwait.Holds(within, listeningPoll, func() bool {
 		if addr, boot, ok := listeningIn(p.Log()); ok {
 			p.Addr, p.Boot = addr, boot
@@ -704,7 +713,11 @@ func (p *brokerProcess) AwaitListening(t *testing.T) {
 		}
 		return false
 	}) {
-		t.Fatalf("the broker neither logged %q nor exited within %s, %s before the test binary's deadline:\n%s", "broker listening", within.Round(time.Second), listenWaitMargin, p.Log())
+		bound := listenWaitMargin.String() + " before the test binary's deadline"
+		if _, ok := t.Deadline(); !ok {
+			bound = "the wait of a test binary with no deadline (listenWaitNoDeadline)"
+		}
+		t.Fatalf("the broker neither logged %q nor exited within %s, %s:\n%s", "broker listening", within.Round(time.Second), bound, p.Log())
 	}
 }
 

@@ -69,7 +69,8 @@ func randomName(t testing.TB) string {
 // (testdb.ProcessDatabaseOn: the package comment says why), migrates it, drops it when t ends, and
 // returns a connection string whose connections use that schema. params are extra connection
 // parameters as key=value (e.g. "pool_max_conns=2"). It skips t when DatabaseURLEnv is unset, and
-// fails it when the package's TestMain does not run its tests through Main.
+// fails it when the package's TestMain does not run its tests through Main. The server's login
+// needs CREATEDB.
 func URL(t testing.TB, params ...string) string {
 	t.Helper()
 	raw := testdb.ProcessDatabaseOn(t, serverURL(t), "broker_test_binary")

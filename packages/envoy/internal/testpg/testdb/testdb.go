@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/url"
 	"testing"
 
@@ -19,12 +20,14 @@ import (
 )
 
 // DatabaseOn creates a database of this test's own on the server adminURL names, drops it when the
-// test ends, and returns adminURL with its path replaced by that database and its query kept. The
-// name is prefix, an underscore and eight random bytes in hex: it is random because every test of
-// every package sharing one server takes a name there.
+// test ends, and returns a URL of that database (databaseURL: adminURL with its path replaced by
+// it, its query kept less any dbname or database parameter). The name is prefix, an underscore
+// and eight random bytes in hex: it is random because every test of every package sharing one
+// server takes a name there.
 //
 // Both statements run on adminURL itself, which is exact for every caller because a caller passes
-// the URL its own statements run on, and that URL and the result differ only in the path.
+// the URL its own statements run on, and that URL and the result differ only in the database they
+// select.
 //
 // A failure names the server's host and the database, never adminURL: a DSN carries a credential,
 // and a test here prints none (docs/solutions/testing/a-proof-script-never-prints-a-dsn-a-userinfo-scrubber-leaks-the-query-and-keyword-password-forms-INFRA-229.md).
@@ -37,11 +40,10 @@ func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 		// url.Parse's own error quotes the URL it was given, so only the error it wraps is printed.
 		t.Fatalf("parse the admin URL of the Postgres server: %v", errors.Unwrap(err))
 	}
-	var suffix [8]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		t.Fatalf("random database name: %v", err)
+	name, err := newDatabaseName(prefix)
+	if err != nil {
+		t.Fatal(err)
 	}
-	name := prefix + "_" + hex.EncodeToString(suffix[:])
 	// A copy of template1's files: created the default way, through the write-ahead log, an empty
 	// database costs 4.4 MB of log (docs/testing.md, "A database a Go test creates").
 	adminExec(t, adminURL, server.Host, "create database "+name+" strategy file_copy")
@@ -56,24 +58,49 @@ func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 	return databaseURL(*server, name)
 }
 
-// databaseURL is server's URL with its path replaced by database, its query kept.
+// newDatabaseName is prefix, an underscore and eight random bytes in hex.
+func newDatabaseName(prefix string) (string, error) {
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", fmt.Errorf("random database name: %w", err)
+	}
+	return prefix + "_" + hex.EncodeToString(suffix[:]), nil
+}
+
+// databaseURL is server's URL naming database in every field pgx selects a database by: its path
+// is replaced by database, and its query is kept less any dbname or database parameter, which pgx
+// reads over the path, so a server URL that carried one would put every caller in the one
+// database it names.
 func databaseURL(server url.URL, database string) string {
 	server.Path = "/" + database
+	query := server.Query()
+	query.Del("dbname")
+	query.Del("database")
+	server.RawQuery = query.Encode()
 	return server.String()
 }
 
-// adminExec runs one statement over a connection of its own to adminURL: neither create database
-// nor drop database may run inside a transaction or against the database it names. host is that
-// server's host, printed in place of adminURL, which carries a credential.
+// adminExec runs one statement over a connection of its own to adminURL, failing t: neither
+// create database nor drop database may run inside a transaction or against the database it
+// names.
 func adminExec(t testing.TB, adminURL, host, statement string) {
 	t.Helper()
+	if err := execOn(adminURL, host, statement); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// execOn runs statement over a connection of its own to adminURL. host is that server's host,
+// printed in place of adminURL, which carries a credential.
+func execOn(adminURL, host, statement string) error {
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, adminURL)
 	if err != nil {
-		t.Fatalf("connect to the Postgres server at %s: %v", host, err)
+		return fmt.Errorf("connect to the Postgres server at %s: %w", host, err)
 	}
 	defer conn.Close(ctx)
 	if _, err := conn.Exec(ctx, statement); err != nil {
-		t.Fatalf("%s: %v", statement, err)
+		return fmt.Errorf("%s on %s: %w", statement, host, err)
 	}
+	return nil
 }
