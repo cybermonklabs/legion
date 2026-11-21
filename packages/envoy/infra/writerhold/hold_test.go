@@ -33,38 +33,17 @@ type heldStack struct {
 	t     *testing.T
 	s     *holdtest.Stack
 	op    *Operator
-	disks *rigDisks
+	disks *holdtest.Disks
 	keys  *memoryKeys
 	e     env
 	// report is the minter report's path: a report of now with no finding.
 	report string
 }
 
-// rigDisks is compute.disks.get over holdtest's volumes: each claim's disk, by its handle's name,
-// with a numeric id a row can change, as a disk deleted and made again under its old name gets a
-// new id.
-type rigDisks struct {
-	mu  sync.Mutex
-	ids map[string]uint64
-}
+// stackDisks is Disks over holdtest's disks, by the disk's name.
+type stackDisks struct{ *holdtest.Disks }
 
-func (d *rigDisks) DiskID(_ context.Context, disk DiskRef) (uint64, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	id, ok := d.ids[disk.Name]
-	if !ok {
-		return 0, fmt.Errorf("compute.disks.get %s: 404 notFound", disk)
-	}
-	return id, nil
-}
-
-// remake gives the disk of member i's claim a new id, as a restore from a snapshot under the
-// disk's old name does.
-func (d *rigDisks) remake(i int) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.ids["pvc-"+holdtest.Pod(i)] += 1000
-}
+func (d stackDisks) DiskID(_ context.Context, disk DiskRef) (uint64, error) { return d.ID(disk.Name) }
 
 // memoryKeys is the signing key's store, in memory: Put adds the first version only, as the Secret
 // Manager store does.
@@ -101,26 +80,14 @@ func newHeldStack(t *testing.T) *heldStack {
 func newHeldStackWith(t *testing.T, opts holdtest.Options) *heldStack {
 	t.Helper()
 	s := holdtest.StartWith(t, opts)
-	disks := &rigDisks{ids: map[string]uint64{}}
-	for i := range s.Cluster.Servers {
-		disks.ids["pvc-"+holdtest.Pod(i)] = uint64(7000000000000000000 + i)
-	}
+	disks := holdtest.NewDisks(len(s.Cluster.Servers))
 	op := &Operator{
 		Hub: KubeHub{Client: s.Kube.Client, Namespace: holdtest.Namespace, StatefulSet: holdtest.StatefulSet,
 			ConfigMap: holdtest.ConfigMap, Forward: s.Kube},
-		Disks: disks,
-		URLs:  s.Cluster.URLs(),
-		Connect: func(context.Context) (*nats.Conn, error) {
-			return nats.Connect(s.Cluster.URL(), append(s.OperatorCredential(), nats.Name("envoy-infra hold"),
-				nats.MaxReconnects(-1), nats.ReconnectWait(100*time.Millisecond), nats.Timeout(10*time.Second))...)
-		},
-		Probe: func(_ context.Context, url string) error {
-			nc, err := nats.Connect(url, s.ProbeCredential(), nats.Name("envoy-infra hold probe"), nats.NoReconnect(), nats.Timeout(10*time.Second))
-			if err == nil {
-				nc.Close()
-			}
-			return err
-		},
+		Disks:        stackDisks{disks},
+		URLs:         s.Cluster.URLs(),
+		Connect:      s.ConnectOperator,
+		Probe:        s.DialProbe,
 		RestartLimit: 3 * time.Minute,
 	}
 	h := &heldStack{t: t, s: s, op: op, disks: disks, keys: &memoryKeys{versions: map[string][][]byte{}}}
@@ -187,18 +154,11 @@ func (h *heldStack) prepared(w holdrecord.Workflow) string {
 	return id
 }
 
-// heldWithoutTheSteps moves a prepared hold to held the way `hold set` writes its journal (its
-// intent with the row prepare, the move, its done entry), without the steps it runs against the
-// hub, for a row that tests what comes after a set hold rather than the steps themselves.
+// heldWithoutTheSteps moves a prepared hold to held the way `hold set` writes its journal, without
+// the steps it runs against the hub (holdtest's HoldWithoutTheSteps).
 func (h *heldStack) heldWithoutTheSteps(id string) {
 	h.t.Helper()
-	ctx := context.Background()
-	_, err := h.s.Records.Admit(ctx, id, holdrecord.Request{Command: holdrecord.CommandSet}, nil)
-	require.NoError(h.t, err)
-	row := h.row()
-	_, err = h.s.Records.MoveRow(ctx, row.Gen, natsgrant.OperatorPhaseHeld, id, "the row's hold")
-	require.NoError(h.t, err)
-	require.NoError(h.t, h.s.Records.AppendDone(ctx, id, holdrecord.CommandSet, nil))
+	h.s.HoldWithoutTheSteps(h.t, id)
 }
 
 // listenerAdmitted reports whether a listener entry's connection is admitted to the hub now.

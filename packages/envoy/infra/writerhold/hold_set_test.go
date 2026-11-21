@@ -14,81 +14,27 @@ import (
 	"github.com/sjawhar/envoy/infra/writerhold/holdtest"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/holdrecord"
-	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// seedProtectedStreams makes every protected stream the preflight reads by name, three copies
-// each, as the hub holds them: the operator makes them under a hold of its own (the held grant is
-// the one that creates a protected stream), which it then releases with nothing changed.
+// seedProtectedStreams makes every protected stream the preflight reads by name, as the hub holds
+// them (holdtest's SeedProtectedStreams), and checks that they are what the preflight protects.
 func (h *heldStack) seedProtectedStreams() {
 	h.t.Helper()
-	ctx := context.Background()
-	id := h.prepared(holdrecord.WorkflowStreamsUpdate)
-	h.heldWithoutTheSteps(id)
-	nc, err := h.op.Connect(ctx)
-	require.NoError(h.t, err)
-	defer nc.Close()
-	js, err := jetstream.New(nc)
-	require.NoError(h.t, err)
-	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: bus.Stream, Subjects: []string{"notifications.>"}, Replicas: 3})
-	require.NoError(h.t, err, "create %s", bus.Stream)
-	buckets := append([]string{bus.SessionConsumersBucket, bus.LegionAgentBucket, bus.DPoPProofBucket, bus.WebhookRedeliveryBucket}, bus.CopiedBuckets()...)
-	for _, bucket := range buckets {
-		_, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bucket, Replicas: 3})
-		require.NoError(h.t, err, "create bucket %s", bucket)
+	h.s.SeedProtectedStreams(h.t)
+	want := ProtectedStreams()
+	var seeded []string
+	for _, bucket := range holdtest.ProtectedBuckets() {
+		seeded = append(seeded, kvStreamPrefix+bucket)
 	}
-	nc.Close()
-	code, _, _ := h.run(actionRelease, "--hold", id, "--reason", "the streams are made")
-	require.Zero(h.t, code)
+	require.ElementsMatch(h.t, want, append([]string{bus.Stream}, seeded...), "holdtest seeds other streams than the preflight protects")
 }
 
-// jszStreams is the part of a server's /jsz?accounts=true&streams=true the rows read: each stream it
-// holds, with the leader of its group as that server sees it.
-type jszStreams struct {
-	AccountDetails []struct {
-		Streams []struct {
-			Name    string `json:"name"`
-			Cluster struct {
-				Leader string `json:"leader"`
-			} `json:"cluster"`
-		} `json:"stream_detail"`
-	} `json:"account_details"`
-}
-
-// awaitStreamLeaders waits until every declared server sees a leader for every protected stream:
-// after a hold's restarts, R3 groups elect their leaders again, and a hold whose preflight reads a
-// stream with none yet is UNKNOWN, as it must be, so a row waits before its next hold.
+// awaitStreamLeaders waits until every member sees a leader for every protected stream
+// (holdtest's AwaitStreamLeaders).
 func (h *heldStack) awaitStreamLeaders() {
 	h.t.Helper()
-	ctx := context.Background()
-	want := ProtectedStreams()
-	testwait.Eventually(h.t, "every protected stream has a leader on every server", func() bool {
-		for i := range h.s.Cluster.Servers {
-			monitor, stop, err := h.op.Hub.Monitor(ctx, holdtest.Pod(i))
-			if err != nil {
-				return false
-			}
-			var jsz jszStreams
-			err = monitor.Get(ctx, "/jsz?accounts=true&streams=true", &jsz)
-			stop()
-			if err != nil {
-				return false
-			}
-			led := map[string]bool{}
-			for _, account := range jsz.AccountDetails {
-				for _, stream := range account.Streams {
-					led[stream.Name] = stream.Cluster.Leader != ""
-				}
-			}
-			for _, name := range want {
-				if !led[name] {
-					return false
-				}
-			}
-		}
-		return true
-	})
+	h.s.AwaitStreamLeaders(h.t, ProtectedStreams())
 }
 
 // listener connects a listener entry of machine, reconnecting as a listener does, and returns it

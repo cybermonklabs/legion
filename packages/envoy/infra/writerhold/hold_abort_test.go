@@ -85,7 +85,7 @@ func TestHoldAbort(t *testing.T) {
 	// A restore lands on claim 0: abort is refused at its disk check, with a stop entry, and a
 	// prove of the restored claim is then admitted and done; abort after it is refused ErrExcluded.
 	id = h.hubRestoreHold()
-	h.disks.remake(0)
+	h.disks.Remake(0)
 	code, _, stderr = h.run(actionAbort, "--hold", id, "--reason", "abort over a restore")
 	require.Equal(t, 1, code)
 	require.Contains(t, stderr, holdtest.Claim(0))

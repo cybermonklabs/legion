@@ -10,25 +10,15 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nuid"
-	compute "google.golang.org/api/compute/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/sjawhar/envoy/infra/internal/flagerr"
-	"github.com/sjawhar/envoy/infra/seed"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/holdrecord"
-	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -78,14 +68,11 @@ func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }
 
 // options are a run's flags.
 type options struct {
-	action                                      string
-	brokerURL, tokenFile, verifyKeys, keySecret string
-	holdID, workflow, reason, mintersReport     string
-	bootstrap                                   bool
-	restored, snapshots                         stringList
-	nats                                        stringList
-	probeTokenFile                              string
-	namespace, statefulSet, configMap           string
+	HubFlags
+	action                   string
+	holdID, workflow, reason string
+	bootstrap                bool
+	restored, snapshots      stringList
 }
 
 // KeyStore is the Secret Manager store of the operator's hold signing key: keygen writes its first
@@ -134,26 +121,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, e env) in
 
 // parse reads args into options, or answers the exit code of a usage error (or of --help).
 func parse(args []string, stderr io.Writer) (options, int) {
-	o := options{action: args[0], namespace: DefaultNamespace, statefulSet: DefaultStatefulSet, configMap: DefaultConfigMap}
+	o := options{action: args[0]}
 	flags := flag.NewFlagSet("envoy-infra hold "+o.action, flag.ContinueOnError)
 	var parsed bytes.Buffer
 	flags.SetOutput(&parsed)
-	flags.StringVar(&o.brokerURL, "broker-url", "", "the secrets broker's base URL")
-	flags.StringVar(&o.tokenFile, "token-file", "", "the operator's ServiceAccount token")
-	flags.StringVar(&o.verifyKeys, "verify-keys", "", "BROKER_NATS_HOLD_SIGNING_KEYS")
-	flags.StringVar(&o.keySecret, "signing-key-secret", "", "projects/<project>/secrets/"+SigningKeySecret)
+	o.HubFlags.Register(flags)
 	flags.StringVar(&o.holdID, "hold", "", "the hold's id")
 	flags.StringVar(&o.workflow, "workflow", "", "the hold's workflow")
 	flags.StringVar(&o.reason, "reason", "", "why, as the hold row records it")
-	flags.StringVar(&o.mintersReport, "minters-report", "", "operator-token-minters.sh's --report file")
 	flags.BoolVar(&o.bootstrap, "bootstrap", false, "write the first row, released at gen 1")
 	flags.Var(&o.restored, "restored", "a restored target and its disk or volume, <target>=<disk>")
 	flags.Var(&o.snapshots, "snapshot", "a restored target and its snapshot, <target>=<snapshot>")
-	flags.Var(&o.nats, "nats", "a hub client URL")
-	flags.StringVar(&o.probeTokenFile, "probe-token-file", "", "the hold probe's platform token")
-	flags.StringVar(&o.namespace, "kube-namespace", o.namespace, "the hub's namespace")
-	flags.StringVar(&o.statefulSet, "statefulset", o.statefulSet, "the hub's StatefulSet")
-	flags.StringVar(&o.configMap, "configmap", o.configMap, "the hub's ConfigMap")
 	if err := flags.Parse(args[1:]); err != nil {
 		switch {
 		case errors.Is(err, flag.ErrHelp):
@@ -208,21 +186,21 @@ func (o options) usageProblem() string {
 		}
 	}
 	if o.action == actionKeygen {
-		add(need("signing-key-secret", o.keySecret))
+		add(need("signing-key-secret", o.KeySecret))
 		return strings.Join(problems, "; ")
 	}
-	add(need("broker-url", o.brokerURL))
-	add(need("token-file", o.tokenFile))
-	add(need("verify-keys", o.verifyKeys))
+	add(need("broker-url", o.BrokerURL))
+	add(need("token-file", o.TokenFile))
+	add(need("verify-keys", o.VerifyKeys))
 	writes := o.action != actionStatus
 	if writes {
-		add(need("signing-key-secret", o.keySecret))
+		add(need("signing-key-secret", o.KeySecret))
 		add(need("reason", reasonFor(o)))
 	}
 	switch o.action {
 	case actionPrepare:
 		add(need("workflow", o.workflow))
-		add(need("minters-report", o.mintersReport))
+		add(need("minters-report", o.MintersReport))
 		if o.holdID != "" {
 			add("--hold is not taken: prepare makes the hold's id")
 		}
@@ -233,7 +211,7 @@ func (o options) usageProblem() string {
 		if o.holdID != "" && o.workflow != "" {
 			add("--hold and --workflow are not taken together: a prepared hold's workflow is in its record")
 		}
-		add(need("minters-report", o.mintersReport))
+		add(need("minters-report", o.MintersReport))
 	case actionAbort, actionRelease:
 		add(need("hold", o.holdID))
 	case actionRestore:
@@ -247,10 +225,10 @@ func (o options) usageProblem() string {
 		}
 	}
 	if o.action == actionSet || o.action == actionProve {
-		if len(o.nats) == 0 {
+		if len(o.NATS) == 0 {
 			add("--nats is required: the hub's client URLs")
 		}
-		add(need("probe-token-file", o.probeTokenFile))
+		add(need("probe-token-file", o.ProbeTokenFile))
 	}
 	if o.workflow != "" && !contains(workflows(), o.workflow) {
 		add(fmt.Sprintf("--workflow %q is not one of %s", o.workflow, strings.Join(workflows(), ", ")))
@@ -315,7 +293,7 @@ func dispatch(ctx context.Context, o options, stdout, stderr io.Writer, e env) e
 		if err != nil {
 			return err
 		}
-		return keygen(ctx, store, o.keySecret, stdout, stderr)
+		return keygen(ctx, store, o.KeySecret, stdout, stderr)
 	}
 	records, err := e.records(ctx, o, o.action != actionStatus)
 	if err != nil {
@@ -449,119 +427,19 @@ func keygen(ctx context.Context, store KeyStore, secret string, stdout, stderr i
 	return nil
 }
 
-// signingKey reads the private half from store's served version of secret.
-func signingKey(ctx context.Context, store KeyStore, secret string) (ed25519.PrivateKey, error) {
-	_, value, err := store.Current(ctx, secret)
-	if err != nil {
-		return nil, fmt.Errorf("read the signing key from %s: %w", secret, err)
-	}
-	defer clear(value)
-	seedBytes, err := base64.RawURLEncoding.Strict().DecodeString(strings.TrimSpace(string(value)))
-	if err != nil || len(seedBytes) != ed25519.SeedSize {
-		return nil, fmt.Errorf("%s's served version is not the unpadded base64url of a %d-byte Ed25519 seed (not echoed)", secret, ed25519.SeedSize)
-	}
-	defer clear(seedBytes)
-	return ed25519.NewKeyFromSeed(seedBytes), nil
-}
-
-// openRecords opens the operator's client of o's broker: the token read from o.tokenFile at each
-// request, the verify keys parsed from o.verifyKeys, and, when signing, the private half from the
-// key store.
-func openRecords(ctx context.Context, o options, signing bool, keys func(context.Context) (KeyStore, error)) (*holdrecord.Client, error) {
-	verify, err := signedrecord.ParsePublicKeys("--verify-keys", o.verifyKeys)
-	if err != nil {
-		return nil, err
-	}
-	cfg := holdrecord.Config{
-		BrokerURL:  o.brokerURL,
-		Token:      tokenFromFile(o.tokenFile),
-		VerifyKeys: verify,
-		HTTP:       &http.Client{Timeout: 30 * time.Second},
-	}
-	if signing {
-		store, err := keys(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if cfg.SigningKey, err = signingKey(ctx, store, o.keySecret); err != nil {
-			return nil, err
-		}
-	}
-	return holdrecord.New(cfg)
-}
-
-// tokenFromFile reads the token at path at each call: the kubelet rewrites a projected token in
-// place.
-func tokenFromFile(path string) func(context.Context) (string, error) {
-	return func(context.Context) (string, error) {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return "", fmt.Errorf("read the token file %s: %w", path, err)
-		}
-		token := strings.TrimSpace(string(raw))
-		if token == "" {
-			return "", fmt.Errorf("the token file %s is empty", path)
-		}
-		return token, nil
-	}
-}
-
 // newHoldID is a fresh hold id: a nuid, one subject token with no '.', so the bucket barrier's key
 // hold.barrier.<hold id> is one key.
 func newHoldID() string { return nuid.Next() }
 
-// openKeys opens Secret Manager, as `envoy-infra seed --store gcp-secret-manager` does.
-func openKeys(ctx context.Context) (KeyStore, error) { return seed.OpenGCP(ctx, "", "") }
-
 // realEnv is the env of a real run: the broker's routes with the operator's token and the hold
-// key from Secret Manager, and the hub through the Kubernetes API (in the operator's Job, the
-// in-cluster configuration; elsewhere KUBECONFIG's) and its NATS client URLs.
+// key from Secret Manager, and the hub through HubFlags.Operator.
 func realEnv() env {
 	return env{
 		records: func(ctx context.Context, o options, signing bool) (*holdrecord.Client, error) {
-			return openRecords(ctx, o, signing, openKeys)
+			return openRecords(ctx, o.HubFlags, signing, openKeys)
 		},
 		keys: openKeys,
-		hub:  openOperator,
+		hub:  func(ctx context.Context, o options) (*Operator, error) { return openOperator(ctx, o.HubFlags) },
 		now:  time.Now,
 	}
-}
-
-// openOperator is the real Operator of o.
-func openOperator(ctx context.Context, o options) (*Operator, error) {
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		config, err = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(clientcmd.NewDefaultClientConfigLoadingRules(), &clientcmd.ConfigOverrides{}).ClientConfig()
-		if err != nil {
-			return nil, fmt.Errorf("no Kubernetes configuration, in the cluster or in KUBECONFIG: %w", err)
-		}
-	}
-	client, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, err
-	}
-	computeService, err := compute.NewService(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("open the Compute API: %w", err)
-	}
-	urls := strings.Join(o.nats, ",")
-	return &Operator{
-		Hub: KubeHub{Client: client, Namespace: o.namespace, StatefulSet: o.statefulSet, ConfigMap: o.configMap,
-			Forward: APIForwarder{Config: config}},
-		Disks: ComputeDisks{Service: computeService},
-		URLs:  o.nats,
-		Connect: func(context.Context) (*nats.Conn, error) {
-			credential, _ := natscred.Service(natscred.ServiceFile(o.tokenFile))
-			return nats.Connect(urls, credential, nats.CustomInboxPrefix(natsgrant.OperatorInbox),
-				nats.Name("envoy-infra hold"), nats.Timeout(10*time.Second), nats.MaxReconnects(-1))
-		},
-		Probe: func(_ context.Context, url string) error {
-			credential, _ := natscred.Service(natscred.ServiceFile(o.probeTokenFile))
-			nc, err := nats.Connect(url, credential, nats.Name("envoy-infra hold probe"), nats.NoReconnect(), nats.Timeout(10*time.Second))
-			if err == nil {
-				nc.Close()
-			}
-			return err
-		},
-	}, nil
 }

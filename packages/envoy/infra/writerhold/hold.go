@@ -120,7 +120,7 @@ func readStep1(ctx context.Context, op *Operator) (map[string]string, error) {
 // prepare with a new hold id and the hold's journal inserted for its workflow. Clients are still
 // admitted. It prints the hold id.
 func prepare(ctx context.Context, records *holdrecord.Client, op *Operator, o options, now func() time.Time, stdout io.Writer) error {
-	if err := PreflightMinters(ctx, op.Hub.Client, o.mintersReport, now); err != nil {
+	if err := PreflightMinters(ctx, op.Hub.Client, o.MintersReport, now); err != nil {
 		return err
 	}
 	id, err := startHold(ctx, records, op, holdrecord.Workflow(o.workflow), o.reason)
@@ -327,7 +327,7 @@ func onExpectedDisks(ctx context.Context, op *Operator, d holdrecord.Done) error
 // stop entry, so `hold set`'s rerun, `hold abort` in hub-restore, or `hold release` with nothing
 // changed is admitted. A rerun that finds the row held under its hold id runs the held steps again.
 func set(ctx context.Context, records *holdrecord.Client, op *Operator, o options, now func() time.Time, stdout io.Writer) error {
-	if err := PreflightMinters(ctx, op.Hub.Client, o.mintersReport, now); err != nil {
+	if err := PreflightMinters(ctx, op.Hub.Client, o.MintersReport, now); err != nil {
 		return err
 	}
 	id := o.holdID
@@ -665,6 +665,40 @@ func proveServers(ctx context.Context, op *Operator, holdID string, bindings map
 	if err != nil {
 		return nil, err
 	}
+	if _, err := restartProveAndBarrier(ctx, op, nc, render, declared, holdID, bindings); err != nil {
+		return nil, err
+	}
+	return Report{Hub: op.Hub, Declared: declared, AuthUser: render.AuthUser, Wait: op.Wait}.Run(ctx, nc)
+}
+
+// RestartProveAndBarrier runs §3a's steps 3 to 5 on the hub inside hold holdID: every declared
+// server restarted, one eviction at a time, and proved (a new server id, the probe refused on it,
+// its routes, image, revision and claim on the disk it is bound to now), then the meta barrier. It
+// returns the restarted servers, each with its new /varz. A command that must leave nothing a
+// server accepted before its own step (t-7's `restore --finish`) runs it first.
+func RestartProveAndBarrier(ctx context.Context, op *Operator, holdID string) (Declared, error) {
+	nc, err := op.Connect(ctx)
+	if err != nil {
+		return nil, unknownf(StepRestart, err, "connect to the hub as the operator")
+	}
+	defer func() { nc.Close() }()
+	render, err := Precondition(ctx, op.Hub)
+	if err != nil {
+		return nil, err
+	}
+	declared, err := Discover(ctx, op.Hub)
+	if err != nil {
+		return nil, err
+	}
+	claims, err := ReadClaims(ctx, op.Hub, render, op.Disks)
+	if err != nil {
+		return nil, err
+	}
+	return restartProveAndBarrier(ctx, op, nc, render, declared, holdID, claims)
+}
+
+// restartProveAndBarrier is steps 3 to 5 on nc, each claim held to bindings.
+func restartProveAndBarrier(ctx context.Context, op *Operator, nc *nats.Conn, render *Render, declared Declared, holdID string, bindings map[string]ClaimBinding) (Declared, error) {
 	restart := Restart{Hub: op.Hub, Declared: declared, Limit: op.RestartLimit, Probe: op.Probe,
 		Bind: func(ctx context.Context, pod string, step1, now Varz) error {
 			if err := CheckReload(StepProof, pod, step1, now); err != nil {
@@ -683,5 +717,5 @@ func proveServers(ctx context.Context, op *Operator, holdID string, bindings map
 	if err := (MetaBarrier{Hub: op.Hub, Declared: after, HoldID: holdID}).Run(ctx, nc, nil); err != nil {
 		return nil, err
 	}
-	return Report{Hub: op.Hub, Declared: declared, AuthUser: render.AuthUser, Wait: op.Wait}.Run(ctx, nc)
+	return after, nil
 }
