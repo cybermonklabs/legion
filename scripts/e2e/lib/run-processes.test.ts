@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
@@ -25,6 +25,29 @@ import { procRootOf } from "./proc-root";
 const rig = join(import.meta.dir, "rig.sh");
 const force = join(import.meta.dir, "arg-max-force.sh");
 const root = join(import.meta.dir, "..", "..", "..");
+
+// rowBoundMs is the bound of every row of this file (setDefaultTimeout), whatever the runner's
+// command line, and a hang guard that decides no verdict: every wait a row makes on the kernel ends
+// rowTeardownMs before it (rowWaitsEnd), naming what it waited for and what it saw, so the walk and
+// the cleanup after a wait still fit in the row, and a wait that runs out fails by its own message
+// rather than by bun's timeout. No span shorter than the row decides a wait: a forced run on a
+// devbox at a load near 450 (2026-11-21) held an escaped process inside its exec for more than 3 s,
+// and the fixed 3 s wait this replaced failed the row. Bun gives a hook the default bound in force
+// when the hook is registered, so this comes before every hook of the file, temporaryDirectory's
+// afterAll that removes `dir` among them: on that devbox's shared scratch disk that removal ran
+// 14.5 s to 20.6 s in three whole-file runs, past bun's 5 s for a hook, and failed the file as
+// "(unnamed) … a beforeEach/afterEach hook timed out" while every row passed.
+const rowBoundMs = 60_000;
+const rowTeardownMs = 15_000;
+setDefaultTimeout(rowBoundMs);
+let rowStart = 0;
+beforeEach(() => {
+  rowStart = performance.now();
+});
+// rowWaitsEnd is when the running row's waits end, in performance.now() time.
+function rowWaitsEnd(): number {
+  return rowStart + rowBoundMs - rowTeardownMs;
+}
 const dir = temporaryDirectory("run-processes-test");
 // perl: every process a row starts, and every harness, runs through ownGroup (lib/own-group.ts).
 const skip = skipWithout("perl");
@@ -120,14 +143,15 @@ async function gone(pid: number): Promise<boolean> {
 // and only after it has counted each variable the environment's real end. Until then environ reads
 // empty and a walk of the marks names nothing, so a wait on the exe link or on the command line can
 // end inside the exec. Nothing signals the end of another process's exec, so it reads both every
-// 50 ms, as gone and untilRunning (lib/own-group.ts) do. It rejects naming the pid, what its exe
-// link read and how many bytes its environ held when that is not so within 3 s: the row's 5 s (bun
-// test's default, which CI's `bun test scripts/e2e/lib` keeps) less 2 s for the walk after.
+// 50 ms, as gone and untilRunning (lib/own-group.ts) do, until the row's waits end (rowWaitsEnd),
+// and reads once more then; past that it rejects naming the pid, what its exe link read and how many
+// bytes its environ held.
 async function untilExecDone(pid: number, program: string): Promise<void> {
   const want = realpathSync(hostTool(program) ?? program);
+  const end = rowWaitsEnd();
   let exe = "";
   let environ = 0;
-  for (let i = 0; i < 60; i++) {
+  for (;;) {
     try {
       exe = readlinkSync(`/proc/${pid}/exe`);
       environ = exe === want ? readFileSync(`/proc/${pid}/environ`).length : 0;
@@ -136,10 +160,12 @@ async function untilExecDone(pid: number, program: string): Promise<void> {
       environ = 0;
     }
     if (exe === want && environ > 0) return;
-    await Bun.sleep(50);
+    const now = performance.now();
+    if (now >= end) break;
+    await Bun.sleep(Math.min(50, end - now));
   }
   throw new Error(
-    `pid ${pid} did not finish its exec of ${want} within 3 s: its exe link read ${exe || "nothing"} and its environ ${environ} bytes`
+    `pid ${pid} did not finish its exec of ${want} by the end of the row's waits (${(rowBoundMs - rowTeardownMs) / 1000} s after the row began): its exe link read ${exe || "nothing"} and its environ ${environ} bytes`
   );
 }
 
@@ -377,21 +403,21 @@ function spelled(address: string): string {
 // process already held OTHER at the port the kernel then gave 127.0.0.1. No order removes the
 // reverse, a port the kernel gives OTHER that some process already listens on at 127.0.0.1 (or on
 // every address), since the box's processes share one network namespace: that refuses this listen,
-// and the row takes a fresh port from a new process until 3 s have gone (the row's 5 s less 2 s for
-// the walk and its teardown), then fails naming every port 127.0.0.1 refused, a failure of its
-// setup and not of listening_holders. Both LISTEN rows are read from /proc/net/tcp before the walk,
-// which must name this test process alone.
+// and the row takes a fresh port from a new process until the row's waits end (rowWaitsEnd), then
+// fails naming every port 127.0.0.1 refused, a failure of its setup and not of listening_holders.
+// Both LISTEN rows are read from /proc/net/tcp before the walk, which must name this test process
+// alone.
 async function onlyTheLoopbackHolder(name: string, program: string[], other: string) {
   const work = join(dir, name);
   mkdirSync(work);
   let listener: { port: number; stop(closeActiveConnections?: boolean): void } | undefined;
   const refused: string[] = [];
-  const deadline = Date.now() + 3000;
+  const deadline = rowWaitsEnd();
   try {
     while (listener === undefined) {
-      if (Date.now() >= deadline) {
+      if (performance.now() >= deadline) {
         throw new Error(
-          `no port free on both ${other} and 127.0.0.1 within 3 s: ${refused.length} ports tried, each refused on 127.0.0.1, so listening_holders was not run (${refused.join("; ")})`
+          `no port free on both ${other} and 127.0.0.1 by the end of the row's waits (${(rowBoundMs - rowTeardownMs) / 1000} s after the row began): ${refused.length} ports tried, each refused on 127.0.0.1, so listening_holders was not run (${refused.join("; ")})`
         );
       }
       const holder = Bun.spawn(ownGroup(program), {
