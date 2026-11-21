@@ -44,9 +44,29 @@ jobs:
     # 1059 s for runs 44013632169 and 43996496498 on ubuntu-24.04, whose entry was eleven days old
     # and held no darwin objects. 1059 s and the 206 s the race compile adds at most (234 s less
     # 28 s) come to 1265 s, about 21 minutes, and half again is 1898 s, the 32 minutes here.
-    timeout-minutes: 32
+    # The writer hold's packages (writerhold, buckets) add to the unit step their rows on the
+    # broker's real hold routes over this job's Postgres, each a 3-server cluster whose every server
+    # a hold restarts: 15 to 70 s a row on a dev box without -race, about 40 rows. With no
+    # measurement of them here yet, the unit step is given 40 minutes (race-unit.sh's -timeout) and
+    # each forced-order step 15, as the envoy-go-race job's are: 32 + 40 + 30 = 102.
+    timeout-minutes: 102
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       TESTCONTAINERS_RYUK_DISABLED: "true"
+      # The broker's store, which the writer hold's rows open (holdrecordtest.Start) and skip
+      # without; a skip is a pass, so without this variable the hold's rows never run here.
+      BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -128,6 +148,19 @@ jobs:
             pattern=$(../../../.github/scripts/go-tagged-tests.sh natslive "$pkg")
             go test -count=1 -timeout 30m -tags natslive -run "$pattern" "$pkg"
           done
+        working-directory: packages/envoy/infra
+      # The writer hold's forced-order tests (packages/envoy/scripts/forced-order.sh, run against
+      # this module with -C): every TestForcedOrderHold test of writerhold, built with -tags
+      # odatrace and -race against a nats-server whose own code carries the hold points
+      # internal/testnats/hooks.go drives. The first step hooks the nats-server the module links,
+      # the second v2.10.29; the script fails a package that declares no such test. Neither step
+      # sets an environment variable: check-ci-filters.sh reduces no go command of a job one of
+      # whose steps sets a GO* name.
+      - name: Writer hold forced-order tests on the hooked nats-server the module links
+        run: ../scripts/forced-order.sh -C . ./writerhold/
+        working-directory: packages/envoy/infra
+      - name: Writer hold forced-order tests on the hooked nats-server v2.10.29
+        run: ../scripts/forced-order.sh -C . -server 2.10.29 ./writerhold/
         working-directory: packages/envoy/infra
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
