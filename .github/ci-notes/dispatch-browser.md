@@ -1169,18 +1169,28 @@ three's per-leg merge all grow with those. A job cancelled at this budget posts 
 so the run is red and read again from the jobs API; it cannot pass a verdict it never
 reached.
 
-## Why every leg's blob report is downloaded into a directory of its own
+## Why every leg's blob report is downloaded without merge-multiple, and the two layouts it lands in
 
-Every leg's blob report and row count, one directory per artifact. Each artifact holds a
-blob-report/ and a rows/ directory, so the zips land together and the counts land beside
-them rather than among them: `merge-reports` reads the zips of the directory it is given.
+Every leg's blob report and row count. A leg's artifact holds a blob-report/ directory, a
+rows/ directory or both (a leg whose browser step wrote a count and no blob uploads rows/
+alone), so the zips land together and the counts land beside them rather than among them:
+`merge-reports` reads the zips of the directory it is given.
 
-No `merge-multiple`, so each artifact is extracted into a directory named for it
-(dispatch-browser-blob-shard-1-2/blob-report/report-shard-1.zip) and the step "Take the
-newest attempt of each leg's blob report" can
-tell the attempts apart. A run's artifact list holds every attempt's artifacts and this
-pattern matches them all; two attempts of one leg hold the same inner paths, so merging
-them into one directory let one attempt overwrite the other in an order nothing fixes.
+No `merge-multiple`, so when more than one artifact matches, each is extracted into a
+directory named for it (dispatch-browser-blob-shard-1-2/blob-report/report-shard-1.zip)
+and the step "Take the newest attempt of each leg's blob report" can tell the attempts
+apart. A run's artifact list holds every attempt's artifacts and this pattern matches
+them all; two attempts of one leg hold the same inner paths, so merging them into one
+directory let one attempt overwrite the other in an order nothing fixes.
+
+When exactly one artifact matches, the action extracts it into `path` itself, with no
+directory named for it: v8.0.1's src/download-artifact.ts, at the pinned 3e5f45b2, writes
+into `path` when `merge-multiple` is set or when `artifacts.length === 1`. blobs/ then
+holds that artifact's blob-report/ and rows/ (blobs/blob-report/report-shard-1.zip). How
+many artifacts the pattern matches, over every attempt of the run, is the run's - one leg
+that uploaded a blob on one attempt makes one - so that step reads both layouts, and takes
+a lone artifact whole: one artifact is one leg at one attempt, and there is nothing to
+choose.
 
 ## Why a refused blob download is reported as a refused read
 
@@ -1207,8 +1217,9 @@ The newest attempt of each leg, and no other, into one directory of the shape th
 "Merge the legs' blob reports into one report", "Reading one, the rows" and "Reading three, the leg exits with no failed row" read. A leg a failed-only re-run did not run keeps the attempt that ran it, which
 is what .github/scripts/ci-ok-report.sh already does with the jobs' ci-ok reports; the
 script's head says what two attempts of one leg did to a merged report when they were
-downloaded over each other. It runs from $GITHUB_WORKSPACE, this step's own directory,
-and its log names the attempt it took for each leg.
+downloaded over each other. It runs from $GITHUB_WORKSPACE, this step's own directory.
+Where several artifacts matched, its log names the attempt it took for each leg; where one
+matched, it names the files it took.
 
 ## What the merged report's three outputs are for
 
