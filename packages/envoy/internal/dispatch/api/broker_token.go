@@ -1,7 +1,7 @@
 package api
 
 // broker_token.go is the credential that is not a bearer: an access token the secrets broker
-// issued, presented under RFC 9449's DPoP scheme. internal/brokertoken decides it; what is here
+// issued, presented under RFC 9449's DPoP scheme. internal/ciphertoken decides it; what is here
 // is where that decision is made on a request, how it is carried to every layer that resolves
 // the caller, what each refusal says, and what an open connection's heartbeat asks instead.
 //
@@ -18,7 +18,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -42,7 +42,7 @@ import (
 // list does not name.
 func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, presented := brokertoken.Presented(r); !presented {
+		if _, presented := ciphertoken.Presented(r); !presented {
 			handler(w, r)
 			return
 		}
@@ -62,7 +62,7 @@ func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 // proof that opened the connection, and that proof is spent: checking it again would be the
 // replay it looks like and would close a sound socket on its first heartbeat. It authenticated
 // the upgrade, so what is left to ask is whether the broker still holds the token live, which is
-// brokertoken.Verifier.Live, and, for a token naming a person, whether that person may still act
+// ciphertoken.Verifier.Live, and, for a token naming a person, whether that person may still act
 // and the token's account is still theirs (brokerPersonAdmitted), as every request under the
 // token asks: so a socket a replaced account's broker token opened closes at its next heartbeat
 // after the replacing sign-in commits. It answers the person the token names as the caller's owner,
@@ -73,7 +73,7 @@ func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 // broker token opened closes too. A token naming no person, a read-only one among them, answers
 // no caller. Nothing is admitted through this, only kept.
 func (s *server) callerStillResolves(r *http.Request) (caller model.Actor, broker bool, err error) {
-	if _, presented := brokertoken.Presented(r); presented {
+	if _, presented := ciphertoken.Presented(r); presented {
 		if s.deps.BrokerTokens == nil {
 			return model.Actor{}, true, errNoBrokerConfigured()
 		}
@@ -97,7 +97,7 @@ func (s *server) callerStillResolves(r *http.Request) (caller model.Actor, broke
 // to the Google account it is. One statement reads, by the person's key, their member kind, the
 // account (`sub`) people records for them, and when people recorded it (sub_recorded_at).
 //
-// A token is held to the account its credential records (brokerTokenSubject), read in the same
+// A token is held to the account its credential records (brokerTokenAccount), read in the same
 // snapshot, on a deployment whose sign-in records accounts (Deps.SignInIssuer set; elsewhere
 // people.sub may be a Google account left from before a switch to a pool, and names nothing):
 //
@@ -116,12 +116,12 @@ func (s *server) callerStillResolves(r *http.Request) (caller model.Actor, broke
 //     would admit one the replaced account made under that issuer after the margin;
 //   - a token recording no account (its credential made before the broker recorded accounts)
 //     might be any account's, so it is held to when its credential was made
-//     (brokertoken.Caller.CredentialCreatedAt): made before people recorded the person's account,
+//     (ciphertoken.Caller.CredentialCreatedAt): made before people recorded the person's account,
 //     or less than brokerCredentialMargin after it, or at a time the broker did not record, it is
 //     refused 401 BROKER_TOKEN_RECORDS_NO_ACCOUNT; made at least the margin after, or with no
 //     recording to compare with (sub_recorded_at null), it acts.
 //
-// A token an operator's exchange entry mapped (brokertoken.ProjectScopeNamed: a pod's account, a
+// A token an operator's exchange entry mapped (ciphertoken.ProjectScopeNamed: a pod's account, a
 // workflow, a Google machine's account, each listed for the person) is held to no account and no
 // time: no person's credential made it, the operator's configuration names its person, and a pod
 // cannot sign in again, so a time would refuse it for as long as it lives once the person's account
@@ -143,21 +143,20 @@ func (s *server) callerStillResolves(r *http.Request) (caller model.Actor, broke
 // share. A read that fails is 503 IDENTITY_UNAVAILABLE, never an accept. So the token of a full
 // member, or of a person no people row holds, costs that one read and answers as it always did
 // while its account is theirs; only a restricted member's reads the lists. A token naming a
-// service and no person is not asked. The admission answers the token's own account and whether
-// it is of another issuer, which its mints and approves name (BrokerAdmittedSubject,
-// BrokerForeignAccount), and whether the person is restricted, which a live socket's heartbeat
-// holds it to.
-func (s *server) brokerPersonAdmitted(ctx context.Context, caller brokertoken.Caller) (brokerAdmission, error) {
+// service and no person is not asked. The admission answers whether the person is restricted,
+// which a live socket's heartbeat holds it to. A broker token never mints or decides
+// (brokerPersonScopes), so nothing past the admission reads its account.
+func (s *server) brokerPersonAdmitted(ctx context.Context, caller ciphertoken.Caller) (brokerAdmission, error) {
 	var kind string
 	var replaced, named bool
-	admission := brokerAdmission{Foreign: s.brokerForeignAccount(caller)}
-	admission.Subject, admission.Issuer = s.brokerTokenAccount(caller)
-	held := s.deps.SignInIssuer != "" && (caller.ProjectScope != brokertoken.ProjectScopeNamed || personCredential(caller))
+	subject, issuer := s.brokerTokenAccount(caller)
+	foreign := s.brokerForeignAccount(caller)
+	held := s.deps.SignInIssuer != "" && (caller.ProjectScope != ciphertoken.ProjectScopeNamed || personCredential(caller))
 	err := s.deps.Store.Pool.QueryRow(ctx, `
 		select coalesce((select member_kind from people where email = $1), ''),
 			`+brokerAccountReplaced("$1", "$2::text", "$6::text", "$5::boolean", "$3::timestamptz", "$4::boolean")+`,
 			`+brokerAccountNamed("$1", "$2::text")+`
-	`, model.CanonicalLogin(caller.Person), admission.Subject, timeOrNull(caller.CredentialCreatedAt), held, admission.Foreign, admission.Issuer).
+	`, model.CanonicalLogin(caller.Person), subject, timeOrNull(caller.CredentialCreatedAt), held, foreign, issuer).
 		Scan(&kind, &replaced, &named)
 	if err != nil {
 		slog.Warn("dispatch: a broker token naming a person was refused: their member kind and recorded account could not be read", "error", err)
@@ -165,9 +164,9 @@ func (s *server) brokerPersonAdmitted(ctx context.Context, caller brokertoken.Ca
 			"whether this token's person may still act could not be read; try again in a minute")
 	}
 	if replaced {
-		return brokerAdmission{}, brokerReplacedRefusal(admission.Subject == "", named)
+		return brokerAdmission{}, brokerReplacedRefusal(subject == "", named)
 	}
-	admission.Restricted = model.MemberKind(kind) == model.MemberRestricted
+	admission := brokerAdmission{Restricted: model.MemberKind(kind) == model.MemberRestricted}
 	if !admission.Restricted {
 		return admission, nil
 	}
@@ -178,7 +177,7 @@ func (s *server) brokerPersonAdmitted(ctx context.Context, caller brokertoken.Ca
 // made it: the account it records, or when that credential was made. A sign-in's and a machine
 // login's trade record both, or the creation alone for a credential no account approved; an
 // operator entry's records neither, since no person's credential made it.
-func personCredential(caller brokertoken.Caller) bool {
+func personCredential(caller ciphertoken.Caller) bool {
 	return caller.AccountSubject != "" || !caller.CredentialCreatedAt.IsZero()
 }
 
@@ -190,9 +189,9 @@ func personCredential(caller brokertoken.Caller) bool {
 //   - The relay. An approve by the replaced account's credential that passed its last check
 //     (approverStanding) just before the replacing sign-in committed is relayed, and the broker
 //     makes the machine login in its own transaction later. Dispatch sends the decision within
-//     its own time after that check, and its client (agentsecrets defaultTimeout, 5 s) bounds how
-//     long the request takes to reach the broker; the broker's handler then has its request
-//     deadline, 45 s (cmd/broker requestDeadline), to begin the transaction whose start is the
+//     its own time after that check, and its client (cipher.Client's defaultTimeout, 5 s) bounds
+//     how long the request takes to reach the broker; the broker's handler then has its request
+//     deadline, 45 s (cmd/cipherd requestDeadline), to begin the transaction whose start is the
 //     login's created_at, so a late commit does not move it. So 50 s and Dispatch's own time.
 //   - The two clocks. The credential's time is the broker database's now() and the recording's
 //     is Dispatch's database's clock_timestamp(), so a broker clock ahead of Dispatch's by d moves
@@ -259,7 +258,7 @@ func errBrokerTokenRecordsNoAccount() error {
 // token recording none (a sign-in or machine login made before the broker recorded accounts), for
 // one whose account is of another issuer (brokerForeignAccount), and for a Dispatch that signs
 // nobody in.
-func (s *server) brokerTokenAccount(caller brokertoken.Caller) (subject, issuer string) {
+func (s *server) brokerTokenAccount(caller ciphertoken.Caller) (subject, issuer string) {
 	if caller.AccountSubject == "" || s.deps.SignInIssuer == "" {
 		return "", ""
 	}
@@ -290,7 +289,7 @@ func (s *server) recordedIssuer(issuer string) (string, bool) {
 // token's issuer, Google's, and its approvals the issuer Dispatch relays (the sign-in issuer's, or
 // the outside origin's for a passkey's account), so none is expected; the arm is what keeps one
 // from being held to a time instead.
-func (s *server) brokerForeignAccount(caller brokertoken.Caller) bool {
+func (s *server) brokerForeignAccount(caller ciphertoken.Caller) bool {
 	if caller.AccountSubject == "" || s.deps.SignInIssuer == "" {
 		return false
 	}
@@ -298,15 +297,10 @@ func (s *server) brokerForeignAccount(caller brokertoken.Caller) bool {
 	return !known
 }
 
-// brokerAdmission is a broker token's person admitted (brokerPersonAdmitted): the account the
-// token's credential records, as an account Dispatch can name (brokerTokenAccount), its `sub`
-// (Subject, "" for none) and its issuer as people.sub_issuer spells it (Issuer), whether it records
-// an account of another issuer (brokerForeignAccount), and whether the person is a restricted
-// member, read in the same statement, which a live socket's heartbeat compares (personRestricted).
+// brokerAdmission is a broker token's person admitted (brokerPersonAdmitted): whether the person
+// is a restricted member, read in the same statement as the token's account, which a live socket's
+// heartbeat compares (personRestricted).
 type brokerAdmission struct {
-	Subject    string
-	Issuer     string
-	Foreign    bool
 	Restricted bool
 }
 
@@ -323,10 +317,8 @@ type brokerAdmission struct {
 // address's account or less than brokerCredentialMargin after it, or at an unrecorded time. It is
 // false for an address recording no account, and, for a token recording none, with no recording
 // time, so nothing is refused that predates the column. An admission reads it
-// (brokerPersonAdmitted), and so do the two reads a request makes again once its body has arrived,
-// a decision's (approverStanding) and a personal token's mint (mintAgentTokenSQL), so a token
-// admitted before another account's sign-in committed acts on nothing after it, however long its
-// client held the body back.
+// (brokerPersonAdmitted), the one place it is read: a broker token neither decides nor mints
+// (brokerPersonScopes), so no read made again once a request's body has arrived asks it.
 func brokerAccountReplaced(address, subject, issuer, foreign, createdAt, held string) string {
 	return "(" + held + " and exists (select 1 from people where email = " + address + " and sub is not null and (" +
 		foreign + " or (nullif(" + subject + ", '') is not null and (sub <> " + subject + " or coalesce(sub_issuer, '') <> " + issuer + "))" +
@@ -342,11 +334,6 @@ func brokerAccountReplaced(address, subject, issuer, foreign, createdAt, held st
 func brokerAccountNamed(address, subject string) string {
 	return "exists (select 1 from broker_revocations where email = " + address + " and nullif(" + subject + ", '') in (subject, holder_subject))"
 }
-
-// brokerAccountNamedSQL reads, for a broker token caller's address ($1) and own account ($2),
-// whether a revocation names the token's account (brokerAccountNamed): what a mint refused by
-// brokerAccountReplaced names in its refusal (mintCallerGone, brokerReplacedRefusal).
-var brokerAccountNamedSQL = `select ` + brokerAccountNamed("$1::text", "$2::text")
 
 // errBrokerCredentialRevoked is the refusal of a broker token naming a person whose account a
 // revocation names as the replaced one or an earlier holder while people records another
@@ -377,9 +364,11 @@ func errNoBrokerConfigured() *apiError {
 	return errorf(http.StatusUnauthorized, "UNAUTHORIZED", "invalid bearer token")
 }
 
+var brokerPersonScopes = []string{model.ScopePerson}
+
 // brokerTokenActor authenticates a caller presenting an access token the secrets broker issued,
 // under the DPoP scheme: the broker is asked whether the token is live and the caller is held to
-// the key that token is bound to (internal/brokertoken). A verified caller is the session the
+// the key that token is bound to (internal/ciphertoken). A verified caller is the session the
 // token names, acting for the person it names, or, where the broker names none, for the service
 // the machine holding it belongs to. It is never retried as another credential.
 //
@@ -390,7 +379,7 @@ func errNoBrokerConfigured() *apiError {
 // turn it away earlier still (gateRouteScopes): there is no person for it to act as.
 //
 // A read-only token is one of those too, a service and no person, and the broker held it to less
-// still: the scope read alone, the project scope none, no project (brokertoken.Caller.ReadOnly,
+// still: the scope read alone, the project scope none, no project (ciphertoken.Caller.ReadOnly,
 // which only a verifier built with Options.ServesReadOnly answers). Its credential is marked
 // read-only (model.Credential.ReadOnly) and holds no OAuth scope, and refuseReadOnlyToken answers
 // it 403 READ_ONLY_TOKEN on every route the read list does not name (readScopeRoutes), ahead of
@@ -439,19 +428,19 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	caller, err := s.deps.BrokerTokens.Verify(r.Context(), r)
 	switch {
 	case err == nil:
-	case errors.Is(err, brokertoken.ErrNotActive):
+	case errors.Is(err, ciphertoken.ErrNotActive):
 		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_NOT_ACTIVE",
 			"the secrets broker does not hold this access token as live")
-	case errors.Is(err, brokertoken.ErrKeyMismatch):
+	case errors.Is(err, ciphertoken.ErrKeyMismatch):
 		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_KEY_MISMATCH",
 			"the DPoP proof's key is not the key this access token is bound to")
-	case errors.Is(err, brokertoken.ErrProofInvalid), errors.Is(err, brokertoken.ErrNotPresented), errors.Is(err, store.ErrUnstorableProof):
+	case errors.Is(err, ciphertoken.ErrProofInvalid), errors.Is(err, ciphertoken.ErrNotPresented), errors.Is(err, store.ErrUnstorableProof):
 		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_PROOF_INVALID",
 			"the DPoP proof did not verify")
-	case errors.Is(err, brokertoken.ErrNotASession):
+	case errors.Is(err, ciphertoken.ErrNotASession):
 		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_NOT_A_SESSION",
 			"this access token is not a session's credential: the secrets broker names no session for it")
-	case errors.Is(err, brokertoken.ErrRateLimited):
+	case errors.Is(err, ciphertoken.ErrRateLimited):
 		wait := s.deps.BrokerTokens.RetryAfter()
 		refusal := errorf(http.StatusTooManyRequests, "BROKER_TOKEN_RATE_LIMITED",
 			"too many access tokens checked from this address; try again in %s", wait)
@@ -472,26 +461,31 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 			return model.Actor{}, false, err
 		}
 	}
-	// Both scopes go to a token the broker scoped to its person: that token is the person's own
-	// agent acting for them, so it may do what they may, approvals included. A token held to one
-	// project (named) gets none, whichever made it. An operator's entry maps one to a project and not
-	// to a person, so it proves a session, not that any person stands behind the request. A
-	// restricted member's machine login trades for one too: a person's own credential made that
-	// one, and it is held to that person's account (brokerPersonAdmitted, personCredential), but it
-	// is the outside person's agent held to the one project they work on, which acts in that
-	// project and settles nothing of the person's own, so it holds no scope either. A restricted
-	// member's token the broker scoped to their person gets none for the same reason: a broker whose
-	// project check is off, an older broker during a rollout, or a token minted before the broker
-	// held restricted members to one project can still answer one, and brokerPersonAdmitted has read
-	// the member's kind above, so the scope does not rest on the broker's check alone. A token that
-	// names a service and no person gets none either, whatever scope the broker answered: there
-	// is no person for it to act as, and a scope that said otherwise would let it act as the
-	// session's own id on the routes that read what belongs to a person. A read-only token is
-	// one of those, and its one scope, read, is carried as the credential's ReadOnly mark and
-	// never as a scope a route could require.
+	// A token the broker scoped to its person holds the person scope: that token is the person's
+	// own agent acting for them, so it reads, writes and answers their questions as they do. No
+	// broker-issued token holds approve, whatever its project scope (brokerPersonScopes): every
+	// one is made from a file on the machine that holds it, a machine login or a person's sign-in,
+	// so whoever copies that file holds it, and approve settles what only the person settles - an
+	// approval, a credential decision or revoke, a personal token. Those need the person's browser
+	// session or a personal token the person gave approve. A token scoped to a project gets no
+	// scope, because the deployment mapped that token to a project and not to the person: it
+	// proves a session, not that any person stands behind the request. A restricted member's
+	// machine login trades for one too: a person's own credential made that one, and it is held to
+	// that person's account (brokerPersonAdmitted, personCredential), but it is the outside
+	// person's agent held to the one project they work on, which acts in that project and settles
+	// nothing of the person's own, so it holds no scope either. A restricted member's token the
+	// broker scoped to their person gets none for the same reason: a broker whose project check is
+	// off, an older broker during a rollout, or a token minted before the broker held restricted
+	// members to one project can still answer one, and brokerPersonAdmitted has read the member's
+	// kind above, so the scope does not rest on the broker's check alone. A token that names a
+	// service and no person gets none either, whatever scope the broker answered: there is no
+	// person for it to act as, and a scope that said otherwise would let it act as the session's
+	// own id on the routes that read what belongs to a person. A read-only token is one of those,
+	// and its one scope, read, is carried as the credential's ReadOnly mark and never as a scope a
+	// route could require.
 	var scopes []string
-	if caller.Person != "" && caller.ProjectScope == brokertoken.ProjectScopePerson && !admission.Restricted {
-		scopes = model.Scopes
+	if caller.Person != "" && caller.ProjectScope == ciphertoken.ProjectScopePerson && !admission.Restricted {
+		scopes = brokerPersonScopes
 	}
 	actor := model.Actor{
 		Kind: "session",
@@ -499,12 +493,10 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		// The broker proved this session, so the credential already names the agent behind the
 		// request and no request body has to name it, and the actor is Proven. A read-only token
 		// is marked as one, which is all refuseReadOnlyToken reads.
-		Credential: &model.Credential{Scopes: scopes, Session: caller.Session, ReadOnly: caller.ReadOnly,
-			BrokerAdmittedSubject: admission.Subject, BrokerAdmittedIssuer: admission.Issuer, BrokerCredentialCreatedAt: caller.CredentialCreatedAt,
-			BrokerForeignAccount: admission.Foreign},
-		Proven: true,
+		Credential: &model.Credential{Scopes: scopes, Session: caller.Session, ReadOnly: caller.ReadOnly},
+		Proven:     true,
 	}
-	// A caller names a person or a service, never both and never neither (brokertoken.Caller),
+	// A caller names a person or a service, never both and never neither (ciphertoken.Caller),
 	// and the two fields are set from the token alone, never from a body. whoami reports both.
 	if caller.Person != "" {
 		actor.Owner = &caller.Person
@@ -518,20 +510,20 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// token did before projects could be private (R9); for a restricted member's token it narrows
 	// every project (R3). A token held to one project names that project: one an operator's entry
 	// mapped, today's named-scope rule, and a restricted member's machine login's (the broker's
-	// exchange.Set.Machine); brokertoken refuses a named token naming two. A full member's such token
-	// has its writes held to that project as they were before, whatever the deployment holds
+	// exchange.Set.Machine); ciphertoken refuses a named token naming two. A full member's such
+	// token has its writes held to that project as they were before, whatever the deployment holds
 	// (NamedProject; namedProjectOf), and a restricted member's is held by its list, which covers
 	// that project alone. A token acting as its person carries the list its trade asked for
-	// (brokertoken.Caller.Projects), which holds no write by name, since a dev box session's person
+	// (ciphertoken.Caller.Projects), which holds no write by name, since a dev box session's person
 	// writes wherever they may. Every other token carries no list: a named token naming none (the
 	// shared public-session account's), which reads and writes as a token naming no project does;
 	// the token of a machine naming a service and no person, which names no project at all; and a
 	// read-only token, whose project scope none names no project and writes none.
 	switch {
-	case caller.ProjectScope == brokertoken.ProjectScopeNamed && len(caller.Projects) == 1:
+	case caller.ProjectScope == ciphertoken.ProjectScopeNamed && len(caller.Projects) == 1:
 		actor.Credential.Projects = caller.Projects
 		actor.Credential.NamedProject = caller.Projects[0]
-	case caller.ProjectScope == brokertoken.ProjectScopePerson && len(caller.Projects) > 0:
+	case caller.ProjectScope == ciphertoken.ProjectScopePerson && len(caller.Projects) > 0:
 		actor.Credential.Projects = caller.Projects
 	}
 	// The writer the line names: the person, or the service for a token that names none, under

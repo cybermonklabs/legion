@@ -29,13 +29,14 @@
 --     no refresh token; it stands while confirmed_at holds a time, and its hourly confirmation reads
 --     the access lists and the passkeys instead. So the pairing holds for a row of the sign-in
 --     issuer's account, and a passkey's row holds no refresh token at all.
---   - passkey_ceremonies holds each ceremony a finish used, until it lapses: the SHA-256 of its
---     challenge, under a unique key, and when it lapses (5 minutes after its begin). A begin
---     writes nothing; the finish whose answer verified records the challenge in the transaction
---     that records what the answer does, so a ceremony's answer does that once: a replayed answer
---     and its ceremony cookie are refused even for a passkey whose signature counter stays 0,
---     which the counter check cannot catch. Each finish deletes the rows that lapsed, so the table
---     holds the last 5 minutes of finishes.
+--   - passkey_ceremonies holds each ceremony a finish used, until a minute after it lapses: the
+--     SHA-256 of its challenge, under a unique key, and when it lapses (5 minutes after its
+--     begin). A begin writes nothing; the finish whose answer verified records the challenge in
+--     the transaction that records what the answer does, so a ceremony's answer does that once: a
+--     replayed answer and its ceremony cookie are refused even for a passkey whose signature
+--     counter stays 0, which the counter check cannot catch. Each finish deletes the rows a minute
+--     past their lapse (a margin for the database's clock running ahead of the process's), so the
+--     table holds the last 6 minutes of finishes.
 --
 -- New tables, a nullable column with no default and its check added NOT VALID (as 20261117064356
 -- adds agent_tokens.subject's: an inline check on `add column` would read every row of people), a

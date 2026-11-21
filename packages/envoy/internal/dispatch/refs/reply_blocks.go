@@ -57,7 +57,8 @@ type ItemRepair struct {
 }
 
 // PlanItemIfOwed plans the index comment, message or ask itemID is owed, read and planned from
-// its stored text as IndexItemIfOwed indexes it; an item that owes none plans nothing.
+// its stored text as IndexItemIfOwed indexes it, its short ids resolved for the author its row
+// records (NewReader); an item that owes none plans nothing.
 func PlanItemIfOwed(ctx context.Context, q Queryer, kind ItemKind, itemID string, origins text.Origins) (ItemRepair, error) {
 	var query string
 	switch kind {
@@ -67,13 +68,13 @@ func PlanItemIfOwed(ctx context.Context, q Queryer, kind ItemKind, itemID string
 	case ItemComment:
 		query = `
 			select c.body, coalesce(c.edited_at, c.created_at), true,
-			       s.comment_id is not null, s.owed_at is not null, s.body_sha256
+			       s.comment_id is not null, s.owed_at is not null, s.body_sha256, c.author
 			from comments c left join comment_block_state s on s.comment_id = c.id
 			where c.id = $1::uuid`
 	case ItemMessage:
 		query = `
 			select m.body, m.created_at, m.issue_key is not null,
-			       s.message_id is not null, s.owed_at is not null, s.body_sha256
+			       s.message_id is not null, s.owed_at is not null, s.body_sha256, m.author
 			from messages m left join message_block_state s on s.message_id = m.id
 			where m.id = $1::uuid`
 	default:
@@ -83,7 +84,8 @@ func PlanItemIfOwed(ctx context.Context, q Queryer, kind ItemKind, itemID string
 	var writtenAt time.Time
 	var mentions, stated, owed bool
 	var sum *string
-	if err := q.QueryRow(ctx, query, itemID).Scan(&body, &writtenAt, &mentions, &stated, &owed, &sum); err != nil {
+	var author []byte
+	if err := q.QueryRow(ctx, query, itemID).Scan(&body, &writtenAt, &mentions, &stated, &owed, &sum, &author); err != nil {
 		return ItemRepair{}, fmt.Errorf("read the block state of %s %s: %w", kind, itemID, err)
 	}
 	if stated && !owed && sum != nil && *sum == itemblocks.BodySHA256(body) {
@@ -92,7 +94,11 @@ func PlanItemIfOwed(ctx context.Context, q Queryer, kind ItemKind, itemID string
 	repair := ItemRepair{kind: kind, itemID: itemID, owed: true, mentions: mentions}
 	var located []text.Located
 	if mentions {
-		located = NewReader(ctx, q, string(kind), itemID, origins).Mentions(body)
+		writer, err := writerOf(author)
+		if err != nil {
+			return ItemRepair{}, fmt.Errorf("read the author of %s %s: %w", kind, itemID, err)
+		}
+		located = NewReader(ctx, q, writer, string(kind), itemID, origins).Mentions(body)
 	}
 	index, err := ReadItemIndex(ctx, q, kind, itemID)
 	if err != nil {

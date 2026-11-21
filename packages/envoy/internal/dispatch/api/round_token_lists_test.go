@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -239,7 +239,7 @@ func TestAPersonTokensTradedListHoldsNoDeploymentWriteWhileNoProjectIsPrivate(t 
 			caller := newBrokerCaller(t)
 			const token = "a-person-token-whose-trade-named-one-project"
 			answer := liveNamedToken(caller.jkt)
-			answer.ProjectScope, answer.Projects = brokertoken.ProjectScopePerson, []string{brokerTestProject}
+			answer.ProjectScope, answer.Projects = ciphertoken.ProjectScopePerson, []string{brokerTestProject}
 			rig.broker.Says(token, answer)
 			seedProject(t, rig, brokerTestProject, "Broker")
 			if private {

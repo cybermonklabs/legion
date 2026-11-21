@@ -28,8 +28,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
@@ -42,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
+	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
@@ -284,6 +285,16 @@ type bootConfig struct {
 	InsecureCookie bool
 	// EnvoyToken is ENVOY_TOKEN, the bearer every Envoy listener call sends.
 	EnvoyToken string
+	// EnvoyAccountTokenFile is ENVOY_ACCOUNT_TOKEN_FILE, the file holding Dispatch's own projected
+	// Kubernetes service-account token for the listener's audience, which every listener call
+	// reads and presents in EnvoyToken's place. The file is read by the listener client on each
+	// call, never here: a projected token rotates.
+	EnvoyAccountTokenFile string
+	// EnvoyGoogleAudience is ENVOY_ACCOUNT_GOOGLE_AUDIENCE: on Google Cloud, the audience of the
+	// identity token the metadata server mints for Dispatch's machine's service account, which
+	// every listener call presents in EnvoyToken's place (envoy.WithGoogleIdentity); the listener's
+	// ENVOY_OIDC_GOOGLE_AUDIENCE. At most one of it and EnvoyAccountTokenFile is set.
+	EnvoyGoogleAudience string
 	// RoleHolderWindows are the session windows a role route's holder is judged by
 	// (ENVOY_SESSION_LIVE_WINDOW and ENVOY_SESSION_GONE_HORIZON, roleHolderWindows): what the
 	// outbox's reader of the role and session buckets carries (roles.NewBuckets).
@@ -309,6 +320,15 @@ func main() {
 		os.Exit(1)
 	}
 	reportIgnoredPrivateProjects(boot.PrivateProjectsIgnored)
+	// Dispatch's Google Cloud identity at the listener needs a metadata server, decided once here:
+	// a machine with none refuses to start, naming the setting, and a metadata server that does
+	// not answer later fails only the call it was asked for, which its delivery tries again.
+	if boot.EnvoyGoogleAudience != "" {
+		if err := dispatchenvoy.CheckGoogleIdentity(context.Background()); err != nil {
+			slog.Error("dispatch: Envoy listener identity", "error", err)
+			os.Exit(1)
+		}
+	}
 	// The registry's pace, before anything registers or reads what is live. The live window stays
 	// three beats, as processes.LiveWindow is of processes.HeartbeatInterval, so a run cannot give
 	// itself a window shorter than its own heartbeat, and the wait a refused process makes
@@ -716,15 +736,21 @@ func main() {
 	//     as long as the process runs) and the task progress reconciliation (retrying, briefly,
 	//     rows another writer held).
 	//   - timers that stay, because GitHub has no feed of what they would miss - a webhook that
-	//     never arrived, a delivery that failed, a source's branch head: the delivery reconcile
-	//     and the architecture import every 5 minutes, each starting after a random delay within
-	//     one interval (duty.RunJittered), and the webhook redelivery sweep every 2, sweeping at
-	//     start (redeliver.Sweeper.Run); each then waits its interval plus up to a tenth again
-	//     drawn afresh every period (duty.Jittered), so two processes' ticks drift apart rather
-	//     than staying in step. Under the lease each of these passes is recorded with its loop's
-	//     own period (duty_passes, migration 0115), which is what makes it run once per period
-	//     rather than once per process: two tickers started minutes apart almost never meet inside
-	//     a pass, so the lease alone would exclude nothing.
+	//     never arrived, a delivery that failed: the delivery reconcile and the architecture
+	//     import every 5 minutes, each starting after a random delay within one interval
+	//     (duty.RunJittered), and the webhook redelivery sweep every 2, sweeping at start
+	//     (redeliver.Sweeper.Run). While delivery settings are saved, a push of a source's branch
+	//     imports that source at once (delivery.PushImports, architecture.Importer.Pushed; the
+	//     delivery intake runs only then), so the architecture import's timer repairs a push that
+	//     never arrived, and is the only automatic import where no settings are saved. Each then
+	//     waits its interval less up to a tenth of it, drawn afresh every time
+	//     (duty.JitteredWithin), so no wait is longer than
+	//     the interval and two processes' ticks drift apart rather than staying in step. Under
+	//     the lease each of these passes is recorded with its loop's own period, 0.9 of its
+	//     interval (duty.LeasePeriod, duty_passes, migration 0115), which every wait is longer
+	//     than: that is what makes it run once per period rather than once per process, and
+	//     never refuses a lone process's tick. Two tickers started minutes apart almost never
+	//     meet inside a pass, so the lease alone would exclude nothing.
 	//   - timers that poll the database: the block-index reconciliation (every 30 s, 2 s while a
 	//     batch is full), the repair of closed and reopened issues' asks (api.RunIssueAskRepair,
 	//     every 10 minutes on a plain ticker, after the boot's own unleased pass), the prune of
@@ -1134,27 +1160,30 @@ func main() {
 	go reconcile.Run(ctx, deliveryReconcileLeases)
 	// waitIntakes waits for both intakes to stop once ctx is cancelled; StartIntakes returns it as
 	// a sync.OnceFunc, so a second call returns once the first has. The shutdown runs it before it
-	// closes the database pool: an intake releases its duty.Hold through that pool as it stops,
-	// and a hold left in place for its TTL names the stopped process's deliver subject, which a
-	// process of the build before holds, binding by lookup, goes on delivering at, so the next
-	// holder would read that binding as a dead holder's and take it over. Every exit after the
-	// intakes start runs it too (exitAfterIntakes, stopIntakesOnExit, and the stop during the
-	// registry's admission wait), since each intake can hold its durable before this process
-	// serves anything. With no NATS client there is nothing to wait for.
+	// closes the database pool: it closes the intakes' NATS clients after their Runs return, then
+	// waits for any hand-back finalizer to release its duty.Hold through that pool. A hold left in
+	// place for its TTL names the stopped process's deliver subject, which a process of the build
+	// before holds, binding by lookup, goes on delivering at, so the next holder would read that
+	// binding as a dead holder's and take it over. Every exit after the intakes start runs it too
+	// (exitAfterIntakes, stopIntakesOnExit, and the stop during the registry's admission wait), since
+	// each intake can hold its durable before this process serves anything. With no NATS client there
+	// is nothing to wait for.
 	waitIntakes := func() {}
 	if natsClient != nil {
 		// The intake and the job intake (LEGION-690) each bind a durable, so each takes a client of
-		// its own (delivery.StartIntakes). Their Runs return once ctx is cancelled; each begins
-		// stopping then, at the signal, beside the HTTP drain and the document shutdown, and
-		// returns once a message still in its handler has been acknowledged, or given up at its
-		// stop budget from the signal and handed back, with the messages behind it handed back too
-		// and the intake's hold released, so another process takes its durable over at once and
-		// the clients close after it. Each connects in the background as the publisher does, and
-		// its poll takes the durable's hold once it has.
+		// its own (delivery.StartIntakes). Their Runs begin stopping at the signal beside the HTTP
+		// drain and document shutdown, and return once a message in a handler has been acknowledged or
+		// given up at its stop budget and handed back. StartIntakes then closes both clients, waits for
+		// each pending hand-back's finalizer to release the hold through the pool, and returns. Each
+		// connects in the background as the publisher does, and its poll takes the durable's hold once
+		// it has. While delivery settings are saved (the intake runs only then), the intake hands each
+		// push of a branch to the architecture importer the ticker and the routes share, which imports
+		// the enabled sources on that repository and branch at once; a push it hands over once the
+		// importer's Close has begun starts nothing (architecture.Importer.Pushed).
 		connectIntake := func(name string) (*bus.Client, error) {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
 		}
-		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake)
+		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake, appCtx.Architecture())
 		if err != nil {
 			slog.Error("dispatch delivery: connect NATS", "error", err)
 			os.Exit(1)
@@ -1439,24 +1468,29 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		AccessAccounts:       commaList(env, "DISPATCH_ACCESS_ACCOUNTS"),
 		ProjectOwnerFallback: strings.TrimSpace(env.get("DISPATCH_PROJECT_OWNER_FALLBACK")),
 
-		NewIssueLabel:      strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_LABEL")),
-		NewIssueSession:    strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_SESSION")),
-		GitHubAPIBase:      strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")),
-		SignInIssuer:       strings.TrimSpace(env.get("DISPATCH_SIGNIN_ISSUER")),
-		SignInClientID:     strings.TrimSpace(env.get("DISPATCH_SIGNIN_CLIENT_ID")),
-		SignInClientSecret: strings.TrimSpace(env.get("DISPATCH_SIGNIN_CLIENT_SECRET")),
-		SignInGroup:        strings.TrimSpace(env.get("DISPATCH_SIGNIN_GROUP")),
-		SignInDomain:       strings.TrimSpace(env.get("DISPATCH_SIGNIN_DOMAIN")),
-		NATSDisabled:       env.get("DISPATCH_NATS_DISABLED") == "1",
-		TestHooksEnabled:   env.get("DISPATCH_TEST_HOOKS") == "1",
-		WebDist:            env.get("DISPATCH_WEB_DIST"),
-		FileStoreBucket:    strings.TrimSpace(env.get("DISPATCH_FILE_STORE_BUCKET")),
-		DevSignInSharedKey: env.get("DISPATCH_DEV_SIGNIN_SHARED_KEY"),
-		InsecureCookie:     env.get("DISPATCH_INSECURE_COOKIE") != "",
-		EnvoyToken:         env.get("ENVOY_TOKEN"),
+		NewIssueLabel:         strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_LABEL")),
+		NewIssueSession:       strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_SESSION")),
+		GitHubAPIBase:         strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")),
+		SignInIssuer:          strings.TrimSpace(env.get("DISPATCH_SIGNIN_ISSUER")),
+		SignInClientID:        strings.TrimSpace(env.get("DISPATCH_SIGNIN_CLIENT_ID")),
+		SignInClientSecret:    strings.TrimSpace(env.get("DISPATCH_SIGNIN_CLIENT_SECRET")),
+		SignInGroup:           strings.TrimSpace(env.get("DISPATCH_SIGNIN_GROUP")),
+		SignInDomain:          strings.TrimSpace(env.get("DISPATCH_SIGNIN_DOMAIN")),
+		NATSDisabled:          env.get("DISPATCH_NATS_DISABLED") == "1",
+		TestHooksEnabled:      env.get("DISPATCH_TEST_HOOKS") == "1",
+		WebDist:               env.get("DISPATCH_WEB_DIST"),
+		FileStoreBucket:       strings.TrimSpace(env.get("DISPATCH_FILE_STORE_BUCKET")),
+		DevSignInSharedKey:    env.get("DISPATCH_DEV_SIGNIN_SHARED_KEY"),
+		InsecureCookie:        env.get("DISPATCH_INSECURE_COOKIE") != "",
+		EnvoyToken:            env.get("ENVOY_TOKEN"),
+		EnvoyAccountTokenFile: strings.TrimSpace(env.get("ENVOY_ACCOUNT_TOKEN_FILE")),
+		EnvoyGoogleAudience:   strings.TrimSpace(env.get("ENVOY_ACCOUNT_GOOGLE_AUDIENCE")),
 	}
 	if boot.DatabaseURL == "" {
 		return bootConfig{}, errors.New("DATABASE_URL required")
+	}
+	if boot.EnvoyAccountTokenFile != "" && boot.EnvoyGoogleAudience != "" {
+		return bootConfig{}, errors.New("ENVOY_ACCOUNT_TOKEN_FILE and ENVOY_ACCOUNT_GOOGLE_AUDIENCE each name Dispatch's identity at the Envoy listener; set one of them")
 	}
 	agentTokens := env.get("DISPATCH_AGENT_TOKEN")
 	if strings.TrimSpace(agentTokens) == "" {
@@ -2057,6 +2091,8 @@ func appContextOptions(boot bootConfig, rule identity.SignInRule, built routes.A
 	built.PrivateProjects = boot.PrivateProjects
 	built.EnvoyURL = boot.EnvoyURL
 	built.EnvoyToken = boot.EnvoyToken
+	built.EnvoyAccountTokenFile = boot.EnvoyAccountTokenFile
+	built.EnvoyGoogleAudience = boot.EnvoyGoogleAudience
 	built.GitHubAPIBase = boot.GitHubAPIBase
 	built.AgentSecretsURL = boot.AgentSecretsURL
 	built.AgentSecretsTokenFile = boot.AgentSecretsTokenFile
@@ -2312,7 +2348,7 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // is checked against DISPATCH_SERVER_URL. Spent proofs are recorded in Dispatch's own database
 // (store.DPoPProofs), which the maintenance pass sweeps.
 //
-// It serves a read-only token (brokertoken.Options.ServesReadOnly): the scope read alone, which
+// It serves a read-only token (ciphertoken.Options.ServesReadOnly): the scope read alone, which
 // the broker mints from a read entry. Dispatch is the one service that asks for it, because its
 // route table holds the read list such a token may call (readScopeRoutes in internal/dispatch/api)
 // and every other route answers it 403 READ_ONLY_TOKEN before anything of the route runs.
@@ -2320,7 +2356,7 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // A deployment with no broker gets nil: Dispatch then has no such credential kind, and a DPoP
 // presentation is refused as any non-bearer Authorization header has always been
 // (401 UNAUTHORIZED).
-func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL string) (*brokertoken.Verifier, error) {
+func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL string) (*ciphertoken.Verifier, error) {
 	if boot.AgentSecretsURL == "" {
 		return nil, nil
 	}
@@ -2328,9 +2364,9 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 	if boot.OutsideOrigin != "" {
 		origins = append(origins, boot.OutsideOrigin)
 	}
-	return brokertoken.New(brokertoken.Options{
+	return ciphertoken.New(ciphertoken.Options{
 		BrokerURL: boot.AgentSecretsURL,
-		Account:   brokertoken.NewAccountToken(boot.AgentSecretsTokenFile),
+		Account:   ciphertoken.NewAccountToken(boot.AgentSecretsTokenFile),
 		Origins:   origins,
 		Replay:    store.NewDPoPProofs(database.Pool),
 		// Dispatch's own rule for which address a request came from, the one its access log and

@@ -5,8 +5,9 @@ package daemon
 // issue's pod is a round of its own: it is replaced only once its own workers have answered, and
 // an answer in one issue's pod replaces no other issue's. Nothing of the round suspends a root
 // architect, parks an issue or sends a root to await a person, and the daemon goes on serving every
-// claim in an open round — a worker tasked to push its work completes its phase through the same
-// route it would on any other day (api's handoff/complete).
+// claim in an open round — a worker tasked with the steps of its update message
+// (supervise.UpdateTask) completes its phase through the same route it would on any other day
+// (api's handoff/complete).
 //
 // The rig is podupdate_test.go's over two issues rather than one: real machines over a real
 // Postgres with the runtime faked, ticked by hand one sweep at a time. The completion is driven
@@ -215,7 +216,7 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 		cfg: config.Config{Project: "LEGION", PodUpdateGrace: podUpdateGrace},
 		log: quietLogger(), plan: plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
 		runtime: rt, supervisor: sup,
-		enqueue:     (&workflowRuntime{pool: pool, records: records, log: quietLogger()}).enqueueOutbox,
+		enqueue:     (&workflowRuntime{pool: pool, records: records, dispatchProject: "LEGION", log: quietLogger()}).enqueueOutbox,
 		refreshGate: supervise.NewRefreshGate(0),
 	}
 	engine := workflow.New(records, workflow.Config{Project: podUpdateProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
@@ -352,6 +353,13 @@ func (r *fleetRig) awaitRound(issue string, role claim.Role) supervise.Claim {
 }
 
 // signal is the worker answering ready_for_update, as api's claims/ready-for-update posts it.
+//
+// After the answer, signal writes the activity report that the answering turn's end sends in
+// production: nothing of the worker's own runs, onto the claim's current launch through the
+// store's own call. In production every answer comes from a turn whose end sends such a report,
+// and before its bound a round waits for a claim with a process in its pod that has sent no
+// report since its last turn started (backgroundClaims, dispatch://INFRA-4203 R1). Without the
+// report, every round this rig's answers end early would hold to its bound.
 func (r *fleetRig) signal(issue string, role claim.Role, head string) {
 	r.t.Helper()
 	m := r.machineOf(issue, role)
@@ -360,6 +368,10 @@ func (r *fleetRig) signal(issue string, role claim.Role, head string) {
 		Claim: c.Token, Generation: c.Generation, Session: c.Session, Round: c.UpdateRound, Head: head,
 	}); err != nil {
 		r.t.Fatalf("%s's %s answered the update round: %v", issue, role, err)
+	}
+	known, err := r.sup.store.PutClaimActivity(r.ctx, c.Token, c.Generation, claim.SessionActivity{At: r.clock.Now().UTC()})
+	if err != nil || !known {
+		r.t.Fatalf("report that nothing of %s's %s runs: known %v, %v", issue, role, known, err)
 	}
 }
 
@@ -464,9 +476,6 @@ func (d *fleetHandoffs) EventsAfter(context.Context, string, int64) ([]json.RawM
 }
 func (d *fleetHandoffs) Approval(context.Context, string) (dispatch.Approval, error) {
 	return dispatch.Approval{}, nil
-}
-func (d *fleetHandoffs) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
 }
 
 // complete is one worker's phase completion through the daemon's own route, with a grant minted
@@ -608,11 +617,11 @@ func (r *fleetRig) assertNoRootLeftTheWorkflow(issues ...string) {
 // the issue that has not finished answering keep their round, their pod and their processes, and
 // their pod is replaced only once the last of them answers.
 //
-// The round refuses no completion while it waits, either: a worker tasked to push its work and
-// answer completes its phase through the daemon's own route, the issue moves on, and the round it
-// is in stays open — the worker pushes, reports and is replaced after, which is what the round is
-// for. And nothing of any of it moves a root out of the workflow: no root waits on a person, none
-// is parked, and no architect is suspended.
+// The round refuses no completion while it waits, either: a worker tasked with the steps of its
+// update message (supervise.UpdateTask) completes its phase through the daemon's own route, the
+// issue moves on, and the round it is in stays open — the worker does those steps, answers and
+// is replaced after, which is what the round is for. And nothing of any of it moves a root out
+// of the workflow: no root waits on a person, none is parked, and no architect is suspended.
 func TestPodUpdateReplacesEachIssuesPodOnlyAfterItsOwnWorkersAnswer(t *testing.T) {
 	rig := newFleetRig(t,
 		fleetIssue{key: fleetIssueA, phase: phase.Implementing, pod: fleetPodA,

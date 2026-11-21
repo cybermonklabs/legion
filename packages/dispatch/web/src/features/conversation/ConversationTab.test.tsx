@@ -1,13 +1,13 @@
 import { afterEach, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { type MutationKey, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the two clicks of one same-tick double press, which user-event cannot fire inside a single task
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { jump } from "../../__tests__/fake-clock";
-import { graphNode } from "../../__tests__/graph-fixture";
+import { type Lists, newQueryClient, stubLists, tab } from "../../__tests__/draft-matrix-fixture";
+import { jump, settle } from "../../__tests__/fake-clock";
 import {
   dwellOn,
   type IntersectionControl,
@@ -16,9 +16,11 @@ import {
 } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssueStates, answerThreadReads } from "../../__tests__/send-answers";
+import { heldDraftWords, stopReplySend } from "../../__tests__/stop-late-write";
 import { wholeText } from "../../__tests__/whole-text";
 import type { WriteBounds } from "../../api/client";
 import { ApiError, api } from "../../api/client";
+import { userStateQuery } from "../../api/queries";
 import type {
   Actor,
   Agent,
@@ -37,14 +39,16 @@ import type {
   UserState,
 } from "../../api/types";
 import { messageDeliveryFields } from "../agents/delivery-fixture";
-import { stubMatchMedia } from "../margin/margin-fixture";
+import { PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
+import { SendStoppedError } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { ConversationTab } from "./ConversationTab";
 import { answeredWithErrorGuidance, safeRetryGuidance } from "./delivery";
+import { threadReplySendKey } from "./usePhoneThread";
 
 const alice: Actor = { id: "alice", kind: "user" };
 
@@ -224,86 +228,6 @@ const secondaryDocument: Artifact = {
   primary: false,
   slug: "supporting-document",
 };
-
-interface Lists {
-  agents?: Agent[];
-  asks?: IssueAskThreadRow[];
-  comments?: Comment[];
-  /** The issue's handoffs with their bodies: the list answers them as they are (a body is extra
-   *  to a summary), and `getHandoff` answers one by id. */
-  handoffs?: Handoff[];
-  /** The issue's newest event, which a dwell on the newest card marks read through. */
-  head?: DispatchEvent[];
-  messages?: MessageRead[];
-  /** The first event the reader has not read: its moment is the unread boundary. */
-  unread?: DispatchEvent[];
-}
-
-/** The four reads the Conversation builds its list from, plus the two one-row event reads that
- *  carry the unread boundary and the issue's head, the read of one handoff's body, and the blocks
- *  read an opened comment editor makes, answered with no block ids. The returned `lists` is live:
- *  a test that changes it changes what the next refetch answers. */
-function stubLists(initial: Lists = {}): { lists: Lists; restore: () => void } {
-  const lists: Lists = { ...initial };
-  const spies = [
-    spyOn(api, "listIssueAskThreads").mockImplementation(async () => lists.asks ?? []),
-    spyOn(api, "listComments").mockImplementation(async () => lists.comments ?? []),
-    spyOn(api, "listIssueMessages").mockImplementation(async () => lists.messages ?? []),
-    spyOn(api, "listHandoffs").mockImplementation(async () => lists.handoffs ?? []),
-    spyOn(api, "getHandoff").mockImplementation(async (id) => {
-      const found = lists.handoffs?.find((row) => row.id === id);
-      if (found === undefined) throw new ApiError(404, { error: `no handoff ${id}` });
-      return found;
-    }),
-    spyOn(api, "listAgents").mockImplementation(async () => lists.agents ?? []),
-    spyOn(api, "commentBlocks").mockImplementation(async (id) => ({
-      blocks: [],
-      indexed: false,
-      item: graphNode({ id, issue_key: "CORE-1", kind: "comment" }),
-    })),
-    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options = {}) =>
-      options.order === "desc" ? (lists.head ?? []) : (lists.unread ?? [])
-    ),
-  ];
-  return {
-    lists,
-    restore: () => {
-      for (const spy of spies) spy.mockRestore();
-    },
-  };
-}
-
-function newQueryClient(): QueryClient {
-  return new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
-}
-
-function tab(
-  state: UserState,
-  visible: boolean,
-  queryClient: QueryClient,
-  isClosed = false,
-  issueArtifacts: ReadonlyMap<string, Artifact> = new Map(),
-  focusItemId?: string
-): ReactNode {
-  return (
-    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
-      <KeymapProvider>
-        <QueryClientProvider client={queryClient}>
-          <ConversationTab
-            focusItemId={focusItemId}
-            issueArtifacts={issueArtifacts}
-            isClosed={isClosed}
-            issueKey="CORE-1"
-            state={state}
-            visible={visible}
-          />
-        </QueryClientProvider>
-      </KeymapProvider>
-    </MemoryRouter>
-  );
-}
 
 // The sticky composer sits at document top 0 and the newest card below it. `useFollowLatest`
 // reads their bounding rectangles only to place the newest card beneath the composer, so these
@@ -1283,7 +1207,7 @@ const refusedText = "Couldn't send — the server is down";
 // Resolve on a phone as they do at a desktop width.
 test("on a phone, the reader's own Resolve keeps the thread composer's refused reply and its comment", async () => {
   const user = userEvent.setup();
-  const restoreViewport = stubMatchMedia(true);
+  const restoreViewport = stubViewport(PHONE_WIDTH);
   const resolve = ownResolveOverAReply();
 
   try {
@@ -1320,7 +1244,7 @@ test("on a phone, the reader's own Resolve keeps the thread composer's refused r
 // that already shows the refusal.
 test("on a phone, a thread reply refused while the reader's Resolve is out outlives the Resolve", async () => {
   const user = userEvent.setup();
-  const restoreViewport = stubMatchMedia(true);
+  const restoreViewport = stubViewport(PHONE_WIDTH);
   const resolve = ownResolveOverAReply();
 
   try {
@@ -1358,7 +1282,7 @@ test("on a phone, a thread reply refused while the reader's Resolve is out outli
 for (const width of ["phone", "desktop"] as const) {
   test(`at a ${width} width, the reader's own Resolve keeps the card's refused reply and its comment`, async () => {
     const user = userEvent.setup();
-    const restoreViewport = width === "phone" ? stubMatchMedia(true) : () => {};
+    const restoreViewport = width === "phone" ? stubViewport(PHONE_WIDTH) : () => {};
     const resolve = ownResolveOverAReply();
 
     try {
@@ -1398,7 +1322,7 @@ for (const width of ["phone", "desktop"] as const) {
 // the composer, and its draft, to the other comment.
 test("on a phone, another comment's Reply opens the thread whose reply was refused after Back", async () => {
   const user = userEvent.setup();
-  const restoreViewport = stubMatchMedia(true);
+  const restoreViewport = stubViewport(PHONE_WIDTH);
   const stub = stubLists({
     comments: [
       comment("comment-a", { body: "Comment A", created_at: "2026-09-20T00:00:00Z" }),
@@ -1599,6 +1523,338 @@ test("another message's Reply redirects onto the one whose refusal the docked co
     stub.restore();
   }
 });
+
+// The docked composer is one box for the issue, whose reply its Reply and Cancel reply move. Cancel
+// reply is the reader's own move, so a reply Dispatch refused goes with it: the box shows the draft
+// as a new comment, with its Retry at once, and that Retry posts it as one, a new write under a
+// key of its own.
+test("a reply the docked composer holds refused is posted as a new comment after Cancel reply", async () => {
+  const user = userEvent.setup();
+  const stub = stubLists({
+    comments: [comment("comment-a", { body: "Comment A", created_at: "2026-09-20T00:00:00Z" })],
+  });
+  const createComment = spyOn(api, "createComment")
+    .mockRejectedValueOnce(new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" }))
+    .mockResolvedValue(comment("comment-b"));
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const turn = () => {
+    const element = view.container.querySelector<HTMLElement>('[data-turn="comment:comment-a"]');
+    if (element === null) throw new Error("expected comment-a's turn");
+    return element;
+  };
+
+  try {
+    await screen.findByText("Comment A");
+    await user.click(within(turn()).getByRole("button", { name: "Reply" }));
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await user.clear(field);
+    await user.click(field);
+    await user.paste("Reply meant for A");
+    await user.click(within(composer).getByRole("button", { name: "Send" }));
+    await within(composer).findByText(refusedText);
+
+    await user.click(within(composer).getByRole("button", { name: "Cancel reply" }));
+    expect(within(composer).queryByText(/Comment A/)).not.toBeInTheDocument();
+    expect(field.value).toBe("Reply meant for A");
+    expect(within(composer).queryByText(/This message was written/)).not.toBeInTheDocument();
+    await user.click(within(composer).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+    expect(createComment.mock.calls.map(([, input]) => input)).toEqual([
+      { body: "Reply meant for A", reply_to: "comment-a" },
+      { body: "Reply meant for A" },
+    ]);
+    const [first, retried] = createComment.mock.calls.map(([, , bounds]) => bounds.key);
+    expect(retried).not.toBe(first);
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
+    stub.restore();
+  }
+});
+
+/** The Conversation at a phone width over one comment, `Comment A`, whose comment writes
+ *  `createComment` answers. */
+function phoneOverCommentA(
+  createComment: Mock<typeof api.createComment>,
+  queryClient = newQueryClient()
+) {
+  const restoreViewport = stubViewport(PHONE_WIDTH);
+  const stub = stubLists({
+    comments: [comment("comment-a", { body: "Comment A", created_at: "2026-09-20T00:00:00Z" })],
+  });
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  return {
+    restore: () => {
+      view.unmount();
+      createComment.mockRestore();
+      stub.restore();
+      restoreViewport();
+    },
+    turn: () => {
+      const element = view.container.querySelector<HTMLElement>('[data-turn="comment:comment-a"]');
+      if (element === null) throw new Error("expected comment-a's turn");
+      return element;
+    },
+  };
+}
+
+/** Opens the thread of `turn`'s comment with its Reply, and writes `body` in the thread
+ *  composer. Answers the thread view. */
+async function writeInThread(
+  user: UserEvent,
+  turn: HTMLElement,
+  body: string
+): Promise<HTMLElement> {
+  await user.click(within(turn).getByRole("button", { name: "Reply" }));
+  const dialog = await screen.findByRole("dialog", { name: "Thread" });
+  const field = within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+  await user.clear(field);
+  await user.click(field);
+  await user.paste(body);
+  return dialog;
+}
+
+// On a phone a comment's Reply answers in its thread, by a composer of its own that Cancel reply
+// ends. Cancel reply is the reader's own move to the issue's address all the same, so a reply
+// Dispatch refused goes with it, as it goes with the docked composer's own Cancel reply: the
+// docked composer the reader comes back to shows the text and the refusal, and its Retry posts a
+// new comment under a key of its own.
+test("on a phone, a thread reply refused is posted as a new comment from the docked composer after Cancel reply", async () => {
+  const user = userEvent.setup();
+  const createComment = spyOn(api, "createComment")
+    .mockRejectedValueOnce(new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" }))
+    .mockResolvedValue(comment("comment-b"));
+  const phone = phoneOverCommentA(createComment);
+
+  try {
+    await screen.findByText("Comment A");
+    const dialog = await writeInThread(user, phone.turn(), "Reply meant for A");
+    await user.click(within(dialog).getByRole("button", { name: "Send" }));
+    await within(dialog).findByText(refusedText);
+
+    await user.click(within(dialog).getByRole("button", { name: "Cancel reply" }));
+    expect(within(dialog).queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Back" }));
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    expect(field.value).toBe("Reply meant for A");
+    expect(within(composer).getByText(refusedText)).toBeTruthy();
+    expect(within(composer).queryByText(/Comment A/)).not.toBeInTheDocument();
+    expect(within(composer).queryByText(/This message was written/)).not.toBeInTheDocument();
+    expect(createComment).toHaveBeenCalledTimes(1);
+
+    await user.click(within(composer).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+    expect(createComment.mock.calls.map(([, input]) => input)).toEqual([
+      { body: "Reply meant for A", reply_to: "comment-a" },
+      { body: "Reply meant for A" },
+    ]);
+    const [first, retried] = createComment.mock.calls.map(([, , bounds]) => bounds.key);
+    expect(retried).not.toBe(first);
+  } finally {
+    phone.restore();
+  }
+});
+
+// The draft goes with the reader's own move whether or not it was ever sent: a reply typed in the
+// thread and cancelled is the docked composer's draft, and nothing goes until Send there.
+test("on a phone, a thread reply never sent is the docked composer's draft after Cancel reply", async () => {
+  const user = userEvent.setup();
+  const createComment = spyOn(api, "createComment").mockResolvedValue(comment("comment-b"));
+  const phone = phoneOverCommentA(createComment);
+
+  try {
+    await screen.findByText("Comment A");
+    const dialog = await writeInThread(user, phone.turn(), "Reply never sent");
+
+    await user.click(within(dialog).getByRole("button", { name: "Cancel reply" }));
+    expect(within(dialog).queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Back" }));
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    expect(field.value).toBe("Reply never sent");
+    expect(within(composer).queryByText(/Comment A/)).not.toBeInTheDocument();
+    expect(createComment).not.toHaveBeenCalled();
+
+    await user.click(within(composer).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    expect(createComment.mock.calls.map(([, input]) => input)).toEqual([
+      { body: "Reply never sent" },
+    ]);
+  } finally {
+    phone.restore();
+  }
+});
+
+// A docked composer holding a draft of its own is never written over. The thread composer's
+// Cancel reply then puts it away as it stands, its refusal with it: Back keeps both, the docked
+// draft is as the reader left it, the docked composer says the reply is kept and how to go on with
+// it, and the comment's Reply brings the thread's reply back and the line goes.
+test("on a phone, Cancel reply over a docked draft of its own keeps both, and the comment's Reply brings the thread reply back", async () => {
+  const user = userEvent.setup();
+  const createComment = spyOn(api, "createComment").mockRejectedValueOnce(
+    new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
+  );
+  const phone = phoneOverCommentA(createComment);
+
+  try {
+    await screen.findByText("Comment A");
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    const docked = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await user.click(docked);
+    await user.paste("Docked draft");
+    let dialog = await writeInThread(user, phone.turn(), "Reply meant for A");
+    await user.click(within(dialog).getByRole("button", { name: "Send" }));
+    await within(dialog).findByText(refusedText);
+
+    await user.click(within(dialog).getByRole("button", { name: "Cancel reply" }));
+    expect(within(dialog).queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Back" }));
+    expect(screen.queryByRole("dialog", { name: "Thread" })).not.toBeInTheDocument();
+    expect(docked.value).toBe("Docked draft");
+    expect(within(composer).queryByText(refusedText)).not.toBeInTheDocument();
+    // The thread covers the docked composer until Back, so this is the line's first time on
+    // screen; a status the reader cannot see is no role the query finds.
+    expect(within(composer).getByRole("status").textContent).toBe(
+      "Your reply to the comment by alice is kept. Press Reply on that comment to go on with it."
+    );
+
+    await user.click(within(phone.turn()).getByRole("button", { name: "Reply" }));
+    dialog = await screen.findByRole("dialog", { name: "Thread" });
+    expect(
+      within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" }).value
+    ).toBe("Reply meant for A");
+    expect(within(dialog).getByText(refusedText)).toBeTruthy();
+    expect(docked.value).toBe("Docked draft");
+    expect(within(composer).queryByText(/is kept/)).not.toBeInTheDocument();
+    expect(createComment).toHaveBeenCalledTimes(1);
+  } finally {
+    phone.restore();
+  }
+});
+
+/** What a send the reader stopped says in its composer at its own address: Dispatch has not
+ *  confirmed it, and its Retry asks again under its own key. */
+const stoppedText = new SendStoppedError().message;
+
+/** The phone thread composer's send name, and the one of `Comment A`'s thread card's own reply. */
+const threadComposerKey: MutationKey = ["conversation-composer", "CORE-1", "phone-thread"];
+const cardReplyKey = threadReplySendKey(["conversation-composer", "CORE-1"], "comment-a");
+
+/** The reply to `Comment A` a stopped send answers (`stopReplySend`). */
+const commentAReply = {
+  actor: alice,
+  excerpt: "Comment A",
+  id: "comment-a",
+  parentKind: "comment",
+} as const;
+
+// Back is a move of the host's, not one the reader makes with the composer's own controls, so it
+// carries the thread composer's draft nowhere: the draft is held for the comment it answers, and
+// that comment's Reply brings it back - its text, a refusal's note, and a stopped send's note
+// that it may have been delivered. Nothing is sent meanwhile.
+for (const held of ["typed", "refused", "stopped"] as const) {
+  test(`on a phone, a thread reply ${heldDraftWords[held]} comes back with the comment's Reply after Back`, async () => {
+    const user = userEvent.setup();
+    const createComment = spyOn(api, "createComment").mockRejectedValue(
+      new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
+    );
+    const queryClient = newQueryClient();
+    const body = `Reply ${heldDraftWords[held]}, then Back`;
+    if (held === "stopped") {
+      await stopReplySend(queryClient, createComment, threadComposerKey, body, commentAReply);
+    }
+    const phone = phoneOverCommentA(createComment, queryClient);
+    const reply = async () => {
+      await user.click(within(phone.turn()).getByRole("button", { name: "Reply" }));
+      return screen.findByRole("dialog", { name: "Thread" });
+    };
+
+    try {
+      await screen.findByText("Comment A");
+      let dialog: HTMLElement;
+      if (held === "stopped") {
+        dialog = await reply();
+        expect(within(dialog).getByText(stoppedText)).toBeTruthy();
+      } else {
+        dialog = await writeInThread(user, phone.turn(), body);
+        if (held === "refused") {
+          await user.click(within(dialog).getByRole("button", { name: "Send" }));
+          await within(dialog).findByText(refusedText);
+        }
+      }
+      const sent = createComment.mock.calls.length;
+      await user.click(within(dialog).getByRole("button", { name: "Back" }));
+      expect(screen.queryByRole("dialog", { name: "Thread" })).not.toBeInTheDocument();
+
+      dialog = await reply();
+      // The text and the note in one comparison, so a row that fails says which of them is gone.
+      expect({
+        refusal: within(dialog).queryByText(refusedText) !== null,
+        stopped: within(dialog).queryByText(stoppedText) !== null,
+        text: within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" }).value,
+      }).toEqual({ refusal: held === "refused", stopped: held === "stopped", text: body });
+      expect(createComment).toHaveBeenCalledTimes(sent);
+    } finally {
+      phone.restore();
+    }
+  });
+}
+
+// The thread card's own reply lives in the thread view, which Back takes off the page: Back is the
+// host's move all the same, so the card's draft is held for its thread, and opening the thread
+// again brings it back, with a refusal's note or a stopped send's.
+for (const held of ["typed", "refused", "stopped"] as const) {
+  test(`on a phone, the thread card's own reply ${heldDraftWords[held]} comes back in its thread after Back`, async () => {
+    const user = userEvent.setup();
+    const createComment = spyOn(api, "createComment").mockRejectedValue(
+      new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
+    );
+    const queryClient = newQueryClient();
+    const body = `Card reply ${heldDraftWords[held]}, then Back`;
+    if (held === "stopped") {
+      await stopReplySend(queryClient, createComment, cardReplyKey, body, commentAReply);
+    }
+    const phone = phoneOverCommentA(createComment, queryClient);
+    const openThread = async () => {
+      await user.click(within(phone.turn()).getByRole("button", { name: "Expand thread" }));
+      return screen.findByRole("dialog", { name: "Thread" });
+    };
+
+    try {
+      await screen.findByText("Comment A");
+      let dialog = await openThread();
+      const field = within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
+      if (held === "stopped") {
+        expect(within(dialog).getByText(stoppedText)).toBeTruthy();
+      } else {
+        await user.click(field);
+        await user.paste(body);
+        if (held === "refused") {
+          const form = field.closest("form");
+          if (form === null) throw new Error("expected the card's reply form");
+          await user.click(within(form).getByRole("button", { name: "Send" }));
+          await within(dialog).findByText(refusedText);
+        }
+      }
+      const sent = createComment.mock.calls.length;
+      await user.click(within(dialog).getByRole("button", { name: "Back" }));
+      expect(screen.queryByRole("dialog", { name: "Thread" })).not.toBeInTheDocument();
+
+      dialog = await openThread();
+      expect({
+        refusal: within(dialog).queryByText(refusedText) !== null,
+        stopped: within(dialog).queryByText(stoppedText) !== null,
+        text: within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" }).value,
+      }).toEqual({ refusal: held === "refused", stopped: held === "stopped", text: body });
+      expect(createComment).toHaveBeenCalledTimes(sent);
+    } finally {
+      phone.restore();
+    }
+  });
+}
 
 test(
   "shows Jump to latest until the reader returns to the top",
@@ -2256,7 +2512,7 @@ test("on a phone, landing on a comment opens its thread dialog and reading it ma
   // The reply is read in the commit that mounts the dialog, which only a loaded engine draws
   // (`MarkdownBody`): the first body of a file takes the asynchronous path.
   await warmMarkdownRenderer();
-  const restoreViewport = stubMatchMedia(true);
+  const restoreViewport = stubViewport(PHONE_WIDTH);
   const root = comment("root-comment", { body: "Root comment" });
   const reply = comment("reply-comment", {
     body: "Reply comment",
@@ -2330,6 +2586,86 @@ test("the read mark writes the issue's head seq as the reader, and retries an un
     await waitFor(() =>
       expect(queryClient.getQueryData<UserState>(["user-state"])?.["CORE-1"]?.last_read_seq).toBe(7)
     );
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    putIssueState.mockRestore();
+    stub.restore();
+    viewport.restore();
+  }
+});
+
+const NO_ARTIFACTS: ReadonlyMap<string, Artifact> = new Map();
+
+/** CORE-1's Conversation under the viewer's states as the issue page's read of them holds them
+ *  (`IssuePage`), so a write into that read reaches the tab as it does on the page. */
+function ConversationUnderReadStates(): ReactNode {
+  const state = useQuery(userStateQuery()).data;
+  return (
+    <ConversationTab
+      issueArtifacts={NO_ARTIFACTS}
+      isClosed={false}
+      issueKey="CORE-1"
+      state={state}
+      visible
+    />
+  );
+}
+
+// A read of the viewer's issue states that was out when the read mark answered was answered from
+// the states before the mark. When it lands after the mark's answer, it must not put back the
+// issue's old read mark, which would count the conversation the reader just read unread again.
+test("a read asked before the read mark answered does not put back the mark it replaced", async () => {
+  const viewport = installIntersectionObserver();
+  const stub = stubLists({
+    comments: [comment("comment-1", { body: "Newest" })],
+    head: [headEvent(7)],
+  });
+  const asked: ReturnType<typeof Promise.withResolvers<UserState>>[] = [];
+  const getMyState = spyOn(api, "getMyState").mockImplementation(() => {
+    const read = Promise.withResolvers<UserState>();
+    asked.push(read);
+    return read.promise;
+  });
+  const putIssueState = answerIssueStates().mockImplementation(async (_key, input) =>
+    issueState([], input.last_read_seq ?? 0)
+  );
+  const queryClient = newQueryClient();
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const lastReadSeq = () =>
+    queryClient.getQueryData<UserState>(userStateQuery().queryKey)?.["CORE-1"]?.last_read_seq;
+  const view = render(
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <KeymapProvider>
+        <QueryClientProvider client={queryClient}>
+          <ConversationUnderReadStates />
+        </QueryClientProvider>
+      </KeymapProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    await waitFor(() => expect(asked).toHaveLength(1));
+    await act(async () => asked[0]?.resolve({ "CORE-1": issueState([], 1) }));
+    await screen.findByText("Newest");
+    const card = view.container.querySelector('[data-turn="comment:comment-1"]');
+    if (card === null) throw new Error("expected the newest card");
+
+    // A read of the states goes out, as an event's refresh asks one, and is still out at the mark.
+    act(() => {
+      void queryClient.invalidateQueries({ queryKey: userStateQuery().queryKey });
+    });
+    await waitFor(() => expect(asked).toHaveLength(2));
+    await dwellOnFakeClock(viewport, card);
+    expect(putIssueState).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(lastReadSeq()).toBe(7));
+
+    // The read asked before the mark answers the states from before it.
+    await act(async () => {
+      asked[1]?.resolve({ "CORE-1": issueState([], 1) });
+      await settle();
+    });
+    expect(lastReadSeq()).toBe(7);
   } finally {
     view.unmount();
     getMyState.mockRestore();

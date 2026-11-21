@@ -41,9 +41,11 @@ export type ActorOrigin = z.output<typeof ActorOriginSchema>;
 /** The OAuth scopes a Dispatch credential can hold, mirroring Go's `model.ScopePerson` and
  *  `model.ScopeApprove` and the `agent_tokens.scopes` check that stores them: `person` acts as
  *  the credential's own person on every route a person reaches through the dashboard, and
- *  `approve` settles what a person settles — a document review, the answer of an approval ask, a
- *  machine-login decision or revoke, and minting, changing or revoking a personal token. A
- *  credential holding `approve` holds `person` too. */
+ *  `approve` settles what a person settles — a document review, a decision's Keep, the answer of
+ *  an approval ask, a machine-login decision, a credential-grant, machine-login or sign-in revoke,
+ *  minting, changing or revoking a personal token, and a change to a project's access list,
+ *  visibility, owner or Slack channels or to a group an access list can name. A credential
+ *  holding `approve` holds `person` too, and no token the secrets broker issued holds `approve`. */
 export const DISPATCH_SCOPES = ["person", "approve"] as const;
 export type DispatchScope = (typeof DISPATCH_SCOPES)[number];
 

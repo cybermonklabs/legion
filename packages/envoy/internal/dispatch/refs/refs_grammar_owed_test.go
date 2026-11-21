@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -61,7 +62,7 @@ func TestAWriteLeavesNothingOwed(t *testing.T) {
 		t.Fatalf("the comment's own write owes %v, want the comment alone", owed)
 	}
 
-	located := NewReader(ctx, tx, "comment", comment, text.NewOrigins(refsGrammarServer)).Mentions("Blocked on CORE-1.")
+	located := NewReader(ctx, tx, prefixAuthor, "comment", comment, text.NewOrigins(refsGrammarServer)).Mentions("Blocked on CORE-1.")
 	if _, err := replaceRefs(ctx, tx, "comment", comment, text.Refs(located), nil); err != nil {
 		t.Fatalf("index the comment: %v", err)
 	}
@@ -102,7 +103,8 @@ func TestADocumentVersionLeavesItsScopeOwed(t *testing.T) {
 		t.Fatalf("the version's write owes %v, want %v", owed, wantOwed)
 	}
 
-	reader := NewReader(ctx, tx, "artifact", document, text.NewOrigins(refsGrammarServer))
+	// The version records no author, so its writer is nobody, as the version's own write reads it.
+	reader := NewReader(ctx, tx, model.Actor{}, "artifact", document, text.NewOrigins(refsGrammarServer))
 	replacement, err := PlanReplace(ctx, tx, "artifact", document,
 		text.Refs(reader.Mentions("Blocked on CORE-1.")), &versionAt)
 	if err != nil {

@@ -5,7 +5,7 @@ body: |-
     against the outside origin, and every other request against `DISPATCH_SERVER_URL`, as before.
     An agent whose Dispatch URL is the outside origin signs for it and is answered there, where it
     was refused `401 BROKER_TOKEN_PROOF_INVALID`. A proof naming one origin is refused at the other,
-    and a spent proof is refused at both. `brokertoken.Options.Origin` is now `Origins`, the
+    and a spent proof is refused at both. `ciphertoken.Options.Origin` is now `Origins`, the
     canonical origin first; a verifier of one origin, the Envoy listener's, checks every request
     against it as before.
 time: 2026-11-20T08:04:04.463361821Z

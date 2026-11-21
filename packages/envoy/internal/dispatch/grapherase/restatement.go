@@ -14,8 +14,7 @@ import (
 )
 
 // restateSearch writes again the two search vectors that stand on a document's latest version,
-// for each document a version of which the run deleted, and answers the projects of the
-// documents whose row it moved, which the term statistics are counted again for.
+// for each document a version of which the run deleted.
 //
 // document_search holds each document's latest version with markdown (migration
 // 20261101182447), and 20261101182454's trigger writes it on a version's insert or on an update of
@@ -26,24 +25,38 @@ import (
 // row of the table. A document with no version left keeps no row, as one that never had a version
 // with markdown has none.
 //
+// Each row that goes is queued for the term statistics with the vector it held
+// (search_term_queue), the row 20261101182522's trigger writes for a row of the table it
+// replaces. That trigger fires on an insert or an update alone, since document_search had no
+// delete before the erase, so without this row no queue row would carry the vector of the version
+// that went, which is the vector the statistics count for the document, and
+// api.ForgetErasedTermsTx, which reads the erased words from the queue rows the run wrote, could
+// not take them out.
+//
 // An issue's own search vector holds its spec's text (issue_embedding_spec, migration
 // 20261105145242), written by the trigger on the spec's version insert, so an issue whose spec
 // lost a version has that vector written again by the statement that trigger runs.
-func (e *Erasure) restateSearch(ctx context.Context, tx pgx.Tx, artifacts []string) ([]string, error) {
+func (e *Erasure) restateSearch(ctx context.Context, tx pgx.Tx, artifacts []string) error {
 	if len(artifacts) == 0 {
-		return nil, nil
+		return nil
 	}
 	rows, err := tx.Query(ctx, `
-		delete from document_search d
-		where d.artifact_id = any($1::uuid[])
-		  and not exists (select 1 from artifact_versions v where v.artifact_id = d.artifact_id and v.number = d.number)
-		returning d.artifact_id::text`, artifacts)
+		with gone as (
+			delete from document_search d
+			where d.artifact_id = any($1::uuid[])
+			  and not exists (select 1 from artifact_versions v where v.artifact_id = d.artifact_id and v.number = d.number)
+			returning d.artifact_id, d.search
+		), queued as (
+			insert into search_term_queue (kind, artifact_id, old_search)
+			select 'document', gone.artifact_id, coalesce(gone.search, ''::tsvector) from gone
+		)
+		select artifact_id::text from gone`, artifacts)
 	if err != nil {
-		return nil, fmt.Errorf("delete the search rows of the versions that went: %w", err)
+		return fmt.Errorf("delete the search rows of the versions that went: %w", err)
 	}
 	stale, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return nil, fmt.Errorf("delete the search rows of the versions that went: %w", err)
+		return fmt.Errorf("delete the search rows of the versions that went: %w", err)
 	}
 	var restated int64
 	if len(stale) > 0 {
@@ -55,7 +68,7 @@ func (e *Erasure) restateSearch(ctx context.Context, tx pgx.Tx, artifacts []stri
 				where latest.artifact_id = any($1::uuid[]) and latest.markdown is not null
 				order by latest.artifact_id, latest.number desc)`, stale)
 		if err != nil {
-			return nil, fmt.Errorf("write the search rows of the latest versions left: %w", err)
+			return fmt.Errorf("write the search rows of the latest versions left: %w", err)
 		}
 		restated = tag.RowsAffected()
 	}
@@ -66,21 +79,10 @@ func (e *Erasure) restateSearch(ctx context.Context, tx pgx.Tx, artifacts []stri
 		from artifacts a
 		where a.issue_key = i.key and a.is_primary and a.id = any($1::uuid[])`, artifacts)
 	if err != nil {
-		return nil, fmt.Errorf("write the search vectors of the issues whose spec lost a version: %w", err)
+		return fmt.Errorf("write the search vectors of the issues whose spec lost a version: %w", err)
 	}
 	e.redacted("issues", tag.RowsAffected())
-	rows, err = tx.Query(ctx, `
-		select distinct a.project_key from artifacts a
-		where a.id = any($1::uuid[]) and a.project_key is not null
-		order by 1`, stale)
-	if err != nil {
-		return nil, fmt.Errorf("read the projects of the documents whose search rows moved: %w", err)
-	}
-	projects, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the projects of the documents whose search rows moved: %w", err)
-	}
-	return projects, nil
+	return nil
 }
 
 // forgottenEmbeddings is what forgetEmbeddings deleted that a later step of the same run writes
@@ -214,12 +216,14 @@ func (e *Erasure) replaceLiveTexts(ctx context.Context, tx pgx.Tx) error {
 }
 
 // treeSums is the key of the stored display tree of every whole text the run removes or rewrites:
-// the node's own texts, the markdown of each version it deletes, the text of each block holding
-// the node's block, each string of an event payload the redaction rewrites, and the live text of
-// its document. text_trees keys a tree by the SHA-256 of its text's UTF-8 bytes (pmdoc.TextSum,
-// migration 20261105121325) and holds the text's words in the tree, so each of those texts leaves
-// a row holding the erased bytes once its own row is gone. It is read before anything goes, while
-// the versions and the blocks still hold those texts.
+// the node's own texts, the markdown of each version it deletes, each text of a block holding the
+// node's block that the redaction rewrites (readAncestorTexts), each string of an event payload
+// the redaction rewrites, and the live text of its document. text_trees keys a tree by the
+// SHA-256 of its text's UTF-8 bytes (pmdoc.TextSum, migration 20261105121325) and holds the
+// text's words in the tree, so each of those texts leaves a row holding the erased bytes once its
+// own row is gone. It is read before anything goes, while the versions and the blocks still hold
+// those texts. The text of a block holding the node's block at a version the node's block did not
+// stand in (blockStoodIn) is one the run leaves, and its tree is that text's, which stays.
 func (e *Erasure) treeSums(ctx context.Context, tx pgx.Tx, read erasedRead) ([][]byte, error) {
 	if len(read.texts) == 0 {
 		return nil, nil
@@ -233,9 +237,14 @@ func (e *Erasure) treeSums(ctx context.Context, tx pgx.Tx, read erasedRead) ([][
 			whole = append(whole, document.live.Text)
 		}
 	}
-	document, ancestors := "", read.ancestors
+	document := ""
 	if read.document != nil {
 		document = read.document.artifact
+	}
+	textBlocks := make([]string, len(read.blockTexts))
+	textVersions := make([]int32, len(read.blockTexts))
+	for index, text := range read.blockTexts {
+		textBlocks[index], textVersions[index] = text.blockID, text.version
 	}
 	rows, err := tx.Query(ctx, `
 		select sha256(convert_to(whole.text, 'UTF8')) from unnest($1::text[]) as whole (text)
@@ -246,8 +255,10 @@ func (e *Erasure) treeSums(ctx context.Context, tx pgx.Tx, read erasedRead) ([][
 		 where v.markdown is not null
 		union
 		select sha256(convert_to(t.text, 'UTF8')) from document_block_texts t
-		 where t.artifact_id = nullif($4, '')::uuid and t.block_id = any($5::text[]) and t.text is not null`,
-		whole, read.artifacts, read.numbers, document, ancestors)
+		  join unnest($5::text[], $6::int[]) as rewritten (block_id, version)
+		    on rewritten.block_id = t.block_id and rewritten.version = t.version
+		 where t.artifact_id = nullif($4, '')::uuid and t.text is not null`,
+		whole, read.artifacts, read.numbers, document, textBlocks, textVersions)
 	if err != nil {
 		return nil, fmt.Errorf("read the display trees of the texts of %s:%s: %w", e.Kind, e.ID, err)
 	}

@@ -17,7 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -35,6 +35,12 @@ var timeStamp = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(
 
 // maskTimes is body with every RFC 3339 time written as one placeholder.
 func maskTimes(body string) string { return timeStamp.ReplaceAllString(body, "<time>") }
+
+// ageSeconds is an answer's `"age_seconds":N` member, a count of whole seconds since a row was made.
+var ageSeconds = regexp.MustCompile(`"age_seconds":[0-9]+`)
+
+// maskAges is body with every age in seconds written as one placeholder.
+func maskAges(body string) string { return ageSeconds.ReplaceAllString(body, `"age_seconds":<age>`) }
 
 // hiddenPerson is a full member no list of PRIV names, so a caller that sees PRIV alone does not
 // see them (access.PersonClause), and an open viewer does.
@@ -136,6 +142,8 @@ var missingAnswers = map[string]struct {
 		"the caller's own read mark, kept under any thread id and reading no message (idRoutes)"},
 	"POST /api/v1/issues/{key}/results": {http.StatusBadRequest, "UNKNOWN_CHECK",
 		"a result names a check of its issue's Verification document, and an issue the caller cannot read holds none"},
+	"POST /api/v1/issues/{key}/results/dry-run": {http.StatusBadRequest, "UNKNOWN_CHECK",
+		"the record's dry run makes the record's every refusal before its transaction (readResultRequest), so it answers the record's UNKNOWN_CHECK"},
 	"PUT /api/v1/issues/{key}/role-holders": {http.StatusForbidden, "ROLE_HOLDER_FORBIDDEN",
 		"only the session of the issue's own project's Legion daemon writes its role holders, and every other caller is refused before any read, naming only the key it sent (putIssueRoleHolders)"},
 }
@@ -333,10 +341,10 @@ const callerAliceNamedToken privateCaller = "alice's broker token scoped to PUB"
 // project by an operator's entry, proving session, which requestIn presents for caller.
 func sayBrokered(seed privateSeed, caller privateCaller, session, project string) {
 	token := "broker-token-of-" + string(caller)
-	seed.broker.Says(token, brokertoken.Introspection{
+	seed.broker.Says(token, ciphertoken.Introspection{
 		Active: true, Session: session, Person: seedAlice,
-		ProjectScope: brokertoken.ProjectScopeNamed, Projects: []string{project}, Scope: "dispatch.write",
-		ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: brokertoken.ExchangeClientID, Thumbprint: seed.agent.jkt,
+		ProjectScope: ciphertoken.ProjectScopeNamed, Projects: []string{project}, Scope: "dispatch.write",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: ciphertoken.ExchangeClientID, Thumbprint: seed.agent.jkt,
 	})
 	seed.brokered[caller] = token
 }

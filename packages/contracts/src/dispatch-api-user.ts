@@ -209,15 +209,16 @@ export type PasskeyRefusal = (typeof PASSKEY_REFUSALS)[number];
 
 /** GET /api/v1/whoami: a person by lowercase email (`login`), or an agent with its personal
  *  token's owner (a lowercase email) — null under the shared token or a verified service token —
- *  and that service token's subject, null unless one authenticated the request. `session` is the
- *  session the credential itself proved, which only an access token the secrets broker issued
- *  does, and `project`, deprecated, the one key of a one-key `projects`, null for any other list.
- *  Both are absent from a Dispatch older than broker-issued tokens, which a client reads as an
- *  older build rather than as null. The agent form's `projects` is the credential's list, sorted,
- *  and its `private_projects` those of them the caller must treat as private (a private project,
- *  one the credential no longer sees, one that names no project), so a key is public exactly when
- *  it is in `projects` and not in `private_projects`; both are absent when empty. A person at a
- *  browser lists none, so the person form carries neither.
+ *  and that service token's subject (`service`), null unless one authenticated the request.
+ *  `session` is the session the credential itself proved, which only an access token the secrets
+ *  broker issued does, and `project`, deprecated, the one key of a one-key `projects`, null for
+ *  any other list. A client reads an absent `service`, `session` or `project` as a Dispatch older
+ *  than that field, not as null: `service` is absent from one older than verified service tokens,
+ *  and the other two from one older than broker-issued tokens. The agent form's `projects` is the
+ *  credential's list, sorted, and its `private_projects` those of them the caller must treat as
+ *  private (a private project, one the credential no longer sees, one that names no project), so
+ *  a key is public exactly when it is in `projects` and not in `private_projects`; both are absent
+ *  when empty. A person at a browser lists none, so the person form carries neither.
  *
  *  `scopes` is the OAuth scopes the caller's own credential holds, which decide the routes it may
  *  call: both of them for a person at a browser, the set its row names for a personal token, and

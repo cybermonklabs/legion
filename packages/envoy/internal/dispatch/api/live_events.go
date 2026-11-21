@@ -769,8 +769,9 @@ func madePublicSQL(eventAlias string) string {
 // viewer bound at viewerParam does not see now, that took the project from it:
 //
 //   - the removal of the viewer's own person from the project's list;
-//   - the removal from the list of a group that holds the viewer's person, which the person saw
-//     the project through;
+//   - the removal from the list of a group that holds the viewer's person as a full member, which
+//     the person saw the project through: a group admits only its full members
+//     (access.PersonSeesProjectSQL), so its removal takes nothing from a restricted member in it;
 //   - an owner change that took the project from the viewer's person (its principal, SetOwner);
 //   - the project turned private, to a viewer that read it while it was public: an open viewer,
 //     which reads every public project, and a credential whose own list names it (Viewer.Lists).
@@ -785,7 +786,9 @@ func lostSightSQL(eventAlias, viewerParam string) string {
 			(` + e + `.payload->>'change' in ('` + model.AccessPersonRemoved + `', '` + model.AccessOwnerChanged + `')
 				and recorded.principal = ` + person + `)
 			or (` + e + `.payload->>'change' = '` + model.AccessGroupRemoved + `' and exists (
-				select 1 from access_group_members lost where lost.group_name = recorded.principal and lost.person = ` + person + `
+				select 1 from access_group_members lost
+				join people full_member on full_member.email = lost.person and full_member.member_kind = 'full'
+				where lost.group_name = recorded.principal and lost.person = ` + person + `
 				offset 0))
 			or (` + e + `.payload->>'change' = '` + model.AccessVisibilityChanged + `' and recorded.visibility = '` + model.ProjectPrivate + `'
 				and (` + access.OpenClause(viewerParam) + ` or ` + access.ListsClause(e+`.project_key`, viewerParam) + `)))

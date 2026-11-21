@@ -199,15 +199,23 @@ func clipCallerField(field string) string {
 }
 
 // googleLoadBalancerRanges are the addresses Google's external Application Load Balancer reaches
-// its backends from (and its health checks come from): a connection from one of them came through
-// that balancer, which writes X-Forwarded-For as [<what the client sent>,]<client address>,<its own
-// address>, as the secrets broker's edge reads it.
-var googleLoadBalancerRanges = []netip.Prefix{netip.MustParsePrefix("35.191.0.0/16"), netip.MustParsePrefix("130.211.0.0/22")}
+// its backends from: 35.191.0.0/16 and 130.211.0.0/22 in IPv4 (from which its health checks come
+// too), and its IPv6 proxy range 2600:2d00:1:1::/64. A connection from one of them came through that
+// balancer, which writes X-Forwarded-For as [<what the client sent>,]<client address>,<its own
+// address>, as the secrets broker's edge reads it. Google's IPv6 health-check range,
+// 2600:2d00:1:b029::/64, is left out: a health check sends no X-Forwarded-For, so with or without
+// it such a connection keys on its own address.
+var googleLoadBalancerRanges = []netip.Prefix{
+	netip.MustParsePrefix("35.191.0.0/16"),
+	netip.MustParsePrefix("130.211.0.0/22"),
+	netip.MustParsePrefix("2600:2d00:1:1::/64"),
+}
 
 // ForwardedAddress is the caller's address as Dispatch keys it: the access log's address, the
 // previous-token log's, and the per-address rate-limit bucket the secrets broker's token check
 // keys on. Nothing admits a caller by it: no route grants access by a caller's network address
-// (routes' TestNoRouteGrantsAccessByNetworkAddress).
+// (routes' TestNoRouteGrantsAccessByNetworkAddress). A bound the caller's own header must not
+// pick reads BoundAddress instead, which keys a connection off the balancer on its own address.
 //
 // A connection from Google's external load balancer (googleLoadBalancerRanges) is read by the rule
 // the broker's edge reads its callers by: the second-to-last entry of the one X-Forwarded-For line,
@@ -253,10 +261,26 @@ func peerAddress(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-// ThroughGoogleLoadBalancer reports whether r's connection came from Google's external load
-// balancer (googleLoadBalancerRanges), whose X-Forwarded-For ForwardedAddress reads.
-func ThroughGoogleLoadBalancer(r *http.Request) bool {
-	return fromGoogleLoadBalancer(peerAddress(r))
+// BoundAddress is the address a per-address bound keys a caller on, where the caller's own text
+// must not pick the key (the passkey ceremonies' begins, routes.limitPasskeyBegins), and whether
+// the request names one. A connection from Google's external load balancer keys on the client
+// address the balancer wrote (balancedClientAddress, as ForwardedAddress reads it), or on the
+// balancer's own address when the header holds no such entry; a request through the balancer
+// carrying more than one X-Forwarded-For line is none the balancer forwarded as it writes the
+// header, so it names no address (false). Any other connection keys on its own address, whatever
+// X-Forwarded-For it carries: that header is then the caller's own text.
+func BoundAddress(r *http.Request) (string, bool) {
+	peer := peerAddress(r)
+	if !fromGoogleLoadBalancer(peer) {
+		return peer, true
+	}
+	if len(r.Header.Values("X-Forwarded-For")) > 1 {
+		return "", false
+	}
+	if client, ok := balancedClientAddress(r); ok {
+		return client, true
+	}
+	return peer, true
 }
 
 // fromGoogleLoadBalancer reports whether peer, a connection's address without its port, is one of

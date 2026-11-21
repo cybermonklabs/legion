@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -174,13 +174,12 @@ func TestASharedSlackChannelIsRefused(t *testing.T) {
 // project only to a caller who sees it by the read rule, read for the request's own credential
 // (the viewer ownerWrite resolved), never for the person actingPerson answers. alice owns both
 // projects, so at her browser she sees PRIV and reads its name. Her personal token listing PRIV2
-// alone sees PRIV2, so its write reaches the check, and not PRIV, so it reads the refusal that
-// names no project. A broker-issued token reaches this person's route only when it holds no one
-// project (broker_token.go: the person scope), and such a token sees no private project, so its
-// write of PRIV2 answers 404 PROJECT_NOT_FOUND before the check, as every write of a project it
-// cannot see does; read as its person it would reach the check and read PRIV's name. Controls:
-// name PRIV whenever the credential's person sees it, or read the person's viewer in place of the
-// request's, and the token rows fail naming the token.
+// alone, which holds the person and approve scopes the access writes need (#4156), sees PRIV2, so
+// its write reaches the check, and not PRIV, so it reads the refusal that names no project. Her
+// broker token never reaches the check: no broker token holds the approve scope (main's #4644),
+// so it is refused 403 OAUTH_SCOPE_REQUIRED first, and that refusal names no project either.
+// Controls: name PRIV whenever the credential's person sees it, or read the person's viewer in
+// place of the request's, and the personal token's row fails naming the token.
 func TestTheSharedChannelRefusalReadsTheCallersCredential(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	// alice owns both, so she sees PRIV.
@@ -194,9 +193,16 @@ func TestTheSharedChannelRefusalReadsTheCallersCredential(t *testing.T) {
 	caller := newBrokerCaller(t)
 	const brokerToken = "alice-broker-token-holding-no-project"
 	says := liveNamedToken(caller.jkt)
-	says.Person, says.ProjectScope, says.Projects = "alice", brokertoken.ProjectScopePerson, nil
+	says.Person, says.ProjectScope, says.Projects = "alice", ciphertoken.ProjectScopePerson, nil
 	rig.broker.Says(brokerToken, says)
-	personal := mintListed(t, rig.handler, "alice", "alice's token listing PRIV2", []string{"PRIV2"})
+	// The access writes need the person and approve scopes (#4156), so the token holds both.
+	mint := mintBody("alice's token listing PRIV2", []string{"PRIV2"})
+	mint["scopes"] = []string{model.ScopePerson, model.ScopeApprove}
+	minted := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/me/agent-tokens", mint, "alice")
+	if minted.Code != http.StatusCreated {
+		t.Fatalf("alice mints a token listing PRIV2: status=%d body=%s", minted.Code, minted.Body.String())
+	}
+	personal := decodeBody[listedToken](t, minted)
 	const unseen = "C0SHARED001 is listed by a private project you cannot see"
 	for _, row := range []struct {
 		who    string
@@ -213,12 +219,12 @@ func TestTheSharedChannelRefusalReadsTheCallersCredential(t *testing.T) {
 		}, http.StatusConflict, "SLACK_CHANNEL_SHARED", unseen},
 		{"alice's broker token holding no project", func() *httptest.ResponseRecorder {
 			return rig.serve(caller.presenting(t, http.MethodPatch, path, brokerToken, body))
-		}, http.StatusNotFound, "PROJECT_NOT_FOUND", ""},
+		}, http.StatusForbidden, "OAUTH_SCOPE_REQUIRED", "this request's credential does not hold the approve scope, which this route requires"},
 	} {
 		before := allEvents(t, rig.database)
 		response := row.send()
 		refusal := decodeBody[errorBody](t, response)
-		if response.Code != row.status || refusal.Code != row.code || (row.want != "" && refusal.Error != row.want) {
+		if response.Code != row.status || refusal.Code != row.code || refusal.Error != row.want {
 			t.Errorf("%s writes C0SHARED001 on PRIV2 = %d %s, want %d %s reading %q", row.who, response.Code, response.Body.String(), row.status, row.code, row.want)
 		}
 		if row.status != http.StatusConflict && strings.Contains(response.Body.String(), "PRIV,") {

@@ -320,9 +320,9 @@ func TestATokenListedBeforeItsPersonLostTheProjectSeesNothingOfIt(t *testing.T) 
 
 // TestANamedTokenUsesTheProjectItNames: a broker token an operator's entry named, whose person is
 // carol and whose project is PUB, reads PUB and not PRIV, writes a comment on a PUB issue, answers
-// PRIV's issue as an issue nobody holds for a read and a write (its write is held to PUB, so both
-// are 403 PROJECT_SCOPE naming no project), and is refused 403 OAUTH_SCOPE_REQUIRED on GET
-// /api/v1/inbox: a named token holds no OAuth scope (namedTokenReads).
+// PRIV's issue as an issue nobody holds for a read and a write (404, exactly as for a missing one:
+// its viewer does not see PRIV), and is refused 403 OAUTH_SCOPE_REQUIRED on GET /api/v1/inbox: a
+// named token holds no OAuth scope (namedTokenReads).
 func TestANamedTokenUsesTheProjectItNames(t *testing.T) {
 	namedTokenReads(t, []string{publicProject})
 }

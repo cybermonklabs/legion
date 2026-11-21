@@ -248,9 +248,9 @@ export type WriteMethod = (typeof WRITE_METHODS)[number];
  *  or a `PATCH`, each of which Dispatch would do a second time when a dropped answer has the page
  *  ask again. A `PUT` or a `DELETE` is the same change however often it is made, so it sends no
  *  key and Dispatch keeps nothing under one for it. The one place that rule is written: `send`
- *  reads it as it builds the headers, and `keySpent` reads it to decide whether a key's age
- *  stops a write, which is how both the retry loop (`writeUnderKey`) and a kept refusal
- *  (`refusalFrom`) reach it.
+ *  reads it as it builds the headers, the write store as it records each write (`Write.keyed`),
+ *  and `keySpent` reads it to decide whether a key's age stops a write, which is how both the
+ *  retry loop (`writeUnderKey`) and a kept refusal (`refusalFrom`) reach it.
  */
 export function goesUnderKey(method: WriteMethod): boolean {
   return method === "POST" || method === "PATCH";
@@ -362,6 +362,37 @@ export function isArtifactNotFound(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404 && error.code === "ARTIFACT_NOT_FOUND";
 }
 
+// An unsubscribe of a session the owner's subscriptions no longer name: removed already - by an
+// earlier unsubscribe whose answer the page never had, or by someone else - which is the state
+// the unsubscribe asks for.
+export function isSubscriberNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404 && error.code === "SUBSCRIBER_NOT_FOUND";
+}
+
+// An unfollow of a session that does not follow the ask: taken off already, which is the state
+// the unfollow asks for.
+export function isFollowerNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404 && error.code === "FOLLOWER_NOT_FOUND";
+}
+
+/**
+ * A removal - a `DELETE` - that lands on finding the thing gone already. A `DELETE` sends no key,
+ * so Dispatch keeps no answer for one: made again after one that landed - stopped, or its answer
+ * lost - it finds nothing to remove, and Dispatch answers the `404` that `gone` names. That is the
+ * removal done, which is what the person asked, so it resolves as a `204` does; any other error
+ * rejects as `removal` did.
+ */
+export async function removedEvenIfGone(
+  removal: Promise<unknown>,
+  gone: (error: unknown) => boolean
+): Promise<void> {
+  try {
+    await removal;
+  } catch (error) {
+    if (!gone(error)) throw error;
+  }
+}
+
 // A Dispatch with no secrets broker configured (no DISPATCH_AGENT_SECRETS_URL) answers every
 // credential route but the pending list with this 404 — the same class as the architecture-source
 // 404 above it: retrying changes nothing. The pending list, which every page reads, answers `null`
@@ -420,6 +451,13 @@ export function isDocumentUnloadable(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409 && error.code === "DOCUMENT_UNLOADABLE";
 }
 
+// An issue's reference closure walk cut at the server's bound (`503 REFERENCES_TIMEOUT`): the walk
+// costs the database the whole bound each time, so an automatic retry only multiplies that cost
+// and shows nothing more. The page offers its own Retry instead.
+export function isReferencesTimeout(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 503 && error.code === "REFERENCES_TIMEOUT";
+}
+
 // A stored document holding an element this Dispatch process's build cannot read: a newer build
 // wrote it while two builds serve one database during a release. It is not a repairable state, and
 // a replacement would delete the element. A later read can reach a build that reads it, so the read
@@ -455,12 +493,12 @@ export function isAgentListRefilling(error: unknown): boolean {
 
 // The retry policy every query in the app shares: an auth outcome (401), any 403, a missing
 // architecture source, an unconfigured credential broker or delivery timeline, a stored document
-// outside Proof's schema, or a stored history that cannot load is definitive and retrying it
-// changes nothing; any other failure (dropped connection, a read past its deadline, 5xx, a
-// document holding content this build cannot read yet) is worth a couple of automatic attempts
-// before surfacing a Retry affordance to the user. A 403 is Dispatch's permanent answer to the
-// credential the request carried (a deployment read refused to a restricted member, a role the
-// caller does not hold), and a retry carries the same credential.
+// outside Proof's schema, a stored history that cannot load, or a reference closure cut at its
+// bound is definitive or too costly to send again at once; any other failure (dropped connection,
+// a read past its deadline, 5xx, a document holding content this build cannot read yet) is worth
+// a couple of automatic attempts before surfacing a Retry affordance to the user. A 403 is
+// Dispatch's permanent answer to the credential the request carried (a deployment read refused to
+// a restricted member, a role the caller does not hold), and a retry carries the same credential.
 export function isRetryableQueryError(error: unknown): boolean {
   if (error instanceof ApiError && error.status === 403) return false;
   return (
@@ -469,7 +507,8 @@ export function isRetryableQueryError(error: unknown): boolean {
     !isCredentialFeatureOff(error) &&
     !isDeliveryNotConfigured(error) &&
     !isDocumentSchemaError(error) &&
-    !isDocumentUnloadable(error)
+    !isDocumentUnloadable(error) &&
+    !isReferencesTimeout(error)
   );
 }
 
@@ -657,17 +696,27 @@ export function artifactVersionPath(owner: ArtifactOwner, slug: string, version:
  *  written in the browser and for a title typed with nothing under it, and a multipart form - the
  *  body those same routes take as `multipart/form-data` - for a file picked, pasted or dropped.
  *  A create carrying neither a file nor content makes an empty document, so it goes as JSON with
- *  the name alone. */
+ *  the name alone. An upload that names the base it replaces carries it either way, as the field
+ *  `precondition`, which the form sends as the object's JSON text. */
 function artifactUploadBody(
   input: CreateArtifactInput
 ): Body<"/api/v1/issues/{key}/artifacts", "post"> | FormData {
   if (input.file === undefined) {
-    return { actor: input.actor, content: input.content, name: input.name, summary: input.summary };
+    return {
+      actor: input.actor,
+      content: input.content,
+      name: input.name,
+      precondition: input.precondition,
+      summary: input.summary,
+    };
   }
   const form = new FormData();
   form.set("name", input.name);
   if (input.summary !== undefined) {
     form.set("summary", input.summary);
+  }
+  if (input.precondition !== undefined) {
+    form.set("precondition", JSON.stringify(input.precondition));
   }
   if (input.actor !== undefined) {
     form.set("actor", JSON.stringify(input.actor));
@@ -1059,6 +1108,9 @@ export class DispatchApiClient {
     );
   }
 
+  /** `DELETE /api/v1/settings/repo-projects/{owner}/{repo}`: remove the repository's mapping. A
+   *  repository with no mapping answers the same 204, so a removal made again after one that
+   *  landed needs no `removedEvenIfGone`. */
   async deleteRepoProject(repo: string, bounds: WriteBounds): Promise<void> {
     await this.remove("/api/v1/settings/repo-projects/{owner}/{repo}", repoParams(repo), bounds);
   }
@@ -1088,7 +1140,8 @@ export class DispatchApiClient {
   }
 
   /** Gives the project to another full member (`owner`) or sets its visibility; only its owner
-   *  calls it (`403 PROJECT_OWNER_REQUIRED`). Answers the project's access as the write left it. */
+   *  calls it (`403 PROJECT_OWNER_REQUIRED`). Answers the project's access as the write left it.
+   *  This and the four access-list writes below need the `person` and `approve` scopes. */
   patchProjectAccess(
     project: string,
     input: Body<"/api/v1/projects/{key}/access", "patch">,
@@ -1184,7 +1237,8 @@ export class DispatchApiClient {
   }
 
   /** Makes group `name` with its writer as owner, or writes its members again for its owner
-   *  (`403 GROUP_OWNER_REQUIRED` for anyone else). */
+   *  (`403 GROUP_OWNER_REQUIRED` for anyone else). This and the delete below need the `person`
+   *  and `approve` scopes, as the access-list writes do. */
   putAccessGroup(
     name: string,
     input: Body<"/api/v1/access-groups/{name}", "put">,
@@ -1711,6 +1765,18 @@ export class DispatchApiClient {
     return this.read("/api/v1/artifacts/{id}/text", { id });
   }
 
+  /** `GET …/artifacts/{slug}/text`: the markdown, version and whole-document token of the
+   *  document `owner` holds under `slug`, which may be its slug or its filename. `404
+   *  ARTIFACT_NOT_FOUND` when the owner holds no such document, which is what the first upload
+   *  of a name reads. A conversation holds files and pictures and no document at all, and
+   *  serves no such route, which is why its owner is not one this takes. */
+  ownerArtifactText(owner: { issue: string } | { project: string }, slug: string) {
+    if ("issue" in owner) {
+      return this.read("/api/v1/issues/{key}/artifacts/{slug}/text", { key: owner.issue, slug });
+    }
+    return this.read("/api/v1/projects/{key}/artifacts/{slug}/text", { key: owner.project, slug });
+  }
+
   rebuildArtifact(id: string, markdown: string | undefined, bounds: WriteBounds) {
     return this.post(
       "/api/v1/artifacts/{id}/rebuild",
@@ -2076,9 +2142,14 @@ export class DispatchApiClient {
     return this.read("/api/v1/credential-grants", {}, { approver: "me" });
   }
 
-  /** Revoke a grant as the signed-in viewer, its approver or its enrollment's operator. The
-   *  operator's revoke of an automatic grant also ends that session's other automatic grants of
-   *  those secrets and makes it ask before it gets them again. */
+  /** Revoke a grant as the signed-in viewer: its approver, or the person its enrollment acts for,
+   *  ends it whatever project it touches. The operator's revoke of an automatic grant also ends that
+   *  session's other automatic grants of those secrets and makes it ask before it gets them again.
+   *  A grant revoked by a viewer it does not name is 404 when it belongs to a private project the
+   *  viewer may not see, and 503 `PROJECT_ACCESS_UNAVAILABLE` while the broker cannot ask Dispatch;
+   *  of the grants the viewer may see, they end one whose approver is anyone, and any other is 403
+   *  `NOT_APPROVER`. A grant the broker saw move to another box each time it read it is 409
+   *  `GRANT_MOVING`, revoking nothing; the same revoke succeeds once it stays put. */
   async revokeCredentialGrant(grantId: string, bounds: WriteBounds): Promise<void> {
     await this.post("/api/v1/credential-grants/{id}/revoke", { id: grantId }, undefined, bounds);
   }
@@ -2087,9 +2158,10 @@ export class DispatchApiClient {
    *  before anybody decided it, which the list keeps until somebody dismisses it. Dispatch names
    *  the viewer as the person dismissing, and the request then leaves every list for good, a
    *  shared one's included. The broker refuses one the viewer's list does not hold (403
-   *  `NOT_APPROVER`), one that can still be decided (409 `RECORD_PENDING`) and one that was
-   *  decided, or cancelled before its deadline (409 `RECORD_TERMINAL`); a second dismissal
-   *  answers the first one's values. */
+   *  `NOT_APPROVER`), one of a private project the viewer may not see (404, as an id no request
+   *  has, and 503 `PROJECT_ACCESS_UNAVAILABLE` while it cannot ask Dispatch), one that can still
+   *  be decided (409 `RECORD_PENDING`) and one that was decided, or cancelled before its deadline
+   *  (409 `RECORD_TERMINAL`); a second dismissal answers the first one's values. */
   async dismissCredentialRequest(recordId: string, bounds: WriteBounds): Promise<void> {
     await this.post(
       "/api/v1/credential-requests/{id}/dismiss",
@@ -2099,16 +2171,17 @@ export class DispatchApiClient {
     );
   }
 
-  /** `GET /api/v1/machine-logins`: the machine logins the viewer may revoke, their own machines'
-   *  and every service's, whoever approved it, that are unexpired or expired with a session still
-   *  running. A restricted member is answered their own machines' alone. */
+  /** `GET /api/v1/machine-logins`: the machine logins the viewer may revoke, their own machines',
+   *  their own pods' (`person` set) and every service's, whoever approved it, that are unexpired
+   *  or expired with a session still running. A restricted member is answered their own machines'
+   *  alone. */
   getMachineLogins() {
     return this.read("/api/v1/machine-logins", {});
   }
 
-  /** Revoke a machine login, expired or not: a service's, or one of the viewer's machines'; a
-   *  restricted member revokes only one of their own machines'. Dispatch names the viewer as the
-   *  person revoking, and every session the login enrolled ends with it. */
+  /** Revoke a machine login, expired or not: a service's, one of the viewer's machines', or one
+   *  of the viewer's pods'; a restricted member revokes only one of their own machines'. Dispatch
+   *  names the viewer as the person revoking, and every session the login enrolled ends with it. */
   async revokeMachineLogin(credentialId: string, bounds: WriteBounds): Promise<void> {
     await this.post("/api/v1/machine-logins/{id}/revoke", { id: credentialId }, undefined, bounds);
   }

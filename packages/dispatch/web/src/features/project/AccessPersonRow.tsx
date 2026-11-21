@@ -120,6 +120,7 @@ export function AccessPersonRow({
       setCopied(false);
     },
     onSuccess: (answer) => setInvitation(answer ?? undefined),
+    method: "POST",
     write: (_none, bounds) => api.createProjectInvitation(project, email, bounds),
   });
   const reset = () => {

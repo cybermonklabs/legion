@@ -16,7 +16,7 @@ import (
 )
 
 // Ask followers: the sessions an ask's answer, edits, resolution, and replies reach
-// directly. Every session that writes to an ask follows it (asks.FollowAuthor at each
+// directly. Every session that writes to an ask follows it (asks.QueueFollowAuthor at each
 // insert site); these routes let a session leave or rejoin and a person curate the list.
 //
 // A credential acting as the addressed session — the session a broker-issued token proved,

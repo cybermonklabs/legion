@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,9 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -40,9 +37,9 @@ func TestAnEntryTokenActsWhateverItsPersonsAccount(t *testing.T) {
 	const person = "dana@example.com"
 	ctx := context.Background()
 	people := store.NewPgPeopleStore(rig.database.Pool, testSigningKey, nil)
-	entry := brokertoken.Caller{Person: person, ProjectScope: brokertoken.ProjectScopeNamed, Projects: []string{"ACC"}}
-	own := brokertoken.Caller{Person: person, ProjectScope: brokertoken.ProjectScopePerson}
-	acts := func(when string, caller brokertoken.Caller) {
+	entry := ciphertoken.Caller{Person: person, ProjectScope: ciphertoken.ProjectScopeNamed, Projects: []string{"ACC"}}
+	own := ciphertoken.Caller{Person: person, ProjectScope: ciphertoken.ProjectScopePerson}
+	acts := func(when string, caller ciphertoken.Caller) {
 		t.Helper()
 		if _, err := served.brokerPersonAdmitted(ctx, caller); err != nil {
 			t.Errorf("%s: %v, want it admitted", when, err)
@@ -85,11 +82,11 @@ func TestARestrictedMembersNamedTokenIsHeldToItsAccount(t *testing.T) {
 	if err := rig.database.Pool.QueryRow(ctx, `select date_trunc('second', now() - interval '20 minutes')`).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
-	recordsA := brokertoken.Caller{Person: accessErin, ProjectScope: brokertoken.ProjectScopeNamed, Projects: []string{"ACC"},
+	recordsA := ciphertoken.Caller{Person: accessErin, ProjectScope: ciphertoken.ProjectScopeNamed, Projects: []string{"ACC"},
 		AccountIssuer: deps.SignInIssuer, AccountSubject: "account-a", CredentialCreatedAt: before}
 	personScopeRecordsA := recordsA
-	personScopeRecordsA.ProjectScope, personScopeRecordsA.Projects = brokertoken.ProjectScopePerson, nil
-	recordsNone := brokertoken.Caller{Person: accessErin, ProjectScope: brokertoken.ProjectScopeNamed, Projects: []string{"ACC"}, CredentialCreatedAt: before}
+	personScopeRecordsA.ProjectScope, personScopeRecordsA.Projects = ciphertoken.ProjectScopePerson, nil
+	recordsNone := ciphertoken.Caller{Person: accessErin, ProjectScope: ciphertoken.ProjectScopeNamed, Projects: []string{"ACC"}, CredentialCreatedAt: before}
 	people := store.NewPgPeopleStore(rig.database.Pool, testSigningKey, nil)
 	if err := people.SignInSubject(ctx, accessErin, "account-a", "refresh-a", model.MemberRestricted); err != nil {
 		t.Fatalf("erin's first sign-in as account A: %v", err)
@@ -111,13 +108,13 @@ func TestARestrictedMembersNamedTokenIsHeldToItsAccount(t *testing.T) {
 // TestAnAccountOfAnotherIssuerIsRefusedOnceTheAddressRecordsOne (the model's S1 with an account
 // of another issuer, review finding F6): a broker token whose credential records an account of
 // another issuer than Dispatch's sign-in issuer names an account Dispatch cannot compare with the
-// one it records, so once people records an account for its person it is refused at its admission
-// and as a minter, however long after the recording its credential was made, where a token
-// recording no account made that late acts and binds the address's account.
+// one it records, so once people records an account for its person it is refused at its admission,
+// however long after the recording its credential was made, where a token recording no account
+// made that late acts. A broker token mints nothing anyway (brokerPersonScopes).
 //
 // Control: brokerForeignAccount answering false, the reviewer's alternative of holding such a
 // token as one recording none: the token of another issuer made 10 minutes after the recording is
-// admitted, and its mint binds the address's account.
+// admitted.
 func TestAnAccountOfAnotherIssuerIsRefusedOnceTheAddressRecordsOne(t *testing.T) {
 	rig := newOutsideBrokerRig(t)
 	deps := rig.offDeps
@@ -130,9 +127,9 @@ func TestAnAccountOfAnotherIssuerIsRefusedOnceTheAddressRecordsOne(t *testing.T)
 		t.Fatal(err)
 	}
 	late := recordedAt.Add(10 * time.Minute)
-	foreign := brokertoken.Caller{Person: person, ProjectScope: brokertoken.ProjectScopePerson,
+	foreign := ciphertoken.Caller{Person: person, ProjectScope: ciphertoken.ProjectScopePerson,
 		AccountIssuer: "https://issuer.example", AccountSubject: "account-a", CredentialCreatedAt: late}
-	none := brokertoken.Caller{Person: person, ProjectScope: brokertoken.ProjectScopePerson, CredentialCreatedAt: late}
+	none := ciphertoken.Caller{Person: person, ProjectScope: ciphertoken.ProjectScopePerson, CredentialCreatedAt: late}
 	if _, err := served.brokerPersonAdmitted(ctx, foreign); err != nil {
 		t.Fatalf("a token of another issuer while no account is recorded: %v, want it admitted", err)
 	}
@@ -145,35 +142,6 @@ func TestAnAccountOfAnotherIssuerIsRefusedOnceTheAddressRecordsOne(t *testing.T)
 	wantAPIError(t, err, http.StatusUnauthorized, "BROKER_TOKEN_RECORDS_NO_ACCOUNT", "a token of another issuer made 10 minutes after the recording")
 	if _, err := served.brokerPersonAdmitted(ctx, none); err != nil {
 		t.Errorf("a token recording no account made 10 minutes after the recording: %v, want it admitted", err)
-	}
-	address := person
-	mint := func(minter brokerMinter) (string, error) {
-		t.Helper()
-		tx, err := rig.database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback(ctx)
-		var id string
-		if err := tx.QueryRow(ctx, mintAgentTokenSQL, person, "minted", []byte("hash of a mint"), "prefix00", []string{model.ScopePerson}, []string{},
-			nil, nil, nil, minter.address, minter.subject, true, minter.created, minter.foreign, minter.issuer).
-			Scan(&id, new(string), new(string), new([]string), new([]string), new(any), new(any), new(any)); err != nil {
-			return "", err
-		}
-		var subject *string
-		if err := tx.QueryRow(ctx, `select subject from agent_tokens where id = $1`, id).Scan(&subject); err != nil {
-			t.Fatal(err)
-		}
-		if subject == nil {
-			return "", nil
-		}
-		return *subject, nil
-	}
-	if _, err := mint(brokerMinter{address: &address, created: timeOrNull(late), foreign: served.brokerForeignAccount(foreign)}); !errors.Is(err, pgx.ErrNoRows) {
-		t.Errorf("a mint by a token of another issuer answered %v, want nothing inserted", err)
-	}
-	if got, err := mint(brokerMinter{address: &address, created: timeOrNull(late)}); err != nil || got != "account-b" {
-		t.Errorf("a mint by a token recording no account made after the margin recorded %q (%v), want account-b", got, err)
 	}
 }
 

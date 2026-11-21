@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/broker/wire"
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/cipher/wire"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/approvetimingtest"
@@ -47,10 +47,10 @@ func init() {
 const brokerOrigin = "http://dispatch.test"
 
 // fakeBroker is the secrets broker as Dispatch reaches it: the introspection route answers what
-// each test says each token is (brokertokentest.StubBroker), each token of a person's credential
+// each test says each token is (ciphertokentest.StubBroker), each token of a person's credential
 // naming the account the credential records as the broker's introspection does, POST
 // /v1/person-subjects/revoke ends the credentials of the account it names as the broker's does and
-// records, as the broker's replaced_person_subjects does (internal/broker/store's
+// records, as the broker's replaced_person_subjects does (internal/cipher/store's
 // RecordReplacedSubjectTx), that the account no longer holds the address, so it is refused there
 // from then on, and that the holder does, deleting any earlier record of the holder; an approve
 // answers that it minted a machine login, and a deny that it denied one. Each credential holds the
@@ -58,7 +58,7 @@ const brokerOrigin = "http://dispatch.test"
 // per-credential lists and revokes an earlier Dispatch made among them - is answered 404, and
 // every call but an introspection is recorded as "METHOD path body".
 type fakeBroker struct {
-	stub   *brokertokentest.StubBroker
+	stub   *ciphertokentest.StubBroker
 	server *httptest.Server
 	// issuer is the issuer the broker records each credential's account under, Dispatch's own
 	// sign-in issuer (brokerRouter sets it), unless a credential names another.
@@ -98,7 +98,7 @@ type fakeCredential struct {
 
 func newFakeBroker(t *testing.T) *fakeBroker {
 	t.Helper()
-	broker := &fakeBroker{stub: brokertokentest.NewStubBroker(t), replaced: map[[2]string]bool{}}
+	broker := &fakeBroker{stub: ciphertokentest.NewStubBroker(t), replaced: map[[2]string]bool{}}
 	broker.server = httptest.NewServer(approvetimingtest.Broker(func() string { return broker.server.URL }, http.HandlerFunc(broker.serve)))
 	t.Cleanup(broker.server.Close)
 	return broker
@@ -107,7 +107,7 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 // holds gives the broker a live credential and answers each of tokens as a live token of person
 // bound to caller's key, as the exchange mints a person's session token, naming the account the
 // credential records, none for one that records none.
-func (b *fakeBroker) holds(credential *fakeCredential, caller *brokertokentest.Caller) {
+func (b *fakeBroker) holds(credential *fakeCredential, caller *ciphertokentest.Caller) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.credentials = append(b.credentials, credential)
@@ -117,9 +117,9 @@ func (b *fakeBroker) holds(credential *fakeCredential, caller *brokertokentest.C
 	}
 	for i, token := range credential.tokens {
 		if credential.service != "" {
-			b.stub.Says(token, brokertoken.Introspection{
-				Active: true, Session: credential.id + "-session", Service: credential.service, ProjectScope: brokertoken.ProjectScopePerson,
-				Scope: "dispatch.write", ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: brokertoken.ExchangeClientID, Thumbprint: caller.JKT(),
+			b.stub.Says(token, ciphertoken.Introspection{
+				Active: true, Session: credential.id + "-session", Service: credential.service, ProjectScope: ciphertoken.ProjectScopePerson,
+				Scope: "dispatch.write", ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: ciphertoken.ExchangeClientID, Thumbprint: caller.JKT(),
 			})
 			continue
 		}
@@ -127,10 +127,10 @@ func (b *fakeBroker) holds(credential *fakeCredential, caller *brokertokentest.C
 		if !credential.createdAt.IsZero() {
 			createdAt = credential.createdAt.Unix()
 		}
-		b.stub.Says(token, brokertoken.Introspection{
-			Active: true, Session: credential.id + "-session-" + string(rune('a'+i)), Person: credential.person, ProjectScope: brokertoken.ProjectScopePerson,
+		b.stub.Says(token, ciphertoken.Introspection{
+			Active: true, Session: credential.id + "-session-" + string(rune('a'+i)), Person: credential.person, ProjectScope: ciphertoken.ProjectScopePerson,
 			AccountIssuer: issuer, AccountSubject: credential.subject, CredentialCreatedAt: createdAt,
-			Scope: "dispatch.write", ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: brokertoken.ExchangeClientID, Thumbprint: caller.JKT(),
+			Scope: "dispatch.write", ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: ciphertoken.ExchangeClientID, Thumbprint: caller.JKT(),
 		})
 	}
 }
@@ -185,7 +185,7 @@ func (b *fakeBroker) refuses(person, subject string) bool {
 }
 
 func (b *fakeBroker) serve(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == brokertoken.IntrospectPath {
+	if r.URL.Path == ciphertoken.IntrospectPath {
 		b.stub.Server.Config.Handler.ServeHTTP(w, r)
 		return
 	}
@@ -223,7 +223,7 @@ func (b *fakeBroker) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			answer.TokensEnded += len(c.tokens)
 			for _, token := range c.tokens {
-				b.stub.Says(token, brokertoken.Introspection{})
+				b.stub.Says(token, ciphertoken.Introspection{})
 			}
 		}
 		b.replaced[[2]string{revocation.Person, revocation.Subject}] = true
@@ -285,7 +285,7 @@ func (s *outsideSignIn) brokerRouter(t *testing.T, broker *fakeBroker) (http.Han
 // brokerTokenRequest answers method path from handler with body, presenting token under the DPoP
 // scheme with a fresh proof of caller's key for that target, as an agent holding a broker token
 // sends it.
-func brokerTokenRequest(t *testing.T, handler http.Handler, caller *brokertokentest.Caller, method, path, body, token string) *httptest.ResponseRecorder {
+func brokerTokenRequest(t *testing.T, handler http.Handler, caller *ciphertokentest.Caller, method, path, body, token string) *httptest.ResponseRecorder {
 	t.Helper()
 	signed := caller.Signed(t, method, brokerOrigin+path, token)
 	request := httptest.NewRequest(method, brokerOrigin+path, strings.NewReader(body))
@@ -441,7 +441,7 @@ func TestOutsideSignInReassignEndsTheReplacedAccountsBrokerCredentials(t *testin
 	broker := newFakeBroker(t)
 	handler, background := s.brokerRouter(t, broker)
 	s.workspaceSignIn(t, handler, reassignedEmail, firstHolder)
-	machine, box, older, daemon := brokertokentest.NewCaller(t), brokertokentest.NewCaller(t), brokertokentest.NewCaller(t), brokertokentest.NewCaller(t)
+	machine, box, older, daemon := ciphertokentest.NewCaller(t), ciphertokentest.NewCaller(t), ciphertokentest.NewCaller(t), ciphertokentest.NewCaller(t)
 	broker.holds(&fakeCredential{id: "login-first", person: reassignedEmail, subject: firstHolder, tokens: []string{"token-of-the-first-holders-machine"}}, machine)
 	broker.holds(&fakeCredential{id: "signin-first", person: reassignedEmail, subject: firstHolder, signIn: true, tokens: []string{"token-of-the-first-holders-sign-in"}}, box)
 	broker.holds(&fakeCredential{id: "login-unrecorded", person: reassignedEmail, tokens: []string{"token-of-a-login-from-before"}}, older)
@@ -517,7 +517,7 @@ func TestOutsideSignInAnAccountThatTakesItsAddressBackIsNotRevoked(t *testing.T)
 	s.workspaceSignIn(t, handler, reassignedEmail, firstHolder)
 	s.workspaceSignIn(t, handler, reassignedEmail, secondHolder)
 	reclaimed := s.workspaceSignIn(t, handler, reassignedEmail, firstHolder)
-	box := brokertokentest.NewCaller(t)
+	box := ciphertokentest.NewCaller(t)
 	const signInToken = "token-of-the-first-holders-sign-in-after-the-reclaim"
 	broker.holds(&fakeCredential{id: "signin-after-the-reclaim", person: reassignedEmail, subject: firstHolder, signIn: true, tokens: []string{signInToken}}, box)
 
@@ -551,7 +551,7 @@ func TestOutsideSignInReassignLeavesTheRevocationOwedWhileTheBrokerRefuses(t *te
 			broker := newFakeBroker(t)
 			handler, background := s.brokerRouter(t, broker)
 			s.workspaceSignIn(t, handler, reassignedEmail, firstHolder)
-			machine := brokertokentest.NewCaller(t)
+			machine := ciphertokentest.NewCaller(t)
 			broker.holds(&fakeCredential{id: "login-first", person: reassignedEmail, subject: firstHolder, tokens: []string{"token-of-the-first-holders-machine"}}, machine)
 			broker.refusing(status)
 
@@ -593,7 +593,7 @@ func TestOutsideSignInReassignLeavesARevocationTheBrokerAnswersSupersededOwed(t 
 	broker := newFakeBroker(t)
 	handler, background := s.brokerRouter(t, broker)
 	s.workspaceSignIn(t, handler, reassignedEmail, firstHolder)
-	machine := brokertokentest.NewCaller(t)
+	machine := ciphertokentest.NewCaller(t)
 	broker.holds(&fakeCredential{id: "login-first", person: reassignedEmail, subject: firstHolder, tokens: []string{"token-of-the-first-holders-machine"}}, machine)
 	broker.superseding(99)
 
@@ -712,7 +712,7 @@ func TestOutsideSignInHourlyEndOfAFullMemberRevokesNothing(t *testing.T) {
 		t.Fatalf("the Workspace account %s: the callback answered %d %s, want a signed-in redirect", memberEmail, signedIn.Code, signedIn.Body.String())
 	}
 	token := mintTokenOn(t, handler, signedIn)
-	machine := brokertokentest.NewCaller(t)
+	machine := ciphertokentest.NewCaller(t)
 	const machineToken = "token-of-the-members-machine"
 	broker.holds(&fakeCredential{id: "login-member", person: memberEmail, subject: "google-subject", tokens: []string{machineToken}}, machine)
 	requireTokenActs(t, "GET /api/v1/whoami with the member's personal token, before the hourly check ends the sign-in",
@@ -764,7 +764,7 @@ func TestOutsideSignInReclaimKeepsTheMembersOwnBrokerCredentials(t *testing.T) {
 	if outsider := codeFlowSignIn(t, handler, s.pool, map[string]any{"sub": "outsider", "email": memberEmail, "email_verified": true}); outsider.Code != http.StatusFound {
 		t.Fatalf("the account outside the Workspace at %s: the callback answered %d %s, want a signed-in redirect", memberEmail, outsider.Code, outsider.Body.String())
 	}
-	machine, box := brokertokentest.NewCaller(t), brokertokentest.NewCaller(t)
+	machine, box := ciphertokentest.NewCaller(t), ciphertokentest.NewCaller(t)
 	broker.holds(&fakeCredential{id: "login-member", person: memberEmail, subject: "member", tokens: []string{"token-of-the-members-machine"}}, machine)
 	broker.holds(&fakeCredential{id: "signin-member", person: memberEmail, subject: "member", signIn: true, tokens: []string{"token-of-the-members-sign-in"}}, box)
 
@@ -810,7 +810,7 @@ func TestOutsideSignInTakingTheAddressBackFromAnAccountRestrictedSinceRevokesIt(
 	s.listOn(t, "PRIV", access.PrincipalPerson, email)
 	s.workspaceSignIn(t, handler, email, firstHolder)
 	second := s.workspaceSignIn(t, handler, email, secondHolder)
-	box := brokertokentest.NewCaller(t)
+	box := ciphertokentest.NewCaller(t)
 	broker.holds(&fakeCredential{id: "signin-second", person: email, subject: secondHolder, signIn: true, tokens: []string{"token-of-the-second-holders-sign-in"}}, box)
 	background.RevokeBrokerCredentials(ctx)
 	first := s.subjectRevoke(t, email, firstHolder, secondHolder)
@@ -881,37 +881,35 @@ func requireBrokerTokenRecordsNoAccount(t *testing.T, what string, recorder *htt
 // the account each records, whether or not the broker has paid the revocation: the first holder's,
 // whose account people no longer records, is refused 401 BROKER_TOKEN_NOT_ACTIVE, at a read and at
 // a personal token's mint, which writes no row, before the pass, after it, an hour after the broker
-// confirmed, and still once the affirmative read a process keeps for brokertoken.AffirmativeCacheTTL
+// confirmed, and still once the affirmative read a process keeps for ciphertoken.AffirmativeCacheTTL
 // has passed and the broker, which ended it, is asked again; the second holder's own, recording the
-// account people records now, reads and mints throughout; and a token recording no account whose
-// credential was made before the recording, which might be either's, is refused 401
-// BROKER_TOKEN_RECORDS_NO_ACCOUNT throughout, never admitted again once the revocation settles.
-// Before the address passed on, the first holder's token read and minted. The pass ends the
-// unnamed credential that existed before it, as it ends every row of the address recording no
-// account, so after the pass the test asks with one the broker still holds live (made before the
-// recording, which an older broker, or a revoke the broker answered before it saw the row, would
-// leave): Dispatch refuses it by its creation time alone. A credential recording no account that
-// the broker made one minute after the recording is refused too (inside brokerCredentialMargin),
-// one made ten minutes after acts, and the personal token it mints records the second holder's
-// account.
+// account people records now, reads throughout and mints nothing (403 OAUTH_SCOPE_REQUIRED: no
+// broker token holds approve); and a token recording no account whose credential was made before
+// the recording, which might be either's, is refused 401 BROKER_TOKEN_RECORDS_NO_ACCOUNT
+// throughout, never admitted again once the revocation settles. Before the address passed on, the
+// first holder's token read, and minted nothing. The pass ends the unnamed credential that existed
+// before it, as it ends every row of the address recording no account, so after the pass the test
+// asks with one the broker still holds live (made before the recording, which an older broker, or
+// a revoke the broker answered before it saw the row, would leave): Dispatch refuses it by its
+// creation time alone. A credential recording no account that the broker made one minute after the
+// recording is refused too (inside brokerCredentialMargin), and one made ten minutes after acts.
 func TestOutsideSignInReassignHoldsEachBrokerTokenByItsAccount(t *testing.T) {
 	ctx := context.Background()
 	s := newOutsideSignIn(t, nil)
 	broker := newFakeBroker(t)
 	handler, background := s.brokerRouter(t, broker)
 	s.workspaceSignIn(t, handler, reassignedEmail, firstHolder)
-	machine := brokertokentest.NewCaller(t)
+	machine := ciphertokentest.NewCaller(t)
 	const replacedToken = "token-of-the-first-holders-machine"
 	broker.holds(&fakeCredential{id: "login-first", person: reassignedEmail, subject: firstHolder, tokens: []string{replacedToken}}, machine)
-	mint := func(caller *brokertokentest.Caller, token, name string) *httptest.ResponseRecorder {
+	mint := func(caller *ciphertokentest.Caller, token, name string) *httptest.ResponseRecorder {
 		return brokerTokenRequest(t, handler, caller, http.MethodPost, "/api/v1/me/agent-tokens", `{"name":"`+name+`"}`, token)
 	}
 	requireTokenActs(t, "GET /api/v1/whoami with the first holder's broker token, before the address passes on",
 		brokerTokenRequest(t, handler, machine, http.MethodGet, "/api/v1/whoami", "", replacedToken))
-	if minted := mint(machine, replacedToken, "minted before the address passed on"); minted.Code != http.StatusCreated {
-		t.Fatalf("the first holder's broker token's mint, before the address passes on, answered %d %s, want 201", minted.Code, minted.Body.String())
-	}
-	unnamedMachine := brokertokentest.NewCaller(t)
+	requireNoApproveScope(t, "the first holder's broker token's mint, before the address passes on",
+		mint(machine, replacedToken, "minted before the address passed on"))
+	unnamedMachine := ciphertokentest.NewCaller(t)
 	unnamedToken := "token-of-a-machine-recording-no-account"
 	broker.holds(&fakeCredential{id: "login-unnamed", person: reassignedEmail, tokens: []string{unnamedToken}, createdAt: time.Now().Add(-time.Hour)}, unnamedMachine)
 
@@ -920,14 +918,14 @@ func TestOutsideSignInReassignHoldsEachBrokerTokenByItsAccount(t *testing.T) {
 	if err := s.database.Pool.QueryRow(ctx, `select sub_recorded_at from people where email = $1`, reassignedEmail).Scan(&recordedAt); err != nil {
 		t.Fatalf("read when the second holder's sign-in recorded its account: %v", err)
 	}
-	holderMachine := brokertokentest.NewCaller(t)
+	holderMachine := ciphertokentest.NewCaller(t)
 	const holderToken = "token-of-the-second-holders-machine"
 	broker.holds(&fakeCredential{id: "login-second", person: reassignedEmail, subject: secondHolder, tokens: []string{holderToken}}, holderMachine)
 	phase := func(when string) {
 		t.Helper()
 		for _, caller := range []struct {
 			who, token string
-			machine    *brokertokentest.Caller
+			machine    *ciphertokentest.Caller
 			require    func(*testing.T, string, *httptest.ResponseRecorder)
 		}{
 			{"the first holder's", replacedToken, machine, requireBrokerCredentialRevoked},
@@ -943,8 +941,9 @@ func TestOutsideSignInReassignHoldsEachBrokerTokenByItsAccount(t *testing.T) {
 		}
 		requireTokenActs(t, "GET /api/v1/whoami with the second holder's broker token, "+when,
 			brokerTokenRequest(t, handler, holderMachine, http.MethodGet, "/api/v1/whoami", "", holderToken))
-		if minted := mint(holderMachine, holderToken, "the second holder's own, "+when); minted.Code != http.StatusCreated {
-			t.Fatalf("the second holder's broker token's mint, %s, answered %d %s, want 201", when, minted.Code, minted.Body.String())
+		requireNoApproveScope(t, "the second holder's broker token's mint, "+when, mint(holderMachine, holderToken, "the second holder's own, "+when))
+		if rows := s.tokenRowsNamed(t, "the second holder's own, "+when); rows != 0 {
+			t.Errorf("the second holder's refused mint, %s, wrote %d token rows, want none", when, rows)
 		}
 	}
 	phase("before the revocation pass")
@@ -958,10 +957,10 @@ func TestOutsideSignInReassignHoldsEachBrokerTokenByItsAccount(t *testing.T) {
 	unnamedToken = "token-of-a-machine-recording-no-account-the-revocation-missed"
 	broker.holds(&fakeCredential{id: "login-unnamed-missed", person: reassignedEmail, tokens: []string{unnamedToken}, createdAt: recordedAt.Add(-time.Hour)}, unnamedMachine)
 	s.settledAgo(t, reassignedEmail, time.Hour)
-	time.Sleep(brokertoken.AffirmativeCacheTTL + 100*time.Millisecond)
+	time.Sleep(ciphertoken.AffirmativeCacheTTL + 100*time.Millisecond)
 	phase("an hour after the broker confirmed, past the process's affirmative read")
 
-	insideMachine, laterMachine := brokertokentest.NewCaller(t), brokertokentest.NewCaller(t)
+	insideMachine, laterMachine := ciphertokentest.NewCaller(t), ciphertokentest.NewCaller(t)
 	const insideToken, laterToken = "token-made-a-minute-after-the-recording", "token-made-ten-minutes-after-the-recording"
 	broker.holds(&fakeCredential{id: "login-inside-the-margin", person: reassignedEmail, tokens: []string{insideToken}, createdAt: recordedAt.Add(time.Minute)}, insideMachine)
 	broker.holds(&fakeCredential{id: "login-after-the-margin", person: reassignedEmail, tokens: []string{laterToken}, createdAt: recordedAt.Add(10 * time.Minute)}, laterMachine)
@@ -969,16 +968,8 @@ func TestOutsideSignInReassignHoldsEachBrokerTokenByItsAccount(t *testing.T) {
 		brokerTokenRequest(t, handler, insideMachine, http.MethodGet, "/api/v1/whoami", "", insideToken))
 	requireTokenActs(t, "GET /api/v1/whoami with a broker token recording no account made ten minutes after the recording",
 		brokerTokenRequest(t, handler, laterMachine, http.MethodGet, "/api/v1/whoami", "", laterToken))
-	if minted := mint(laterMachine, laterToken, "minted ten minutes after the recording"); minted.Code != http.StatusCreated {
-		t.Fatalf("the mint by a broker token recording no account made ten minutes after the recording answered %d %s, want 201", minted.Code, minted.Body.String())
-	}
-	var subject *string
-	if err := s.database.Pool.QueryRow(ctx, `select subject from agent_tokens where name = 'minted ten minutes after the recording'`).Scan(&subject); err != nil {
-		t.Fatal(err)
-	}
-	if subject == nil || *subject != secondHolder {
-		t.Errorf("the token minted by a credential recording no account made after the recording records %v, want the second holder's account", subject)
-	}
+	requireNoApproveScope(t, "the mint by a broker token recording no account made ten minutes after the recording",
+		mint(laterMachine, laterToken, "minted ten minutes after the recording"))
 }
 
 // A revocation names the replaced account, not a moment: the second holder signs in at the broker
@@ -994,10 +985,10 @@ func TestOutsideSignInReassignKeepsTheNewHoldersSignInMadeAfterTheReplacement(t 
 	broker := newFakeBroker(t)
 	handler, background := s.brokerRouter(t, broker)
 	s.workspaceSignIn(t, handler, reassignedEmail, firstHolder)
-	broker.holds(&fakeCredential{id: "login-first", person: reassignedEmail, subject: firstHolder, tokens: []string{"token-of-the-first-holders-machine"}}, brokertokentest.NewCaller(t))
+	broker.holds(&fakeCredential{id: "login-first", person: reassignedEmail, subject: firstHolder, tokens: []string{"token-of-the-first-holders-machine"}}, ciphertokentest.NewCaller(t))
 	s.workspaceSignIn(t, handler, reassignedEmail, secondHolder)
 	time.Sleep(2 * time.Second)
-	box := brokertokentest.NewCaller(t)
+	box := ciphertokentest.NewCaller(t)
 	const boxToken = "token-of-the-second-holders-sign-in"
 	broker.holds(&fakeCredential{id: "signin-second", person: reassignedEmail, subject: secondHolder, signIn: true, tokens: []string{boxToken}}, box)
 

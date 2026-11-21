@@ -1,19 +1,19 @@
 -- 20261120150130_machine_login_revocations.up.sql — the machine logins of restricted members that
 -- Dispatch owes the secrets broker a revocation of.
 --
--- When a project's owner takes a restricted member off its access list and no other project's list
--- names them any more, the member's agents must hold nothing of the deployment. Each trade of their
+-- When a project's owner takes a restricted member off its access list, the member's agents must
+-- hold no login approved before it, whatever other list still names them (R16). Each trade of their
 -- machine login names one project, which the broker checks against Dispatch every time, so no new
 -- token of a project is minted past the broker's cache; the logins themselves, and the tokens
 -- already traded from them, are the broker's, which Dispatch can end only by calling the broker
 -- after the removal commits. So the removal records the debt here, in its own transaction, and the
--- server's revocation loop (api: revokeOwedMachineLogins) pays it after the commit by revoking the
--- machine logins the member approved for their own machines before `recorded_at`, again and again
--- until the broker confirms: a broker that does not answer, or a process that dies between the
--- commit and the call, leaves the row for the next pass of any process. The removal does not wait
--- on the broker, so an owner removes a person while the broker is down; a login the member approves
--- after an owner puts them back survives the pass. A removal that leaves the member on another
--- project's list records nothing: a machine login belongs to no project, and keeps serving those.
+-- server's revocation loop (api: revokeOwedMachineLogins) pays it after the commit by revoking every
+-- machine login the member approved for their own machines, again and again until the broker
+-- confirms: a broker that does not answer, or a process that dies between the commit and the call,
+-- leaves the row for the next pass of any process. The removal does not wait on the broker, so an
+-- owner removes a person while the broker is down. Dispatch orders the member's approvals against
+-- the record (store: HoldMachineLoginApprovals): one in flight finishes before it, and while it is
+-- owed none is relayed, so no clock is compared.
 --
 -- One row per address (`email`, as people.email holds it). A removal recorded again before or after
 -- the row is paid owes it again: `generation` counts the removals recorded, so a pass that read an

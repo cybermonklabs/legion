@@ -18,7 +18,10 @@ name: CI job dispatch-project-access
 # answered as for an id nobody holds. project-access-blob.sh (c-blob-unchanged) builds the merge
 # base beside this tree through scripts/e2e/lib/two-builds.sh, seeds each alike on a database of
 # its own with every project public, and fails on any answer a caller reads differently at the
-# two, and on any list it reads that holds no row.
+# two, and on any list it reads that holds no row. membership-answer.sh (contract K3) reads the
+# membership answer's three routes with the secrets broker's own projected token, under the
+# harness switch that gives that token (DISPATCH_E2E_ACCESS_ISSUER=1), and holds a person's dsp_
+# token and cookie refused at each.
 # The merge base is the commit this run tests the change against: the merge group's base, else
 # the first parent of the commit checked out, which on a pull request is the merge commit's base
 # and on a dispatched run the commit before main's tip. two-builds.sh takes its tree with
@@ -91,6 +94,9 @@ jobs:
         working-directory: packages/dispatch
       - name: Read and write every route as the callers PRIV is hidden from, PRIV made private by the store write
         run: bash e2e/acceptance/project-access.sh --private-by-sql
+        working-directory: packages/dispatch
+      - name: Read the membership answer as the secrets broker reads it
+        run: DISPATCH_E2E_ACCESS_ISSUER=1 bash e2e/acceptance/with-harness.sh bash e2e/acceptance/membership-answer.sh
         working-directory: packages/dispatch
       - name: Compare what every caller reads at the merge base and at this tree
         run: |

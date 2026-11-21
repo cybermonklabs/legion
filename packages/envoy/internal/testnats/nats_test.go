@@ -153,7 +153,8 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 	})
 }
 
-// fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does.
+// fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does, and with its
+// test's deadline, which a wait bounded by it reads (waitBound).
 type fatalRecorder struct {
 	testing.TB
 	message string
@@ -163,6 +164,13 @@ func (f *fatalRecorder) Fatal(args ...any) { f.message = fmt.Sprint(args...); ru
 func (f *fatalRecorder) Fatalf(format string, args ...any) {
 	f.message = fmt.Sprintf(format, args...)
 	runtime.Goexit()
+}
+
+func (f *fatalRecorder) Deadline() (time.Time, bool) {
+	if timed, ok := f.TB.(interface{ Deadline() (time.Time, bool) }); ok {
+		return timed.Deadline()
+	}
+	return time.Time{}, false
 }
 
 // A test gets one account however often it asks, so every connection it makes reaches the streams
@@ -411,7 +419,7 @@ func TestAClosedGateKeepsItsPort(t *testing.T) {
 		t.Fatalf("open the other program's socket: %v", err)
 	}
 	t.Cleanup(func() { _ = syscall.Close(fd) })
-	err = syscall.Bind(fd, &syscall.SockaddrInet4{Port: address.Port, Addr: [4]byte{127, 0, 0, 1}})
+	err = syscall.Bind(fd, &syscall.SockaddrInet4{Port: address.Port, Addr: [4]byte(address.IP.To4())})
 	if err == nil {
 		// The port was free: hold it listening, as a program that took it would, so the Open below
 		// meets it.
@@ -421,7 +429,7 @@ func TestAClosedGateKeepsItsPort(t *testing.T) {
 		t.Errorf("another program's bind of the closed gate's port %d: %v, want address already in use", address.Port, err)
 	}
 
-	if claim, reservation, err := holdGatePort(address.Port); err == nil {
+	if claim, reservation, err := holdGatePort(address.IP, address.Port); err == nil {
 		_ = syscall.Close(reservation)
 		_ = claim.Close()
 		t.Errorf("a second gate held the closed gate's port %d", address.Port)

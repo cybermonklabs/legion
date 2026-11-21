@@ -9,6 +9,14 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// EitherSideOfNode is the test of a graph_tuples row for a tuple of either side of one node, the
+// node's kind bound as $1 and its id as $2: every tuple out of the node and every tuple into it.
+// It is parenthesised whole, so a statement may join it to another test with `and`. The erase's
+// listing of a node's tuples (grapherase's readTuples), its delete of them (EraseNode) and its
+// search for a tuple that landed since (tuplesLeft) read the one spelling, so the three name the
+// same rows.
+const EitherSideOfNode = `((from_kind = $1 and from_id = $2) or (to_kind = $1 and to_id = $2))`
+
 // EraseNode deletes node kind:id and the tuples seqs names, inside the caller's transaction: the
 // tuples of both sides of the node, then its row. It is the one write of this store that deletes,
 // and `envoy-dispatch erase` (grapherase) is its one caller: an erase (R1 and R5 of
@@ -31,8 +39,7 @@ import (
 // lock the store's lock order does not already place. A tuple is appended once and never written
 // again, so no other writer's write meets a delete of one.
 func EraseNode(ctx context.Context, tx pgx.Tx, kind, id string, seqs []int64) error {
-	tag, err := tx.Exec(ctx, `delete from graph_tuples where seq = any($3::bigint[])
-		and ((from_kind = $1 and from_id = $2) or (to_kind = $1 and to_id = $2))`, kind, id, seqs)
+	tag, err := tx.Exec(ctx, `delete from graph_tuples where seq = any($3::bigint[]) and `+EitherSideOfNode, kind, id, seqs)
 	if err != nil {
 		return fmt.Errorf("delete the tuples of %s:%s: %w", kind, id, err)
 	}
@@ -60,7 +67,7 @@ func tuplesLeft(ctx context.Context, tx pgx.Tx, kind, id string) ([]string, erro
 	rows, err := tx.Query(ctx, `
 		select seq || ' (' || from_kind || ':' || from_id || ' ' || kind || ' ' || to_kind || ':' || to_id || ')'
 		from graph_tuples
-		where (from_kind = $1 and from_id = $2) or (to_kind = $1 and to_id = $2)
+		where `+EitherSideOfNode+`
 		order by seq`, kind, id)
 	if err != nil {
 		return nil, fmt.Errorf("read the tuples left of %s:%s: %w", kind, id, err)

@@ -520,7 +520,7 @@ func TestTheContainersStopCutsTheSizeWalkDropsTheHeldReportAndRunReturnsInsideTh
 
 	f.clock.advance(volumeWalkInterval + time.Minute)
 	armed.Store(true)
-	f.tick("the sweep ended")
+	f.tickUntil("the sweep ended") // the walk is held at its third target until the container stops
 	awaitClosed(t, walking, "the second sweep's size walk to reach its third target")
 
 	stoppedAt := time.Now()
@@ -743,9 +743,12 @@ func TestALaterAnswerAppliesToTheNextSweepAndNotOneInFlight(t *testing.T) {
 	case f.logged("below the high mark 85%") != 1:
 		t.Errorf("the interval after the sweep did not read the volume under the settings in force; the trimmer wrote %q", f.linesWritten())
 	}
-	if _, live := f.ticks.live(settingsInterval(*laterTrimSettings())); !live {
-		t.Error("the trimmer is on no clock of the later answer's interval: a shortened interval must not wait the old one out")
-	}
+	// The interval writes "nothing to sweep" and only then has the loop stop the clock of the old
+	// period and make one of the new (intervals), so the case waits for that clock.
+	testwait.Eventually(t, "the trimmer to wait on a clock of the later answer's interval: a shortened interval must not wait the old one out", func() bool {
+		_, live := f.ticks.live(settingsInterval(*laterTrimSettings()))
+		return live
+	})
 	assertIntervals(t, f, settingsInterval(*trimSettings()), settingsInterval(*laterTrimSettings()))
 	f.assertProtected()
 }
@@ -926,7 +929,7 @@ func TestAReportIsNeverWrittenOnAConnectionWhoseAnswerCarriesNoSettings(t *testi
 			ackPod(pod, trimSettings())
 			trim := trims.await()
 
-			f.tick("the sweep ended")
+			f.tickUntil("the sweep ended") // the walk is held at its first directory until the case releases it
 			awaitClosed(t, walking, "the size walk the report is built from")
 
 			// The daemon goes away with the report half made, and its answer to the redial is

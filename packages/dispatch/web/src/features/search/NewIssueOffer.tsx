@@ -3,9 +3,17 @@ import type { ReactNode } from "react";
 
 import { newIssueSettingsQuery } from "../../api/queries";
 import { useRestrictedMember } from "../../hooks/useRestrictedMember";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { useWrites, type Writes } from "../writes/write-store";
 import { type FiledIssue, fileNewIssue, type NewIssueWrite } from "./new-issue";
-import { barNoteClassName, type Offer, type OfferRow, refusalText, useWordsState } from "./offer";
+import {
+  barNoteClassName,
+  type Offer,
+  type OfferRow,
+  type UnconfirmedPress,
+  unconfirmedPress,
+  useWordsState,
+} from "./offer";
 
 /** The group the offer's one row sits in, and the row's own id, which the bar's arrows and
  *  `aria-activedescendant` read. */
@@ -14,12 +22,13 @@ export const NEW_ISSUE_OPTION_ID = "search-option-new-issue";
 
 /** Where the offer stands once a press has been made: the writes out, the issue made (`filed`
  *  absent for one Dispatch had no answer naming, and carrying the write onto it that Dispatch
- *  refused where there was one), or the create itself refused, in the person's words. Nothing
- *  pressed is no state at all (`useWordsState`). */
+ *  refused where there was one), the create itself refused, in the person's words, or stopped by
+ *  the person before Dispatch confirmed it. Nothing pressed is no state at all
+ *  (`useWordsState`). */
 type OfferState =
   | { readonly kind: "making"; readonly words: string }
   | { readonly filed: FiledIssue | undefined; readonly kind: "made"; readonly words: string }
-  | { readonly kind: "refused"; readonly refusal: string; readonly words: string };
+  | UnconfirmedPress;
 
 /** How the offer writes; the tests pass their own. */
 export type FileNewIssue = (
@@ -94,11 +103,7 @@ export function useNewIssueOffer({
         }
       },
       (error: unknown) => {
-        setState({
-          kind: "refused",
-          refusal: refusalText(error, "the write did not reach Dispatch."),
-          words,
-        });
+        setState(unconfirmedPress(error, words, "the write did not reach Dispatch."));
       }
     );
   };
@@ -114,12 +119,13 @@ export function useNewIssueOffer({
           select: () => onOpen(filed.issue.key),
         };
   return {
-    // The row is listed from the two states a press can still create from - nothing pressed,
-    // and a create Dispatch refused - and as `Open …` once an issue is made. While the writes
-    // are out, and for a create Dispatch landed with no answer naming, there is no row: a press
-    // there would make a second issue.
+    // The row is listed from the states a press can still create from - nothing pressed, a
+    // create Dispatch refused, and one the person stopped, which the line says a press makes
+    // again as a new create - and as `Open …` once an issue is made. While the writes are out,
+    // and for a create Dispatch landed with no answer naming, there is no row: a press there
+    // would make a second issue.
     row:
-      here === undefined || here.kind === "refused"
+      here === undefined || here.kind === "refused" || here.kind === "stopped"
         ? {
             id: NEW_ISSUE_OPTION_ID,
             kind: "offer",
@@ -152,6 +158,15 @@ function NewIssueSaid({ state }: { readonly state: OfferState | undefined }): Re
       </p>
     );
   }
+  if (state.kind === "stopped") {
+    return (
+      <p className={barNoteClassName} data-testid="search-new-issue-said" role="alert">
+        {stoppedWriteNote("the new issue", "made", {
+          anew: "Pressing Make a new issue again sends it as a new create.",
+        })}
+      </p>
+    );
+  }
   const filed = state.filed;
   if (filed === undefined) {
     return (
@@ -161,9 +176,17 @@ function NewIssueSaid({ state }: { readonly state: OfferState | undefined }): Re
     );
   }
   if (filed.refused !== undefined) {
+    const { refused } = filed;
+    // A write onto the issue the person stopped may have landed, and nothing here makes it again
+    // - the bar's writes show no refusal of their own in the shell's indicator (`press`) - so the
+    // line sends them to the issue, which the row opens.
     return (
       <p className={barNoteClassName} data-testid="search-new-issue-said" role="alert">
-        {`${filed.issue.key} is made; ${filed.refused.what} was refused: ${filed.refused.why}`}
+        {refused.kind === "stopped"
+          ? `${filed.issue.key} is made. ${stoppedWriteNote(refused.what, "made", {
+              anew: `Nothing here makes it again: open ${filed.issue.key} to see whether it was.`,
+            })}`
+          : `${filed.issue.key} is made; ${refused.what} was refused: ${refused.refusal}`}
       </p>
     );
   }

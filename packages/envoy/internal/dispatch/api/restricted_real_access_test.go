@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/broker/exchange"
-	"github.com/sjawhar/envoy/internal/broker/projectaccess"
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
 
 // newRestrictedTokenRig's broker asks a stand-in of Dispatch's membership answer
@@ -66,7 +66,7 @@ func newRealAccessRig(t *testing.T) (restrictedTokenRig, *realAccess) {
 	t.Cleanup(front.Close)
 	brokerAccount := accountTokenFile(t, issuer.Mint(t, issuer.signing, issuer.Claims(listedServiceAccount, serviceTokenAudience)))
 	access := &realAccess{fresh: func() *projectaccess.Client {
-		return projectaccess.New(front.URL, brokertoken.NewAccountToken(brokerAccount), nil)
+		return projectaccess.New(front.URL, ciphertoken.NewAccountToken(brokerAccount), nil)
 	}}
 	access.forget()
 	r := newRestrictedTokenRigWith(t, access, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}})
@@ -94,7 +94,7 @@ func TestARestrictedMembersTradeAsksTheRealDispatch(t *testing.T) {
 	}
 	token, _ := body["access_token"].(string)
 	answer := r.introspect(t, token)
-	if !answer.Active || answer.ProjectScope != brokertoken.ProjectScopeNamed || !slices.Equal(answer.Projects, []string{"ACC"}) || answer.Person != accessErin {
+	if !answer.Active || answer.ProjectScope != ciphertoken.ProjectScopeNamed || !slices.Equal(answer.Projects, []string{"ACC"}) || answer.Person != accessErin {
 		t.Fatalf("erin's token introspects as %+v, want named [ACC] for erin", answer)
 	}
 	if expiresIn, _ := body["expires_in"].(float64); expiresIn <= 0 || time.Duration(expiresIn)*time.Second > exchange.RestrictedLifetime {
@@ -117,7 +117,7 @@ func TestARestrictedMembersTradeAsksTheRealDispatch(t *testing.T) {
 			t.Fatalf("carol's trade naming %q = %d %v, want 200", asked, status, body)
 		}
 		token, _ := body["access_token"].(string)
-		if answer := r.introspect(t, token); !answer.Active || answer.ProjectScope != brokertoken.ProjectScopePerson {
+		if answer := r.introspect(t, token); !answer.Active || answer.ProjectScope != ciphertoken.ProjectScopePerson {
 			t.Errorf("carol's token naming %q introspects as %+v, want the person scope", asked, answer)
 		}
 	}

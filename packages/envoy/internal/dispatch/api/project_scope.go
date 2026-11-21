@@ -60,7 +60,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -92,7 +92,7 @@ const (
 // too: its refusal is written further in, by the keyed layer for a keyed write and by the handler
 // for any other.
 func (s *server) brokerCredentialActor(r *http.Request) (model.Actor, bool) {
-	if _, presented := brokertoken.Presented(r); !presented {
+	if _, presented := ciphertoken.Presented(r); !presented {
 		return model.Actor{}, false
 	}
 	actor, _, err := s.optionalActor(r)

@@ -66,13 +66,15 @@ export function renderPanel({
     listAccessGroups: spyOn(api, "listAccessGroups").mockResolvedValue(groups),
     whoAmI: spyOn(api, "whoAmI"),
   };
-  const view = render(
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>
-        <ProjectAccessPanel project="CORE" />
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const mount = () =>
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <ProjectAccessPanel project="CORE" />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+  let view = mount();
   return {
     ...spies,
     lands: (next: ProjectAccess | Promise<ProjectAccess>) => async (): Promise<ProjectAccess> => {
@@ -80,6 +82,13 @@ export function renderPanel({
       return stored;
     },
     queryClient,
+    /** Closes the panel and opens it again on the same query client, as leaving the tab and
+     *  coming back does: the mutation cache keeps its saves, and the new panel's hook holds none
+     *  of the presses the old one made. */
+    remount: () => {
+      view.unmount();
+      view = mount();
+    },
     restore: () => {
       view.unmount();
       queryClient.clear();

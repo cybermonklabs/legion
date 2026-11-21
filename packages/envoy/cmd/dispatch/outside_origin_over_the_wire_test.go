@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 )
 
 // overTheWire sends GET /api/v1/whoami to server under host, carrying signed's Authorization and
@@ -64,7 +64,7 @@ func TestOutsideOriginAnswersABrokerTokensProofOverTheWire(t *testing.T) {
 	handler, _ := s.brokerRouter(t, broker)
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	agent := brokertokentest.NewCaller(t)
+	agent := ciphertokentest.NewCaller(t)
 	broker.holds(&fakeCredential{id: "login-outside", person: privOwner, service: "outside-agents", tokens: []string{outsideAgentToken}}, agent)
 	outsideHost, canonicalHost := hostOf(t, outsideBrokerOrigin), hostOf(t, brokerOrigin)
 

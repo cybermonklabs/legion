@@ -122,7 +122,12 @@ test("human users manage repository project mappings from the settings route", a
     );
 
     expect(await screen.findByRole("heading", { name: "Repositories → Projects" })).toBeDefined();
-    expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings");
+    // The sidebar draws its links only once its inbox, pinned issues and projects have answered
+    // (`Sidebar.tsx`), which the page's heading above does not wait for, so the link is waited for.
+    expect(await screen.findByRole("link", { name: "Settings" })).toHaveAttribute(
+      "href",
+      "/settings"
+    );
     // The heading above is the section's, which renders before its mapping list: the rows arrive
     // with a read of their own, and reading them synchronously finds the table still saying
     // "Loading…" on a pod whose cores are busy.
@@ -632,8 +637,9 @@ test("default assignee picks made while one is saving show, and only the newest 
   try {
     const section = within(await screen.findByRole("region", { name: "Projects" }));
     // A default set on the project an unmapped repository falls back to is what a reader has to
-    // weigh while setting one, so the consequence sits beside the control.
-    expect(section.getByText(/no project mapping/)).toHaveTextContent("default project");
+    // weigh while setting one, so the consequence sits beside the control. The region is drawn
+    // at once, saying `Loading projects…`, so the line is waited for: it comes with the projects.
+    expect(await section.findByText(/no project mapping/)).toHaveTextContent("default project");
 
     const control = await defaultAssigneeControl("CORE");
     await waitFor(() => expect(control.value).toBe("alice@example.com"));

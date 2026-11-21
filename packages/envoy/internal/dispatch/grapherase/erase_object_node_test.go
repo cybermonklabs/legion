@@ -136,7 +136,10 @@ func TestTheErasesRowCheckUnderTheNodeLockRefusesTheCreateItWaitedFor(t *testing
 	lockstep.Begin(t, database, create)
 	created := graphstore.PlanUncaused([]graphstore.Node{graphstore.ArtifactNode(
 		seeded.documentRef, "ERASE", "", model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC())}, nil)
-	if err := store.RunWrite(ctx, create.Tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, created) }); err != nil {
+	if err := store.RunWrite(ctx, create.Tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, created)
+		return nil
+	}); err != nil {
 		t.Fatalf("write the created document's node: %v", err)
 	}
 	if _, err := create.Tx.Exec(ctx, `

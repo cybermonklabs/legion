@@ -69,6 +69,7 @@ func TestAWriteRepeatingAHeldBlockIDIsRefused(t *testing.T) {
 			write: func(t *testing.T, handler http.Handler, issueKey, artifactID string) *httptest.ResponseRecorder {
 				return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issueKey+"/artifacts", map[string]any{
 					"name": "spec.md", "content": callout + "\n" + documentMarkdown(t, handler, artifactID),
+					"precondition": uploadBase(t, handler, artifactID),
 				}, "alice")
 			}},
 	} {

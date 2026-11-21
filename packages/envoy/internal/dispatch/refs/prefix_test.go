@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -140,6 +141,10 @@ func insertPrefixBlockText(t *testing.T, tx pgx.Tx, artifactID, blockID string, 
 // for both: the server's own reader (serverReader), who sees every project and every party and
 // reads every item these fixtures write.
 var prefixReader = serverReader
+
+// prefixAuthor is the author every comment and ask these fixtures write records, and so the
+// writer a Reader of one of them resolves its short ids for (NewReader).
+var prefixAuthor = model.Actor{Kind: "user", ID: "alice"}
 
 // resolvedPrefix is the candidate prefix names, failing the test when it names none or several. It
 // reads as prefixReader. Where ResolvePrefixes is the same function (bothResolve), it asks

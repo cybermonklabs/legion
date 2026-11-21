@@ -10,7 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -26,13 +26,13 @@ import (
 //     credential is refused: the deploy resets nothing;
 //   - once the recording time is set, A's personal token made before it is refused at use, at an
 //     approve's re-read and as a minter, and A's broker credential made before it is refused at its
-//     admission (401 BROKER_TOKEN_RECORDS_NO_ACCOUNT), at an approve and as a minter, as is one
-//     whose creation time the broker did not record;
+//     admission (401 BROKER_TOKEN_RECORDS_NO_ACCOUNT), as is one whose creation time the broker
+//     did not record; a broker credential mints and approves nothing anyway (brokerPersonScopes);
 //   - at the boundary the broker credential's time crosses two clocks, so one made 1 minute after
 //     the recording is refused and one made 10 minutes after acts (brokerCredentialMargin);
 //   - a personal token made after the recording (Dispatch's own clock) acts;
-//   - a credential recording no account made after the recording mints a token that records the
-//     address's account, so the no-account state stops there.
+//   - a personal token recording no account made after the recording mints a token that records
+//     the address's account, so the no-account state stops there.
 //
 // Control: tokenAccountReplaced and brokerAccountReplaced without the time arm (a no-account
 // credential never replaced); A's credentials made before the recording act.
@@ -67,8 +67,8 @@ func TestACredentialRecordingNoAccountIsHeldToWhenTheAddressAccountWasRecorded(t
 		}
 		return plaintext, id
 	}
-	broker := func(createdAt time.Time) brokertoken.Caller {
-		return brokertoken.Caller{Person: person, CredentialCreatedAt: createdAt}
+	broker := func(createdAt time.Time) ciphertoken.Caller {
+		return ciphertoken.Caller{Person: person, CredentialCreatedAt: createdAt}
 	}
 	before := recordedAt.Add(-time.Hour)
 	beforeToken, beforeID := personalToken("made before the recording", before)
@@ -83,7 +83,7 @@ func TestACredentialRecordingNoAccountIsHeldToWhenTheAddressAccountWasRecorded(t
 			wantAPIError(t, err, http.StatusUnauthorized, "TOKEN_REVOKED", when)
 		}
 	}
-	brokerActs := func(when string, caller brokertoken.Caller, want bool) {
+	brokerActs := func(when string, caller ciphertoken.Caller, want bool) {
 		t.Helper()
 		_, err := served.brokerPersonAdmitted(ctx, caller)
 		switch {
@@ -123,7 +123,7 @@ func TestACredentialRecordingNoAccountIsHeldToWhenTheAddressAccountWasRecorded(t
 		t.Errorf("an approve's re-read of a personal token made after the recording: %v, want it to stand", err)
 	}
 
-	mint := func(tokenID *string, minter brokerMinter) (string, error) {
+	mint := func(tokenID *string) (string, error) {
 		t.Helper()
 		tx, err := rig.database.Pool.Begin(ctx)
 		if err != nil {
@@ -132,7 +132,7 @@ func TestACredentialRecordingNoAccountIsHeldToWhenTheAddressAccountWasRecorded(t
 		defer tx.Rollback(ctx)
 		var id string
 		err = tx.QueryRow(ctx, mintAgentTokenSQL, person, "minted", []byte("hash of a mint"), "prefix00", []string{model.ScopePerson}, []string{},
-			nil, nil, tokenID, minter.address, minter.subject, true, minter.created, minter.foreign, minter.issuer).
+			nil, nil, tokenID, true).
 			Scan(&id, new(string), new(string), new([]string), new([]string), new(any), new(any), new(any))
 		if err != nil {
 			return "", err
@@ -146,30 +146,12 @@ func TestACredentialRecordingNoAccountIsHeldToWhenTheAddressAccountWasRecorded(t
 		}
 		return *subject, nil
 	}
-	address := person
-	brokerMinterMade := func(createdAt time.Time) brokerMinter {
-		return brokerMinter{address: &address, created: timeOrNull(createdAt)}
-	}
-	if _, err := mint(&beforeID, brokerMinter{}); !errors.Is(err, pgx.ErrNoRows) {
+	if _, err := mint(&beforeID); !errors.Is(err, pgx.ErrNoRows) {
 		t.Errorf("a mint by A's personal token made before the recording answered %v, want nothing inserted", err)
 	}
-	if _, err := mint(nil, brokerMinterMade(before)); !errors.Is(err, pgx.ErrNoRows) {
-		t.Errorf("a mint by A's broker credential made before the recording answered %v, want nothing inserted", err)
-	}
-	if _, err := mint(nil, brokerMinterMade(recordedAt.Add(time.Minute))); !errors.Is(err, pgx.ErrNoRows) {
-		t.Errorf("a mint by a broker credential made inside the margin answered %v, want nothing inserted", err)
-	}
-	if got, err := mint(&afterID, brokerMinter{}); err != nil || got != "account-b" {
+	if got, err := mint(&afterID); err != nil || got != "account-b" {
 		t.Errorf("a mint by a personal token recording no account made after the recording recorded %q (%v), want the address's account account-b", got, err)
 	}
-	if got, err := mint(nil, brokerMinterMade(recordedAt.Add(10*time.Minute))); err != nil || got != "account-b" {
-		t.Errorf("a mint by a broker credential recording no account made after the margin recorded %q (%v), want account-b", got, err)
-	}
-	tx, err := rig.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback(ctx)
-	wantAPIError(t, mintCallerGone(ctx, tx, nil, brokerMinterMade(before)), http.StatusUnauthorized, "BROKER_TOKEN_RECORDS_NO_ACCOUNT",
-		"the refusal of a mint by A's broker credential made before the recording")
+	wantAPIError(t, mintCallerGone(&beforeID), http.StatusUnauthorized, "TOKEN_REVOKED",
+		"the refusal of a mint by A's personal token made before the recording")
 }

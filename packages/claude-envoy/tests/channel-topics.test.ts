@@ -47,7 +47,7 @@ test("subscribes nothing for a followed topic, and closes the connection at shut
     const broker = new FakeNatsServer()
     stopBroker = () => broker.stop()
     const connection = await connect({ servers: broker.url })
-    followed = createChannelTopics(connection)
+    followed = createChannelTopics(() => connection)
 
     followed.follow(THREAD)
     // The session receives only what its own consumer's relay pushes, so a followed topic is a
@@ -74,7 +74,7 @@ test("unfollow drops a topic from topics() at once", async () => {
     const broker = new FakeNatsServer()
     stopBroker = () => broker.stop()
     const connection = await connect({ servers: broker.url })
-    followed = createChannelTopics(connection)
+    followed = createChannelTopics(() => connection)
 
     followed.follow(COMMENT)
     followed.unfollow([COMMENT])

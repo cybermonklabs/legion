@@ -404,8 +404,8 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // has committed.
 //
 // This comment is where the Inbox's read-mark lock order is written down. putThreadRead
-// (api/replies.go), the dismiss route (api/inbox_dismiss.go), the lock statements above, the
-// race tests and packages/envoy/AGENTS.md point here rather than saying it again.
+// (api/replies.go), the dismiss route (api/inbox_dismiss.go), the lock statements above and the
+// race tests point here rather than saying it again.
 //
 // The order is owner, then the root of every Agent thread a dismissal writes a mark for, then
 // the caller's rows, then the agent rows it writes, then the project its events name. Steps 2

@@ -17,7 +17,7 @@ import (
 	gws "github.com/gorilla/websocket"
 	"github.com/reearth/ygo/crdt"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -280,7 +280,7 @@ func TestALiveConnectionWhoseOpenResolutionFailedClosesAtItsFirstHeartbeat(t *te
 	})
 	request := httptest.NewRequest(http.MethodGet, "/ws/live", nil)
 	request.Header.Set("Authorization", "DPoP "+strings.Repeat("b", 43))
-	if _, presented := brokertoken.Presented(request); !presented {
+	if _, presented := ciphertoken.Presented(request); !presented {
 		t.Fatal("control: the request presents no broker token, so its open would not ask resolves")
 	}
 	connection.ServeHTTP(httptest.NewRecorder(), request)

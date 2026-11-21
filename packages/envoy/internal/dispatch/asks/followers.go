@@ -51,8 +51,8 @@ type Followed struct {
 // a session from, so a follower that never wrote a comment and was never reached by a delivery
 // is still a node of the store, and the ask's followed_by edge to it has a far end every read
 // resolves: refs' loadStoreNodes answers a session from graph_nodes alone. Every server path that
-// adds a follower reaches this insert: FollowAuthor and QueueFollowAuthor at each site that writes
-// an ask or a reply to one, and PUT /api/v1/asks/{id}/followers/{session_id}.
+// adds a follower reaches this insert: QueueFollowAuthor at each site that writes an ask or a
+// reply to one, and PUT /api/v1/asks/{id}/followers/{session_id}.
 //
 // The node is made by who, the actor of the write, at at, and caused by event. A caller whose
 // event is appended after the follow passes graphstore.NoEvent and moves the node onto that event
@@ -131,17 +131,9 @@ func queueFollow(b *store.WriteBatch, askID, sessionID string, who model.Actor, 
 	return held, nil
 }
 
-// FollowAuthor follows askID for a session author, at once, and does nothing for a human, so
-// every insert site can call it with the actor it already has. The session's node is made by the
-// author at at and caused by event, as Follow makes it.
-func FollowAuthor(ctx context.Context, tx pgx.Tx, askID string, author model.Actor, at time.Time, event int64) (Followed, error) {
-	if author.Kind != "session" || author.ID == "" {
-		return Followed{}, nil
-	}
-	return Follow(ctx, tx, askID, author.ID, author, at, event)
-}
-
-// QueueFollowAuthor is FollowAuthor queued on a write phase's batch, for a write whose event that
+// QueueFollowAuthor queues on a write phase's batch the follow of askID for a session author, and
+// does nothing for a human, so every insert site can call it with the actor it already has. The
+// session's node is made by the author at at, as Follow makes it, for a write whose event that
 // phase appends: before it, with graphstore.NoEvent, whose node it holds for QueueCaused, or right
 // after it, with graphstore.LatestEvent, whose node it states under that event.
 func QueueFollowAuthor(b *store.WriteBatch, askID string, author model.Actor, at time.Time, event int64) (graphstore.Uncaused, error) {

@@ -30,6 +30,7 @@ const sources = [
   "scripts/e2e/lib/loopback-dsn.sh",
   "scripts/e2e/lib/loopback-dsn.py",
   "scripts/e2e/lib/port-file.sh",
+  "scripts/e2e/lib/process-tree.sh",
 ];
 
 const scratch = temporaryDirectories("project-access-blob-base");

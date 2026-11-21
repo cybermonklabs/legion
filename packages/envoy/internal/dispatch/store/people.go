@@ -177,12 +177,12 @@ func signInMemberKind(email string, kind model.MemberKind) error {
 // When the row recorded another Google account, which this sign-in replaces, it also revokes every
 // personal token of email (revokeAddressTokensSQL), whatever member kind the row held and the
 // sign-in records, so nothing the replaced account signed in or minted acts as the new one. When
-// it records the address's first account (a row recording none, or no row at all, which
-// a broker token can mint a personal token without), it revokes the address's personal tokens that
-// recorded another account at their mint, or none (revokeOtherAccountsTokensSQL): an account that
-// held the address at the broker and never signed in to Dispatch, whose tokens record it, and a
-// credential bound to no account, whose tokens predate this recording; those that recorded this
-// one stand. When the store owes
+// it records the address's first account (a row recording none, or no row at all), it revokes the
+// address's personal tokens that recorded another account at their mint, or none
+// (revokeOtherAccountsTokensSQL): an account that held the address at the broker and never signed
+// in to Dispatch, whose tokens record it (its broker token minted them, before no broker token
+// held the approve scope a mint needs), and a credential bound to no account, whose tokens predate
+// this recording; those that recorded this one stand. When the store owes
 // broker revocations (WithBrokerRevocations: a broker is configured), it also records that
 // Dispatch owes the secrets broker a revocation of the replaced account, whatever member kind the
 // row held, and on a first recording one of each account whose token it revoked

@@ -13,7 +13,7 @@ import (
 
 	jose "github.com/go-jose/go-jose/v4"
 
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 )
 
 // TestADPoPProofWhoseJTIHoldsNULIsTheCallersRefusal (red test by the tester of
@@ -24,7 +24,7 @@ import (
 // line saying the secrets broker could not be reached, for a request whose only fault is the
 // caller's own proof. The proof is the caller's to fix, as every other bad proof is: 401
 // BROKER_TOKEN_PROOF_INVALID (store.ErrUnstorableProof). The secrets broker's own replay store
-// refuses the same proof (internal/broker/oauthstore's ErrUnstorableText), which its token
+// refuses the same proof (internal/cipher/oauthstore's ErrUnstorableText), which its token
 // endpoint answers 400 invalid_request REQUEST_INVALID.
 //
 // The proofs here are signed by hand rather than by the helper's DPoP transport, which mints its
@@ -37,7 +37,7 @@ func TestADPoPProofWhoseJTIHoldsNULIsTheCallersRefusal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	jkt := brokertokentest.NewCallerWith(t, key).JKT()
+	jkt := ciphertokentest.NewCallerWith(t, key).JKT()
 	const token = "a-token-whose-proof-names-a-nul"
 	rig.broker.Says(token, liveNamedToken(jkt))
 	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: key}, (&jose.SignerOptions{EmbedJWK: true}).WithType("dpop+jwt"))

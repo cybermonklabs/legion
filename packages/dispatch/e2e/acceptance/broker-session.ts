@@ -2,7 +2,7 @@
  *  the secrets broker proved a person's. Dispatch records such a session as that person's (an
  *  alias_of tuple, graphstore's aliases) only for an access token the broker scoped to the person,
  *  presented under RFC 9449's DPoP scheme with a fresh ES256 proof on every request
- *  (packages/envoy/internal/brokertoken). The harness's broker is e2e/fake-broker.ts, which calls
+ *  (packages/envoy/internal/ciphertoken). The harness's broker is e2e/fake-broker.ts, which calls
  *  a token minted by e2e/fake-broker-token.ts live with the answer it carries, so this mints one
  *  bound to a key of its own and signs each request's proof with that key, as
  *  packages/broker-client/src/dpop.ts signs a real session's.

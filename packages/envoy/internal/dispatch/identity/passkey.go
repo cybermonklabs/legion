@@ -321,7 +321,7 @@ func (p *Passkeys) FinishEnrollment(ctx context.Context, ceremony PasskeyCeremon
 // navigator.credentials.get, naming no credential, with user verification required, and the
 // ceremony its finish completes. It reads and writes nothing: the ceremony rides in the browser's
 // signed cookie, and its finish records it used (store.PgPasskeys.SignIn).
-func (p *Passkeys) BeginSignIn(ctx context.Context) (*protocol.CredentialAssertion, PasskeyCeremony, error) {
+func (p *Passkeys) BeginSignIn() (*protocol.CredentialAssertion, PasskeyCeremony, error) {
 	assertion, session, err := p.relyingParty.BeginDiscoverableLogin(webauthn.WithUserVerification(protocol.VerificationRequired))
 	if err != nil {
 		return nil, PasskeyCeremony{}, fmt.Errorf("begin the passkey sign-in: %w", err)

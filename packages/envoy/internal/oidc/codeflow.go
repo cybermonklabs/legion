@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,9 +16,10 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// tokenTimeout bounds one call to the issuer's token endpoint, a code exchange or a refresh, and
-// one call to its revocation endpoint.
-const tokenTimeout = 10 * time.Second
+// TokenTimeout bounds one call to the issuer's token endpoint, a code exchange or a refresh, and
+// one call to its revocation endpoint. It is exported so that a caller that bounds a grant with a
+// deadline of its own can check that deadline against it, as Dispatch's membership test does.
+const TokenTimeout = 10 * time.Second
 
 // tokenClient is the HTTP client every call that carries the client's credentials is made with:
 // the code flow's own calls to the token and revocation endpoints, and CheckClient's discovery
@@ -25,7 +27,7 @@ const tokenTimeout = 10 * time.Second
 // re-send the form, and with it a code, a refresh token or the client's secret, to wherever the
 // redirect points.
 func tokenClient() *http.Client {
-	return &http.Client{Timeout: tokenTimeout, CheckRedirect: func(*http.Request, []*http.Request) error {
+	return &http.Client{Timeout: TokenTimeout, CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
 }
@@ -70,8 +72,9 @@ type CodeFlow struct {
 }
 
 // codeFlowIssuer is what a code flow reads from its issuer's discovery document: the verifier of
-// the ID tokens it issues to the client, the client's endpoints there, and the revocation_endpoint
-// the document names, empty when it names none.
+// the ID tokens it issues to the client, the client's endpoints there with the way the client
+// authenticates at its token endpoint, and the revocation_endpoint the document names, empty when
+// it names none.
 type codeFlowIssuer struct {
 	verifier      *Verifier
 	config        oauth2.Config
@@ -94,7 +97,8 @@ func NewCodeFlow(issuer, clientID, clientSecret, hostedDomain string) *CodeFlow 
 
 // discoverCodeFlow reads issuer's discovery document. An issuer whose document names no
 // authorization_endpoint or token_endpoint offers no sign-in, and fails discovery. One that names
-// no revocation_endpoint is accepted, and Revoke fails against it.
+// no revocation_endpoint is accepted, and Revoke fails against it. The config every grant starts
+// from, the code exchanges', Refresh's and CheckClient's, authenticates as tokenAuthStyle says.
 func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string) (*codeFlowIssuer, error) {
 	provider, err := gooidc.NewProvider(ctx, issuer)
 	if err != nil {
@@ -104,12 +108,14 @@ func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string
 	if endpoint.AuthURL == "" || endpoint.TokenURL == "" {
 		return nil, fmt.Errorf("oidc: issuer %s names no authorization_endpoint or token_endpoint in its discovery document, so it offers no sign-in", issuer)
 	}
-	var revocation struct {
-		Endpoint string `json:"revocation_endpoint"`
+	var metadata struct {
+		RevocationEndpoint string   `json:"revocation_endpoint"`
+		TokenAuthMethods   []string `json:"token_endpoint_auth_methods_supported"`
 	}
-	if err := provider.Claims(&revocation); err != nil {
-		return nil, fmt.Errorf("oidc: read issuer %s's revocation_endpoint: %w", issuer, err)
+	if err := provider.Claims(&metadata); err != nil {
+		return nil, fmt.Errorf("oidc: read issuer %s's revocation_endpoint and token_endpoint_auth_methods_supported: %w", issuer, err)
 	}
+	endpoint.AuthStyle = tokenAuthStyle(metadata.TokenAuthMethods)
 	return &codeFlowIssuer{
 		verifier: newVerifier(provider, issuer, clientID),
 		config: oauth2.Config{
@@ -118,8 +124,29 @@ func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string
 			Endpoint:     endpoint,
 			Scopes:       signInScopes,
 		},
-		revocationURL: revocation.Endpoint,
+		revocationURL: metadata.RevocationEndpoint,
 	}, nil
+}
+
+// tokenAuthStyle is how the client sends its secret to the token endpoint, from the issuer's
+// token_endpoint_auth_methods_supported (RFC 8414 section 2): HTTP Basic when the list names
+// client_secret_basic, whatever else it names (Basic is RFC 8414's default and the method RFC 6749
+// section 2.3.1 requires of every issuer); else the form when it names client_secret_post. Either
+// makes every grant one request.
+//
+// With no list, or a list naming neither, the style stays x/oauth2's AuthStyleAutoDetect: the
+// issuer behind such a document may take the form alone. AutoDetect asks by HTTP Basic and, on
+// any failure, a refusal included, again in the form, and keeps the style of
+// the first grant that succeeds; so until one has, a refused grant is two requests, and a
+// caller's bound must fit both.
+func tokenAuthStyle(methods []string) oauth2.AuthStyle {
+	switch {
+	case slices.Contains(methods, "client_secret_basic"):
+		return oauth2.AuthStyleInHeader
+	case slices.Contains(methods, "client_secret_post"):
+		return oauth2.AuthStyleInParams
+	}
+	return oauth2.AuthStyleAutoDetect
 }
 
 // Discover reads the issuer's discovery document unless it has been read. Concurrent calls share
@@ -164,9 +191,7 @@ func (f *CodeFlow) AuthURL(ctx context.Context, redirectURL, state, nonce string
 	if err != nil {
 		return "", err
 	}
-	config := issuer.config
-	config.RedirectURL = redirectURL
-	asks := []oauth2.AuthCodeOption{gooidc.Nonce(nonce)}
+	asks := append(redirectTo(redirectURL), gooidc.Nonce(nonce))
 	if f.hostedDomain != "" {
 		prompt := "consent"
 		if options.SelectAccount {
@@ -177,7 +202,7 @@ func (f *CodeFlow) AuthURL(ctx context.Context, redirectURL, state, nonce string
 			asks = append(asks, oauth2.SetAuthURLParam("hd", f.hostedDomain))
 		}
 	}
-	return config.AuthCodeURL(state, asks...), nil
+	return issuer.config.AuthCodeURL(state, asks...), nil
 }
 
 // Exchange trades the code the issuer redirected to redirectURL for the signed-in person's ID
@@ -205,9 +230,7 @@ func (f *CodeFlow) exchange(ctx context.Context, redirectURL, code, nonce string
 	if err != nil {
 		return Session{}, err
 	}
-	config := issuer.config
-	config.RedirectURL = redirectURL
-	token, err := config.Exchange(f.tokenContext(ctx), code, options...)
+	token, err := issuer.config.Exchange(f.tokenContext(ctx), code, append(redirectTo(redirectURL), options...)...)
 	if err != nil {
 		return Session{}, fmt.Errorf("oidc: exchange code: %w", err)
 	}
@@ -250,9 +273,7 @@ func (f *CodeFlow) OnlineAuthURL(ctx context.Context, redirectURL string, signIn
 	if err != nil {
 		return "", err
 	}
-	config := issuer.config
-	config.RedirectURL = redirectURL
-	options := []oauth2.AuthCodeOption{gooidc.Nonce(signIn.Nonce), oauth2.S256ChallengeOption(signIn.Verifier)}
+	options := append(redirectTo(redirectURL), gooidc.Nonce(signIn.Nonce), oauth2.S256ChallengeOption(signIn.Verifier))
 	if f.hostedDomain != "" {
 		options = append(options, oauth2.SetAuthURLParam("hd", f.hostedDomain))
 	}
@@ -262,7 +283,19 @@ func (f *CodeFlow) OnlineAuthURL(ctx context.Context, redirectURL string, signIn
 	if signIn.SelectAccount {
 		options = append(options, oauth2.SetAuthURLParam("prompt", "select_account"))
 	}
-	return config.AuthCodeURL(signIn.State, options...), nil
+	return issuer.config.AuthCodeURL(signIn.State, options...), nil
+}
+
+// redirectTo is the options that name redirectURL as a request's redirect_uri, and none for an
+// empty one, as x/oauth2 leaves out an empty RedirectURL. Each grant passes its redirect this way
+// and uses the config discovery built in place, never a copy with its RedirectURL set: the config
+// holds x/oauth2's cache of the style it found (a sync/atomic.Value), and a copy taken while a
+// Refresh first uses it races with that use.
+func redirectTo(redirectURL string) []oauth2.AuthCodeOption {
+	if redirectURL == "" {
+		return nil
+	}
+	return []oauth2.AuthCodeOption{oauth2.SetAuthURLParam("redirect_uri", redirectURL)}
 }
 
 // OnlineExchange trades the code the issuer redirected to redirectURL, with signIn's PKCE

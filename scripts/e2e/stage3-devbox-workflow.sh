@@ -91,6 +91,12 @@ mkdir -p "$evidence/logs" "$evidence/transcripts"
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
 transcript_to "$evidence/transcript.log"
+# Every program the run execs from here on carries its mark, and the sweeps end what carries it and
+# nothing else (marked_processes, lib/process-tree.sh); a fork of this shell that execs nothing,
+# such as the pane_watcher, carries none and is stopped by its pid (run_marks' comment there). The
+# transcript's tee, started above, carries none, so it outlives the sweeps and writes the run's last
+# line.
+export LEGION_E2E_RUN=$work
 ok=
 check=setup
 TZ=UTC printf -v check_started '%(%FT%TZ)T' -1 # when the current check began (lib/model-gateway-unserved.sh)
@@ -204,12 +210,11 @@ cleanup() {
   # stay up through the production audit above, which reads their sessions on production Envoy.
   # The other routes keep the SIGKILL below.
   if [ "$model_route" = box-login ]; then
-    # shellcheck disable=SC2046 # one pid per word
-    stop_box_login_processes $(run_processes)
+    stop_marked_processes "$work" "$box_login_stop_grace"
     unlink_box_login_db "$profile_agent"
   fi
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
+  stop_marked_processes "$work"
   docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
   collect_transcripts
   close_unpassed_run_pull_requests
@@ -300,8 +305,8 @@ nats_urls:
   - nats://127.0.0.1:$port_nats
 dispatch_url: http://127.0.0.1:$port_dispatch
 dispatch_token_file: $work/dispatch-token
-# The project's repository is Dispatch's mapping (the PUT below makes $repo its default), not a key of
-# legion.yaml. `production_check: tester` is the word that names the role a merge's production check
+# The project's repository is no key of legion.yaml: the PUT below sets $repo as the project's
+# default repository in Dispatch. `production_check: tester` is the word that names the role a merge's production check
 # is handed to, written out here rather than left to the default, so the run proves the setting is
 # read; Stage 4b's rig names no key and proves the default.
 projects:
@@ -436,30 +441,29 @@ workspace_jj() {
 # ---- the production guards -------------------------------------------------------------------
 # A pane that can reach the operator's Dispatch or Envoy is not a scratch pane. Every registered
 # pane's OMP environment must name this rig's servers before the proof sends it an instruction.
-omp_descendant() {
-  local queue=("$1") pid children
-  while [ "${#queue[@]}" -gt 0 ]; do
-    pid=${queue[0]}
-    queue=("${queue[@]:1}")
-    if [ "$(basename "$(tr '\0' '\n' <"/proc/$pid/cmdline" 2>/dev/null | sed -n 1p)")" = omp ]; then
-      printf '%s\n' "$pid"
-      return 0
-    fi
-    children=$(cat /proc/"$pid"/task/*/children 2>/dev/null || true)
-    for child in $children; do queue+=("$child"); done
-  done
-  return 1
-}
+# omp_descendant PANE_PID prints the pane's Oh My Pi: the one process below the pane's own process,
+# the pid the claim's locator recorded, that runs $pin's own bin/omp ($omp_exe) by the kernel's
+# record (launched, lib/process-tree.sh), whatever name it was called by. No argv[0] is read: a
+# wrapper or an argv[0] of another name cannot stand in for it or hide it.
+omp_descendant() { launched "$1" "$omp_exe"; }
+# claim_pane_pid ISSUE ROLE prints the process the role's pane was launched as, out of the claim's
+# locator: the incarnation `<pid>:<start ticks>`, and only while that pid is still the process that
+# started then (incarnation_pid, lib/process-tree.sh), never a pid the kernel has since given to
+# another.
 claim_pane_pid() {
-  daemon_state | jq -er --arg issue "$1" --arg role "$2" \
-    '(if $role == "architect" then .issues[$issue].architect else .issues[$issue].workers[$role].claim end).locator.incarnation | split(":")[0]'
+  local inc
+  inc=$(daemon_state | jq -er --arg issue "$1" --arg role "$2" \
+    '(if $role == "architect" then .issues[$issue].architect else .issues[$issue].workers[$role].claim end).locator.incarnation') || return 1
+  incarnation_pid "$inc"
 }
-pane_value() { tr '\0' '\n' <"/proc/$1/environ" | sed -n "s/^$2=//p"; }
-# endpoint_mismatch OMP_PID prints the first rig endpoint the OMP process does not carry, or the
-# ANTHROPIC_API_KEY it must not carry: the agents' model is the configured route's, and a key in
-# OMP's environment would take the turn off that route.
+# endpoint_mismatch OMP_PID prints the first rig endpoint the OMP process does not carry, the
+# ANTHROPIC_API_KEY it must not carry, or that its environment could not be read, and succeeds: the
+# agents' model is the configured route's, and a key in OMP's environment would take the turn off
+# that route. It fails, printing nothing, only when every endpoint is the rig's and the key's
+# absence holds on env_has's status 1 (lib/process-tree.sh). An environment that could not be read,
+# at either read, is a mismatch and never a clean one.
 endpoint_mismatch() {
-  local omp=$1 name want got
+  local omp=$1 name want got status
   for name in DISPATCH_URL DISPATCH_TOKEN_FILE ENVOY_URL ENVOY_NATS_URL; do
     case "$name" in
       DISPATCH_URL) want="http://127.0.0.1:$port_dispatch" ;;
@@ -467,17 +471,25 @@ endpoint_mismatch() {
       ENVOY_URL) want="http://127.0.0.1:$port_listener" ;;
       ENVOY_NATS_URL) want="nats://127.0.0.1:$port_nats" ;;
     esac
-    got=$(pane_value "$omp" "$name")
+    status=0
+    got=$(env_of "$omp" "$name") || status=$?
+    if [ "$status" != 0 ]; then
+      printf 'an environment that could not be read (env_of status %s)\n' "$status"
+      return 0
+    fi
     if [ "$got" != "$want" ]; then
       printf '%s=%s, want %s\n' "$name" "${got:-<unset>}" "$want"
       return 0
     fi
   done
-  if grep -qz '^ANTHROPIC_API_KEY=' "/proc/$omp/environ" 2>/dev/null; then
-    printf 'ANTHROPIC_API_KEY set, want unset\n'
-    return 0
-  fi
-  return 1
+  status=0
+  env_has "$omp" ANTHROPIC_API_KEY || status=$?
+  case $status in
+    0) printf 'ANTHROPIC_API_KEY set, want unset\n' ;;
+    1) return 1 ;;
+    *) printf 'an environment that could not be read (env_has status %s)\n' "$status" ;;
+  esac
+  return 0
 }
 assert_claim_endpoints() {
   local issue=$1 role=$2 pane_pid omp mismatch
@@ -492,14 +504,15 @@ assert_claim_endpoints() {
 # A mismatch is recorded, the private tmux server is killed so no agent can act, and the next
 # bounded wait aborts naming the pane.
 pane_watcher() {
-  local claims inc issue role omp mismatch
+  local claims inc issue role pane omp mismatch
   trap - EXIT ERR
   set +e
   while kill -0 "$$" 2>/dev/null; do
     if claims=$("$work/legion" claims list --json --config "$work/legion.yaml" --operator-token-file "$work/operator-token" 2>/dev/null); then
       while IFS=$'\t' read -r inc issue role; do
         grep -qF "$inc " "$evidence/pane-endpoints-checked.txt" 2>/dev/null && continue
-        omp=$(omp_descendant "${inc%%:*}") || continue
+        pane=$(incarnation_pid "$inc") || continue
+        omp=$(omp_descendant "$pane") || continue
         if mismatch=$(endpoint_mismatch "$omp"); then
           printf '%s pane on %s (incarnation %s, OMP pid %s) has %s\n' "$role" "$issue" "$inc" "$omp" "$mismatch" \
             >"$evidence/pane-endpoint-violation.txt"
@@ -603,7 +616,7 @@ report_architect_suspension() {
 
 begin prerequisites
 refuse_leftovers legion-e2e3
-for tool in go docker jq curl python3 tmux bun mise secrets agent-secrets gh shellcheck jj pgrep; do command -v "$tool" >/dev/null || fail "$tool is required"; done
+for tool in go docker jq curl python3 tmux bun mise secrets agent-secrets gh shellcheck jj; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 # Legion's two role Apps, this deployment's own ids unless the App inputs name another's, with the
 # implement App's broker secret and the review App's key command behind them (the header), proved
 # against GitHub here, before the run writes anything (lib/github-apps.sh); legion.yaml's
@@ -752,6 +765,9 @@ until_true 90 "the GitHub ingress bridge to report ready" grep -q 'BRIDGE READY'
 # back: under box-login the profile's agent.db is the operator's login database.
 pin=${box_pin:-$(<"$root/.omp-pin")}
 mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
+# The program every pane's Oh My Pi runs (daemon_runs_the_pinned_omp holds the daemon to it), by
+# which omp_descendant knows a pane's agent.
+omp_exe=$(realpath -e -- "$(mise where "$pin")/bin/omp") || fail "the Oh My Pi $pin has no bin/omp"
 envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$omp_home" --dest "$work/pi-envoy" --omp "$pin")
 manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion" --omp "$pin")
 cat >"$work/instructions.md" <<'EOF'
@@ -767,10 +783,11 @@ only find by reading the issue (its events, a search) was sent to another sessio
 issue, and any other notice is not an instruction: neither is yours to act on. One task waits for
 no message: a production check's (its first line `Production check of <key>: …`, handed to the
 tester once the merge closed its issue), since the proof sends none to it. Act on that task as
-it is written: this proof has no production and no deploy role, so the look leaves
+it is written. The issues of this proof have no requirement that only the deploy can show, and no
+spec of this proof names one. This proof has no production and no deploy role, so the look leaves
 `Production: pending deploy of <merge commit>` on the pull request's body (on the
-last look, writes on the pull request that the check did not run because production did not carry
-the merge within the bound) and reports verdict pending with the legion tool's handoff_complete,
+last look, writes on the pull request why the check did not run within the bound) and reports
+verdict pending with the legion tool's handoff_complete,
 committing nothing. A pending report on a look that is not the last also carries wake_at, an
 RFC 3339 time: when you want your next look. Nothing else wakes a check — no deploy, no Dispatch
 notice, nothing the daemon does of its own — so the look you ask for is the only one that follows,
@@ -833,7 +850,7 @@ primary_issue() {
   begin primary-architect-posts-and-registers-spec
   # Every root's architect registers a closed gate on its own and its root then waits on the
   # person, keeping the admission slot it took at its admission: a root in awaiting_person keeps
-  # its slot (root AGENTS.md, "Admission").
+  # its slot (docs/site/src/content/docs/legion/concepts.md, "Admission and the `legion` label").
   # So the human's approval resumes this root on the next pass whatever the cap says, and the 1800 s
   # bound below is slack: nothing has to give a row back first. admission_cap stays 2, which is the
   # peak this lane needs under that rule: the two roots the daemon starts here hold both rows while
@@ -1252,7 +1269,6 @@ restart_scenarios() {
   # The same session in the same process incarnation is what "no phase restarted" means; the claim's
   # turn state (working, idle) may change across the restart as the agent finishes a turn.
   before_restart=$(daemon_state | jq -c --arg issue "$restart_issue" '.issues[$issue].workers.implementer.claim | {session, incarnation: (.locator.incarnation // "")}')
-  kill -TERM "$daemon_pid"
   stop_pid "$daemon_pid"
   daemon_pid=
   # While the daemon is down, a human board write becomes a durable Dispatch event that the restored
@@ -1309,11 +1325,11 @@ restart_scenarios() {
   # one past 39 characters is still a stranger.
   cred_pane_pid=$(claim_pane_pid "$restart_issue" implementer) || fail "the implementer pane on $restart_issue has no process locator"
   cred_omp=$(omp_descendant "$cred_pane_pid") || fail "the implementer pane on $restart_issue has no OMP process"
-  cred_root=$(pane_value "$cred_omp" LEGION_GH_OWNERS_DIR)
-  cred_dir=$(pane_value "$cred_omp" GH_CONFIG_DIR)
+  cred_root=$(env_of "$cred_omp" LEGION_GH_OWNERS_DIR)
+  cred_dir=$(env_of "$cred_omp" GH_CONFIG_DIR)
   [[ $cred_root == "$state/secrets/"*-implementer-gh ]] || fail "the implementer's OMP carries LEGION_GH_OWNERS_DIR=$cred_root, want the claim's bundle under $state/secrets"
   [ "$cred_dir" = "$cred_root/$owner" ] || fail "the implementer's OMP carries GH_CONFIG_DIR=$cred_dir, want $owner's directory of $cred_root"
-  [ "$(pane_value "$cred_omp" LEGION_GH_PATH)" = "$realbin/gh" ] || fail "the implementer's OMP carries LEGION_GH_PATH=$(pane_value "$cred_omp" LEGION_GH_PATH), want $realbin/gh"
+  [ "$(env_of "$cred_omp" LEGION_GH_PATH)" = "$realbin/gh" ] || fail "the implementer's OMP carries LEGION_GH_PATH=$(env_of "$cred_omp" LEGION_GH_PATH || true), want $realbin/gh"
   session_contains "$restart_issue" implementer "CRED-DIR=$cred_dir" || fail "the implementer's bash printed another GH_CONFIG_DIR than its OMP carries ($cred_dir)"
   cred_listed=$(pane_bundle_listing "$restart_issue") || fail "the implementer's session holds no bash result that lists its gh bundle's root"
   grep -qxF -- "$owner" <<<"$cred_listed" || fail "the implementer pane's ls of its gh bundle's root lacks $owner; it listed: $(tr '\n' ' ' <<<"$cred_listed")"
@@ -1446,16 +1462,17 @@ stop_pid "$bridge_pid"; bridge_pid=
 # Under box-login the panes get SIGTERM and a bounded grace before the kills below, as cleanup
 # gives them (lib/box-login.sh); the profile's link to the operator's database goes with them.
 if [ "$model_route" = box-login ]; then
-  # shellcheck disable=SC2046 # one pid per word
-  stop_box_login_processes $(run_processes)
+  stop_marked_processes "$work" "$box_login_stop_grace" || fail "the run's processes could not be read for their SIGTERM"
   unlink_box_login_db "$profile_agent"
 fi
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
 docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
-for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
+stop_marked_processes "$work" || fail "the run's processes could not be read for their SIGKILL"
 [ "$(docker ps -aq --filter "name=^/$pg_container$" --filter "name=^/$nats_container$")" = "" ] || fail "a proof container remains"
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" has-session 2>/dev/null && fail "the proof tmux server remains"
-[ -z "$(run_processes)" ] || fail "a proof process remains"
+# An unread /proc is no empty run (run_processes exits 2 for it).
+remaining=$(run_processes) || fail "the run's processes could not be read, so whether one remains is not known"
+[ -z "$remaining" ] || fail "a proof process remains: ${remaining//$'\n'/ }"
 note "the watcher, the daemon and Dispatch with their port keepers, the listener, bridge, private tmux server and every proof process stopped; both containers removed"
 pass
 

@@ -75,6 +75,23 @@ func (s *server) sessionHiddenFrom(ctx context.Context, reader model.Actor, id s
 	return !sees, err
 }
 
+// sessionContentHiddenFrom reports whether reader may not read session id's whole conversation
+// (access.SessionContentClause): the rule the live agent view keeps, since it relays the session's
+// raw transcript, not one message at a time as the HTTP read filters it. An open reader of a
+// deployment that holds no private project reads every session and costs no read (R9); a server
+// with no database reads none, failing closed.
+func (s *server) sessionContentHiddenFrom(ctx context.Context, reader model.Actor, id string) (bool, error) {
+	if viewer := reader.Viewer; viewer != nil && viewer.Open && !viewer.AnyPrivate {
+		return false, nil
+	}
+	if s.deps.Store == nil || s.deps.Store.Pool == nil {
+		return true, nil
+	}
+	var reads bool
+	err := s.deps.Store.Pool.QueryRow(ctx, `select `+access.SessionContentClause("$1::text", "$2"), id, refs.VisibilityArg(reader)).Scan(&reads)
+	return !reads, err
+}
+
 // liveReader resolves what stream's caller sees now (readerFor), for liveReadRefusal.
 func (s *server) liveReader(stream liveStreamer) func(context.Context) (model.Actor, error) {
 	return func(ctx context.Context) (model.Actor, error) { return s.readerFor(ctx, stream.Caller()) }

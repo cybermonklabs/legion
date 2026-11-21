@@ -22,9 +22,9 @@ const CALLERS: Record<string, { label: string; meaning: string }> = {
  *  the source, `model.ScopePerson` and `model.ScopeApprove`). */
 const SCOPES: Record<string, string> = {
   person:
-    "this credential acts as its person. A browser sign-in holds it, and so does a personal token unless its owner took it away.",
+    "this credential acts as its person. A browser sign-in holds it, so does a personal token unless its owner took it away, and so does a token the secrets broker issued that acts for its person.",
   approve:
-    "beside `person`, this credential may do what settles work or controls a credential: a document review, the answer of an ask of kind `approval`, a machine-login decision, a credential-grant or machine-login revoke, and minting, changing or revoking a personal token. No credential holds `approve` without `person`.",
+    "beside `person`, this credential may do what settles work or controls a credential: a document review, keeping a decision, the answer of an ask of kind `approval`, a machine-login decision, a credential-grant, machine-login or sign-in revoke, minting, changing or revoking a personal token, and a change to a project's access list, visibility, owner or Slack channels or to a group an access list can name. A browser sign-in holds it, and so does a personal token its owner gave it; no token the secrets broker issued holds it, and no credential holds `approve` without `person`.",
 };
 
 interface Route {

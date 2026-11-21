@@ -125,15 +125,17 @@ type UsedCeremony struct {
 }
 
 // useCeremonyTx records, in tx, the ceremony's challenge as used, by its SHA-256 under a unique key
-// (passkey_ceremonies), after deleting every one that lapsed: a finish whose answer verified calls
-// it in the transaction that records what the answer does (Enroll, SignIn), so a ceremony's answer
-// does that at most once however often it is sent, and two finishes of one answer at once commit
-// one, the other waiting on the key and finding it taken (ErrPasskeyCeremonyUsed). No begin writes:
-// the signed ceremony cookie carries what the finish needs, so a begin, which takes no credential,
-// costs the database nothing. A lapsed ceremony's cookie is refused before its finish runs, so its
-// row is needed no longer.
+// (passkey_ceremonies), after deleting every one that lapsed more than a minute ago: a finish
+// whose answer verified calls it in the transaction that records what the answer does (Enroll,
+// SignIn), so a ceremony's answer does that at most once however often it is sent, and two
+// finishes of one answer at once commit one, the other waiting on the key and finding it taken
+// (ErrPasskeyCeremonyUsed). No begin writes: the signed ceremony cookie carries what the finish
+// needs, so a begin, which takes no credential, costs the database nothing. A lapsed ceremony's
+// cookie is refused before its finish runs, by the process's clock, so a row is needed no longer
+// once it has lapsed by that clock; the minute's margin keeps it while the database's clock runs
+// ahead of the process's, which would otherwise free a used row while its cookie still verifies.
 func useCeremonyTx(ctx context.Context, tx pgx.Tx, ceremony UsedCeremony) error {
-	if _, err := tx.Exec(ctx, `delete from passkey_ceremonies where expires_at <= now()`); err != nil {
+	if _, err := tx.Exec(ctx, `delete from passkey_ceremonies where expires_at <= now() - interval '1 minute'`); err != nil {
 		return fmt.Errorf("delete the lapsed passkey ceremonies: %w", err)
 	}
 	hash := sha256.Sum256([]byte(ceremony.Challenge))
@@ -233,38 +235,27 @@ func LockAddressTx(ctx context.Context, tx pgx.Tx, email string) error {
 	return nil
 }
 
-// ResetTx is the owner's Reset of email, in tx (api.resetProjectAccessPerson), whose caller
-// deleted the person's unused links first (DeletePersonInvitationsTx), so the links are locked
-// before the address, as Enroll locks them. A full member's row, read under the address's lock, is
-// auth.ErrAddressHeldByMember and writes nothing; every other address's account ends as
-// EndAccountTx ends it, so nobody signs in as the person until they enroll with a new link, under
-// a new account. It answers how many passkeys it deleted.
-func (p *PgPasskeys) ResetTx(ctx context.Context, tx pgx.Tx, email string) (int64, error) {
-	login := model.CanonicalLogin(email)
-	if _, err := tx.Exec(ctx, addressLockSQL, login); err != nil {
-		return 0, fmt.Errorf("reset the person: lock the address: %w", err)
-	}
-	var full bool
-	if err := tx.QueryRow(ctx, `select coalesce(bool_or(member_kind = 'full'), false) from people where email = $1`, login).Scan(&full); err != nil {
-		return 0, fmt.Errorf("reset the person: read their member kind: %w", err)
-	}
-	// Read under the address's lock, which a Google sign-in takes too: a full member whose first
-	// sign-in committed after the caller checked the member kind is no one's to reset.
-	if full {
-		return 0, auth.ErrAddressHeldByMember
-	}
-	return p.endAccountTx(ctx, tx, login)
-}
-
-// EndAccountTx ends, in tx, what email's passkey account holds: the owner's Reset (ResetTx), a
-// removal from the last list that names the person (api.endUnlistedPasskeySignIn) and the hourly
-// end of a person no list names (End) each call it, so whatever an account made while one owner's
-// list named the person acts for nobody once that ends, and a later owner who names the address
-// names a new account. It answers how many passkeys it deleted (endAccountTx).
+// EndAccountTx ends, in tx, what email's passkey account holds: the owner's Reset
+// (api.resetProjectAccessPerson) and a removal from the last list that names the person
+// (api.endUnlistedPasskeySignIn) call it, as the hourly end of a person no list names does (End),
+// so whatever an account made while one owner's list named the person acts for nobody once that
+// ends, and a later owner who names the address names a new account. It takes the address's lock
+// first; a Reset's caller deleted the person's unused links before it, so the links are locked
+// before the address, as Enroll locks them. A full member's row, read under that lock, which a
+// Google sign-in takes too, is auth.ErrAddressHeldByMember and writes nothing: a full member whose
+// first sign-in committed after the caller read the lists is no one's to end. It answers how many
+// passkeys it deleted (endAccountTx).
 func (p *PgPasskeys) EndAccountTx(ctx context.Context, tx pgx.Tx, email string) (int64, error) {
 	login := model.CanonicalLogin(email)
 	if _, err := tx.Exec(ctx, addressLockSQL, login); err != nil {
 		return 0, fmt.Errorf("end the person's account: lock the address: %w", err)
+	}
+	var full bool
+	if err := tx.QueryRow(ctx, `select coalesce(bool_or(member_kind = 'full'), false) from people where email = $1`, login).Scan(&full); err != nil {
+		return 0, fmt.Errorf("end the person's account: read their member kind: %w", err)
+	}
+	if full {
+		return 0, auth.ErrAddressHeldByMember
 	}
 	return p.endAccountTx(ctx, tx, login)
 }
@@ -313,18 +304,13 @@ func NewPasskeySubject() (string, error) {
 }
 
 // ListedByAnotherOwner reports whether a project whose owner is not owner names email directly on
-// its access list, read through q. A passkey signs its person in to every project that names them,
-// so only an owner of every such project makes a link for them, and an enrollment uses a link only
-// while its maker still is (R5: no project's owner binds a passkey that reads another owner's
-// project).
+// its access list, read through q (ListedByOtherOwners, the one read of that rule). A passkey signs
+// its person in to every project that names them, so only an owner of every such project makes a
+// link for them, and an enrollment uses a link only while its maker still is (R5: no project's
+// owner binds a passkey that reads another owner's project).
 func ListedByAnotherOwner(ctx context.Context, q PasskeyReader, email, owner string) (bool, error) {
-	var other bool
-	if err := q.QueryRow(ctx, `select exists (select 1 from project_access a join projects p on p.key = a.project_key
-		where a.principal_kind = 'person' and a.principal = $1 and canonical_login(coalesce(p.owner, '')) <> canonical_login($2))`,
-		model.CanonicalLogin(email), owner).Scan(&other); err != nil {
-		return false, fmt.Errorf("read whether another owner's project names %s: %w", model.CanonicalLogin(email), err)
-	}
-	return other, nil
+	others, err := ListedByOtherOwners(ctx, q, []string{model.CanonicalLogin(email)}, owner)
+	return len(others) > 0, err
 }
 
 // ListedByAnotherOwner is the package's ListedByAnotherOwner over the people store's pool, for an
@@ -679,7 +665,7 @@ func (p *PgPasskeys) Confirm(ctx context.Context, email, subject string) (bool, 
 // while email's row records subject under the outside origin, it ends what that account holds and
 // deletes the person's passkeys in one transaction (endAccountTx: a new passkey subject, which
 // revokes their personal tokens and owes the broker the old account's revocation), and answers
-// whether it did. A row the lists still admit with no passkey left has its sign-in ended alone.
+// whether it did.
 func (p *PgPasskeys) End(ctx context.Context, email, subject string) (bool, error) {
 	return p.settle(ctx, email, subject, true)
 }
@@ -705,17 +691,27 @@ func (p *PgPasskeys) settle(ctx context.Context, email, subject string, end bool
 	if err != nil {
 		return false, fmt.Errorf("read the passkey sign-in of %q: %w", login, err)
 	}
-	if !end && !standing {
-		// Signed out, or ended by another request's check: nothing to confirm or end.
+	if end {
+		deleted, err := p.endAccountTx(ctx, tx, login)
+		if err != nil {
+			return false, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return false, fmt.Errorf("end the passkey sign-in of %q: %w", login, err)
+		}
+		slog.Warn("dispatch: the hourly confirmation ended the account of a person no list names and deleted their passkeys", "email", login, "passkeys_deleted", deleted)
 		return false, nil
 	}
-	if !end && passkeys > 0 {
+	switch {
+	case !standing:
+		// Signed out, or ended by another request's check: nothing to confirm.
+		return false, nil
+	case passkeys > 0:
 		if _, err := tx.Exec(ctx, `update people set confirmed_at = now() where email = $1`, login); err != nil {
 			return false, fmt.Errorf("confirm the passkey sign-in of %q: %w", login, err)
 		}
 		return true, tx.Commit(ctx)
-	}
-	if !end {
+	default:
 		// Still listed, with no passkey left: the sign-in ends, and the account stands for the
 		// person's next enrollment.
 		if _, err := EndPasskeySignInTx(ctx, tx, login); err != nil {
@@ -724,17 +720,9 @@ func (p *PgPasskeys) settle(ctx context.Context, email, subject string, end bool
 		if err := tx.Commit(ctx); err != nil {
 			return false, fmt.Errorf("end the passkey sign-in of %q: %w", login, err)
 		}
+		slog.Warn("dispatch: the hourly confirmation ended a passkey sign-in with no passkey left", "email", login)
 		return false, nil
 	}
-	deleted, err := p.endAccountTx(ctx, tx, login)
-	if err != nil {
-		return false, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("end the passkey sign-in of %q: %w", login, err)
-	}
-	slog.Warn("dispatch: the hourly confirmation ended a passkey sign-in and deleted its passkeys", "email", login, "passkeys_deleted", deleted, "listed", !end)
-	return false, nil
 }
 
 // aaguidOf is an authenticator's AAGUID as passkeys stores it: 16 bytes, or none for an all-zero

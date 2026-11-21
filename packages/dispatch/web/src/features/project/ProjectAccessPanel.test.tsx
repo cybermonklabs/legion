@@ -1,16 +1,19 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { settle } from "../../__tests__/fake-clock";
+import { realClock, settle } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { pagedGroups } from "../../__tests__/paged-groups";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { ProjectAccess } from "../../api/types";
 import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
+import { SendExpiredError, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { ProjectAccessPanel } from "./ProjectAccessPanel";
 import { access, crew, named, ops, renderPanel } from "./project-access-fixture";
 
@@ -265,6 +268,109 @@ test("a refused save shows the server's own words beside its control, keeps the 
   } finally {
     panel.restore();
     putPerson.mockRestore();
+  }
+});
+
+// The panel reads its refusal from the mutation cache, not from the write's own result, so a save
+// the reader stopped reaches it by that road: it may have landed, and the panel says so and what
+// its Retry does, not that it failed (#3000's rule for a keyed write the reader stops). Control:
+// without it the panel says "Couldn't add dave@example.com."
+test("an access save the reader stopped says it may have been made and what Retry does, not that it failed", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const panel = renderPanel();
+  const putPerson = spyOn(api, "putProjectAccessPerson").mockRejectedValue(
+    new NetworkError(
+      "/api/v1/projects/CORE/access/people/dave@example.com",
+      new TypeError("Failed to fetch")
+    )
+  );
+  try {
+    const email = await screen.findByLabelText<HTMLInputElement>("Add a person");
+    await user.type(email, "dave@example.com");
+    await user.click(screen.getByRole("button", { name: "Add person" }));
+    await stopTheLateWrite(panel.queryClient);
+
+    const alert = within(screen.getByRole("region", { name: "People" })).getByRole("alert");
+    // The alert's paragraph, without its Retry button's name.
+    expect(alert.querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the addition of dave@example.com", "made", {
+        method: "PUT",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+    panel.restore();
+    putPerson.mockRestore();
+  }
+});
+
+// A PATCH goes under a key, so where the panel that made a stopped save is still open its Retry
+// makes that very press again under the key. A panel opened after the save holds no press to make
+// again, so its Retry is a new save under a new key, and its note says that instead. Control:
+// with one note for both panels, the reopened panel says the Retry goes under the old key.
+test("a stopped Slack channel save says Retry asks under its key, and a panel opened after it says Retry is a new save", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const panel = renderPanel();
+  const patch = spyOn(api, "patchProjectAccess").mockRejectedValue(
+    new NetworkError("/api/v1/projects/CORE/access", new TypeError("Failed to fetch"))
+  );
+  try {
+    await user.type(await screen.findByLabelText<HTMLInputElement>("Channel ids"), "C012345678");
+    await user.click(screen.getByRole("button", { name: "Save channels" }));
+    await stopTheLateWrite(panel.queryClient);
+    const slack = { name: "Slack channels" };
+    expect(
+      within(screen.getByRole("region", slack)).getByRole("alert").querySelector("p")?.textContent
+    ).toBe(
+      stoppedWriteNote("CORE's Slack channels", "saved", {
+        method: "PATCH",
+        stopped: new SendStoppedError(),
+      })
+    );
+
+    panel.remount();
+    await screen.findByLabelText("Channel ids");
+    expect(
+      within(screen.getByRole("region", slack)).getByRole("alert").querySelector("p")?.textContent
+    ).toBe(
+      stoppedWriteNote("CORE's Slack channels", "saved", {
+        anew: "This panel was opened after that save, so Retry sends it as a new save.",
+      })
+    );
+  } finally {
+    realClock();
+    panel.restore();
+    patch.mockRestore();
+  }
+});
+
+// A PATCH whose key ran out ends with SendExpiredError, which leaves no press to make again
+// (retriesUnderItsKey), even in the panel that made it. That panel still says what its Retry is:
+// a new write, which can save the change a second time if the first save landed
+// (expiredRetryNote). Control: with madeHere alone deciding, the panel says it was opened after
+// that save, and the second-save warning is gone.
+test("a Slack channel save whose key ran out warns in its own panel that Retry can save it a second time", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel();
+  const patch = spyOn(api, "patchProjectAccess").mockRejectedValue(new SendExpiredError());
+  try {
+    await user.type(await screen.findByLabelText<HTMLInputElement>("Channel ids"), "C012345678");
+    await user.click(screen.getByRole("button", { name: "Save channels" }));
+    const alert = await within(screen.getByRole("region", { name: "Slack channels" })).findByRole(
+      "alert"
+    );
+    expect(alert.querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("CORE's Slack channels", "saved", {
+        method: "PATCH",
+        stopped: new SendExpiredError(),
+      })
+    );
+  } finally {
+    panel.restore();
+    patch.mockRestore();
   }
 });
 

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/broker/record"
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -111,7 +111,7 @@ func heldScopes(t *testing.T, whoami *httptest.ResponseRecorder) []string {
 // of a decision that carries no code, and the code-less rows fail.
 func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 	rig := newFakeBrokerRig(t)
-	stub := brokertokentest.NewStubBroker(t)
+	stub := ciphertokentest.NewStubBroker(t)
 	served, _ := newAccessServerWith(t, testServerOptions{
 		signInOutside: true, brokerTokens: stubBrokerTokens(t, stub),
 		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
@@ -179,7 +179,7 @@ func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 	caller := newBrokerCaller(t)
 	const erinsBrokerToken = "erins-person-scoped-broker-token"
 	answer := liveNamedToken(caller.jkt)
-	answer.Person, answer.ProjectScope, answer.Projects = accessErin, brokertoken.ProjectScopePerson, nil
+	answer.Person, answer.ProjectScope, answer.Projects = accessErin, ciphertoken.ProjectScopePerson, nil
 	stub.Says(erinsBrokerToken, answer)
 	whoami := httptest.NewRecorder()
 	served.ServeHTTP(whoami, caller.presenting(t, http.MethodGet, "/api/v1/whoami", erinsBrokerToken, nil))
@@ -231,7 +231,7 @@ func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 // Control: brokerTokenActor giving a person-scope token the person's scopes whatever their member
 // kind, and erin's token holds person and approve and reads her inbox, named.
 func TestARestrictedMembersPersonScopeBrokerTokenHoldsNoScope(t *testing.T) {
-	stub := brokertokentest.NewStubBroker(t)
+	stub := ciphertokentest.NewStubBroker(t)
 	served, _ := newAccessServerWith(t, testServerOptions{signInOutside: true, brokerTokens: stubBrokerTokens(t, stub)})
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
@@ -245,7 +245,7 @@ func TestARestrictedMembersPersonScopeBrokerTokenHoldsNoScope(t *testing.T) {
 		{accessCarol, "carols-person-scoped-broker-token", false},
 	} {
 		answer := liveNamedToken(caller.jkt)
-		answer.Person, answer.ProjectScope, answer.Projects = c.person, brokertoken.ProjectScopePerson, nil
+		answer.Person, answer.ProjectScope, answer.Projects = c.person, ciphertoken.ProjectScopePerson, nil
 		stub.Says(c.token, answer)
 		whoami := httptest.NewRecorder()
 		served.ServeHTTP(whoami, caller.presenting(t, http.MethodGet, "/api/v1/whoami", c.token, nil))
@@ -331,14 +331,13 @@ func TestARemovalWhileTheBrokerIsDownIsPaidOnceItIsBack(t *testing.T) {
 		t.Fatalf("after a pass with the broker down the revocation is owed %t (%v) and the broker was sent %v, want it owed and no revoke", owed, err, rig.revokes())
 	}
 
-	// The broker answers again; the claim's retry window is moved past, as its 30 s would.
+	// The broker answers again a minute on: past the claim's retry window and the broker's bound
+	// on an approve it took before the removal (machineLoginSettleAfter), as that minute would.
 	delete(rig.statusByRoute, list)
 	rig.bodyByRoute[list] = `{"credentials":[
 		{"credential_id":"cred-erin","host":"erin-laptop","service":null,"subject":null,"approved_by":"erin@other.example","issued_at":"2026-11-20T00:00:00Z","expires_at":"2026-12-20T00:00:00Z","expired":false},
 		{"credential_id":"cred-daemon","host":"cluster.example","service":"legion-daemon","subject":null,"approved_by":"erin@other.example","issued_at":"2026-11-20T00:00:00Z","expires_at":"2026-12-20T00:00:00Z","expired":false}]}`
-	if _, err := database.Pool.Exec(ctx, `update machine_login_revocations set tried_at = now() - interval '1 minute'`); err != nil {
-		t.Fatal(err)
-	}
+	removalAged(t, database, machineLoginSettleAfter)
 	rig.routes = nil
 	registered.revokeBrokerDebts(ctx)
 	if !slices.Equal(rig.revokes(), []string{"POST /v1/launcher-credentials/cred-erin/revoke-by-approver"}) {

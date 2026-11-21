@@ -9,7 +9,7 @@ import (
 
 // RecordMachineLoginRevocation records, in a transaction of its own, that Dispatch owes the secrets
 // broker the revocation of email's machine logins (store.RecordMachineLoginRevocation), as a
-// removal that takes a restricted member off their last access list does in its own.
+// removal that takes a restricted member off an access list naming them does in its own.
 func RecordMachineLoginRevocation(t testing.TB, database *store.Store, email string) {
 	t.Helper()
 	ctx := context.Background()

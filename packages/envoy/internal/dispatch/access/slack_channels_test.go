@@ -238,8 +238,9 @@ func TestASharedSlackChannelNamesItsProjectOnlyToACallerWhoSeesIt(t *testing.T) 
 		hidden = "C0SHARED001 is listed by a private project you cannot see"
 	)
 	// brokerToken is a person's access token the secrets broker issued, with no list, as the API
-	// resolves it (api/broker_token.go).
-	brokerToken := model.Actor{Kind: "session", ID: "ses_olga", Owner: new(olga), Credential: &model.Credential{Scopes: model.Scopes, Session: "ses_olga"}}
+	// resolves it (api/broker_token.go's brokerTokenActor): the person scope alone, since no
+	// broker-issued token holds approve (brokerPersonScopes), and Proven.
+	brokerToken := model.Actor{Kind: "session", ID: "ses_olga", Owner: new(olga), Credential: &model.Credential{Scopes: []string{model.ScopePerson}, Session: "ses_olga"}, Proven: true}
 	for _, row := range []struct {
 		name   string
 		caller model.Actor

@@ -107,8 +107,8 @@ var (
 // write a mark for, step 2 of the lock order (markInboxReadThreads, api/inbox_read.go), in
 // ascending id order so two dismisses over overlapping sets take them in one order.
 //
-// This comment is where `for update` is accounted for, and the route's own steps, the race tests
-// below and packages/envoy/AGENTS.md point here rather than saying it again. It is the one level
+// This comment is where `for update` is accounted for, and the route's own steps and the race
+// tests below point here rather than saying it again. It is the one level
 // that conflicts with the `for key share` the clearing trigger of 20261105093507 takes on this
 // same row before its delete - that migration's header says why the trigger takes that level -
 // and that conflict is the whole of what orders this route against the trigger. Two dismisses

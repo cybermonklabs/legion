@@ -86,27 +86,15 @@ func MemberKind(ctx context.Context, q Querier, login string) (model.MemberKind,
 // then the projects its delete sweeps; a write of a project's list that names a group takes the
 // same name before the project (LockForAccessWrite), so a delete of that group and the write are
 // ordered by the name: the delete waits for the write and then sweeps its row, or the write,
-// seeing the delete committed, finds no group. A removal of a person from a list takes that
-// person's lock last (LockPersonRemoval), after its project's, and no write takes a project's lock
-// while it holds a person's.
+// seeing the delete committed, finds no group. A removal of a person takes that person's
+// machine-login approval lock (store.LockMachineLoginApprovals) before any of these, since it may
+// wait there for an approve the secrets broker has not answered, and holds no project's lock while
+// it does; an approval of the person's takes that lock alone, so no cycle forms through it.
 
 // LockGroupName takes, for the rest of tx, the lock that orders every write of group name.
 func LockGroupName(ctx context.Context, tx pgx.Tx, name string) error {
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtextextended('access_group:' || $1, 0))`, name); err != nil {
 		return fmt.Errorf("lock group %s: %w", name, err)
-	}
-	return nil
-}
-
-// LockPersonRemoval takes, for the rest of tx, the lock that orders every removal of the person
-// email from an access list. A removal reads, after its own delete, whether any list still names
-// the person (Listed), and owes the revocation of a restricted member's machine logins when none
-// does; two removals of one person from two projects would each read the other's row, not yet
-// deleted by a commit, and neither would owe it. Under this lock the second reads the first's
-// commit. Its error, as MemberKind's, never names the email.
-func LockPersonRemoval(ctx context.Context, tx pgx.Tx, email string) error {
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtextextended('access_person_removal:' || $1, 0))`, model.CanonicalLogin(email)); err != nil {
-		return fmt.Errorf("lock a person's removals: %w", err)
 	}
 	return nil
 }

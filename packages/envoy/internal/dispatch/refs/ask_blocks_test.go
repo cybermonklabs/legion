@@ -98,7 +98,7 @@ func indexAskPartsAt(t *testing.T, tx pgx.Tx, ask model.Ask, index int) []Target
 	if err != nil {
 		t.Fatalf("read the part index of ask %s: %v", ask.ID, err)
 	}
-	indexing, err := PlanAskParts(stored, NewReader(ctx, tx, "ask", ask.ID, text.NewOrigins(askPartServer)), ask, at)
+	indexing, err := PlanAskParts(stored, NewReader(ctx, tx, ask.Author, "ask", ask.ID, text.NewOrigins(askPartServer)), ask, at)
 	if err != nil {
 		t.Fatalf("index the parts of ask %s: %v", ask.ID, err)
 	}
@@ -560,7 +560,7 @@ func TestAnAskWriteReadsItsQuestionsOnce(t *testing.T) {
 	ask := insertAsk(t, tx.Tx, "ACME-1", "Does #q1 still hold?", model.AskOption{Label: "Yes, as #q1 says"})
 
 	tx.queries = nil
-	reader := NewReader(ctx, tx, "ask", ask.ID, text.NewOrigins(askPartServer))
+	reader := NewReader(ctx, tx, ask.Author, "ask", ask.ID, text.NewOrigins(askPartServer))
 	replacement, err := PlanReplace(ctx, tx, "ask", ask.ID, text.Refs(reader.Mentions(ask.Question)), nil)
 	if err != nil {
 		t.Fatalf("plan the ask's question: %v", err)

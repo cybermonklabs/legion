@@ -8,7 +8,7 @@
 // (internal/dispatch/outbox), and the process's shared listener hub (Hub), on which the document
 // rooms' room sync is registered (internal/dispatch/docs) and every change-driven background
 // loop of the server takes its wake (cmd/dispatch); the other is the broker's cross-pod
-// secret-reread fan-out (internal/broker/reread). Serving two programs is why the package sits
+// secret-reread fan-out (internal/cipher/reread). Serving two programs is why the package sits
 // here rather than under internal/dispatch, as internal/pgmigrate does for the two migration
 // runners.
 package pglisten

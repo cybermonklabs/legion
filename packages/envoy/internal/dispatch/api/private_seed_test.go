@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -79,7 +79,7 @@ type privateSeed struct {
 	brokered map[privateCaller]string
 	// broker is the stub secrets broker the server asks about a DPoP-bound token, and agent the
 	// key an agent of carol's presents such a token with (asSession).
-	broker *brokertokentest.StubBroker
+	broker *ciphertokentest.StubBroker
 	agent  *brokerCaller
 }
 
@@ -98,7 +98,7 @@ func seedPrivateProject(t *testing.T) privateSeed {
 // his token acts only while that rule admits him (restrictedOwnerAdmitted), which PRIV's list does.
 func seedPrivateProjectWith(t *testing.T, options testServerOptions) privateSeed {
 	t.Helper()
-	broker := brokertokentest.NewStubBroker(t)
+	broker := ciphertokentest.NewStubBroker(t)
 	options.brokerTokens = stubBrokerTokens(t, broker)
 	options.signInOutside = true
 	if options.busProjects == nil {
@@ -269,10 +269,10 @@ func (s privateSeed) mustRequest(t *testing.T, caller privateCaller, method, tar
 func (s privateSeed) asSession(t *testing.T, session, project, method, target string, body any, status int) *httptest.ResponseRecorder {
 	t.Helper()
 	token := "broker-token-of-" + session + "-in-" + project
-	s.broker.Says(token, brokertoken.Introspection{
+	s.broker.Says(token, ciphertoken.Introspection{
 		Active: true, Session: session, Person: seedCarol,
-		ProjectScope: brokertoken.ProjectScopeNamed, Projects: []string{project}, Scope: "dispatch.write",
-		ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: brokertoken.ExchangeClientID, Thumbprint: s.agent.jkt,
+		ProjectScope: ciphertoken.ProjectScopeNamed, Projects: []string{project}, Scope: "dispatch.write",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: ciphertoken.ExchangeClientID, Thumbprint: s.agent.jkt,
 	})
 	response := httptest.NewRecorder()
 	s.handler.ServeHTTP(response, s.agent.presenting(t, method, target, token, body))

@@ -88,19 +88,23 @@ func (s *server) startAgentSubscription(ctx context.Context, stream liveStreamer
 // relayAgentConversation is one agent subscription's whole life: it returns once the subscription
 // has ended, on its own or because ctx did.
 //
-// A session the caller may not see (sessionHiddenFrom) is answered as one nobody answers for, as
-// GET /api/v1/agents/{session_id}/messages answers its list as the empty list of a session nobody
-// knows: the no-responder verdict and nothing after it, and the relay never subscribes to the
-// session, tells it a viewer is attached or asks for its replay. Each re-arm asks again, and a
-// view whose session the caller no longer sees ends (dropped), so its page subscribes again and is
-// answered as above.
+// A session whose conversation the caller may not read whole (sessionContentHiddenFrom) is
+// answered as one nobody answers for, as GET /api/v1/agents/{session_id}/messages answers its list
+// as the empty list of a session nobody knows: the no-responder verdict and nothing after it, and
+// the relay never subscribes to the session, tells it a viewer is attached or asks for its replay.
+// The view relays the session's raw transcript, whose tool results hold whatever the session read
+// of any project it worked in, so it is held to every project the session acted in and every one
+// its listener record lists, where the HTTP read filters each message by its own project. The rule
+// is asked again on each change of a project's access or of a group the event relay carries, on
+// every heartbeat (accessRecheckEvery) and on each re-arm, and a view whose session the caller no
+// longer may read ends (dropped), so its page subscribes again and is answered as above.
 func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer, sub, sessionID string) {
 	reader, err := s.readerFor(ctx, stream.Caller())
 	if err != nil {
 		endAgentAfterFailure(ctx, stream, sub, "resolve what the caller sees", err)
 		return
 	}
-	hidden, err := s.sessionHiddenFrom(ctx, reader, sessionID)
+	hidden, err := s.sessionContentHiddenFrom(ctx, reader, sessionID)
 	if err != nil {
 		endAgentAfterFailure(ctx, stream, sub, "read whether the caller sees the session", err)
 		return
@@ -110,6 +114,16 @@ func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer
 			<-ctx.Done()
 		}
 		return
+	}
+	// The access changes, from the event relay: a change of a project's access or of a group may
+	// take the session's projects from the caller, so each one asks the rule again. A relay the
+	// view cannot join, or one whose feed this view fell behind, leaves the heartbeat to ask.
+	var accessChanges <-chan relayedEvent
+	if s.eventRelay != nil {
+		if feed, err := s.eventRelay.subscribe(ctx, liveEventsBuffer); err == nil {
+			defer feed.cancel()
+			accessChanges = feed.events
+		}
 	}
 	source := s.deps.AgentStream
 	queue := newAgentStreamQueue()
@@ -187,8 +201,28 @@ func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer
 			return ""
 		}
 	}
+	// stillReads asks the rule again (sessionContentHiddenFrom) and reports whether the view goes
+	// on: a session the caller may no longer read is told nothing more, and the view ends.
+	stillReads := func() bool {
+		reader, err := s.readerFor(ctx, stream.Caller())
+		if err == nil {
+			hidden, err = s.sessionContentHiddenFrom(ctx, reader, sessionID)
+		}
+		if err == nil && !hidden {
+			return true
+		}
+		stopRelay()
+		if err != nil {
+			endAgentAfterFailure(ctx, stream, sub, "read whether the caller still sees the session", err)
+			return false
+		}
+		_ = stream.SendWait(ctx, liveEnded(sub, liveEndedDropped))
+		return false
+	}
 	rearm := time.NewTicker(s.agentWatchInterval)
 	defer rearm.Stop()
+	heartbeat := time.NewTicker(s.accessRecheckEvery())
+	defer heartbeat.Stop()
 	for {
 		var frames []agentstream.Frame
 		var size int
@@ -199,20 +233,24 @@ func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer
 		case <-dropped:
 		case <-queue.wake:
 			frames, size = queue.take()
-		case <-rearm.C:
-			// What the caller sees is read again before the session hears from this viewer: a
-			// session it no longer sees is told nothing more, and the view ends.
-			reader, err := s.readerFor(ctx, stream.Caller())
-			if err == nil {
-				hidden, err = s.sessionHiddenFrom(ctx, reader, sessionID)
+		case event, open := <-accessChanges:
+			if !open {
+				// The view fell behind the relay's feed: the heartbeat asks from here on.
+				accessChanges = nil
+				continue
 			}
-			if err != nil || hidden {
-				stopRelay()
-				if err != nil {
-					endAgentAfterFailure(ctx, stream, sub, "read whether the caller still sees the session", err)
-					return
-				}
-				_ = stream.SendWait(ctx, liveEnded(sub, liveEndedDropped))
+			if (event.Event.Type == projectAccessChangedEvent || event.Event.Type == accessGroupChangedEvent) && !stillReads() {
+				return
+			}
+			continue
+		case <-heartbeat.C:
+			if !stillReads() {
+				return
+			}
+			continue
+		case <-rearm.C:
+			// What the caller sees is read again before the session hears from this viewer.
+			if !stillReads() {
 				return
 			}
 			if err := source.Watch(sessionID); err != nil {

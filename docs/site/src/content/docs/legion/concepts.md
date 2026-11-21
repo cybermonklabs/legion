@@ -15,7 +15,7 @@ section can use the words without stopping to explain them.
   in, and starts and stops the agents that do the work. It keeps its own record in Postgres, so a
   restart picks up where it left off. It never writes code; the merge is the merger agent's request
   under the repository's rules.
-- **Agents** are [Oh My Pi](https://github.com/sjawhar/oh-my-pi) sessions. Under the Kubernetes
+- **Agents** are [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) sessions. Under the Kubernetes
   runtime every agent the daemon starts runs in a pod of its own, from one published worker image,
   and talks to the daemon over a connection the pod dials back. Under the tmux runtime a phase
   worker's role may run on Claude Code instead (`worker_backends` in `legion.yaml`); it does the same
@@ -24,11 +24,11 @@ section can use the words without stopping to explain them.
   questions an agent asks you, the approvals, the messages and the status everyone reads. Legion
   never reads or writes a GitHub issue.
 - **GitHub** holds the code: one branch, `legion/<KEY>`, and one pull request per issue, in the
-  issue's repository. Dispatch maps repositories to a project (Settings → Repositories →
-  Projects), which gives the project its default repository and the repositories Legion prepares
-  before an issue names one; each issue targets one repository, the one Dispatch resolves for it (its
-  own, else its nearest ancestor's, else the project's default), which Legion records, with that
-  repository's default branch as GitHub names it, when it first records the issue, and keeps.
+  issue's repository. Each issue targets one repository, the one Dispatch resolves for it (its
+  own, else its nearest ancestor's, else the project's default repository, which is set in
+  Dispatch), which Legion records, with that repository's default branch as GitHub names it, when
+  it first records the issue, and keeps. This release's one-time pass is the one exception: it
+  writes a configured rename's new name (`repository_renames`) over the old one on the records.
   Legion acts there through two GitHub Apps, so the account that reviews a change is never the one
   that wrote it. The daemon creates a root's branch at the recorded default branch (`main`,
   `develop` or `release/v7.1` alike) when it admits the root, before its architect starts, and a
@@ -43,8 +43,7 @@ One Legion deployment can work issues across several GitHub repositories, under 
 with exactly one repository per issue — never two.
 A change that spans repositories uses child issues, each in one repository.
 Several children may share a repository, each child's own `--repo` fixed when the daemon records it.
-An issue may name any `owner/name`, whether or not Dispatch maps it to the project, and the
-account that installs a role's GitHub App decides what that role reaches.
+An issue may name any `owner/name`, and the account that installs a role's GitHub App decides what that role reaches.
 Every worker holds a gh bundle of its role's GitHub App, with one token for each owner that App
 is installed on.
 Each token is minted on that owner's installation with the role's own permissions: the implement
@@ -63,7 +62,15 @@ Each token reaches every repository its own installation holds.
 `legion gh`, the `gh` wrapper every pane and pod runs, reads the directory of the owner of the
 repository a command names, and `git` reaches the same bundle through a credential helper that
 picks a directory the same way, so a command naming an owner the App is not installed on is
-refused there, not merely discouraged.
+refused there, not merely discouraged. The one exception is a `gh` read the wrapper knows (a
+command such as `pr list` typed by its full name with each value its own word, a `gh api` GET,
+or a `gh api graphql -f query=…` in the one form
+[the deployment guide](https://github.com/cybermonklabs/legion/blob/main/docs/deployment.md#what-a-panes-gh-git-and-jj-are)
+lists, whose query holds neither the word `mutation` nor `subscription`, in any case) that names
+only such owners, names no repository a configured
+rename moves, and reads no `github.com` remote of the working directory: it runs with
+`GH_CONFIG_DIR`'s token, which GitHub lets read public data and that installation's own
+repositories alone.
 
 ## The controller
 
@@ -549,7 +556,7 @@ result of the issue's `after_merge` check, naming the merge commit and what woke
 that result's line on the pull request; `pending`,
 when production does not carry the merge yet, or an observation a requirement names has not
 happened yet; or `fail`, a requirement observed as not met, one still unobserved at the last
-look when production carries the merge, or a defect, naming the issue, the pull
+look whether or not production carries the merge, or a defect, naming the issue, the pull
 request, the merge commit, what it drove and what failed. A defect with a clear fix goes to the
 controller, which gives it to the tree that owns that code and files an issue only when none does.
 One that needs a decision is a Dispatch ask on Legion's
@@ -566,7 +573,9 @@ check's own bound starts no look of its own, because the look at that bound alre
 Nothing else wakes a check: no deploy run, no Dispatch `issue.deployed`, no Dispatch build and no
 daemon boot, and the daemon reads no deployment's production workflows at all.
 A look is bounded at two hours, and a look nobody reported — its two hours, an operator's hold,
-or a claim that failed to start — starts the next look two hours later.
+or a claim that failed to start — starts the next look two hours later. A look that began before
+a pause of the project ended counts its two hours from the resume, or from its agent's last ready
+after the resume where that is later, and counts nothing while that agent is still starting.
 The whole check is bounded at `production_check_hours` (336, fourteen
 days, by default): the look at that bound is the last, and a `pending` there closes the check
 as not run, which the agent writes on the pull request. `legion state` prints how many checks

@@ -90,6 +90,7 @@ var m19BindingFragments = map[string]bool{
 	"RoleClause":              false,
 	"RoleProjectClause":       false,
 	"SessionClause":           false,
+	"SessionContentClause":    false,
 	"VisibleProjectsSQL":      false,
 
 	// It holds the projects row it reads to the row's own project key and to the viewer: a private

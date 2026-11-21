@@ -1,7 +1,6 @@
 package routes
 
 import (
-	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -24,15 +23,16 @@ const (
 	passkeyBeginAddressBurst = 10
 	// passkeyBeginAddresses caps the addresses the limiter remembers. At the cap it forgets those
 	// whose bucket is full again (idle for passkeyBeginIdle), sweeping the map at most once a
-	// passkeyBeginIdle, and refuses a new address while the map is still full, so memory and the
-	// work of each begin stay bounded however many addresses send.
+	// passkeyBeginIdle, and serves a new address without remembering it while the map is still
+	// full, so memory and the work of each begin stay bounded however many addresses send, and no
+	// number of strangers' addresses refuses the person's.
 	passkeyBeginAddresses = 10000
 	passkeyBeginIdle      = time.Duration(passkeyBeginAddressBurst) * time.Second
 )
 
 // passkeyBeginLimiter bounds the passkey ceremonies' begins of one process per client address
-// (passkeyBeginAddress). A begin over the bound is 429 PASSKEY_RATE_LIMITED, written before
-// anything is read.
+// (auth.BoundAddress). A begin over the bound is 429 PASSKEY_RATE_LIMITED, written before anything
+// is read.
 type passkeyBeginLimiter struct {
 	mu        sync.Mutex
 	byAddress map[string]*passkeyBeginBucket
@@ -50,8 +50,9 @@ func newPasskeyBeginLimiter() *passkeyBeginLimiter {
 }
 
 // allow reports whether a begin from address at now is within its address's bound, spending from
-// it when it is. A new address finding passkeyBeginAddresses remembered is refused, unless a sweep
-// (at most one a passkeyBeginIdle) forgets an idle one first.
+// it when it is. A new address finding passkeyBeginAddresses remembered after a sweep (at most one
+// a passkeyBeginIdle) is served without being remembered: the cap holds the limiter's memory, and
+// it must not refuse the person's begin from an address strangers have not yet filled it with.
 func (l *passkeyBeginLimiter) allow(address string, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -62,7 +63,7 @@ func (l *passkeyBeginLimiter) allow(address string, now time.Time) bool {
 			l.swept = now
 		}
 		if len(l.byAddress) >= passkeyBeginAddresses {
-			return false
+			return true
 		}
 		bucket = &passkeyBeginBucket{limiter: rate.NewLimiter(passkeyBeginsPerAddress, passkeyBeginAddressBurst)}
 		l.byAddress[address] = bucket
@@ -81,32 +82,13 @@ func (l *passkeyBeginLimiter) forgetIdle(now time.Time) {
 	}
 }
 
-// passkeyBeginAddress is the address a begin is bounded by, and whether the request names one the
-// bound can trust. Through Google's load balancer (auth.ThroughGoogleLoadBalancer) it is the client
-// address the balancer appended (auth.ForwardedAddress), and a request carrying more than one
-// X-Forwarded-For line is none the balancer forwarded as it writes the header, so it names no
-// address (false). Any other connection is bounded by its own address, whatever X-Forwarded-For it
-// carries: that header is then the client's own text, which would let it pick a fresh bound for
-// each begin.
-func passkeyBeginAddress(req *http.Request) (string, bool) {
-	if auth.ThroughGoogleLoadBalancer(req) {
-		if len(req.Header.Values("X-Forwarded-For")) > 1 {
-			return "", false
-		}
-		return auth.ForwardedAddress(req), true
-	}
-	if host, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
-		return host, true
-	}
-	return req.RemoteAddr, true
-}
-
 // limitPasskeyBegins serves next, a ceremony's begin, while the request is within its address's
-// bound: 400 FORWARDED_FOR_INVALID for a request through the load balancer with more than one
-// X-Forwarded-For line, and 429 PASSKEY_RATE_LIMITED, with Retry-After, over the bound.
+// bound (auth.BoundAddress): 400 FORWARDED_FOR_INVALID for a request through the load balancer with
+// more than one X-Forwarded-For line, and 429 PASSKEY_RATE_LIMITED, with Retry-After, over the
+// bound.
 func (r *router) limitPasskeyBegins(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		address, ok := passkeyBeginAddress(req)
+		address, ok := auth.BoundAddress(req)
 		if !ok {
 			writeCodeError(w, http.StatusBadRequest, "the request's X-Forwarded-For is not the one line the load balancer writes", "FORWARDED_FOR_INVALID")
 			return

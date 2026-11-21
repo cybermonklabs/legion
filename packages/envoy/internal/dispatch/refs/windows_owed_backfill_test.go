@@ -15,7 +15,7 @@ import (
 // windowMarkerBackfills is every migration that marks the owners whose windows were already
 // stale when the marker column reached them, in the order a runner applies them: the items'
 // backfill and the documents'. They are read from the files the runner embeds rather than
-// copied here, so this test is about the statements a database runs (cmd/broker's
+// copied here, so this test is about the statements a database runs (cmd/cipherd's
 // countMigrations reads its set the same way).
 var windowMarkerBackfills = []string{
 	"20261107203841_item_block_state_windows_owed_backfill.up.sql",

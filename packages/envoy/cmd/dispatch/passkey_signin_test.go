@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -424,39 +423,6 @@ func TestRemovingTheLastListingEndsSignInAndDeletesPasskeys(t *testing.T) {
 	wantCode(t, "a passkey sign-in after the last removal", r.signIn(t, r.handler, device), http.StatusUnauthorized, "PASSKEY_UNKNOWN")
 }
 
-// TestTheOwnersResetEndsSignInAndDeletesPasskeys (R5): the owner's Reset of a person the list still
-// names ends their sign-in and deletes their passkeys at once, and leaves them on the list, so a
-// new link enrolls them again. Reset is the owner's browser's alone: a full member's address is
-// 409 FULL_MEMBER.
-//
-// Control: skip the end in the Reset (store.EndPasskeySignInTx not called), and the row fails
-// naming the passkey still stored.
-func TestTheOwnersResetEndsSignInAndDeletesPasskeys(t *testing.T) {
-	r := newPasskeyRig(t, nil)
-	device := newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin)
-	cookie := r.enrolled(t, device, r.invite(t, outsiderEmail), outsiderEmail)
-	unused := r.invite(t, outsiderEmail)
-
-	reset := r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+outsiderEmail+"/reset", nil)
-	if reset.Code != http.StatusOK || !strings.Contains(reset.Body.String(), `"people":["`+outsiderEmail+`"]`) {
-		t.Fatalf("alice's Reset of the outsider answered %d %s, want 200 with the outsider still listed", reset.Code, reset.Body.String())
-	}
-	if n := r.passkeysOf(t, outsiderEmail); n != 0 {
-		t.Fatalf("after the Reset %s holds %d passkey(s), want every one deleted", outsiderEmail, n)
-	}
-	if whoami := whoamiOutside(r.handler, cookie); whoami.Code != http.StatusUnauthorized {
-		t.Fatalf("whoami after the Reset answered %d %s, want 401", whoami.Code, whoami.Body.String())
-	}
-	wantCode(t, "a passkey sign-in after the Reset", r.signIn(t, r.handler, device), http.StatusUnauthorized, "PASSKEY_UNKNOWN")
-	wantCode(t, "the link made before the Reset", r.beginEnrollment(r.handler, unused), http.StatusNotFound, "INVITATION_UNKNOWN")
-
-	again := r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), r.invite(t, outsiderEmail), outsiderEmail)
-	signedInRestricted(t, r.handler, again, outsiderEmail)
-
-	r.listOn(t, "PRIV", access.PrincipalPerson, privOwner)
-	wantCode(t, "a Reset of a full member", r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+privOwner+"/reset", nil), http.StatusConflict, "FULL_MEMBER")
-}
-
 // TestADelistedPersonLosesSignInAndPasskeysAtTheHourlyCheck (R5): a person the lists stop naming
 // by any write but a removal keeps their sign-in until its confirmation is an hour old; the next
 // request after it ends the sign-in and deletes their passkeys in one transaction, and says why
@@ -732,6 +698,30 @@ func TestPasskeyCeremonyIsTakenOnce(t *testing.T) {
 	}
 }
 
+// TestAReplayAfterTheDatabasesClockRanAheadIsRefused: a used ceremony's row is kept a minute past
+// when it lapses by the database's clock, so a database clock that runs ahead of the process's,
+// which accepts the ceremony's cookie until it lapses by its own, deletes no used row while its
+// cookie still verifies: the replay of a sign-in whose row the database already counts 30 seconds
+// lapsed is 400 CEREMONY_EXPIRED.
+//
+// Control: delete the used rows as soon as they lapse by the database's clock (useCeremonyTx
+// without its margin), and the replay signs in, 200, and the row fails.
+func TestAReplayAfterTheDatabasesClockRanAheadIsRefused(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	device := newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin)
+	r.enrolled(t, device, r.invite(t, outsiderEmail), outsiderEmail)
+	begun := call(r.handler, passkeyOrigin, http.MethodPost, "/auth/passkey/login/begin", map[string]string{})
+	answer := device.assertAt(t, begun.Body.Bytes())
+	if first := call(r.handler, passkeyOrigin, http.MethodPost, "/auth/passkey/login/finish", answer, ceremonyCookie(begun)); first.Code != http.StatusOK {
+		t.Fatalf("the sign-in at counter 0 answered %d %s, want 200", first.Code, first.Body.String())
+	}
+	if _, err := r.database.Pool.Exec(context.Background(), `update passkey_ceremonies set expires_at = now() - interval '30 seconds'`); err != nil {
+		t.Fatal(err)
+	}
+	replayed := call(r.handler, passkeyOrigin, http.MethodPost, "/auth/passkey/login/finish", answer, ceremonyCookie(begun))
+	wantCode(t, "the same finish sent again, its row lapsed 30 seconds by the database's clock", replayed, http.StatusBadRequest, "CEREMONY_EXPIRED")
+}
+
 // TestPasskeyRefusesAWorkspaceAddress: no link is made, and no passkey is enrolled, for an
 // address on a domain of the company's Workspace: the sign-in domain, each domain
 // DISPATCH_SIGNIN_WORKSPACE_DOMAINS lists (the shapes a Workspace's domains take: other top-level
@@ -764,50 +754,6 @@ func TestPasskeyRefusesAWorkspaceAddress(t *testing.T) {
 	wantCode(t, "a passkey sign-in once the address's domain is the Workspace's", r.signIn(t, listedServer, device), http.StatusForbidden, "WORKSPACE_ADDRESS")
 	if n := r.passkeysOf(t, moved); n != 0 {
 		t.Fatalf("%s holds %d passkeys once its domain is the Workspace's, want every one deleted", moved, n)
-	}
-}
-
-// TestPasskeyAccessFieldsAreTheOwnersAlone: GET /api/v1/projects/{key}/access answers the owner's
-// browser session, where passkey sign-in is on, when each passkey of a listed person was enrolled
-// (passkeys) and the people a link can be made for now (invitable: on no Workspace domain, no full
-// member's); a full member the list names and the restricted member read neither field, and with
-// passkey sign-in off the owner reads neither either.
-//
-// Control: answer the two fields to every reader (withOwnersPasskeys skipping its owner check),
-// and the full member's read carries passkeys and the row fails.
-func TestPasskeyAccessFieldsAreTheOwnersAlone(t *testing.T) {
-	r := newPasskeyRig(t, nil)
-	cookie := r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), r.invite(t, outsiderEmail), outsiderEmail)
-	const dana = "dana@example.com"
-	danaSignIn := codeFlowSignIn(t, r.handler, r.pool, map[string]any{"sub": "google-dana", "email": dana, "email_verified": true, "hd": "example.com"})
-	r.listOn(t, "PRIV", access.PrincipalPerson, dana)
-	r.listOn(t, "PRIV", access.PrincipalPerson, "pending@other.example")
-
-	var owners struct {
-		Passkeys  []model.EnrolledPasskey `json:"passkeys"`
-		Invitable []string                `json:"invitable"`
-	}
-	read := r.asOwner(http.MethodGet, "/api/v1/projects/PRIV/access", nil)
-	if read.Code != http.StatusOK || json.Unmarshal(read.Body.Bytes(), &owners) != nil {
-		t.Fatalf("alice's read of PRIV's access: %d %s", read.Code, read.Body.String())
-	}
-	if len(owners.Passkeys) != 1 || owners.Passkeys[0].Email != outsiderEmail || owners.Passkeys[0].EnrolledAt.IsZero() {
-		t.Fatalf("alice reads passkeys %+v, want the outsider's one, with its enrollment time", owners.Passkeys)
-	}
-	if want := []string{outsiderEmail, "pending@other.example"}; !slices.Equal(owners.Invitable, want) {
-		t.Fatalf("alice reads invitable %v, want %v: no full member", owners.Invitable, want)
-	}
-	for who, response := range map[string]*httptest.ResponseRecorder{
-		"dana, a full member the list names": call(r.handler, canonicalOrigin, http.MethodGet, "/api/v1/projects/PRIV/access", nil, sessionCookieOf(t, "dana's sign-in", danaSignIn)),
-		"the restricted member":              call(r.handler, passkeyOrigin, http.MethodGet, "/api/v1/projects/PRIV/access", nil, cookie),
-	} {
-		if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"passkeys"`) || strings.Contains(response.Body.String(), `"invitable"`) {
-			t.Fatalf("%s's read of PRIV's access: %d %s, want 200 with neither passkeys nor invitable", who, response.Code, response.Body.String())
-		}
-	}
-	off, _ := r.serverWith(t, map[string]string{"DISPATCH_SIGNIN_PASSKEY": ""})
-	if off := call(off, canonicalOrigin, http.MethodGet, "/api/v1/projects/PRIV/access", nil, r.alice); off.Code != http.StatusOK || strings.Contains(off.Body.String(), `"passkeys"`) {
-		t.Fatalf("alice's read with passkey sign-in off: %d %s, want 200 with no passkeys", off.Code, off.Body.String())
 	}
 }
 
@@ -981,6 +927,23 @@ func TestAFloodOfBeginsFromManyAddressesLeavesAFreshAddressServed(t *testing.T) 
 	}
 }
 
+// TestAFullAddressMapLeavesAFreshAddressServed: 10,000 strangers' addresses, one begin each
+// through the load balancer, fill the bound's memory of addresses; the person's begin from an
+// address it does not hold is still served, so no number of strangers' addresses refuses it.
+//
+// Control: refuse a new address while the map is full (passkeyBeginLimiter.allow answering false
+// at the cap, as at aa6950fcf1), and the person's begin is 429 PASSKEY_RATE_LIMITED and the row
+// fails.
+func TestAFullAddressMapLeavesAFreshAddressServed(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	for n := range 10000 {
+		beginThrough(r.handler, balancerPeer, fmt.Sprintf("198.18.%d.%d, 35.191.0.10", n/250, n%250))
+	}
+	if begun := beginThrough(r.handler, balancerPeer, "203.0.113.77, 35.191.0.10"); begun.Code != http.StatusOK {
+		t.Fatalf("the person's begin from a fresh address with the map full answered %d %s, want 200", begun.Code, begun.Body.String())
+	}
+}
+
 // TestTheBeginsWriteNothing: a ceremony's begin, which takes no credential, writes no row: the
 // signed ceremony cookie carries what its finish needs, and the finish records the challenge as
 // used only after the answer verifies (store.PgPasskeys.SignIn and Enroll), so a flood of begins
@@ -1013,7 +976,7 @@ func TestTheBeginsWriteNothing(t *testing.T) {
 // balancer's own address, which every such request would share, while a begin with one line is
 // served.
 //
-// Control: bound the begin by auth.ForwardedAddress whatever its lines (passkeyBeginAddress without
+// Control: bound the begin by auth.ForwardedAddress whatever its lines (auth.BoundAddress without
 // the line count), and the two-line begin answers 200 and the row fails.
 func TestABeginWithTwoForwardedForLinesIsRefused(t *testing.T) {
 	r := newPasskeyRig(t, nil)

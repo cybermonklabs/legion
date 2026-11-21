@@ -162,13 +162,12 @@ type deferredVersion struct {
 // version of document slug, a nestedSpec whose blocks this build has stated, and leave its index
 // owed: the inner paragraph's mention of CORE-2 moves onto the middle paragraph, as
 // moveLinkAsThePreviousRelease moves it, the edit reaches the store through the room, and the
-// settlement writes the version and its artifact.version event, whose seq it takes off the
-// issue's own counter as that release's events.Append does, and clears the pending settlement.
-// It indexes no block: migration 0122's trigger leaves the version null, and nothing here touches
-// store_owed_at. That release's version write indexes the version's own text with the whole
-// grammar all the same (refs.SettleOwed), so the row the version's insert owes the re-index queue
-// is settled here, as moveLinkAsThePreviousRelease settles it, and the version's event is the only
-// way left for this build to reach the document.
+// settlement writes the version and its artifact.version event and clears the pending settlement
+// (settleVersionAsThePreviousRelease). It indexes no block: migration 0122's trigger leaves the
+// version null, and nothing here touches store_owed_at. That release's version write indexes the
+// version's own text with the whole grammar all the same (refs.SettleOwed), so the row the
+// version's insert owes the re-index queue is settled here, as moveLinkAsThePreviousRelease
+// settles it, and the version's event is the only way left for this build to reach the document.
 func deferAsThePreviousRelease(t *testing.T, database *store.Store, service *Service, document, slug string) deferredVersion {
 	t.Helper()
 	ctx := context.Background()
@@ -205,26 +204,7 @@ func deferAsThePreviousRelease(t *testing.T, database *store.Store, service *Ser
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	if err := tx.QueryRow(ctx, `
-		insert into artifact_versions (artifact_id, number, markdown, authors)
-		select $1, max(number) + 1, $2, '[{"kind":"user","id":"alice"}]' from artifact_versions where artifact_id = $1
-		returning number, created_at
-	`, document, deferred.markdown).Scan(&deferred.number, &deferred.at); err != nil {
-		t.Fatalf("write the version of %s: %v", slug, err)
-	}
-	if err := tx.QueryRow(ctx, `
-		with bumped as (update issues set last_seq = last_seq + 1 where key = 'CORE-1' returning last_seq)
-		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', bumped.last_seq, 'artifact.version', '{"kind":"user","id":"alice"}',
-		       jsonb_build_object('artifact_id', $1::text, 'name', 'spec.md', 'version', jsonb_build_object('number', $2::int)), false
-		from bumped
-		returning id
-	`, document, deferred.number).Scan(&deferred.event); err != nil {
-		t.Fatalf("append the event of the version of %s: %v", slug, err)
-	}
-	if _, err := tx.Exec(ctx, `delete from doc_settlements_pending where artifact_id = $1`, document); err != nil {
-		t.Fatalf("settle the version of %s: %v", slug, err)
-	}
+	deferred.number, deferred.at, deferred.event = settleVersionAsThePreviousRelease(t, tx, document, deferred.markdown)
 	if _, err := tx.Exec(ctx, `delete from refs_grammar_owed where kind = 'artifact' and id = $1::uuid`, document); err != nil {
 		t.Fatalf("settle the re-index queue's row of %s as the previous release's version write does: %v", slug, err)
 	}

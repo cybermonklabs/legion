@@ -15,6 +15,7 @@ import {
   textPrimaryOnCanvas,
 } from "../../theme/classes";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { CredentialDecisionButtons } from "./CredentialDecisionButtons";
 import { CredentialRecordFacts } from "./CredentialRecordFacts";
@@ -66,9 +67,9 @@ function MachineLoginDecision({
  * deadline passed before anybody decided it reads as expired, before the broker's sweep ends it
  * and after, and the broker refuses every decision of it: it shows that in one line, with no
  * buttons. Below it, the machine logins the viewer may revoke that can still reach a secret:
- * their own machines' and every service's. A restricted member, who approves here the device
- * login of their own agents, is answered their own machines' logins alone, and revokes only those
- * (Dispatch holds them to their own), so their list says that (`ownOnly`).
+ * their own machines', their own pods' and every service's. A restricted member, who approves
+ * here the device login of their own agents, is answered their own machines' logins alone, and
+ * revokes only those (Dispatch holds them to their own), so their list says that (`ownOnly`).
  */
 export function MachineLoginPage(): ReactNode {
   const [code, setCode] = useState("");
@@ -81,6 +82,7 @@ export function MachineLoginPage(): ReactNode {
     inline: true,
     label: () => "Lookup of a machine login code",
     onSettled: () => submitGuard.release(),
+    method: "POST",
     write: (lookupCode: string, bounds) => api.lookupMachineCredential(lookupCode, bounds),
   });
   // A lookup Dispatch answered with nothing it kept shows nothing until it is looked up again.
@@ -90,6 +92,7 @@ export function MachineLoginPage(): ReactNode {
 
   // Each is typed by its answer, which its callbacks read.
   const approve = useKeyedWrite<DecisionResponse>({
+    method: "POST",
     write: (_variables, bounds) =>
       api.approveCredentialRecord(record?.record_id ?? "", { code: lookedUpCode }, bounds),
     inline: true,
@@ -103,6 +106,7 @@ export function MachineLoginPage(): ReactNode {
     },
   });
   const deny = useKeyedWrite<StateResponse>({
+    method: "POST",
     write: (_variables, bounds) =>
       api.denyCredentialRecord(record?.record_id ?? "", { code: lookedUpCode }, bounds),
     inline: true,
@@ -176,9 +180,15 @@ export function MachineLoginPage(): ReactNode {
           Look up
         </button>
       </form>
+      {/* A lookup the reader stopped may have been made, and Look up is a press of its own, under
+          a key of its own. */}
       {lookup.isError ? (
         <p className={dangerText}>
-          {apiErrorMessage(lookup.error, "Could not look up that code.")}
+          {lookup.error instanceof SendStoppedError
+            ? stoppedWriteNote("the lookup of that code", "made", {
+                anew: "Look up sends the code in the field as a new lookup.",
+              })
+            : apiErrorMessage(lookup.error, "Could not look up that code.")}
         </p>
       ) : null}
       {view === undefined ? null : (

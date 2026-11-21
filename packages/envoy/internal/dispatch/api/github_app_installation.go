@@ -2,9 +2,9 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -20,9 +20,13 @@ type appInstallationResponse struct {
 // events of its repositories through, is installed on the path's repository: GitHub's
 // installation lookup under the App's JWT, its 404 being false. Any authenticated caller may ask:
 // the Legion daemon asks it for every repository it serves, since on a repository the App is not
-// installed on GitHub sends Legion none of its events and nothing redelivers them. Dispatch with no
-// App key answers 503 GITHUB_APP_UNCONFIGURED; any other failed lookup 502 GITHUB_UNREADABLE,
-// naming the repository and GitHub's error.
+// installed on GitHub sends Legion none of its events and nothing redelivers them. A path that
+// names no repository GitHub allows is 400 INVALID_REPO_PROJECT before GitHub is asked anything
+// (repoProjectPath), since its halves go into the lookup's path as they are. Dispatch with no App
+// key answers 503 GITHUB_APP_UNCONFIGURED; any other failed lookup 502 GITHUB_UNREADABLE, naming
+// the repository and GitHub's error, worded and cut to its bound as every such 502 words it
+// (gitHubReason): an error GitHub answered with a page that is no JSON carries the page as
+// githubapp.ShownBody shows it, its first 512 characters and its size.
 //
 // A repository the caller may not see by the GitHub proxy's rule (repositoriesHidden, over
 // refs.RepositoryClause) answers exactly what one the App is not installed on answers, as the
@@ -40,12 +44,12 @@ func (s *server) getAppInstallation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	repo, err := repoProjectPath(r)
+	owner, name, err := repoProjectPath(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	owner, name, _ := strings.Cut(repo, "/")
+	repo := owner + "/" + name
 	if s.deps.GitHub == nil {
 		writeError(w, "GITHUB_APP_UNCONFIGURED", http.StatusServiceUnavailable, githubapp.ErrNoAppKey.Error())
 		return
@@ -57,12 +61,24 @@ func (s *server) getAppInstallation(w http.ResponseWriter, r *http.Request) {
 	}
 	var installed bool
 	if !hidden[repo] {
-		installed, err = s.deps.GitHub.Installed(r.Context(), owner, name)
+		// While a project is private the lookup is held to the path's repository, as the GitHub
+		// proxy holds its reads (githubapp.HoldToRepository): GitHub answers an old name of a renamed
+		// or transferred repository with a redirect to that repository as it is now, which
+		// repositoriesHidden never judged, so such a redirect answers as a repository the App is not
+		// installed on. With no private project the lookup follows GitHub's redirects, as before.
+		ctx := r.Context()
+		if reader.Viewer != nil && reader.Viewer.AnyPrivate {
+			ctx = githubapp.HoldToRepository(ctx, owner, name)
+		}
+		installed, err = s.deps.GitHub.Installed(ctx, owner, name)
+		if errors.Is(err, githubapp.ErrRedirectedOffRepository) {
+			installed, err = false, nil
+		}
 	} else if limited := s.deps.GitHub.HeldLimit(r.Context(), githubapp.AppScope); limited != nil {
 		err = limited
 	}
 	if err != nil {
-		writeError(w, "GITHUB_UNREADABLE", http.StatusBadGateway, fmt.Sprintf("read the GitHub App's installation on %s: %v", repo, err))
+		writeError(w, "GITHUB_UNREADABLE", http.StatusBadGateway, fmt.Sprintf("read the GitHub App's installation on %s: %s", repo, gitHubReason(err)))
 		return
 	}
 	WriteJSON(w, http.StatusOK, appInstallationResponse{Installed: installed})

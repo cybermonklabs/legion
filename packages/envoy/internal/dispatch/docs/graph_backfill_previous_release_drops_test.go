@@ -214,10 +214,9 @@ func TestTheBlockAndTheLinkThePreviousReleaseDroppedAreGoneAfterTheBackfill(t *t
 // indexAsThePreviousRelease writes the document's next version as the release before this one
 // writes and indexes it, with every write that release makes and none of the store: the edit
 // reaches the store through the room, the settlement writes the version and its artifact.version
-// event, whose seq it takes off the issue's own counter as that release's events.Append does, and
-// clears the pending settlement, and that release's index pass then indexes the version in the
-// same transaction (indexVersionAsThePreviousRelease), deleting each link of dropped and adding
-// each link of added.
+// event and clears the pending settlement (settleVersionAsThePreviousRelease), and that release's
+// index pass then indexes the version in the same transaction (indexVersionAsThePreviousRelease),
+// deleting each link of dropped and adding each link of added.
 func indexAsThePreviousRelease(t *testing.T, database *store.Store, service *Service, artifactID string, edit func(*pmdoc.Node) *pmdoc.Node, dropped, added []blockLinkRow) {
 	t.Helper()
 	ctx := context.Background()
@@ -232,6 +231,21 @@ func indexAsThePreviousRelease(t *testing.T, database *store.Store, service *Ser
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
+	version, versionAt, eventID := settleVersionAsThePreviousRelease(t, tx, artifactID, markdown)
+	indexVersionAsThePreviousRelease(t, tx, artifactID, version, versionAt, eventID, markdown, blocks, dropped, added)
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// settleVersionAsThePreviousRelease is the settlement of the release before this one writing the
+// document's next version, whose render is markdown, in tx: the version row, its artifact.version
+// event, whose seq it takes off the issue's own counter as that release's events.Append does
+// (documentEvent), and the pending settlement cleared. It indexes nothing, and answers the
+// version's number, the time it was written at and its event.
+func settleVersionAsThePreviousRelease(t *testing.T, tx pgx.Tx, artifactID, markdown string) (int, time.Time, int64) {
+	t.Helper()
+	ctx := context.Background()
 	var version int
 	var versionAt time.Time
 	if err := tx.QueryRow(ctx, `
@@ -239,26 +253,13 @@ func indexAsThePreviousRelease(t *testing.T, database *store.Store, service *Ser
 		select $1, max(number) + 1, $2, '[{"kind":"user","id":"alice"}]' from artifact_versions where artifact_id = $1
 		returning number, created_at
 	`, artifactID, markdown).Scan(&version, &versionAt); err != nil {
-		t.Fatalf("write the version: %v", err)
+		t.Fatalf("write the version of %s: %v", artifactID, err)
 	}
-	var eventID int64
-	if err := tx.QueryRow(ctx, `
-		with bumped as (update issues set last_seq = last_seq + 1 where key = 'CORE-1' returning last_seq)
-		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', bumped.last_seq, 'artifact.version', '{"kind":"user","id":"alice"}',
-		       jsonb_build_object('artifact_id', $1::text, 'name', 'spec.md', 'version', jsonb_build_object('number', $2::int)), false
-		from bumped
-		returning id
-	`, artifactID, version).Scan(&eventID); err != nil {
-		t.Fatalf("append the version's event: %v", err)
-	}
+	event := appendDocumentEvent(t, ctx, tx, "artifact.version", versionEventPayload(t, artifactID, "spec.md", version))
 	if _, err := tx.Exec(ctx, `delete from doc_settlements_pending where artifact_id = $1`, artifactID); err != nil {
-		t.Fatalf("settle the version: %v", err)
+		t.Fatalf("settle the version of %s: %v", artifactID, err)
 	}
-	indexVersionAsThePreviousRelease(t, tx, artifactID, version, versionAt, eventID, markdown, blocks, dropped, added)
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
+	return version, versionAt, event
 }
 
 // indexVersionAsThePreviousRelease is the index pass of the release before this one over version

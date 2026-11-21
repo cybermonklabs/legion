@@ -1,0 +1,4 @@
+kind: Changed
+body: |-
+  The checks-settlement fixtures now carry each run's `conclusion` word and the `skipped` group.
+  `held-back-suites-skip.json` adds a real head of this repository whose held-back suites skipped.

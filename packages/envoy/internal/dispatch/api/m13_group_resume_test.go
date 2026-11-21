@@ -49,6 +49,46 @@ func TestAResumeAcrossAGroupTakenOffAListOwesARefreshToItsMembers(t *testing.T) 
 	requireResumeComplete(t, seed, url, callerCarol, since, true, "PRIV's list names her, so she reads PRIV before the change and after it")
 }
 
+// TestAResumeAcrossAGroupTakenOffAListOwesNothingToARestrictedMemberInIt: erin's address was put in
+// group team, which PRIV's list names, before anybody signed in as her, and she then signed in
+// from outside, a restricted member; dave, a full member, is in team too. A group admits only its
+// full members (access.PersonSeesProjectSQL), so erin never saw PRIV. carol takes team off PRIV's
+// list: dave's resume across the change owes his page a refresh, and erin's is complete, since
+// the change took nothing from her and tells her nothing of a project she never read.
+//
+// Control: lostSightSQL's group arm counting every member of the removed group, a restricted one
+// included (the rule before); erin's resume is not complete, and the test fails naming her.
+func TestAResumeAcrossAGroupTakenOffAListOwesNothingToARestrictedMemberInIt(t *testing.T) {
+	const dave, erin = "dave@example.com", "erin@outside.example"
+	seed := seedPrivateProject(t)
+	seedPeople(t, seed.database, dave)
+	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/access-groups/team", map[string]any{"members": []string{dave, erin}}, http.StatusOK)
+	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPrivate+"/access/groups/team", nil, http.StatusOK)
+	seedPeople(t, seed.database, erin)
+	markRestricted(t, seed.database, erin)
+	if reader, err := seed.server.readerFor(t.Context(), model.BrowserActor(erin)); err != nil || slices.Contains(reader.Viewer.Sees, seedPrivate) {
+		t.Fatalf("erin, restricted and in team on PRIV's list, reads as %+v (%v), want a reader that does not see PRIV", reader.Viewer, err)
+	}
+	since := eventHead(t, seed.database)
+	seed.mustRequest(t, callerCarol, http.MethodDelete, "/api/v1/projects/"+seedPrivate+"/access/groups/team", nil, http.StatusOK)
+
+	url := liveURLOf(t, seed.handler)
+	for _, member := range []struct {
+		login    string
+		complete bool
+		why      string
+	}{
+		{dave, false, "he read PRIV through team, reads it no more, and his page holds PRIV's rows"},
+		{erin, true, "team never admitted her, a restricted member, so its removal took nothing from her"},
+	} {
+		client := seed.dialLive(t, url, asUser(member.login))
+		if got := subscribeEventsStart(t, client, "feed", &since); got.ReplayComplete != member.complete {
+			t.Errorf("%s's resume from %d across team taken off PRIV's list answers replay complete %v, want %v: %s",
+				member.login, since, got.ReplayComplete, member.complete, member.why)
+		}
+	}
+}
+
 // TestAResumeAcrossItsPersonLeavingAGroupOwesARefreshToAListingToken: dave sees PRIV only through
 // group team, which PRIV's list names, and his token lists PRIV. carol takes dave out of team. The
 // token reads PRIV no more, so its resume across the change is not complete. The group's event

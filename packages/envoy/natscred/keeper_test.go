@@ -12,14 +12,14 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/natscred"
 )
 
 // statusListeners is how many status listeners nc holds (Conn.StatusChanged). nats.go reports the
 // number nowhere, so it is read from the connection's own map (Conn.statListeners, nats.go
-// v1.53.1), and only after the goroutine that last wrote it has handed over through a channel.
+// v1.55.0), and only after the goroutine that last wrote it has handed over through a channel.
 func statusListeners(t *testing.T, nc *nats.Conn) int {
 	t.Helper()
 	listeners := reflect.ValueOf(nc).Elem().FieldByName("statListeners")
@@ -80,12 +80,12 @@ func TestAKeeperEndsWhenItsConnectionCloses(t *testing.T) {
 	t.Run("a session's keeper closed inside a renewal call", func(t *testing.T) {
 		nc, err := connect(t, url)
 		require.NoError(t, err)
-		presented := &brokerclient.Token{AccessToken: "presented-not-a-secret", Expiry: time.Now().Add(15 * time.Minute)}
+		presented := &cipherclient.Token{AccessToken: "presented-not-a-secret", Expiry: time.Now().Add(15 * time.Minute)}
 		inRenewal, release := make(chan struct{}), make(chan struct{})
 		// run is a renewal loop inside its trade when the connection closes: the trade answers
 		// the token the connection presented, and the loop then waits for its next renewal, as
-		// brokerclient.Client.Run does, until its context ends.
-		run := func(ctx context.Context, onToken func(context.Context, *brokerclient.Token) error) error {
+		// cipherclient.Client.Run does, until its context ends.
+		run := func(ctx context.Context, onToken func(context.Context, *cipherclient.Token) error) error {
 			close(inRenewal)
 			<-release
 			if err := onToken(ctx, presented); err != nil {
@@ -94,7 +94,7 @@ func TestAKeeperEndsWhenItsConnectionCloses(t *testing.T) {
 			<-ctx.Done()
 			return ctx.Err()
 		}
-		renewal := func(token *brokerclient.Token) time.Time { return token.Expiry.Add(-brokerclient.DefaultRenewBefore) }
+		renewal := func(token *cipherclient.Token) time.Time { return token.Expiry.Add(-cipherclient.DefaultRenewBefore) }
 		before := statusListeners(t, nc)
 		kept := keepUntilEnded(t.Context(), natscred.SessionKeeper(run, renewal, presented), nc)
 		<-inRenewal
@@ -107,13 +107,13 @@ func TestAKeeperEndsWhenItsConnectionCloses(t *testing.T) {
 }
 
 // A keeper that ends for its own reason, its context ended or its renewal loop ended (as
-// brokerclient.Client.Run ends on a refusal no retry cures), gives its connection's status
+// cipherclient.Client.Run ends on a refusal no retry cures), gives its connection's status
 // listener back, so no listener outlives it on a connection that stays open. The control is
 // untilClosed's stop without RemoveStatusListener: the listener count stays one above.
 func TestAKeeperThatEndsOnItsOwnGivesBackItsStatusListener(t *testing.T) {
 	_, url := testnats.Start(t)
-	presented := &brokerclient.Token{AccessToken: "presented-not-a-secret", Expiry: time.Now().Add(15 * time.Minute)}
-	renewal := func(token *brokerclient.Token) time.Time { return token.Expiry.Add(-brokerclient.DefaultRenewBefore) }
+	presented := &cipherclient.Token{AccessToken: "presented-not-a-secret", Expiry: time.Now().Add(15 * time.Minute)}
+	renewal := func(token *cipherclient.Token) time.Time { return token.Expiry.Add(-cipherclient.DefaultRenewBefore) }
 	for _, row := range []struct {
 		name string
 		// end ends the keeper: cancel ends its context, release lets its renewal loop return.
@@ -126,7 +126,7 @@ func TestAKeeperThatEndsOnItsOwnGivesBackItsStatusListener(t *testing.T) {
 			nc, err := connect(t, url)
 			require.NoError(t, err)
 			inRenewal, release := make(chan struct{}), make(chan struct{})
-			run := func(ctx context.Context, _ func(context.Context, *brokerclient.Token) error) error {
+			run := func(ctx context.Context, _ func(context.Context, *cipherclient.Token) error) error {
 				close(inRenewal)
 				select {
 				case <-ctx.Done():

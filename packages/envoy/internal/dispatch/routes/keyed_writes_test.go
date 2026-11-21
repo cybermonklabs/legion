@@ -20,12 +20,12 @@ var browserWrites = map[string]string{
 	"POST /auth/logout": "the sign-out resolves its caller and refuses one it cannot, and a second run revokes nothing more",
 	githubapi.Prefix:    "the GitHub proxy answers every method but GET 405 and writes nothing",
 	"/":                 "the dashboard's files are read and never written",
-	// The passkey ceremonies of a person from outside, at the outside origin's page alone: each
-	// begin records a ceremony a finish takes once, and a finish repeated finds it taken.
-	"POST /auth/passkey/register/begin":  "a begin records only a ceremony that lapses, and a second begin is a second ceremony",
-	"POST /auth/passkey/register/finish": "a finish takes its ceremony once, so a repeat is refused CEREMONY_EXPIRED and writes nothing",
-	"POST /auth/passkey/login/begin":     "a begin records only a ceremony that lapses, and a second begin is a second ceremony",
-	"POST /auth/passkey/login/finish":    "a finish takes its ceremony once, so a repeat is refused CEREMONY_EXPIRED and writes nothing",
+	// The passkey ceremonies of a person from outside, at the outside origin's page alone: a
+	// begin writes nothing, and a finish records its ceremony used once.
+	"POST /auth/passkey/register/begin":  "a begin writes nothing: its ceremony rides in the signed cookie, and a second begin is a second ceremony",
+	"POST /auth/passkey/register/finish": "a finish records its ceremony used under a unique key, so a repeat is refused CEREMONY_EXPIRED and writes nothing",
+	"POST /auth/passkey/login/begin":     "a begin writes nothing: its ceremony rides in the signed cookie, and a second begin is a second ceremony",
+	"POST /auth/passkey/login/finish":    "a finish records its ceremony used under a unique key, so a repeat is refused CEREMONY_EXPIRED and writes nothing",
 }
 
 // mounted is a ServeMux the server's own mounting code (mount) filled.

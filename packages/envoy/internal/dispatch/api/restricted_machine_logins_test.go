@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/broker/wire"
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/cipher/wire"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 )
 
 // machineLoginsAnswered is the broker's answer to GET /v1/launcher-credentials in
@@ -108,7 +108,7 @@ func TestARestrictedMemberListsAndRevokesOnlyTheirOwnMachineLogins(t *testing.T)
 // token that holds the row's scopes is answered, named.
 func TestARestrictedMembersTokensListAndRevokeNoMachineLogin(t *testing.T) {
 	rig := newFakeBrokerRig(t)
-	stub := brokertokentest.NewStubBroker(t)
+	stub := ciphertokentest.NewStubBroker(t)
 	served, _ := newAccessServerWith(t, testServerOptions{
 		signInOutside: true, brokerTokens: stubBrokerTokens(t, stub),
 		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
@@ -125,7 +125,7 @@ func TestARestrictedMembersTokensListAndRevokeNoMachineLogin(t *testing.T) {
 	caller := newBrokerCaller(t)
 	const erinsBrokerToken = "erins-person-scoped-broker-token"
 	answer := liveNamedToken(caller.jkt)
-	answer.Person, answer.ProjectScope, answer.Projects = accessErin, brokertoken.ProjectScopePerson, nil
+	answer.Person, answer.ProjectScope, answer.Projects = accessErin, ciphertoken.ProjectScopePerson, nil
 	stub.Says(erinsBrokerToken, answer)
 	brokerWhoami := httptest.NewRecorder()
 	served.ServeHTTP(brokerWhoami, caller.presenting(t, http.MethodGet, "/api/v1/whoami", erinsBrokerToken, nil))

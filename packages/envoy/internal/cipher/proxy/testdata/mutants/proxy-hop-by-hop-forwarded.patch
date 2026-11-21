@@ -1,0 +1,19 @@
+# proxy-hop-by-hop-forwarded: the swap's headers are written over the request
+# httputil.ReverseProxy stripped of its hop-by-hop headers, so the command's Connection header
+# and every header it names reach the service, and a service that speaks HTTP/2 fails the call
+# with a 502.
+# must fail: TestAHopByHopHeaderTheCommandNamesStopsAtTheProxy
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxy/bound.go
++++ b/packages/envoy/internal/cipher/proxy/bound.go
+@@ -468,6 +468,9 @@
+ 				RawQuery: rawQuery,
+ 			}
+ 			pr.Out.Host = hostHeaderOf(info.target)
++			// MUTANT: the swap's headers written over the request ReverseProxy stripped of its
++			// hop-by-hop headers, as before the swap's headers went to it as the request's own.
++			pr.Out.Header = header.Clone()
+ 			// ReverseProxy drops the command's own Forwarded and X-Forwarded-* headers before
+ 			// Rewrite runs, for a proxy that writes its own; this one writes none and changes
+ 			// no header the entry does not name, so they go on as the command sent them, and

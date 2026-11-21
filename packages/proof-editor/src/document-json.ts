@@ -19,7 +19,7 @@
  * A node or mark type the schema does not carry is refused by name: a host that cannot draw a
  * document must say so, where an empty editor would read as an empty document.
  */
-import type { Node as ProseMirrorNode, Schema } from '@milkdown/kit/prose/model';
+import type { Node as ProseMirrorNode, Schema } from "@milkdown/kit/prose/model";
 
 /** One mark of a text node, as `Mark.toJSON()` writes it. */
 export type DocumentMarkJSON = {
@@ -45,7 +45,7 @@ export function documentFromJSON(schema: Schema, json: DocumentJSON): ProseMirro
     if (markType === undefined) throw new RangeError(`this editor has no mark type "${mark.type}"`);
     return markType.create(mark.attrs);
   });
-  if (json.type === 'text') return schema.text(json.text ?? '', marks);
+  if (json.type === "text") return schema.text(json.text ?? "", marks);
   const nodeType = schema.nodes[json.type];
   if (nodeType === undefined) throw new RangeError(`this editor has no node type "${json.type}"`);
   const content = json.content?.map((child) => documentFromJSON(schema, child));

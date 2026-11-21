@@ -30,7 +30,8 @@ func recordedMachineLoginRevocation(t *testing.T, database *Store, email string)
 // removal's transaction is owed from its commit, claimed once within the retry window, and settled
 // only at the generation the claim read. A removal recorded again after the claim owes it anew, so
 // the earlier claim's settlement writes nothing and the next claim pays it; and the row a claim took
-// is not claimed again until the window has passed.
+// is not claimed again until the window has passed. Every Settle here asks no time past the
+// removal (after 0), so the generation alone decides.
 //
 // Control: Settle without its generation, and the earlier claim settles the later removal and the
 // row fails naming it settled.
@@ -57,7 +58,7 @@ func TestARemovalRecordedAgainIsNotSettledByAnEarlierClaim(t *testing.T) {
 	}
 
 	record()
-	if settled, err := revocations.Settle(ctx, claimed[0]); err != nil || settled {
+	if settled, err := revocations.Settle(ctx, claimed[0], 0); err != nil || settled {
 		t.Fatalf("Settle of the earlier claim after the removal was recorded again = %t, %v; want nothing settled", settled, err)
 	}
 	if owed, generation, err := revocations.Owing(ctx, email); err != nil || !owed || generation != claimed[0].Generation+1 {
@@ -71,7 +72,7 @@ func TestARemovalRecordedAgainIsNotSettledByAnEarlierClaim(t *testing.T) {
 	if err != nil || len(next) != 1 || next[0].Generation != claimed[0].Generation+1 {
 		t.Fatalf("Claim after the window = %+v, %v; want the later generation", next, err)
 	}
-	if settled, err := revocations.Settle(ctx, next[0]); err != nil || !settled {
+	if settled, err := revocations.Settle(ctx, next[0], 0); err != nil || !settled {
 		t.Fatalf("Settle of the later claim = %t, %v; want it settled", settled, err)
 	}
 	if owed, _, err := revocations.Owing(ctx, email); err != nil || owed {

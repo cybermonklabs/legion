@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/broker/wire"
+	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -19,7 +19,7 @@ import (
 // under them - only the broker can end. So the sign-in records the debt in its transaction, naming
 // the replaced account by its issuer and `sub` and the account that took the address by its `sub`
 // (store.BrokerRevocations, migration 20261116232217), and this loop pays it after the commit, in
-// whichever process a pass runs, with one call (agentsecrets.Client.RevokePersonSubject), until the
+// whichever process a pass runs, with one call (cipher.Client.RevokePersonSubject), until the
 // broker confirms: a process that dies between the commit and the call, or a broker that does not
 // answer, leaves the revocation owed for the next pass.
 //
@@ -29,7 +29,7 @@ import (
 // refuses it anything new, and leaves the new holder's credentials alone, whenever they were made.
 //
 // Dispatch itself holds each broker token naming the address to the account its credential records
-// (brokerPersonAdmitted, brokerTokenSubject), from the replacing commit, whether or not the broker
+// (brokerPersonAdmitted, brokerTokenAccount), from the replacing commit, whether or not the broker
 // has paid: the new holder's own acts, the replaced account's is refused since people no longer
 // records its account, and one recording no account is refused when its credential was made before
 // the replacing sign-in recorded its account, which every credential the replaced account holds
@@ -60,7 +60,7 @@ const brokerRevocationRetry = 30 * time.Second
 // Claiming more would starve the rows the window skipped: a claim stamps every row it takes, and
 // the next claim orders by tried_at, the same moment for all of them, then recorded_at, so a pass
 // would send the same first rows again each time and never reach the others. Production's client
-// bounds a call at five seconds (agentsecrets.New), which makes this 5; a client bounded at
+// bounds a call at five seconds (cipher.New), which makes this 5; a client bounded at
 // nothing, or at the retry window or more, claims one row a pass, since no batch size is safe
 // under a call the client never gives up on.
 func brokerRevocationBatch(timeout time.Duration) int {
@@ -88,7 +88,7 @@ func RunBrokerRevocations(ctx context.Context, pass func(context.Context) time.T
 // revokeOwedBrokerCredentials is one pass of the loop: it claims up to
 // brokerRevocationBatch(the broker client's own bound on a call) owed revocations, at most one of
 // an address, and for each tells the broker the replaced account no
-// longer holds the address (agentsecrets.Client.RevokePersonSubject), with the address's session
+// longer holds the address (cipher.Client.RevokePersonSubject), with the address's session
 // generation the replacement left (session_generation), by which the broker refuses an approve
 // Dispatch checked before the replacement. One the broker confirms, by answering 200 revoked, is
 // settled at the generation the claim read, logged at WARN with what the broker ended. One the

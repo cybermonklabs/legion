@@ -1,13 +1,17 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { pagedGroups } from "../../__tests__/paged-groups";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { AccessGroup } from "../../api/types";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { GroupsSection } from "./GroupsSection";
 
 const crew: AccessGroup = {
@@ -63,6 +67,7 @@ function renderSection({
   );
   return {
     ...spies,
+    queryClient,
     restore: () => {
       view.unmount();
       queryClient.clear();
@@ -257,6 +262,65 @@ test("a refused make shows the server's own words, keeps the form, and Retry sen
     expect(section.putAccessGroup).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   } finally {
+    section.restore();
+  }
+});
+
+// A make the reader stopped may have made the group: the form says so and what its Retry does,
+// not that it failed (#3000's rule for a keyed write the reader stops). Control: without it the
+// form says "Couldn't make group vendors."
+test("a make the reader stopped says the group may have been made and what Retry does, not that it failed", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const section = renderSection();
+  section.putAccessGroup.mockRejectedValue(
+    new NetworkError("/api/v1/access/groups/vendors", new TypeError("Failed to fetch"))
+  );
+  try {
+    await user.type(await screen.findByLabelText<HTMLInputElement>("Group name"), "vendors");
+    await user.type(screen.getByLabelText("Members"), "grace@example.com");
+    await user.click(screen.getByRole("button", { name: "New group" }));
+    await stopTheLateWrite(section.queryClient);
+
+    // The alert's paragraph, without its Retry button's name.
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the new group vendors", "made", {
+        method: "PUT",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+    section.restore();
+  }
+});
+
+// A row's save the reader stopped may have landed too: the row says so beneath the group, not
+// that it failed. Control: without it the row says "Couldn't save the members of crew."
+test("a members save the reader stopped says it may have been saved and what Retry does, not that it failed", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const section = renderSection();
+  section.putAccessGroup.mockRejectedValue(
+    new NetworkError("/api/v1/access/groups/crew", new TypeError("Failed to fetch"))
+  );
+  try {
+    await user.click(await screen.findByRole("button", { name: "Edit crew" }));
+    await user.type(
+      screen.getByLabelText<HTMLTextAreaElement>("Members of crew"),
+      ", frank@example.com"
+    );
+    await user.click(screen.getByRole("button", { name: "Save crew" }));
+    await stopTheLateWrite(section.queryClient);
+
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the members of crew", "saved", {
+        method: "PUT",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
     section.restore();
   }
 });

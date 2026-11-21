@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 )
 
 // outsideBrokerOrigin is the outside origin (DISPATCH_OUTSIDE_ORIGIN) a broker-token test's
@@ -49,7 +49,7 @@ func TestOutsideOriginAnswersABrokerTokensProofNamingIt(t *testing.T) {
 	s.boot.OutsideOrigin = outsideBrokerOrigin
 	broker := newFakeBroker(t)
 	handler, _ := s.brokerRouter(t, broker)
-	agent := brokertokentest.NewCaller(t)
+	agent := ciphertokentest.NewCaller(t)
 	broker.holds(&fakeCredential{id: "login-outside", person: privOwner, service: "outside-agents", tokens: []string{outsideAgentToken}}, agent)
 	signed := agent.Signed(t, http.MethodGet, outsideBrokerOrigin+"/api/v1/whoami", outsideAgentToken)
 
@@ -68,7 +68,7 @@ func TestNoOutsideOriginRefusesABrokerTokensProofNamingIt(t *testing.T) {
 	s := newOutsideSignIn(t, nil)
 	broker := newFakeBroker(t)
 	handler, _ := s.brokerRouter(t, broker)
-	agent := brokertokentest.NewCaller(t)
+	agent := ciphertokentest.NewCaller(t)
 	broker.holds(&fakeCredential{id: "login-outside", person: privOwner, service: "outside-agents", tokens: []string{outsideAgentToken}}, agent)
 	signed := agent.Signed(t, http.MethodGet, outsideBrokerOrigin+"/api/v1/whoami", outsideAgentToken)
 

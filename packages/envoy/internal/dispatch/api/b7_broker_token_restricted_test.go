@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
 
 // TestARestrictedMembersBrokerTokenSeesOnlyItsListWhateverTheDeploymentHolds (R3): a broker
@@ -35,7 +35,7 @@ func TestARestrictedMembersBrokerTokenSeesOnlyItsListWhateverTheDeploymentHolds(
 			const named, person = "a-restricted-members-token-of-one-project", "a-restricted-members-person-token-of-one-project"
 			rig.broker.Says(named, liveNamedToken(caller.jkt))
 			answer := liveNamedToken(caller.jkt)
-			answer.ProjectScope, answer.Projects = brokertoken.ProjectScopePerson, []string{brokerTestProject}
+			answer.ProjectScope, answer.Projects = ciphertoken.ProjectScopePerson, []string{brokerTestProject}
 			rig.broker.Says(person, answer)
 			own := seedProject(t, rig, brokerTestProject, "Broker")
 			other := seedProject(t, rig, "OTHER", "Other")

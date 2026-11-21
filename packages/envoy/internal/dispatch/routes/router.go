@@ -33,7 +33,7 @@ import (
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/sync/singleflight"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -149,7 +149,15 @@ type AppContextOptions struct {
 	// EnvoyToken is the bearer every Envoy listener call sends (cmd/dispatch: ENVOY_TOKEN); empty
 	// sends none.
 	EnvoyToken string
-	Docs       docs.API
+	// EnvoyAccountTokenFile is the file holding Dispatch's own projected service-account token
+	// every Envoy listener call presents in EnvoyToken's place (cmd/dispatch:
+	// ENVOY_ACCOUNT_TOKEN_FILE); empty presents EnvoyToken.
+	EnvoyAccountTokenFile string
+	// EnvoyGoogleAudience is ENVOY_ACCOUNT_GOOGLE_AUDIENCE, the audience of the Google Cloud
+	// machine's identity token every listener call presents in EnvoyToken's place instead
+	// (cmd/dispatch); empty presents none.
+	EnvoyGoogleAudience string
+	Docs                docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549); nil turns it off.
 	Embedder embed.Embedder
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is configured.
@@ -167,7 +175,7 @@ type AppContextOptions struct {
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme; nil where no broker is configured. cmd/dispatch builds it
 	// (brokerTokenVerifier). See api.DepsInput.
-	BrokerTokens *brokertoken.Verifier
+	BrokerTokens *ciphertoken.Verifier
 	// PrivateProjects are the keys of the projects the deployment has provisioned as private
 	// (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS), and BusProjects the writer of the private-projects
 	// record. See api.DepsInput.
@@ -296,6 +304,8 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		OutsideOrigin:          outsideOrigin,
 		EnvoyURL:               opts.EnvoyURL,
 		EnvoyToken:             opts.EnvoyToken,
+		EnvoyAccountTokenFile:  opts.EnvoyAccountTokenFile,
+		EnvoyGoogleAudience:    opts.EnvoyGoogleAudience,
 		Docs:                   opts.Docs,
 		Embedder:               opts.Embedder,
 		Answerer:               opts.Answerer,

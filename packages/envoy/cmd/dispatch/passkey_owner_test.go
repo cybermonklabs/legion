@@ -11,11 +11,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -44,7 +46,7 @@ func personOn(handler http.Handler, owner *http.Cookie, method, key, email, then
 // whoever used the link first keeps nothing the cookie made. The next link enrolls under that new
 // account.
 //
-// Control: the Reset keeps the address's account (store.PgPasskeys.ResetTx recording no new
+// Control: the Reset keeps the address's account (store.PgPasskeys.EndAccountTx recording no new
 // subject), and the token still reads PRIV and the row fails.
 func TestTheOwnersResetRevokesThePersonsPersonalTokens(t *testing.T) {
 	r := newPasskeyRig(t, nil)
@@ -238,12 +240,13 @@ func TestTheOwnersResetRefusesAWorkspaceAddress(t *testing.T) {
 	wantCode(t, "alice's Reset of "+workspace, personOn(r.handler, r.alice, http.MethodPost, "PRIV", workspace, "/reset"), http.StatusBadRequest, "WORKSPACE_ADDRESS")
 }
 
-// TestAResetUnderTheAddressLockRefusesAFullMember: store.PgPasskeys's ResetTx reads the member
-// kind again under the address's lock, which a Google sign-in takes too, so a full member whose
-// first sign-in committed after the Reset's handler read the list is auth.ErrAddressHeldByMember,
-// and the Reset writes nothing: their personal tokens and account stand.
+// TestAResetUnderTheAddressLockRefusesAFullMember: store.PgPasskeys's EndAccountTx, which the
+// Reset and the last-list removal call, reads the member kind again under the address's lock,
+// which a Google sign-in takes too, so a full member whose first sign-in committed after the
+// Reset's handler read the list is auth.ErrAddressHeldByMember, and nothing is written: their
+// personal tokens and account stand.
 //
-// Control: drop ResetTx's member-kind read, and the Reset revokes the full member's account and
+// Control: drop EndAccountTx's member-kind read, and it revokes the full member's account and
 // answers nil, and the row fails.
 func TestAResetUnderTheAddressLockRefusesAFullMember(t *testing.T) {
 	r := newPasskeyRig(t, nil)
@@ -256,8 +259,8 @@ func TestAResetUnderTheAddressLockRefusesAFullMember(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := store.NewPgPasskeys(r.people.PgPeopleStore, passkeyOrigin).ResetTx(ctx, tx, outsiderEmail); !errors.Is(err, auth.ErrAddressHeldByMember) {
-		t.Fatalf("ResetTx of a full member's address answered %v, want auth.ErrAddressHeldByMember", err)
+	if _, err := store.NewPgPasskeys(r.people.PgPeopleStore, passkeyOrigin).EndAccountTx(ctx, tx, outsiderEmail); !errors.Is(err, auth.ErrAddressHeldByMember) {
+		t.Fatalf("EndAccountTx of a full member's address answered %v, want auth.ErrAddressHeldByMember", err)
 	}
 }
 
@@ -398,5 +401,116 @@ func TestTheOwnersAnswerNamesWhomAnotherOwnersProjectNames(t *testing.T) {
 	after := read("once MAL no longer names the outsider")
 	if !strings.Contains(strings.Join(after.Invitable, " "), outsiderEmail) || len(after.ListedByAnotherOwner) != 0 {
 		t.Fatalf("once MAL no longer names the outsider alice's answer is %+v, want them invitable and listed by no other owner", after)
+	}
+}
+
+// TestTheOwnersAnswerNamesOnlyPeopleFromOutsideAsListedByAnotherOwner (R5): MAL, Mallory's, names
+// dana, a full member, someone@example.ai, an address on a Workspace domain, and alice's outsider,
+// each of whom PRIV, alice's, names too; alice's answer lists the outsider alone in
+// listed_by_another_owner, since only a person from outside is refused a link for another owner's
+// listing (dana's link is 409 FULL_MEMBER and the Workspace address's 400 WORKSPACE_ADDRESS
+// whatever else names them), and neither of the other two is invitable either.
+//
+// Control: name every person another owner's project names (withOwnersPasskeys passing
+// store.ListedByOtherOwners through, as at aa6950fcf1), and dana and the Workspace address appear in
+// listed_by_another_owner and the row fails.
+func TestTheOwnersAnswerNamesOnlyPeopleFromOutsideAsListedByAnotherOwner(t *testing.T) {
+	r := newPasskeyRig(t, map[string]string{"DISPATCH_SIGNIN_WORKSPACE_DOMAINS": "example.ai"})
+	const dana, workspace = "dana@example.com", "someone@example.ai"
+	sessionCookieOf(t, "dana's Google sign-in", codeFlowSignIn(t, r.handler, r.pool, map[string]any{"sub": "google-dana", "email": dana, "email_verified": true, "hd": "example.com"}))
+	malloryCookie := r.ownerOf(t, "MAL", "mallory@example.com")
+	for _, person := range []string{dana, workspace, outsiderEmail} {
+		r.listOn(t, "PRIV", access.PrincipalPerson, person)
+		if listed := personOn(r.handler, malloryCookie, http.MethodPut, "MAL", person, ""); listed.Code != http.StatusOK {
+			t.Fatalf("Mallory names %s on MAL: %d %s, want 200", person, listed.Code, listed.Body.String())
+		}
+	}
+	var answer struct {
+		Invitable            []string `json:"invitable"`
+		ListedByAnotherOwner []string `json:"listed_by_another_owner"`
+	}
+	response := r.asOwner(http.MethodGet, "/api/v1/projects/PRIV/access", nil)
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &answer) != nil {
+		t.Fatalf("alice's read of PRIV's access: %d %s", response.Code, response.Body.String())
+	}
+	if !slices.Equal(answer.ListedByAnotherOwner, []string{outsiderEmail}) || len(answer.Invitable) != 0 {
+		t.Fatalf("alice's answer is %+v, want listed_by_another_owner [%s] alone and nobody invitable", answer, outsiderEmail)
+	}
+}
+
+// TestTheOwnersResetEndsSignInAndDeletesPasskeys (R5): the owner's Reset of a person the list still
+// names ends their sign-in and deletes their passkeys at once, and leaves them on the list, so a
+// new link enrolls them again. Reset is the owner's browser's alone: a full member's address is
+// 409 FULL_MEMBER.
+//
+// Control: skip the end in the Reset (store.EndPasskeySignInTx not called), and the row fails
+// naming the passkey still stored.
+func TestTheOwnersResetEndsSignInAndDeletesPasskeys(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	device := newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin)
+	cookie := r.enrolled(t, device, r.invite(t, outsiderEmail), outsiderEmail)
+	unused := r.invite(t, outsiderEmail)
+
+	reset := r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+outsiderEmail+"/reset", nil)
+	if reset.Code != http.StatusOK || !strings.Contains(reset.Body.String(), `"people":["`+outsiderEmail+`"]`) {
+		t.Fatalf("alice's Reset of the outsider answered %d %s, want 200 with the outsider still listed", reset.Code, reset.Body.String())
+	}
+	if n := r.passkeysOf(t, outsiderEmail); n != 0 {
+		t.Fatalf("after the Reset %s holds %d passkey(s), want every one deleted", outsiderEmail, n)
+	}
+	if whoami := whoamiOutside(r.handler, cookie); whoami.Code != http.StatusUnauthorized {
+		t.Fatalf("whoami after the Reset answered %d %s, want 401", whoami.Code, whoami.Body.String())
+	}
+	wantCode(t, "a passkey sign-in after the Reset", r.signIn(t, r.handler, device), http.StatusUnauthorized, "PASSKEY_UNKNOWN")
+	wantCode(t, "the link made before the Reset", r.beginEnrollment(r.handler, unused), http.StatusNotFound, "INVITATION_UNKNOWN")
+
+	again := r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), r.invite(t, outsiderEmail), outsiderEmail)
+	signedInRestricted(t, r.handler, again, outsiderEmail)
+
+	r.listOn(t, "PRIV", access.PrincipalPerson, privOwner)
+	wantCode(t, "a Reset of a full member", r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+privOwner+"/reset", nil), http.StatusConflict, "FULL_MEMBER")
+}
+
+// TestPasskeyAccessFieldsAreTheOwnersAlone: GET /api/v1/projects/{key}/access answers the owner's
+// browser session, where passkey sign-in is on, when each passkey of a listed person was enrolled
+// (passkeys) and the people a link can be made for now (invitable: on no Workspace domain, no full
+// member's); a full member the list names and the restricted member read neither field, and with
+// passkey sign-in off the owner reads neither either.
+//
+// Control: answer the two fields to every reader (withOwnersPasskeys skipping its owner check),
+// and the full member's read carries passkeys and the row fails.
+func TestPasskeyAccessFieldsAreTheOwnersAlone(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	cookie := r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), r.invite(t, outsiderEmail), outsiderEmail)
+	const dana = "dana@example.com"
+	danaSignIn := codeFlowSignIn(t, r.handler, r.pool, map[string]any{"sub": "google-dana", "email": dana, "email_verified": true, "hd": "example.com"})
+	r.listOn(t, "PRIV", access.PrincipalPerson, dana)
+	r.listOn(t, "PRIV", access.PrincipalPerson, "pending@other.example")
+
+	var owners struct {
+		Passkeys  []model.EnrolledPasskey `json:"passkeys"`
+		Invitable []string                `json:"invitable"`
+	}
+	read := r.asOwner(http.MethodGet, "/api/v1/projects/PRIV/access", nil)
+	if read.Code != http.StatusOK || json.Unmarshal(read.Body.Bytes(), &owners) != nil {
+		t.Fatalf("alice's read of PRIV's access: %d %s", read.Code, read.Body.String())
+	}
+	if len(owners.Passkeys) != 1 || owners.Passkeys[0].Email != outsiderEmail || owners.Passkeys[0].EnrolledAt.IsZero() {
+		t.Fatalf("alice reads passkeys %+v, want the outsider's one, with its enrollment time", owners.Passkeys)
+	}
+	if want := []string{outsiderEmail, "pending@other.example"}; !slices.Equal(owners.Invitable, want) {
+		t.Fatalf("alice reads invitable %v, want %v: no full member", owners.Invitable, want)
+	}
+	for who, response := range map[string]*httptest.ResponseRecorder{
+		"dana, a full member the list names": call(r.handler, canonicalOrigin, http.MethodGet, "/api/v1/projects/PRIV/access", nil, sessionCookieOf(t, "dana's sign-in", danaSignIn)),
+		"the restricted member":              call(r.handler, passkeyOrigin, http.MethodGet, "/api/v1/projects/PRIV/access", nil, cookie),
+	} {
+		if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"passkeys"`) || strings.Contains(response.Body.String(), `"invitable"`) {
+			t.Fatalf("%s's read of PRIV's access: %d %s, want 200 with neither passkeys nor invitable", who, response.Code, response.Body.String())
+		}
+	}
+	off, _ := r.serverWith(t, map[string]string{"DISPATCH_SIGNIN_PASSKEY": ""})
+	if off := call(off, canonicalOrigin, http.MethodGet, "/api/v1/projects/PRIV/access", nil, r.alice); off.Code != http.StatusOK || strings.Contains(off.Body.String(), `"passkeys"`) {
+		t.Fatalf("alice's read with passkey sign-in off: %d %s, want 200 with no passkeys", off.Code, off.Body.String())
 	}
 }

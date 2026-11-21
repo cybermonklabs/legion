@@ -129,7 +129,7 @@ func (r *router) whoamiSignIn(req *http.Request) string {
 // passkeyRegisterBegin is POST /auth/passkey/register/begin, body {"token"}: the link's fragment.
 // It answers the creation options (protocol.CredentialCreation) with the link's invitation, the
 // project it is for and the owner who made it (identity.EnrollmentOptions), and sets the ceremony
-// cookie; it uses no link, and records only the ceremony a finish takes once (passkey_ceremonies).
+// cookie; it uses no link and writes nothing: the ceremony rides in the signed cookie.
 func (r *router) passkeyRegisterBegin(w http.ResponseWriter, req *http.Request) {
 	var body struct {
 		Token string `json:"token"`
@@ -168,9 +168,9 @@ func (r *router) passkeyRegisterFinish(w http.ResponseWriter, req *http.Request)
 
 // passkeyLoginBegin is POST /auth/passkey/login/begin: the request options
 // (protocol.CredentialAssertion) of a discoverable sign-in, naming no credential, and the ceremony
-// cookie. It records only the ceremony a finish takes once (passkey_ceremonies).
+// cookie. It writes nothing: the ceremony rides in the signed cookie.
 func (r *router) passkeyLoginBegin(w http.ResponseWriter, req *http.Request) {
-	assertion, ceremony, err := r.ctx.Passkeys.BeginSignIn(req.Context())
+	assertion, ceremony, err := r.ctx.Passkeys.BeginSignIn()
 	if err != nil {
 		writePasskeyRefusal(w, err, false)
 		return

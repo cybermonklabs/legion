@@ -24,14 +24,14 @@ import { pickLook } from "./issue-field-looks";
 import { useIssueRepo } from "./useIssueRepo";
 
 /** The grammar a repository GitHub could hold is written in, which is the grammar the server
- *  holds an issue's repository to (`githubCouldHoldRepo`, `issue_repo.go`, itself copied from the
- *  daemon's `ghrepo`): an owner is a letter or digit and then up to 38 letters, digits, hyphens
- *  and underscores - as GitHub serves logins, which is looser than its sign-up form, since
- *  `hello--world`, `artofcode-` and a managed user's `mona-cat_octo` are all served - and a
- *  repository name is at most 100 letters, digits, `.`, `-` and `_`, and is neither `.` nor
- *  `..`. It is written here rather than taken from `ownerRepoPattern`, the looser `owner/name`
- *  shape the settings forms share, because those forms write a repository mapping, which the
- *  server holds to that looser shape alone.
+ *  holds an issue's repository to (`parseIssueRepo`, `issue_repo.go`, through
+ *  `refs.ParseGitHubRepo`, whose rule is copied from the daemon's `ghrepo`): an owner is a letter
+ *  or digit and then up to 38 letters, digits, hyphens and underscores - as GitHub serves logins,
+ *  which is looser than its sign-up form, since `hello--world`, `artofcode-` and a managed user's
+ *  `mona-cat_octo` are all served - and a repository name is at most 100 letters, digits, `.`,
+ *  `-` and `_`, and is neither `.` nor `..`. It is written here rather than taken from
+ *  `ownerRepoPattern`, the looser `owner/name` shape the settings forms share, because those
+ *  forms write a repository mapping, which the server holds to that looser shape alone.
  *
  *  The hyphen is written `\-` in both classes because this is also the box's `pattern`, which a
  *  browser compiles with the `v` flag, and under that flag a bare hyphen in a class is a syntax

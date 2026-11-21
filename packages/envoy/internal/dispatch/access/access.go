@@ -240,6 +240,37 @@ func SessionClause(sessionExpr, viewerParam string) string {
 		ViewerFlag(viewerParam, "private")))
 }
 
+// SessionContentClause passes a session whose whole conversation the viewer bound at viewerParam
+// may read: the transcript the live agent view relays, whose tool results hold whatever the
+// session read of any project it worked in. SessionClause decides whether a session exists for a
+// viewer, and passes one that has acted in any project the viewer sees; this clause passes a
+// session only when every project it acted in (session_projects) and every project its listener
+// record lists (route_roster_session_projects) is one the viewer sees, and it names at least one,
+// so nothing its conversation holds is of a project the viewer does not see.
+//
+// The server's viewer and the viewer's own session pass, and so does every session for an open
+// viewer of a deployment that holds no private project (R9), in the statement's own SQL. A session
+// that names no project passes no other viewer: while a project is private nothing Dispatch holds
+// says which projects its conversation is of, and a viewer that is not open reads only what names
+// its projects. Until `envoy-dispatch backfill-session-projects` has filled the pairs
+// (session_projects_filled), a session passes no open viewer of a deployment that holds a private
+// project, as SessionClause's open arm.
+func SessionContentClause(sessionExpr, viewerParam string) string {
+	listed := `coalesce((select listener.projects->(` + sessionExpr + `) from route_roster_session_projects listener where listener.id = true), '[]'::jsonb)`
+	return clause("SessionContentClause", fmt.Sprintf(`(%[3]s or (%[1]s) = %[2]s::jsonb->>'session'
+		or (%[4]s and not %[5]s)
+		or ((not %[4]s or exists (select 1 from session_projects_filled offset 0))
+			and not exists (
+				select 1 from session_projects unseen
+				where unseen.session_id = (%[1]s) and not ((%[2]s::jsonb->'sees') ? unseen.project_key)
+				offset 0)
+			and %[6]s <@ (%[2]s::jsonb->'sees')
+			and (exists (select 1 from session_projects acted where acted.session_id = (%[1]s) offset 0)
+				or jsonb_array_length(%[6]s) > 0)))`,
+		sessionExpr, viewerParam, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"),
+		ViewerFlag(viewerParam, "private"), listed))
+}
+
 // roleProjectSQL is contracts.RoleProject in SQL, over the role name roleExpr gives: the project
 // key a Legion role's name, legion-<token>-…, gives, its token of lower-case letters and digits
 // upper-cased when that is a project key, and null for every other name. translate upper-cases the
@@ -369,6 +400,40 @@ func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, e
 	}
 	if held {
 		viewer.Lists = listed
+	}
+	viewer.Open = !viewer.Restricted
+	return viewer, nil
+}
+
+// RecordedViewer answers what the person a stored row records as its author may see now, in one
+// read of VisibleProjectsSQL: the person a user author names, or a session author's owner, read as
+// that person's credential naming no list (their member kind and every project access names them
+// on, restricted or full, as Resolve reads them). It is not Resolve, which takes the request's own
+// caller with its credential: it is the viewer refs.Reader resolves the short ids of a stored text
+// for, at a write and at every rebuild of that text alike (refs.Reader.seenBy), so it reads no
+// credential and sees no more than the person does. An author that records no person sees what a
+// credential naming nobody sees.
+func RecordedViewer(ctx context.Context, q Querier, recorded model.Actor) (model.Viewer, error) {
+	login := ""
+	switch {
+	case recorded.Kind == "user":
+		login = model.CanonicalLogin(recorded.ID)
+	case recorded.Owner != nil:
+		login = model.CanonicalLogin(*recorded.Owner)
+	}
+	var person *string
+	if login != "" {
+		person = &login
+	}
+	viewer := model.Viewer{Person: login}
+	if recorded.Kind == "session" {
+		viewer.Session = recorded.ID
+	}
+	agent := recorded.Kind != "user" || recorded.Act != nil
+	var held bool
+	if err := q.QueryRow(ctx, VisibleProjectsSQL(), person, false, agent, []string(nil)).
+		Scan(&viewer.Sees, &viewer.Restricted, &viewer.AnyPrivate, &held); err != nil {
+		return model.Viewer{}, fmt.Errorf("resolve what a recorded author sees: %w", err)
 	}
 	viewer.Open = !viewer.Restricted
 	return viewer, nil

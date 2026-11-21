@@ -639,11 +639,13 @@ func TestWithNoPrivateProjectAReferenceReadsAsToday(t *testing.T) {
 	safeHorizon(t, fixture.server)
 	namesPrivate := false
 	for _, read := range reads {
-		// Two answers stamp the moment they were read (as_of, a window ending now): each time is
-		// written as one placeholder, and every other byte compared.
+		// Two answers stamp the moment they were read (as_of, a window ending now), and the open
+		// asks count each ask's age in whole seconds at that moment (age_seconds), which two reads
+		// a second boundary falls between answer apart: each time and each age is written as one
+		// placeholder, and every other byte compared.
 		want := fixture.request(t, callerCarol, http.MethodGet, read, nil)
 		got := fixture.request(t, callerAlice, http.MethodGet, read, nil)
-		if got.Code != want.Code || maskTimes(got.Body.String()) != maskTimes(want.Body.String()) {
+		if got.Code != want.Code || maskAges(maskTimes(got.Body.String())) != maskAges(maskTimes(want.Body.String())) {
 			t.Errorf("PRIV public: alice reads %s = %d %s, want carol's answer byte for byte: %d %s",
 				read, got.Code, got.Body.String(), want.Code, want.Body.String())
 		}

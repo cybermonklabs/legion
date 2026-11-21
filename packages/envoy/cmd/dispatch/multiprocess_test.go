@@ -56,6 +56,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/crafted"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
@@ -73,6 +74,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // start starts both processes on the pair's database and NATS, each on a port held for it from the
@@ -2040,14 +2042,15 @@ type natsTap struct {
 	sent []byte
 }
 
-// startNATSTap relays to the NATS URL target on a loopback port of its own until the test ends.
+// startNATSTap relays to the NATS URL target on a loopback port and address of its own
+// (testport.LoopbackIP) until the test ends.
 func startNATSTap(t *testing.T, target string) *natsTap {
 	t.Helper()
 	server, err := url.Parse(target)
 	if err != nil || server.Host == "" {
 		t.Fatalf("read the NATS URL %q the tap relays to: %v", target, err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen for the NATS tap: %v", err)
 	}
@@ -2828,7 +2831,7 @@ func TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed(t *testing.T) {
 	pair := newPair(t)
 	seedMergedPullRequestSettings(t, pair.database)
 	fake := newMergedPullRequestFake()
-	// A GitHub of each process's own, and the delivery reconcile on a period the row meets
+	// A GitHub of each process's own, and the delivery reconcile on an interval the row meets
 	// several times over rather than its five minutes, whose jittered first pass would land
 	// inside this row now and then. A pass reads pull requests through the very call that
 	// counts a handling here (delivery.FetchPullRequest), so a pass that re-read one of the
@@ -2964,8 +2967,12 @@ func TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed(t *testing.T) {
 	requireOneHoldPerDurable(t, pair)
 	// A delivery reconcile pass ran with the row's own pull requests stored, and re-read none
 	// of them: one that did would have read a pull request through the very call that counts a
-	// handling above (delivery.FetchPullRequest), and the counts would say so. The processes
-	// run it every ten seconds, so this waits out three of its periods at most.
+	// handling above (delivery.FetchPullRequest), and the counts would say so. Each process ticks
+	// at most ten seconds after its last pass ended and more than nine seconds after its last tick,
+	// nine seconds being the lease's period (duty.LeasePeriod of the ten), so its second tick from
+	// here is due in a period that began after this wait did: that tick runs, or another process's
+	// pass has served that period, and either is a pass counted here. Two ticks and their passes
+	// fit in the 30 s.
 	waitUntil(t, 30*time.Second, "a delivery reconcile pass with the row's pull requests stored", func() bool {
 		return countLease(pair.a, leaseRan, "delivery-reconcile")+countLease(pair.b, leaseRan, "delivery-reconcile") > reconciledBefore
 	})
@@ -3283,10 +3290,14 @@ func waitForDurableDrained(t *testing.T, pair *dispatchPair, js natsgo.JetStream
 // message, so the 404 is redelivered to nobody and neither process logs a delivery error for the
 // durable, which this row requires, as the one-binder row does.
 //
-// The delivery reconcile runs its pass as each process starts (DISPATCH_TEST_RECONCILE_AT_START)
-// and takes the lease for that whole ReconcileInterval with it, so the next pass is five minutes
-// away and none lands in the window the fetches are counted in: the pull-request head this row's
-// envelope writes is re-read by that pass, outside the row, rather than by one inside it.
+// The delivery reconcile runs its pass as each process starts (DISPATCH_TEST_RECONCILE_AT_START),
+// long before this row's envelope is published. That pass serves the period its start falls in, an
+// epoch-aligned bucket of duty.LeasePeriod(ReconcileInterval), four and a half minutes, so the
+// next pass needs a tick due past that bucket's end, and each process's first tick comes a uniform
+// draw within ReconcileInterval of its own start. Such a pass reads again the pull request this
+// row's envelope names, and it lands inside the second the fetches are counted in
+// (deliverySecondFetchWindow) by a chance of about that second in minutes: in almost every run it
+// comes outside the row, rather than inside it.
 func TestAProcessBackFromANATSCutKeepsDeliveryEventsAndDeliversThemOnce(t *testing.T) {
 	durable := bus.DispatchDeliveryDurable
 	// The merged pull request the row publishes. Its author has to be one the settings name: a
@@ -3937,9 +3948,10 @@ func requireLeasedOnce(t *testing.T, pair *dispatchPair, lease string) {
 // which both of them passed. That is exactly what the lease guarantees. requireLeasedOnce's
 // "once overall" is a stronger claim than the lease makes, and a row whose run time passes its
 // period breaks it honestly: the block index's period is 30 s (docs.BlockIndexReconcileInterval)
-// and the webhook redelivery's two minutes, so a pass that overruns leaves the next honest pass
-// in the next period and the count becomes two. Waiting out more boundaries cannot mend that,
-// since each boundary it waits for is another period a pass may serve (INFRA-985).
+// and the webhook redelivery's 108 s (duty.LeasePeriod of redeliver.Interval's two minutes), so a
+// pass that overruns leaves the next honest pass in the next period and the count becomes two.
+// Waiting out more boundaries cannot mend that, since each boundary it waits for is another
+// period a pass may serve (INFRA-985).
 func requireLeasedOncePerPeriod(t *testing.T, pair *dispatchPair, lease string) {
 	t.Helper()
 	passes := map[string][]string{}
@@ -4084,9 +4096,11 @@ const (
 // (api.TestTheMaintenanceLoopSweepsOncePerPeriodAcrossTwoRunners holds what its lease is for);
 // architecture-import's and delivery-reconcile's first pass is jittered uniformly over
 // SyncInterval/ReconcileInterval (5 min) and each process draws its own, so whether their passes
-// ever overlap is a coin toss no test should turn into a flake; edit-notices is a woken loop whose
-// passes here, with nothing due, take milliseconds, so whether the two processes' boot passes
-// meet is luck too (docs.TestEditNoticeSweepRetriesAHeldLease holds its retry, and
+// ever overlap is a coin toss no test should turn into a flake, and so is whether the second's
+// tick falls in the epoch-aligned bucket of 4.5 min (duty.LeasePeriod of the 5 min) the first's
+// pass served, where it is refused, or in the next, where it runs; edit-notices is a woken loop
+// whose passes here, with nothing due, take milliseconds, so whether the two processes' boot
+// passes meet is luck too (docs.TestEditNoticeSweepRetriesAHeldLease holds its retry, and
 // docs.TestEditNoticeSweepOfTwoServicesSendsEachNoticeOnce what its lease is for);
 // settlement-resumption's period is SettlementResumeInterval (1 min) and each pass is over in
 // milliseconds, so this window holds several of its periods, each served once; and
@@ -4150,8 +4164,7 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 	// it at boot, before the sweeper goroutine starts, so it is there before any GitHub call is
 	// made. The other process's skip is no proof either, since a tick that lands in the next
 	// period passes rather than skipping, and waiting for a skip here failed for exactly that
-	// reason - two honest passes, each in its own two-minute period, and no skip at all
-	// (INFRA-985).
+	// reason - two honest passes, each in a period of its own, and no skip at all (INFRA-985).
 	for deadline := time.Now().Add(60 * time.Second); fake.deliveryListings() == 0; time.Sleep(100 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("no webhook delivery listing reached the fake within %v, so no redelivery pass is inside its GitHub call:\nA:\n%s\nB:\n%s",
@@ -4246,10 +4259,14 @@ func TestTheSuggestionOutcomeSweepSerialisesOnTheCursorAcrossBothProcesses(t *te
 // processes are started inside one bucket on purpose: a second process whose first tick lands
 // past a bucket boundary is entitled to sweep, and this row is about the one that lands inside
 // the bucket its peer has already served. waitOutABucketBoundary is what keeps which of the two
-// this run gets from being luck.
+// this run gets from being luck. The sweep's period is 108 s, duty.LeasePeriod(redeliver.Interval),
+// and not the 120 s interval: the boundaries of epoch-aligned buckets of 108 s and of 120 s meet
+// only every 18 minutes, so waiting out a boundary of the interval's would leave one of the
+// period's inside the row in some runs, and the second process would then sweep a period of its
+// own.
 func TestALeasedLoopRunsOnceAcrossAStaggeredStart(t *testing.T) {
 	pair := newPair(t)
-	waitOutABucketBoundary(t, redeliver.Interval)
+	waitOutABucketBoundary(t, duty.LeasePeriod(redeliver.Interval))
 	fake := startGitHubFake(t)
 	// Nothing is held here: this row is about two passes that never meet, so the first one must
 	// finish and give the lease back before the second process exists.

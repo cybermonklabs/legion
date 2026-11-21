@@ -54,7 +54,8 @@ hours the stream still holds shows no receipts.
 ## Consumer delivery
 
 `createConsumerDelivery` (`@legion/envoy-client/consumer-delivery`) is a session's side of the
-listener's relay of its durable consumer ("Session consumers" in `packages/envoy/AGENTS.md`). A
+listener's relay of its durable consumer (the "Session consumers" item of "Runtime shape" in
+`packages/envoy/docs/architecture.md`). A
 host makes one per session, subscribes its `subject` (`notifications.envoy.deliver.<session id>`)
 before it registers, passes `registration()` as the registration's `delivery` field, and gives the
 registration's answer and the topics it carried to `answered`, which returns `consumer`, the one
@@ -159,12 +160,18 @@ listener's warning returns, so a reword reaches both languages from one place.
 `natsConnectionOptions({ servers, name, credential })` (`@legion/envoy-client/nats-connection`) is
 the nats.js `connect` options every session plugin dials with: the credential `natsAuthOptions`
 builds from the resolved `NatsCredential` (`src/nats-auth.ts`, which the package does not export, so
-a plugin dials only with these options), reconnecting forever 2 s apart, and a ping every 10 s
-(`NATS_PING_INTERVAL_MS`) with the connection dropped on the tick that finds two pings unanswered
-(`NATS_MAX_PINGS_OUT`). So a
+a plugin dials only with these options), a dial timeout of 10 s (`NATS_DIAL_TIMEOUT_MS`),
+reconnecting forever 2 s apart, and a ping every 10 s (`NATS_PING_INTERVAL_MS`) with the connection
+dropped on the tick that finds two pings unanswered (`NATS_MAX_PINGS_OUT`). So a
 path that freezes without closing is left within 30 s and redialed at once, and a session is back
-within 52 s when that redial also hangs on nats.js's 20 s dial timeout and the 2 s wait; nats.js's
-default 120 s interval left a frozen path for up to 6 minutes. A failed connect is logged as
+within 42 s when that redial also hangs for its 10 s timeout and the 2 s wait; nats.js's
+default 120 s interval left a frozen path for up to 6 minutes. A plugin opens its connection with
+`connectNats(connect, options, plan, hooks)`: one bound around the whole `connect()` (the name
+lookup, every address and every server, which nats.js times one at a time), and a failed dial
+dialed again 250 ms later, doubling to 4 s, inside a budget (`NATS_DIAL_PLAN`, `natsDialBudget`),
+unless no redial can cure the failure. A server that closes a dial during its handshake, as
+nats-server does to a CONNECT that comes more than 2 s after its INFO, fails it at once
+(`patches/nats@2.29.3.patch`). A failed connect is logged as
 `natsDialFailure(named, error, presenting)`: `could not connect to NATS at <servers> presenting
 <credential>: <reason>`, built once for every caller (pi-envoy, the channel server, the e2e bridge,
 `nats-stream` and `dispatch-user-turns`). The servers are named by the setting that holds them
@@ -226,7 +233,7 @@ the trade all of it but the connection's share, 8 s or half the bound.
 The module imports nats.js's types alone, since every bundle that reads `envoySettings` imports it.
 
 nats.js 2.29.3, the last 2.x release, leaves a redial's socket open when it gives up on that dial
-at its 20 s timeout (a TCP connect that hangs, or a server that never sends `INFO`): it closes
+at its dial timeout (a TCP connect that hangs, or a server that never sends `INFO`): it closes
 only a transport that finished connecting, so the socket keeps the process alive and a channel
 server never exits on SIGTERM. Its stale-connection close (two unanswered pings) flushes the
 transport before it destroys the socket, and behind data a dead path never acknowledged that flush
@@ -833,7 +840,7 @@ instead (`AGENT_SECRETS_URL` with `AGENT_SECRETS_MACHINE_IDENTITY`, `brokerCrede
 credential is then a DPoP-bound access token presented under the `DPoP` scheme rather than a
 bearer. Every bearer source above is resolved first and unchanged, so a session that has one
 behaves exactly as it did. The machine's identity is one of three (`machineIdentity` in
-`@legion/broker-client/environment`). `kubernetes` reads a pod's projected token from
+`@legion/cipher-client/environment`). `kubernetes` reads a pod's projected token from
 `AGENT_SECRETS_MACHINE_TOKEN_FILE`. `metadata` asks the metadata server for a Compute Engine
 machine's Google identity token, for the audience `AGENT_SECRETS_MACHINE_AUDIENCE`. `pool` mints
 a Google identity token through a workload identity pool, as the Go client's `PoolIdentity`
@@ -845,7 +852,7 @@ An identity with one of its variables missing is an error that names the variabl
 A pod writes under a session name only once its deployment has registered that name for the pod,
 and its trade can reach the broker first. The broker refuses that trade with a description
 beginning `pod_session_not_registered:`, and that refusal is never final (`podSessionUnregistered`
-in `@legion/broker-client/token-errors`).
+in `@legion/cipher-client/token-errors`).
 
 The client trades through one retry loop per session (`BrokerTokenClient.token`), and no caller
 starts a second one or cuts its wait short, so the broker sees one trade per slot of the loop's
@@ -898,8 +905,10 @@ trades that person, as the Go client does:
   the broker's sign-in domain, so the broker asks Dispatch no member kind for this trade. A value
   that is no list fails the call naming the variable. The machine's own trade names no project.
 
-Dispatch gives the token that names a person the `person` and `approve` scopes, so the session
-writes as that person.
+Dispatch gives the token that names a person the `person` scope, so the session writes as that
+person. It never gives a broker token `approve`: a review, an answer to an approval request, a
+machine login's decision and a personal token's mint need the person's browser, or a personal
+token (`DISPATCH_TOKEN`) the person gave `approve`.
 
 The client reads the sign-ins as the Go client reads them (`signins.ts`). The directory is
 `AGENT_SECRETS_SIGNIN_DIR`, else `$XDG_STATE_HOME/agent-secrets/signins`, else
@@ -968,9 +977,11 @@ calling trades about every ten minutes. Every `dispatch` command, Claude Code ho
 `envoy-send` is a process of its own, so each one trades once.
 
 A revoke of the sign-in on Dispatch ends the tokens of that sign-in, and the next trade is
-refused with words that name `agent-secrets login`. The revoke does not end a personal agent
-token that an agent made with the person's `approve` scope before the revoke. It does not end a
-machine-login approval that an agent made with that scope before the revoke.
+refused with words that name `agent-secrets login`. Dispatch gives the sign-in's tokens no
+`approve` (above), so an agent under it makes no personal token and decides no machine login. A
+Dispatch release before that rule did give them `approve`: a personal token or a machine-login
+approval an agent made under one then is not ended by the revoke, so revoke each on its own
+Dispatch page.
 
 `DISPATCH_TOKEN_BROKER=1` makes the broker route the only one. No bearer is read at all: not the
 variables, not the chosen file's `dispatch.token`, not a checkout's pair. A machine that can trade
@@ -1003,7 +1014,10 @@ an example, and `--dry-run` runs the call's own argument check (`checkDispatchCa
 strict schema, the cross-field checks and the picture files), refusing the arguments the call would
 refuse with the call's message, and otherwise prints the arguments as given, not as the call fills
 them (an issue from LEGION_ISSUE or the ref). It reads neither Dispatch nor this session's state,
-so it runs with Dispatch off too, and a call it passed can still stop on either.
+so it runs with Dispatch off too, and a call it passed can still stop on either. The one exception
+is a `dispatch result` record: its dry run needs Dispatch on, as the record does, and after the
+arguments prints the pull-request body line Dispatch answers on `POST …/results/dry-run`, recording
+nothing. A retraction's dry run sends nothing.
 
 `runDispatchCli` (`dispatch-cli.ts`) runs one call per process. The host plugin sets
 `DISPATCH_HOST` (`omp` or `claude`) and the session's id (`CLAUDE_CODE_SESSION_ID` under Claude
@@ -1096,11 +1110,12 @@ minute later before reading the refusal as an older Dispatch. In a rollout, a se
 build took but whose answer was lost, and was then sent again to an older build, may still have
 recorded the review, at the version named: `dispatch doc-read` shows the document's approval.
 A review records an approval or a request for changes in the person's name, so it works only with
-a token that names a person who holds `approve`. A session gets such a token from a person's
-sign-in on the machine (above). Dispatch refuses any other token with `403 OAUTH_SCOPE_REQUIRED`
-or `403 SIGN_IN_REQUIRED`. `--version` is the version the caller read, and it must be the version
-the review would record: the document's latest settled version, or the version an open approval
-request names for the document. Dispatch refuses any other version with `409 REVIEW_VERSION_MOVED`,
+a token that names a person who holds `approve`: a personal token (`DISPATCH_TOKEN`) the person
+gave `approve`. A broker token, a person's sign-in included, never holds it. Dispatch refuses any
+other token with `403 OAUTH_SCOPE_REQUIRED` or `403 SIGN_IN_REQUIRED`. `--version` is the version
+the caller read, and it must be the version the review would record: the document's latest
+settled version, or the version an open approval request names for the document. Dispatch
+refuses any other version with `409 REVIEW_VERSION_MOVED`,
 which names the version to read, and records nothing. With an approval request open, the review
 answers that request and records the same verdict on every document the request names, each at
 the version the request names. The output names the state, the version and the actor that

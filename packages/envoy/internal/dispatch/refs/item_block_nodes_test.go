@@ -92,7 +92,7 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 	messageBlock := itemBlockNodeID(ItemMessage, message, "b2")
 	citer := insertIndexedItem(t, tx, ItemComment, "CORE-1", "See dispatch://CORE-1/comment/"+comment+"#b-b2.")
 	ask := insertAsk(t, tx, "CORE-1", "Ship dispatch://CORE-2 first?", model.AskOption{Label: "Yes"})
-	askMentions := NewReader(ctx, tx, "ask", ask.ID, text.NewOrigins(itemBlockServer)).Mentions(ask.Question)
+	askMentions := NewReader(ctx, tx, ask.Author, "ask", ask.ID, text.NewOrigins(itemBlockServer)).Mentions(ask.Question)
 	if _, err := replaceRefs(ctx, tx, "ask", ask.ID, text.Refs(askMentions), nil); err != nil {
 		t.Fatalf("index the ask's own references: %v", err)
 	}
@@ -180,8 +180,9 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 		if slices.Contains(previousReleaseNodeKinds, kind) {
 			continue
 		}
-		// That release resolves no node of the kind. Its predicate stays: the registry answered
-		// for every kind then as it does now, and only the loader is the newer build's.
+		// That release resolves no node of the kind. Its key stays, and with it the predicate
+		// VisibleKind binds: the registry answered for every kind then as it does now, and only
+		// the loader is the newer build's.
 		entry.load = nil
 		previous[kind] = entry
 	}

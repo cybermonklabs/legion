@@ -3,11 +3,14 @@ package refs
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -920,5 +923,130 @@ func TestABlockPastTheAddressBoundKeepsARowThatNamesNoNode(t *testing.T) {
 	}
 	if nodes := blockNodesOf(t, document); nodes != 0 {
 		t.Errorf("the store holds %d nodes of the long-keyed document's blocks, want none", nodes)
+	}
+}
+
+// A pass the revision fence's own statement refuses commits nothing (R23).
+//
+// The plan decides the fence in the pass's read phase (PlanBlocks), and the stand decides it
+// again in its statement, against the row as it stands when that statement runs (queueStand).
+// Here a second transaction stores a newer revision of the document between the two, as no
+// writer of document_block_versions does today: the pass, at version 2, read a null version and
+// planned a win, and its row then stands at 3. The pass's version adds a block and rewords
+// another, so a pass that went on would write that block's node, its tuples and the rows of
+// version 2. Its batch fails instead, with the fence's error naming the document and the version,
+// and once its transaction is abandoned, as every caller abandons one whose write phase failed,
+// the store holds no node, no tuple and no projection row of the pass, and the row still stands
+// at the newer revision. A pass whose batch answered no error is committed as a caller commits
+// one, so a fence that refused nothing leaves its rows here to be named.
+func TestAPassTheFenceRefusesCommitsNothing(t *testing.T) {
+	ctx := context.Background()
+	database := parentDatabase(t)
+	writer := model.Actor{Kind: "user", ID: "alice"}
+	document := newParentDocument(t, database, "FENCE", "fenced-md")
+	first := document.writeVersion(t, 1, nestedDocument("tail one\n").markdown, writer)
+	if won, _ := document.indexVersion(t, 1, nestedDocument("tail one\n"), first); !won {
+		t.Fatalf("the document's first index did not become the version its blocks stand at")
+	}
+	const extra = "extra\n"
+	added := nestedDocument("tail two\n")
+	added.blocks = append(added.blocks, model.ArtifactBlock{
+		ID: "extra", Type: "paragraph", From: len(added.markdown), To: len(added.markdown) + len(extra),
+	})
+	added.markdown += extra
+	const own, newer = 2, 3
+	second := document.writeVersion(t, own, added.markdown, writer)
+	before := document.highestTuple(t)
+
+	// The pass, through its read phase.
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the pass: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	index, err := ReadBlockIndex(ctx, tx, document.artifact)
+	if err != nil {
+		t.Fatalf("read the document's block index: %v", err)
+	}
+	record, err := ReadIndexedVersion(ctx, tx, document.artifact, own)
+	if err != nil {
+		t.Fatalf("read version %d's row: %v", own, err)
+	}
+	var now time.Time
+	if err := tx.QueryRow(ctx, `select now()`).Scan(&now); err != nil {
+		t.Fatalf("read the pass's time: %v", err)
+	}
+	indexing, err := PlanBlocks(ctx, tx, index, BlockIndexMarkingRule, now, VersionBlocks{
+		ArtifactID: document.artifact, Record: record, Number: own, At: second.at, Markdown: added.markdown, Blocks: added.blocks,
+	})
+	if err != nil {
+		t.Fatalf("plan the pass at version %d: %v", own, err)
+	}
+	if !indexing.Won() {
+		t.Fatalf("the pass at version %d lost the fence in its read phase, so its statement has nothing to refuse and this test proves nothing", own)
+	}
+
+	// A newer revision, committed between the plan and the write phase.
+	if _, err := database.Pool.Exec(ctx, `
+		update document_block_versions set version = $2, store_version = $2 where artifact_id = $1::uuid
+	`, document.artifact, newer); err != nil {
+		t.Fatalf("store revision %d: %v", newer, err)
+	}
+
+	err = store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		indexing.Queue(b)
+		return nil
+	})
+	if err != nil {
+		for _, says := range []string{"the revision fence refused", document.artifact, fmt.Sprintf("version %d", own)} {
+			if !strings.Contains(err.Error(), says) {
+				t.Errorf("the refused pass failed with %q, want the fence's error, which says %q", err, says)
+			}
+		}
+		if err := tx.Rollback(ctx); err != nil {
+			t.Fatalf("abandon the refused pass: %v", err)
+		}
+	} else {
+		t.Errorf("the pass at version %d, whose row stood at %d when its stand ran, answered no error: the fence's statement refused nothing", own, newer)
+		if err := graphstore.Caused(ctx, tx, indexing.Stated(), second.event); err != nil {
+			t.Fatalf("append what the pass stated: %v", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit the pass: %v", err)
+		}
+	}
+
+	if _, found, err := graphstore.ReadNode(ctx, database.Pool, BlockNodeKind, document.address("extra")); err != nil || found {
+		t.Errorf("the refused pass left the node of block extra, which only version %d holds: found %v, %v", own, found, err)
+	}
+	if stated := document.tuplesAfter(t, database.Pool, before); len(stated) != 0 {
+		t.Errorf("the refused pass left %d tuples: %+v", len(stated), stated)
+	}
+	for _, row := range []struct{ table, query string }{
+		{"document_blocks", `select block_id from document_blocks where artifact_id = $1::uuid and changed_version = $2 order by block_id`},
+		{"document_block_texts", `select block_id from document_block_texts where artifact_id = $1::uuid and version = $2 order by block_id`},
+		{"document_indexed_versions", `select version::text from document_indexed_versions where artifact_id = $1::uuid and version = $2`},
+	} {
+		rows, err := database.Pool.Query(ctx, row.query, document.artifact, own)
+		if err != nil {
+			t.Fatalf("read the %s rows of version %d: %v", row.table, own, err)
+		}
+		left, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read the %s rows of version %d: %v", row.table, own, err)
+		}
+		if len(left) != 0 {
+			t.Errorf("the refused pass left the %s rows of version %d: %v", row.table, own, left)
+		}
+	}
+	var stands *int
+	if err := database.Pool.QueryRow(ctx,
+		`select version from document_block_versions where artifact_id = $1::uuid`, document.artifact).Scan(&stands); err != nil {
+		t.Fatalf("read the revision the document stands at: %v", err)
+	}
+	if stands == nil {
+		t.Errorf("the document stands at no revision after the refused pass, want the newer revision %d", newer)
+	} else if *stands != newer {
+		t.Errorf("the document stands at %v after the refused pass, want the newer revision %d", *stands, newer)
 	}
 }

@@ -3,6 +3,7 @@ package grapherase
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -84,6 +85,13 @@ type Operator struct {
 	Host         string `json:"host,omitempty"`
 }
 
+// NotRecounted is one project of Erasure.Recounted whose count after the commit failed, with the
+// error that ended it (recountTermStats).
+type NotRecounted struct {
+	Project string
+	Error   string
+}
+
 // Erasure is one run of `envoy-dispatch erase`: the node it addressed, every row it would
 // delete, rewrite, redact or leave (Listing), and - once Applied - what it did.
 type Erasure struct {
@@ -106,10 +114,19 @@ type Erasure struct {
 	// erased text and the approvals whose digest covered those bytes.
 	Versions []ErasedVersion `json:"versions"`
 	Reviews  []ErasedReview  `json:"reviews"`
-	// Documents is the node's own document when its stored history is replaced, and Recounted
-	// the projects whose term statistics the run counted again.
+	// Documents is the node's own document when its stored history is replaced.
 	Documents []ErasedDocument `json:"documents"`
-	Recounted []string         `json:"recounted"`
+	// Recounted are the projects whose term statistics counted words of the items the run
+	// deleted or rewrote: under its locks the run took the lexemes it removed out of them
+	// (api.ForgetErasedTermsTx), and after its commit it counts each again in full, outside its
+	// locks (recountTermStats). The record is written before that count, so it holds the
+	// projects and not how their count went.
+	Recounted []string `json:"recounted"`
+	// NotRecounted are the projects of Recounted whose count after the commit failed. Their
+	// statistics hold none of the erased words and lack the counts of the lexemes the run took
+	// out that other items still hold, until the project's next refresh pass, which counts it in
+	// full. It is not recorded, for the reason above.
+	NotRecounted []NotRecounted `json:"-"`
 	// Digest is the SHA-256 of Listing. A run without --confirm prints it, and a run with
 	// --confirm erases only when the listing it reads under its own locks has the digest it was
 	// given (Mismatch), so what an operator read is what goes.
@@ -118,6 +135,17 @@ type Erasure struct {
 	// order Write prints them. It is not recorded: its last section names other nodes' rows, and
 	// the record of an erase is of what it removed.
 	Listing []string `json:"-"`
+	// LeftAfterCommit are the rows the search after the commit found that hold the erased bytes
+	// and derive from another node, and that the search before the locks did not list
+	// (searchLeftAfterCommit): rows written after that search, which the run left as it leaves
+	// every row it lists. Each is a line as the listing's section of rows left gives it. The
+	// digest does not cover them: the listing was confirmed before they were found. Like Listing
+	// it is not recorded - the record of an erase in graph_erasures holds no listing - so these
+	// rows reach the report alone, as the rows the listing leaves do.
+	LeftAfterCommit []string `json:"-"`
+	// searchedAfterCommit is whether the search after the commit ended, and so whether
+	// LeftAfterCommit is every row it found: a search that failed found none the report can name.
+	searchedAfterCommit bool
 	// Confirmed is the digest --confirm named, and empty for a run without it.
 	Confirmed string `json:"-"`
 	// Blockers are the rows of other nodes that state something about this node: a reply that
@@ -183,9 +211,14 @@ func countedRows(counted []ErasedRows, table string, rows int64) []ErasedRows {
 	return append(counted, ErasedRows{Table: table, Rows: rows})
 }
 
+// leftAfterCommitHead is the head of the report's section of the rows the search after the commit
+// found (Erasure.LeftAfterCommit), in the words of the listing's section of rows left.
+const leftAfterCommitHead = "rows that hold the erased bytes and derive from another node, written after the search and found after the commit, left as they are"
+
 // Write prints the listing with its digest, so an operator reads every row before confirming
 // it, and then what a confirmed run read and did: each document whose live state it loaded, and
-// once Applied every table it emptied or rewrote.
+// once Applied every table it emptied or rewrote and every row its search after the commit found
+// that its listing does not name.
 func (e *Erasure) Write(w io.Writer) {
 	verb := "would remove"
 	switch {
@@ -231,7 +264,29 @@ func (e *Erasure) Write(w io.Writer) {
 		fmt.Fprintf(w, "  redacted: %s %d\n", rows.Table, rows.Rows)
 	}
 	if len(e.Recounted) > 0 {
-		fmt.Fprintf(w, "  term statistics counted again: %s\n", strings.Join(e.Recounted, ", "))
+		fmt.Fprintf(w, "  term statistics: the erased words taken out of %s under the locks\n", strings.Join(e.Recounted, ", "))
+	}
+	var counted []string
+	for _, project := range e.Recounted {
+		if !slices.ContainsFunc(e.NotRecounted, func(failed NotRecounted) bool { return failed.Project == project }) {
+			counted = append(counted, project)
+		}
+	}
+	if len(counted) > 0 {
+		fmt.Fprintf(w, "  term statistics counted again after the commit: %s\n", strings.Join(counted, ", "))
+	}
+	for _, failed := range e.NotRecounted {
+		fmt.Fprintf(w, "  term statistics of %s not counted again after the commit (%s): they hold none of the erased "+
+			"words, and lack the counts of the words taken out that other items still hold until the next refresh "+
+			"pass, which counts %s in full\n", failed.Project, failed.Error, failed.Project)
+	}
+	if e.searchedAfterCommit {
+		fmt.Fprintf(w, "  %s: %d\n", leftAfterCommitHead, len(e.LeftAfterCommit))
+		for _, line := range e.LeftAfterCommit {
+			fmt.Fprintln(w, "    "+line)
+		}
+	} else {
+		fmt.Fprintf(w, "  %s: not known, the search after the commit failed\n", leftAfterCommitHead)
 	}
 	fmt.Fprintf(w, "  text_trees swept after the commit: %d\n", e.Swept)
 }

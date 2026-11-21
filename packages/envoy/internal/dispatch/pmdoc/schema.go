@@ -20,8 +20,10 @@ import (
 // and appends each value it states as a value tuple at the source_event sentinel 0, as
 // 20261113230000_graph_supertags_check_ci_check does: the server installs the store's types and
 // not this file's, so without one TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt fails and a
-// build made for the new version installs the old one. A new type migration also joins
-// typeMigrations in cmd/dispatch/supertag_nodes_test.go, which runs each a second time.
+// build made for the new version installs the old one. A new type migration runs once: written
+// after the store's backfill, it writes under the migration census's bounded-write rule and cannot
+// run twice unchanged, so only the type migrations before the backfill (typeMigrations in
+// cmd/dispatch/supertag_nodes_test.go) run a second time, and a new one joins no list there.
 //
 //go:embed schema/blocks.json
 var blockSchemaJSON []byte

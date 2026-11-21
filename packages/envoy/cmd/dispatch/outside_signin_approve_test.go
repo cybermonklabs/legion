@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -29,13 +29,23 @@ const denyPath = "/api/v1/credential-requests/rec1/deny"
 // approveBody is the body of an approve or a deny, the code the person typed.
 const approveBody = `{"code":"ABCD-1234"}`
 
-// approveCredentials are the three credentials a person approves with: their cookie, a personal
-// token they minted on it, and a broker token of a machine they approved, each answered as the
-// caller's next request is once the caller no longer holds the address.
+// approveCredentials are the two credentials a person approves with: their cookie and a personal
+// token they minted on it, each answered as the caller's next request is once the caller no longer
+// holds the address. A broker token approves, denies and mints nothing: none holds the approve
+// scope (TestOutsideSignInABrokerTokenApprovesDeniesAndMintsNothing).
 var approveCredentials = []struct{ name, refusal string }{
 	{"cookie", "NO_IDENTITY"},
 	{"personal token", "TOKEN_REVOKED"},
-	{"broker token", "BROKER_TOKEN_NOT_ACTIVE"},
+}
+
+// requireNoApproveScope fails the test unless recorder is the refusal of a credential that holds
+// no approve scope, as every broker token is refused at an approve, a deny and a mint: 403
+// OAUTH_SCOPE_REQUIRED.
+func requireNoApproveScope(t *testing.T, what string, recorder *httptest.ResponseRecorder) {
+	t.Helper()
+	if recorder.Code != http.StatusForbidden || errorCode(recorder) != "OAUTH_SCOPE_REQUIRED" {
+		t.Errorf("%s answered %d %s, want 403 OAUTH_SCOPE_REQUIRED", what, recorder.Code, recorder.Body.String())
+	}
 }
 
 // approver is the first holder of reassignedEmail signed in through handler, holding credential:
@@ -51,7 +61,7 @@ func (s *outsideSignIn) approver(t *testing.T, handler http.Handler, broker *fak
 		step()
 	}
 	var token string
-	var machine *brokertokentest.Caller
+	var machine *ciphertokentest.Caller
 	switch credential {
 	case "personal token":
 		token = mintTokenOn(t, handler, cookie)
@@ -60,7 +70,7 @@ func (s *outsideSignIn) approver(t *testing.T, handler http.Handler, broker *fak
 		if err := s.database.Pool.QueryRow(context.Background(), `select coalesce(sub, '') from people where email = $1`, reassignedEmail).Scan(&approvedBy); err != nil {
 			t.Fatal(err)
 		}
-		machine, token = brokertokentest.NewCaller(t), "token-of-the-first-holders-machine"
+		machine, token = ciphertokentest.NewCaller(t), "token-of-the-first-holders-machine"
 		broker.holds(&fakeCredential{id: "login-first", person: reassignedEmail, subject: approvedBy, tokens: []string{token}, createdAt: time.Now()}, machine)
 	}
 	return func(path string, body io.Reader) *http.Request {
@@ -227,9 +237,8 @@ func TestOutsideSignInDenyByTheHolderNamesNoAccount(t *testing.T) {
 // the body Google gives the address to another Workspace account, which signs in; the revocation
 // pass tells the broker to revoke the first holder's account and settles, and an hour passes. An
 // approve relayed then would mint a machine login in the address's name for a caller that lost it.
-// Each approve is refused 401 as the caller's next request would be - BROKER_TOKEN_NOT_ACTIVE for
-// the broker token, which records the first holder's account, which a revocation names - and the
-// broker is told no approve.
+// Each approve is refused 401 as the caller's next request would be, and the broker is told no
+// approve.
 func TestOutsideSignInAnApproveHeldPastTheRevocationIsNotRelayed(t *testing.T) {
 	for _, credential := range approveCredentials {
 		t.Run(credential.name, func(t *testing.T) {
@@ -261,22 +270,26 @@ func TestOutsideSignInAnApproveHeldPastTheRevocationIsNotRelayed(t *testing.T) {
 	}
 }
 
-// An approve held back by a broker token recording no account is refused once another account's
-// sign-in records itself for the address while the body is held: the token's machine login was
-// made after the first holder's account was recorded and past brokerCredentialMargin, so it acts
-// and its first approve is relayed; the second holder's sign-in records the address's account
-// again, after the login was made, so the held approve is refused 401
-// BROKER_TOKEN_RECORDS_NO_ACCOUNT, as the token's next request is, and the broker is told no
-// second approve.
+// A broker token recording no account is held to when its credential was made against when the
+// address's account was recorded, and approves nothing whenever it was made: the token's machine
+// login was made after the first holder's account was recorded and past brokerCredentialMargin, so
+// it acts, while its approve, sent before and held across the second holder's sign-in, is refused
+// 403 OAUTH_SCOPE_REQUIRED (no broker token holds approve) and the broker is told no approve. The
+// second holder's sign-in records the address's account again, after the login was made, so the
+// token's next request is refused 401 BROKER_TOKEN_RECORDS_NO_ACCOUNT.
 //
-// Control: brokerAccountReplaced without its time arm; the held approve is relayed.
+// Control: brokerAccountReplaced without its time arm; the token's request after the second
+// holder's sign-in acts.
 func TestOutsideSignInAnApproveHeldByATokenRecordingNoAccountIsRefusedOnceAnotherAccountSignsIn(t *testing.T) {
 	ctx := context.Background()
 	s := newOutsideSignIn(t, nil)
 	broker := newFakeBroker(t)
 	handler, _ := s.brokerRouter(t, broker)
-	recordsNone := func() { storetest.TestOnlyClearAccount(t, s.database, reassignedEmail) }
-	approver := s.approver(t, handler, broker, "broker token", recordsNone)
+	s.workspaceSignIn(t, handler, reassignedEmail, firstHolder)
+	storetest.TestOnlyClearAccount(t, s.database, reassignedEmail)
+	machine := ciphertokentest.NewCaller(t)
+	const token = "token-of-the-first-holders-machine"
+	broker.holds(&fakeCredential{id: "login-first", person: reassignedEmail, tokens: []string{token}, createdAt: time.Now()}, machine)
 	if _, err := s.database.Pool.Exec(ctx, `update people set sub = $2 where email = $1`, reassignedEmail, firstHolder); err != nil {
 		t.Fatal(err)
 	}
@@ -285,40 +298,35 @@ func TestOutsideSignInAnApproveHeldByATokenRecordingNoAccountIsRefusedOnceAnothe
 		t.Fatal(err)
 	}
 	storetest.SetRecordingTime(t, s.database, reassignedEmail, twentyMinutesAgo)
-	first := httptest.NewRecorder()
-	handler.ServeHTTP(first, approver(approvePath, strings.NewReader(approveBody)))
-	if first.Code != http.StatusOK {
-		t.Fatalf("the approve by a broker token recording no account, its login made 20 minutes after the address's account was recorded, answered %d %s, want 200",
-			first.Code, first.Body.String())
+	whoami := func() *httptest.ResponseRecorder {
+		return brokerTokenRequest(t, handler, machine, http.MethodGet, "/api/v1/whoami", "", token)
 	}
+	requireTokenActs(t, "GET /api/v1/whoami with a broker token recording no account, its login made 20 minutes after the address's account was recorded", whoami())
 	body := newHeldBody(approveBody)
-	recorder := serveHeld(t, handler, approver(approvePath, body), body, func() {
+	approve := httptest.NewRequest(http.MethodPost, brokerOrigin+approvePath, body)
+	approve.ContentLength = int64(len(approveBody))
+	approve.Header.Set("Content-Type", "application/json")
+	signed := machine.Signed(t, http.MethodPost, brokerOrigin+approvePath, token)
+	approve.Header.Set("Authorization", signed.Header.Get("Authorization"))
+	approve.Header.Set("DPoP", signed.Header.Get("DPoP"))
+	recorder := serveHeld(t, handler, approve, body, func() {
 		s.workspaceSignIn(t, handler, reassignedEmail, secondHolder)
 	})
-	if recorder.Code != http.StatusUnauthorized || errorCode(recorder) != "BROKER_TOKEN_RECORDS_NO_ACCOUNT" {
-		t.Errorf("the approve held by a broker token recording no account while the second holder signed in answered %d %s, want 401 BROKER_TOKEN_RECORDS_NO_ACCOUNT",
-			recorder.Code, recorder.Body.String())
-	}
-	var approves int
-	for _, call := range broker.calls() {
-		if strings.Contains(call, "/approve") {
-			approves++
-		}
-	}
-	if approves != 1 {
-		t.Errorf("the broker was told %d approves, want only the first: the held one is refused", approves)
-	}
+	requireNoApproveScope(t, "the approve by a broker token recording no account, held across the second holder's sign-in", recorder)
+	requireCalls(t, broker, "after the approve by a broker token recording no account")
+	requireBrokerTokenRecordsNoAccount(t, "GET /api/v1/whoami with that token once the second holder signed in", whoami())
 }
 
 // A personal token records the Google account of the credential that minted it, and acts only while
-// Dispatch records that account for its address. The first holder mints a token on its cookie, a
-// second token with that token, and a third with its machine's broker token: each records the first
-// holder's account. Then the address's row comes to record no account (as a pool or header sign-in
-// leaves it), and the second holder signs in, which records the address's first account in a while:
-// that sign-in revokes the address's tokens that recorded another account, all three of the first
-// holder's (store.PgPeopleStore.SignInSubject). The first holder's token is refused 401
-// TOKEN_REVOKED at its approve, and the broker is told no approve; a token the second holder mints
-// records the second's account.
+// Dispatch records that account for its address. The first holder mints a token on its cookie and
+// a second token with that token: each records the first holder's account; its machine's broker
+// token mints nothing (403 OAUTH_SCOPE_REQUIRED: no broker token holds approve). Then the
+// address's row comes to record no account (as a pool or header sign-in leaves it), and the second
+// holder signs in, which records the address's first account in a while: that sign-in revokes the
+// address's tokens that recorded another account, both of the first holder's
+// (store.PgPeopleStore.SignInSubject). The first holder's token is refused 401 TOKEN_REVOKED at its
+// approve, and the broker is told no approve; a token the second holder mints records the second's
+// account.
 func TestOutsideSignInAnApproveNamesTheAccountOfTheCredentialThatMadeIt(t *testing.T) {
 	ctx := context.Background()
 	s := newOutsideSignIn(t, nil)
@@ -329,11 +337,10 @@ func TestOutsideSignInAnApproveNamesTheAccountOfTheCredentialThatMadeIt(t *testi
 	if minted := bearerRequest(handler, http.MethodPost, "/api/v1/me/agent-tokens", `{"name":"minted by a token"}`, token); minted.Code != http.StatusCreated {
 		t.Fatalf("a mint by the first holder's token answered %d %s, want 201", minted.Code, minted.Body.String())
 	}
-	machine := brokertokentest.NewCaller(t)
+	machine := ciphertokentest.NewCaller(t)
 	broker.holds(&fakeCredential{id: "login-first", person: reassignedEmail, subject: firstHolder, tokens: []string{"token-of-the-first-holders-machine"}}, machine)
-	if minted := brokerTokenRequest(t, handler, machine, http.MethodPost, "/api/v1/me/agent-tokens", `{"name":"minted by a broker token"}`, "token-of-the-first-holders-machine"); minted.Code != http.StatusCreated {
-		t.Fatalf("a mint by the first holder's broker token answered %d %s, want 201", minted.Code, minted.Body.String())
-	}
+	requireNoApproveScope(t, "a mint by the first holder's broker token",
+		brokerTokenRequest(t, handler, machine, http.MethodPost, "/api/v1/me/agent-tokens", `{"name":"minted by a broker token"}`, "token-of-the-first-holders-machine"))
 	subjects := func() []string {
 		t.Helper()
 		rows, err := s.database.Pool.Query(ctx, `select coalesce(subject, '') from agent_tokens order by created_at, id`)
@@ -350,8 +357,8 @@ func TestOutsideSignInAnApproveNamesTheAccountOfTheCredentialThatMadeIt(t *testi
 		}
 		return got
 	}
-	if got := subjects(); strings.Join(got, ",") != firstHolder+","+firstHolder+","+firstHolder {
-		t.Fatalf("the tokens minted by the first holder's cookie, token and broker token recorded the accounts %q, want the first holder's on each", got)
+	if got := subjects(); strings.Join(got, ",") != firstHolder+","+firstHolder {
+		t.Fatalf("the tokens minted by the first holder's cookie and token recorded the accounts %q, want the first holder's on each, and none minted by the broker token", got)
 	}
 
 	storetest.TestOnlyClearAccount(t, s.database, reassignedEmail)
@@ -361,7 +368,7 @@ func TestOutsideSignInAnApproveNamesTheAccountOfTheCredentialThatMadeIt(t *testi
 		t.Fatal(err)
 	}
 	if live != 0 {
-		t.Fatalf("%d tokens recording the first holder's account are live after the second holder's sign-in recorded itself for the address, want all three revoked", live)
+		t.Fatalf("%d tokens recording the first holder's account are live after the second holder's sign-in recorded itself for the address, want both revoked", live)
 	}
 	approve := httptest.NewRequest(http.MethodPost, brokerOrigin+approvePath, strings.NewReader(approveBody))
 	approve.Header.Set("Content-Type", "application/json")
@@ -377,7 +384,7 @@ func TestOutsideSignInAnApproveNamesTheAccountOfTheCredentialThatMadeIt(t *testi
 		}
 	}
 	mintTokenOn(t, handler, second)
-	if got := subjects(); len(got) != 4 || got[3] != secondHolder {
+	if got := subjects(); len(got) != 3 || got[2] != secondHolder {
 		t.Fatalf("the token the second holder minted recorded %q, want the second holder's account", got)
 	}
 }
@@ -422,5 +429,37 @@ func TestOutsideSignInApproveOfARowWithNoAccountSendsNeitherAccountField(t *test
 			}
 			requireCalls(t, broker, "after the approve by the "+credential.name+" of a row with no account", s.approveRelayed(t, ""))
 		})
+	}
+}
+
+// A broker token approves, denies and mints nothing, whoever holds the address: no broker token
+// holds the approve scope (brokerPersonScopes), so the holder's own broker token, which records the
+// account Dispatch records for the address and acts at a read, is refused 403
+// OAUTH_SCOPE_REQUIRED at a machine login's approve, at its deny and at a personal token's mint.
+// The broker is told no decision and no token is minted.
+//
+// Control: brokerPersonScopes holding approve beside person (each answers 200 or 201, the
+// decisions are relayed and the token is written).
+func TestOutsideSignInABrokerTokenApprovesDeniesAndMintsNothing(t *testing.T) {
+	s := newOutsideSignIn(t, nil)
+	broker := newFakeBroker(t)
+	handler, _ := s.brokerRouter(t, broker)
+	s.workspaceSignIn(t, handler, reassignedEmail, firstHolder)
+	machine := ciphertokentest.NewCaller(t)
+	const token = "token-of-the-holders-machine"
+	broker.holds(&fakeCredential{id: "login-holder", person: reassignedEmail, subject: firstHolder, tokens: []string{token}, createdAt: time.Now()}, machine)
+	requireTokenActs(t, "GET /api/v1/whoami with the holder's broker token",
+		brokerTokenRequest(t, handler, machine, http.MethodGet, "/api/v1/whoami", "", token))
+	const name = "minted by the holder's broker token"
+	for _, c := range []struct{ what, path, body string }{
+		{"the approve", approvePath, approveBody},
+		{"the deny", denyPath, approveBody},
+		{"the mint", "/api/v1/me/agent-tokens", `{"name":"` + name + `"}`},
+	} {
+		requireNoApproveScope(t, c.what+" by the holder's broker token", brokerTokenRequest(t, handler, machine, http.MethodPost, c.path, c.body, token))
+	}
+	requireCalls(t, broker, "after the approve, the deny and the mint by the holder's broker token")
+	if rows := s.tokenRowsNamed(t, name); rows != 0 {
+		t.Errorf("the refused mint by the holder's broker token wrote %d token rows, want none", rows)
 	}
 }

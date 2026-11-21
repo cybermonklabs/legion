@@ -3,7 +3,6 @@ package refs
 import (
 	"context"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 
@@ -440,7 +439,9 @@ func (a backlinkArm) tupleSQL(target backlinkTarget) string {
 // is no key of this table, so a node kind a newer build adds to the graph is counted only once
 // its arms are declared here; "block" is present and empty because no literal-kind arm of the
 // view targets a document's block, and an entry that is present but empty is counted from the
-// mention arms alone rather than refused.
+// mention arms alone rather than refused. Tests outside this package count the same kinds from a
+// copy of these keys (refstest.BacklinkKinds), which TestRefstestBacklinkKindsAreTheArmTablesKinds
+// holds equal to them.
 //
 // Each arm reads only the relations it needs to reach the address it points at and leaves out
 // the joins the view makes only to date an edge. Dropping them preserves every row:
@@ -556,14 +557,6 @@ var backlinkArms = map[string][]backlinkArm{
 		{kind: "replies_to", from: `messages m`, where: `m.replies_to_block is not null`, toID: `m.replies_to_block`,
 			fromKind: "message", fromID: `m.id::text`},
 	},
-}
-
-// BacklinkKinds is every node kind BacklinkCounts answers for, sorted: the keys of the arm
-// table, which is what the count refuses a kind for not holding. A test outside this package
-// counts the same kinds the count itself declares rather than keeping a list of its own
-// (docs.TestGraphEdgesLosesEveryArmOverAMovedKind).
-func BacklinkKinds() []string {
-	return slices.Sorted(maps.Keys(backlinkArms))
 }
 
 // mentionBacklinkArms is the six arms of graph_edges whose edge kind and target kind are

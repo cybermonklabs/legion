@@ -18,7 +18,7 @@ import (
 // insert failed, and the library reported the failure as its server_error, which the broker-token
 // check answered as an unreachable broker (503 BROKER_UNAVAILABLE) for a request whose only fault
 // is the caller's own proof or the length of its own path. The secrets broker's own replay store
-// refuses the same proofs (internal/broker/oauthstore's ErrUnstorableText). The API answers it 401
+// refuses the same proofs (internal/cipher/oauthstore's ErrUnstorableText). The API answers it 401
 // BROKER_TOKEN_PROOF_INVALID, the caller's refusal (api.brokerTokenActor).
 var ErrUnstorableProof = errors.New("store: the DPoP proof's jti holds a control character, or its jti and target URI are too long to record")
 
@@ -34,12 +34,12 @@ const maxStoredProofKey = 2048
 // jtiRetentionMargin is how long past a DPoP proof's acceptance window its record is kept. The
 // window's end is dated on the clock of whoever checked the proof and compared with this
 // database's, so the margin covers the skew between the two; it is the broker's own margin for
-// the same record (internal/broker/oauthstore).
+// the same record (internal/cipher/oauthstore).
 const jtiRetentionMargin = time.Minute
 
 // DPoPProofs is Dispatch's rfc9449.DPoPReplayStorage: the record of every RFC 9449 proof a
 // request has already spent, so a captured proof replayed inside its acceptance window is refused
-// (migration 0150). internal/brokertoken hands it to the library's resource check, and nothing
+// (migration 0150). internal/ciphertoken hands it to the library's resource check, and nothing
 // else writes the table.
 type DPoPProofs struct {
 	pool *Pool
