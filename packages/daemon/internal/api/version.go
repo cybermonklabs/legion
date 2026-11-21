@@ -2986,13 +2986,12 @@ package api
 //     the `legion` command's, which no older build sends.
 //
 // So `contract-shapes.json` gains the records of 202, which are 199's with the key paths of
-// `intakeGiveUps` and the domain of its `reason` on the state's record and with the records of the
-// two new answers beside them, and `request-shapes.json` gains the records of 202, which are 199's
-// with the two controller routes beside them. Every record below 202 is as it was but for one
-// domain on the state's record of each contract from 46 up to and including 199:
-// `intakeGiveUps.newest.*.reason` admitting no value, since every record holds a domain for each
-// enumerated field of its answer (`TestTheRecordSetIsOneRecordPerAnswerPerContract`) and no value
-// of this one arrived below 202.
+// `intakeGiveUps` and the five values of its `reason`'s domain on the state's record and with the
+// records of the two new answers beside them, and `request-shapes.json` gains the records of 202,
+// which are 199's with the two controller routes beside them. Every record below 202 is as it was
+// but for the state's, which gains the domain `intakeGiveUps.newest.*.reason` admitting no value,
+// since every record holds a domain for each enumerated field of its answer
+// (`TestTheRecordSetIsOneRecordPerAnswerPerContract`) and no value of this one arrived below 202.
 //
 // The change carries store migration `20261120144241_intake_failures`, which adds the tables
 // `intake_failures`, `cleared_pull_requests` and `pull_request_settled_heads`. An older daemon
