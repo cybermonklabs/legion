@@ -5,10 +5,12 @@
 // OAuth error code (RFC 6749 section 5.2) only names the refusal's reason (Refusal). Ending a grant
 // is narrower still (EndsGrant). Every reader of a token endpoint's answer that decides something
 // on it - a sign-in refused, a client rejected, a login denied or ended - reads it through these,
-// so each rule has one definition. The broker's minters read GitHub's and Google's statuses by
-// Refuses too (internal/cipher/secrets, mintStatusError), beside their own rate-limit reading. It
-// imports only the standard library and golang.org/x/oauth2, so a command that links no OpenID
-// Connect verifier can use it.
+// so each rule has one definition, but one: the broker client's device flow
+// (internal/cipherclient/device.go, DeviceFlow.Refresh) still ends a sign-in on invalid_grant at
+// any status, until the pull request stacked on this one moves it to EndsGrant. The broker's
+// minters read GitHub's and Google's statuses by Refuses too (internal/cipher/secrets,
+// mintStatusError), beside their own rate-limit reading. It imports only the standard library and
+// golang.org/x/oauth2, so a command that links no OpenID Connect verifier can use it.
 package oauthrefusal
 
 import (
