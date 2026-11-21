@@ -8,8 +8,8 @@ name: Docs (main)
 #
 # A `workflow_dispatch` run starts this workflow on any branch. The build job runs as it does on
 # main, with the `upload-pages-artifact` step that no other caller of docs-site.yaml asks for, so
-# a dispatch of a branch proves that step before the merge. The deploy job runs on main alone
-# (`github.ref`), so a dispatch of a branch deploys nothing to the live site.
+# a dispatch of a branch proves that step before the merge. The deploy job runs on main alone (the
+# `ref` job's exact test of the ref), so a dispatch of a branch deploys nothing to the live site.
 #
 # A workflow of its own, so a push to main builds and deploys the site at all: ci.yaml has no
 # `push:` trigger, and its docs job runs on pull requests and merge groups alone. Of the pushes
@@ -333,12 +333,28 @@ jobs:
     secrets:
       PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 
+  # Says whether the run is on main, for deploy's `if:`, which cannot test that itself: GitHub
+  # compares `github.ref` with a string ignoring case, so a branch named `Main` would deploy.
+  # .github/ci-notes/release.md#why-the-ref-job-and-not-githubref-decides-main says more. It holds
+  # no permission and checks nothing out.
+  ref:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      main: ${{ steps.ref.outputs.main }}
+    steps:
+      - id: ref
+        run: |
+          if [ "$GITHUB_REF" = refs/heads/main ]; then main=true; else main=false; fi
+          echo "main=$main" >> "$GITHUB_OUTPUT"
+
   # No concurrency of its own: the workflow's group already holds the next run until this one's
   # deploy ends. The if: holds the deployment to main: a workflow_dispatch of a branch builds the
   # site and uploads the artifact, and publishes nothing to the live site.
   deploy:
-    needs: build
-    if: github.ref == 'refs/heads/main'
+    needs: [build, ref]
+    if: needs.ref.outputs.main == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     # Publishes the built site to GitHub Pages: pages: write performs the deployment, id-token:

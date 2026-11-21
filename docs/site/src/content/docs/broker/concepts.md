@@ -346,10 +346,16 @@ ended stays without secrets until it is replaced. To stop it logging in, remove 
 to that person alone, and only that person may revoke it ([a person's pod](#a-persons-pod)).
 
 A credential enrolls sessions only for its own operator: an enrollment naming anyone else is refused
-`OPERATOR_MISMATCH`. The broker's rate limiter caps how often anyone can start a machine login, per
-source address and per named person, and how often anyone can try a token login: per source
-address before the token is verified, and per account once it is. A token login the broker could
-not complete (a 5xx, such as while its database is away) spends neither.
+`OPERATOR_MISMATCH`. Where `BROKER_PROJECT_ACCESS_URL` is set, a machine login or a pod login
+whose person Dispatch calls a restricted member, someone an access list admitted from outside the
+deployment's sign-in domain, enrolls nothing (`403 RESTRICTED_MEMBER_ENROLLS_NOTHING`), so that
+person's agents are released no secret; the login still trades for a token that names their
+projects. A session such a person already had is denied every secret `restricted-member`, and its
+grants end at their next use ([Operating the broker](/legion/broker/operate/)). The broker's rate
+limiter caps how often anyone can start a machine login, per source address and per named person,
+and how often anyone can try a token login: per source address before the token is verified, and
+per account once it is. A token login the broker could not complete (a 5xx, such as while its
+database is away) spends neither.
 
 ## Owner and tier: who may have which secret
 
@@ -664,9 +670,11 @@ names that project** and whose person may still see it:
 - A **session** names its projects when it enrols. The helper sends the list
   `AGENT_SECRETS_PROJECTS` holds (project keys separated by spaces, `PRIV CORE`), or
   `agent-secrets register --projects`, and the broker takes it only when Dispatch says the session's
-  person may see every project on it. A restricted member's session must name at least one; a
-  session naming none enrols as before. The list is fixed for the session's life: start a new
-  session to name another, and `agent-secrets self` prints it as a `projects:` line.
+  person may see every project on it. A restricted member's machine login and pod enrol nothing,
+  whatever they name (`403 RESTRICTED_MEMBER_ENROLLS_NOTHING`); only a session under their
+  sign-in must name at least one. A session naming none enrols as before. The list is fixed for
+  the session's life: start a new session to name another, and `agent-secrets self` prints it as a
+  `projects:` line.
 - A **pod** names no list of its own: its project is the one its operator's entry in
   `BROKER_EXCHANGE_ACCOUNTS` maps its service account to, for that entry's person. A machine's own
   session likewise names the one `BROKER_VM_EXCHANGE_ACCOUNTS` maps its fleet's Google account to.
@@ -763,14 +771,14 @@ Dispatch says the person may see every project on it. That list, and not the pro
 `BROKER_EXCHANGE_ACCOUNTS` entry of its account, is what the pod names for a private project's
 secret, and each release asks Dispatch again whether the person still sees the project. So the pod
 gets no secret that its person's own session naming the same list would not get. A restricted
-member sees only the projects whose access list names them, so their pod must name at least one,
-as their session must: a pod naming none is refused `403 PROJECTS_REQUIRED`, which says to set
-`AGENT_SECRETS_PROJECTS`. A pod naming a project its person may not see, or one Dispatch does not
-hold, is refused `403 PROJECT_NOT_VISIBLE`, with the same words for both. While Dispatch cannot be
-reached, or on a broker with no `BROKER_PROJECT_ACCESS_URL`, a pod naming a project is refused
-`503 PROJECTS_UNCHECKED` and nothing is enrolled; a pod naming none enrolls as the person's session
-does, and the broker's log says it enrolled unchecked. Only a person's pod names projects: any other
-pod naming one is refused `400 PROJECTS_NEED_A_PERSON`.
+member's pod enrolls nothing, naming projects or not, as that member's machine login enrolls
+nothing: `403 RESTRICTED_MEMBER_ENROLLS_NOTHING`. A pod naming a project its person may not see,
+or one Dispatch does not hold, is refused `403 PROJECT_NOT_VISIBLE`, with the same words for both.
+While Dispatch cannot say what kind of member the person is, the pod enrolls nothing
+(`503 MEMBER_KIND_UNCHECKABLE`); on a broker with no `BROKER_PROJECT_ACCESS_URL`, a pod naming a
+project is refused `503 PROJECTS_UNCHECKED` and nothing is enrolled, and a pod naming none enrolls
+as the person's session does. Only a person's pod names projects: any other pod naming one is
+refused `400 PROJECTS_NEED_A_PERSON`.
 
 The pod's login enrolls that pod alone and names no session, so it never takes over a session of
 the person's box. The routes that list and revoke the person's machine logins and grants refuse the
@@ -794,18 +802,25 @@ the policy gave the pod without asking names no approver either, so it is listed
 pod's is, to every signed-in person who may see it, and its row reads **Ends with its machine
 login**: revoking the pod's login ends it. A grant of a private project they are not on, which
 the pod may now get through its exchange entry, is hidden from them as from anyone outside the
-project, and is on the pages of that project's people.
+project, and is on the pages of that project's people. The person it was made for still decides
+whether it gets anything at all: a broker with `BROKER_PROJECT_ACCESS_URL` asks Dispatch about that
+person at each request, approval, release and airlock connection of the pod, so the pod of a person
+Dispatch calls a restricted member is denied every secret `restricted-member` after the change as
+before it, and the pod's requests and releases are refused `503 MEMBER_KIND_UNCHECKABLE` while
+Dispatch cannot say what kind of member that person is.
 [Operate](/legion/broker/operate/#what-to-run) says what else a removal or a move does.
 
 ### A group's secret
 
 A secret's owner may be a Google group, written `group:` and the group's lowercase email, and so
 may an entry of its `requesters`. Each member of an owner group stands where the one owner of a
-person's secret stands: a member's own session gets the group's agent-tier secret at once; every
-other request for it, and every request for its human-tier secret, waits for the group's
-approval, which any member gives on the broker's page, and any member dismisses once it expires;
-and a member the group's last good read listed, however old that read is, lists and revokes the
-grants a member or the model judge approved ([Approvals](#approvals)).
+person's secret stands: a member's own session gets the group's agent-tier secret at once (a
+restricted member's session gets none of the group's secrets, as it gets no other secret:
+[Machine login](#machine-login)); every other request for it, and every request for its
+human-tier secret, waits for the group's approval, which any member gives on the broker's page,
+and any member dismisses once it expires; and a member the group's last good read listed,
+however old that read is, lists and revokes the grants a member or the model judge approved
+([Approvals](#approvals)).
 A member may approve a request their own session made, as a sole owner may approve their own: a
 group owner is not a second person, and no rule asks for one. A `requesters` entry naming a
 group admits a session whose person is a member. A list, revoke or dismissal that names the
@@ -1633,7 +1648,8 @@ The judge reads Dispatch at three points before the model — the policy check, 
 and the reads of what the reason points at. The first two and the issue read share one 5-second
 bound, and the ask read has a 5-second bound of its own, both inside the run's 35 seconds, so a
 slow Dispatch leaves the model call and the row's write their time. On a
-broker with `BROKER_PROJECT_ACCESS_URL` set, the policy check reads the state of a tagged secret's
+broker with `BROKER_PROJECT_ACCESS_URL` set, the policy check asks what kind of member the
+session's person is and reads the state of a tagged secret's
 project, and the project check asks with the broker's account token whether a project the request
 names is private: each key's `dispatch-project` tag, the projects of the credential that asked,
 and the project of each issue key in the signed reason. The reads of what the reason points at are
@@ -1641,8 +1657,9 @@ the issue it names and the text of its spec document, and the ask it cites, with
 projected ServiceAccount token, read again from its file once the copy it holds is 30 seconds old.
 A read its bound cuts short fails its check, and the request goes to its person. Another read,
 with the same token, is one GET of the issue a Legion worker pod's claim names, for its assignee
-alone ([Approvals](#approvals)); the reads of project access at `BROKER_PROJECT_ACCESS_URL`, the
-token exchange's and those for a private project's secrets
+alone ([Approvals](#approvals)); the reads of a person's project access and member kind at
+`BROKER_PROJECT_ACCESS_URL`, by the token exchange, an enrollment, a secret request, an approval, a
+release and every airlock connection, and those for a private project's secrets
 ([A private project's secrets](#a-private-projects-secrets)), are the last
 ([Operating the broker](/legion/broker/operate/)). An approval asks Dispatch again before it is
 written, under a 5-second bound of its own that ends a second before the run does, so a Dispatch

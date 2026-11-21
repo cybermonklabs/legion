@@ -201,6 +201,9 @@ jobs:
       - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
         run: bash scripts/daemon-release-gate.test.sh
         working-directory: packages/envoy
+      - name: Verdict test for legacy-subjects-gate.sh (fakes kubectl, curl and nats; no cluster or bus)
+        run: bash scripts/legacy-subjects-gate.test.sh
+        working-directory: packages/envoy
       - name: One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)
         run: bash loadtest/run-step.test.sh
         working-directory: packages/envoy
@@ -230,7 +233,9 @@ jobs:
         run: go build ./cmd/dispatch ./cmd/listener
         working-directory: packages/envoy
       # A migration a database may already have run must keep its identity, or accept what such a
-      # database records of it, its first identity and the base's text, in `-- replaces:` lines:
+      # database records of it, its first identity, the base's text and every identity and text the
+      # base's replaces lines name, in `-- replaces:` lines that begin with the base's, in their
+      # order, then one naming the base's file itself:
       # each runner refuses a database whose version table records what its file does not accept
       # (internal/pgmigrate, Reconcile), so an edit of an applied file, a comment included, is
       # caught here, before any database boots it. The base is what this run's tree lands onto,

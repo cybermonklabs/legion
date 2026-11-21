@@ -67,7 +67,7 @@ type Response struct {
 	// before this field sends none, and such a client refuses that answer.
 	RootPID             int           `json:"root_pid,omitempty"`
 	Operator            string        `json:"operator,omitempty"`
-	State               string        `json:"state,omitempty"`                 // register: enrolling | enrolled
+	State               string        `json:"state,omitempty"`                 // register: enrolling | enrolled | refused (the broker refused the session for good, 403 RESTRICTED_MEMBER_ENROLLS_NOTHING, named in Error; the helper asks no more)
 	VerificationURI     string        `json:"verification_uri,omitempty"`      // login: where a person types the code, the broker's device authorization verification_uri; empty from a helper before this field
 	LoginState          string        `json:"login_state,omitempty"`           // login/login-status: the most recent login's pending|issued|denied|expired; expired whenever LoginRefused and that login is not pending
 	CredentialHeld      bool          `json:"credential_held,omitempty"`       // login-status: the helper holds a launcher credential, whatever the most recent login's state
