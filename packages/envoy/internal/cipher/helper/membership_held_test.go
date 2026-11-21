@@ -201,7 +201,7 @@ func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
 		if lapsed["level"] != "ERROR" || lapsed["credential_id"] != first.id {
 			t.Fatalf("the drop line in identity mode: %v; want an ERROR naming %s", lapsed, first.id)
 		}
-		_, _, lapseErr := b.EnrollSessionKey(ctx, "box-during-the-lapse", sessionThumbprint(t), nil)
+		_, _, lapseErr := b.EnrollSessionKey(ctx, "box-during-the-lapse", sessionThumbprint(t), nil, nil)
 		if !errors.Is(lapseErr, errNoCredential) || lapseErr.Error() != "no machine credential; "+tradeLoop {
 			t.Fatalf("an enrolment during the lapse answered %v; want %q", lapseErr, "no machine credential; "+tradeLoop)
 		}

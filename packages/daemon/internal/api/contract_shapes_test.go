@@ -329,10 +329,10 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 			LastError: "dispatch: 503 Service Unavailable",
 		}},
 		// A cache the runtime made and whose last health read failed, which is the one key of a
-		// cache view the first body carries no example of.
+		// cache view the first body carries no example of. Both role Apps are installed on its
+		// repository, so a caller below repositoriesLiveContract reads it under `mapped`.
 		Repositories: RepositoriesView{
-			Owners: []string{"acme"},
-			Mapped: []MappedRepositoryView{{Repo: "acme/widgets", Default: true, Cache: &CacheView{
+			Live: []LiveRepositoryView{{Repo: "acme/widgets", Apps: &AppInstallationsView{Implement: true, Review: true}, Cache: &CacheView{
 				Repo: "acme/widgets", Sandbox: "legion-shapes-cache-acme-widgets-5f2a1b3c", State: "ready", Ready: true,
 				Address:     "http://legion-shapes-cache-acme-widgets-5f2a1b3c.legion.svc:8418",
 				HealthError: "read http://legion-shapes-cache-acme-widgets-5f2a1b3c.legion.svc:8418/healthz: context deadline exceeded",
@@ -359,7 +359,10 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // a merge wait with every key of one, whose `mergeState` and `toldState` take value i of the
 // merge states, so the twelve issues carry all eight words at both key paths. The project's pause
 // waits on the stop of one claim of each role, so `paused.waitsOn.*.role` carries every role,
-// where populatedState's pause waits on an implementer alone.
+// where populatedState's pause waits on an implementer alone. Its repositories block names five
+// live repositories, both role Apps installed on each, whose caches stand in the five states a
+// cache can be in, so `repositories.live.*.cache.state` carries every word of that field, which
+// arrived with the block at repositoriesLiveContract (answers.go's liveCacheStates).
 //
 // Its settings are the maximal kubernetes file with a sandbox block that sets every member but
 // `type` (sandboxSettingsBlock), which neither other body carries: populatedState's settings are
@@ -395,6 +398,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		claim.RoleReviewer, claim.RoleMerger}
 	stallWords := []record.ArchitectStallArm{record.ArchitectTookNothing, record.ArchitectClaimUnreachable,
 		record.ArchitectSlowBeforeGate}
+	cacheWords := []string{"cloning", "failing", "ready", "refused", "starting"}
 
 	// claimView is a claim that failed with cause, whose pending cause is the next word of the
 	// list and whose held task was queued for taskPhase: every key of a failure and of a held
@@ -475,6 +479,14 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	for i, reason := range heldWords {
 		held = append(held, HeldIssue{Issue: keys[i], Reason: reason})
 	}
+	both := AppInstallationsView{Implement: true, Review: true}
+	live := make([]LiveRepositoryView, 0, len(cacheWords))
+	for _, state := range cacheWords {
+		repo := "acme/" + state
+		live = append(live, LiveRepositoryView{Repo: repo, Apps: &both, Cache: &CacheView{
+			Repo: repo, Sandbox: "legion-values-cache-acme-" + state, State: state,
+		}})
+	}
 	return State{
 		Daemon: DaemonInfo{
 			Project:       "values",
@@ -486,6 +498,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		Admission:    Admission{Cap: 1, Waiting: keys, Trees: keys, Held: held},
 		Issues:       issues,
 		WakesWaiting: wakes,
+		Repositories: RepositoriesView{Live: live},
 		Settings:     SettingsOf(loadSettingsFile(t, settingsFixtureFile+sandboxSettingsBlock)),
 		// Built as the state's read builds it (PauseStateTx), holding no row: populatedState's
 		// pause carries the held rows.
@@ -516,6 +529,15 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			issues = append(issues, state.Issues[key])
 		}
 	}
+	// The route writes one more body than the three states marshal to: the state served a caller
+	// below repositoriesLiveContract, whose `repositories` block is the one contract 152's shape
+	// writes from the same entries (shaping.go's withoutRepositoriesLive), and which no body at
+	// this daemon's own contract carries. The two censuses below read it, so the
+	// `repositories.mapped.*.cache.state` answers.go still declares is a key path a fixture body
+	// carries. The records are taken through the routes from the three states alone
+	// (carriedShapes), so it adds nothing to them.
+	older, _ := withoutRepositoriesLive(states[0])
+	bodies = append(bodies, older)
 	released := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	// The controller's pause, standing, and once the controller's resume ended it
 	// (controllerPause).

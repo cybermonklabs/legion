@@ -419,12 +419,21 @@ type Config struct {
 	// production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
 	JudgeTestSkipChecks bool
 	// BROKER_PROJECT_ACCESS_URL: the base URL of the Dispatch the broker asks whether a project
-	// is private, whether a person may see it, and what kind of member a person is
-	// (internal/cipher/projectaccess), an absolute http(s) URL, read without the slashes it ends
-	// in. Set with BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with neither, the broker asks
-	// Dispatch nothing. A token that names no project, and an operator entry's token, whose
-	// project that operator's own setting chose, are minted as before; a person's trade that
-	// names a project is refused, since nothing could say that person may see it.
+	// is private, whether a person may see it, what kind of member a person is, and which Slack
+	// channels a private project's owner named (internal/cipher/projectaccess), an absolute
+	// http(s) URL, read without the slashes it ends in. The token exchange asks it about the
+	// projects a token names; a session's enrollment, about the projects its list names; each
+	// release and airlock connection of a secret carrying a dispatch-project tag, about that
+	// project and the credential's person; a project-channels secret asked for by a credential
+	// naming a private project, about that project's channels; the approval page, the pending
+	// lists and each decision, about the projects a request touches; and the model judge,
+	// about whether a request is a private project's. Set with BROKER_PROJECT_ACCESS_TOKEN_FILE
+	// or not at all: with neither, the broker asks Dispatch nothing. It then refuses every secret
+	// carrying a dispatch-project tag (project-unchecked) and serves every other secret as
+	// before; a token that names no project, and an operator entry's token, whose project that
+	// operator's own setting chose, are minted as before; a person's trade that names a project,
+	// and a session enrollment that names projects, are refused, since nothing could say that
+	// person may see them.
 	ProjectAccessURL string
 	// BROKER_PROJECT_ACCESS_TOKEN_FILE: the file holding the broker's own projected
 	// ServiceAccount token for that Dispatch, minted for Dispatch's audience. Read when the broker
@@ -756,6 +765,13 @@ type Config struct {
 	// BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs
 	// present. Unset, no workflow exchanges.
 	ExchangeWorkflows []exchange.WorkflowEntry
+	// BROKER_PRIVATE_PROJECTS: the Dispatch projects the operator declares private,
+	// whitespace-separated project keys, such as PRIV ACME, each an uppercase letter, then 1 to 9
+	// uppercase letters or digits. A key that is not one, and a key named twice, refuse the
+	// start, naming the key. This build reads and checks the list and acts on none of it: every
+	// token exchange, enrollment and exchange entry is decided as with the setting unset. Unset
+	// or blank, no project is private.
+	PrivateProjects exchange.PrivateProjects
 	// BROKER_ENVOY_URL: an Envoy listener the broker notifies, best effort, when a session's
 	// pending request expires undecided. Unset, the broker sends nothing. Needs
 	// BROKER_ENVOY_ACCOUNT_TOKEN_FILE, the credential it calls the listener with.
@@ -2444,6 +2460,9 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if len(cfg.ExchangeWorkflows) > 0 && cfg.ExchangeGitHubIssuer == "" {
 		return Config{}, fmt.Errorf("BROKER_EXCHANGE_WORKFLOWS needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs present")
+	}
+	if cfg.PrivateProjects, err = exchange.ParsePrivateProjects(getenv("BROKER_PRIVATE_PROJECTS")); err != nil {
+		return Config{}, fmt.Errorf("BROKER_PRIVATE_PROJECTS: %w", err)
 	}
 	if cfg.EnvoyURL != "" {
 		if cfg.EnvoyAccountTokenFile = strings.TrimSpace(getenv("BROKER_ENVOY_ACCOUNT_TOKEN_FILE")); cfg.EnvoyAccountTokenFile == "" {
