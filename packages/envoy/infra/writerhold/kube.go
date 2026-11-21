@@ -19,7 +19,7 @@ import (
 	"k8s.io/client-go/transport/spdy"
 )
 
-// The clustered hub as the deployment names it (the deployment repository's envoy-cluster program, through
+// The clustered hub as the deployment names it (the deployment's envoy-cluster program, through
 // gcp:ClusteredNatsHub): namespace envoy, the StatefulSet envoy-nats, whose pods are envoy-nats-<i>,
 // and the chart's ConfigMap envoy-nats-config, which holds the configuration each pod runs.
 const (

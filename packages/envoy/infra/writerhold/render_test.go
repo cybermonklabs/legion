@@ -25,8 +25,8 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// renderImage is the nats image the deployment repository's envoy-cluster pins (Pulumi.prod.yaml natsImage, at
-// the deployment repository at 32d9f0fa6a).
+// renderImage is the nats image the deployment's envoy-cluster program pins (Pulumi.prod.yaml
+// natsImage, at 32d9f0fa6a).
 const renderImage = "mirror.gcr.io/library/nats:2.15.1-alpine@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6"
 
 // renderRevision is the fixture StatefulSet's status.updateRevision.
@@ -449,7 +449,7 @@ func TestHoldStaticUsers(t *testing.T) {
 	}
 }
 
-// hubMovePublish is the deployment repository's envoy-move grant (envoy-cluster/hub.go:285-296, read at
+// hubMovePublish is the deployment's envoy-move grant (envoy-cluster/hub.go:285-296, read at
 // 32d9f0fa6a), which reaches every protected stream through STREAM.UPDATE.* and STREAM.DELETE.*.
 var hubMovePublish = []string{
 	"$JS.API.INFO", "$JS.API.STREAM.NAMES", "$JS.API.STREAM.LIST", "$JS.API.STREAM.INFO.*", "$JS.API.STREAM.UPDATE.*",
@@ -458,7 +458,7 @@ var hubMovePublish = []string{
 }
 
 // TestHoldPreflightNoEnvoyMove shows step 1's "No static envoy-move user" (plan v62 line 883): a
-// render that still holds the deployment repository's static move user, as core renders it with its grant,
+// render that still holds the deployment's static move user, as core renders it with its grant,
 // stops the preflight naming envoy-move. Control: the same render without it passes. Production
 // change that would fail it: a check that names users by key alone, or that reads the move user's
 // key as the auth service's because auth_users lists it too.

@@ -840,7 +840,7 @@ then, make it with `create --break-glass` once every writer of the buckets is sc
 `--connz` shows no client but the command's own:
 
 1. Note each Deployment's replica count, then scale them to 0 in this order: the in-cluster
-   listener (`kubectl -n envoy scale deployment/envoy-listener --replicas=0`, the deployment repository's
+   listener (`kubectl -n envoy scale deployment/envoy-listener --replicas=0`, the deployment's
    `envoy-cluster/listener.go`), the hub's session listener
    (`kubectl -n envoy scale deployment/envoy-nats-listener --replicas=0`, `gcp:ClusteredNatsHub`'s
    `<release>-listener`), Dispatch (`kubectl -n dispatch scale deployment/<hostname> --replicas=0`,

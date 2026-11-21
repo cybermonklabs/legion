@@ -778,7 +778,7 @@ func commentName(files map[string]string, key string) string {
 	return ""
 }
 
-// moveUser is the deployment repository's static move user (envoy-cluster/hub.go hubMovePublish), which holds
+// moveUser is the deployment's static move user (envoy-cluster/hub.go hubMovePublish), which holds
 // $JS.API.STREAM.UPDATE.* and $JS.API.STREAM.DELETE.* and connects past the callout; the callout
 // cutover removes it.
 const moveUser = "envoy-move"

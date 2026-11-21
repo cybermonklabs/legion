@@ -4,7 +4,7 @@ package writerhold
 // public repository and CI: the two fixtures are read from testdata (the tester read them from
 // T11_ACCEPTED_CM and T11_SCRIPT_REPORT, which CI does not set), and in both the private project
 // names are example-root and example-infra and the accepted list's answers example.invalid links
-// (testdata/minters-accepted-cm.json is the deployment repository's pull request 4235's rendered list at 9b2dfb0d23, as kind
+// (testdata/minters-accepted-cm.json is t-11's rendered list at 9b2dfb0d23, as kind
 // served it; testdata/minters-script-report-row-m.json is operator-token-minters.sh's row-m report
 // at #4679's e171cc291a, as the script wrote it, for a project-level roles/container.admin
 // holder).
@@ -62,7 +62,7 @@ func TestT11AnAcceptedHoldingAsTheScriptReportsItIsAccepted(t *testing.T) {
 	now := time.Now().UTC()
 	err := PreflightMinters(context.Background(), fake.NewSimpleClientset(t11List(t)),
 		minterReportFile(t, t11ScriptReport(t, now)), func() time.Time { return now })
-	require.NoError(t, err, "broker-ci@ holding roles/container.admin is accepted by the deployment repository's pull request 4235's list")
+	require.NoError(t, err, "broker-ci@ holding roles/container.admin is accepted by t-11's list")
 }
 
 // Control: the same findings in the reader's own shape (no right, granted_at a time) are accepted,

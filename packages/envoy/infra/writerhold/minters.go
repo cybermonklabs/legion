@@ -17,8 +17,8 @@ import (
 )
 
 // The accepted list (§3a, "Who can mint the operator's token"): the ConfigMap
-// envoy-operator-accepted-minters in namespace envoy-operator, which the deployment repository's cluster-grants/
-// renders (t-11, part 3, the deployment repository's pull request 4235), under one data key, AcceptedMintersKey, whose value is a
+// envoy-operator-accepted-minters in namespace envoy-operator, which the deployment's
+// cluster-grants/ renders (t-11, part 3), under one data key, AcceptedMintersKey, whose value is a
 // JSON array of AcceptedMinter, [] until Sami answers plan F's items 8(d) and 8(f).
 const (
 	AcceptedMintersNamespace = "envoy-operator"
@@ -63,8 +63,8 @@ type minterReport struct {
 	Unknown  *[]MinterUnknown `json:"unknown"`
 }
 
-// AcceptedMinter is one entry of the accepted list, as t-11's cluster-grants/ renders it
-// (the deployment repository's pull request 4235): a principal, its Right (the role a finding names for it), the clause of plan
+// AcceptedMinter is one entry of the accepted list, as t-11's cluster-grants/ renders it: a
+// principal, its Right (the role a finding names for it), the clause of plan
 // F's go-live items it falls under (8(d) for a minter, 8(f) for a hold writer), and the link to
 // Sami's answer that accepts it. Every field is required. No entry names a person, because the
 // report never does.

@@ -89,7 +89,7 @@ func reportAt(runAt time.Time, findings []map[string]any, unknown []MinterUnknow
 // report in the old shape (principal and right), a finding that leaves out or empties any of its
 // five fields (UNKNOWN, naming the finding's index and the fields), an accepted list that cannot be
 // read, an accepted entry that leaves out or empties any of its principal, right, clause and answer
-// (the deployment repository's pull request 4235's form), and no report. No principal of the rows is a person, because the
+// (t-11's form), and no report. No principal of the rows is a person, because the
 // report names none. Control: a preflight that skips the report passes a report naming legion-ci@.
 // Production change that would fail it: a check that compares principals alone, takes the old
 // shape, takes a finding without its resource, permissions or grant time, ignores unknown steps,
