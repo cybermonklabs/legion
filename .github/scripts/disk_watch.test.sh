@@ -269,14 +269,18 @@ for _ in $(seq 50); do
   [ "$(state_of "$pid")" = T ] && break
   sleep 0.1
 done
-# The stop's second is read from the clock once the kernel shows the sampler stopped, so the stop
-# landed in that second or an earlier one, and every second after it is one the sampler was off
-# the CPU for the whole of. The window of seconds no line may name begins there, not at the second
-# after the sampler's last line: a stop can land after the sampler read the clock and before its
-# line reached the file, and that line - naming a second the sampler did run in, the one it read
-# the clock in - reaches the file on waking. A window begun after the last line refused it.
-stopped_in=$(date -u +%s)
 check "the kernel has the sampler off the CPU" "$(is "$(state_of "$pid")" T)"
+# The stop's second is read from the clock only after the check above has read `T`, so the stop
+# landed in that second or an earlier one, and every second after it is one the sampler was off
+# the CPU for the whole of. Not before that read: when the polls above all miss the stop and it
+# becomes visible only at the check, a second read before the check can come before the stop, and
+# the sampler's honest lines up to the stop then fall inside the window. When the check did not
+# read `T`, the case has failed already. The window of seconds no line may name begins after this
+# second, not at the second after the sampler's last line: a stop can land after the sampler read
+# the clock and before its line reached the file, and that line - naming a second the sampler did
+# run in, the one it read the clock in - reaches the file on waking. A window begun after the last
+# line refused it.
+stopped_in=$(date -u +%s)
 # While the sampler is off the CPU it cannot write, so its series file is stable here and its last
 # stamp is the last second it has a line for.
 last_before_stall=$(stamps "$stall_state.series" | tail -1)
