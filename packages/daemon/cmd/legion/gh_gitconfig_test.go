@@ -269,18 +269,24 @@ func TestGhRepoGitConfigRefusalNamesWhatHandsTheTokenOn(t *testing.T) {
 // With no git on PATH, ghRepoGitConfigRefusal reads nothing and refuses nothing: gh finds its git
 // on the same PATH, so it runs none, and no configuration of one can send anything. With a git
 // older than 2.26, which knows no --show-scope, it reads as with any other: a repository that
-// sets sslVerify off is still refused, and a clean one passes. The old git here is the real one
-// behind a script that answers --show-scope as git 2.25 does.
+// sets sslVerify off is still refused, and a clean one passes. The old git here is a script that
+// answers --show-scope as git 2.25 does and hands every other call to the git of the PATH the test
+// started with, so a git wrapper on that PATH resolves the real git as it does outside the test.
+// Handed on by its path under the script's own PATH, a wrapper that takes the first other git on
+// PATH as the real one took the script, and the two ran each other until the read's timeout. The
+// PATH is written into the script, since the refusal runs git with only the names gh keeps
+// (ghChildEnviron).
 func TestGhRepoGitConfigRefusalWithNoGitOrAnOldGit(t *testing.T) {
-	git, err := exec.LookPath("git")
-	if err != nil {
+	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on this machine")
 	}
+	started := os.Getenv("PATH")
 	off := repositoryWith(t, []string{"http.https://github.com/.sslVerify", "false"})
 	clean := repositoryWith(t, []string{"user.name", "Legion test"})
 	none := t.TempDir()
 	old := t.TempDir()
-	script := "#!/bin/sh\nfor arg; do\n  if [ \"$arg\" = --show-scope ]; then\n    echo \"error: unknown option \\`show-scope'\" >&2\n    exit 129\n  fi\ndone\nexec '" + git + "' \"$@\"\n"
+	script := "#!/bin/sh\nfor arg; do\n  if [ \"$arg\" = --show-scope ]; then\n    echo \"error: unknown option \\`show-scope'\" >&2\n    exit 129\n  fi\ndone\n" +
+		"PATH='" + strings.ReplaceAll(started, "'", `'\''`) + "'\nexec git \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(old, "git"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
