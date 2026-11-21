@@ -85,24 +85,27 @@ const TWO_STEPS: readonly string[] = [
  */
 const COOLDOWN_MS = 4_000;
 
-/** The cooldown the killed-and-resumed case arms, which is what its return is measured against:
- * long enough that a restored arming is still running when the replacement pane is relaunched,
- * short enough for the return to come while the case watches. The relaunch's own boot is not
- * covered by it and is not meant to be - the case measures the return from the resumed life's
- * first served turn, and reads the restored arming from where that turn went (below). */
-const RESUME_COOLDOWN_MS = 12_000;
+/**
+ * A wait no case reaches: longer than the longest case's own timeout (300 s), and under the cap
+ * the pane sets (`LEGION_REFUSAL_COOLDOWN_MAX_MS`, 600 s), so its refusal raises the doubling level
+ * as a deployment's does. A life armed with it never comes back on its own, so no step of the
+ * case, however slow, can let the return come before the turn the case reads.
+ */
+const UNREACHED_COOLDOWN_MS = 400_000;
 
-/** The cooldown the background job's case arms. The job's assignment, two requests the stand-in
- * answers at once, has to end inside it for the wait to end while the pane is idle; the case
- * checks that it did (`changes` before the wait) and fails by name where it did not, rather than
- * pass on a return that run's own hooks made. */
-const JOB_COOLDOWN_MS = 12_000;
+/** The wait the killed-and-resumed case writes into the transcript's arming once the first life
+ * is gone, counted from that moment: long enough that the restored arming is still running when
+ * the replacement pane is relaunched, short enough for the return to come while the case watches.
+ * The relaunch's own boot is not covered by it and is not meant to be - the case measures the
+ * return from the resumed life's first served turn, and reads the restored arming from where that
+ * turn went (below). */
+const RELAUNCH_WAIT_MS = 12_000;
 
-/** How long an idle pane's wait for its return goes on past the due time before the case gives
- * up on it (`IdleLife.modelChanges`): it bounds only a pane that does not come back while it is
- * idle, which the case's own assertion then fails on, and a pane that does come back ends the
- * wait at the frame that says so. */
-const IDLE_RETURN_MS = 60_000;
+/** How long a case waits for its return past the due time before it gives up on it: an idle
+ * pane's wait (`IdleLife.modelChanges`), or a turn that asks the gateway again until the return.
+ * It bounds only a session that does not come back, which the case's own assertion then fails
+ * on, and a session that does come back ends the wait at the frame or the request that says so. */
+const RETURN_GIVE_UP_MS = 60_000;
 
 const cleanup: Cleanup = [];
 afterEach(async () => {
@@ -163,6 +166,18 @@ interface FallbackPane extends LegionPane {
   readonly returnedAt: (since: number) => number | undefined;
   /** The cooldown states the pane recorded in its transcript, in order. */
   readonly cooldowns: () => Promise<FallbackCooldownState[]>;
+  /**
+   * Each change of the session's model and each run's end that omp printed, in order: a change as
+   * `model`, an end as `end <n>`, or `parked <n>` when the host marked the run as waiting on a
+   * background job's result (`awaitingAsyncWork`). `n` is how many turns the gateway had served
+   * when the end arrived, which is exact: the gateway answers a run's last turn before omp can end
+   * the run. A change carries no count, since omp's frames and the gateway's requests reach the
+   * case on two streams, and a change printed before a request can be read after it.
+   */
+  readonly frames: readonly string[];
+  /** When each `model_changed` frame reached the case (epoch ms), in order: never before omp
+   * printed it, so a change made at or after a due time reads at or after it here. */
+  readonly changedAt: readonly number[];
 }
 
 /**
@@ -186,9 +201,8 @@ interface IdleLife {
   readonly runs: () => number;
   /** Resolves once more than `runs` runs of the session have ended. */
   readonly runAfter: (runs: number) => Promise<void>;
-  /** How many changes of the session's model the host has reported since `since` (epoch ms). */
-  readonly changes: (since: number) => number;
-  /** Resolves true once `changes(since)` is `count`, or false at `giveUpAt` when it is not. */
+  /** Resolves true once the host has reported `count` changes of the session's model since
+   * `since` (epoch ms), or false at `giveUpAt` when it has not. */
   readonly modelChanges: (since: number, count: number, giveUpAt: number) => Promise<boolean>;
 }
 
@@ -218,6 +232,7 @@ async function fallbackPane(options: {
   /** When each `model_changed` frame arrived, and how many runs have ended. */
   const modelChanged: number[] = [];
   let runsEnded = 0;
+  const frames: string[] = [];
   /** The checks of every wait still open, run after each frame omp prints. */
   const waits = new Set<() => void>();
   const { whileUp } = options;
@@ -246,7 +261,6 @@ async function fallbackPane(options: {
       waits.add(check);
       return Promise.race([promise, rpc.closed]);
     };
-    const changes = (since: number): number => modelChanged.filter((at) => at >= since).length;
     const codec = StringCodec();
     let seq = 0;
     return {
@@ -288,8 +302,8 @@ async function fallbackPane(options: {
       runAfter: async (runs) => {
         await until(() => runsEnded > runs);
       },
-      changes,
-      modelChanges: (since, count, giveUpAt) => until(() => changes(since) >= count, giveUpAt),
+      modelChanges: (since, count, giveUpAt) =>
+        until(() => modelChanged.filter((at) => at >= since).length >= count, giveUpAt),
     };
   };
 
@@ -314,8 +328,15 @@ async function fallbackPane(options: {
         workspace = paths.workspace;
       },
       onFrame: (frame) => {
-        if ("type" in frame && frame.type === "model_changed") modelChanged.push(Date.now());
-        if ("type" in frame && frame.type === "agent_end") runsEnded += 1;
+        if ("type" in frame && frame.type === "model_changed") {
+          modelChanged.push(Date.now());
+          frames.push("model");
+        }
+        if ("type" in frame && frame.type === "agent_end") {
+          runsEnded += 1;
+          const parked = "awaitingAsyncWork" in frame && frame.awaitingAsyncWork === true;
+          frames.push(`${parked ? "parked" : "end"} ${served.length}`);
+        }
         for (const check of [...waits]) check();
       },
       ...(whileUp === undefined
@@ -347,28 +368,50 @@ async function fallbackPane(options: {
       served.find((turn) => turn.at >= since && turn.model === "strong-model")?.at,
     cooldowns: async () =>
       (await pane.transcriptEntries(LEGION_FALLBACK_ENTRY)) as FallbackCooldownState[],
+    frames,
+    changedAt: modelChanged,
   };
+}
+
+/**
+ * Writes `dueAt` into the arming the pane's transcript recorded last, once its first life is gone:
+ * the wait runs on the omp process's own clock, which no test can move, so a case that relaunches
+ * a pane sets the boundary of the wait the resumed life restores itself, after every step it takes
+ * before the relaunch.
+ */
+async function moveDueTime(pane: FallbackPane, dueAt: number): Promise<void> {
+  await pane.editTranscriptEntry(LEGION_FALLBACK_ENTRY, (data) => {
+    const state = data as FallbackCooldownState;
+    if (state.arming === undefined) throw new Error("the last fallback state holds no arming");
+    return { ...state, arming: { ...state.arming, dueAt } };
+  });
 }
 
 test.skipIf(skip)(
   "a refusal before any output is retried on the chain's next model, which is the host's own walk",
   async () => {
-    /** When the second assignment's turn must stop pinging the gateway and let the run settle:
-     * well past the wait the refusal bought, so the case sees both sides of it. */
-    let until = 0;
+    /** When the run stops asking again for a session that has not come back by then: it bounds
+     * only a session that never comes back, which the last assertion then fails on. */
+    let giveUpAt = 0;
     const pane = await fallbackPane({
-      // The second assignment is one long turn that asks the gateway every second, so the model
-      // of each of its requests says where the session stood at that moment.
-      prompt: ["Start FALL-1.", "Keep working."],
-      answer: (_model, nth) => {
+      // One assignment, one run: the host's replay of the refused turn and every turn after it
+      // ask the gateway again while the session is on the weaker model, so no step of the case
+      // falls between the refusal and the requests that show where the session stood. The
+      // replay's command returns at once, so a second request follows it inside the wait, and
+      // each later turn sleeps a second first. The run ends at its first request to any other
+      // model: it ends on the return, whenever that comes.
+      prompt: ["Start FALL-1."],
+      answer: (model, nth) => {
         if (nth === 1) {
-          until = Date.now() + 2 * COOLDOWN_MS;
+          giveUpAt = Date.now() + COOLDOWN_MS + RETURN_GIVE_UP_MS;
           return refuses("refusal_1");
         }
-        if (nth === 2) return replies([{ type: "text", text: "Done." }], `msg_${nth}`);
-        return Date.now() < until
-          ? replies([sleeps(1)], `ping_${nth}`)
-          : replies([{ type: "text", text: "Done." }], `msg_${nth}`);
+        if (model !== "weak-model" || Date.now() >= giveUpAt) {
+          return replies([{ type: "text", text: "Done." }], `msg_${nth}`);
+        }
+        return nth === 2
+          ? replies([call("bash", { command: "echo next" })], `msg_${nth}`)
+          : replies([sleeps(1)], `ping_${nth}`);
       },
     });
 
@@ -454,6 +497,9 @@ test.skipIf(skip)(
   "a refusal after streamed text, which the host leaves where it is, sends the next turn to the chain's next model",
   async () => {
     const pane = await fallbackPane({
+      // The case reads only the turn after the refusal, never the return: a wait no case
+      // reaches, so the next assignment's turn reads the walk's model however late it is sent.
+      cooldownMs: UNREACHED_COOLDOWN_MS,
       prompt: ["Start FALL-1.", "Carry on."],
       answer: (_model, nth) =>
         nth === 1
@@ -474,11 +520,15 @@ test.skipIf(skip)(
   "the session is put back on the model it fell back from inside a turn already running, once the cooldown is over",
   async () => {
     const pane = await fallbackPane({
-      prompt: ["Start FALL-1.", "Keep working."],
+      // One assignment, one run, so no step of the case falls inside the wait.
+      prompt: ["Start FALL-1."],
       answer: (_model, nth) => {
-        if (nth === 1) return refuses("refusal_1", { text: "Looking at it." });
+        // Refused before any output: the host walks its own chain and replays the turn on the
+        // weaker model inside the same run.
+        if (nth === 1) return refuses("refusal_1");
         // One long turn on the weaker model: the sleep outlasts the cooldown, so the wait ends
-        // while the turn's tool runs.
+        // while the turn's tool runs. It starts after the refusal, so it outlasts what is left of
+        // the wait however late it starts.
         if (nth === 2) return replies([sleeps(6)], `msg_${nth}`);
         if (nth === 3) return replies([call("bash", { command: "echo next" })], `msg_${nth}`);
         return replies([{ type: "text", text: "Done." }], `msg_${nth}`);
@@ -555,25 +605,31 @@ test.skipIf(skip)(
     /** How many turns the stronger model has been sent: the first is refused, the second is the
      * clean turn that puts the wait back, the third is refused again. */
     let onStrong = 0;
-    let until = 0;
+    /** When the last run stops asking again for a session that has not come back by then: it
+     * bounds only a session that never comes back, which the last assertion then fails on. */
+    let giveUpAt = 0;
     const pane = await fallbackPane({
-      prompt: ["Start FALL-1.", "Keep working.", "Keep going.", "Carry on."],
+      prompt: ["Start FALL-1.", "Keep working.", "Keep going."],
       answer: (model, nth) => {
         if (model === "strong-model") {
           onStrong += 1;
           if (onStrong === 1) return refuses("refusal_1", { text: "Looking at it." });
           // The clean turn: it ends the second assignment's run on the stronger model.
           if (onStrong === 2) return replies([{ type: "text", text: "Back on it." }], `msg_${nth}`);
+          // The second refusal comes before any output: the host walks its own chain and replays
+          // the turn on the weaker model inside the same run, so no step of the case falls inside
+          // the wait it buys. The run ends at its next request to the stronger model, the return.
           if (onStrong === 3) {
-            until = Date.now() + 2 * COOLDOWN_MS;
-            return refuses("refusal_2", { text: "Looking at it again." });
+            giveUpAt = Date.now() + COOLDOWN_MS + RETURN_GIVE_UP_MS;
+            return refuses("refusal_2");
           }
+          return replies([{ type: "text", text: "Done." }], `msg_${nth}`);
         }
         if (nth === 2) return replies([sleeps(6)], `msg_${nth}`);
-        if (until === 0) return replies([call("bash", { command: "echo next" })], `msg_${nth}`);
-        // The last assignment's turn asks the gateway every second, so the model of each request
-        // says where the session stood at that moment.
-        return Date.now() < until
+        if (onStrong < 3) return replies([call("bash", { command: "echo next" })], `msg_${nth}`);
+        // The last run asks the gateway every second while the session is on the weaker model,
+        // so the model of each request says where the session stood at that moment.
+        return Date.now() < giveUpAt
           ? replies([sleeps(1)], `ping_${nth}`)
           : replies([{ type: "text", text: "Done." }], `msg_${nth}`);
       },
@@ -616,7 +672,9 @@ test.skipIf(skip)(
     let giveUpAt = 0;
     let cameBack = false;
     const pane = await fallbackPane({
-      cooldownMs: RESUME_COOLDOWN_MS,
+      // A wait the first life never reaches, so nothing the case does before the relaunch can let
+      // it come back on its own; the case writes the wait the resumed life restores below.
+      cooldownMs: UNREACHED_COOLDOWN_MS,
       // The second assignment is a tool-call turn: its own entries carry the arming written at
       // the end of the refused turn to disk, which is where the resumed life reads it.
       prompt: ["Start FALL-1.", "Note that."],
@@ -634,14 +692,16 @@ test.skipIf(skip)(
 
     const armed = (await pane.cooldowns()).at(-1)?.arming;
     expect(armed).toMatchObject({ restoreTo: STRONG, cause: "refusal" });
-    const dueAt = armed?.dueAt ?? 0;
-    expect(dueAt).toBeGreaterThan(Date.now());
     const firstLife = pane.served.length;
+    // The wait the resumed life restores starts now, once the first life is gone and every step
+    // the case takes before the relaunch is behind it.
+    const dueAt = Date.now() + RELAUNCH_WAIT_MS;
+    await moveDueTime(pane, dueAt);
 
     // The daemon relaunches the worker: a fresh process whose only memory of the fallback is the
     // transcript it resumes.
     dueBy = dueAt;
-    giveUpAt = dueAt + 4 * RESUME_COOLDOWN_MS;
+    giveUpAt = dueAt + 4 * RELAUNCH_WAIT_MS;
     await pane.resume([], "Carry on after the relaunch.");
 
     const resumed = pane.served.slice(firstLife);
@@ -667,7 +727,7 @@ test.skipIf(skip)(
     const resumedFrom = Math.max(dueAt, resumed[0]?.at ?? 0);
     const returned = pane.returnedAt(dueAt);
     expect(returned).toBeDefined();
-    expect((returned ?? 0) - resumedFrom).toBeLessThan(RESUME_COOLDOWN_MS);
+    expect((returned ?? 0) - resumedFrom).toBeLessThan(RELAUNCH_WAIT_MS);
   },
   300_000
 );
@@ -676,8 +736,9 @@ test.skipIf(skip)(
   "a pane relaunched once its restored wait is over sends its first turn to the model it fell back from",
   async () => {
     const pane = await fallbackPane({
-      cooldownMs: RESUME_COOLDOWN_MS,
-      // As in the case above: the second assignment's entries carry the arming to disk.
+      // As in the case above: a wait the first life never reaches, and the second assignment's
+      // entries carry the arming to disk.
+      cooldownMs: UNREACHED_COOLDOWN_MS,
       prompt: ["Start FALL-1.", "Note that."],
       answer: (model, nth) => {
         if (nth === 1) return refuses("refusal_1", { text: "Looking at it." });
@@ -693,14 +754,13 @@ test.skipIf(skip)(
 
     const armed = (await pane.cooldowns()).at(-1)?.arming;
     expect(armed).toMatchObject({ restoreTo: STRONG, cause: "refusal" });
-    const dueAt = armed?.dueAt ?? 0;
     const firstLife = pane.served.length;
 
     // The daemon relaunches the worker once the wait is over, as it does for a pane that was gone
     // longer than the cooldown it fell back for, and as a boot slower than the rest of the wait
-    // does in the case above. A real wait, on purpose: the cooldown runs on the omp process's own
-    // clock, which no test can move, and this one ends at the due time the transcript records.
-    while (Date.now() < dueAt) await Bun.sleep(dueAt - Date.now());
+    // does in the case above. The wait the resumed life restores ended the moment the case wrote
+    // it, so it is over by the relaunch.
+    await moveDueTime(pane, Date.now());
     await pane.resume([], "Carry on after the relaunch.");
 
     // The host reads a request's model before it runs the `context` hook, so that hook cannot
@@ -741,7 +801,11 @@ test.skipIf(skip)(
         // The pane is idle now and nothing starts a run of its own: the session comes back when
         // the wait is over or not at all. The walk is the first model change the host reports
         // after the refusal, and the return is the second.
-        cameBack = await life.modelChanges(refusedAt, 2, refusedAt + COOLDOWN_MS + IDLE_RETURN_MS);
+        cameBack = await life.modelChanges(
+          refusedAt,
+          2,
+          refusedAt + COOLDOWN_MS + RETURN_GIVE_UP_MS
+        );
         servedAtReturn = life.served.length;
         // A card is an agent-attributed wake: the host starts its run with no
         // `before_agent_start`, and reads the run's model before the `context` hook of its first
@@ -771,18 +835,14 @@ test.skipIf(skip)(
      * over, so the job's result comes when the case says rather than at a sleep's end. */
     const release = ".release-job";
     let cameBack = false;
-    let changesBeforeIdle = 0;
-    let servedAtIdle = 0;
-    let servedAtReturn = 0;
     let first = 0;
     const pane = await fallbackPane({
-      cooldownMs: JOB_COOLDOWN_MS,
       prompt: ["Start FALL-1."],
       answer: (_model, nth) => {
-        // Refused after text: the plugin's own walk moves the session to the weaker model.
-        if (nth === 1) return refuses("refusal_1", { text: "Looking at it." });
-        // The second assignment starts a background job and ends its run: the host runs the job
-        // on after the run has ended, and wakes the session with its result.
+        // The first assignment's one turn, which only brings the pane up.
+        if (nth === 1) return replies([{ type: "text", text: "Ready." }], `msg_${nth}`);
+        // The second assignment starts a background job, which the host runs on after the run
+        // has ended, and wakes the session with its result.
         if (nth === 2) {
           return replies(
             [
@@ -794,42 +854,55 @@ test.skipIf(skip)(
             `msg_${nth}`
           );
         }
+        // The turn after the job has started is refused before any output: the host walks its
+        // own chain and replays the turn on the weaker model, and that replay ends the run.
+        if (nth === 3) return refuses("refusal_1");
         return replies([{ type: "text", text: "Done." }], `msg_${nth}`);
       },
       whileUp: async (life) => {
-        const refusedAt = life.served[0]?.at ?? 0;
         // The job's run ends with an `agent_end` the host marks as not terminal, since the job's
         // result continues it; `runLegionPane` settles a prompt only at a terminal one, so this
-        // prompt is sent here.
+        // prompt is sent here. The refusal comes inside this run, after the job has started, so
+        // the wait begins once every step the case takes to set the pane up is behind it: between
+        // the refusal and the pane going idle only the host acts, with its replay.
         await life.prompt("Start the job.");
-        // The pane is idle from here. Only the walk may have changed the model so far: a return
-        // made inside the job's run would be its own hooks', not the idle return this case is for.
-        changesBeforeIdle = life.changes(refusedAt);
-        servedAtIdle = life.served.length;
-        const runs = life.runs();
+        const refusedAt = life.served[2]?.at ?? 0;
         cameBack = await life.modelChanges(
           refusedAt,
           2,
-          refusedAt + JOB_COOLDOWN_MS + IDLE_RETURN_MS
+          refusedAt + COOLDOWN_MS + RETURN_GIVE_UP_MS
         );
-        servedAtReturn = life.served.length;
         // The job's result is an agent-attributed wake, as a card is: no `before_agent_start`,
         // and the run's model read before the `context` hook of its first request runs.
         first = life.served.length;
+        const runs = life.runs();
         await writeFile(path.join(life.workspace, release), "");
         await life.runAfter(runs);
       },
     });
 
-    expect(changesBeforeIdle).toBe(1);
     expect(cameBack).toBe(true);
-    // No request ran a hook while the pane waited, so the return is the timer's.
-    expect(servedAtReturn).toBe(servedAtIdle);
-    const woken = pane.served.slice(first);
-    expect(woken.length).toBeGreaterThan(0);
+    expect(pane.models()).toEqual([
+      "strong-model",
+      "strong-model",
+      "strong-model",
+      "weak-model",
+      "strong-model",
+    ]);
+    // The order omp printed: the walk at the refusal, the job's run parked on the job once the
+    // replay (the fourth turn) has answered, and the return after that with no turn served in
+    // between, before the job's result started a run. No hook ran while the pane waited, so the
+    // return is the timer's; a return made inside the job's run would come before `parked 4`.
+    expect(pane.frames).toEqual(["end 1", "model", "parked 4", "model", "end 5"]);
+    // And the return came no earlier than the wait the refusal armed, which the transcript records.
+    const armed = (await pane.cooldowns())[0];
+    expect(armed).toMatchObject({
+      arming: { restoreTo: STRONG, cause: "refusal" },
+      levels: { [STRONG]: 2 },
+    });
+    expect(pane.changedAt[1]).toBeGreaterThanOrEqual(armed?.arming?.dueAt ?? Infinity);
     // The run is the job's: its first request carries the job's output.
-    expect(woken[0]?.messages).toContain("released");
-    expect(woken[0]?.model).toBe("strong-model");
+    expect(pane.served[first]?.messages).toContain("released");
   },
   180_000
 );
