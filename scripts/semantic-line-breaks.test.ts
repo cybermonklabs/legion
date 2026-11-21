@@ -425,6 +425,17 @@ test("--write refuses, writing nothing, a re-layout that would change how the fi
   expect(await readFile(path, "utf8")).toBe(text);
 });
 
+test("--write names the faults left in a file whose re-layout it refuses for its rendering", async () => {
+  const text = "- a\n  - -\n\n# One. Two\n";
+  const result = await written(text);
+  expect(result.stderr).toBe(
+    `${result.path}: refusing to write: the block at line 1 would render differently (a list became a list)\n` +
+      `${result.path}: refusing to write: line 4 would fail R1: # One. Two\n`
+  );
+  expect(result.exitCode).toBe(2);
+  expect(result.text).toBe(text);
+});
+
 test("--write leaves YAML front matter as it is", async () => {
   const text = "---\nname: example\ndescription: Bar. Baz\n---\n\n# Title\n";
   const result = await written(text);
@@ -459,9 +470,13 @@ test("--write keeps the line break inside inline <code> HTML, which GitHub shows
 });
 
 test("--write does not cut inside an inline HTML attribute value that holds a >", async () => {
-  const text = 'Hover <abbr title="a>b. Second line of the tip">here</abbr> to see it.\n';
-  const result = await written(text);
-  expect(result.text).toBe(text);
+  // The sentence after the element is cut off; the sentence end inside the attribute is not.
+  const result = await written(
+    'Hover <abbr title="a>b. Second line of the tip">here</abbr> to see it. Then go.\n'
+  );
+  expect(result.text).toBe(
+    'Hover <abbr title="a>b. Second line of the tip">here</abbr> to see it.\nThen go.\n'
+  );
   expect(result.exitCode).toBe(0);
 });
 

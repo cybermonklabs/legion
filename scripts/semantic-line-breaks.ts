@@ -1115,28 +1115,32 @@ function lineBefore(before: string, after: string, at: number): number {
 
 /**
  * Why `--write` must not write `next`, the re-layout of `text`: it would differ in more than
- * whitespace or render differently, or the check would still report a finding in it, which is
- * named by its rule and its line in `text`. Empty when `next` may be written. A result the check
- * accepts is one a second `--write` leaves as it is.
+ * whitespace, it would render differently, or the check would still report a finding in it, each
+ * named by its rule and its line in `text`. A rendering refusal still lists the findings, so one
+ * run names every fault. Empty when `next` may be written. A result the check accepts is one a
+ * second `--write` leaves as it is.
  */
 function writeRefusals(parse: Parse, text: string, blocks: Blocks, next: string): string[] {
+  const refusals: string[] = [];
   if (next !== text) {
     const difference = foldedDifference(text, next);
     if (difference !== undefined) {
       return [`the re-layout would change more than whitespace (${difference})`];
     }
     const rendering = renderDifference(parse, text, next);
-    if (rendering !== undefined) return [rendering];
+    if (rendering !== undefined) refusals.push(rendering);
   }
   const { lines } = splitLines(next);
   const starts = [0];
   for (const line of lines) starts.push((starts.at(-1) ?? 0) + line.length + 1);
-  return check(next, next === text ? blocks : scanBlocks(lines)).map(
-    ({ line, column, rule, message }) => {
-      const onDisk = next === text ? line : lineBefore(text, next, (starts[line] ?? 0) + column);
-      return `line ${onDisk + 1} would fail R${rule}: ${message}`;
-    }
-  );
+  for (const { line, column, rule, message } of check(
+    next,
+    next === text ? blocks : scanBlocks(lines)
+  )) {
+    const onDisk = next === text ? line : lineBefore(text, next, (starts[line] ?? 0) + column);
+    refusals.push(`line ${onDisk + 1} would fail R${rule}: ${message}`);
+  }
+  return refusals;
 }
 
 function screenRows(lines: readonly string[]): number {
