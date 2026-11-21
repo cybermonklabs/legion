@@ -492,9 +492,10 @@ func (s *server) endUnlistedPasskeySignIn(ctx context.Context, tx pgx.Tx, email 
 
 // invitationAnswer is POST /api/v1/projects/{key}/access/people/{email}/invitations's answer: the
 // link the owner hands the person, the outside origin's enrollment page with the token in its
-// fragment, when it was made and when it lapses, on the database's clock, which a passkey's
-// enrolled_at is read on too: a passkey of this project enrolled after made_at used this link,
-// since a newer link of the project ends it.
+// fragment, when it was made and when it lapses, on the database's clock. made_at is the key the
+// owner's Access tab holds the link by: a read of the access list that began after the link landed
+// and lists no open link of the person made at made_at (open_invitations) says it was used or
+// ended.
 type invitationAnswer struct {
 	URL       string    `json:"url"`
 	MadeAt    time.Time `json:"made_at"`

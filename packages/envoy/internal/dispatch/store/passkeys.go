@@ -438,7 +438,7 @@ func OpenInvitations(ctx context.Context, q PasskeyReader, project string) ([]mo
 	if err != nil {
 		return nil, fmt.Errorf("read the project's open invitations: %w", err)
 	}
-	return append([]model.OpenInvitation{}, open...), nil
+	return open, nil
 }
 
 // ListedByOtherOwners answers which of emails a project whose owner is not owner names directly,
