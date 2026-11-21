@@ -1,0 +1,5 @@
+kind: Added
+body: IssueReferences gains links and linked_from
+time: 2026-11-21T02:53:49.448828771Z
+custom:
+    Issue: pr4651
