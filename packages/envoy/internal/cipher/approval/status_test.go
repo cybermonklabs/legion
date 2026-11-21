@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -294,6 +295,48 @@ func TestSignInCallbackAnswersATokenEndpointThatCannotAnswer503(t *testing.T) {
 			}
 			if r.sessions(t) != 0 {
 				t.Fatalf("a callback whose token endpoint answers %s made a session", c.name)
+			}
+		})
+	}
+}
+
+// TestSignInCallbackBoundsItsCodeBeforeTheExchange: the callback's code is chosen by whoever holds
+// the browser, so the broker sends the provider's token endpoint a code of at most 2048 bytes. One
+// of 2048 is exchanged (the provider refuses it, a code it never issued); one of 2049 is refused
+// 400 SIGN_IN_CODE_INVALID with no token request and nothing written to the sign-in status.
+func TestSignInCallbackBoundsItsCodeBeforeTheExchange(t *testing.T) {
+	for _, c := range []struct {
+		size      int
+		exchanged bool
+	}{
+		{2048, true},
+		{2049, false},
+	} {
+		t.Run(strconv.Itoa(c.size), func(t *testing.T) {
+			r := newRig(t)
+			enrollmentID, key := r.benSession(t, "ben-box")
+			p := r.request(t, enrollmentID, key, "deploy", nil, "", "TEST_SECRET")
+			before := len(r.issuer.TokenRequests())
+			res := r.signInCallback(t, p.recordID, nil, false, func(u *url.URL) {
+				q := u.Query()
+				q.Set("code", strings.Repeat("c", c.size))
+				u.RawQuery = q.Encode()
+			})
+			sent := len(r.issuer.TokenRequests()) - before
+			if c.exchanged {
+				if sent != 1 || res.Status != http.StatusForbidden {
+					t.Fatalf("a callback with a %d-byte code = %d after %d token requests, want 403 after one:\n%s", c.size, res.Status, sent, res.Body)
+				}
+				return
+			}
+			if sent != 0 || res.Status != http.StatusBadRequest || !strings.Contains(res.Body, "Sign-in refused") {
+				t.Fatalf("a callback with a %d-byte code = %d after %d token requests, want 400 Sign-in refused after none:\n%s", c.size, res.Status, sent, res.Body)
+			}
+			if status, body := r.signInStatus(t); status.LastFailedSignInReason != nil || status.LastFailedSignInAt != nil {
+				t.Fatalf("a callback refused for its code's size wrote the sign-in status %s, want nothing", body)
+			}
+			if r.sessions(t) != 0 {
+				t.Fatalf("a callback with a %d-byte code made a session", c.size)
 			}
 		})
 	}

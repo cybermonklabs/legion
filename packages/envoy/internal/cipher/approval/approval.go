@@ -340,6 +340,8 @@ const (
 	codeSignInNextInvalid = "SIGN_IN_NEXT_INVALID"
 	// A sign-in the provider itself refused, returning an error and no code.
 	codeSignInProviderRefused = "SIGN_IN_PROVIDER_REFUSED"
+	// A sign-in callback whose code is longer than the broker sends a provider (maxCallbackCode).
+	codeSignInCodeInvalid = "SIGN_IN_CODE_INVALID"
 	// A sign-in whose code the provider would not exchange, or whose ID token did not verify.
 	codeSignInUnverified = "SIGN_IN_UNVERIFIED"
 	// A verified sign-in the Workspace rule refuses (oidc.WorkspaceLogin).
