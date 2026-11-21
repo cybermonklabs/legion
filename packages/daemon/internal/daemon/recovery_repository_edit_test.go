@@ -90,6 +90,59 @@ func TestAnEditOfARecoveredIssuesRepositoryIsNotedAndNotApplied(t *testing.T) {
 	}
 }
 
+// A child's own event that the daemon applies while the child's parent is unrecorded records
+// nothing, and nothing but a listing records the child after its parent is recorded
+// (applySummary). Here GitHub has answered for zeta/tools again and the recovery pass that
+// follows holds a listing that shows the child at sequence 1. Meanwhile the child's event at 2
+// applies with its parent unrecorded, and the parent's own event records the parent under a live
+// tree. The pass's listing is older than the child's applied event, so it records nothing of the
+// child; the recovery keeps the child in the scope of its next pass and zeta/tools among the
+// repositories to recover, and that next pass's listing, at 2, records the child under its
+// parent. Before, the pass let zeta/tools go with the child unrecorded, and no later pass listed
+// it.
+func TestAChildARecoveryFoundNewerThanItsListingIsRecordedByTheNextPass(t *testing.T) {
+	quickInstallReads(t)
+	installs := &installations{}
+	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
+	refresher := &heldRefresher{gate: make(chan struct{})}
+	w, client, installs, _ := repositoryRigWith(t, installs, refresher.hold)
+	const root, parent, child = "LEGION-1809", "LEGION-1810", "LEGION-1811"
+	liveRoot(t, w, client, root)
+	deliver(t, w, client, issue(child, "zeta/tools", "todo", false, parent, 1))
+	if got := recordedIssue(t, w, child); got != nil {
+		t.Fatalf("%s is %s while its parent is unrecorded and GitHub does not answer for zeta/tools, want it unrecorded", child, recordedAs(t, w, child))
+	}
+	// GitHub answers for zeta/tools while the refresher is parked; its next turn reads zeta/tools
+	// again, which moves it among the repositories to recover, and the pass that recovers it holds
+	// the next listing, read before the two events below.
+	refresher.park(t, w)
+	installs.setFailing(nil, "implement zeta/tools")
+	release := client.holdListing()
+	t.Cleanup(release)
+	refresher.release(t, w)
+	testwait.Eventually(t, "the recovery's listing held", func() bool { return client.heldListingCount() == 1 })
+	listed := client.listingCount()
+	deliver(t, w, client, issue(child, "zeta/tools", "todo", false, parent, 2))
+	deliver(t, w, client, issue(parent, "acme/widgets", "todo", false, root, 1))
+	if got := recordedIssue(t, w, parent); got == nil || got.Tree != root {
+		t.Fatalf("%s is %s, want it recorded in %s's tree by its own event", parent, recordedAs(t, w, parent), root)
+	}
+	if got := recordedIssue(t, w, child); got != nil {
+		t.Fatalf("%s is %s after its event at 2, applied while its parent was unrecorded, want it unrecorded", child, recordedAs(t, w, child))
+	}
+	release()
+	testwait.Eventually(t, "the held recovery ended", func() bool {
+		return len(w.recoveringReasons()) == 0 || client.listingCount() > listed
+	})
+	if recordedIssue(t, w, child) == nil && len(w.recoveringReasons()) == 0 {
+		t.Fatalf("the held recovery let zeta/tools go with %s unrecorded: its listing, at 1, was older than the child's event at 2, and no later pass lists it", child)
+	}
+	testwait.Eventually(t, child+" recorded by a later recovery", func() bool { return recordedIssue(t, w, child) != nil })
+	if got := recordedIssue(t, w, child); got.Repo != "zeta/tools" || got.Tree != root || got.LastDispatchSeq != 2 {
+		t.Fatalf("%s is %s in tree %s, want it recorded on zeta/tools in %s's tree at sequence 2", child, recordedAs(t, w, child), got.Tree, root)
+	}
+}
+
 // heldEditRecovery is the repository rig with a recovery pass held at its listing: key's todo
 // event on zeta/tools applied while GitHub answers for neither zeta/tools nor orbit/gadgets, and
 // the recovery that event's silence woke holding Dispatch's listing, which shows key on zeta/tools
