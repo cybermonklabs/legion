@@ -78,11 +78,11 @@ const PREFIXED_FLAGS = [
     prefix: "role:",
     names: "a role's name",
     text:
-      "A role the comment mentions, by its name alone: sends role:<name> in mentions, in the " +
-      "order given among the --mention values. Dispatch delivers the comment to the session " +
-      "that holds the role, whichever session that is, retries a send that does not go " +
-      "through, and records every attempt on the comment. One role per flag, repeated; an " +
-      "empty name is refused before anything is sent.",
+      "A role the comment mentions, by its name alone, with no role: before it: sends " +
+      "role:<name> in mentions, in the order given among the --mention values. Dispatch " +
+      "delivers the comment to the session that holds the role, whichever session that is, " +
+      "retries a send that does not go through, and records every attempt on the comment. One " +
+      "role per flag, repeated; an empty name is refused before anything is sent.",
   },
 ] as const;
 
@@ -591,9 +591,19 @@ export function parseCommand(
       case "append": {
         if (!claim(field, flag, true)) break;
         const { prefix } = entry;
-        // The prefix alone names nobody: `--mention-role ''` would send `role:`.
+        // The prefix alone names nobody: `--mention-role ''` would send `role:`. A value that
+        // carries the prefix itself would send it twice (`role:role:x`), which the schema refuses
+        // without naming this flag, so it is refused here, naming both spellings that work.
         if (prefix !== undefined && value.trim() === "") {
           problems.push(`${flag} needs ${prefix.names}, not an empty value`);
+          break;
+        }
+        if (prefix !== undefined && value.startsWith(prefix.text)) {
+          const name = value.slice(prefix.text.length);
+          const own = `--${singular(flagName(field))}`;
+          problems.push(
+            `${flag} takes ${prefix.names} alone, so ${flag} ${quoteWord(value)} would send ${prefix.text}${value}: write ${flag} ${quoteWord(name)}, or ${own} ${quoteWord(value)}`
+          );
           break;
         }
         const text = prefix === undefined ? value : `${prefix.text}${value}`;

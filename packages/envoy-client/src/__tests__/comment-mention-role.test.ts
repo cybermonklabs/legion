@@ -152,6 +152,69 @@ describe("dispatch comment --mention-role", () => {
     expect(requests).toEqual([]);
   });
 
+  // A name written with its prefix would go out as `role:role:<name>`, which Dispatch's schema
+  // refuses without naming the flag. The command refuses it here instead, naming both spellings
+  // that work, and sends nothing.
+  test("a name that already starts with role: exits 2, naming both spellings, and sends nothing", async () => {
+    const { code, stdout } = await run([
+      "comment",
+      "--issue",
+      "DSP-1",
+      "--body",
+      "Over to you.",
+      "--mention-role",
+      "role:legion-acme-controller",
+    ]);
+
+    expect(code).toBe(2);
+    expect(stdout.split("\n")[0]).toBe("dispatch comment was not called: 1 problem");
+    expect(stdout).toContain(
+      "- --mention-role takes a role's name alone, so --mention-role role:legion-acme-controller would send role:role:legion-acme-controller: write --mention-role legion-acme-controller, or --mention role:legion-acme-controller\n"
+    );
+    expect(requests).toEqual([]);
+  });
+
+  // Two append flags of one field build one list; any other second setter of a field is still
+  // refused, in either order: a clear beside an append, and a JSON list beside an append.
+  test.each([
+    [
+      ["comment", "--issue", "DSP-1", "--body", "x", "--clear-mentions", "--mention-role", "a"],
+      "--clear-mentions and --mention-role both set mentions",
+    ],
+    [
+      ["comment", "--issue", "DSP-1", "--body", "x", "--mention-role", "a", "--clear-mentions"],
+      "--mention-role and --clear-mentions both set mentions",
+    ],
+    [
+      ["comment", "--issue", "DSP-1", "--body", "x", "--clear-mentions", "--mention", "role:a"],
+      "--clear-mentions and --mention both set mentions",
+    ],
+    [
+      [
+        "ask",
+        "--issue",
+        "DSP-1",
+        "--question",
+        "q",
+        "--options-json",
+        '[{"label":"x"}]',
+        "--option",
+        "a",
+      ],
+      "--options-json and --option both set options",
+    ],
+    [
+      ["issue", "--project", "DSP", "--title", "t", "--clear-labels", "--label", "a"],
+      "--clear-labels and --label both set labels",
+    ],
+  ] as const)("%j is refused: %s", async (argv, problem) => {
+    const { code, stdout } = await run(argv);
+
+    expect(code).toBe(2);
+    expect(stdout).toContain(`- ${problem}\n`);
+    expect(requests).toEqual([]);
+  });
+
   // R2: the command's help names the flag and says what a role mention reaches.
   test("dispatch comment --help names the flag and says the comment reaches the role's holder", async () => {
     const { code, stdout } = await run(["comment", "--help"]);
