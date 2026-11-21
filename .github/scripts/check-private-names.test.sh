@@ -633,11 +633,30 @@ run_pr_text
 check "a longer name that holds one of them fails" "$(is "$status" 1)"
 check "names both lines" \
   "$(is "$(contains "$out" 'body:1: names a private')$(contains "$out" 'body:2: names a private')" truetrue)"
+# A label starts with a letter or a digit, and a `_` ends a host only with no letter or digit after
+# it: a shell default that names the metadata server, and an identifier that runs on past the
+# ending, pass; a host behind a `_` or a `-`, or followed by one, is refused, and so is a namespace
+# segment with no full stop after it, while one with a full stop passes.
+dollar='$'
+write_pr_text "fix(dispatch): keep the inbox order" \
+  "$(printf '%s\n' "${dollar}{GCE_METADATA_HOST:-metadata.google.$internal}" "set nats.${internal}_url first" \
+    "import Std.${internal^}.UV.System" "it ends with Std.${internal^}.")" "fix: keep the order"
+run_pr_text
+check "a shell default naming the metadata server, an identifier and two namespaces pass" "$(is "$status" 0)"
+bare_edges=(
+  "see _${bare}_ there"
+  "see -$bare:80 there"
+  "vm-1.c.$bare--then"
+  "see Std.${internal^} here"
+)
+write_pr_text "fix(dispatch): keep the inbox order" "$(printf '%s\n' "${bare_edges[@]}")" "fix: keep the order"
+run_pr_text
+check "the edge forms fail" "$(is "$status" 1)"
+for index in "${!bare_edges[@]}"; do
+  check "edge form $index is named at its line" "$(contains "$out" "body:$((index + 1)): names a private internal host")"
+done
 root=$(fixture bare-host-value)
-set +e
-out=$(cd "$root" && PRIVATE_NAME_BARE_HOSTS=maybe .github/scripts/check-private-names.sh 2>&1)
-status=$?
-set -e
+PRIVATE_NAME_BARE_HOSTS=maybe run_check "$root"
 check "a PRIVATE_NAME_BARE_HOSTS that is neither yes nor no exits 2" "$(is "$status" 2)"
 check "and says so" "$(contains "$out" '^check-private-names: PRIVATE_NAME_BARE_HOSTS must be yes or no')"
 

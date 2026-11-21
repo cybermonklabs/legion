@@ -24,16 +24,25 @@
 #      (packages/claude-envoy/dist/envoy-channel.js, which reaches this check on main and through
 #      packages/claude-envoy/scripts/verify-build.sh, never in a pull request's diff), and nowhere
 #      else. A namespace passes too: a name holding a capital letter, then a segment spelled
-#      exactly `Internal`, as a Lean module or function or an OCaml value path has. That is the one
-#      shape a host and a namespace share, so a host written that way passes with it. So does
-#      Lean's own option `internal.cmdlineSnapshots` under its `Lean` namespace, and no near name.
+#      exactly `Internal` and a full stop, as a Lean module or function or an OCaml value path
+#      has, one label in front included (`Std.Internal.` passes). That is the one shape a host and
+#      a namespace share, so a host written that way passes with it. So does Lean's own option
+#      `internal.cmdlineSnapshots` under its `Lean` namespace, and no near name.
 #      A run with PRIVATE_NAME_BARE_HOSTS=yes, which check-pr-text.sh asks for over a pull
-#      request's own text, also refuses a host that ends in `.internal`: one followed by a port, a
-#      path, a blank, a quote, a bracket, a sentence's full stop or the end of the line, as
-#      Dispatch's results line refuses it, since that text is pasted where no reader stands
-#      between. Only the GCE metadata server's and Docker's host name of that shape pass there. A
-#      run over a tree reads no such ending: the tree holds those two names and its tests' own
-#      hosts of that shape, which name no private network;
+#      request's own text, also refuses a host that ends in `.internal`, as Dispatch's results
+#      line refuses it, since that text is pasted where no reader stands between. Each label of
+#      such a host starts with a letter or a digit, and `.internal` ends it when what follows is
+#      any character but a letter, a digit, a `.` or a `_` (a port's `:`, a path's `/`, a blank,
+#      a quote, a bracket, a hyphen), a full stop or a run of `_` with no letter or digit after
+#      it, or the end of the line. So `nats.internal_url` passes. The namespace above passes there
+#      too, with its full stop (`Std.Internal.`), and `Std.Internal` with no full stop after it is
+#      refused there. Only the GCE metadata server's and Docker's host name of that shape pass,
+#      with no label or `-` in front of them (a `_` is no part of a label, as no DNS name holds
+#      one, so a `_` in front leaves them whole). A run over a tree reads no such ending: the
+#      tree holds those two names and its tests' own hosts of that shape, which name no private
+#      network. The bare reading is the CI check's alone, on purpose: the daemon's leak guard,
+#      which runs this script's port over every `legion gh` call and every text handed to
+#      `legion leak-check text`, does not read it, since it would refuse agents' own writes;
 #   4. a Tailscale MagicDNS host — a DNS label then `.ts.net`, in any case, with no letter or
 #      digit after it. A reserved tailnet name (`example-tailnet`, under any machine name of its
 #      own in front) passes;
@@ -166,12 +175,6 @@ repository_rule="(^|[^[:alnum:]]|$encoded_byte)agent($separator)?c([^[:alnum:]]|
 company_rule="t""rajectory($separator|[.])?labs"
 proper_noun_rule="(^|[^[:alnum:]])(T""rajectory|T""RAJECTORY)([^[:alnum:]]|\$)"
 private_host_rule='[[:alnum:]-]+[.]internal[.][[:alnum:].-]+'
-# The third rule's reading of a pull request's own text (PRIVATE_NAME_BARE_HOSTS=yes): a host that
-# ends in `.internal`, every label before it included, then no letter, digit or further label. Its
-# whole matches that name no private host: the two well-known names, with the one or two trailing
-# characters the rule may have captured.
-bare_host_rule='([[:alnum:]-]+[.])*[[:alnum:]-]+[.]internal([^[:alnum:].]|[.]([^[:alnum:]]|$)|$)'
-allowed_bare_host='(metadata[.]google|host[.]docker)[.]internal([^[:alnum:].]|[.][^[:alnum:]]?)?'
 # Whole matches of the host rule that name no private host: a reserved example host (a trailing
 # full stop is the sentence's), and the NATS client's property in the bundle that vendors it.
 allowed_host='[[:alnum:]-]+[.]internal[.]example([.](com|net|org))?[.]*'
@@ -205,6 +208,13 @@ case $rules in
     exit 2
     ;;
 esac
+# The third rule's reading of a pull request's own text (PRIVATE_NAME_BARE_HOSTS=yes, the header
+# says what it refuses): a host that ends in `.internal`, every label before it included, each
+# starting with a letter or a digit. Its whole matches that name no private host: the two
+# well-known names, with the trailing characters the rule may have captured. Neither is in the
+# variables the daemon's leak guard ports (private-names.toml), which read no such text.
+bare_host_rule='([[:alnum:]][[:alnum:]-]*[.])*[[:alnum:]][[:alnum:]-]*[.]internal([^[:alnum:]._]|_+([^[:alnum:]]|$)|[.]([^[:alnum:]]|$)|$)'
+allowed_bare_host='(metadata[.]google|host[.]docker)[.]internal([^[:alnum:].]|[.][^[:alnum:]]?|_+[^[:alnum:]]?)?'
 bare_hosts=${PRIVATE_NAME_BARE_HOSTS:-no}
 case $bare_hosts in
   yes | no) ;;
