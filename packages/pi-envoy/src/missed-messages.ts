@@ -53,6 +53,16 @@ export const REPLAY_NOTICE_ENTRY = "envoy-replay-notice";
  */
 export const CONSUMER_STATE_ENTRY = "envoy-consumer-state";
 
+/**
+ * Transcript entry recording what the session was last told of its Envoy inbound: `{told: true}`
+ * when it was told it receives nothing, `{told: false}` when it was told it receives again. The
+ * newest one is the session's state. A process that resumes the session reads it
+ * (`inboundOutageTold`), so the end of an outage an earlier process told is told by the next
+ * process whose registration is accepted, and not only by the process that told it, which can end
+ * first: it can crash, be stopped, or be relaunched by the daemon before NATS answers again.
+ */
+export const INBOUND_OUTAGE_ENTRY = "envoy-inbound-outage";
+
 /** A replay notice recorded as held (`REPLAY_NOTICE_ENTRY`), by the id its records share. */
 export interface HeldReplayNotice {
   readonly id: string;
@@ -216,6 +226,17 @@ export function heldReplayNotices(entries: readonly unknown[]): HeldReplayNotice
     if (!handed.has(id)) notices.push({ id, content });
   }
   return notices;
+}
+
+/** Whether the newest `INBOUND_OUTAGE_ENTRY` says the session was told it receives nothing; false
+ *  for a session whose entries hold none. A newest entry that does not parse reads as not told,
+ *  and is never passed over for an older one: the older entry is no longer what the session was
+ *  last told, and a told record read in its place tells the session the end of an outage whose
+ *  end it may already have been told, where a record misread as not told costs at most a second
+ *  outage notice. */
+export function inboundOutageTold(entries: readonly unknown[]): boolean {
+  const newest = customEntries(entries, INBOUND_OUTAGE_ENTRY).at(-1);
+  return typeof newest === "object" && newest !== null && Reflect.get(newest, "told") === true;
 }
 
 /** What a session's entries record for `sessionID` to restore its consumer delivery with

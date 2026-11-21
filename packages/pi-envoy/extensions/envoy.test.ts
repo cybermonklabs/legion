@@ -49,7 +49,7 @@ import type {
 } from "@legion/envoy-client/delivery-ledger";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import type { ExecFn } from "@legion/envoy-client/dispatch-cwd";
-import { natsFailureReason } from "@legion/envoy-client/errors";
+import { isNoRelaySubjectRefusal, natsFailureReason } from "@legion/envoy-client/errors";
 import { forgetKeyedLayerMemory } from "@legion/envoy-client/dispatch-http";
 import { shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
@@ -10744,9 +10744,14 @@ console.log(JSON.stringify(args));
     // listener refuses a registration that carries none.
     expect(registrations).toEqual([]);
     const forked = live("ses_nd_fork");
-    await expect(claimEnvoyRole("ses_nd_fork", "legion-controller", forked)).rejects.toThrow(
-      "holds no relay subject"
+    const refused = await claimEnvoyRole("ses_nd_fork", "legion-controller", forked).then(
+      () => undefined,
+      (error: unknown) => error
     );
+    expect(String(refused)).toContain("holds no relay subject");
+    // The claim boot claims again after exactly this refusal (`isNoRelaySubjectRefusal`), whatever
+    // shape the pass wrapped it in.
+    expect(isNoRelaySubjectRefusal(refused)).toBe(true);
     expect(holders.has("legion-controller")).toBe(false);
     natsState.failConnects = 0;
     await claimEnvoyRole("ses_nd_fork", "legion-controller", forked);
@@ -20590,6 +20595,305 @@ console.log(JSON.stringify(args));
     } finally {
       stopSink();
     }
+  });
+
+  // The outage is told by one process, which ends before any registration of its is accepted: it
+  // crashed, was stopped, or was relaunched by the daemon. The daemon resumes the session in a new
+  // process, whose first registration is accepted. On 2026-11-20 an implementer session read the
+  // notice an earlier process of its session had written as its state for hours, and reported
+  // that the listener gives it no relay subject, while every registration the listener took from
+  // it was answered with one. Its twin: an earlier process that told the outage's end leaves the
+  // process resuming the session nothing to tell.
+  for (const { row, earlierRecovers } of [
+    {
+      row: "a session an earlier process told it receives nothing is told it receives again by the process that resumes it",
+      earlierRecovers: false,
+    },
+    {
+      row: "a session an earlier process told it receives again is told nothing of its inbound by the process that resumes it",
+      earlierRecovers: true,
+    },
+  ]) {
+    test(row, async () => {
+      let registered = 0;
+      globalThis.fetch = async (input, init) => {
+        if (new URL(input.toString()).pathname === "/v1/interests/subscribe") registered += 1;
+        return responseWithRegistration(input, init, {});
+      };
+      natsState.failConnects = 1;
+      const warnings: string[] = [];
+      const stopSink = logger.registerLogSink((entry) => {
+        if (entry.level === "warn") warnings.push(entry.message);
+      });
+      try {
+        const earlier = createPi();
+        const resuming = createPi();
+        const transcript = (): readonly unknown[] => [...earlier.entries, ...resuming.entries];
+        const written = (entries: readonly unknown[], text: string) =>
+          entries.filter((entry) => JSON.stringify(entry).includes(text));
+        const restoredShown = (notifications: readonly string[]) =>
+          notifications.filter((m) => m.includes("inbound messages reach this session again"));
+        const intervals: (() => void)[] = [];
+        const processContext = (notifications: string[]): SessionContext => ({
+          cwd: "/tmp/envoy-omp-test",
+          sessionManager: {
+            ...topLevelSession,
+            getSessionId: () => "ses_resumed",
+            getBranch: transcript,
+            getEntries: transcript,
+          },
+          setInterval: (callback) => intervals.push(callback),
+          ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+        });
+
+        const earlierNotifications: string[] = [];
+        // Each process loads the extension afresh, as a new Oh My Pi process does: a static
+        // import would share one module, and with it the outage state this row is about.
+        const { default: earlierExtension } = await import(
+          `./envoy.ts?inbound-told-earlier-${earlierRecovers}`
+        );
+        earlierExtension(earlier.pi);
+        await earlier.handlers.get("session_start")?.({}, processContext(earlierNotifications));
+        expect(
+          earlierNotifications.filter((m) => m.includes("inbound messages are unavailable"))
+        ).toHaveLength(1);
+        expect(written(transcript(), "Envoy inbound unavailable")).toHaveLength(1);
+        expect(written(transcript(), "Envoy inbound restored")).toEqual([]);
+        if (earlierRecovers) {
+          // The background retry's pass dials, opens the relay and registers.
+          intervals.at(-1)?.();
+          await until(
+            () => restoredShown(earlierNotifications).length > 0,
+            "the restored notice from the earlier process"
+          );
+        }
+
+        // The earlier process ends here: nothing of it runs again.
+        const before = registered;
+        const resumingNotifications: string[] = [];
+        const { default: resumingExtension } = await import(
+          `./envoy.ts?inbound-told-resuming-${earlierRecovers}`
+        );
+        resumingExtension(resuming.pi);
+        await resuming.handlers.get("session_start")?.({}, processContext(resumingNotifications));
+        await until(() => registered > before, "the resuming process's registration");
+        if (!earlierRecovers) {
+          await until(
+            () => restoredShown(resumingNotifications).length > 0,
+            "the restored notice from the resuming process"
+          );
+        }
+        expect(restoredShown(resumingNotifications)).toHaveLength(earlierRecovers ? 0 : 1);
+        expect(written(resuming.entries, "Envoy inbound restored")).toHaveLength(
+          earlierRecovers ? 0 : 1
+        );
+        expect(warnings.filter((m) => m.includes("this session receives again"))).toHaveLength(1);
+        // The resuming process was refused nothing, so it tells no outage of its own.
+        expect(
+          resumingNotifications.filter((m) => m.includes("inbound messages are unavailable"))
+        ).toEqual([]);
+      } finally {
+        stopSink();
+      }
+    });
+  }
+
+  // A take-up is the session's whose record was read: a process that resumes session B, whose
+  // record says it was told it receives nothing, and moves to a new session C before any
+  // registration of its is accepted, never tells C the end of an outage C never heard of.
+  test("a take-up read from one session's record is not told to the next session the process binds", async () => {
+    const registeredFor: string[] = [];
+    globalThis.fetch = async (input, init) => {
+      if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { session_id?: string };
+        registeredFor.push(body.session_id ?? "");
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    natsState.failConnects = 1;
+    try {
+      const earlier = createPi();
+      const resuming = createPi();
+      let sessionID = "ses_taken_up";
+      let entries = (): readonly unknown[] => [...earlier.entries, ...resuming.entries];
+      const notifications: string[] = [];
+      const processContext = (): SessionContext => ({
+        cwd: "/tmp/envoy-omp-test",
+        sessionManager: {
+          ...topLevelSession,
+          getSessionId: () => sessionID,
+          getBranch: () => entries(),
+          getEntries: () => entries(),
+        },
+        setInterval: () => undefined,
+        ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+      });
+      const { default: earlierExtension } = await import("./envoy.ts?taken-up-earlier");
+      earlierExtension(earlier.pi);
+      await earlier.handlers.get("session_start")?.({}, processContext());
+      expect(notifications.filter((m) => m.includes("inbound messages are unavailable"))).toHaveLength(1);
+
+      // The resuming process's own start dial fails too, so no registration of its is accepted
+      // while it serves B; then the session moves to C, whose transcript is its own.
+      notifications.splice(0);
+      natsState.failConnects = 1;
+      const { default: resumingExtension } = await import("./envoy.ts?taken-up-resuming");
+      resumingExtension(resuming.pi);
+      await resuming.handlers.get("session_start")?.({}, processContext());
+      const startedAt = resuming.entries.length;
+      await resuming.handlers.get("session_before_switch")?.({ reason: "new" }, processContext());
+      sessionID = "ses_taken_up_next";
+      entries = () => resuming.entries.slice(startedAt);
+      await resuming.handlers.get("session_switch")?.({ reason: "new" }, processContext());
+      await until(
+        () => registeredFor.includes("ses_taken_up_next"),
+        "the new session's registration"
+      );
+      // The answer's handling, accepted() and its notice included, runs in the microtasks after
+      // the stand-in answered; a macrotask turn lets every one of them run.
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(notifications.filter((m) => m.includes("inbound messages reach this session again"))).toEqual([]);
+      expect(
+        resuming.entries.slice(startedAt).filter((entry) => JSON.stringify(entry).includes("Envoy inbound restored"))
+      ).toEqual([]);
+    } finally {
+      natsState.failConnects = 0;
+    }
+  });
+
+  // What a session was told of its inbound is its own, in one process as across processes: a
+  // process that told session A it receives nothing and moves to session B with `/new` tells B its
+  // own outage at B's own refusal, and its end once B's registration is accepted, while A's record
+  // still ends with the outage notice, for a process that binds A again to end.
+  test("a session the process moves to with /new during an outage is told its own outage and its end, and the session it left keeps its told record", async () => {
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+    natsState.failConnects = 1;
+    try {
+      const fixture = createPi();
+      let sessionID = "ses_outage_left";
+      let entries = (): readonly unknown[] => fixture.entries;
+      const notifications: string[] = [];
+      const intervals: (() => void)[] = [];
+      const context = (): SessionContext => ({
+        cwd: "/tmp/envoy-omp-test",
+        sessionManager: {
+          ...topLevelSession,
+          getSessionId: () => sessionID,
+          getBranch: () => entries(),
+          getEntries: () => entries(),
+        },
+        setInterval: (callback) => intervals.push(callback),
+        ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+      });
+      const unavailable = () =>
+        notifications.filter((m) => m.includes("inbound messages are unavailable"));
+      const restored = () =>
+        notifications.filter((m) => m.includes("inbound messages reach this session again"));
+      const written = (from: readonly unknown[], text: string) =>
+        from.filter((entry) => JSON.stringify(entry).includes(text));
+      const { default: envoyExtension } = await import("./envoy.ts?outage-per-session");
+      envoyExtension(fixture.pi);
+      await fixture.handlers.get("session_start")?.({}, context());
+      expect(unavailable()).toHaveLength(1);
+      const left = fixture.entries.length;
+
+      // The new session's own dial fails too, so its first registration is refused.
+      natsState.failConnects = 1;
+      await fixture.handlers.get("session_before_switch")?.({ reason: "new" }, context());
+      sessionID = "ses_outage_next";
+      entries = () => fixture.entries.slice(left);
+      await fixture.handlers.get("session_switch")?.({ reason: "new" }, context());
+      await until(() => unavailable().length === 2, "the new session's own outage notice");
+      expect(restored()).toEqual([]);
+
+      // The background retry's pass dials, opens the relay and registers.
+      intervals.at(-1)?.();
+      await until(() => restored().length === 1, "the new session's restored notice");
+      const next = fixture.entries.slice(left);
+      expect(written(next, "Envoy inbound unavailable")).toHaveLength(1);
+      expect(written(next, "Envoy inbound restored")).toHaveLength(1);
+      expect(written(fixture.entries.slice(0, left), "Envoy inbound restored")).toEqual([]);
+    } finally {
+      natsState.failConnects = 0;
+    }
+  });
+
+  // A registration sent for one session that is answered only after the process moved to another
+  // with /new: its refusal is the session it was sent for, so the session bound now is told no
+  // outage and gets no outage record in its transcript.
+  test("a registration of the session left, refused after a /new, tells the new session no outage", async () => {
+    const left = "ses_late_answer_left";
+    let held: PromiseWithResolvers<Response> | undefined;
+    const heldAsked = Promise.withResolvers<void>();
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      if (
+        held !== undefined &&
+        url.pathname === "/v1/interests/subscribe" &&
+        (init?.body?.toString() ?? "").includes(left)
+      ) {
+        const answer = held;
+        held = undefined;
+        heldAsked.resolve();
+        return answer.promise;
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    const fixture = createPi();
+    let sessionID = left;
+    let entries = (): readonly unknown[] => fixture.entries;
+    const notifications: string[] = [];
+    const context = (): SessionContext => ({
+      ...sessionContext(sessionID),
+      sessionManager: {
+        ...topLevelSession,
+        getSessionId: () => sessionID,
+        getBranch: () => entries(),
+        getEntries: () => entries(),
+      },
+      ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+    });
+    const unavailable = () =>
+      notifications.filter((m) => m.includes("inbound messages are unavailable"));
+    const { default: envoyExtension } = await import("./envoy.ts?late-answer-after-new");
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, context());
+    expect(unavailable()).toEqual([]);
+
+    // A follow sends a registration of the session outside any pass; its answer is held.
+    const subscribe = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
+    if (subscribe === undefined) throw new Error("envoy_subscribe was not registered");
+    held = Promise.withResolvers<Response>();
+    const answer = held;
+    const followed = subscribe.execute("", { topics: ["team.late-answer"] });
+    await heldAsked.promise;
+
+    const start = fixture.entries.length;
+    await fixture.handlers.get("session_before_switch")?.({ reason: "new" }, context());
+    sessionID = "ses_late_answer_next";
+    entries = () => fixture.entries.slice(start);
+    await fixture.handlers.get("session_switch")?.({ reason: "new" }, context());
+
+    // The held registration of the session left is refused now, after the move.
+    answer.resolve(
+      new Response(
+        JSON.stringify({
+          error: "this session was given no durable consumer",
+          reason: "not_requested",
+        }),
+        { status: 409 }
+      )
+    );
+    await followed.catch(() => undefined);
+    await settle();
+    expect(unavailable()).toEqual([]);
+    expect(
+      fixture.entries
+        .slice(start)
+        .filter((entry) => JSON.stringify(entry).includes("Envoy inbound unavailable"))
+    ).toEqual([]);
+    await fixture.handlers.get("session_shutdown")?.({}, context());
   });
 
   test("a relay lost after the start names its failure in the refused registration, and the next heartbeat opens it again and says so once", async () => {

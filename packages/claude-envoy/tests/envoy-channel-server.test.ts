@@ -363,6 +363,29 @@ test("retains only the latest fifty inbound envelope summaries", async () => {
   })
 })
 
+// A notice addressed to one id whose turn reads the pending handoff while the server takes a
+// `/clear` up: the read can return the file as it stood before the move, so the served id is
+// checked again after it, and the notice is refused rather than shown to the conversation the
+// server now serves.
+test("a notice whose turn reads the handoff while a /clear is taken up is refused, not shown to the new id", async () => {
+  const notifier = new FakeNotifier()
+  const identity = new SessionIdentity("ses_before", "/tmp")
+  const delivery = createChannelDelivery({
+    identity,
+    notifier,
+    configFile: sessionConfigFile("claude", process.env),
+    pendingHandoff: async () => {
+      identity.set("ses_after")
+      return "ses_before"
+    },
+  })
+
+  await expect(delivery.notice("Envoy inbound unavailable", "ses_before")).rejects.toThrow(
+    "this process serves ses_after",
+  )
+  expect(notifier.notifications).toEqual([])
+})
+
 // A frame with no `event_id` names no event, so the inbox cannot read one as a copy of another:
 // two of them are two messages, and both are written to the session (INFRA-1026 review). The
 // rule before this one keyed every such frame by the word the entry shows — `unknown` — so the

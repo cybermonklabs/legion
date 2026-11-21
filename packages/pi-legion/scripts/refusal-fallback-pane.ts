@@ -54,8 +54,9 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 const [cooldownArg, driveArg, evidence] = process.argv.slice(2);
 const binary = process.env.LEGION_OMP_PATH ?? "";
 /** The JetStream server every pane's Envoy extension connects to, which the entry script starts
- * and names: a session a listener can give no consumer receives nothing and its claim boot ends
- * it, so a pane with no reachable NATS never reaches the turns this proof measures. */
+ * and names: a session that can open no relay subject receives nothing and never takes its role
+ * (its claim boot claims it again until NATS answers), so a pane with no reachable NATS would
+ * run its turns unlike any pane in production. */
 const natsUrl = process.env.REFUSAL_FALLBACK_NATS_URL ?? "";
 const cooldownMs = Number(cooldownArg);
 const driveMs = Number(driveArg);

@@ -636,6 +636,140 @@ test("a handoff stuck on a stalled NATS flush gives up, so shutdown still deregi
   }
 })
 
+/** A connection whose drain and close wait for `release()`: a shutdown's close of it is under way,
+ *  and the connection still live, while the row runs what the shutdown left queued. */
+class HeldCloseNats extends FakeNats {
+  /** Resolves once a drain or close of it began. */
+  readonly closing = Promise.withResolvers<void>()
+  private readonly gate = Promise.withResolvers<void>()
+
+  override async close(): Promise<void> {
+    this.closing.resolve()
+    await this.gate.promise
+    return super.close()
+  }
+
+  release(): void {
+    this.gate.resolve()
+  }
+}
+
+/** A role record of `sessionId`'s, as the session's own claim wrote it. */
+async function writeRoleFile(stateDirectory: string, sessionId: string): Promise<void> {
+  const file = roleStateFile(stateDirectory, sessionId)
+  await mkdir(dirname(file), { recursive: true })
+  await writeFile(file, JSON.stringify({ session_id: sessionId, role: "reviewer" }))
+}
+
+// A registration queued before shutdown runs after shutdown began: a listener call held the chain
+// past that point. A `/clear` it would take up is left alone: taken up, it would deregister the old
+// id, move the session to the new id and claim the role for it, for a process that is going.
+test("a /clear a registration queued before shutdown would take up is not taken up once shutdown began: no DELETE, id change or role move behind it", async () => {
+  const stateDirectory = scratchState()
+  const calls: string[] = []
+  const nats = new HeldCloseNats()
+  const identity = new SessionIdentity("ses_old", "/tmp")
+  await writeRoleFile(stateDirectory, "ses_old")
+  const handoff = sessionHandoffFile(stateDirectory, 797)
+  await writeSessionHandoff(handoff, "ses_old")
+  let hold: PromiseWithResolvers<void> | undefined
+  const holding = Promise.withResolvers<void>()
+  const released = Promise.withResolvers<void>()
+  const session = await startChannelSession(
+    sessionOptions(identity, stateDirectory, {
+      connection: nats,
+      heartbeatMs: 60_000,
+      handoffPid: 797,
+      client: recordingClient(calls, {
+        subscribe: async (input) => {
+          calls.push(`subscribe ${input.sessionID}`)
+          const held = hold
+          hold = undefined
+          if (held !== undefined) {
+            holding.resolve()
+            await held.promise
+          }
+          return noInterest(input.sessionID)
+        },
+      }),
+    }),
+  )
+  try {
+    hold = released
+    const following = session.follow(["notifications.team.deploy"]).catch(() => [])
+    await holding.promise
+    await writeSessionHandoff(handoff, "ses_new")
+    // Queued behind the held registration, before shutdown: it would take the `/clear` up.
+    session.capabilitiesChanged()
+    const shutting = session.shutdown()
+    // Shutdown has begun, and its close of the connection waits: the queued registration runs on
+    // a live connection, where the `/clear`'s flush succeeds.
+    await nats.closing.promise
+    const from = calls.length
+    released.resolve()
+    await following
+    await settled()
+    nats.release()
+    await shutting
+    expect(identity.id).toBe("ses_old")
+    expect(calls.slice(from).filter((call) => call.startsWith("unregister"))).toEqual([
+      "unregister ses_old",
+    ])
+    expect(calls.slice(from).filter((call) => call.includes("ses_new"))).toEqual([])
+  } finally {
+    released.resolve()
+    nats.release()
+    await session.shutdown()
+  }
+})
+
+// A `/clear` whose take-up was under way as shutdown began, its old id's DELETE still on the wire,
+// finishes the move but claims no role for the new id behind the shutdown's DELETE, as a
+// heartbeat's body claims none once shutdown began.
+test("a /clear being taken up as shutdown begins claims no role for the new id", async () => {
+  const stateDirectory = scratchState()
+  const calls: string[] = []
+  const identity = new SessionIdentity("ses_old", "/tmp")
+  await writeRoleFile(stateDirectory, "ses_old")
+  const handoff = sessionHandoffFile(stateDirectory, 799)
+  await writeSessionHandoff(handoff, "ses_old")
+  const deleteAsked = Promise.withResolvers<void>()
+  const deleteHeld = Promise.withResolvers<void>()
+  let deleted = false
+  const session = await startChannelSession(
+    sessionOptions(identity, stateDirectory, {
+      connection: new FakeNats(),
+      heartbeatMs: 60_000,
+      handoffPid: 799,
+      // The shutdown waits for the take-up the row holds, so its DELETE comes after it.
+      registrationSettleMs: 10_000,
+      client: recordingClient(calls, {
+        unregisterSession: async ({ sessionID }) => {
+          calls.push(`unregister ${sessionID}`)
+          if (sessionID !== "ses_old" || deleted) return
+          deleted = true
+          deleteAsked.resolve()
+          await deleteHeld.promise
+        },
+      }),
+    }),
+  )
+  try {
+    // The handoff file's watch asks for the heartbeat that takes the `/clear` up.
+    await writeSessionHandoff(handoff, "ses_new")
+    await deleteAsked.promise
+    const shutting = session.shutdown()
+    deleteHeld.resolve()
+    await shutting
+    expect(identity.id).toBe("ses_new")
+    expect(calls.filter((call) => call.startsWith("setRole ses_new"))).toEqual([])
+    expect(calls.at(-1)).toBe("unregister ses_new")
+  } finally {
+    deleteHeld.resolve()
+    await session.shutdown()
+  }
+})
+
 test("a handoff that fails before the id switch leaves the new subject out of registrations under the old id", async () => {
   const stateDirectory = scratchState()
   const calls: string[] = []

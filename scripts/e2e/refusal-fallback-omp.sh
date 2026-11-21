@@ -54,8 +54,9 @@
 # minutes. It reaches no network: each pane's model gateway, the
 # stand-in daemon and the stand-in Envoy listener are loopback servers of the driver's, and the NATS
 # server the Envoy extension connects to is one the run builds and starts itself
-# (packages/envoy/internal/testnats/cmd/natsd, on a port the kernel picks), since a session given
-# no consumer ends at its claim boot. REFUSAL_FALLBACK_EVIDENCE_DIR
+# (packages/envoy/internal/testnats/cmd/natsd, on a port the kernel picks), since a session that
+# can open no relay subject receives nothing and never takes its role (its claim boot claims it
+# again until NATS answers), unlike any pane in production. REFUSAL_FALLBACK_EVIDENCE_DIR
 # (default a fresh directory under TMPDIR, or /tmp when it is unset, kept and printed) holds the
 # transcript, the NATS log and a copy of every pane's Oh My Pi transcript; each pane's scratch root
 # is under TMPDIR too, since a pod's own disk is small and its TMPDIR names the issue's volume. It
@@ -151,8 +152,9 @@ pass
 
 begin nats
 # A pane's Envoy extension is given no consumer by a listener it cannot reach a NATS server
-# through, and a session with no consumer ends at its claim boot (INFRA-771), so the run starts a
-# JetStream server of its own, as the delivery proofs do. The port is the kernel's pick (`-p -1`),
+# through, and a session with no consumer never takes its role: its claim boot claims it again
+# until NATS answers (INFRA-771). So the run starts a JetStream server of its own, as the delivery
+# proofs do, and its panes run as production ones do. The port is the kernel's pick (`-p -1`),
 # read back from the line the server logs once it listens.
 command -v go >/dev/null || fail "go is not on PATH: the run builds its own natsd"
 go -C "$root/packages/envoy" build -o "$work/bin/natsd" ./internal/testnats/cmd/natsd ||

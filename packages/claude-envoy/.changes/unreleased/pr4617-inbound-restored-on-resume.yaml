@@ -1,0 +1,26 @@
+kind: Fixed
+body: |-
+  A Claude Code or Codex channel server that starts again mid-session, over a session whose state
+  file records that it was told it receives nothing (`inboundOutageTold`), tells the session it
+  receives again at its first accepted registration. What the session was told is recorded once the
+  notice that told it is shown, in the state file of the id it was told under, so an end that could
+  not be shown is still told by a later server. A `/clear` or `/new` that is taken up binds the new
+  id's file at once, before its relay waits for a live connection: from then the new id is told its
+  own outage and its end, recorded in its own file, and never the end of the outage the id it left
+  was told, and a notice for the old id still waiting its turn when the move lands is not shown to
+  the new conversation. A `/clear` that cannot be taken up yet waits, and the new conversation is
+  told nothing of its inbound meanwhile: one read while the NATS connection is closed for good
+  waits for the connection that replaces it, and is taken up before that connection's first
+  registration, and one whose old id the listener refuses to deregister waits for the next
+  heartbeat. The registrations the old id sends while it waits tell no one and record nothing, and
+  a notice for the old id that waited its turn is refused once the hook has written the new id, so
+  the new conversation is never told the old id's outage or its end, and the old id's file keeps
+  an outage it was told; a `/clear` undone before it is taken up leaves the old conversation that
+  outage, whose end it is told. A session whose outage notice could not be shown is told it again
+  at the outage's next refusal, and no end of an outage it was never shown; stderr still says once
+  that the session receives nothing and once that it receives again, the end at the first accepted
+  registration after, whichever id it is under after a `/clear`. Once shutdown has begun, no
+  `/clear` is taken up and no role is claimed for a new id behind the shutdown's deregistration.
+time: 2026-11-20T14:07:49Z
+custom:
+    Issue: pr4617

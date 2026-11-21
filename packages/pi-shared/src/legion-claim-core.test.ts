@@ -1,11 +1,18 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { NoRelaySubjectError } from "@legion/envoy-client/consumer-delivery";
 import { EnvoyApiError } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { claimFirstTurnBoundMs, DEFAULT_CLAIM_FIRST_TURN_BOUND_MS } from "./claim-first-turn-bound";
 import { createLegionDaemonClient } from "./daemon-client";
-import { bootLegionClaim, claimRoleAgainOnBusy, type LegionClaimHost } from "./legion-claim-core";
+import {
+  bootLegionClaim,
+  claimAgainCures,
+  claimAgainReason,
+  claimRoleAgain,
+  type LegionClaimHost,
+} from "./legion-claim-core";
 import type { ClaimCapability } from "./legion-phase-ops";
 
 /** The contract the build under test speaks, which its client states on every request. */
@@ -304,7 +311,7 @@ test("a host that stops while a 503 claim waits to be made again claims no more 
 test("the daemon-launched controller's claim is made again on a 503 with the same helper, and any other refusal is thrown at once", async () => {
   const lines: string[] = [];
   let tries = 0;
-  await claimRoleAgainOnBusy(
+  await claimRoleAgain(
     async () => {
       if (++tries < 3) throw claimAnswered503();
     },
@@ -316,7 +323,7 @@ test("the daemon-launched controller's claim is made again on a 503 with the sam
 
   const refused = new Error("Envoy role controller is held by live session ses_other");
   await expect(
-    claimRoleAgainOnBusy(
+    claimRoleAgain(
       async () => {
         throw refused;
       },
@@ -332,7 +339,7 @@ test("a claim a person waits on gives up after its counted attempts, throwing th
   let tries = 0;
   const busy = claimAnswered503();
   await expect(
-    claimRoleAgainOnBusy(
+    claimRoleAgain(
       async () => {
         tries++;
         throw busy;
@@ -345,7 +352,7 @@ test("a claim a person waits on gives up after its counted attempts, throwing th
   expect(lines).toHaveLength(2);
 
   let unbounded = 0;
-  await claimRoleAgainOnBusy(
+  await claimRoleAgain(
     async () => {
       if (++unbounded < 6) throw claimAnswered503();
     },
@@ -353,6 +360,193 @@ test("a claim a person waits on gives up after its counted attempts, throwing th
     { log: () => {}, firstDelayMs: 1 }
   );
   expect(unbounded).toBe(6);
+});
+
+const NO_RELAY =
+  "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing, because its relay subject could not be opened: Authentication Timeout";
+
+test("a claim refused because the session holds no relay subject is claimed again after a growing wait, in each shape pi-envoy's claim fails in, and the session is not stopped", async () => {
+  let refusals = 3;
+  const { host, steps, lines, firstTurn } = claimHost({
+    overrides: {
+      roleClaimRetryFirstDelayMs: 1,
+      claimRole: async (role) => {
+        steps.push(`claimRole ${role}`);
+        if (refusals === 0) return;
+        refusals -= 1;
+        // The class itself (pi-envoy's registration call throws it bare), a plain error carrying
+        // only its name (another plugin's copy of the class), and pi-envoy's session-pass
+        // registration error, which carries the refusal as its cause.
+        if (refusals === 2) throw new NoRelaySubjectError(NO_RELAY);
+        if (refusals === 1)
+          throw Object.assign(new Error(NO_RELAY), { name: "NoRelaySubjectError" });
+        throw new Error(NO_RELAY, { cause: new NoRelaySubjectError(NO_RELAY) });
+      },
+    },
+  });
+  const booted = await bootLegionClaim(host);
+
+  firstTurn()?.();
+  await booted.claimed;
+
+  expect(steps).not.toContain("stop");
+  expect(steps.filter((step) => step === `claimRole ${claimToken}`)).toHaveLength(4);
+  expect(lines).toEqual(
+    [1, 2, 4].map(
+      (wait, index) =>
+        `claim of Envoy role ${claimToken} was refused before the listener was asked, because this session holds no relay subject yet, at attempt ${index + 1}, so nothing was claimed; claiming it again in ${wait} ms: ${NO_RELAY}`
+    )
+  );
+});
+
+// The boot's claim has no count of tries: a pane whose NATS is down for minutes keeps claiming
+// until NATS answers, where a bound would stop it mid-turn. Twelve refusals at waits from 1 ms
+// pass the first round's eleven tries and the typed controller's five.
+test("a claim refused for want of a relay subject twelve times is claimed again each time, never stops the session, and lands", async () => {
+  let refusals = 12;
+  const { host, steps, lines, firstTurn } = claimHost({
+    overrides: {
+      roleClaimRetryFirstDelayMs: 1,
+      claimRole: async (role) => {
+        steps.push(`claimRole ${role}`);
+        if (refusals === 0) return;
+        refusals -= 1;
+        throw new NoRelaySubjectError(NO_RELAY);
+      },
+    },
+  });
+  const booted = await bootLegionClaim(host);
+
+  firstTurn()?.();
+  await booted.claimed;
+
+  expect(steps).not.toContain("stop");
+  expect(steps.filter((step) => step === `claimRole ${claimToken}`)).toHaveLength(13);
+  expect(lines).toHaveLength(12);
+  expect(refusals).toBe(0);
+}, 30_000);
+
+test("control: a refusal whose cause is another error is no missing relay, and stops the session at once", async () => {
+  const { host, steps, lines, firstTurn } = claimHost({
+    overrides: {
+      roleClaimRetryFirstDelayMs: 1,
+      claimRole: async (role) => {
+        steps.push(`claimRole ${role}`);
+        throw new Error("registration refused", {
+          cause: new Error("Envoy role is held by live session ses_other"),
+        });
+      },
+    },
+  });
+  const booted = await bootLegionClaim(host);
+
+  firstTurn()?.();
+  await booted.claimed;
+
+  expect(steps.filter((step) => step === `claimRole ${claimToken}`)).toHaveLength(1);
+  expect(steps.at(-1)).toBe("stop");
+  expect(lines).toHaveLength(1);
+});
+
+test("each claim again waits out the wait it logged before it claims", async () => {
+  // The waits only lengthen under load, so their sum is a floor the claims cannot beat; a loop
+  // that logged its waits and did not take them claims all four times within a millisecond.
+  let tries = 0;
+  const started = performance.now();
+  await claimRoleAgain(
+    async () => {
+      if (++tries < 4) throw new NoRelaySubjectError(NO_RELAY);
+    },
+    "controller",
+    { log: () => {}, firstDelayMs: 40 }
+  );
+  expect(tries).toBe(4);
+  expect(performance.now() - started).toBeGreaterThanOrEqual(40 + 80 + 160 - 5);
+});
+
+test("why a claim is made again: the listener's 503 and a missing relay, and nothing else", () => {
+  const conflict = new EnvoyApiError({
+    method: "POST",
+    url: "http://listener.test/v1/roles/set",
+    status: 409,
+    responseBody: JSON.stringify({ error: "envoy: the role is held by a live session" }),
+  });
+  expect(claimAgainReason(claimAnswered503())).toBe("busy");
+  expect(claimAgainReason(new NoRelaySubjectError(NO_RELAY))).toBe("no-relay");
+  expect(claimAgainReason(new Error(NO_RELAY))).toBeUndefined();
+  expect(claimAgainReason(conflict)).toBeUndefined();
+  expect(claimAgainCures(claimAnswered503())).toBe(true);
+  expect(claimAgainCures(new NoRelaySubjectError(NO_RELAY))).toBe(true);
+  expect(claimAgainCures(conflict)).toBe(false);
+});
+
+// The steady wait of a pane whose NATS stays down: the wait doubles from 1 s and stops at 30 s.
+// Fake timers drive it, since the real waits would take minutes.
+test("a claim made again waits 1, 2, 4, 8 and 16 s, then 30 s at most, however long the relay stays missing", async () => {
+  jest.useFakeTimers();
+  try {
+    const lines: string[] = [];
+    let tries = 0;
+    const claimed = claimRoleAgain(
+      async () => {
+        if (++tries < 9) throw new NoRelaySubjectError(NO_RELAY);
+      },
+      "implementer",
+      { log: (line) => lines.push(line) }
+    );
+    for (let turn = 0; turn < 8; turn++) {
+      for (let flush = 0; flush < 5; flush++) await Promise.resolve();
+      jest.advanceTimersByTime(30_000);
+    }
+    await claimed;
+    expect(tries).toBe(9);
+    expect(lines.map((line) => /claiming it again in (\d+) ms/.exec(line)?.[1])).toEqual([
+      "1000",
+      "2000",
+      "4000",
+      "8000",
+      "16000",
+      "30000",
+      "30000",
+      "30000",
+    ]);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("a host that stopped before the first claim claims nothing", async () => {
+  const stopped = new AbortController();
+  stopped.abort();
+  let tries = 0;
+  await expect(
+    claimRoleAgain(
+      async () => {
+        tries += 1;
+      },
+      "implementer",
+      { log: () => {}, signal: stopped.signal }
+    )
+  ).rejects.toThrow("the host stopped first");
+  expect(tries).toBe(0);
+});
+
+// A host that stops before the session's first turn and long before the bound: the bound's timer
+// goes with the stop, and the claim step settles at the stop, having claimed nothing, rather than
+// waiting out the bound for a session the host ended.
+test("a host that stops before the first turn settles its claim step at the stop, and claims nothing", async () => {
+  const stopping = new AbortController();
+  const { host, steps } = claimHost({ overrides: { signal: stopping.signal } });
+  const booted = await bootLegionClaim(host);
+  stopping.abort();
+  // The bound is the helper's 600 s, so only the stop can settle the step inside this window.
+  const settled = await Promise.race([
+    booted.claimed.then(() => "settled"),
+    Bun.sleep(1_000).then(() => "still waiting"),
+  ]);
+  expect(settled).toBe("settled");
+  expect(steps.filter((step) => step.startsWith("claimRole"))).toEqual([]);
+  expect(steps).not.toContain("stop");
 });
 
 test("a 4xx at claims/ready is not retried: one ready, then the agent stops, with no regain listener and no claim, whatever turn the registered signal reports", async () => {

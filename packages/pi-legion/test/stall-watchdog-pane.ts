@@ -362,7 +362,7 @@ export interface StallPane {
  * numbers set low. The pane takes no NATS delivery of its own and is given a real server all the
  * same (`LEGION_TEST_NATS_URL`): a session receives only what its own consumer holds
  * (INFRA-771), so one that can open no relay subject is answered no consumer, every registration
- * of its fails, and its claim boot ends the session rather than running on deaf. A side request —
+ * of its fails, and its claim boot never takes its role, claiming it again until NATS answers. A side request —
  * the run-end self-check, a routing hint — is answered at once with one word, since none of them
  * is a turn; a turn of the pane's own conversation is answered from `reply`.
  */

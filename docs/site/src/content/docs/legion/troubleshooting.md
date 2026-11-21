@@ -1248,10 +1248,11 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   session one generation later and counts a launch failure; after `launch_failure_limit` of them
   the claim fails. The line carries `claim`, and `launchFailure` with `limit`, the launch failure
   this retirement counts and the limit it counts toward. A daemon-launched controller whose Envoy
-  role claim the listener keeps answering `503` at its start lands here, and its waits are in the
-  Oh My Pi log of its session; a controller whose Oh My Pi session changed is refused when it
-  registers the new session (`SameAgentRefusal`, `409`), exits, and is relaunched on its recorded
-  session.
+  role claim keeps being answered `503` at its start, or keeps being refused there because its
+  session holds no relay subject (its NATS connection is not open), claims again and lands here;
+  its waits are in the Oh My Pi log of its session. A controller whose Oh My Pi session changed is
+  refused when it registers the new session (`SameAgentRefusal`, `409`), exits, and is relaunched
+  on its recorded session.
   While the tree's cleanup is reserved (the tree is closing), the retirement waits: the process is
   kept, nothing is counted, and the deadline is tried again at the probe interval
   (`probe_interval_seconds`, 30 seconds at the default). Each try logs **`supervise: timer`** at

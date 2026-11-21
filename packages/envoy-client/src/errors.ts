@@ -43,6 +43,29 @@ export function hasErrnoCode(error: unknown, code: string): boolean {
   return error instanceof Error && "code" in error && error.code === code;
 }
 
+/**
+ * The `name` of consumer delivery's refusal of a session that holds no relay subject
+ * (`NoRelaySubjectError`, `./consumer-delivery`). Each plugin bundles its own copy of this package,
+ * so the refusal pi-envoy throws is no `instanceof` of the class in pi-legion's copy: a caller that
+ * hears it across that line reads its name (`isNoRelaySubjectRefusal`).
+ */
+export const NO_RELAY_SUBJECT_ERROR_NAME = "NoRelaySubjectError";
+
+/**
+ * Whether `error` is consumer delivery's refusal of a session that holds no relay subject, in
+ * whichever plugin's copy of this package it was made, or carries one as its `cause`: pi-envoy's
+ * session pass wraps the refusal in its own registration error (`cause`), and its registration
+ * call throws it bare, so a role claim can fail in either shape. At most 8 causes are followed.
+ */
+export function isNoRelaySubjectRefusal(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 8 && current instanceof Error; depth += 1) {
+    if (current.name === NO_RELAY_SUBJECT_ERROR_NAME) return true;
+    current = current.cause;
+  }
+  return false;
+}
+
 /** The codes a fetch fails with when nothing took its connection: Bun 1.4 answers a refused
  *  connection `ECONNREFUSED`, and a name that does not resolve `ENOTFOUND` or `EAI_AGAIN` with the
  *  syscall `getaddrinfo` (measured on Bun 1.4.4). A reset after the request was written

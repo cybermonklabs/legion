@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+  A Legion pane, and a controller the daemon launched, whose Envoy role claim is refused because the
+  session holds no relay subject yet (its NATS connection is not open) now claims the role again,
+  after the growing wait a claim the listener answers 503 already takes (1 s, doubling to 30 s), and
+  logs each wait; the pane runs its turns meanwhile. Before, the pane's claim boot stopped it and
+  the controller exited, the daemon launched it again, and the whole start ran again and met the same
+  outage. A claim a person types (`/legion-claim-controller`, `/legion-controller-start`) tries 5
+  times on this refusal too, and then fails on screen; in a controller the daemon launched, the
+  process now stays up, where before it exited. Neither a pane's claim nor the controller's makes
+  more claims once its session shuts down, and no controller logs a failed claim or exits 1 for a
+  claim its shutdown ended; a `task` subagent's shutdown ends none of them. A relay that never
+  opens now leaves the pane running without its role, instead of relaunching it until
+  `launch_failure_limit`: the lasting outage shows as the claim's log line at each wait (every 30 s
+  at most) and as the session's "Envoy inbound unavailable" notice.
+time: 2026-11-20T14:07:49Z
+custom:
+    Issue: pr4617
