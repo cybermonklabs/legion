@@ -24,10 +24,11 @@ import (
 // consumer still there is deleted with no WARN or ERROR; one already gone (a NATS restart loses an
 // ordered consumer, which nats.go keeps in memory) is a warning, since the delete was for that
 // state. Either way nats.go reports nothing asynchronously and nothing is an ERROR, which
-// TestListenerFollowsTheInterestRegistryAcrossNATSRestarts refuses (LEGION-278). The lost consumer
-// is held lost (testnats.HoldConsumerLost) until the drain is over: left alone, nats.go puts a new
-// one in its place once a heartbeat check passes in silence, and the end would delete that one and
-// warn of nothing (docs/testing.md, "A test that deletes a KV watcher's consumer").
+// TestListenerFollowsTheInterestRegistryAcrossNATSRestarts refuses (LEGION-278).
+// The lost consumer is held lost (testnats.HoldConsumerLost) until the drain is over: left alone,
+// nats.go puts a new one in its place once a heartbeat check passes in silence, and the end would
+// delete that one and warn of nothing (docs/testing.md, "A test that deletes a KV watcher's
+// consumer").
 func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 	for _, test := range []struct {
 		name         string
