@@ -11,9 +11,10 @@
 # 0. A stand-in `sleep` records each wait the ladder asks for through the `sleep` on PATH, and
 # the cases read those records, not how long the drive took: two cases set the knob to 1 and read
 # the waits 1 s and 2 s, or 1 s. The control reads that a gh answering at once makes the drive
-# wait for nothing at all, by any means: it runs that drive under strace and holds it to no
-# timed-wait system call (TIMED_WAITS below), which a `sleep` by any path, a `read -t` and any
-# other wait with a timeout make, whatever its length.
+# wait on no clock in the kernel: it runs that drive under strace and holds it to no timed wait
+# in the system calls TIMED_WAITS names, which a `sleep` by any path, a `read -t` and a futex
+# wait with a timeout make, whatever its length. A busy loop in user space makes no such call
+# and is not seen.
 #
 # NO CASE REACHES THE NETWORK: every case is files, a stand-in gh, a stand-in `timeout` that
 # four cases opt into call by call and that otherwise execs the real one, a stand-in `sleep` that
@@ -125,11 +126,26 @@ real_strace=$(type -P strace) ||
     exit 1; }
 # The system calls that wait with a timeout, on x86_64 and on arm64 (which has no select, poll or
 # epoll_wait): a sleep binary and bash's sleep builtin make clock_nanosleep or nanosleep, `read -t`
-# makes pselect6, and the rest are the other ways a process can wait out a clock. A regex, so
-# strace matches only the calls the host's architecture has. The drive at this file's head makes
-# none of them: traced on 2026-11-21, it made 0, and a `/usr/bin/sleep 1` after gh answered made
-# clock_nanosleep, a `read -t 1` on a FIFO pselect6.
-TIMED_WAITS='/^(nanosleep|clock_nanosleep|select|pselect6|poll|ppoll|epoll_wait|epoll_pwait|epoll_pwait2|rt_sigtimedwait)$'
+# makes pselect6, a thread or a helper waiting on a futex with a timeout makes futex, and the rest
+# are the other ways a process can wait out a clock in the kernel. A regex, so strace matches
+# only the calls the host's architecture has. What the trace establishes is that no listed call
+# waited with a timeout; a busy loop in user space, which spins on the clock without a system
+# call, is not seen by it, and no check here reads elapsed time to make up for that.
+TIMED_WAITS='/^(nanosleep|clock_nanosleep|select|pselect6|poll|ppoll|epoll_wait|epoll_pwait|epoll_pwait2|rt_sigtimedwait|futex|futex_waitv)$'
+
+# timed_waits <trace>: the calls of a strace log that waited with a timeout, one per line. A call
+# begins a line `<pid> <name>(`; one another process's call interrupted goes on in a
+# `<... name resumed>` line, which is no new call and is passed over. A futex or futex_waitv call
+# waits on a clock only where its timeout argument is a struct, `{tv_sec=`: a lock's FUTEX_WAIT
+# has NULL there and FUTEX_WAKE has no timeout at all. The drive at this file's head makes no
+# timed wait: traced on 2026-11-21, it made 0 of every listed call but futex, and 27
+# futex(FUTEX_WAKE_PRIVATE) calls, none of them timed, in each of 3 runs. A `/usr/bin/sleep 1`
+# after gh answered made clock_nanosleep, a `read -t 1` on a FIFO pselect6, and a 1 s
+# FUTEX_WAIT_PRIVATE futex with `{tv_sec=1, tv_nsec=0}`.
+timed_waits() {
+  { grep -E '^[0-9]+ [a-z_0-9]+\(' "$1" || true; } | { grep -Ev '^[0-9]+ futex(_waitv)?\(' || true; }
+  grep -E '^[0-9]+ futex(_waitv)?\(.*\{tv_sec=' "$1" || true
+}
 
 # The stand-in `timeout`, beside the stand-in `gh` and opted into per call. It records the
 # whole argument list of every call it is given, one file per call, whether or not it stands in
@@ -574,11 +590,12 @@ check "and waited the ladder's first second" "$(is "$(sleeps)" 1)"
 
 echo "case: the negative control, a gh that answers at once"
 # The two cases above read the waits the ladder asked of `sleep`, and this one holds that a gh
-# answering at once makes the drive wait for nothing. A wait the stand-in does not record - a
-# sleep binary by its absolute path, `read -t`, any wait after the answer, of any length - makes
-# a system call TIMED_WAITS names, so the drive runs under strace and the trace must hold none.
-# The knob is 100000 and the real `timeout 120` still bounds the drive, so a wait the size of the
-# knob also ends it with 124.
+# answering at once makes the drive wait on no clock in the kernel. A wait the stand-in does not
+# record - a sleep binary by its absolute path, `read -t`, a futex wait with a timeout, any such
+# wait after the answer, of any length - is a timed call of one TIMED_WAITS names, so the drive
+# runs under strace and timed_waits must find none in the trace. A busy loop in user space is no
+# system call and passes. The knob is 100000 and the real `timeout 120` still bounds the drive,
+# so a wait the size of the knob also ends it with 124.
 fixture 0
 set +e
 out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
@@ -589,8 +606,9 @@ set -e
 check "exits 0" "$(is "$status" 0)"
 check "calls gh once" "$(is "$(calls)" 1)"
 check "and asks sleep for no wait" "$(is "$(sleeps)" "")"
-check "and makes no timed wait of any kind" "$(is "$(wc -l < "$work/waits")" 0)"
-[ ! -s "$work/waits" ] || sed 's/^/    traced: /' "$work/waits"
+waits=$(timed_waits "$work/waits")
+check "and makes no timed wait of any kind" "$(is "$(grep -c . <<<"$waits" || true)" 0)"
+[ -z "$waits" ] || sed 's/^/    traced: /' <<<"$waits"
 
 echo "case: blobs-refused names the download step that failed and nothing beyond it"
 # What this job knows of a refused blob download is which step failed and on which attempt.
