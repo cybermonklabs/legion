@@ -772,7 +772,7 @@ func TestHorizonSafeWaitsOutAnObservationInFlightBeforeTheCall(t *testing.T) {
 		_, err := horizon.Safe(ctx)
 		stale <- err
 	}()
-	<-gated.observed // the stale observation has read the log and committed
+	receiveBeforeTheDeadline(t, "the stale observation to read the log and commit", gated.observed)
 	id := commitHorizonEvent(ctx, t, database)
 	type result struct {
 		safe int64
@@ -783,12 +783,12 @@ func TestHorizonSafeWaitsOutAnObservationInFlightBeforeTheCall(t *testing.T) {
 		safe, err := horizon.Safe(ctx)
 		called <- result{safe, err}
 	}()
-	<-parked // the call has found the stale observation in flight, before it waits on it
+	receiveBeforeTheDeadline(t, "the call to park on the stale observation in flight", parked)
 	close(gated.release)
-	if err := <-stale; err != nil {
+	if err := receiveBeforeTheDeadline(t, "the Safe that ran the stale observation to return", stale); err != nil {
 		t.Fatalf("Safe that ran the stale observation: %v", err)
 	}
-	got := <-called
+	got := receiveBeforeTheDeadline(t, "the Safe called while the stale observation was in flight to return", called)
 	if got.err != nil {
 		t.Fatalf("Safe after committing id %d: %v", id, got.err)
 	}
@@ -827,16 +827,16 @@ func TestHorizonConcurrentSafeCallsShareAnObservation(t *testing.T) {
 		errs <- err
 	}
 	go safe()
-	<-counting.entered
+	receiveBeforeTheDeadline(t, "the first caller's observation to reach the database", counting.entered)
 	for range callers - 1 {
 		go safe()
 	}
-	for range callers - 1 {
-		<-parked
+	for i := range callers - 1 {
+		receiveBeforeTheDeadline(t, fmt.Sprintf("Safe call %d of the %d later ones to park on the held observation", i+1, callers-1), parked)
 	}
 	close(counting.release)
-	for range callers {
-		if err := <-errs; err != nil {
+	for i := range callers {
+		if err := receiveBeforeTheDeadline(t, fmt.Sprintf("Safe call %d of %d to return", i+1, callers), errs); err != nil {
 			t.Fatalf("concurrent Safe: %v", err)
 		}
 	}
@@ -893,24 +893,24 @@ func TestHorizonCallersThatWakeAfterTheNextObservationEndedTakeIt(t *testing.T) 
 		errs <- err
 	}
 	go safe()
-	<-entered
+	receiveBeforeTheDeadline(t, "the first caller's observation to reach the database", entered)
 	for range callers - 1 {
 		go safe()
 	}
-	for range callers - 1 {
-		<-parked
+	for i := range callers - 1 {
+		receiveBeforeTheDeadline(t, fmt.Sprintf("Safe call %d of the %d later ones to park on the held observation", i+1, callers-1), parked)
 	}
 	close(release)
 	// The first caller's answer, and that of the late caller the hook let through, which ran the
 	// next observation: once both are in, that observation has ended.
-	for range 2 {
-		if err := <-errs; err != nil {
+	for i := range 2 {
+		if err := receiveBeforeTheDeadline(t, fmt.Sprintf("answer %d of 2 before the held callers wake: the first caller's and the next observation's runner's", i+1), errs); err != nil {
 			t.Fatalf("Safe: %v", err)
 		}
 	}
 	close(late)
-	for range callers - 2 {
-		if err := <-errs; err != nil {
+	for i := range callers - 2 {
+		if err := receiveBeforeTheDeadline(t, fmt.Sprintf("Safe call %d of the %d woken after the next observation had ended to return", i+1, callers-2), errs); err != nil {
 			t.Fatalf("Safe of a caller that woke after the next observation had ended: %v", err)
 		}
 	}
@@ -940,15 +940,15 @@ func TestHorizonACallerThatWokeLateTakesNoOtherCallersCancellation(t *testing.T)
 		_, err := horizon.Safe(ctx)
 		first <- err
 	}()
-	<-entered
+	receiveBeforeTheDeadline(t, "the first caller's observation to reach the database", entered)
 	waiter := make(chan error, 1)
 	go func() {
 		_, err := horizon.Safe(ctx)
 		waiter <- err
 	}()
-	<-parked
+	receiveBeforeTheDeadline(t, "the second caller to park on the held observation", parked)
 	close(release)
-	if err := <-first; err != nil {
+	if err := receiveBeforeTheDeadline(t, "the Safe that ran the first observation to return", first); err != nil {
 		t.Fatalf("Safe that ran the first observation: %v", err)
 	}
 	cancelled, cancel := context.WithCancel(ctx)
@@ -957,7 +957,7 @@ func TestHorizonACallerThatWokeLateTakesNoOtherCallersCancellation(t *testing.T)
 		t.Fatalf("Safe on a cancelled context = %v, want its own cancellation", err)
 	}
 	close(late)
-	if err := <-waiter; err != nil {
+	if err := receiveBeforeTheDeadline(t, "the Safe of the caller that woke late to return", waiter); err != nil {
 		t.Fatalf("Safe of the caller that woke late = %v, want the answer of an observation of its own", err)
 	}
 	if got := observations.Load(); got != 3 {
@@ -984,7 +984,7 @@ func TestHorizonCallersOfAnAbandonedObservationShareTheNext(t *testing.T) {
 		_, err := horizon.observe(runnerCtx, 0)
 		runner <- err
 	}()
-	<-entered
+	receiveBeforeTheDeadline(t, "the runner's observation to reach the database", entered)
 	// The second caller to park is held before it waits, until the first has run the next
 	// observation to its end.
 	parked := make(chan struct{}, 2)
@@ -1003,19 +1003,19 @@ func TestHorizonCallersOfAnAbandonedObservationShareTheNext(t *testing.T) {
 			errs <- err
 		}()
 	}
-	for range 2 {
-		<-parked
+	for i := range 2 {
+		receiveBeforeTheDeadline(t, fmt.Sprintf("caller %d of 2 to park on the runner's observation", i+1), parked)
 	}
 	cancelRunner()
 	close(release)
-	if err := <-runner; !errors.Is(err, context.Canceled) {
+	if err := receiveBeforeTheDeadline(t, "the runner's observe to return its cancellation", runner); !errors.Is(err, context.Canceled) {
 		t.Fatalf("observe whose context ended = %v, want its own cancellation", err)
 	}
-	if err := <-errs; err != nil {
+	if err := receiveBeforeTheDeadline(t, "the observe of the caller that ran the next observation to return", errs); err != nil {
 		t.Fatalf("observe of the caller that ran the next observation: %v", err)
 	}
 	close(late)
-	if err := <-errs; err != nil {
+	if err := receiveBeforeTheDeadline(t, "the observe of the caller that woke after the next observation had ended to return", errs); err != nil {
 		t.Fatalf("observe of the caller that woke after the next observation had ended: %v", err)
 	}
 	if got := observations.Load(); got != 2 {
@@ -1040,7 +1040,7 @@ func TestHorizonACallerThatLooksLateAfterItsBoundaryTakesTheObservationThatEnded
 		_, err := horizon.Safe(ctx)
 		first <- err
 	}()
-	<-entered
+	receiveBeforeTheDeadline(t, "the first caller's observation to reach the database", entered)
 	counted, late := make(chan struct{}), make(chan struct{})
 	var boundaries atomic.Int32
 	horizon.afterObservationBoundary = func() {
@@ -1056,22 +1056,22 @@ func TestHorizonACallerThatLooksLateAfterItsBoundaryTakesTheObservationThatEnded
 		_, err := horizon.Safe(ctx)
 		held <- err
 	}()
-	<-counted
+	receiveBeforeTheDeadline(t, "the held call to read the count at its boundary", counted)
 	other := make(chan error, 1)
 	go func() {
 		_, err := horizon.Safe(ctx)
 		other <- err
 	}()
-	<-parked
+	receiveBeforeTheDeadline(t, "the other call to park on the first observation", parked)
 	close(release)
-	if err := <-first; err != nil {
+	if err := receiveBeforeTheDeadline(t, "the Safe that ran the first observation to return", first); err != nil {
 		t.Fatalf("Safe that ran the first observation: %v", err)
 	}
-	if err := <-other; err != nil {
+	if err := receiveBeforeTheDeadline(t, "the Safe that ran the next observation to return", other); err != nil {
 		t.Fatalf("Safe that ran the next observation: %v", err)
 	}
 	close(late)
-	if err := <-held; err != nil {
+	if err := receiveBeforeTheDeadline(t, "the Safe held after its boundary to return", held); err != nil {
 		t.Fatalf("Safe held after its boundary: %v", err)
 	}
 	if got := observations.Load(); got != 2 {
@@ -1106,7 +1106,7 @@ func TestHorizonALateCallerTakesTheNextObservationPastAnotherCallersCancellation
 		_, err := horizon.Safe(ctx)
 		first <- err
 	}()
-	<-entered
+	receiveBeforeTheDeadline(t, "the first caller's observation to reach the database", entered)
 	errs := make(chan error, 2)
 	for range 2 {
 		go func() {
@@ -1114,14 +1114,14 @@ func TestHorizonALateCallerTakesTheNextObservationPastAnotherCallersCancellation
 			errs <- err
 		}()
 	}
-	for range 2 {
-		<-parked
+	for i := range 2 {
+		receiveBeforeTheDeadline(t, fmt.Sprintf("caller %d of 2 to park on the first observation", i+1), parked)
 	}
 	close(release)
-	if err := <-first; err != nil {
+	if err := receiveBeforeTheDeadline(t, "the Safe that ran the first observation to return", first); err != nil {
 		t.Fatalf("Safe that ran the first observation: %v", err)
 	}
-	if err := <-errs; err != nil {
+	if err := receiveBeforeTheDeadline(t, "the Safe that ran the next observation to return", errs); err != nil {
 		t.Fatalf("Safe that ran the next observation: %v", err)
 	}
 	cancelled, cancel := context.WithCancel(ctx)
@@ -1130,7 +1130,7 @@ func TestHorizonALateCallerTakesTheNextObservationPastAnotherCallersCancellation
 		t.Fatalf("Safe on a cancelled context = %v, want its own cancellation", err)
 	}
 	close(late)
-	if err := <-errs; err != nil {
+	if err := receiveBeforeTheDeadline(t, "the Safe of the caller that woke after the cancelled observation ended to return", errs); err != nil {
 		t.Fatalf("Safe of the caller that woke after the cancelled observation ended: %v", err)
 	}
 	if got := observations.Load(); got != 3 {
@@ -1178,24 +1178,24 @@ func TestHorizonAwaitBacksOffOnceForObservationsItsGapCheckRead(t *testing.T) {
 		safe, err = horizon.Await(ctx)
 		awaited <- err
 	}()
-	<-counted // Await has read the count, 0, and looks only once the first observation is in flight
+	receiveBeforeTheDeadline(t, "Await to read the count at its boundary", counted) // 0: it looks only once the first observation is in flight
 	first := make(chan error, 1)
 	go func() {
 		_, err := horizon.Safe(ctx)
 		first <- err
 	}()
-	<-entered
+	receiveBeforeTheDeadline(t, "the first caller's observation to reach the database", entered)
 	close(looks)
-	<-parked
+	receiveBeforeTheDeadline(t, "Await to park on the first observation", parked)
 	close(release)
-	if err := <-first; err != nil {
+	if err := receiveBeforeTheDeadline(t, "the Safe that ran the first observation to return", first); err != nil {
 		t.Fatalf("Safe that ran the first observation: %v", err)
 	}
 	if _, err := horizon.Safe(ctx); err != nil {
 		t.Fatalf("Safe that ran the second observation: %v", err)
 	}
 	close(late)
-	if err := <-awaited; err != nil || safe != 8 {
+	if err := receiveBeforeTheDeadline(t, "Await to return", awaited); err != nil || safe != 8 {
 		t.Fatalf("Await = %d, %v; want 8", safe, err)
 	}
 	if got := observations.Load(); got != 3 {
