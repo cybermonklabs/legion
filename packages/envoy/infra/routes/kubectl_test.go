@@ -42,17 +42,6 @@ const (
 	otherCA   = "-----BEGIN CERTIFICATE-----\nb3RoZXIgY2x1c3RlciBDQSwgREVSIHN0YW5kLWlu\n-----END CERTIFICATE-----\n"
 )
 
-// caDigest is the SHA-256, in hex, of the one certificate's DER in a PEM CA certificate, as a
-// record holds it.
-func caDigest(certificate string) string {
-	block, rest := pem.Decode([]byte(certificate))
-	if block == nil || len(bytes.TrimSpace(rest)) > 0 {
-		panic("caDigest takes one PEM certificate")
-	}
-	sum := sha256.Sum256(block.Bytes)
-	return hex.EncodeToString(sum[:])
-}
-
 // caDigests is the sorted SHA-256, in hex, of each certificate's DER in a PEM bundle, as a record
 // holds them: nil for none.
 func caDigests(bundle string) []string {
@@ -253,7 +242,7 @@ func TestKubectlReadsTheHubThroughKubectl(t *testing.T) {
 	require.Equal(t, routes.Clean, report.Verdict(), "findings: %v", report.Findings)
 	cluster, err := src.Cluster(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, routes.Cluster{Context: "example-context", Server: "https://example-context.example.invalid", CA: []string{caDigest(exampleCA)}}, cluster)
+	require.Equal(t, routes.Cluster{Context: "example-context", Server: "https://example-context.example.invalid", CA: caDigests(exampleCA)}, cluster)
 
 	calls, err := os.ReadFile(filepath.Join(dir, "calls"))
 	require.NoError(t, err)
@@ -382,7 +371,7 @@ func TestKubectlClusterInAPodWithNoKubeconfig(t *testing.T) {
 	t.Setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
 	t.Setenv("KUBERNETES_SERVICE_PORT", "443")
 	// A pod whose ServiceAccount holds no CA: the record holds none, and compares the context and
-	// server alone (TestCheckRefusesARecordOfAnotherClusterAtTheSameAddress holds one).
+	// server alone (TestCheckKnowsTheClusterByItsCA holds one).
 	routes.SetServiceAccountCA(t, filepath.Join(t.TempDir(), "no-ca.crt"))
 	open := func(context string) routes.Source {
 		t.Helper()
@@ -393,7 +382,7 @@ func TestKubectlClusterInAPodWithNoKubeconfig(t *testing.T) {
 	}
 	cluster, err := open("").Cluster(ctx)
 	require.NoError(t, err)
-	require.Equal(t, routes.Cluster{Context: "example-context", Server: "https://example-context.example.invalid", CA: []string{caDigest(exampleCA)}}, cluster,
+	require.Equal(t, routes.Cluster{Context: "example-context", Server: "https://example-context.example.invalid", CA: caDigests(exampleCA)}, cluster,
 		"control: a kubeconfig is read as before, though the in-cluster variables are set")
 
 	require.NoError(t, os.Remove(filepath.Join(dir, "config.json")))
@@ -438,23 +427,27 @@ func TestCheckKnowsTheClusterByItsCA(t *testing.T) {
 		inPod bool
 		ca    string // the PEM the client holds; "" for none
 	}
-	const otherCluster = "another cluster: the CA message"
+	// The two other-cluster rows record exampleCA and check against otherCA.
+	otherCluster := []string{
+		"is the record of a cluster whose CA certificates have the SHA-256 " + strings.Join(caDigests(exampleCA), ", ") + "; the cluster read now",
+		"has " + strings.Join(caDigests(otherCA), ", ") + ", and they share none, so it is another cluster",
+	}
 	for _, row := range []struct {
 		name          string
 		record, check side
 		want          int
-		message       string
+		messages      []string
 	}{
-		{"control: one CA through one context", side{false, exampleCA}, side{false, exampleCA}, 0, ""},
-		{"control: one CA in a pod", side{true, exampleCA}, side{true, exampleCA}, 0, ""},
-		{"a person's context, then the Job in the cluster, one CA", side{false, exampleCA}, side{true, exampleCA}, 0, ""},
-		{"a bundle holding the old and the new CA, against a record of the old", side{false, exampleCA}, side{false, exampleCA + otherCA}, 0, ""},
-		{"a record of the new CA, against a bundle holding both", side{true, otherCA}, side{true, exampleCA + otherCA}, 0, ""},
+		{"control: one CA through one context", side{false, exampleCA}, side{false, exampleCA}, 0, nil},
+		{"control: one CA in a pod", side{true, exampleCA}, side{true, exampleCA}, 0, nil},
+		{"a person's context, then the Job in the cluster, one CA", side{false, exampleCA}, side{true, exampleCA}, 0, nil},
+		{"a bundle holding the old and the new CA, against a record of the old", side{false, exampleCA}, side{false, exampleCA + otherCA}, 0, nil},
+		{"a record of the new CA, against a bundle holding both", side{true, otherCA}, side{true, exampleCA + otherCA}, 0, nil},
 		{"another cluster through one context and server", side{false, exampleCA}, side{false, otherCA}, 2, otherCluster},
 		{"another cluster at one Service address, in a pod", side{true, exampleCA}, side{true, otherCA}, 2, otherCluster},
 		{"control: no CA on the record's side, another context", side{true, ""}, side{false, exampleCA}, 2,
-			`is the record taken through context "in-cluster" of the cluster at "https://34.118.224.1:443", not through context "example-context"`},
-		{"control: no CA on either side, one context", side{true, ""}, side{true, ""}, 0, ""},
+			[]string{`is the record taken through context "in-cluster" of the cluster at "https://34.118.224.1:443", not through context "example-context"`}},
+		{"control: no CA on either side, one context", side{true, ""}, side{true, ""}, 0, nil},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			h := cleanHub()
@@ -504,12 +497,9 @@ func TestCheckKnowsTheClusterByItsCA(t *testing.T) {
 			use(row.check)
 			code, output = run("check", "--record", out)
 			require.Equal(t, row.want, code, output)
-			if row.message != otherCluster {
-				require.Contains(t, output, row.message)
-				return
+			for _, message := range row.messages {
+				require.Contains(t, output, message)
 			}
-			require.Contains(t, output, "is the record of a cluster whose CA certificates have the SHA-256 "+caDigest(row.record.ca)+"; the cluster read now")
-			require.Contains(t, output, "has "+caDigest(row.check.ca)+", and they share none, so it is another cluster")
 		})
 	}
 }
