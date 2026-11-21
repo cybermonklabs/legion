@@ -3467,6 +3467,20 @@
       "production": "cipherclient.ExternalAccountIdentity.Token, redact.RefusalClient"
     },
     {
+      "id": "site-proxy-echo-device-wait",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestProxyEchoDeviceSignInPrintsTheClassAndNoCredential/Wait",
+      "production": "cipherclient.DeviceFlow.Wait: the token endpoint's refusal of the device code's poll as its class (redact.Class)"
+    },
+    {
+      "id": "site-proxy-echo-device-refresh",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestProxyEchoDeviceSignInPrintsTheClassAndNoCredential/Refresh",
+      "production": "cipherclient.DeviceFlow.Refresh: the token endpoint's refusal of the refresh as its class (redact.Class)"
+    },
+    {
       "id": "tokens-every-piece",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
@@ -5070,6 +5084,20 @@
       }
     },
     {
+      "id": "dev-proxy-stands-answer-words-enroll",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestAnEnrolmentRefusalPrintsTheBrokersWordsAsTheRuleReadsThem",
+      "production": "dev-airlock-stands enroll-pod call: a refusal's words as the rule reads them, the proof and the pod token the enrolment carried redacted (redact.Answer.Words)",
+      "function": "github.com/sjawhar/envoy/cmd/dev-proxy-stands.call",
+      "capture": "dev-proxy-stands.answer-words/enroll",
+      "mutation": {
+        "file": "packages/envoy/cmd/dev-proxy-stands/enroll.go",
+        "preimage": "answer.StatusCode, read.Words())",
+        "replacement": "answer.StatusCode, func() string { var b strings.Builder; _, _ = read.StreamTo(&b); return b.String() }())"
+      }
+    },
+    {
       "id": "mcpbridge-endpoint-url-refused",
       "requirement": "r3-each-site",
       "package": "./internal/mcpbridge",
@@ -5095,6 +5123,20 @@
         "file": "packages/envoy/internal/mcpbridge/http_server.go",
         "preimage": "\"POST to %s: %w\", redact.Field(s.messageURL), redact.Cause(postErr, s.messageURL)",
         "replacement": "\"POST to %s: %w\", s.messageURL, postErr"
+      }
+    },
+    {
+      "id": "refillrig-answer-words-register",
+      "requirement": "r3-each-site",
+      "package": "./internal/testnats/cmd/refillrig",
+      "test": "TestARegistrationRefusalPrintsTheListenersWordsAsTheRuleReadsThem",
+      "production": "refillrig register: a refused registration names the listener's words as the rule reads them (redact.Answer.Words)",
+      "function": "github.com/sjawhar/envoy/internal/testnats/cmd/refillrig.runRegister",
+      "capture": "refillrig.register-refused",
+      "mutation": {
+        "file": "packages/envoy/internal/testnats/cmd/refillrig/register.go",
+        "preimage": "resp.StatusCode, answer.Words())",
+        "replacement": "resp.StatusCode, func() string { var b bytes.Buffer; _, _ = answer.StreamTo(&b); return b.String() }())"
       }
     },
     {

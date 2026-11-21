@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
@@ -134,4 +135,56 @@ func TestAConnectRefusalPrintsTheProxysWordsAsTheRuleReadsThem(t *testing.T) {
 			t.Errorf("load gap answered the error %q; want %q, the page as the proxy wrote it", reason, want)
 		}
 	})
+}
+
+// TestAnEnrolmentRefusalPrintsTheBrokersWordsAsTheRuleReadsThem: the broker, or whatever answers in
+// its place, takes the service login and refuses the enrolment with a page that echoes the launcher
+// proof and the pod's token the enrolment carried, and words that quote a credential's URL. The
+// refusal names the page's words as the rule reads them, with every credential the enrolment
+// carried redacted (redact.Carried over the request net/http leaves on the answer), and neither
+// the proof nor the token. Captures dev-proxy-stands.answer-words/enroll.
+func TestAnEnrolmentRefusalPrintsTheBrokersWordsAsTheRuleReadsThem(t *testing.T) {
+	var mu sync.Mutex
+	var proofs []string
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/launcher-credentials/token":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"credential_id":"credential-1"}`)
+		case "/v1/enrollments":
+			var body struct {
+				PodToken string `json:"pod_token"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			proofs = append(proofs, r.Header.Get("Proof"))
+			mu.Unlock()
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprintf(w, "enrolment refused: proof %s, pod token %s; %s", r.Header.Get("Proof"), body.PodToken, redacttest.Words)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer broker.Close()
+	dir := t.TempDir()
+	tokenFile := writeFile(t, dir, "registrar-token", "registrar-token-not-echoed\n")
+	podTokenFile := writeFile(t, dir, "pod-token", redacttest.Token+"\n")
+	var stdout, stderr strings.Builder
+	if code := run(context.Background(), []string{"enroll-pod", "--url", broker.URL, "--token-file", tokenFile, "--pod-token-file", podTokenFile,
+		"--pod-uid", "pod-uid-1", "--thumbprint", "thumbprint-1"}, &stdout, &stderr); code != 1 {
+		t.Fatalf("dev-airlock-stands enroll-pod exited %d; want 1, the enrolment refused. stdout: %s stderr: %s", code, stdout.String(), stderr.String())
+	}
+	printed := stderr.String()
+	redacttest.RequireNone(t, "dev-proxy-stands.answer-words/enroll", printed)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(proofs) != 1 || proofs[0] == "" {
+		t.Fatalf("the enrolment carried the proofs %q; want one, which the page echoes", proofs)
+	}
+	if strings.Contains(printed, proofs[0]) {
+		t.Errorf("enroll-pod printed the launcher proof the enrolment carried: %s", printed)
+	}
+	if want := "/v1/enrollments answered 403: enrolment refused: proof "; !strings.Contains(printed, want) || !strings.Contains(printed, redacttest.Shown) {
+		t.Errorf("enroll-pod printed %q; want %q and the page's words as the rule reads them", printed, want)
+	}
 }
