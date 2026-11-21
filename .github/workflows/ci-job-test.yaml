@@ -338,7 +338,7 @@ jobs:
         run: bun test scripts/priorities-seed.test.ts
 
       # The guides' own layout, in this job because it installs Bun's dependencies, which the
-      # test's Markdown parser needs (scripts/semantic-line-breaks.guides.test.ts:5-7). The
+      # test's Markdown parser needs (scripts/semantic-line-breaks.guides.test.ts:6-8). The
       # step has a filter of its own, guide_layout, naming the five guides the test reads and
       # the checker it spawns: no other step of this job reads one of them, so a run that
       # changed none of them skips this step.

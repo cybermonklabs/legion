@@ -172,17 +172,6 @@ func newVerifier(provider *gooidc.Provider, issuer, audience string) *Verifier {
 	}
 }
 
-// Issues reports whether raw's iss claim, read without verifying anything, names this verifier's
-// issuer, Google's scheme-less spelling included when the verifier is Google's (namesIssuer). A
-// caller that trusts several issuers picks with it the one verifier a token is for, so a token of
-// one issuer never makes another's verifier fetch its keys; Verify still checks the issuer with
-// everything else. It reads unverified text, so it picks a verifier and decides nothing about a
-// caller: no claim anyone is admitted on comes from it.
-func (v *Verifier) Issues(raw string) bool {
-	claims, err := decodeUnverifiedClaims(raw)
-	return err == nil && v.namesIssuer(claims.Issuer)
-}
-
 // Verify checks raw against the issuer's published keys, the configured
 // audience, and the token's expiry. Every error wraps exactly one of
 // ErrMalformed, ErrIssuer, ErrAudience, ErrExpired, ErrCancelled,
