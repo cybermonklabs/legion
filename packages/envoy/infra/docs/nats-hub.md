@@ -1173,8 +1173,9 @@ reaches it:
 
 The hub's own NetworkPolicy `<n>` admits this pod to NATS's 4222 beside the hosts.
 
-How it is updated. A change of the listener's image, size or environment rolls the one pod with
-`maxUnavailable: 0` and `maxSurge: 1`, so the new pod starts before the old one stops. The new pod
+How it is updated. Outside the writer hold, a change of the listener's image, size or environment
+rolls the one pod with `maxUnavailable: 0` and `maxSurge: 1`, so the new pod starts before the old
+one stops. The new pod
 is Ready only once its `/v1` serves, since its startup probe passes only then (below), and `/v1`
 opens without waiting for the durable, which the old pod holds until it stops, so the new pod's
 `/v1` cannot wait on the old pod. The new pod's listener starts its bind of the durable right
@@ -1194,6 +1195,11 @@ port 9020 refuses connections while no listener pod is ready, and its port 4222 
 it. Setting, changing or removing the listener's `senderMessagesPerMinute` or `senderMessageBurst`
 is a change of the listener's environment, so it rolls the pod the same way. The new pod's listener
 starts with every sender's count full, as any restart of the listener does.
+
+With the listener's `replaceUnderHold: true` the Deployment is recreated instead, with no
+`rollingUpdate` block: the old pod stops before the new one starts, and the apply does not wait for
+the new pod, which the hold keeps from connecting to NATS
+([The consumer-name mode and the writer hold's update rule](../README.md#the-consumer-name-mode-and-the-writer-holds-update-rule)).
 
 What is watched. The startup probe runs `/bin/sh -c` of
 `curl -fsS --max-time 5 http://127.0.0.1:9020/metrics | grep -q '^envoy_active_interests '` every
