@@ -27,7 +27,10 @@
 # (**/action.yml, **/action.yaml), read as YAML, every step's `uses:` and every job's `uses:`
 # (a reusable-workflow call), and the `with:` of every step that uses actions/setup-go. Files are
 # discovered by walking the tree, not by asking git, so an unsnapshotted change cannot read green
-# locally.
+# locally. The walk skips only what holds no workflow or action of this repository: the version
+# control metadata (.git, .jj) and node_modules, which .gitignore keeps out of every checkout, so
+# GitHub can run no action from it. A `vendor` or `.venv` directory is read like any other, since a
+# composite action committed there is one a workflow can call.
 #
 # Run from anywhere: .github/scripts/check-action-pins.sh
 # CI runs it in ci.yaml's lint job, and its tests in ci.yaml's test job.
@@ -63,7 +66,7 @@ def _mapping_with_line(loader, node):
 
 LineLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping_with_line)
 
-SKIP_DIRS = {".git", ".jj", "node_modules", ".venv", "vendor"}
+SKIP_DIRS = {".git", ".jj", "node_modules"}
 SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -120,11 +123,14 @@ def check_uses(path: Path, line: int, uses: str) -> None:
 
 
 def check_setup_go(path: Path, step: Mapping) -> None:
-    """A step of actions/setup-go reads Go from go.dev and sends no token. The values are not
-    printed: a YAML value can hold a newline, which would start a workflow command of its own."""
+    """A step of actions/setup-go reads Go from go.dev and sends no token. The action's owner and
+    name are compared without regard to case, as GitHub resolves them (`Actions/Setup-Go@<sha>`
+    runs the same action) and as check-release-credentials.sh and check-bun-version.sh compare
+    theirs. The input values are not printed: a YAML value can hold a newline, which would start a
+    workflow command of its own."""
     global setup_go_steps
     uses = step["uses"]
-    if not isinstance(uses, str) or uses.split("@", 1)[0] != SETUP_GO:
+    if not isinstance(uses, str) or uses.split("@", 1)[0].strip().lower() != SETUP_GO:
         return
     setup_go_steps += 1
     inputs = step.get("with")

@@ -258,4 +258,62 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the action file and line" "$(contains "$out" ".github/actions/local/action.yml:5: 'actions/setup-go@$SHA' lacks go-download-base-url")"
 
+# A setup-go step spelled with the case GitHub ignores, on line 7, with no inputs: GitHub resolves
+# `Actions/setup-go@<sha>` and `actions/Setup-Go@<sha>` to the same action, so the rule holds
+# either spelling to the two inputs.
+for spelling in Actions/setup-go actions/Setup-Go; do
+  echo "case: '$spelling', a spelling GitHub resolves to actions/setup-go, is held to the rule"
+  root=$(fixture "setup-go-case-${spelling//\//-}")
+  cat > "$root/.github/workflows/ci.yaml" <<YAML
+name: CI
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: ${spelling}@${SHA} # v7.0.0
+        with:
+          go-version-file: go.mod
+YAML
+  run_check "$root"
+  check "exits 1" "$(is "$status" 1)"
+  check "names the step as written" \
+    "$(contains "$out" "^::error::.github/workflows/ci.yaml:7: '$spelling@$SHA' lacks go-download-base-url: https://go.dev/dl and token: '' under with:")"
+done
+
+# A composite action with a setup-go step and no inputs, at .github/actions/<dir>/go/action.yml:
+# a workflow can call one committed under vendor/ or .venv/ like any other.
+for dir in vendor .venv; do
+  echo "case: a composite action under a $dir directory is read"
+  root=$(fixture "setup-go-under-$dir")
+  mkdir -p "$root/.github/actions/$dir/go"
+  cat > "$root/.github/actions/$dir/go/action.yml" <<YAML
+name: Go
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@${SHA} # v7.0.0
+      with:
+        go-version-file: go.mod
+YAML
+  run_check "$root"
+  check "exits 1" "$(is "$status" 1)"
+  check "names the action file and line" \
+    "$(contains "$out" "^::error::.github/actions/$dir/go/action.yml:5: 'actions/setup-go@$SHA' lacks go-download-base-url")"
+done
+
+echo "case: node_modules, which .gitignore keeps out of every checkout, is still not read"
+root=$(fixture setup-go-node-modules)
+mkdir -p "$root/node_modules/some-package"
+cat > "$root/node_modules/some-package/action.yml" <<'YAML'
+name: A dependency's own action
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v7
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "reads no file there" "$(contains "$out" 'every remote action across 0 files is pinned to a commit SHA, and no step uses actions/setup-go$')"
+
 summary "check-action-pins.sh"
