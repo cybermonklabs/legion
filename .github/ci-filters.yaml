@@ -2470,6 +2470,7 @@ ci_filters:
   - '.github/agent-secrets-client-targets.json'
   - '.github/envoy-infra-targets.json'
   - 'package.json'
+  - *bun_install
   - '**/*.go'
   - '**/go.mod'
   - '**/go.sum'

@@ -80,9 +80,6 @@ jobs:
       - name: Check the gitleaks the release lane fetches is the one the daemon links
         run: .github/scripts/check-gitleaks-version.sh
 
-      - name: Check image triggers cover every image input
-        run: .github/scripts/check-image-trigger-paths.sh
-
       - name: Check every image a CI job fetches is a row of .github/ci-images.yaml
         run: .github/scripts/check-ci-images.sh tree
 
@@ -161,6 +158,16 @@ jobs:
             exit 1
           fi
 
+      # dorny/paths-filter reads its filters with js-yaml under node24 (its action.yml), and the
+      # two checks below that read them read them with that js-yaml, node_modules' js-yaml-paths-filter
+      # (workflow_paths.load_paths_filter), under the same Node major, after the install above.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Check image triggers cover every image input
+        run: .github/scripts/check-image-trigger-paths.sh
+
       # A package's `bun run lint` checks only the paths its recipe names. This is the command the
       # root README.md's "Development" section documents, over the whole tree, so a fixture,
       # config or test file that Biome would rewrite fails here instead of on the next person who
@@ -180,8 +187,8 @@ jobs:
       # program with `bunx tsc --listFilesOnly`, and the modules each entry a gate's job runs
       # loads with `bun build --metafile`, and holds every such file to that gate's filter,
       # so the TypeScript half of what those filters must select is derived rather than
-      # hand-kept. In this job because the ci-filters job has neither Bun nor node_modules, and
-      # because this one is gated by no `changes` output, so a change anywhere can start it.
+      # hand-kept. In this job because this one is gated by no `changes` output, so a change
+      # anywhere can start it.
       - name: Check every Bun gate's filter selects the files its typecheck compiles
         run: .github/scripts/check-ts-filters.sh
 

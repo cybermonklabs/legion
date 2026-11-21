@@ -437,6 +437,25 @@ check_input_parse_error ".github/workflows/ci.yaml"
 check "a key repeated in a nested mapping is refused the same way" \
   "$(contains "$out" "^::error file=.github/workflows/ci.yaml::cannot read repository input: the mapping key 'filters' of line $((first + 1)) is the key of line $first again: ")"
 
+echo "case: a filters file that repeats a filter name through an alias of it"
+# PyYAML composes an alias to the very node its anchor composed, so a filter name written again as
+# an alias of itself is one node twice in the file's mapping. js-yaml 4.1.0, which dorny/paths-filter
+# v4.0.3 reads the file with, refuses it as a duplicated mapping key, so every job the file gates
+# is skipped. The repeat holds the same list as the first copy, so a check that took the last copy
+# would judge the very filters it judges green. The control is the same anchor aliased nowhere.
+root=$(fixture filters-aliased-key)
+replace "$root/.github/ci-filters.yaml" $'image:\n' $'&image image:\n'
+run_check "$root"
+check "an anchored filter name aliased nowhere passes" "$(is "$status" 0)"
+anchored=$(grep -n '^&image image:$' "$root/.github/ci-filters.yaml" | cut -d: -f1)
+printf "*image :\n  - 'docs/**'\n" >> "$root/.github/ci-filters.yaml"
+alias_line=$(grep -n '^\*image :$' "$root/.github/ci-filters.yaml" | cut -d: -f1)
+run_check "$root"
+check_input_parse_error ".github/ci-filters.yaml"
+check "names the file, the key, the alias's line, the alias and the line of the key it repeats" \
+  "$(contains "$out" "^::error file=.github/ci-filters.yaml::cannot read repository input: the mapping key 'image' of line $alias_line, written as the alias \*image, is the key of line $anchored again: ")"
+check "and judges nothing by either copy" "$(is "$(contains "$out" '^report: ')" false)"
+
 echo "case: importing an unsafe data string cannot inject warning commands"
 root=$(fixture import-warning-command)
 cat >> "$root/.github/scripts/ci_job_reads.py" <<'PY'
@@ -3445,6 +3464,62 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names that workflow, its job and its step" \
   "$(contains "$out" "::error file=.github/workflows/other.yaml::the paths-filter step pick of job pick passes a \`filters\` input that is not exactly .github/ci-filters.yaml")"
+
+echo "case: a paths-filter step pinned to a commit whose js-yaml is not recorded"
+# The filters are read with the js-yaml workflow_paths.PATHS_FILTER_JS_YAML records for the pinned
+# commit, so a bump of the pin alone would leave this check reading them with the old one. The
+# text of every workflow and every action file is read, so a step in a composite action counts. The
+# control is the recorded commit, which passes.
+recorded=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 -c 'import workflow_paths as wp; print(*wp.PATHS_FILTER_JS_YAML)')
+root=$(fixture paths-filter-pin-recorded)
+replace "$root/.github/workflows/ci.yaml" "      - uses: dorny/paths-filter@v4" "      - uses: dorny/paths-filter@$recorded # v4.0.3"
+run_check "$root"
+check "the recorded commit passes" "$(is "$status" 0)"
+root=$(fixture paths-filter-pin-unrecorded)
+replace "$root/.github/workflows/ci.yaml" "      - uses: dorny/paths-filter@v4" \
+  "      - uses: dorny/paths-filter@0123456789abcdef0123456789abcdef01234567 # v9.9.9"
+pinned=$(grep -n 'dorny/paths-filter@0123456789abcdef' "$root/.github/workflows/ci.yaml" | cut -d: -f1)
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file, its line, the commit and what to record" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::.github/workflows/ci.yaml:$pinned pins dorny/paths-filter@0123456789abcdef0123456789abcdef01234567, whose js-yaml workflow_paths.PATHS_FILTER_JS_YAML does not record; read that commit's package-lock.json (node_modules/js-yaml), record the pair there, and set package.json's js-yaml-paths-filter alias to that version")"
+root=$(fixture paths-filter-pin-in-an-action)
+mkdir -p "$root/tools/choose"
+cat > "$root/tools/choose/action.yml" <<'YAML'
+name: Choose
+runs:
+  using: composite
+  steps:
+    - uses: "dorny/paths-filter@0123456789ABCDEF0123456789ABCDEF01234567"
+      with:
+        filters: .github/ci-filters.yaml
+YAML
+git -C "$root" add tools/choose/action.yml
+run_check "$root"
+check "a composite action's pin in any directory, written quoted in upper case, fails too" \
+  "$(contains "$out" "::error file=tools/choose/action.yml::tools/choose/action.yml:5 pins dorny/paths-filter@0123456789ABCDEF0123456789ABCDEF01234567, whose js-yaml ")"
+
+echo "case: no node to read the filters with"
+# The filters are read with js-yaml under Node; without node the check ends naming it, as an
+# active annotation outside the stopped-command sections that keep repository text out of the log.
+root=$(fixture no-node)
+no_node="$work/no-node-bin"
+mkdir -p "$no_node"
+IFS=: read -r -a path_dirs <<<"$PATH"
+for path_dir in "${path_dirs[@]}"; do
+  [ -d "$path_dir" ] || continue
+  for program in "$path_dir"/*; do
+    [ "${program##*/}" != node ] && [ -x "$program" ] && [ ! -e "$no_node/${program##*/}" ] && ln -s "$program" "$no_node/${program##*/}"
+  done
+done
+ln -sf "$(python3 -c 'import sys; print(sys.executable)')" "$no_node/python3"
+PATH_BEFORE=$PATH
+PATH=$no_node
+run_check "$root"
+PATH=$PATH_BEFORE
+check "fails" "$(is "$status" 1)"
+check "names node as an active annotation" \
+  "$(is "$(awk '/^::stop-commands::/ { stopped = substr($0, 18); next } stopped != "" && $0 == "::" stopped "::" { stopped = ""; next } stopped == "" && /^::error::node is not on PATH: / { print "active" }' <<<"$out")" active)"
 
 echo "case: two paths-filter steps reading the filters file under different quantifiers"
 root=$(fixture filters-two-quantifiers)

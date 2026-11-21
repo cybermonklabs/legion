@@ -41,6 +41,16 @@ jobs:
         with:
           go-version-file: packages/daemon/go.mod
           cache: false
+      # The check reads .github/ci-filters.yaml with the js-yaml dorny/paths-filter reads it with,
+      # node_modules' js-yaml-paths-filter (workflow_paths.load_paths_filter), under the Node major
+      # the action runs on (its action.yml: node24), and ends by name where either is missing.
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
       - name: Check every CI filter matches every file its job reads
         run: .github/scripts/check-ci-filters.sh
 

@@ -3786,7 +3786,10 @@ GATES = [
                          "test files, so one added or deleted changes this check's own answer"),
     ) + reads(*((path, f"check-ci-filters.sh holds its on.push.paths equal to the {name} filter (PUSH_WORKFLOWS)")
                 for name, path in PUSH_WORKFLOWS.items()))
-      + setup_go("ci-filters", f"{DAEMON}/go.mod")),
+      + setup_go("ci-filters", f"{DAEMON}/go.mod")
+      # The check reads the filters with node_modules' js-yaml-paths-filter under Node 24
+      # (workflow_paths.load_paths_filter), which the job's frozen install puts there.
+      + bun_job("ci-filters")),
 
     # The proof-sdk-offline job: a frozen install behind a proxy that answers 504 for every host
     # the proof editor's old `github:sjawhar/proof-sdk#<sha>` route used, which proves the
