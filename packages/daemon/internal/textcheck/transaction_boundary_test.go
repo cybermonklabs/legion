@@ -187,6 +187,11 @@ func (g *boundaryGuard) run(overlay map[string][]byte) ([]string, error) {
 						pkg.Fset.Position(at).Line, rule, pkg.Name, function))
 					return true
 				})
+				key := allowanceKey{pkg: within, function: function, rule: "R4"}
+				for _, at := range mixedContexts(pkg.TypesInfo, decl) {
+					calls[key] = append(calls[key], fmt.Sprintf("%s:%d R4 in %s.%s", path,
+						pkg.Fset.Position(at).Line, pkg.Name, function))
+				}
 			}
 		}
 	}
@@ -228,6 +233,87 @@ func pgxTx(loaded []*packages.Package) (*types.Interface, error) {
 		}
 	}
 	return nil, errors.New("no loaded package imports pgx, so the guard cannot tell a transaction from a pool")
+}
+
+// boundaryFunctions are the store's functions that run a body in a transaction, the body their
+// last argument: each body's context is the transaction's commit scope.
+var boundaryFunctions = []string{"Transact", "TransactWith", "ReadOnly", "transactUntilCommitted"}
+
+// mixedContexts is every call inside a transaction body of the store's boundary whose context
+// argument does not come from the body's own context (R4): a variable declared outside the body,
+// or an expression that names no variable declared inside it, such as r.Context(). Such a call
+// runs outside the commit scope, so a hook it registers panics, a wake it sends comes before the
+// commit, and a transaction it opens is its own. A function literal inside a body is not walked:
+// a hook runs once the commit is over, and a literal that is itself a body is checked as one.
+func mixedContexts(info *types.Info, decl ast.Decl) []token.Pos {
+	var found []token.Pos
+	ast.Inspect(decl, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || len(call.Args) == 0 || !boundaryCall(info, call) {
+			return true
+		}
+		body, ok := call.Args[len(call.Args)-1].(*ast.FuncLit)
+		if !ok {
+			return true
+		}
+		ast.Inspect(body.Body, func(inner ast.Node) bool {
+			switch inner := inner.(type) {
+			case *ast.FuncLit:
+				return false
+			case *ast.CallExpr:
+				if len(inner.Args) > 0 && takesContextFirst(info, inner) && !namesAVariableOf(info, inner.Args[0], body) {
+					found = append(found, inner.Args[0].Pos())
+				}
+			}
+			return true
+		})
+		return true
+	})
+	return found
+}
+
+// boundaryCall reports whether call calls one of the store's boundaryFunctions.
+func boundaryCall(info *types.Info, call *ast.CallExpr) bool {
+	fun := call.Fun
+	switch indexed := fun.(type) {
+	case *ast.IndexExpr:
+		fun = indexed.X
+	case *ast.IndexListExpr:
+		fun = indexed.X
+	}
+	var name *ast.Ident
+	switch fun := fun.(type) {
+	case *ast.Ident:
+		name = fun
+	case *ast.SelectorExpr:
+		name = fun.Sel
+	default:
+		return false
+	}
+	function, ok := info.Uses[name].(*types.Func)
+	return ok && function.Pkg() != nil && function.Pkg().Path() == modulePath+"/internal/store" &&
+		slices.Contains(boundaryFunctions, function.Name())
+}
+
+// takesContextFirst reports whether call's callee takes a context.Context first.
+func takesContextFirst(info *types.Info, call *ast.CallExpr) bool {
+	signature, ok := info.TypeOf(call.Fun).(*types.Signature)
+	return ok && signature.Params().Len() > 0 && signature.Params().At(0).Type().String() == "context.Context"
+}
+
+// namesAVariableOf reports whether expr names a variable declared inside lit: the body's context,
+// or one the body derived from it.
+func namesAVariableOf(info *types.Info, expr ast.Expr, lit *ast.FuncLit) bool {
+	found := false
+	ast.Inspect(expr, func(node ast.Node) bool {
+		if ident, ok := node.(*ast.Ident); ok {
+			if variable, ok := info.Uses[ident].(*types.Var); ok && variable.Pos() >= lit.Pos() && variable.Pos() < lit.End() {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
 }
 
 // openerRule is R1 for an identifier that names a pgx function that opens a transaction by hand,
@@ -378,6 +464,39 @@ func plantedDotOwner(ctx context.Context, raw *pgxpool.Pool) error {
 }
 `
 
+// plantedContextTransaction is a third overlay file of package daemon, whose transaction body
+// passes contexts from outside the body to calls inside it (R4), beside the forms R4 admits.
+const plantedContextTransaction = `package daemon
+
+import (
+	"context"
+	"net/http"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/store"
+)
+
+func plantedMixed(ctx context.Context, pool *store.Pool, r *http.Request) error {
+	listing := ctx
+	return store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(r.Context(), "select 1"); err != nil { // L16 reported: R4, the request's context
+			return err
+		}
+		if _, err := tx.Exec(listing, "select 1"); err != nil { // L17 reported: R4, a context from outside the body
+			return err
+		}
+		derived := context.WithoutCancel(ctx)
+		if _, err := tx.Exec(derived, "select 1"); err != nil { // a context the body derived from its own
+			return err
+		}
+		store.OnCommit(ctx, func() { _ = listing.Err() }) // a hook, which runs once the commit is over
+		_, err := tx.Exec(ctx, "select 1")                // the body's own context
+		return err
+	})
+}
+`
+
 // plantedFile is one overlay file the guard loads, and the function each of its marked lines is
 // in.
 type plantedFile struct {
@@ -393,6 +512,7 @@ var plantedFiles = []plantedFile{
 		return "plantedOwner"
 	}},
 	{"planted_dot_transaction.go", plantedDotTransaction, func(string) string { return "plantedDotOwner" }},
+	{"planted_context_transaction.go", plantedContextTransaction, func(string) string { return "plantedMixed" }},
 }
 
 // plantedMark is a planted line's mark: its name and the rule it must be reported under.
@@ -400,11 +520,12 @@ var plantedMark = regexp.MustCompile(`// (L[0-9]+) reported: (R[0-9])`)
 
 // TestNoTransactionOrStatementBypassesTheBoundary runs the guard over the module with the planted
 // files added. The production code must add no line; the planted files must add exactly their
-// fifteen marked lines. A real call outside the boundary fails by being listed, a guard blind to a
-// receiver kind, a method, a method value, a method expression, a context of another type,
-// database/sql, a dot import or a package fails by a missing marked line, and a guard that
-// reaches into the boundary fails by listing the TransactWith body, the savepoint or the
-// statement in a transaction.
+// seventeen marked lines. A real call outside the boundary fails by being listed, a guard blind to
+// a receiver kind, a method, a method value, a method expression, a context of another type,
+// database/sql, a dot import, a context from outside a transaction's body or a package fails by a
+// missing marked line, and a guard that reaches into the boundary fails by listing the
+// TransactWith body, the savepoint, the statement in a transaction, a context the body derived or
+// a hook.
 func TestNoTransactionOrStatementBypassesTheBoundary(t *testing.T) {
 	dir := moduleDir(t)
 	overlay := map[string][]byte{}
@@ -423,8 +544,8 @@ func TestNoTransactionOrStatementBypassesTheBoundary(t *testing.T) {
 			want = append(want, "internal/daemon/"+file.name+":"+strconv.Itoa(number+1)+" "+mark[2]+" in daemon."+file.function(mark[1]))
 		}
 	}
-	if len(want) != 15 {
-		t.Fatalf("the planted files mark %d lines, want 15", len(want))
+	if len(want) != 17 {
+		t.Fatalf("the planted files mark %d lines, want 17", len(want))
 	}
 	slices.Sort(want)
 

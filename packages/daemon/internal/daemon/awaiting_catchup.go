@@ -204,15 +204,15 @@ func (w *workflowRuntime) catchUpAwaiting(ctx context.Context) error {
 	var roots []catchUpRoot
 	listing, cancel := context.WithTimeout(ctx, bootTimeout)
 	err := store.TransactWith(listing, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		issues, err := w.records.Issues(listing, tx)
+		issues, err := w.records.Issues(ctx, tx)
 		if err != nil {
 			return err
 		}
-		gates, err := w.rootGates(listing, tx, issues)
+		gates, err := w.rootGates(ctx, tx, issues)
 		if err != nil {
 			return err
 		}
-		slotted, err := w.slottedIssues(listing, tx)
+		slotted, err := w.slottedIssues(ctx, tx)
 		if err != nil {
 			return err
 		}
@@ -226,11 +226,11 @@ func (w *workflowRuntime) catchUpAwaiting(ctx context.Context) error {
 					root.gates = append(root.gates, gate)
 				}
 			}
-			if root.cursor, root.hasCursor, err = w.records.CaughtUpSeq(listing, tx, issue.Key); err != nil {
+			if root.cursor, root.hasCursor, err = w.records.CaughtUpSeq(ctx, tx, issue.Key); err != nil {
 				return err
 			}
 			if len(root.gates) > 0 {
-				asks, err := w.records.RootAsks(listing, tx, []string{issue.Key})
+				asks, err := w.records.RootAsks(ctx, tx, []string{issue.Key})
 				if err != nil {
 					return err
 				}

@@ -743,7 +743,7 @@ func pendingAncestor(child dispatch.Issue, byKey map[string]releasedChild, pendi
 
 func (s *server) clearChildReleaseRetry(w http.ResponseWriter, r *http.Request, issue string) bool {
 	if err := store.Transact(r.Context(), s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		return s.records.DeleteReleaseRetry(r.Context(), tx, issue)
+		return s.records.DeleteReleaseRetry(ctx, tx, issue)
 	}); err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", fmt.Sprintf("could not clear the release retry of %s", issue))
 		return false

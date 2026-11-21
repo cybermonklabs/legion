@@ -322,7 +322,7 @@ func (w *workflowRuntime) recordedBranches(ctx context.Context) (map[string]ghbr
 	var issues []record.Issue
 	if err := store.TransactWith(read, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		issues, err = w.records.Issues(read, tx)
+		issues, err = w.records.Issues(ctx, tx)
 		return err
 	}); err != nil {
 		return nil, fmt.Errorf("read the default branches the project's records hold: %w", err)
