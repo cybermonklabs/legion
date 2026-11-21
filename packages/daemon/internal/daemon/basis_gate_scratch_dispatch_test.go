@@ -1445,6 +1445,101 @@ func TestRegistrationIsRefusedOnceAnotherProjectsDaemonAcceptsTheAncestor(t *tes
 	}
 }
 
+// R1 across projects against the daemon's own status repair: a controller tick that runs while a
+// sign-off stands between its Dispatch write and its fact writes nothing over that write. OTHR-1
+// stands in accepting in OTHR's daemon, and LEGION-1 is a view on it, set up as in the test above.
+// OTHR's architect signs OTHR-1 off, and at the seam after the sign-off's retro write and before
+// its fact (afterSignOffStatusWrite) the proof waits for OTHR's record to hold the event of that
+// write, in accepting with Dispatch at retro, which the repair reads as a status to correct to
+// needs_review, and then runs one real controller tick. Dispatch must keep retro. Once the sign-off
+// has answered and OTHR's daemon records OTHR-1 in retro, Dispatch must still show retro and
+// LEGION's architect's registration on OTHR-1's approved version must be refused 409
+// BASIS_ACCEPTED. A retro row of OTHR's outbox is held at its seam (beforeOutboxStatusWrite) until
+// then, so the proof reads Dispatch as the acceptance left it, and not as a later row repaired it.
+func TestARepairTickDuringASignOffWritesNothingOverItsAcceptance(t *testing.T) {
+	legion, other := crossProjectRigs(t, 2)
+	ticks := make(chan time.Time)
+	written := &seamAct{}
+	retroRows := make(chan struct{})
+	defer close(retroRows)
+	other.tune = func(o *overrides) {
+		o.controllerTicks = ticks
+		o.afterSignOffStatusWrite = func(_ context.Context, issue string) { written.run(issue) }
+		o.beforeOutboxStatusWrite = func(row record.OutboxRow) {
+			if write, ok := statusWriteOf(row); ok && write.Status == "retro" {
+				<-retroRows
+			}
+		}
+	}
+	legion.boot()
+	other.boot()
+
+	parent := other.create(asSession, "Quarterly billing overhaul",
+		map[string]any{"labels": []string{"legion"}, "spec": requirementsMarkdown("Billing", "o1", "o2")})
+	approval := other.approve(parent.PrimaryArtifactID)
+	parentGrant := other.admit(parent.Key)
+	other.moveRecord(parent.Key, phase.Accepting)
+
+	root := legion.create(asSession, "Ledger export rewrite", map[string]any{"labels": []string{"legion"}})
+	rootGrant := legion.admit(root.Key)
+	legion.mustLinkAcross(root.Key, parent.Key)
+	legion.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(parent.Key, "o1")}}))
+	legion.mustLinkAcross(root.Key, "")
+
+	written.arm(parent.Key, func() seamAnswer {
+		testwait.Eventually(t, "OTHR's record of "+parent.Key+" to hold its sign-off's retro write while it stands in accepting", func() bool {
+			shown := other.record(parent.Key)
+			return shown.Phase == phase.Accepting && shown.DispatchStatus == "retro"
+		})
+		other.controllerTick(ticks)
+		if testwait.Holds(5*time.Second, testwait.Poll, func() bool { return other.issue(parent.Key).Status != "retro" }) {
+			t.Errorf("the controller tick moved %s off its sign-off's retro to %s in Dispatch before the sign-off's fact", parent.Key, other.issue(parent.Key).Status)
+		}
+		return seamAnswer{}
+	})
+	if status, refusal := other.architectCall("/legion/v1/signoff", map[string]any{"grantId": parentGrant(), "issue": parent.Key}); status != http.StatusOK {
+		t.Fatalf("the sign-off of %s = %d %+v, want 200", parent.Key, status, refusal)
+	}
+	if ran, _ := written.result(); !ran {
+		t.Fatalf("the seam after %s's retro write never ran", parent.Key)
+	}
+	testwait.Eventually(t, "OTHR's daemon to record "+parent.Key+" in retro", func() bool {
+		return other.record(parent.Key).Phase == phase.Retro
+	})
+	// Each status row OTHR's outbox runs without a hold has settled: the issue's rows are run in
+	// order on its lane, and the held retro row, if any, is the newest of them.
+	testwait.Eventually(t, "OTHR's outbox to settle every status row of "+parent.Key+" ahead of a held retro row", func() bool {
+		var ahead int
+		if err := other.pool.QueryRow(t.Context(), `select count(*) from outbox where issue = $1 and kind = $2 and payload->>'status' <> 'retro'`,
+			parent.Key, string(record.OutboxKindDispatchStatus)).Scan(&ahead); err != nil {
+			t.Fatalf("count the status rows of %s: %v", parent.Key, err)
+		}
+		return ahead == 0
+	})
+	if shown := other.issue(parent.Key).Status; shown != "retro" {
+		t.Errorf("Dispatch shows %s %s while OTHR's daemon records it accepted, in retro", parent.Key, shown)
+	}
+	legion.mustLinkAcross(root.Key, parent.Key)
+	answer := <-legion.gateCallAsync(basisCall(rootGrant(), root, 1, parent.PrimaryArtifactID, approval.Version, basisReasonOf(400)))
+	if answer.err != nil {
+		t.Fatalf("the registration of %s on %s failed: %v", root.Key, parent.Key, answer.err)
+	}
+	var failure api.Failure
+	if answer.status != http.StatusOK {
+		if err := json.Unmarshal(answer.body, &failure); err != nil {
+			t.Fatalf("decode the refusal %d %s: %v", answer.status, answer.body, err)
+		}
+	}
+	if answer.status != http.StatusConflict || failure.Code != "BASIS_ACCEPTED" || !strings.Contains(failure.Error, parent.Key) {
+		t.Fatalf("%s's registration on %s once OTHR's daemon recorded its acceptance = %d %s, want 409 BASIS_ACCEPTED naming %s",
+			root.Key, parent.Key, answer.status, answer.body, parent.Key)
+	}
+	if facts, gates := legion.gateFacts(root.Key), legion.gates(root.Key); facts != 0 || len(gates) != 0 {
+		t.Fatalf("the refused registration left %d gate facts and the gate rows %+v on %s, want none", facts, gates, root.Key)
+	}
+	t.Logf("after a controller tick inside %s's sign-off, %s's registration was refused %s: %s", parent.Key, root.Key, failure.Code, failure.Error)
+}
+
 // c5's second half (R1 across projects): sign_off and close_root refuse an open child of another
 // project filed after the last controller tick, naming it, and sign_off takes the issue once that
 // child is in icebox. LEGION-1 stands in accepting after a tick, Dispatch showing needs_review;

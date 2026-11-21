@@ -365,3 +365,98 @@ func TestASecondAcceptanceOfAnIssueWaitsForTheFirstToSettle(t *testing.T) {
 		t.Fatalf("acceptance writes = %q, want %q", statuses.acceptances, want)
 	}
 }
+
+// movedWhileJudged is a judgement of sign_off and close_root before which move runs: what someone
+// does in Dispatch after the route read the issue and before the route's own write.
+type movedWhileJudged struct {
+	AcceptanceJudge
+	move func(ctx context.Context, issue string)
+}
+
+func (j movedWhileJudged) SignOffRefusal(ctx context.Context, tx pgx.Tx, issue string) (*intake.Refusal, error) {
+	j.move(ctx, issue)
+	return j.AcceptanceJudge.SignOffRefusal(ctx, tx, issue)
+}
+
+func (j movedWhileJudged) CloseRootRefusal(ctx context.Context, tx pgx.Tx, issue string) (*intake.Refusal, error) {
+	j.move(ctx, issue)
+	return j.AcceptanceJudge.CloseRootRefusal(ctx, tx, issue)
+}
+
+// A person moves the issue in Dispatch after the route read it and before the route's own write:
+// closes it under a sign-off, parks it under a close_root. The route writes at the sequence of its
+// read, so Dispatch refuses the write, nothing is written over the person's move and nothing is
+// recorded, and the route answers 409 ISSUE_CHANGED naming the status the person set. The control
+// of each act moves nothing, and the act is taken.
+func TestAnAcceptanceWritesNothingOverAPersonsMoveSinceItsRead(t *testing.T) {
+	for _, tc := range []struct {
+		name, route, writes, moved string
+		body                       map[string]any
+	}{
+		{name: "sign_off under a person's close", route: "/legion/v1/signoff", writes: "retro", moved: "done"},
+		{name: "sign_off with no move", route: "/legion/v1/signoff", writes: "retro"},
+		{name: "close_root under a person's park", route: "/legion/v1/roots/close", writes: "done", moved: "backlog",
+			body: map[string]any{"reason": "The human decided no change is needed."}},
+		{name: "close_root with no move", route: "/legion/v1/roots/close", writes: "done",
+			body: map[string]any{"reason": "The human decided no change is needed."}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var statuses *statusRecorder
+			judge := movedWhileJudged{AcceptanceJudge: &acceptanceJudge{}, move: func(ctx context.Context, issue string) {
+				if tc.moved == "" {
+					return
+				}
+				if _, err := statuses.SetStatus(ctx, issue, tc.moved); err != nil {
+					t.Errorf("the person's %s: %v", tc.moved, err)
+				}
+			}}
+			h, facts, shown := newAcceptanceHarness(t, judge, nil)
+			statuses = shown
+			architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+			body := map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}
+			for key, value := range tc.body {
+				body[key] = value
+			}
+			answer := h.request(http.MethodPost, tc.route, body, nil)
+			if tc.moved == "" {
+				if answer.Code != http.StatusOK || statuses.issues["LEGION-208"].Status != tc.writes || len(facts.recorded()) != 1 {
+					t.Fatalf("%s = %d %s, Dispatch %s, facts %#v; want 200, %s and the act's fact", tc.route, answer.Code, answer.Body,
+						statuses.issues["LEGION-208"].Status, facts.recorded(), tc.writes)
+				}
+				return
+			}
+			if got := statuses.issues["LEGION-208"].Status; got != tc.moved {
+				t.Fatalf("Dispatch shows LEGION-208 %s after %s answered %d %s, want the person's %s: the act's %s was written over it",
+					got, tc.route, answer.Code, answer.Body, tc.moved, tc.writes)
+			}
+			if message := refused(t, answer, http.StatusConflict, "ISSUE_CHANGED"); !strings.Contains(message, tc.moved) {
+				t.Fatalf("the refusal = %q, want it naming the person's %s", message, tc.moved)
+			}
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("facts = %#v, want none applied", got)
+			}
+		})
+	}
+}
+
+// An event that leaves the status as the route read it, a message, moves the sequence between the
+// read and the write. Dispatch refuses the write at the read's sequence; the route reads the issue
+// again, finds the status it read there, and writes at that read's sequence.
+func TestAnAcceptanceWritesAtANewReadOverAnEventThatKeptTheStatus(t *testing.T) {
+	var statuses *statusRecorder
+	judge := movedWhileJudged{AcceptanceJudge: &acceptanceJudge{}, move: func(_ context.Context, issue string) {
+		moved := statuses.issues[issue]
+		moved.LastSeq++
+		statuses.issues[issue] = moved
+	}}
+	h, facts, shown := newAcceptanceHarness(t, judge, nil)
+	statuses = shown
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	answer := h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil)
+	if answer.Code != http.StatusOK || len(facts.recorded()) != 1 {
+		t.Fatalf("the sign-off = %d %s with facts %#v, want 200 and its fact", answer.Code, answer.Body, facts.recorded())
+	}
+	if got := statuses.issues["LEGION-208"]; got.Status != "retro" || got.LastSeq != 9 {
+		t.Fatalf("Dispatch shows LEGION-208 %s at sequence %d, want retro written at 9, past the message at 8", got.Status, got.LastSeq)
+	}
+}
