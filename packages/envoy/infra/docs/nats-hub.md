@@ -1241,7 +1241,10 @@ force, left no line of the reload that loaded it, or loaded within 10 s of a pod
 mesh is not whole or the servers do not hold one password, when a route connection from another
 address named no server or was still open when the log was read, when the log holds no hangup
 that began the reload that loaded authorization, when the log holds a line the server did not
-write, or when a pod changed during the check. It prints no password,
+write, or when a pod changed during the check. It refuses, exit 2, a record whose namespace,
+StatefulSet or pod name is not a DNS label, whose pod uid is not a UUID, or whose CA entry is not a
+64-hex SHA-256, naming the field and not its value, since a record file can be edited and the
+check prints those fields unquoted. It prints no password,
 since it never has one, and quotes what a peer chose, a route's `remote_id` and `remote_name` and
 an address from a log line, so no peer can write a line of its own on the operator's terminal. So
 anything that can reach a pod's port 6222 can keep the check from reaching 0, though not make it

@@ -36,7 +36,9 @@ const usageText = `usage: envoy-infra routes record --namespace <ns> --statefuls
     the mesh is not whole or the servers do not hold one password, when a route connection from
     another address named no server or was still open when the log was read, when the log holds no
     hangup that began the reload that loaded authorization, when the log holds a line in the
-    server's form the server did not write, or when a pod changed during the check.
+    server's form the server did not write, or when a pod changed during the check; and it refuses,
+    exit 2, a record whose namespace, StatefulSet or pod name is not a DNS label, whose pod uid is
+    not a UUID, or whose CA entry is not a 64-hex SHA-256, naming the field.
 `
 
 // timeout bounds a command's reads of the hub: each kubectl call, each wait for a port-forward to
