@@ -475,17 +475,27 @@ var runningGcloud = struct {
 // each of which ends the form by a signal through exitBySignal itself.
 var formWatchesSignals atomic.Int32
 
+// gcloudStarted and gcloudWaited name the two moments of runRecorded at which onGcloudStep runs.
+const (
+	gcloudStarted = "started" // gcloud has started; its pid is not recorded yet
+	gcloudWaited  = "waited"  // gcloud has been waited for; what it left is not killed yet
+)
+
+// onGcloudStep runs in runRecorded at each of gcloudStarted and gcloudWaited. A test replaces it
+// to send a signal at one of those moments, which no timing of the test's own can hit on every
+// run.
+var onGcloudStep = func(step string) {}
+
 // runRecorded runs cmd as cmd.Run does, its pid recorded in runningGcloud from its start until it
 // has been waited for, so that an end by a signal (exitBySignal) kills it with its group. Where no
 // form watches createSignals, it watches them itself (watchSignalsWhileGcloudRuns) from before cmd
-// starts until what cmd left is killed: a signal that came after cmd's start and before a watch
-// begun after it would take its default action, ending this process with cmd's group still
-// running. A signal caught while cmd starts is handled once cmd's pid is recorded, since
-// killRunningGcloud waits on runningGcloud's lock; one whose handler takes that lock first keeps
-// cmd from starting at all. Once cmd has been waited for, on every outcome, it kills what is left
-// of cmd's group (killGroupLeft): a gcloud that exits by itself can leave a child holding its
-// output, which gcloudWaitDelay stops the wait for and does not kill. The group is gcloud's own,
-// so nothing else is in it, and while a process is left in it its id names no other group.
+// starts until what cmd left is killed, so that no signal in that span takes its default action
+// and ends this process with cmd's group still running; one caught while cmd starts is handled
+// once cmd's pid is recorded, since killRunningGcloud waits on runningGcloud's lock. Once cmd has
+// been waited for, on every outcome, it kills what is left of cmd's group (killGroupLeft): a
+// gcloud that exits by itself can leave a child holding its output, which gcloudWaitDelay stops
+// the wait for and does not kill. The group is gcloud's own, so nothing else is in it, and while
+// a process is left in it its id names no other group.
 func runRecorded(cmd *exec.Cmd) error {
 	stop := watchSignalsWhileGcloudRuns()
 	defer stop()
@@ -495,9 +505,11 @@ func runRecorded(cmd *exec.Cmd) error {
 		return err
 	}
 	pid := cmd.Process.Pid
+	onGcloudStep(gcloudStarted)
 	runningGcloud.pids[pid] = true
 	runningGcloud.Unlock()
 	err := cmd.Wait()
+	onGcloudStep(gcloudWaited)
 	killGroupLeft(pid)
 	runningGcloud.Lock()
 	delete(runningGcloud.pids, pid)
