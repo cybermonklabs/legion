@@ -1271,20 +1271,33 @@ func leftForRecovery(t *testing.T, w *workflowRuntime, child dispatch.Issue, tre
 // event of its own): the event's silence is noted with the repository it was silent for, and that
 // repository's recovery takes the issue in whatever it resolves to. Scoped by its resolution at
 // the recovery alone, it waited for the next boot.
+//
+// The move lands while a recovery pass holds a listing read before it, and GitHub answers only
+// once a recovery has listed Dispatch since the move. A pass decides from the listing it read, as
+// every admission decides from the Dispatch read it made before its commit, so GitHub answering
+// the held pass's own read would admit the issue where it resolved before the move.
 func TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
 	w, client, installs, _ := repositoryRigWith(t, installs)
 	const key = "LEGION-1500"
+	release := client.holdListing()
+	t.Cleanup(release)
 	deliver(t, w, client, issue(key, "zeta/tools", "todo", true, "", 1))
 	if recordedIssue(t, w, key) != nil {
 		t.Fatalf("%s recorded while zeta/tools' read fails", key)
 	}
+	testwait.Eventually(t, "the listing of the recovery the event's silence woke held", func() bool { return client.heldListingCount() == 1 })
 	// The project's default moves to acme/widgets: Dispatch resolves the issue there now, and sends
 	// no event of it.
 	moved := issue(key, "acme/widgets", "todo", true, "", 1)
 	client.show(moved)
+	listed := client.listingCount()
+	release()
+	// The refresher runs one pass at a time, so a listing since the move is one the held pass has
+	// ended before.
+	testwait.Eventually(t, "a recovery listing Dispatch since the default moved", func() bool { return client.listingCount() > listed })
 	serveAndRecover(t, w, installs)
 	if got := recordedIssue(t, w, key); got == nil || got.Repo != "acme/widgets" {
 		t.Fatalf("%s = %+v once zeta/tools is recovered, want it admitted on acme/widgets, where it resolves now", key, got)
