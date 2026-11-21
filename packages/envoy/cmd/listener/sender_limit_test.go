@@ -264,17 +264,10 @@ func newSenderLimitRigOn(t *testing.T, client *bus.Client, url string) *senderLi
 	rig := &senderLimitRig{knownSessionRig: newKnownSessionRigOn(t, client, url), now: senderLimitStart}
 	wakesCtx, stopWakes := context.WithCancel(context.Background())
 	t.Cleanup(stopWakes)
-	rig.deps.wakes = newWakeReporter(wakesCtx, client)
+	rig.deps.wakes = newWakeReporter(wakesCtx, client, knownSessionProjects(rig.known))
 	conn := testnats.Connect(t, url)
 	t.Cleanup(conn.Close)
-	wakes, err := conn.SubscribeSync(bus.LegionWakeTopic)
-	if err != nil {
-		t.Fatalf("subscribe to %s: %v", bus.LegionWakeTopic, err)
-	}
-	if err := conn.Flush(); err != nil {
-		t.Fatalf("flush the wake subscription: %v", err)
-	}
-	rig.wakes = wakes
+	rig.wakes = subscribeWakes(t, conn)
 	return rig
 }
 
@@ -295,13 +288,14 @@ func (rig *senderLimitRig) live(t *testing.T, sessionID string, capabilities []s
 	}
 }
 
-// recorded gives sessionID a known-session record advertising capabilities and no entry, as a
-// session that stopped leaves behind: a send to it reports a wake before anything else is decided.
+// recorded gives sessionID a known-session record advertising capabilities and listing the test's
+// project, and no entry, as a session that stopped leaves behind: a send to it reports a wake, on
+// that project's wake subject, before anything else is decided.
 func (rig *senderLimitRig) recorded(t *testing.T, sessionID string, capabilities []string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := rig.known.RecordWithin(ctx, session.KnownSession{SessionID: sessionID, Title: "a stopped target", Capabilities: capabilities}); err != nil {
+	if err := rig.known.RecordWithin(ctx, session.KnownSession{SessionID: sessionID, Title: "a stopped target", Capabilities: capabilities, Projects: []string{testWakeProject}}); err != nil {
 		t.Fatalf("record %s: %v", sessionID, err)
 	}
 	rig.record(t, sessionID)
@@ -579,7 +573,7 @@ func TestSenderLimitRoutes(t *testing.T) {
 			sender   = "ses_routes_role"
 			other    = "ses_routes_role_other"
 			claimant = "ses_routes_role_claimant"
-			role     = "routes-refused-role"
+			role     = "legion-acme-routes-refused-role"
 			refused  = "the role message after the burst"
 			taken    = "the role message the claimant takes"
 		)
@@ -626,11 +620,12 @@ func TestSenderLimitRoutes(t *testing.T) {
 	t.Run("send after the burst to a session with no entry publishes no wake", func(t *testing.T) {
 		rig.limit(4, 1)
 		const sender, other, gone = "ses_routes_unwoken", "ses_routes_unwoken_other", "ses_routes_unwoken_target"
+		rig.recorded(t, gone, nil)
 		rig.spend(t, sender, 1)
 		rig.sendFrom(t, sender, gone, nil).requireRefused(t, "the send after the burst", sender, 4, 1, 15)
-		// Another sender's send to the same session is answered 404 with its wake reported, so the
-		// rig is shown to read the session's wake reports, and that one is the only one.
-		rig.sendFrom(t, other, gone, nil).requireStatus(t, "another sender's send", http.StatusNotFound)
+		// Another sender's send to the same session is stored for it with its wake reported, so
+		// the rig is shown to read the session's wake reports, and that one is the only one.
+		rig.sendFrom(t, other, gone, nil).requireStatus(t, "another sender's send", http.StatusOK)
 		awaitWake(t, rig.wakes, wakeKindAgent, gone)
 		rig.requireNoWake(t, wakeKindAgent, gone)
 		rig.requireCount(t, sender, false)
@@ -821,7 +816,7 @@ func TestSenderLimitCost(t *testing.T) {
 
 	t.Run("repeat of a kept copy (202 after the wake) costs nothing", func(t *testing.T) {
 		rig.limit(4, 2)
-		const sender, role = "ses_cost_kept_repeat", "cost-kept-repeat"
+		const sender, role = "ses_cost_kept_repeat", "legion-acme-cost-kept-repeat"
 		key := map[string]any{"idempotency_key": uuid.NewString()}
 		before := len(logs())
 		first := rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, key)
@@ -922,7 +917,7 @@ func TestSenderLimitCost(t *testing.T) {
 
 	t.Run("role message kept for a later holder (202) costs one", func(t *testing.T) {
 		rig.limit(4, 1)
-		const sender, role = "ses_cost_kept", "cost-kept"
+		const sender, role = "ses_cost_kept", "legion-acme-cost-kept"
 		before := len(logs())
 		kept := rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, nil)
 		kept.requireStatus(t, "the message to a role nobody holds", http.StatusAccepted)
@@ -937,7 +932,7 @@ func TestSenderLimitCost(t *testing.T) {
 
 	t.Run("role message with no holder and keep false (404 after a wake report) costs one", func(t *testing.T) {
 		rig.limit(4, 1)
-		const sender, role = "ses_cost_unkept", "cost-unkept"
+		const sender, role = "ses_cost_unkept", "legion-acme-cost-unkept"
 		before := len(logs())
 		unkept := rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, map[string]any{"keep": false})
 		unkept.requireStatus(t, "the message with keep false", http.StatusNotFound)
@@ -949,14 +944,14 @@ func TestSenderLimitCost(t *testing.T) {
 		rig.requireCount(t, sender, false)
 	})
 
-	t.Run("send to a session with no entry (404 after a wake report) costs one", func(t *testing.T) {
+	t.Run("send to a session nobody knows (404; no record lists its project, so no wake goes out) costs one", func(t *testing.T) {
 		rig.limit(4, 1)
 		const sender, gone = "ses_cost_gone", "ses_cost_gone_target"
 		missing := rig.sendFrom(t, sender, gone, nil)
 		missing.requireStatus(t, "the send to a session nobody knows", http.StatusNotFound)
 		missing.requireOutcome(t, "the send to a session nobody knows", outcomeNoLiveSession)
 		missing.requireNamed(t, "the send to a session nobody knows", sender)
-		awaitWake(t, rig.wakes, wakeKindAgent, gone)
+		rig.requireNoWake(t, wakeKindAgent, gone)
 		rig.requireCount(t, sender, false)
 	})
 
@@ -1130,7 +1125,7 @@ func TestSenderLimitCost(t *testing.T) {
 	t.Run("role send answered 202 for a repeat of a kept copy after a forward the stream stored costs one", func(t *testing.T) {
 		released := newSenderLimitRig(t)
 		released.limit(4, 1)
-		const sender, holder, role = "ses_cost_released", "ses_cost_released_holder", "cost-released"
+		const sender, holder, role = "ses_cost_released", "ses_cost_released_holder", "legion-acme-cost-released"
 		idempotencyKey := uuid.NewString()
 		earlier := listenerTestEnvelope(contracts.RoleTopicPrefix+role, publishDedupePrefix+idempotencyKey)
 		earlier.SourceSession = sender

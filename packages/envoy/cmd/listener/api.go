@@ -1132,16 +1132,17 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, "cannot publish to agent topics; use /v1/messages/send for direct agent messages")
 			return
 		}
-		// The wake subject is this listener's own report of a released Legion pod, and a Legion
-		// daemon acts on what it reads there: it wakes the pod a role token or a session names,
-		// and it holds its whole release gate open on a `listener_ready` report's clock. A caller
-		// of this route chooses every field of the envelope and the payload, source "envoy"
-		// included, so a session that could publish here — a prompt-injected one among them —
-		// could wake pods at will and keep that gate open with a report dated in the future. Only
-		// the listener publishes it, and it does so directly (wake.go).
-		if strings.TrimSpace(request.Topic) == bus.LegionWakeTopic {
+		// A wake subject — the shared one or a project's own (isLegionWakeTopic) — is this
+		// listener's own report of a released Legion pod, and a Legion daemon acts on what it reads
+		// there: it wakes the pod a role token or a session names, and it holds its whole release
+		// gate open on a `listener_ready` report's clock. A caller of this route chooses every field
+		// of the envelope and the payload, source "envoy" included, so a session that could publish
+		// here — a prompt-injected one among them — could wake pods at will and keep that gate open
+		// with a report dated in the future. Only the listener publishes it, and it does so directly
+		// (wake.go).
+		if topic := strings.TrimSpace(request.Topic); isLegionWakeTopic(topic) {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest,
-				"cannot publish to "+bus.LegionWakeTopic+"; the listener alone reports a Legion pod wake", "topic")
+				"cannot publish to "+topic+"; the listener alone reports a Legion pod wake", "topic")
 			return
 		}
 		// A lane of the listener's own is refused, and named in the refusal as the stream itself
@@ -3083,12 +3084,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// that consumer call landed, since every one that could not get its consumer was refused
 		// above with nothing recorded. A failed write is this WARN and nothing else: the
 		// registration is answered whatever it did (session.KnownSessions).
-		if err := d.known.RecordWithin(ctx, session.KnownSession{
-			SessionID:    body.SessionID,
-			Title:        body.Title,
-			Capabilities: body.Capabilities,
-			Topics:       item.Topics,
-		}); err != nil {
+		if err := d.known.RecordWithin(ctx, knownSessionRecord(body.SessionID, body.Title, body.Capabilities, item.Topics, nil)); err != nil {
 			logger.Warn("listener known-session record not written",
 				slog.String("session_id", body.SessionID), slog.String("error", err.Error()))
 		}
