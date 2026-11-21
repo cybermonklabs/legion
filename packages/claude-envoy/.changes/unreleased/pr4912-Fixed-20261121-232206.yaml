@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+    On a host with no /proc (macOS), the Codex plugin records a session whatever `ps` takes. It read
+    the codex process's start and arguments with `ps` under a fixed 1 s timeout, and a start not read
+    in that second meant the session got no Envoy messages. The `SessionStart` and `SessionEnd`
+    hooks now give `ps` what Codex's hook timeout leaves after the steps that follow it, run the
+    `!` token command only while its 10 s still fits, and say by name what they skipped; the MCP
+    server reads each start once without holding its event loop, and a `ps` it cannot start reads
+    as unknown instead of ending the server.
+time: 2026-11-21T23:22:06Z
+custom:
+    Issue: pr4912

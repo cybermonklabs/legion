@@ -1,6 +1,6 @@
 import { link, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { join } from "node:path"
-import { processStarted } from "./codex-session-record"
+import { processStartedLater, procStarted } from "./codex-session-record"
 
 /**
  * Which of a `codex` process's plugin servers owns its Envoy session.
@@ -109,15 +109,35 @@ export interface ProcessProbe {
   readonly started: (pid: number) => string | undefined
 }
 
-/** The start each live pid was last read at, so `ps` (off Linux) runs once per pid, not every
- *  poll. A pid's start changes only when the pid is used again, which `ESRCH` comes before. */
-const startedOf = new Map<number, string | undefined>()
+/** The start each live pid was read at, so `ps` (off Linux) runs once per pid, not every poll. A
+ *  pid's start changes only when the pid is used again, which `ESRCH` comes before. Only a start
+ *  read is kept: one `ps` could not give is asked again. */
+const startedOf = new Map<number, string>()
+/** The pids whose start `ps` is reading now. */
+const reading = new Set<number>()
 
 const SYSTEM_PROBE: ProcessProbe = {
   signal: (pid) => process.kill(pid, 0),
   started: (pid) => {
-    if (!startedOf.has(pid)) startedOf.set(pid, processStarted(pid))
-    return startedOf.get(pid)
+    const known = startedOf.get(pid) ?? procStarted(pid)
+    if (known !== undefined) {
+      startedOf.set(pid, known)
+      return known
+    }
+    // Off Linux: `ps` reads it without holding the event loop, and until it has, the start says
+    // nothing either way (`serverAlive`), so a slow `ps` never judges a live server gone.
+    if (!reading.has(pid)) {
+      reading.add(pid)
+      void processStartedLater(pid)
+        .then((started) => {
+          if (started !== undefined) startedOf.set(pid, started)
+        })
+        .catch(() => {
+          // A start not read says nothing either way; the next look asks again.
+        })
+        .finally(() => reading.delete(pid))
+    }
+    return undefined
   },
 }
 

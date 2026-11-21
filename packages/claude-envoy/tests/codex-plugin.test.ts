@@ -9,6 +9,10 @@ import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "
 import { join, resolve } from "node:path"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { buildCodexPlugin, CODEX_EXPLICIT_SKILLS, codexSkill, parseMode } from "../scripts/build"
+import {
+  SESSION_END_HOOK_TIMEOUT_MS,
+  SESSION_START_HOOK_TIMEOUT_MS,
+} from "../src/codex/codex-session-record"
 
 const packageRoot = resolve(import.meta.dir, "..")
 
@@ -146,6 +150,16 @@ describe("the built Codex plugin", () => {
     expect(sessionHooks.length).toBeGreaterThan(0)
     for (const command of sessionHooks) expect(command).toEndWith("--host codex")
     expect(commands.some((command) => command.endsWith('codex-hook.js" session-end'))).toBe(true)
+    // The time a Codex hook gives each step is what this timeout leaves it (`hookDeadline`), so the
+    // constants it reads are this file's.
+    const timeoutOf = (ending: string): number[] =>
+      Object.values(hooks.hooks)
+        .flat()
+        .flatMap((group) => (group as { hooks: { command: string; timeout: number }[] }).hooks)
+        .filter((hook) => hook.command.endsWith(ending))
+        .map((hook) => hook.timeout * 1000)
+    expect(timeoutOf('codex-hook.js" session-start')).toEqual([SESSION_START_HOOK_TIMEOUT_MS])
+    expect(timeoutOf('codex-hook.js" session-end')).toEqual([SESSION_END_HOOK_TIMEOUT_MS])
   })
 
   test("has the manifest shape Codex's validator accepts", () => {

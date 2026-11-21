@@ -11,7 +11,7 @@ import type { DeliveryRequest } from "@legion/envoy-client/transport"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import {
   codexSessionRecordFile,
-  processStarted,
+  processStartedLater,
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
 import { SERVER_START_MS, waitFor } from "./channel-session-harness"
@@ -44,7 +44,7 @@ export const CODEX_QUEUED = "queued.log"
  */
 export function codexSession(sessionId: string): (stateDirectory: string) => Promise<void> {
   return async (stateDirectory) => {
-    const started = processStarted(process.pid)
+    const started = await processStartedLater(process.pid)
     if (started === undefined) throw new Error("this process's start cannot be read")
     const codex = join(stateDirectory, "codex")
     await writeFile(

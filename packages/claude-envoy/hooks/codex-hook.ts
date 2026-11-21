@@ -16,6 +16,7 @@
 import { rm } from "node:fs/promises"
 import { formatOpenAsksSummary } from "@legion/envoy-client/dispatch-execute"
 import { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import { COMMAND_TIMEOUT_MS } from "@legion/envoy-client/envoy-config"
 import { messageFor } from "@legion/envoy-client/errors"
 import { sessionConfigFile, sessionDispatchSettings } from "@legion/envoy-client/session-settings"
 import { z } from "zod"
@@ -26,19 +27,28 @@ import {
   codexHome,
   codexProcessId,
   codexSessionRecordFile,
+  HOOK_WRITES_MS,
+  hookDeadline,
   markSessionEnded,
   processStarted,
   pruneCodexSessionRecords,
   readCodexSessionRecord,
   recordOfProcess,
+  SESSION_END_HOOK_TIMEOUT_MS,
+  SESSION_START_HOOK_TIMEOUT_MS,
   SHARED_APP_SERVER_NOTE,
   sharedAppServer,
+  timeLeft,
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 
 /** How long the open-asks read may take before the summary says it is unavailable. */
 const OPEN_ASKS_TIMEOUT_MS = 3_000
+
+/** What `SessionStart`'s reads of the codex process leave for the steps after them at their
+ *  least: the record's writes and the open-asks read. */
+const AFTER_READS_MS = HOOK_WRITES_MS + OPEN_ASKS_TIMEOUT_MS
 
 const SessionStartInput = z.object({
   session_id: z.string().min(1),
@@ -74,12 +84,29 @@ async function sessionEnd(raw: unknown): Promise<void> {
   const file = codexSessionRecordFile(pluginData, pid)
   const record = await readCodexSessionRecord(file)
   if (record === undefined || record.session_id !== input.session_id) return
-  if (!recordOfProcess(record, pid)) return
+  // Codex ends this hook at its timeout; `ps` gets what that leaves, less the marker's writes.
+  const deadline = hookDeadline(SESSION_END_HOOK_TIMEOUT_MS)
+  let failure = ""
+  const started = processStarted(pid, timeLeft(deadline) - HOOK_WRITES_MS, (why) => {
+    failure = why
+  })
+  if (started === undefined) {
+    process.stderr.write(
+      `envoy: the end of session ${input.session_id} was not marked, because the start of codex process ${pid} cannot be read (${failure})\n`,
+    )
+    return
+  }
+  if (!recordOfProcess(record, started)) return
   await markSessionEnded(pluginData, pid, input.session_id)
 }
 
 async function sessionStart(raw: unknown): Promise<void> {
   const input = SessionStartInput.parse(raw)
+  // Codex ends this hook at its timeout and then drops everything it printed, so every step gets
+  // what that leaves: the reads of the codex process leave the steps after them their whole time
+  // (`AFTER_READS_MS`), the token command runs only while its own 10 s still fits, and the open
+  // asks read gets what is left.
+  const deadline = hookDeadline(SESSION_START_HOOK_TIMEOUT_MS)
   const pluginData = configuredValue(
     process.env["PLUGIN_DATA"] ?? process.env["CLAUDE_PLUGIN_DATA"],
   )
@@ -93,8 +120,12 @@ async function sessionStart(raw: unknown): Promise<void> {
       process.stderr.write(`envoy: could not prune old session records — ${messageFor(error)}\n`)
     }
     try {
-      const started = processStarted(pid)
-      if (sharedAppServer(pid)) {
+      const readMs = (): number => timeLeft(deadline) - AFTER_READS_MS
+      let failure = ""
+      const started = processStarted(pid, readMs(), (why) => {
+        failure = why
+      })
+      if (sharedAppServer(pid, readMs())) {
         // No record: two sessions of one process would share it (`sharedAppServer`).
         process.stdout.write(`${SHARED_APP_SERVER_NOTE}\n\n`)
       } else if (input.transcript_path === null || input.transcript_path === undefined) {
@@ -104,7 +135,7 @@ async function sessionStart(raw: unknown): Promise<void> {
         process.stdout.write(`${NO_TRANSCRIPT_NOTE}\n\n`)
       } else if (started === undefined) {
         process.stderr.write(
-          `envoy: this session was not recorded, because the start of codex process ${pid} cannot be read; it gets no Envoy messages\n`,
+          `envoy: this session was not recorded, because the start of codex process ${pid} cannot be read (${failure}); it gets no Envoy messages\n`,
         )
       } else {
         // The session again (`/resume`): it has not ended. The marker goes before the record is
@@ -127,21 +158,33 @@ async function sessionStart(raw: unknown): Promise<void> {
   }
 
   const chosen = sessionConfigFile("codex", process.env)
+  // A `!` command may run for its whole 10 s; with less left than that and the asks read, the
+  // read takes only an outcome this process already has, and says when it has none.
+  const runs = timeLeft(deadline) >= COMMAND_TIMEOUT_MS + OPEN_ASKS_TIMEOUT_MS
   const { dispatch, warnings } = sessionDispatchSettings(chosen, process.env, {
     cwd: input.cwd,
     session: input.session_id,
+    commands: runs ? "run" : "kept",
   })
   for (const warning of warnings) process.stdout.write(`envoy: ${warning}\n`)
   if (!dispatch.enabled) {
     if (dispatch.error !== null) {
-      process.stdout.write(`Dispatch authored-ask summary unavailable: ${dispatch.error}\n`)
+      const why = runs ? "" : " (too little of this hook's time was left to run a command)"
+      process.stdout.write(`Dispatch authored-ask summary unavailable${why}: ${dispatch.error}\n`)
     }
     return
   }
   process.stdout.write(`${CODEX_DISPATCH_NOTE}\n\n`)
+  const asksMs = Math.min(OPEN_ASKS_TIMEOUT_MS, timeLeft(deadline))
+  if (asksMs === 0) {
+    process.stdout.write(
+      "Dispatch authored-ask summary unavailable: this hook's time ran out before it could read the open asks\n",
+    )
+    return
+  }
   try {
     const snapshot = await new DispatchClient(dispatch.url, dispatch.credential, fetch, {
-      signal: AbortSignal.timeout(OPEN_ASKS_TIMEOUT_MS),
+      signal: AbortSignal.timeout(asksMs),
     }).openAsks(input.session_id)
     process.stdout.write(
       `Dispatch authored-ask summary:\n${formatOpenAsksSummary(snapshot, dispatch.publicUrl ?? dispatch.url)}\n`,

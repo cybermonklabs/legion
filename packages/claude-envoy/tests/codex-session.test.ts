@@ -18,10 +18,12 @@ import {
   codexSessionRecordFile,
   codexSubcommand,
   processStarted,
+  processStartedLater,
   pruneCodexSessionRecords,
   readCodexSessionRecord,
   recordOfProcess,
   sharedAppServer,
+  sharedAppServerLater,
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
 import { CODEX_COMMAND_REFUSAL, createCodexUserTurnRouter } from "../src/codex/codex-user-turns"
@@ -50,33 +52,40 @@ describe("the Codex session record", () => {
     expect(await readCodexSessionRecord(file)).toBeUndefined()
   })
 
-  test("a record is this process's only when it names this process's start", () => {
+  test("a record is this process's only when it names this process's start", async () => {
+    const started = await processStartedLater(process.pid)
     const record = {
       codex_executable: null,
       codex_home: "/h",
       cwd: "/w",
-      codex_started: processStarted(process.pid) ?? null,
+      codex_started: started ?? null,
       session_id: "s",
       source: null,
       transcript_path: null,
     }
     expect(record.codex_started).not.toBeNull()
-    expect(recordOfProcess(record, process.pid)).toBe(true)
-    expect(recordOfProcess({ ...record, codex_started: "1" }, process.pid)).toBe(false)
+    expect(recordOfProcess(record, started)).toBe(true)
+    expect(recordOfProcess({ ...record, codex_started: "1" }, started)).toBe(false)
     // A record whose start was not read, or a process whose start cannot be read, is not taken.
-    expect(recordOfProcess({ ...record, codex_started: null }, process.pid)).toBe(false)
+    expect(recordOfProcess({ ...record, codex_started: null }, started)).toBe(false)
+    expect(recordOfProcess(record, undefined)).toBe(false)
+    // A process gone has no start: with /proc no `ps` runs for it, and without, `ps` names none.
     const exited = Bun.spawnSync(["true"]).pid
-    expect(recordOfProcess(record, exited)).toBe(false)
+    expect(processStarted(exited, 5_000)).toBeUndefined()
+    expect(await processStartedLater(exited)).toBeUndefined()
   })
 
-  test("Codex's shared app server is told apart from a codex process of its own", () => {
+  test("Codex's shared app server is told apart from a codex process of its own", async () => {
     // `sleep 5; :` so the shell cannot exec sleep in its own place, which would drop app-server
     // from its arguments. `-c` takes a value for codex as for sh, so the subcommand is app-server.
     const shared = Bun.spawn(["sh", "-c", "sleep 5; :", "app-server"])
     const own = Bun.spawn(["sh", "-c", "sleep 5; :"])
     try {
-      expect(sharedAppServer(shared.pid)).toBe(true)
-      expect(sharedAppServer(own.pid)).toBe(false)
+      // Where there is no /proc, `ps` gets the row's own minute, so no shorter timer decides it.
+      expect(sharedAppServer(shared.pid, 60_000)).toBe(true)
+      expect(sharedAppServer(own.pid, 60_000)).toBe(false)
+      expect(await sharedAppServerLater(shared.pid)).toBe(true)
+      expect(await sharedAppServerLater(own.pid)).toBe(false)
     } finally {
       shared.kill()
       own.kill()

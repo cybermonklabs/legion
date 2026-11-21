@@ -34,8 +34,9 @@ export type EnvoyConfigEnvironment = {
   readonly DISPATCH_URL?: string | undefined;
 } & Readonly<Record<string, string | undefined>>;
 
-/** How long a `!` command may run before its field is an error. */
-const COMMAND_TIMEOUT_MS = 10_000;
+/** How long a `!` command may run before its field is an error; a caller on a deadline (the Codex
+ * plugin's `SessionStart` hook) runs one only while this still fits. */
+export const COMMAND_TIMEOUT_MS = 10_000;
 
 /** A variable's value, with an empty one read as unset: the one meaning of `""` for every variable
  * Dispatch and Envoy read. */

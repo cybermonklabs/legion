@@ -16,7 +16,7 @@ import { join, resolve } from "node:path"
 import type { Subprocess } from "bun"
 import {
   codexSessionRecordFile,
-  processStarted,
+  processStartedLater,
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
 
@@ -107,7 +107,7 @@ export async function recordFor(
   sessionId: string,
   homes: { readonly codexHome: string; readonly cwd: string },
 ): Promise<void> {
-  const started = processStarted(process.pid)
+  const started = await processStartedLater(process.pid)
   if (started === undefined) throw new Error("this process's start cannot be read")
   await writeCodexSessionRecord(codexSessionRecordFile(pluginData, process.pid), {
     codex_executable: null,

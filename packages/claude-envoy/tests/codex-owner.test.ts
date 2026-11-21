@@ -15,7 +15,7 @@ import {
   codexEndedFile,
   codexSessionRecordFile,
   markSessionEnded,
-  processStarted,
+  processStartedLater,
   sessionEnded,
   watchRecord,
   writeCodexSessionRecord,
@@ -230,10 +230,11 @@ describe("watching the record", () => {
     async () => {
       const left = rowBudget()
       const record = codexSessionRecordFile(root, 9)
+      const started = await processStartedLater(process.pid)
       await writeCodexSessionRecord(record, {
         codex_executable: null,
         codex_home: "/h",
-        codex_started: processStarted(process.pid) ?? "1",
+        codex_started: started ?? "1",
         cwd: "/w",
         session_id: "s-1",
         source: null,
@@ -243,7 +244,7 @@ describe("watching the record", () => {
       const seen: [string, boolean][] = []
       const stop = watchRecord(
         record,
-        process.pid,
+        Promise.resolve(started),
         (sessionId) => sessionEnded(codexEndedFile(root, 9, sessionId)),
         (next, ended) => seen.push([next.session_id, ended]),
         50,
