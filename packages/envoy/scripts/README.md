@@ -916,10 +916,11 @@ What it reads, all of it read-only:
   `notifications.dispatch.issue.>`, `notifications.agent.>`,
   `notifications.envoy.exceptions.notifications.agent.>` and `notifications.envoy.kept.>`; the
   last message of each of those subjects in an old form (`$JS.API.STREAM.MSG.GET` by
-  `last_by_subj`: its subject, stream sequence and time alone, never its content); and every
-  record of the interest store `envoy_interests`. A list longer than one answer is read page by
-  page, each page from the last item of the page before, and a refused or empty answer ends that
-  list's reads at once.
+  `last_by_subj`: its subject, stream sequence and time alone, never its content; at most 1000 of
+  them, the rest counted, since they only name the newest old-form message and decide no verdict);
+  and every record of the interest store `envoy_interests`. A list longer than one answer is read
+  page by page, each page from the last item of the page before, and a refused or empty answer
+  ends that list's reads at once.
 
 The first reading shuts on no old-form name. The stream keeps the old-form messages published
 before every producer moved for its whole retention, and interest records and consumer filters may
@@ -936,7 +937,10 @@ refused; a reading named with `--since` that shut the gate; and less than the re
 two, the readings' and each listener's own two reads of its counter. The old form is the gate's own
 rule (`lib/legacy-subjects-gate-forms.jq`, `old_form`, which the gate also hands the Job to choose
 the subjects whose last message it reads), so the gate stays right once the code that reads both
-forms is deleted.
+forms is deleted. It takes as old a filter that matches old-form names alone even where it names
+no key: `notifications.dispatch.issue.*.comment.created` has the old form's length, one token
+short of every new-form issue event's name, so it hears the old form alone; the listener's counter
+takes it as old too (`contracts.LegacyIssueFilter`).
 
 What it cannot see prints `UNKNOWN`, never `GATE OPEN`: a surface it could not read or that
 answered nothing (no listener, no Legion daemon consumer, no issue or agent subject on the stream,

@@ -12,10 +12,11 @@
 # nats call as --inbox-prefix, for a grant that subscribes only its identity's own inbox prefix. It
 # makes read requests only: who the server says the connection is, the stream's info, the stream's
 # consumer list, the stream's subjects under each family the rename moved, the last message of each
-# of those subjects that is in an old form, the interest bucket's keys and each key's record. It
-# judges nothing; the gate does. Which subjects are in an old form is the gate's own rule, which the
-# gate hands the Job in FORMS_JQ (lib/legacy-subjects-gate-forms.jq, old_form); without it no last
-# message is read, and the gate reads that as old-form subjects it could not read.
+# of those subjects that is in an old form (at most OLD_LAST_MAX of them, the rest counted), the
+# interest bucket's keys and each key's record. It judges nothing; the gate does. Which subjects
+# are in an old form is the gate's own rule, which the gate hands the Job in FORMS_JQ
+# (lib/legacy-subjects-gate-forms.jq, old_form); without it no last message is read, and the gate
+# names no newest old-form message.
 #
 # Each read is printed as one line of five tab-separated fields: the read's name, its argument,
 # the nats CLI's exit status, and its standard output and standard error, each in base64 on one
@@ -146,22 +147,31 @@ for family in \
 done
 
 # The last message of each subject the pages list that is in an old form (FORMS_JQ, the gate's own
-# rule), by `last_by_subj`: its subject, stream sequence and time alone, which a second reading
-# compares with the first reading's last sequence. A subject whose messages expired since the list
-# answers no message found.
+# rule), by `last_by_subj`: its subject, stream sequence and time alone, which the gate uses to name
+# the newest old-form message and, at a second reading, the old-form subjects published after the
+# first reading's last sequence. The reads decide no verdict, since any old-form subject the second
+# reading finds shuts it, so they are bounded: at most OLD_LAST_MAX (1000, about 40 s at the Job's
+# 250m) are read, and one line counts the rest, so a stream full of old-form subjects cannot push
+# the Job past its deadline. A subject whose messages expired since the list answers no message
+# found. An answer that is no JSON object is printed as no answer, never as it came.
 : >"$work/old-subjects"
 if [ -n "${FORMS_JQ:-}" ]; then
   printf '%s\n' "$FORMS_JQ" >"$work/legacy-subjects-gate-forms.jq"
   jq -r -L "$work" 'include "legacy-subjects-gate-forms"; try (.state.subjects | objects | keys[] | select(old_form)) catch empty' \
     "$work/subject-pages" 2>/dev/null | sort -u >"$work/old-subjects"
 fi
+old_last_max=${OLD_LAST_MAX:-1000}
+head -n "$old_last_max" "$work/old-subjects" >"$work/old-subjects-read"
 while IFS= read -r subject; do
   n req --raw "\$JS.API.STREAM.MSG.GET.$stream" "$(jq -cn --arg s "$subject" '{last_by_subj: $s}')" >"$work/msg" 2>"$work/err"
   status=$?
   jq -c 'if type == "object" then {type, error, message: (if (.message | type) == "object" then {subject: .message.subject, seq: .message.seq, time: .message.time} else null end)} else error("no object") end' \
-    "$work/msg" >"$work/out" 2>/dev/null || cp "$work/msg" "$work/out"
+    "$work/msg" >"$work/out" 2>/dev/null || : >"$work/out"
   emit old_last "$subject" "$status"
-done <"$work/old-subjects"
+done <"$work/old-subjects-read"
+printf '%s' "$(($(wc -l <"$work/old-subjects") - $(wc -l <"$work/old-subjects-read")))" >"$work/out"
+: >"$work/err"
+emit old_last_skipped "$old_last_max" 0
 
 n kv ls "$bucket" >"$work/out" 2>"$work/err"
 status=$?

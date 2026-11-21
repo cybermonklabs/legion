@@ -243,8 +243,14 @@ def rfc3339: if type == "string" then (sub("\\.[0-9]+"; "") | try fromdateiso860
           else {seq: $a.value.message.seq, time: ($a.value.message.time // null)}
           end)})
    | from_entries) as $oldlast
-# The newest old-form message the stream holds, of those whose last message was read.
+# The newest old-form message the stream holds, of those whose last message was read, and how many
+# old-form subjects' last message was not: beyond the Job's cap (old_last_skipped), or a read that
+# failed. These name what a reading found and decide no verdict: a first reading shuts on no
+# old-form subject, and a second shuts on every one.
 | ([$oldlast | to_entries[] | select(.value.seq) | {subject: .key, seq: .value.seq, time: .value.time}] | max_by(.seq)) as $newestold
+| ($jl | map(select(.leg == "old_last_skipped")) | first // null) as $skippedline
+| ({cap: ($skippedline.arg // null), skipped: ($skippedline.out // "0" | tonumber? // 0),
+    failed: ([$oldlast[] | select(.problem)] | length)}) as $unreadlast
 
 # --- what each surface holds ----------------------------------------------------------------------
 | [
@@ -319,20 +325,18 @@ def rfc3339: if type == "string" then (sub("\\.[0-9]+"; "") | try fromdateiso860
               {unknown: "the stream's subjects under \($family): the stream holds none, which a stream every issue event and every send passes through never does, so the read saw nothing"}
             else ($subjects | map(select(old_form))) as $old
               | ([$old[] | {subject: ., last: $oldlast[.]}]) as $o
-              | ([$o[] | select(.last == null or .last.problem)]) as $unread
-              | (if ($unread | length) > 0 then {unknown: "the stream's subjects under \($family): the last message of \($unread | length) old-form subject(s) could not be read: \($unread[:3] | map("\(.subject | printable) (\(.last.problem // "the Job printed no read of it"))") | join("; "))"} else empty end),
-                (if ($old | length) == 0 then {pass: "the stream holds \($subjects | length) subject(s) under \($family), none in an old form"}
+              | (if ($old | length) == 0 then {pass: "the stream holds \($subjects | length) subject(s) under \($family), none in an old form"}
                  # A first reading names what it finds and shuts on none of it (below). A second
                  # reading opens only on a stream with no old-form message at all: each old-form
-                 # subject shuts it, named by whether its last message came after the first
-                 # reading's last stream sequence or is one the stream still holds from before.
+                 # subject shuts it, named apart when its last message, as the Job read it, came
+                 # after the first reading's last stream sequence.
                  elif $in.earlier == null or ($in.earlier.stream.last_seq | type) != "number" then {shut: "the stream holds \($old | length) old-form subject(s) under \($family): \($old[:5] | map(printable) | join(", "))\(if ($old | length) > 5 then ", …" else "" end)", subjects: $old}
                  else
                    ($in.earlier.stream.last_seq) as $l
                    | ([$o[] | select(.last.seq and .last.seq > $l)]) as $after
                    | ([$o[] | select((.last.seq and .last.seq > $l) | not)]) as $still
                    | (if ($after | length) > 0 then {shut: "the stream holds \($after | length) old-form subject(s) under \($family) with a message published after the first reading's last stream sequence \($l): \($after[:5] | map("\(.subject | printable) (sequence \(.last.seq) at \(.last.time // "?" | printable))") | join(", "))\(if ($after | length) > 5 then ", …" else "" end)", subjects: [$after[].subject]} else empty end),
-                     (if ($still | length) > 0 then {shut: "the stream still holds \($still | length) old-form subject(s) under \($family) at this second reading, whose last message is not after the first reading's last stream sequence \($l): \($still[:5] | map("\(.subject | printable)\(if .last.seq then " (sequence \(.last.seq) at \(.last.time // "?" | printable))" else "" end)") | join(", "))\(if ($still | length) > 5 then ", …" else "" end)", subjects: [$still[].subject]} else empty end)
+                     (if ($still | length) > 0 then {shut: "the stream still holds \($still | length) old-form subject(s) under \($family) at this second reading, none read as published after the first reading's last stream sequence \($l): \($still[:5] | map("\(.subject | printable) (\(if .last.seq then "sequence \(.last.seq) at \(.last.time // "?" | printable)" elif .last.gone then "expired since its list was read" else "its last message not read" end))") | join(", "))\(if ($still | length) > 5 then ", …" else "" end)", subjects: [$still[].subject]} else empty end)
                  end)
             end
         else empty
@@ -358,11 +362,17 @@ def rfc3339: if type == "string" then (sub("\\.[0-9]+"; "") | try fromdateiso860
 # interest records and consumer filters still in an old form, are what the rename leaves behind
 # until every producer and reader has moved. It names each (FOUND), records the stream's last
 # sequence, the newest old-form message and every counter, and the second reading, a window
-# later, shuts on any old-form message published after that sequence, any counter that moved, and
-# any interest record or consumer filter still in an old form.
+# later, shuts on any old-form message the stream still holds, any counter that moved, and any
+# interest record or consumer filter still in an old form. The newest old-form message is the
+# newest of those the Job read; the line says how many old-form subjects' last message it did not.
+| ((if $unreadlast.skipped > 0 then ["\($unreadlast.skipped) beyond the \($unreadlast.cap // "?" | printable) the Job reads"] else [] end)
+   + (if $unreadlast.failed > 0 then ["\($unreadlast.failed) whose read failed"] else [] end)) as $unreadparts
+| (if ($unreadparts | length) > 0 then "; the last message of \($unreadlast.skipped + $unreadlast.failed) old-form subject(s) was not read (\($unreadparts | join(", "))), so the newest named is the newest of those read" else "" end) as $unreadnote
 | (if $in.earlier == null then
      [$found[] | if .shut then {found: .shut} + del(.shut) else . end]
-     + (if $newestold then [{found: "the newest old-form message on the stream is \($newestold.subject | printable), stream sequence \($newestold.seq) at \($newestold.time // "?" | printable); the stream's last sequence is \($lastseq // "?")"}] else [] end)
+     + (if $newestold then [{found: "the newest old-form message on the stream is \($newestold.subject | printable), stream sequence \($newestold.seq) at \($newestold.time // "?" | printable); the stream's last sequence is \($lastseq // "?")\($unreadnote)"}]
+        elif ($unreadparts | length) > 0 then [{found: "the last message of no old-form subject was read (\($unreadparts | join(", "))), so no newest old-form message is named; the stream's last sequence is \($lastseq // "?")"}]
+        else [] end)
    else $found end) as $found
 
 # --- the comparison with the earlier reading -----------------------------------------------------
@@ -446,7 +456,7 @@ def rfc3339: if type == "string" then (sub("\\.[0-9]+"; "") | try fromdateiso860
       compared_with: (if $in.earlier == null then null else $in.earlier.read_at end),
       identity: {said: $said, credential: $credential},
       stream: {max_age_seconds: $maxage, first_ts: $firstts, created: ($stream.value.created // null), id: $streamid,
-        last_seq: $lastseq, newest_old: $newestold},
+        last_seq: $lastseq, newest_old: $newestold, old_last_unread: $unreadlast},
       found: $foundlines,
       listeners: [$listeners[] | select(.unknown | not)],
       consumers_old: [$found[] | select(.consumer) | .consumer],

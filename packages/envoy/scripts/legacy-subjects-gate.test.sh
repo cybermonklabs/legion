@@ -223,6 +223,7 @@ job_log() {
   line subjects "notifications.agent.> 0" 0 "$(subjects_page notifications.agent.ACME.ses_a notifications.agent._.ses_b)" ""
   line subjects "notifications.envoy.exceptions.notifications.agent.> 0" 0 "$(subjects_page)" ""
   line subjects "notifications.envoy.kept.> 0" 0 "$(subjects_page notifications.envoy.kept.role._.lead-reviewer)" ""
+  line old_last_skipped 1000 0 "0" ""
   line interest_keys - 0 "$keys" ""
   if [ -n "$keys" ]; then
     line interest ses_a 0 "$(interest ses_a notifications.agent.ses_a 'notifications.dispatch.issue.ACME.ACME-12.>')" ""
@@ -355,7 +356,17 @@ true	notifications.dispatch.issue.ACME-12
 true	notifications.dispatch.issue.A-1.>
 false	notifications.dispatch.issue.ACME.ACME-12.>
 false	notifications.dispatch.issue.>
-false	notifications.dispatch.issue.*.comment.created
+true	notifications.dispatch.issue.*.comment.created
+true	notifications.dispatch.issue.*.*.created
+true	notifications.dispatch.issue.*.*.*
+true	notifications.dispatch.issue.*.comment.>
+true	notifications.envoy.exceptions.notifications.dispatch.issue.*.comment.created
+false	notifications.dispatch.issue.*.*.comment.created
+false	notifications.dispatch.issue.*.*.>
+false	notifications.dispatch.issue.*.>
+false	notifications.dispatch.issue.*.*.*.*
+false	notifications.dispatch.issue.ACME.*.comment.created
+false	notifications.dispatch.issue.*
 false	notifications.dispatch.issue.*.ACME-12.>
 true	notifications.agent.ses_a
 true	notifications.agent.*
@@ -387,6 +398,7 @@ while IFS=$'\t' read -r want filter filters; do
 done <<'ROWS'
 true	notifications.agent.ses_a	["notifications.agent.ses_a","notifications.agent.*.ses_a"]
 true	notifications.dispatch.issue.ACME-12.>	["notifications.dispatch.issue.ACME-12.>","notifications.dispatch.issue.ACME.ACME-12.>"]
+true	notifications.dispatch.issue.*.comment.created	["notifications.dispatch.issue.*.comment.created","notifications.dispatch.issue.*.*.comment.created"]
 false	notifications.agent.ses_a	["notifications.agent.ses_a"]
 false	notifications.agent.ses_a	["notifications.agent.ses_a","notifications.agent.*.ses_b"]
 false	notifications.agent.ses_a	["notifications.agent.ses_a","notifications.agent.lower.ses_a"]
@@ -645,7 +657,11 @@ case "$1 $2" in
           echo '{"type":"io.nats.jetstream.api.v1.stream_info_response","total":0,"offset":0,"limit":0,"config":{"name":"ENVOY_NOTIFICATIONS"},"state":{"messages":0}}'
         fi ;;
       '$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS')
-        jq -cn --argjson q "$4" '{type: "io.nats.jetstream.api.v1.stream_msg_get_response", message: {subject: $q.last_by_subj, seq: 77, time: "2026-11-20T10:00:00Z", hdrs: "TkFUUy8xLjANCg0K", data: "eyJtZXNzYWdlIjoiYSBwcml2YXRlIG1lc3NhZ2UifQ=="}}' ;;
+        if [ -n "${FAKE_MSG_RAW:-}" ]; then
+          echo 'a private message, as no JSON'
+        else
+          jq -cn --argjson q "$4" '{type: "io.nats.jetstream.api.v1.stream_msg_get_response", message: {subject: $q.last_by_subj, seq: 77, time: "2026-11-20T10:00:00Z", hdrs: "TkFUUy8xLjANCg0K", data: "eyJtZXNzYWdlIjoiYSBwcml2YXRlIG1lc3NhZ2UifQ=="}}'
+        fi ;;
       '$SYS.REQ.USER.INFO')
         echo 'nats: permissions violation: Permissions Violation for Publish to "$SYS.REQ.USER.INFO"' >&2 ;;
       *) echo "fake nats: no answer for $*" >&2; exit 99 ;;
@@ -703,6 +719,30 @@ while IFS=$'\t' read -r _ _ _ out _; do printf '%s' "$out" | base64 -d; echo; do
 ! grep -q -- "private-work" "$FAKE/reads.decoded" || fail "the Job's log holds the record's directory"
 ! grep -q -- "eyJtZXNzYWdl\|TkFUUy8x" "$FAKE/reads.decoded" || fail "the Job's log holds a message's content or headers"
 [ "$(grep -c -v -- '--inbox-prefix _INBOX_envoy_listener_gke' "$FAKE/reads.calls")" = 0 ] || fail "a nats call took no inbox prefix: $(grep -v -- '--inbox-prefix' "$FAKE/reads.calls" | head -n 1)"
+[ "$(awk -F'\t' '$1 == "old_last_skipped" {print $2 "|" $4}' "$FAKE/reads.out")" = "1000|$(printf 0 | base64 -w 0)" ] ||
+  fail "the Job printed no count of 0 old-form subjects skipped under its cap of 1000"
+done_case
+
+# The last-message reads decide no verdict, so the Job reads at most OLD_LAST_MAX of them and counts
+# the rest: a stream full of old-form subjects cannot push the Job past its deadline.
+new_case "the NATS reads read at most OLD_LAST_MAX last messages and count the rest"
+run_reads OLD_LAST_MAX=0
+[ "$status" = 0 ] || fail "the NATS reads exited $status: $(cat "$FAKE/reads.err")"
+[ "$(grep -c -- 'MSG.GET' "$FAKE/reads.calls")" = 0 ] || fail "the Job asked for $(grep -c -- 'MSG.GET' "$FAKE/reads.calls") last messages under a cap of 0"
+[ "$(awk -F'\t' '$1 == "old_last_skipped" {print $2 "|" $4}' "$FAKE/reads.out")" = "0|$(printf 1 | base64 -w 0)" ] ||
+  fail "the Job printed no count of the 1 old-form subject it did not read: $(awk -F'\t' '$1 == "old_last_skipped"' "$FAKE/reads.out")"
+[ "$(tail -n 1 "$FAKE/reads.out" | cut -f1)" = end ] || fail "the NATS reads did not reach their end line"
+done_case
+
+# A last message's answer that is no JSON object reaches the log as no answer, never as it came, so
+# the log holds no message's content however the server answers.
+new_case "a last-message answer that is no JSON object is logged as no answer"
+run_reads FAKE_MSG_RAW=1
+[ "$status" = 0 ] || fail "the NATS reads exited $status: $(cat "$FAKE/reads.err")"
+[ "$(awk -F'\t' '$1 == "old_last" {print $4}' "$FAKE/reads.out")" = "" ] ||
+  fail "the Job logged the answer $(awk -F'\t' '$1 == "old_last" {print $4}' "$FAKE/reads.out" | base64 -d), want nothing"
+while IFS=$'\t' read -r _ _ _ out _; do printf '%s' "$out" | base64 -d; echo; done <"$FAKE/reads.out" >"$FAKE/reads.decoded"
+! grep -q -- "a private message" "$FAKE/reads.decoded" || fail "the Job's log holds a message's content"
 done_case
 
 # A hub behind the auth service admits a service by CONNECT's user `service` and the token as its
@@ -744,19 +784,32 @@ replace_row subjects "notifications.dispatch.issue.> 0" \
   "$(last_message notifications.dispatch.issue.ACME-13.comment.created 850)"
 reading --since "$FAKE/earlier.json"
 expect_status 1
-expect_line "GATE SHUT: the stream still holds 1 old-form subject(s) under notifications.dispatch.issue.> at this second reading, whose last message is not after the first reading's last stream sequence 900: notifications.dispatch.issue.ACME-13.comment.created (sequence 850 at 2026-11-20T10:00:00Z)"
+expect_line "GATE SHUT: the stream still holds 1 old-form subject(s) under notifications.dispatch.issue.> at this second reading, none read as published after the first reading's last stream sequence 900: notifications.dispatch.issue.ACME-13.comment.created (sequence 850 at 2026-11-20T10:00:00Z)"
 expect_no_line "with a message published after the first reading's last stream sequence"
 expect_last "GATE SHUT"
 done_case
 
-# A first reading records the newest old-form message on the stream, so an old-form subject whose
-# last message it could not read leaves the reading incomplete.
-new_case "an old-form subject whose last message was not read is UNKNOWN"
+# The last-message reads name what a reading found and decide nothing: a first reading whose
+# old-form subjects' last messages were not read (beyond the Job's cap, or a read that failed) is a
+# first reading that says so, never UNKNOWN; a second reading shuts on such a subject all the same.
+new_case "an old-form subject whose last message was not read is named, at a first reading and a second"
 replace_row subjects "notifications.dispatch.issue.> 0" \
-  "$(line subjects "notifications.dispatch.issue.> 0" 0 "$(subjects_page notifications.dispatch.issue.ACME.ACME-12.comment.created notifications.dispatch.issue.ACME-13.comment.created)" "")"
+  "$(line subjects "notifications.dispatch.issue.> 0" 0 "$(subjects_page notifications.dispatch.issue.ACME.ACME-12.comment.created notifications.dispatch.issue.ACME-13.comment.created notifications.dispatch.issue.ZED-7.comment.created)" "")" \
+  "$(last_message notifications.dispatch.issue.ACME-13.comment.created 812)" \
+  "$(line old_last notifications.dispatch.issue.ZED-7.comment.created 0 "" "nats: timeout")"
+replace_row old_last_skipped 1000 "$(line old_last_skipped 1000 0 "2" "")"
 reading
-expect_status 3
-expect_line "UNKNOWN: the stream's subjects under notifications.dispatch.issue.>: the last message of 1 old-form subject(s) could not be read: notifications.dispatch.issue.ACME-13.comment.created (the Job printed no read of it)"
+expect_status 4
+expect_line "FOUND: the newest old-form message on the stream is notifications.dispatch.issue.ACME-13.comment.created, stream sequence 812 at 2026-11-20T10:00:00Z; the stream's last sequence is 900; the last message of 3 old-form subject(s) was not read (2 beyond the 1000 the Job reads, 1 whose read failed), so the newest named is the newest of those read"
+expect_no_line "UNKNOWN"
+jq '.started_at -= 262800 | .finished_at -= 262800 | .read_at = (.started_at | todate) | .listeners |= map(.read_at -= 262800)' "$FAKE/record.json" >"$FAKE/earlier.json"
+rm -f "$FAKE/record.json"
+cp "$base/job.log" "$FAKE/job.log"
+replace_row subjects "notifications.dispatch.issue.> 0" \
+  "$(line subjects "notifications.dispatch.issue.> 0" 0 "$(subjects_page notifications.dispatch.issue.ACME.ACME-12.comment.created notifications.dispatch.issue.ZED-7.comment.created)" "")"
+reading --since "$FAKE/earlier.json"
+expect_status 1
+expect_line "GATE SHUT: the stream still holds 1 old-form subject(s) under notifications.dispatch.issue.> at this second reading, none read as published after the first reading's last stream sequence 900: notifications.dispatch.issue.ZED-7.comment.created (its last message not read)"
 done_case
 
 new_case "an interest record holding an old-form topic at the second reading shuts the gate; its own agent subject does not"
@@ -766,6 +819,32 @@ reading --since "$FAKE/earlier.json"
 expect_status 1
 expect_line "GATE SHUT: the interest record of session ses_a holds notifications.role.lead-reviewer, in an old form"
 expect_no_line "notifications.agent.ses_a, in an old form"
+done_case
+
+# An issue filter with a wildcard where the old form names the key, of the old form's fixed length,
+# hears old-form names alone (notifications.dispatch.issue.*.comment.created: the new form of
+# comment.created has one token more), so a reader on it goes deaf when Dispatch publishes the new
+# form. As a consumer's filter it shuts the second reading unless the consumer also filters its
+# new form; as a stored interest it shuts it too.
+new_case "a consumer on an old-only wildcard issue filter shuts the second reading; one that also filters its new form does not"
+first_reading_of 73
+replace_row consumers 0 "$(line consumers 0 0 "$(consumers_page "$(clean_consumers)" \
+  "$(consumer ses_wild '["notifications.dispatch.issue.*.comment.created"]')" \
+  "$(consumer ses_both '["notifications.dispatch.issue.*.comment.created","notifications.dispatch.issue.*.*.comment.created"]')")" "")"
+reading --since "$FAKE/earlier.json"
+expect_status 1
+expect_line "GATE SHUT: consumer ses_wild filters notifications.dispatch.issue.*.comment.created, which only an old-form name matches"
+expect_no_line "consumer ses_both"
+expect_last "GATE SHUT"
+done_case
+
+new_case "an interest record holding an old-only wildcard issue filter shuts the second reading"
+first_reading_of 73
+replace_row interest ses_a "$(line interest ses_a 0 "$(interest ses_a notifications.agent.ses_a 'notifications.dispatch.issue.*.comment.created')" "")"
+reading --since "$FAKE/earlier.json"
+expect_status 1
+expect_line "GATE SHUT: the interest record of session ses_a holds notifications.dispatch.issue.*.comment.created, in an old form"
+expect_last "GATE SHUT"
 done_case
 
 new_case "a listener whose log cannot be read is UNKNOWN"

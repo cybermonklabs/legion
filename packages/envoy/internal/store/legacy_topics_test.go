@@ -24,7 +24,8 @@ func (c *kindCounter) Inc(labels ...[2]string) {
 
 // legacyFixture is the rows of packages/contracts/fixtures/subject-project.json the registry is
 // run over: the one table both languages' readers run, so the registry names and counts exactly
-// the old forms contracts.CanonicalTopic and contracts.CanonicalRole read.
+// the old forms contracts.CanonicalTopic and contracts.CanonicalRole read, and besides them the
+// wildcard issue filters only old-form names match (oldOnlyIssueFilters).
 type legacyFixture struct {
 	CanonicalTopic []struct {
 		Topic     string `json:"topic"`
@@ -54,7 +55,60 @@ func readLegacyFixture(t *testing.T) legacyFixture {
 	if len(fixture.CanonicalTopic) < 23 || len(fixture.CanonicalRole) < 8 {
 		t.Fatalf("the shared cases hold %d topic rows and %d role rows, want at least 23 and 8", len(fixture.CanonicalTopic), len(fixture.CanonicalRole))
 	}
+	found := 0
+	for i, row := range fixture.CanonicalTopic {
+		if canonical, ok := oldOnlyIssueFilters[row.Topic]; ok {
+			fixture.CanonicalTopic[i].Canonical, fixture.CanonicalTopic[i].Legacy = canonical, true
+			found++
+		}
+	}
+	if found != 1 {
+		t.Fatalf("the shared cases hold %d of the wildcard issue filters the registry reads as old, want 1", found)
+	}
 	return fixture
+}
+
+// oldOnlyIssueFilters is the shared cases' wildcard issue filters that only old-form names match,
+// with their new forms: contracts.CanonicalTopic reads each as its own new form, and the registry
+// reads it as old (contracts.LegacyIssueFilter), since a subscriber on it hears nothing once
+// Dispatch publishes the new form.
+var oldOnlyIssueFilters = map[string]string{
+	"notifications.dispatch.issue.*.comment.created": "notifications.dispatch.issue.*.*.comment.created",
+}
+
+// An issue filter with a wildcard where the old form names the key, of the old form's fixed length
+// (notifications.dispatch.issue.*.comment.created), hears old-form names alone, so a registration
+// naming it is counted and named with its new form, any project first, and a stored row holding it
+// is counted each time it is read, as every old form is. A filter that hears both forms or the new
+// form alone is neither, and a failed-delivery report of one follows the filter it carries.
+func TestAnOldOnlyWildcardIssueFilterIsCountedAndNamed(t *testing.T) {
+	const issue = contracts.DispatchIssueTopicPrefix
+	const exceptions = "notifications.envoy.exceptions."
+	for topic, canonical := range map[string]string{
+		issue + "*.comment.created":              issue + "*.*.comment.created",
+		issue + "*.*.created":                    issue + "*.*.*.created",
+		issue + "*.comment.>":                    issue + "*.*.comment.>",
+		exceptions + issue + "*.comment.created": exceptions + issue + "*.*.comment.created",
+		issue + "*.*.comment.created":            "",
+		issue + "*.*.>":                          "",
+		issue + "*.>":                            "",
+		issue + "*.INFRA-12.>":                   "",
+		issue + "*.*.*.*":                        "",
+		issue + "*":                              "",
+	} {
+		counter := &kindCounter{}
+		r := &Registry{legacySubjects: counter}
+		warnings := r.LegacyTopicWarnings("ses_wild", []string{topic})
+		r.CountStoredLegacyTopics("ses_wild", []string{topic})
+		var want, wantKinds []string
+		if canonical != "" {
+			want = []string{topic + " is the old form of " + canonical + "; register " + canonical}
+			wantKinds = []string{"interest", "interest"}
+		}
+		if !slices.Equal(warnings, want) || !slices.Equal(counter.kinds, wantKinds) {
+			t.Errorf("a registration and a stored read of %q warned %q counting %q; want %q counting %q", topic, warnings, counter.kinds, want, wantKinds)
+		}
+	}
 }
 
 // Each topic a registration names in the old form is counted once (kind="interest") and named in a

@@ -33,7 +33,7 @@ func (r *Registry) LegacyTopicWarnings(sessionID string, topics []string) []stri
 	own := contracts.LegacyAgentSubject(sessionID)
 	var warnings []string
 	for _, topic := range topics {
-		canonical, legacy := contracts.CanonicalTopic(topic)
+		canonical, legacy := oldFormOf(topic)
 		if !legacy {
 			continue
 		}
@@ -59,10 +59,22 @@ func (r *Registry) LegacyTopicWarnings(sessionID string, topics []string) []stri
 func (r *Registry) CountStoredLegacyTopics(sessionID string, topics []string) {
 	own := contracts.LegacyAgentSubject(sessionID)
 	for _, topic := range topics {
-		if _, legacy := contracts.CanonicalTopic(topic); legacy && topic != own {
+		if _, legacy := oldFormOf(topic); legacy && topic != own {
 			r.countLegacy("interest")
 		}
 	}
+}
+
+// oldFormOf is a topic's new form, and whether the topic is in the old form, for the counts above:
+// the old form contracts.CanonicalTopic reads, and also an issue-event filter only old-form names
+// match though it names no key (contracts.LegacyIssueFilter), which CanonicalTopic reads as its own
+// new form. A subscriber on such a filter hears nothing once Dispatch publishes the new form, so
+// it is a reader the old form's refusal would stop, and the count must move for it.
+func oldFormOf(topic string) (canonical string, legacy bool) {
+	if canonical, legacy := contracts.CanonicalTopic(topic); legacy {
+		return canonical, true
+	}
+	return contracts.LegacyIssueFilter(topic)
 }
 
 // ClaimedRole reads a role a claim names in either form (contracts.CanonicalRole) and answers the
