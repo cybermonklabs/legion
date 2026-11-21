@@ -142,8 +142,7 @@ type RootCloseRequest struct {
 	Reason  string `json:"reason"`
 }
 
-// ChildRequest names the child of the architect's tree that park_child takes out of the workflow
-// or rerun_child runs again.
+// ChildRequest names the child of the architect's tree that rerun_child runs again.
 type ChildRequest struct {
 	GrantID string `json:"grantId"`
 	Issue   string `json:"issue"`
@@ -456,8 +455,8 @@ func (s *server) documentOfIssue(w http.ResponseWriter, r *http.Request, artifac
 // graph. An issue already in the workflow is refused, since writing todo would move an in-progress
 // child back.
 //
-// A sub-architect releases only issues under its own, as it parks and runs again only those
-// (architectOwnsUnder): the tree root, its own issue, a sibling of it and an issue under a sibling
+// A sub-architect releases only issues under its own, as it runs again only those
+// (childOfTree): the tree root, its own issue, a sibling of it and an issue under a sibling
 // are another architect's, and are refused ISSUE_NOT_OWNED. That is judged before the status, so a
 // sub-architect that names the running root or a running sibling is told the issue is not its own,
 // not that it already runs; a chain that never reaches the tree is outside it, whoever asks. The
@@ -1413,16 +1412,18 @@ func (s *server) closeRoot(w http.ResponseWriter, r *http.Request) {
 
 // rootRoute is a route an architect takes only on its tree's root: its refusal code, and its two
 // refusals, each a whole message whose one verb is the tree root: forChild when the grant names a
-// child of the tree, notOwner when its architect does not own the root.
-type rootRoute struct{ code, forChild, notOwner string }
+// child of the tree, notOwner when its architect does not own the root. rule follows forChild as
+// plain text and is never read as a format. close_root's rule says how a child leaves instead, by
+// its owning architect's status write (record.EndChildRule).
+type rootRoute struct{ code, forChild, rule, notOwner string }
 
 var (
-	gateRoute = rootRoute{"GATE_ROOT_ONLY",
-		"the design gate belongs to the tree root %s; register it there",
-		"the design gate belongs to the tree root %s; its root architect registers it"}
-	closeRootRoute = rootRoute{"ROOT_REQUIRED",
-		"close_root ends the tree root %s; a child leaves with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed",
-		"close_root ends the tree root %s; its root architect closes it"}
+	gateRoute = rootRoute{code: "GATE_ROOT_ONLY",
+		forChild: "the design gate belongs to the tree root %s; register it there",
+		notOwner: "the design gate belongs to the tree root %s; its root architect registers it"}
+	closeRootRoute = rootRoute{code: "ROOT_REQUIRED",
+		forChild: "close_root ends the tree root %s. ", rule: record.EndChildRule,
+		notOwner: "close_root ends the tree root %s; its root architect closes it"}
 )
 
 // rootArchitectOf says whether grant acts on recorded, an issue of its tree, as a route that only
@@ -1431,7 +1432,7 @@ var (
 // otherwise.
 func (s *server) rootArchitectOf(w http.ResponseWriter, r *http.Request, grant credential.Grant, recorded record.Issue, route rootRoute) bool {
 	if !claim.IsTreeRoot(recorded.Key, grant.Tree) {
-		s.writeFailure(w, r, http.StatusForbidden, route.code, fmt.Sprintf(route.forChild, grant.Tree))
+		s.writeFailure(w, r, http.StatusForbidden, route.code, fmt.Sprintf(route.forChild, grant.Tree)+route.rule)
 		return false
 	}
 	owns, err := s.owns(r.Context(), grant, recorded)
@@ -1446,9 +1447,9 @@ func (s *server) rootArchitectOf(w http.ResponseWriter, r *http.Request, grant c
 }
 
 // architectOwns says whether grant's architect owns recorded, an issue of its tree, for the
-// operation op, writing a 403 ISSUE_NOT_OWNED when it does not (owns). An operation that moves an
-// issue into or out of the workflow, which a sub-architect does only below its own issue, takes
-// architectOwnsUnder instead.
+// operation op, writing a 403 ISSUE_NOT_OWNED when it does not (owns). rerun_child, which moves an
+// issue into the workflow and which a sub-architect takes only below its own issue, judges its
+// child over the tree's records instead (childOfTree).
 func (s *server) architectOwns(w http.ResponseWriter, r *http.Request, grant credential.Grant, recorded record.Issue, op string) bool {
 	owns, err := s.owns(r.Context(), grant, recorded)
 	if err != nil {
@@ -1461,118 +1462,65 @@ func (s *server) architectOwns(w http.ResponseWriter, r *http.Request, grant cre
 	return owns
 }
 
-// architectOwnsUnder is architectOwns for an operation that moves recorded into or out of the
-// workflow, park_child or rerun_child, which an architect takes only on an issue under its own:
-// recorded lies under the grant's issue through its recorded parents (owns), and a sub-architect's
-// own issue is refused too, as are the tree root, a sibling of it and an issue under a sibling. An
-// issue's run is moved by an architect above it, as one released it (releasableChild). The tree
-// root's architect owns every issue of its tree, so nothing is read for it, and the root it names
-// is childOfTree's to refuse. It writes a 403 ISSUE_NOT_OWNED naming op when the architect does
-// not own recorded.
-func (s *server) architectOwnsUnder(w http.ResponseWriter, r *http.Request, grant credential.Grant, recorded record.Issue, op string) bool {
-	if claim.IsTreeRoot(grant.Issue, grant.Tree) {
-		return true
-	}
-	under := recorded.Key != grant.Issue
-	if under {
-		var err error
-		if under, err = s.owns(r.Context(), grant, recorded); err != nil {
-			s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
-			return false
-		}
-	}
-	if !under {
-		s.notUnder(w, r, op, recorded.Key, grant)
-	}
-	return under
-}
-
 // notUnder refuses grant's sub-architect op on key, an issue of its tree that is not under the
-// grant's own issue (architectOwnsUnder, releasableChild), with architectOwns' status and code
-// (403 ISSUE_NOT_OWNED), naming op, in a message of its own.
+// grant's own issue (childOfTree, releasableChild), with architectOwns' status and code (403
+// ISSUE_NOT_OWNED), naming op, in a message of its own.
 func (s *server) notUnder(w http.ResponseWriter, r *http.Request, op, key string, grant credential.Grant) {
 	s.writeFailure(w, r, http.StatusForbidden, "ISSUE_NOT_OWNED", fmt.Sprintf("%s of %s is refused: the architect of %s takes it only on an issue under %s", op, key, grant.Issue, grant.Issue))
 }
 
 // owns says whether grant's architect owns recorded, an issue of its tree: recorded is the grant's
-// own issue or lies under it, through its recorded parents. So the tree root's architect owns every
-// issue of its tree, and a sub-architect its own issue and those under it, never the root or a
-// sibling: a sub-architect holds a grant for the whole tree and can name any issue of it. A chain
-// that leaves the tree before reaching the grant's issue (no parent on a child, a parent not
-// recorded or recorded in another tree, a cycle) ends at the tree root, whose architect owns the
-// issue: a human's re-parent in Dispatch leaves an issue's tree as it was (admit's
-// recordObservation), except a root that never ran, which joins its parent's live tree
-// (workflow/adopt.go), and the notice router ends the same walk at the same place
-// (record.OwningArchitect), so the architect the reviewer's phase-finished notice reaches is the
-// one that may accept the issue. The walk reads every parent in one read-only transaction, opened
-// only when it has a parent to read.
+// own issue or lies under it, through its recorded parents (record.OwnsUnder, the walk childOfTree
+// takes too). So the tree root's architect owns every issue of its tree, and a sub-architect its
+// own issue and those under it, never the root or a sibling: a sub-architect holds a grant for the
+// whole tree and can name any issue of it. A chain that leaves the tree before reaching the
+// grant's issue (no parent on a child, a parent not recorded or recorded in another tree, a cycle)
+// ends at the tree root, whose architect owns the issue: a human's re-parent in Dispatch leaves an
+// issue's tree as it was (admit's recordObservation), except a root that never ran, which joins
+// its parent's live tree (workflow/adopt.go), and the notice router ends the same walk at the same
+// place (record.OwningArchitect), so the architect the reviewer's phase-finished notice reaches is
+// the one that may accept the issue.
+//
+// Four answers need no read. The grant's own issue answers yes, and every issue answers yes for
+// the tree root's architect. For a sub-architect, the tree root answers no, because the root is
+// under no issue. An issue with no recorded parent answers no, because its chain ends at the root
+// at once. record.OwnsUnder gives the last three answers too. Any other question reads the tree
+// once (treeMembers).
 func (s *server) owns(ctx context.Context, grant credential.Grant, recorded record.Issue) (bool, error) {
-	var tx pgx.Tx
-	defer func() {
-		if tx != nil {
-			_ = tx.Rollback(ctx)
-		}
-	}()
-	byRoot := claim.IsTreeRoot(grant.Issue, grant.Tree)
-	seen := map[string]bool{}
-	for current := &recorded; ; {
-		if current.Key == grant.Issue {
-			return true, nil
-		}
-		if current.Parent == nil || claim.IsTreeRoot(current.Key, current.Tree) || seen[current.Key] {
-			return byRoot, nil
-		}
-		seen[current.Key] = true
-		if tx == nil {
-			if s.pool == nil {
-				return false, errors.New("record dependencies are unavailable")
-			}
-			var err error
-			if tx, err = s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly}); err != nil {
-				return false, err
-			}
-		}
-		parent, err := s.records.Issue(ctx, tx, *current.Parent)
-		if err != nil {
-			return false, err
-		}
-		if parent == nil || parent.Tree != grant.Tree {
-			return byRoot, nil
-		}
-		current = parent
+	if recorded.Key == grant.Issue || claim.IsTreeRoot(grant.Issue, grant.Tree) {
+		return true, nil
 	}
+	if claim.IsTreeRoot(recorded.Key, recorded.Tree) || recorded.Parent == nil {
+		return false, nil
+	}
+	members, err := s.treeMembers(ctx, grant.Tree)
+	if err != nil {
+		return false, err
+	}
+	return record.OwnsUnder(members, grant.Tree, grant.Issue, recorded), nil
 }
 
-// parkChild takes a running child the architect owns (childOfTree: for a sub-architect, an issue
-// under its own) out of the workflow by moving it to backlog in Dispatch, the move a human would
-// make, and applies that move to the record before it answers (applyOwnStatusWrite), as the move's
-// event would: the child is parked as any child leaving the workflow is (the workflow's leave).
-// Every claim of the child, its own architect's included, is suspended with its session kept, its
-// phase is parked, and the architect above it is told (child-status). The record does not wait for
-// the event to come back through the Dispatch consumer, which can run far behind: until then the
-// workflow would keep running the child, start its next phase's worker on a completion, and refuse
-// rerun_child. The event, once delivered, finds the record at its sequence and changes nothing.
-// rerun_child, or release_children on the backlog child, runs it again.
-func (s *server) parkChild(w http.ResponseWriter, r *http.Request) {
-	child, ok := s.childOfTree(w, r, "park_child")
-	if !ok {
-		return
-	}
-	if child.Phase == phase.Done {
-		s.writeFailure(w, r, http.StatusConflict, "CHILD_NOT_RUNNING", fmt.Sprintf("%s is already out of the workflow; rerun_child runs it again", child.Key))
-		return
-	}
-	if written, ok := s.setDispatchStatus(w, r, child.Key, "backlog"); ok && s.applyOwnStatusWrite(w, r, written) {
-		s.writeAnswer(w, r, AnswerEmptyObject, http.StatusOK, EmptyResponse{})
-	}
+// removedChildRoute answers an older plugin's call of a child route that this daemon no longer
+// serves. The owning architect now takes a child out of the workflow by its own status write in
+// Dispatch, and the daemon takes that write from its event (workflow's sessionStatusWrite). So the
+// route reads no body, applies no fact and writes nothing to Dispatch. It answers 410
+// ROUTE_REMOVED with a reason that says which status to write, followed by the rules of that
+// write (record.EndChildRule). An older plugin's tool gives its agent the code and the reason of
+// any 4xx as the result of the call. A 502 or a 503 would be retried, and STALE_PLUGIN_CONTRACT
+// would end the plugin. The reason names the child by a placeholder, because the route reads no
+// body.
+func (s *server) removedChildRoute(w http.ResponseWriter, r *http.Request) {
+	s.writeFailure(w, r, http.StatusGone, "ROUTE_REMOVED", "This route is removed. Write backlog, icebox or done on the child in Dispatch "+
+		"(dispatch issue-update --issue <KEY> --status <status>). Add --reason when the status is done. "+
+		"The daemon takes the move from the Dispatch event of that write. "+record.EndChildRule)
 }
 
 // rerunChild runs a child the architect owns (childOfTree: for a sub-architect, an issue under its
-// own) again once it is out of the workflow, parked or signed off, by moving it to todo in Dispatch,
-// the move a human would make, and applies that move to the record before it answers
-// (applyOwnStatusWrite), as the move's event would: the child's next run starts under the tree from
-// planning (the workflow's reenterChild), and the event, once delivered, changes nothing. A running
-// child is parked first, and a lingering tree runs nothing more; a todo it reached anyway would
+// own) again once it is out of the workflow, by moving it to todo in Dispatch, the move a human
+// would make, and applies that move to the record before it answers (applyOwnStatusWrite), as the
+// move's event would: the child's next run starts under the tree from planning (the workflow's
+// reenterChild), and the event, once delivered, changes nothing. A child still in the workflow is
+// refused (childRunning). A lingering tree runs nothing more, since a todo it reached anyway would
 // admit the child as an orphan root of its own.
 //
 // It is refused while an ancestor of the child has already been accepted
@@ -1581,22 +1529,17 @@ func (s *server) parkChild(w http.ResponseWriter, r *http.Request) {
 // The ancestor is named, and the chain is walked past a parent already done, so a grandchild
 // under a done parent is refused by whichever issue above it is still merging.
 //
-// The tree is read once (treeMembers) and both judgements are made over those records, as
-// release_children judges a whole wave over one read of them: the root whose linger stops a
-// rerun is among them, and the chain the ancestor is found on is walked over them
+// The tree is read once and every judgement of the request is made over those records, as
+// release_children judges a whole wave over one read of them: the architect's ownership of the
+// child (childOfTree), the root whose linger stops a rerun, and the chain the ancestor is found on
 // (record.AcceptedAncestorIn).
 func (s *server) rerunChild(w http.ResponseWriter, r *http.Request) {
-	child, ok := s.childOfTree(w, r, "rerun_child")
+	child, members, ok := s.childOfTree(w, r)
 	if !ok {
 		return
 	}
 	if child.Phase != phase.Done {
-		s.writeFailure(w, r, http.StatusConflict, "CHILD_RUNNING", fmt.Sprintf("%s is in phase %s; park_child takes it out of the workflow before rerun_child runs it again. That pair is the child's restart and not a park", child.Key, child.Phase))
-		return
-	}
-	members, err := s.treeMembers(r.Context(), child.Tree)
-	if err != nil {
-		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the tree of the child to rerun")
+		s.writeFailure(w, r, http.StatusConflict, "CHILD_RUNNING", s.childRunning(r.Context(), child))
 		return
 	}
 	at := slices.IndexFunc(members, func(member record.Issue) bool { return member.Key == child.Tree })
@@ -1617,30 +1560,79 @@ func (s *server) rerunChild(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// childOfTree reads a ChildRequest for op, park_child or rerun_child, and authorizes it: an
-// architect's grant, and an issue of its tree that the architect owns for op (architectOwnsUnder)
-// other than the tree root, which leaves the workflow only with the whole tree. Ownership is judged
+// childRunning is why rerun_child refuses child, which the record holds in the workflow
+// (CHILD_RUNNING), told as what the architect does next. The restart of a running child is the
+// owning architect's backlog, then rerun_child, and the daemon takes that backlog from its
+// Dispatch event (workflow's sessionStatusWrite), which the event consumer can deliver late
+// (dispatch://INFRA-3178/spec R1). So the refusal reads the child from Dispatch once. Where
+// Dispatch already shows a status that takes the child out of the workflow (record.OutOfWorkflow),
+// the architect wrote its move and the daemon has not taken it yet, so the architect calls again
+// once read_record shows the child at phase done. That move can also be one the daemon sets back,
+// and then Dispatch stops showing it, so the reason also says which writes the daemon sets back
+// and that the architect then writes backlog first. Anywhere else the architect writes backlog
+// first. A read that fails gives that second reason: the refusal stands without the read, so it
+// never fails 502. Only this refusal reads Dispatch, so a rerun the record takes costs no read.
+func (s *server) childRunning(ctx context.Context, child record.Issue) string {
+	if s.dispatch != nil {
+		shown, err := s.dispatch.GetIssue(ctx, child.Key)
+		if err == nil && record.OutOfWorkflow(shown.Status) {
+			return fmt.Sprintf("Dispatch shows %s for %s, but the daemon has not taken that move yet. The record still shows %s in phase %s. "+
+				"Call rerun_child again when read_record shows %s at phase done. "+
+				"If dispatch read --issue %s no longer shows %s, the daemon set the move back. "+
+				"In that case, write backlog on %s first (dispatch issue-update --issue %s --status backlog). "+
+				"The daemon sets back a phase worker's write and a write by an architect that does not own %s. "+
+				"It also sets back a write of the status that Dispatch already showed.",
+				shown.Status, child.Key, child.Key, child.Phase, child.Key, child.Key, shown.Status, child.Key, child.Key, child.Key)
+		}
+		if err != nil {
+			s.log.Warn("api: rerun_child could not read the running child from Dispatch, so its refusal says to write backlog first", "issue", child.Key, "error", err)
+		}
+	}
+	return fmt.Sprintf("%s is in phase %s, so rerun_child cannot run it again now. The restart of a running child is backlog, then rerun_child. "+
+		"Write backlog on %s first (dispatch issue-update --issue %s --status backlog). Then call rerun_child again when read_record shows %s at phase done.",
+		child.Key, child.Phase, child.Key, child.Key, child.Key)
+}
+
+// childOfTree reads rerun_child's ChildRequest and authorizes it: an architect's grant, and an
+// issue of its tree that the architect owns for the rerun (record.OwnsUnder) other than the tree
+// root, which leaves the workflow only with the whole tree. A sub-architect owns only the issues
+// under its own issue, never its own issue, the root, a sibling or an issue under a sibling: an
+// issue's run is moved by an architect above it, as one released it (releasableChild). The rule is
+// record.OwnsUnder, which the engine also asks before it takes the owning architect's status on a
+// child (workflow's sessionStatusWrite), so the API and the engine agree on the owner.
+//
+// It reads the tree once (treeMembers) and judges ownership over those records, then answers them,
+// so rerunChild makes every judgement of the request over that one read. Ownership is judged
 // first, so a sub-architect that names an issue not under its own is told only that, whatever the
-// issue's run. The tree root's architect owns every issue of its tree, so it gets each route's
-// answers, CHILD_REQUIRED for the root included.
-func (s *server) childOfTree(w http.ResponseWriter, r *http.Request, op string) (record.Issue, bool) {
+// issue's run. The tree root's architect owns every issue of its tree, so it gets each of the
+// route's answers, CHILD_REQUIRED for the root included.
+func (s *server) childOfTree(w http.ResponseWriter, r *http.Request) (record.Issue, []record.Issue, bool) {
 	var req ChildRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r, field{"grantId", req.GrantID}, field{"issue", req.Issue}) {
-		return record.Issue{}, false
+		return record.Issue{}, nil, false
 	}
 	if !claim.IsIssueKey(req.Issue) {
 		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
-		return record.Issue{}, false
+		return record.Issue{}, nil, false
 	}
 	grant, child, ok := s.architectForIssue(w, r, req.GrantID, req.Issue)
-	if !ok || !s.architectOwnsUnder(w, r, grant, child, op) {
-		return record.Issue{}, false
+	if !ok {
+		return record.Issue{}, nil, false
+	}
+	members, err := s.treeMembers(r.Context(), grant.Tree)
+	if err != nil {
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
+		return record.Issue{}, nil, false
+	}
+	if !record.OwnsUnder(members, grant.Tree, grant.Issue, child) {
+		s.notUnder(w, r, "rerun_child", child.Key, grant)
+		return record.Issue{}, nil, false
 	}
 	if claim.IsTreeRoot(child.Key, child.Tree) {
-		s.writeFailure(w, r, http.StatusForbidden, "CHILD_REQUIRED", fmt.Sprintf("%s is the tree root; park_child and rerun_child take a child of it", child.Key))
-		return record.Issue{}, false
+		s.writeFailure(w, r, http.StatusForbidden, "CHILD_REQUIRED", fmt.Sprintf("%s is the tree root. rerun_child takes a child of it.", child.Key))
+		return record.Issue{}, nil, false
 	}
-	return child, true
+	return child, members, true
 }
 
 func validPhase(value phase.Phase) bool {
