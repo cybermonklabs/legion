@@ -3038,11 +3038,10 @@ test("a pause rejects an empty reason", () => {
 // The intake's open give-ups (contract 207). The golden counts two consumers' and lists three
 // records, one that did not decode, whose event id is null. Every other state golden is of an
 // intake with none open and carries two empty lists rather than no key, but for
-// state-narrowed-repositories.json, a body served below 207, which carries no key. A state served
-// to a caller below 207 carries no key at all and still parses. A count with no newest sequence is
-// refused, since the controller's summary prints it (`LEGION_ANSWER_READS`); a listed record with
-// no id is read, since no plugin code reads one; and a record whose reason the enumeration does
-// not name is refused.
+// state-narrowed-repositories.json, a body served below 207, which carries no key and still
+// parses. A count with no newest sequence is refused, since the controller's summary prints it
+// (`LEGION_ANSWER_READS`); a listed record with no id is read, since no plugin code reads one; and
+// a record whose reason the enumeration does not name is refused.
 test("the state golden counts and lists the intake's open give-ups, and a state without them parses", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   expect(state.intakeGiveUps?.consumers).toEqual([
@@ -3059,8 +3058,9 @@ test("the state golden counts and lists the intake's open give-ups, and a state 
     newest: [],
   });
 
-  const { intakeGiveUps: _intakeGiveUps, ...narrowed } = fixtureBody("state.json");
-  expect(LegionStateResponse.parse(narrowed).intakeGiveUps).toBeUndefined();
+  expect(
+    stateWithRepositoriesAt152.parse(fixture("state-narrowed-repositories.json")).intakeGiveUps
+  ).toBeUndefined();
 
   const countless = fixture("state.json") as {
     intakeGiveUps: { consumers: Record<string, unknown>[] };

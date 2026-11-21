@@ -741,11 +741,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// repositories' `apps` and none of the pause, those keys, the repositories block and
 			// `intakeGiveUps`; and a pod at pauseContract is served the pause and none of those
 			// keys, the repositories block and `intakeGiveUps`.
-			// Every row of a pod is below repositoriesLiveContract too, which no pod's claims
-			// place a caller at (callerKind.reaches), so each is served the repositories block
-			// in contract 152's shape before any key of it is taken out (withRepositoriesAt152),
-			// and only the three rows served this daemon's own body the block this contract
-			// writes.
+			// Every row but the three served this daemon's own body is served the repositories
+			// block in contract 152's shape before any key of it is taken out
+			// (withRepositoriesAt152); those three are served the block this contract writes.
 			if tc.rounds && tc.stall {
 				want := full
 				if !tc.answers {
