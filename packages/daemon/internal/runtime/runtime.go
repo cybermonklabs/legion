@@ -287,8 +287,10 @@ type IssueReleaser interface {
 // which holds nothing of a pod before it. The next launch deletes a Sandbox that carries the reset
 // mark or that has another disk shape, with its volume. The daemon asks it when a pod goes before
 // its update round is over, with the time the round opened, to tell the issue whether the work its
-// roles did not push is still on the volume. A runtime whose pods keep no volume implements
-// nothing here, and the daemon then reads no kept volume.
+// roles did not push is still on the volume, and in the rename pass's live-pod rules, at each boot
+// and each pod end, with the present time, to keep the issue on the name its workspace on the
+// volume is under. Every runtime that runs a pod per issue implements it, since the daemon's test
+// of such a runtime (issuePods) needs it; one whose pods keep no volume answers false.
 type IssueVolumeReader interface {
 	IssueKeepsVolume(issue string, since time.Time) bool
 }

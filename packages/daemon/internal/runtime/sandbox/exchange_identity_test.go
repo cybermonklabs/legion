@@ -17,7 +17,7 @@ import (
 const testExchangeAudience = "legion-broker-exchange"
 
 // The two variables a pod's broker clients read to decide which identity the machine proves and
-// where its token is (packages/broker-client/src/environment.ts, IDENTITY_VAR and
+// where its token is (packages/cipher-client/src/environment.ts, IDENTITY_VAR and
 // MACHINE_TOKEN_FILE_VAR).
 const (
 	identityVariable  = "AGENT_SECRETS_MACHINE_IDENTITY"

@@ -33,7 +33,7 @@ import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
 import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
-import { STAGE_IN_ROW, useDocumentStage } from "./document-stage";
+import { useDocumentStage } from "./document-stage";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
 import {
@@ -118,6 +118,7 @@ export function NodeRow({
   editing,
   expanded,
   focused,
+  foldable = true,
   folded,
   isClosed,
   level,
@@ -127,6 +128,7 @@ export function NodeRow({
   onToggle,
   ownAnswer,
   pinned,
+  placesItself,
   report,
   rowKey,
   tabStop,
@@ -162,6 +164,10 @@ export function NodeRow({
    *  undefined for a node that holds none. */
   expanded?: boolean;
   focused: boolean;
+  /** Whether the row draws its fold control where it holds children. The row a tree is zoomed
+   *  to, drawn open by definition, draws none, and keeps its `aria-expanded`. True unless the
+   *  view passes it. */
+  foldable?: boolean;
   /** How many nodes it holds while it is folded. */
   folded?: number;
   /** Whether the issue is closed, which the writes a body offers are refused on. */
@@ -175,6 +181,13 @@ export function NodeRow({
   /** Whether the answer this ask carries is the reader's own, which carries the ink rule. */
   ownAnswer: boolean;
   pinned: boolean;
+  /** Whether the row brings itself on screen while it has the focus (`useRowOnScreen`), which
+   *  every row does but three of the outline's: its first row as the page opens on it with no
+   *  question waiting on the reader, and the row a zoom leaves the reader on under the crumb line
+   *  it draws, each of which stays where it stands until the reader acts, and the row the reader
+   *  is editing, which the editor's own caret keeps in view while it grows as the reader writes.
+   *  All three are `IssueTree.tsx`'s to set. */
+  placesItself?: boolean;
   /** What a key pressed on this row answers, where it answers in words (`ANSWER_LINES`): drawn at
    *  the row, last, until the next key, a focus move or leaving the tree clears it (R22). */
   report?: string;
@@ -193,7 +206,7 @@ export function NodeRow({
 }): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
-  const stage = useDocumentStage(editing, STAGE_IN_ROW);
+  const stage = useDocumentStage(editing);
   // Where the reader writes: a row's Reply and an open question's Answer set it (R16).
   const writer = useOutlineWriter();
   // The reader's own words: a turn a person wrote who is the reader (R34). An ask, a block or a
@@ -222,7 +235,7 @@ export function NodeRow({
   const [opened, setOpened] = useState(false);
   const clamped = clamp !== undefined && !opened && !body;
 
-  const press = useRowOnScreen(row, focused);
+  const press = useRowOnScreen(row, focused, BELOW_WHAT_STAYS, placesItself);
 
   const depth = level - 1;
   // R1's one line, cut from the words of the node's first block (`lineWords`), as every one-line
@@ -293,6 +306,7 @@ export function NodeRow({
         <Bullet
           collapsed={collapsed}
           expanded={expanded}
+          foldable={foldable}
           onToggle={onToggle}
           tabStops={tabStops}
           tone={tone}
@@ -480,13 +494,22 @@ export const NODE_ROW_LAYOUT = {
  * filter's body places itself by this one hook. `below` is how far below what stays a row that
  * lay under it is placed, `BELOW_WHAT_STAYS` unless a view places its rows by a step of its own,
  * as a view whose sticky heads stand taller than the outline's does.
+ *
+ * Not while `placesItself` is false: then a focused row is placed neither as it takes the focus
+ * nor as it grows. The outline's first row the page opens on is one, and its body opens with the
+ * focus, so a row taller than the screen would be put at its top under the band and the
+ * page would open scrolled past its header. Read when the row is placed rather than as a
+ * cause of placing it, so the row turning back to placing itself moves nothing at that moment.
  */
 export function useRowOnScreen(
   row: RefObject<HTMLElement | null>,
   focused: boolean,
-  below: number = BELOW_WHAT_STAYS
+  below: number = BELOW_WHAT_STAYS,
+  placesItself = true
 ): () => void {
   const pressed = useRef(false);
+  const placing = useRef(placesItself);
+  placing.current = placesItself;
   const press = () => {
     pressed.current = true;
     const ended = new AbortController();
@@ -501,6 +524,7 @@ export function useRowOnScreen(
     const element = row.current;
     if (!focused || element === null) return;
     const place = () => {
+      if (!placing.current) return;
       if (pressed.current) return;
       bringOnScreen(element);
       belowWhatStays(element, below);
@@ -601,12 +625,14 @@ function stateTone(node: TreeNode): keyof typeof pageStateText {
 function Bullet({
   collapsed,
   expanded,
+  foldable,
   onToggle,
   tabStops,
   tone,
 }: {
   collapsed: boolean;
   expanded?: boolean;
+  foldable: boolean;
   onToggle: () => void;
   tabStops: boolean;
   tone: Tone;
@@ -617,6 +643,13 @@ function Bullet({
       className={`block size-[7px] rounded-full ${pageKindBullet[tone]} ${collapsed ? pageFoldedHalo : ""}`}
     />
   );
+  if (!foldable) {
+    return (
+      <span className={NODE_ROW_LAYOUT.bullet} data-node-bullet="">
+        {dot}
+      </span>
+    );
+  }
   if (expanded === undefined) {
     return (
       <span className={NODE_ROW_LAYOUT.bullet} data-node-bullet="">

@@ -57,10 +57,14 @@ var containerInit = func() bool { return os.Getpid() == 1 }
 // report would have told the role.
 const maxWaitingMemoryKills = 32
 
-// serveMemoryGuard runs the issue pod's one memory watch and each role's sender of that watch's
-// kill reports until ctx ends, and answers a channel closed once all of them have returned, so Run
-// can wait for it as it waits for the test database's ticker (serveTestPG). The controller's pod
-// runs none: Run's single-role branch returns before this is reached.
+// serveMemoryGuard runs the pod's one memory watch and each role's sender of that watch's kill
+// reports until ctx ends, and answers a channel closed once all of them have returned, so Run can
+// wait for it as it waits for the test database's ticker (serveTestPG). The controller's pod runs
+// none in its single-role form: Run's single-role branch returns before this is reached. Where the
+// session database names a writer audience, the controller's roles-dir form reaches here and
+// builds the guard. The controller's acknowledgement carries no MemoryGuard (launcherHelloAck in
+// internal/runtime/sandbox), so that guard runs at its defaults only until the first
+// acknowledgement, which turns it off (serve), and off it ends nothing.
 //
 // The watch runs only where the launcher is the container's first process (containerInit). Any
 // other launcher logs one line and runs none: no manager then holds a guard, so serve hands no
@@ -266,7 +270,7 @@ func (c *podClassifier) classify(t *memoryguard.Table) map[int]memoryguard.Class
 		}
 		protected[init.PID] = true
 		session[init.PID] = true
-		shim := c.shim(t, init)
+		shim := roleShim(t, init, c.exe)
 		if shim == nil {
 			continue
 		}
@@ -336,15 +340,19 @@ func (c *podClassifier) isTestPG(t *memoryguard.Table, pid int) bool {
 	return err == nil && slices.Contains(c.testPGData, cwd)
 }
 
-// shim is the role's shim: the oldest direct child of its role-init that is this binary run as
-// `worker-shim`. Any younger one is an orphan of the role's that the role-init adopted, as the
-// init of the role's PID namespace, and whatever it calls itself it is the role's work.
-func (c *podClassifier) shim(t *memoryguard.Table, init *memoryguard.Process) *memoryguard.Process {
-	if c.exe == "" {
+// roleShim is the shim of the role whose role-init is init: the oldest direct child of init that
+// is exe run as `worker-shim`, where exe is the launcher's own executable, since a role's shim is
+// the launcher's binary. Any younger one is an orphan of the role's that the role-init adopted, as
+// the init of the role's PID namespace, and whatever it calls itself it is the role's work. It is
+// the one rule for the shim: the pod's classifier (podClassifier.classify) and a generation's
+// session peer check (sessionPeer) both call it. With no exe, which a launcher that cannot read
+// its own executable has, no process is the shim.
+func roleShim(t *memoryguard.Table, init *memoryguard.Process, exe string) *memoryguard.Process {
+	if exe == "" {
 		return nil
 	}
 	for _, p := range t.Children(init.PID) {
-		if p.Exe == c.exe && argument(p, 1) == shimArgument {
+		if p.Exe == exe && argument(p, 1) == shimArgument {
 			return p
 		}
 	}

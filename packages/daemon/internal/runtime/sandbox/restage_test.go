@@ -355,9 +355,9 @@ func ghItemsFor(owners ...string) []corev1.KeyToPath {
 	return items
 }
 
-// A project that gains a GitHub owner — a repository of a new owner in its mapping, which the
-// restarted daemon serves (appauth.GitHubDirs) and renders a directory for in every role's
-// bundle — leaves every issue pod created before it projecting the owners of its own creation:
+// A project that gains a GitHub owner — both Apps installed on a new owner, which the restarted
+// daemon serves (appauth.GitHubDirs) and renders a directory for in every role's bundle — leaves
+// every issue pod created before it projecting the owners of its own creation:
 // the refresher adds the new owner's two keys to the live role Secret, but a pod's projection
 // names the keys it was built with, so /var/run/legion/gh holds no directory of that owner and
 // every gh call of its roles against that owner's repositories runs as nobody. The pod has
@@ -601,13 +601,14 @@ func ownerRuleOwners(repos []ghrepo.Repository, pair ghrepo.Rename) []string {
 // answers for the issue recorded on recordedSmoke (appauth.GitHubDirs), over both Apps as an
 // issue pod's projection is read. GitHubDirs answers from the record each App's last bundle
 // build wrote and calls GitHub itself not at all, so a bundle of each App is built first, over
-// an App installed on every owner the mapping names, which is this deployment's.
+// an App installed on every owner of repos, which is this deployment's.
 func servedOwnerDirs(t *testing.T, repos []ghrepo.Repository) []string {
 	t.Helper()
-	served := func() []ghrepo.Repository { return repos }
+	listed := func() []ghrepo.Repository { return repos }
+	served := servesOneOf(listed)
 	renames := ghrepo.MustRenames(smokeRename)
 	installed := appauth.NewInstalled()
-	credential := appauth.GitHubCredential(sourceOf(&namedLeases{}, installedOnMapped{served: served}), served, renames, installed, nil, nil)
+	credential := appauth.GitHubCredential(sourceOf(&namedLeases{}, installedOnServed{repos: listed}), served, renames, installed, nil, nil)
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleReviewer} {
 		if _, err := credential(context.Background(), role, recordedSmoke); err != nil {
 			t.Fatalf("the %s's bundle: %v", role, err)
