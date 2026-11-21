@@ -132,23 +132,27 @@ func subscribeDurable(client *bus.Client, wanted natsgo.ConsumerConfig, deliverS
 // under way as ctx ended ends by then too (takeOverFinishWithin, 10 s), so one that binds after
 // ctx ended is stopped under the same deadline rather than one of its own. In cmd/dispatch that
 // ctx is the signal context, so the stop begins at SIGTERM and runs beside the HTTP drain and the
-// document shutdown, which take up to stopGrace (30 s) less a 5 s reserve: httpDrainBeforeDocuments
-// then documentShutdownTimeout (cmd/dispatch/shutdown.go); StartIntakes' stop, which the shutdown
-// waits for, adds no deadline of its own. The shutdown waits for the intakes after the document
-// service and before it deregisters this process and closes the database pool, so that a handler's
-// writes never meet a closed pool. 15 s leaves 10 s before the document budget's latest end for
-// what follows the deadline -- the handlers given up returning, which they do as soon as their
-// context is cancelled, the negative acknowledgements and the unsubscribe, each waiting for NATS at
-// most bus.ConnLockWait, the drain's end, which the given-up handlers' cancelled context cuts short,
-// and the clients closing. The flush that confirms the hand-backs (up to intakeFlushWait, 1 s)
-// and the hold's release (up to intakeHoldRenew, 5 s) run before the close. Only a pending
-// hand-back's finalizer, with its release, follows the close: Client.Close waits for nats.go's
-// connection lock, which a write can hold until its one-minute write deadline; a kubelet kill
-// then ends the client and renewal. It is also well past what a handler GitHub answers
-// needs, a pull request and its commit pages with a page GitHub answered 502 asked again (after 1 s, then 2 s: githubPageRetryWait), so
-// an ordinary handler finishes and is acknowledged rather than redone. A call GitHub does not
-// answer holds one attempt for up to githubapp.RequestTimeout (20 s), and is then asked again,
-// which no budget inside stopGrace could wait out. A var so a test can shrink it.
+// document shutdown, inside the shutdown's one deadline, stopGrace (30 s) less shutdownMargin
+// (3 s), made at the signal (shutdownContext, cmd/dispatch/shutdown.go), where the document service
+// runs until silentProbeReserve (7 s) before that deadline, 20 s after the signal at the latest;
+// StartIntakes' stop, which the shutdown waits for, adds no deadline of its own. The shutdown waits
+// for the intakes after the document service and before it deregisters this process and closes the
+// database pools, so that a handler's writes never meet a closed pool. 15 s leaves 5 s before the
+// document service's latest end for what follows the deadline -- the handlers given up returning,
+// which they do as soon as their context is cancelled, the negative acknowledgements and the
+// unsubscribe, each waiting for NATS at most bus.ConnLockWait, the drain's end, which the given-up
+// handlers' cancelled context cuts short, and the clients closing. The flush that confirms the
+// hand-backs (up to intakeFlushWait, 1 s) and the hold's release (up to intakeHoldRenew, 5 s) run
+// before the close, so at those bounds the stop ends about 21 s after the signal: past the document
+// service's latest end, and 6 s inside the shutdown's deadline. Only a pending hand-back's
+// finalizer, with its release, follows the close: Client.Close waits for nats.go's connection lock,
+// which a write can hold until its one-minute write deadline; the shutdown stops waiting for it at
+// its deadline, and a kubelet kill then ends the client and renewal. It is also well past what a
+// handler GitHub answers needs, a pull request and its commit pages with a page GitHub answered 502
+// asked again (after 1 s, then 2 s: githubPageRetryWait), so an ordinary handler finishes and is
+// acknowledged rather than redone. A call GitHub does not answer holds one attempt for up to
+// githubapp.RequestTimeout (20 s), and is then asked again, which no budget inside stopGrace could
+// wait out. A var so a test can shrink it.
 var intakeStopBudget = 15 * time.Second
 
 // stopContext returns the stop deadline of an intake whose Run runs until ctx ends: a context that

@@ -121,7 +121,7 @@ func TestHeldVersionBlocksMatchesEveryBlockOfAVersionBehindOnlyInAskStates(t *te
 	// The close's final sweep, as the repair runs it, under the issue's owner lock: it writes resolved
 	// the ask block no settlement has indexed.
 	var marked []BlockRef
-	if err := joinedWrite(service, func(ctx context.Context) (err error) {
+	if err := joinedIssueWrite(service, "CORE-1", func(ctx context.Context) (err error) {
 		tx, _ := txFromContext(ctx)
 		if err := store.LockOwner(ctx, tx, store.IssueOwner("CORE-1")); err != nil {
 			return fmt.Errorf("lock the issue: %w", err)

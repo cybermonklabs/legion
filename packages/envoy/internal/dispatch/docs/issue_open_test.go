@@ -640,7 +640,7 @@ func TestWritingIssueAskStatesOnARunTheCloseCutsStoresNothing(t *testing.T) {
 	queued := queueAKeystrokeEachSideOfTheClose(t, database, service, alice, artifactID, "Context", 4*closeMargin)
 
 	closer := model.Actor{Kind: "user", ID: "carol"}
-	err := joinedWrite(service, func(ctx context.Context) error {
+	err := joinedIssueWrite(service, "DOC-1", func(ctx context.Context) error {
 		tx, _ := txFromContext(ctx)
 		// The issue route holds the issue's owner lock before it writes any document.
 		if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
@@ -2402,4 +2402,63 @@ func settleTheDocumentNow(t *testing.T, service *Service, artifactID string) {
 		}
 		return !owed
 	})
+}
+
+// A settlement owed by a document whose issue closed before the settlement's warm-up settles it,
+// on a process that never heard of the close: no room of that process holds the document, so no
+// record there remembers the close, and the warm-up's load carries the service's own mark
+// (withOwnerVerified), so allowInject reads no issue and refuses nothing. A closed issue's
+// document settles as an open one's does (settleRoomWithin): the settlement reads the issue row
+// its pass locks (settlementPass.issueClosed), saves the text the store holds, deletes the
+// pending-settlement row, and logs, counts and retries no failure. While a closed issue settled
+// nothing, this row held the opposite: the warm-up was refused (ErrIssueClosed) and the row kept
+// the work for the resumption after a reopen.
+func TestASettlementOnAProcessThatNeverHeardOfTheCloseSettlesTheClosedIssuesDocument(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "before")
+	taskA, _ := newTestServiceInstance(t, database)
+	seedServiceText(t, taskA, artifactID, "Context\n")
+	waitForLandedAppends(t, taskA, artifactID)
+	writeIssueClosed(t, database, "DOC-1", true)
+	// Task B is the process the settlement runs on: it holds no room and no record of the
+	// document, so nothing there remembers the close, and neither task runs a room sync.
+	taskB, _ := newTestServiceInstance(t, storetest.SecondProcess(t, database))
+	if state := taskB.lockExistingState(artifactID); state != nil {
+		recorded := !state.closedRead.IsZero()
+		taskB.unlockState(artifactID, state)
+		if recorded {
+			t.Fatal("task B records the document's issue, so its settlement would end before the warm-up it is here to test")
+		}
+	}
+	if owed, _, err := readOwedSettlement(ctx, database.Pool, artifactID); err != nil || !owed {
+		t.Fatalf("the document owes no settlement to run (owed %t, %v)", owed, err)
+	}
+
+	logs := captureLogs(t)
+	state := taskB.lockState(artifactID)
+	generation := state.roomGeneration
+	taskB.unlockState(artifactID, state)
+	outcome := taskB.settleRoomWithin(ctx, artifactID, generation, false)
+	// What the timer's settlement does with the outcome, which is where a retry is counted and
+	// logged (retrySettle).
+	taskB.followUpSettlement(artifactID, outcome)
+	if outcome.next != settleEnded || outcome.err != nil {
+		t.Fatalf("the settlement of a closed issue's document ended %d (%v), want settleEnded and no error", outcome.next, outcome.err)
+	}
+	if logged := logs.String(); strings.Contains(logged, "settle document") {
+		t.Fatalf("the settlement logged:\n%s\nwant nothing of a failed settlement: it settled", logged)
+	}
+	state = taskB.lockState(artifactID)
+	failures, armed := state.settleFailures, taskB.isSettleTimerArmed(state.settle)
+	taskB.unlockState(artifactID, state)
+	if failures != 0 || armed {
+		t.Fatalf("the settlement left %d failures counted against the room and armed=%t, want none and no retry", failures, armed)
+	}
+	if owed, _, err := readOwedSettlement(ctx, database.Pool, artifactID); err != nil || owed {
+		t.Fatalf("the pending-settlement row says owed=%t (%v), want it deleted by the settlement that saved the document", owed, err)
+	}
+	if markdown := latestVersionMarkdown(t, taskB, artifactID); !strings.Contains(markdown, "Context") {
+		t.Fatalf("the closed issue's settlement left the latest version reading %q, want the text the store holds", markdown)
+	}
 }

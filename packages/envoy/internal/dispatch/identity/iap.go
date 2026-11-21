@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
@@ -54,10 +55,27 @@ type IAPIdentity struct {
 // (oidc.Verifier's classify), and Login runs before any authorization, so anyone who reaches
 // Dispatch around IAP would choose that text on every request. The person refusals log the email
 // and hd of a verified assertion, which IAP wrote.
+//
+// A place of the request pool's share outside admission that r's context carries
+// (admission.PlaceFrom: a document socket's admission, a heartbeat check) is needed for the
+// person's record alone. The verification reads no pool, and it may wait on IAP's key set -
+// oidc.Keys reads it for the first assertion, once the set's Lifetime is up, and for a key id the
+// set does not hold, or waits for another assertion's read of it under way, a round trip of up to
+// its FetchTimeout - so where the verifier says it will read the set or wait for a read of it
+// (oidc.IAPVerifier.WouldReadKeySet), Login gives the place back before it verifies,
+// as Membership.Confirm does before the sign-in issuer, and takes it again for the record
+// (retake), answered as a busy pool (store.ErrPoolBusy) where none comes free; a refusal then
+// returns with the place given back. Every other verification - the set already read and fresh,
+// as for nearly every heartbeat - is answered from memory, and Login keeps the place through it
+// rather than give it back and wait for it again. A request inside admission carries no place.
 func (i IAPIdentity) Login(r *http.Request) (string, error) {
 	raw := r.Header.Get(IAPAssertionHeader)
 	if raw == "" {
 		return "", ErrNoIdentity
+	}
+	place := admission.PlaceFrom(r.Context())
+	if i.Verifier.WouldReadKeySet(raw) {
+		place.Release()
 	}
 	claims, err := i.Verifier.Verify(r.Context(), raw)
 	var expired *oidc.IAPExpiredError
@@ -79,8 +97,14 @@ func (i IAPIdentity) Login(r *http.Request) (string, error) {
 		slog.Debug("dispatch: IAP assertion expired", "error", err)
 		return "", ErrCredentialExpired
 	}
+	if err := retake(r.Context(), place, "an IAP person's record"); err != nil {
+		return "", err
+	}
 	if err := i.People.Record(r.Context(), email); err != nil {
 		return "", err
 	}
 	return email, nil
 }
+
+// presents is whether r carries an IAP assertion, which Login refuses ErrNoIdentity without.
+func (IAPIdentity) presents(r *http.Request) bool { return HasIAPAssertion(r) }

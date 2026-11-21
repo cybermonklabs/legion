@@ -16,6 +16,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
@@ -303,7 +304,9 @@ func TestADocumentSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *tes
 }
 
 // A socket whose person no longer resolves is still cut as before, whatever identity it runs
-// under: only the credential's own expiry (identity.ErrCredentialExpired) is a rotation.
+// under: only the credential's own expiry (identity.ErrCredentialExpired) is a rotation. Every
+// other refusal cuts it with errCallerNoLongerResolves, never the plain context.Canceled of a
+// client that left.
 func TestOnlyAnExpiredCredentialRotatesASocket(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -311,8 +314,8 @@ func TestOnlyAnExpiredCredentialRotatesASocket(t *testing.T) {
 		want error
 	}{
 		{"an expired IAP assertion", identity.ErrCredentialExpired, errCredentialExpired},
-		{"no identity", identity.ErrNoIdentity, context.Canceled},
-		{"the sign-in issuer down", identity.ErrSignInUnavailable, context.Canceled},
+		{"no identity", identity.ErrNoIdentity, errCallerNoLongerResolves},
+		{"the sign-in issuer down", identity.ErrSignInUnavailable, errCallerNoLongerResolves},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, deps := newTestServer(t, testServerOptions{streamHeartbeat: 10 * time.Millisecond})
@@ -327,5 +330,81 @@ func TestOnlyAnExpiredCredentialRotatesASocket(t *testing.T) {
 				t.Fatalf("the heartbeat's refusal %v cancelled the socket with %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+// A document socket behind IAP whose request carries no assertion IAP signed - none at all, or
+// only the unsigned header IAP writes beside it, which a request that reached Dispatch around IAP
+// can carry as well - is refused 401 at once with every place of the request pool's share outside
+// admission held, and takes none: it reads no person and asks IAP's key set nothing
+// (identity.Presents), as docs' TestASocketPresentingNoSignInIsRefused401BeforeItTakesAPlace holds
+// for a sign-in cookie. A socket whose request carries an assertion goes on to its caller's
+// resolution (identity.IAPIdentity.Login): once a place is free its assertion is verified against
+// the key set and its person recorded, and only then is its room read, here a name that is no
+// document's.
+func TestADocumentSocketPresentingNoIAPAssertionIsRefused401BeforeItTakesAPlace(t *testing.T) {
+	outside := admission.New(admission.DefaultLimits()).Outside()
+	database := storetest.Open(t)
+	signed := newIAPSocketKeys(t, database)
+	documents := docs.New(docs.Deps{Store: database, Events: events.NewBroker(), Identity: signed.identity, Outside: outside, Settle: time.Hour})
+	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+	held := 0
+	t.Cleanup(func() {
+		for range held {
+			outside.Release()
+		}
+	})
+	for range admission.OutsideLimit {
+		if err := outside.Take(context.Background(), admission.HeartbeatCheck); err != nil {
+			t.Fatalf("take a place outside admission: %v", err)
+		}
+		held++
+	}
+	const person = "a.person@example.com"
+	recorded := func() int {
+		t.Helper()
+		var rows int
+		if err := database.Pool.QueryRow(context.Background(), `select count(*) from people where email = $1`, person).Scan(&rows); err != nil {
+			t.Fatalf("count %s's person rows: %v", person, err)
+		}
+		return rows
+	}
+	open := func(header http.Header) *httptest.ResponseRecorder {
+		socket := httptest.NewRequest(http.MethodGet, "/ws/doc/room", nil)
+		socket.Header = header
+		answered := httptest.NewRecorder()
+		documents.ServeHTTP(answered, socket)
+		return answered
+	}
+
+	for _, row := range []struct {
+		name   string
+		header http.Header
+	}{
+		{"no assertion", http.Header{}},
+		{"only the unsigned email header", http.Header{"X-Goog-Authenticated-User-Email": []string{"accounts.google.com:" + person}}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			if answered := open(row.header); answered.Code != http.StatusUnauthorized {
+				t.Fatalf("a socket presenting %s with every place held: status=%d body=%s, want 401", row.name, answered.Code, answered.Body.String())
+			}
+		})
+	}
+	if stats := outside.Stats(); stats.MaxQueued != 0 || stats.Refused[admission.SocketAdmission] != (admission.OutsideRefusals{}) {
+		t.Errorf("sockets presenting no assertion waited for a place (the longest queue %d) and were refused %+v, want neither: they take none",
+			stats.MaxQueued, stats.Refused[admission.SocketAdmission])
+	}
+	if fetches, rows := signed.keys.JWKSFetches(), recorded(); fetches != 0 || rows != 0 {
+		t.Errorf("sockets presenting no assertion read IAP's key set %d times and recorded %d person rows, want neither", fetches, rows)
+	}
+
+	for ; held > 0; held-- {
+		outside.Release()
+	}
+	if answered := open(signed.assertion(t, time.Now().Add(9*time.Minute))); answered.Code != http.StatusNotFound {
+		t.Fatalf("a socket presenting an assertion, a place free, for a room that names no document: status=%d body=%s, want 404 once its caller resolved", answered.Code, answered.Body.String())
+	}
+	if fetches, rows := signed.keys.JWKSFetches(), recorded(); fetches == 0 || rows != 1 {
+		t.Errorf("a socket presenting an assertion read IAP's key set %d times and recorded %d person rows, want its resolution to have read the set and recorded its person once", fetches, rows)
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The record of every answer the near-copy gate gives a create. Before it only a create forced
@@ -191,17 +192,18 @@ func (s *server) recordNearCopyRefusal(ctx context.Context, row nearCopyCheckRow
 
 // recordNearCopyCheck writes the row of a create that went in, after its commit, on a bounded
 // context of its own; a create the gate never ran for (check nil) has no row. The create is
-// written by then and its answer waits for this write, so a first attempt that cannot land in
-// nearCopyRecordTimeout for a reason a retry can cure, such as a migration's lock on a table its
-// foreign keys name, is tried once more in the background (retryRecord), and a row that still
-// cannot be written is only logged.
+// written by then and its answer waits for this write, which runs on the request pool as one of
+// the request's own statements. A first attempt that cannot land in nearCopyRecordTimeout for a
+// reason a retry can cure, such as a migration's lock on a table its foreign keys name, is tried
+// once more in the background, on the background pool (retryRecord), and a row that still cannot
+// be written is only logged.
 func (s *server) recordNearCopyCheck(ctx context.Context, row nearCopyCheckRow, check *nearCopyCheck) {
 	if check == nil {
 		return
 	}
-	write := func(ctx context.Context) error { return s.writeNearCopyCheck(ctx, s.deps.Store.Pool, row, check) }
+	write := func(ctx context.Context, pool *store.Pool) error { return s.writeNearCopyCheck(ctx, pool, row, check) }
 	first, cancel := context.WithTimeout(context.WithoutCancel(ctx), nearCopyRecordTimeout)
-	err := write(first)
+	err := write(first, s.deps.Store.Pool)
 	cancel()
 	if err == nil {
 		return
@@ -263,12 +265,12 @@ func (s *server) getNearCopyChecks(w http.ResponseWriter, r *http.Request) {
 	page.From, page.To = from, to
 	limit, err := parseEventLimit(query.Get("limit"), nearCopyChecksPageMax)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	pool, err := s.readyPool()
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	var afterAt *time.Time
@@ -290,7 +292,7 @@ func (s *server) getNearCopyChecks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		afterAt, afterID = &at, &id
@@ -298,20 +300,20 @@ func (s *server) getNearCopyChecks(w http.ResponseWriter, r *http.Request) {
 	rows, err := pool.Query(r.Context(), nearCopyChecksPageQuery,
 		page.Project, page.From, page.To, afterAt, afterID, limit+1)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var check model.NearCopyCheck
 		if err := scanNearCopyCheck(rows, &check); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		page.Checks = append(page.Checks, check)
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if len(page.Checks) > limit {
@@ -333,7 +335,7 @@ func (s *server) getNearCopyCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	pool, err := s.readyPool()
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	id := r.PathValue("id")
@@ -346,7 +348,7 @@ func (s *server) getNearCopyCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, check)

@@ -176,7 +176,7 @@ const maxRoleHolderSessionBytes = 256
 func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	var input issueRoleHoldersInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -232,7 +232,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -252,7 +252,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 			writeRoleHoldersIssueNotFound(w, key)
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if _, err := tx.Exec(r.Context(), `
@@ -260,7 +260,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		where issue_key = $1
 		  and (role, session) not in (select * from unnest($2::text[], $3::text[]))
 	`, issue, roles, sessions); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The delete above is the whole of the publication that names no holder, so the insert runs
@@ -272,17 +272,17 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 			from unnest($2::text[], $3::text[]) as published(role, session)
 			on conflict (issue_key, role) do nothing
 		`, issue, roles, sessions); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	stored, _, err := readIssueRoleHolders(r.Context(), tx, issue)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, stored)
@@ -297,7 +297,7 @@ func (s *server) getIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	read, found, err := readIssueRoleHolders(r.Context(), s.deps.Store.Pool, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !found {

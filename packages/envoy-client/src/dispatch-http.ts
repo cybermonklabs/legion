@@ -438,6 +438,88 @@ function requestSignal(signal: AbortSignal | undefined, deadlineMs: number): Abo
 }
 
 /**
+ * How many times a read, a PUT or a DELETE asks again after Dispatch said to wait (`waitsOut`), on
+ * top of the first attempt. Two keeps an agent's call within a few seconds of `Retry-After` while a
+ * short burst of load passes, without turning a server that stays overloaded into three times the
+ * requests. A write keeps the pacing of its own asking under its key (`DispatchWriteRetry`).
+ */
+const RETRIES = 2;
+
+/** The wait when an answer to wait out asks for none: no `Retry-After`, one `retryAfterMs` cannot
+ *  read, or one that works out to no wait (`0`, or a date already past). Dispatch's own is `1`. */
+const DEFAULT_RETRY_AFTER_SECONDS = 1;
+
+/**
+ * The most a wait-out waits past `Retry-After`, a random share of it per wait, so the agents one
+ * overload refused together do not all come back in the same instant.
+ */
+const RETRY_JITTER_MS = 250;
+
+/** Dispatch's own refusal: the JSON `{error, code}` its `writeError` sends. */
+type DispatchRefusal = DispatchServiceErrorShape & { readonly error: string };
+
+function isDispatchRefusal(value: DispatchServiceErrorShape): value is DispatchRefusal {
+  return typeof value.error === "string";
+}
+
+/** The error a refusal of Dispatch's own throws, its message `message` (its `error` unless told). */
+function refusalError(
+  status: number,
+  refusal: DispatchRefusal,
+  message = refusal.error
+): DispatchServiceError {
+  return new DispatchServiceError(
+    refusal.code ?? `HTTP_${status}`,
+    status,
+    message,
+    refusal.candidates,
+    refusal.current,
+    refusal.mismatches
+  );
+}
+
+/**
+ * Whether Dispatch's refusal `code`, answered with `status` to `method`, is one `#send` waits out
+ * (`Retry-After`) and asks again. A `429 OVERLOADED` (admission) or `429 EDIT_QUEUE_FULL` (the
+ * document writer queue) was sent before the request ran, so any method may repeat it. A
+ * `503 DATABASE_BUSY` (a bound of the server's own ended a call before the database answered it,
+ * and nothing of that call committed) or `503 REQUEST_TIMEOUT` (the read deadline) can still come
+ * after an earlier statement of a write committed, so only a read (GET, HEAD) repeats it; a PUT or
+ * a DELETE, which carries no key, comes back to its caller with it. A `500 COMMIT_OUTCOME_UNKNOWN`
+ * is never waited out and carries no `Retry-After`: the write may have landed. Every other answer
+ * is the caller's at once. A write (POST or PATCH) never reaches `#send`: `#write` asks it again
+ * under its key as its table says (write-outcome.ts, where a 429 is `try-later` and a 5xx
+ * `server-error`), so Dispatch runs it once.
+ */
+function waitsOut(method: string, status: number, code: string | undefined): boolean {
+  if (status === 429) return code === "OVERLOADED" || code === "EDIT_QUEUE_FULL";
+  return (
+    status === 503 &&
+    (method === "GET" || method === "HEAD") &&
+    (code === "DATABASE_BUSY" || code === "REQUEST_TIMEOUT")
+  );
+}
+
+/**
+ * Dispatch's refusal in `response` where `waitsOut` says `method` waits it out, else undefined.
+ * Its JSON is read from a clone, as `tokenNotLive` reads it, so the body stays whole for whoever
+ * reads an answer that comes back.
+ */
+async function refusalToWaitOut(
+  method: string,
+  response: Response
+): Promise<DispatchRefusal | undefined> {
+  const { status } = response;
+  if ((status !== 429 && status !== 503) || !isJson(response)) return undefined;
+  const body: unknown = await response
+    .clone()
+    .json()
+    .catch(() => undefined);
+  const refusal = asErrorShape(body);
+  return isDispatchRefusal(refusal) && waitsOut(method, status, refusal.code) ? refusal : undefined;
+}
+
+/**
  * How a write asks Dispatch again under its key while its attempts get no definitive answer:
  * `pausesMs` is the wait before each retry in turn, so the write makes at most one attempt more than
  * it has entries, and no retry starts once `withinMs` has passed since the first attempt began. An
@@ -915,10 +997,13 @@ function reachesDispatch(status: number): boolean {
 }
 
 /**
- * JSON HTTP client for Dispatch's native-tool API. Every request goes through `#send`, where each
- * write (POST or PATCH) carries an `Idempotency-Key` of its own and asks again under it as
- * `writeRetry` paces it, and where a broker token Dispatch says is no longer live is traded
- * afresh and the request sent once more.
+ * JSON HTTP client for Dispatch's native-tool API, every request under the client's one deadline.
+ * A write (POST or PATCH) goes through `#write`, where it carries an `Idempotency-Key` of its own
+ * and asks again under it as `writeRetry` paces it, a `Retry-After` longer than the pause included.
+ * A read, a PUT or a DELETE goes through `#send`, where an answer Dispatch asks the client to wait
+ * out (`waitsOut`) is asked again after its `Retry-After` while the client's deadline allows the
+ * wait. On either path a broker token Dispatch says is no longer live is traded afresh and the
+ * request sent once more.
  *
  * `credential` is what every request presents: a bearer (`bearerCredential`, src/bearer.ts), or
  * what the secrets broker trades this machine's identity for, or the identity of a person signed
@@ -2128,18 +2213,28 @@ export class DispatchClient {
   }
 
   /**
-   * A read, a PUT or a DELETE: it presents the credential and sends the request once
-   * (`#sendOnce`), and once more where Dispatch answers that the token presented is not live
-   * (`tokenNotLive`, its `401 BROKER_TOKEN_NOT_ACTIVE`) and the credential can be told so
+   * A read, a PUT or a DELETE: it presents the credential and sends the request (`#sendOnce`),
+   * and asks again while Dispatch's answer is one it says to wait out (`waitsOut`): after its
+   * `Retry-After` (`retryAfterMs`, whole seconds or an HTTP date, with
+   * `DEFAULT_RETRY_AFTER_SECONDS` standing in for a header that is missing, unreadable, or asks
+   * for no wait at all — `0`, or a date already past) plus up to `RETRY_JITTER_MS`, at most
+   * `RETRIES` times, and only when that wait ends before the client's deadline (`#deadlineAt`), so
+   * no retry starts past it. The wait is taken on `writeRetry`'s timer (`pause`), which a test
+   * replaces. Giving up throws that refusal with advice naming the attempts and the wait; any
+   * other answer comes back as it is. `signal` aborts the call beside the client's own signal, a
+   * send and a wait between two sends alike.
+   *
+   * It also sends the request once more where Dispatch answers that the token presented is not
+   * live (`tokenNotLive`, its `401 BROKER_TOKEN_NOT_ACTIVE`) and the credential can be told so
    * (`RequestCredential.stale`): the broker ended that token before it lapsed, as a person's
    * revoke of their sign-in does. The credential is told which presentation was dead, drops that
    * token alone, and presents the token it holds now, trading at the broker where it holds none;
    * the request goes again. Dispatch authenticates a request before any handler
    * runs (`brokerTokenActor`, packages/envoy/internal/dispatch/api/broker_token.go), so that 401
-   * says it did nothing. A second such answer is returned as any other refusal is. A trade the
-   * broker refuses throws out of the second presentation, so the call fails in the broker's own
-   * words, which name `agent-secrets login` after a revoke. A write (POST or PATCH) goes through
-   * `#write` instead.
+   * says it did nothing. It is told once per `#send`, whichever of its sends drew that answer,
+   * and a second such answer is returned as any other refusal is. A trade the broker refuses
+   * throws out of the next presentation, so the call fails in the broker's own words, which name
+   * `agent-secrets login` after a revoke. A write (POST or PATCH) goes through `#write` instead.
    */
   async #send(
     method: string,
@@ -2148,13 +2243,45 @@ export class DispatchClient {
     accept = "application/json",
     signal?: AbortSignal
   ): Promise<Response> {
-    const sent = await this.#sendOnce(method, url, body, accept, signal);
-    if (this.#credential.stale === undefined || !(await tokenNotLive(sent.answer))) {
-      return sent.answer;
+    let told = false;
+    for (let attempt = 1; ; attempt++) {
+      let sent = await this.#sendOnce(method, url, body, accept, signal);
+      if (!told && this.#credential.stale !== undefined && (await tokenNotLive(sent.answer))) {
+        told = true;
+        // The presentation the dead token went out in, so the credential drops that token alone.
+        this.#credential.stale(undefined, sent.presented);
+        sent = await this.#sendOnce(method, url, body, accept, signal);
+      }
+      const { answer } = sent;
+      const refusal = await refusalToWaitOut(method, answer);
+      if (refusal === undefined) return answer;
+      const waitMs = retryAfterMs(answer) || DEFAULT_RETRY_AFTER_SECONDS * 1_000;
+      const seconds = Math.round(waitMs / 1_000);
+      const wait = waitMs + Math.random() * RETRY_JITTER_MS;
+      const refused =
+        `${refusal.error}; Dispatch refused ${attempt === 1 ? "1 attempt" : `${attempt} attempts`} ` +
+        `with ${answer.status} ${refusal.code}`;
+      if (attempt > RETRIES) {
+        throw refusalError(
+          answer.status,
+          refusal,
+          `${refused}, waiting out its Retry-After between them, so wait ${seconds} s ` +
+            "(Retry-After) and try again"
+        );
+      }
+      if (performance.now() + wait >= this.#deadlineAt) {
+        throw refusalError(
+          answer.status,
+          refusal,
+          `${refused}, and waiting the ${seconds} s it asks for (Retry-After) would pass the ` +
+            `client's deadline, so wait ${seconds} s and try again`
+        );
+      }
+      await (this.writeRetry.pause ?? pauseFor)(
+        wait,
+        signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal])
+      );
     }
-    // The presentation the dead token went out in, so the credential drops that token alone.
-    this.#credential.stale(undefined, sent.presented);
-    return (await this.#sendOnce(method, url, body, accept, signal)).answer;
   }
 
   /** One request of a read, presenting the credential for it, and the headers it presented;
@@ -2641,7 +2768,7 @@ export class DispatchClient {
     const payload: unknown = json === undefined ? text : json.value;
     if (!response.ok) {
       const error = asErrorShape(payload);
-      if (typeof error.error === "string") {
+      if (isDispatchRefusal(error)) {
         if (response.status === 409 && error.code === IDEMPOTENCY_KEY_COMMITTED) {
           throw new DispatchWriteLandedError(
             IDEMPOTENCY_KEY_COMMITTED,
@@ -2650,14 +2777,7 @@ export class DispatchClient {
             requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)
           );
         }
-        throw new DispatchServiceError(
-          error.code ?? `HTTP_${response.status}`,
-          response.status,
-          error.error,
-          error.candidates,
-          error.current,
-          error.mismatches
-        );
+        throw refusalError(response.status, error);
       }
       throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON");
     }

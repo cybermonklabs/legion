@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"maps"
 	"math"
 	"math/rand/v2"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -24,7 +26,7 @@ import (
 // arrivals runs openLoop over times in the past, so it never sleeps, and records each arrival:
 // whether it is in the window, and the plan that fire draws from the stream after it.
 func arrivals(seed uint64, rate float64, start, winStart, winEnd time.Time) (in []bool, plans []uint64) {
-	openLoop(context.Background(), seed, 1, rate, start, winStart, winEnd, func(r *rand.Rand, inWindow bool) {
+	openLoop(context.Background(), seed, 1, ratePlan(rate, start, winStart, nil), winStart, winEnd, func(r *rand.Rand, _ time.Time, inWindow bool) {
 		in = append(in, inWindow)
 		plans = append(plans, r.Uint64())
 	})
@@ -325,6 +327,146 @@ func TestMetaRecordsAFailedPostgresVersionRead(t *testing.T) {
 	}
 }
 
+// TestMetaKeepsTheQuietGatesReadingsBesideBoxBusyBefore: run-step.sh's quiet-box gate passes
+// loadgen run every reading it took and its bar, and meta.json keeps the reading the step started
+// on (the last), every reading and the bar beside box_busy_before, which stays the reading
+// run-step.sh took after the gate. A step run without the gate records null for all three. Flags
+// that describe no gate that started a step are refused.
+func TestMetaKeepsTheQuietGatesReadingsBesideBoxBusyBefore(t *testing.T) {
+	t.Setenv("LOADTEST_ROOT", t.TempDir())
+	gate, err := parseBusyGate("0.4200,0.0400", 0.10, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := func(g busyGate) string {
+		cfg := runConfig{boxBusyBefore: 0.01, busyGate: g, ep: endpoints{pg: unreachablePG, pids: map[string]int{}}}
+		b, err := json.Marshal(collectMeta(context.Background(), cfg, log.New(io.Discard, "", 0)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	gated := meta(gate)
+	if want := `"box_busy_before":0.01,"box_busy_before_window_s":5,"box_busy_gate":0.04,"box_busy_gate_readings":[0.42,0.04],"box_busy_gate_max":0.1,`; !strings.Contains(gated, want) {
+		t.Errorf("meta.json lacks %s:\n%s", want, gated)
+	}
+	ungated := meta(busyGate{})
+	if want := `"box_busy_before":0.01,"box_busy_before_window_s":5,"box_busy_gate":null,"box_busy_gate_readings":null,"box_busy_gate_max":null,`; !strings.Contains(ungated, want) {
+		t.Errorf("meta.json of a step run without the gate lacks %s:\n%s", want, ungated)
+	}
+
+	if g, err := parseBusyGate("", -1, false); err != nil || len(g.readings) != 0 {
+		t.Errorf("no gate flags parsed to %+v, %v; want no gate", g, err)
+	}
+	if g, err := parseBusyGate("0.1000", 0.10, true); err != nil || !slices.Equal(g.readings, []float64{0.1}) {
+		t.Errorf("a reading at the bar parsed to %+v, %v; want the gate that started on it", g, err)
+	}
+	for _, c := range []struct {
+		readings string
+		bar      float64
+		barGiven bool
+		want     string
+	}{
+		{"0.4200", -1, false, "-box-busy-gate needs -box-busy-gate-max"},
+		{"", 0.10, true, "-box-busy-gate-max needs -box-busy-gate"},
+		{"0.0400", 1.5, true, "-box-busy-gate needs -box-busy-gate-max, a fraction between 0 and 1"},
+		{"0.4200,1.5", 0.10, true, `"1.5" is not a fraction between 0 and 1`},
+		{"0.4200,", 0.10, true, `"" is not a fraction between 0 and 1`},
+		{"0.0400,0.4200", 0.10, true, "ends on 0.42, above -box-busy-gate-max 0.1: the quiet-box gate starts a step only on a reading at or under its bar"},
+	} {
+		if _, err := parseBusyGate(c.readings, c.bar, c.barGiven); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("-box-busy-gate %q -box-busy-gate-max %g (given %t): refusal %v, want one with %q", c.readings, c.bar, c.barGiven, err, c.want)
+		}
+	}
+}
+
+// cgroupFiles is a cgroup root of the test's own: each file of files, its name a path under the
+// root, holding its text.
+func cgroupFiles(t *testing.T, files map[string]string) string {
+	t.Helper()
+	root := t.TempDir()
+	for name, text := range files {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// TestMetaRecordsThePodsCPUQuotaBesideTheTwoLists: meta.json records the CPU quota the pod's
+// processes share as its cgroup gives it (cgroup v2's cpu.max text, else cgroup v1's quota and
+// period), that quota in whole CPUs, rounded down, as common.sh's quota_cpus counts them, and the
+// generator's list beside the server's: a pinned server is throttled with the rest of the pod once
+// they together pass the quota. No quota is null CPUs; a pod whose cgroup files cannot be read
+// records null for both.
+func TestMetaRecordsThePodsCPUQuotaBesideTheTwoLists(t *testing.T) {
+	t.Setenv("LOADTEST_ROOT", t.TempDir())
+	for _, c := range []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{"cgroup v2, a quota of 8", map[string]string{"cpu.max": "800000 100000\n"}, `"cpu_quota":"800000 100000","quota_cpus":8`},
+		{"cgroup v2, 2.5 CPUs", map[string]string{"cpu.max": "250000 100000\n"}, `"cpu_quota":"250000 100000","quota_cpus":2`},
+		{"cgroup v2, no quota", map[string]string{"cpu.max": "max 100000\n"}, `"cpu_quota":"max 100000","quota_cpus":null`},
+		{"cgroup v1, a quota of 3", map[string]string{"cpu/cpu.cfs_quota_us": "300000\n", "cpu/cpu.cfs_period_us": "100000\n"},
+			`"cpu_quota":"300000 100000","quota_cpus":3`},
+		{"cgroup v1, no quota", map[string]string{"cpu/cpu.cfs_quota_us": "-1\n", "cpu/cpu.cfs_period_us": "100000\n"},
+			`"cpu_quota":"-1 100000","quota_cpus":null`},
+		{"no cgroup file", nil, `"cpu_quota":null,"quota_cpus":null`},
+	} {
+		cfg := runConfig{boxBusyBefore: 0, serverCPUs: "0,1", serverCPUCount: 2, generatorCPUs: "2,3,4,5,6,7",
+			cgroupRoot: cgroupFiles(t, c.files), ep: endpoints{pg: unreachablePG, pids: map[string]int{}}}
+		b, err := json.Marshal(collectMeta(context.Background(), cfg, log.New(io.Discard, "", 0)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := `"server_cpus":"0,1","server_cpu_count":2,"generator_cpus":"2,3,4,5,6,7",` + c.want; !strings.Contains(string(b), want) {
+			t.Errorf("%s: meta.json lacks %s:\n%s", c.name, want, b)
+		}
+	}
+}
+
+// TestSummaryCarriesThePodsThrottlingOverTheWindow: the pod's cgroup cpu.stat, read at the
+// window's start and at its end, gives summary.json how often and how long CFS stopped the pod's
+// processes over the window: cgroup v2's nr_throttled and throttled_usec, cgroup v1's nr_throttled
+// and throttled_time in nanoseconds. A cpu.stat not read at either end, or one without those
+// counters (the cpu controller off), leaves both null, never 0.
+func TestSummaryCarriesThePodsThrottlingOverTheWindow(t *testing.T) {
+	v2 := func(periods, usec int64) string {
+		return cgroupFiles(t, map[string]string{"cpu.stat": fmt.Sprintf(
+			"usage_usec 9000000\nuser_usec 6000000\nsystem_usec 3000000\nnr_periods 900\nnr_throttled %d\nthrottled_usec %d\nnr_bursts 0\nburst_usec 0\n", periods, usec)})
+	}
+	v1 := func(periods, ns int64) string {
+		return cgroupFiles(t, map[string]string{"cpu/cpu.stat": fmt.Sprintf("nr_periods 900\nnr_throttled %d\nthrottled_time %d\n", periods, ns)})
+	}
+	const unread = `"cpu_throttled_periods":null,"cpu_throttled_ms":null`
+	for _, c := range []struct {
+		name, start, end, want string
+	}{
+		{"cgroup v2", v2(40, 1_250_000), v2(52, 1_590_500), `"cpu_throttled_periods":12,"cpu_throttled_ms":340.5`},
+		{"cgroup v1", v1(7, 2_000_000_000), v1(9, 2_150_000_000), `"cpu_throttled_periods":2,"cpu_throttled_ms":150`},
+		{"never throttled", v2(0, 0), v2(0, 0), `"cpu_throttled_periods":0,"cpu_throttled_ms":0`},
+		{"no cpu.stat at the start", cgroupFiles(t, nil), v2(52, 1_590_500), unread},
+		{"no cpu.stat at the end", v2(40, 1_250_000), cgroupFiles(t, nil), unread},
+		{"the cpu controller off", cgroupFiles(t, map[string]string{"cpu.stat": "usage_usec 9000000\n"}), v2(52, 1_590_500), unread},
+	} {
+		var r resourcesSummary
+		r.CPUThrottledPeriods, r.CPUThrottledMs = throttledOver(readCPUThrottle(c.start), readCPUThrottle(c.end))
+		b, err := json.Marshal(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), c.want) {
+			t.Errorf("%s: summary.json's resources lack %s:\n%s", c.name, c.want, b)
+		}
+	}
+}
+
 // TestMetaRecordsTheDispatchBuildOfEveryStep: a step's meta.json names the Dispatch binary it ran
 // (bin/envoy-dispatch.json), not only the checkout's commit, so a step run with
 // LOADTEST_DISPATCH_COMMIT names the Dispatch it measured. A synthetic step records it too.
@@ -360,6 +502,99 @@ func TestMetaRecordsTheDispatchBuildOfEveryStep(t *testing.T) {
 	meta = collectMeta(context.Background(), cfg, log.New(&logged, "", 0))
 	if meta.DispatchCommit != "" || meta.DispatchBuild != nil || !strings.Contains(logged.String(), "no Dispatch build record") {
 		t.Fatalf("without the record: dispatch_commit %q, log %q", meta.DispatchCommit, logged.String())
+	}
+}
+
+// TestMetaRecordsTheGOMAXPROCSDispatchRunsWith: meta.json's gomaxprocs is read back from the
+// running Dispatch's /proc/<pid>/environ, not from a variable of loadgen's own, beside the server
+// CPU list and its count. A step pinned to a list whose count Dispatch's GOMAXPROCS is not, or
+// whose GOMAXPROCS could not be read, is refused before its window, naming both numbers; one on
+// the list's count, or unpinned, is not.
+func TestMetaRecordsTheGOMAXPROCSDispatchRunsWith(t *testing.T) {
+	t.Setenv("LOADTEST_ROOT", t.TempDir())
+	t.Setenv("GOMAXPROCS", "7") // loadgen's own, which is not Dispatch's
+	// dispatch starts a process with env, standing in for a running Dispatch.
+	dispatch := func(env ...string) int {
+		cmd := exec.Command("sleep", "60")
+		cmd.Env = append([]string{"PATH=/usr/bin:/bin"}, env...)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		})
+		return cmd.Process.Pid
+	}
+	meta := func(serverCPUs string, count, pid int) metaFile {
+		cfg := runConfig{boxBusyBefore: 0, serverCPUs: serverCPUs, serverCPUCount: count,
+			ep: endpoints{pg: unreachablePG, pids: map[string]int{"dispatch": pid}}}
+		return collectMeta(context.Background(), cfg, log.New(io.Discard, "", 0))
+	}
+	two, thirtyTwo, unset := dispatch("GOMAXPROCS=2"), dispatch("GOMAXPROCS=32"), dispatch()
+
+	onList := meta("0-1", 2, two)
+	if onList.GOMAXPROCS != "2" || onList.GOMAXPROCSError != "" || onList.ServerCPUs != "0-1" || onList.ServerCPUCount == nil || *onList.ServerCPUCount != 2 {
+		t.Fatalf("meta.json gomaxprocs %q (%q) on server CPUs %q (%v); want 2, Dispatch's own, on 0-1, 2 CPUs",
+			onList.GOMAXPROCS, onList.GOMAXPROCSError, onList.ServerCPUs, onList.ServerCPUCount)
+	}
+	if err := gomaxprocsRefusal(onList); err != nil {
+		t.Errorf("a Dispatch on GOMAXPROCS 2 pinned to 2 CPUs is refused: %v", err)
+	}
+	b, err := json.Marshal(onList)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []string{`"gomaxprocs":"2"`, `"server_cpus":"0-1"`, `"server_cpu_count":2`} {
+		if !strings.Contains(string(b), w) {
+			t.Errorf("meta.json lacks %s:\n%s", w, b)
+		}
+	}
+
+	for _, c := range []struct {
+		name string
+		m    metaFile
+		want []string
+	}{
+		{"GOMAXPROCS 32", meta("0-1", 2, thirtyTwo), []string{"refused before the window", "Dispatch runs with GOMAXPROCS 32", "LOADTEST_SERVER_CPUS='0-1', 2 CPUs", "pinned to 2 CPUs with GOMAXPROCS 32 is not the bed any reading names"}},
+		{"no GOMAXPROCS", meta("3", 1, unset), []string{"GOMAXPROCS unset", "LOADTEST_SERVER_CPUS='3', 1 CPU:"}},
+		{"no Dispatch pid", meta("0-1", 2, 0), []string{"GOMAXPROCS unread (no Dispatch pid"}},
+	} {
+		err := gomaxprocsRefusal(c.m)
+		if err == nil {
+			t.Errorf("%s: a Dispatch pinned to %s CPUs is not refused (meta.json gomaxprocs %q)", c.name, c.m.ServerCPUs, c.m.GOMAXPROCS)
+			continue
+		}
+		for _, w := range c.want {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("%s: the refusal %q lacks %q", c.name, err, w)
+			}
+		}
+	}
+
+	unpinned := meta("", 0, thirtyTwo)
+	if unpinned.GOMAXPROCS != "32" || unpinned.ServerCPUCount != nil || gomaxprocsRefusal(unpinned) != nil {
+		t.Errorf("unpinned: gomaxprocs %q, server_cpu_count %v, refusal %v; want 32, null and none", unpinned.GOMAXPROCS, unpinned.ServerCPUCount, gomaxprocsRefusal(unpinned))
+	}
+	if b, err := json.Marshal(unpinned); err != nil || !strings.Contains(string(b), `"server_cpus":"","server_cpu_count":null`) {
+		t.Errorf("unpinned meta.json %s (%v) lacks an empty server list and a null count", b, err)
+	}
+}
+
+// TestServerCPUCountComesWithTheList: loadgen run takes the server list's CPU count from
+// LOADTEST_SERVER_CPU_COUNT, which stack.sh loadgen sets beside the list; a list without a
+// positive count is refused, naming both, and no list needs none.
+func TestServerCPUCountComesWithTheList(t *testing.T) {
+	if n, err := serverCPUCountOf("", ""); n != 0 || err != nil {
+		t.Errorf("no list: %d, %v; want 0 and no error", n, err)
+	}
+	if n, err := serverCPUCountOf("0-1", "2"); n != 2 || err != nil {
+		t.Errorf("0-1 with count 2: %d, %v", n, err)
+	}
+	for _, count := range []string{"", "0", "two"} {
+		if _, err := serverCPUCountOf("0-1", count); err == nil || !strings.Contains(err.Error(), "LOADTEST_SERVER_CPUS='0-1' is set without its CPU count (LOADTEST_SERVER_CPU_COUNT='"+count+"')") {
+			t.Errorf("0-1 with count %q: %v; want it refused naming both", count, err)
+		}
 	}
 }
 
@@ -416,7 +651,7 @@ func TestLoopStepPlansTheSameWritesAndReadsTwice(t *testing.T) {
 			}
 		})
 		var reads []string
-		openLoopPlan(c.rngSeed, requestStream, c.requests, st.start, st.winStart, st.winEnd, func(r *rand.Rand, _ time.Time, in bool) bool {
+		openLoopPlan(c.rngSeed, requestStream, st.ratePlan(c.requests), st.winStart, st.winEnd, func(r *rand.Rand, _ time.Time, in bool) bool {
 			_, path := st.requestPath(st.pops[0], r)
 			if in {
 				reads = append(reads, path)
@@ -573,7 +808,7 @@ func stepPlan(st *step, p *population) ([]eventPlan, []string) {
 		}
 	})
 	var reads []string
-	openLoopPlan(st.cfg.rngSeed, p.requestStream, p.requests, st.start, st.winStart, st.winEnd,
+	openLoopPlan(st.cfg.rngSeed, p.requestStream, st.ratePlan(p.requests), st.winStart, st.winEnd,
 		func(r *rand.Rand, _ time.Time, in bool) bool {
 			_, path := st.requestPath(p, r)
 			if in {

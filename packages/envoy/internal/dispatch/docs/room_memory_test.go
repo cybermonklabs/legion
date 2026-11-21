@@ -192,20 +192,24 @@ func losingPreload(t *testing.T, service *Service, room string, offered []weak.P
 	return weak.Pointer[byte]{}
 }
 
-// The cold reads' cache holds rendered documents up to a budget. A fixed 256 MiB is a sixteenth of
-// one task size and an eighth of another, and the container's size is configurable, so the budget
-// follows the Go memory limit the process runs under: a sixteenth of it, at least 64 MiB and at
-// most 1 GiB, and 256 MiB when no limit is set (debug.SetMemoryLimit reports math.MaxInt64).
-func TestTheReadBudgetFollowsTheGoMemoryLimit(t *testing.T) {
+// The cold reads' cache holds rendered documents up to a budget. A fixed 256 MiB is an eightieth
+// of production's 20 GiB container and a quarter of a 1 GiB one, and the container's size is
+// configurable, so the budget follows the memory the process may use (processMemoryLimit): a
+// sixteenth of it, at least 64 MiB and at most 1 GiB, and 256 MiB when no limit is known
+// (math.MaxInt64).
+func TestTheReadBudgetFollowsTheMemoryLimit(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		limit int64
 		want  int64
 	}{
 		{"no limit", math.MaxInt64, 256 << 20},
-		{"4 GiB", 4 << 30, 256 << 20},
-		{"32 GiB", 32 << 30, 1 << 30},
-		{"512 MiB", 512 << 20, 64 << 20},
+		{"512 MiB, the floor", 512 << 20, 64 << 20},
+		{"2 GiB, a sixteenth", 2 << 30, 128 << 20},
+		{"4 GiB, a sixteenth", 4 << 30, 256 << 20},
+		{"20 GiB, the cap", 20 << 30, 1 << 30},
+		{"32 GiB, the cap", 32 << 30, 1 << 30},
+		{"64 GiB, the cap", 64 << 30, 1 << 30},
 	} {
 		if got := readBudgetFor(test.limit); got != test.want {
 			t.Errorf("the read budget under %s = %d MiB, want %d MiB", test.name, got>>20, test.want>>20)

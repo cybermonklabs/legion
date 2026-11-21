@@ -1,0 +1,24 @@
+kind: Changed
+body: |-
+  `DispatchClient` waits out Dispatch's `Retry-After` on a read, a PUT and a DELETE and asks again,
+  at most twice and only when the wait (`Retry-After`, whole seconds or an HTTP date; 1 s when it
+  is missing, unreadable, or asks for no wait at all, `0` or a date already past; plus up to 250 ms
+  of jitter) ends before the client's deadline (60 s unless its maker names another): any of them
+  answered `429 OVERLOADED` or `429 EDIT_QUEUE_FULL`, which Dispatch sends before the request runs,
+  and a read (GET, HEAD) answered `503 DATABASE_BUSY` or `503 REQUEST_TIMEOUT`. A PUT or DELETE
+  answered either 503 comes back to its caller as it stands, since it carries no key and may have
+  committed. When it gives up, the refusal's message adds how many attempts Dispatch refused and
+  the wait it asks for, e.g. `the server has no room for another read request (wait_exceeded);
+  nothing ran, retry after Retry-After; Dispatch refused 3 attempts with 429 OVERLOADED, waiting
+  out its Retry-After between them, so wait 1 s (Retry-After) and try again`, or that the wait
+  would pass the client's deadline. A write (POST, PATCH) is asked again by its keyed retry instead,
+  under the one idempotency key of its call (the caller's own where it named one, `projectArtifact`
+  and `docEdit`, and otherwise the one the call minted), after the longer of its scheduled pause
+  (1, 2, 4 and 8 s, none starting past 30 s) and the answer's `Retry-After`: a 429 at once, since
+  nothing of the write ran, and a 503 only against a Dispatch this process has seen run the keyed
+  layer, since it can follow an earlier commit of the write, so Dispatch runs the one write and
+  replays its answer. A write that runs out of asks ends with the 429 as Dispatch wrote it, or,
+  after a 503, unsettled with its key. A `500 COMMIT_OUTCOME_UNKNOWN` is never waited out: a read,
+  a PUT or a DELETE gets it back at once, and a write asks again only under its key, against a
+  Dispatch that runs the keyed layer. Every other answer comes back as before. The waits are taken
+  on the timer the constructor's `writeRetry` carries (`pause`), which a test replaces.

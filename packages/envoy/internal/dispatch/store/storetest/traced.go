@@ -68,7 +68,11 @@ func Traced(t testing.TB, pool *store.Pool, tracer pgx.QueryTracer, params map[s
 	})
 }
 
-// StatementCounter counts every statement started on the pool it traces (Traced).
+// StatementCounter counts every statement run on the pool it traces (Traced): each one sent on its
+// own as it starts, and each one a batch sends as pgx reports it (TraceBatchQuery), once it ran. A
+// batch carries much of a write since the bounded lock waits (store.LockWithinBound,
+// store.LockRowsWithinBound, an owner lock's wait, store.WriteBatch), so a counter of the first
+// kind alone would miss it.
 type StatementCounter struct{ count atomic.Int64 }
 
 func (c *StatementCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
@@ -77,6 +81,16 @@ func (c *StatementCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ p
 }
 
 func (c *StatementCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (*StatementCounter) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
+	return ctx
+}
+
+func (c *StatementCounter) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQueryData) {
+	c.count.Add(1)
+}
+
+func (*StatementCounter) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
 // Count is how many statements c has counted.
 func (c *StatementCounter) Count() int64 {
@@ -109,22 +123,38 @@ func RequireNoStatements(t testing.TB, counter *StatementCounter, window time.Du
 	}
 }
 
-// StatementRecorder records the SQL of every statement run on the pool it traces (Traced).
+// StatementRecorder records the SQL of every statement run on the pool it traces (Traced): each one
+// sent on its own as it starts, and each one a batch sends as pgx reports it (TraceBatchQuery), once
+// it ran, in the batch's order, as StatementCounter counts them.
 type StatementRecorder struct {
 	mu  sync.Mutex
 	sql []string
 }
 
 func (r *StatementRecorder) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	r.mu.Lock()
-	r.sql = append(r.sql, data.SQL)
-	r.mu.Unlock()
+	r.record(data.SQL)
 	return ctx
 }
 
 func (r *StatementRecorder) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-// Statements is the SQL of every statement r has recorded, in the order they started.
+func (*StatementRecorder) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
+	return ctx
+}
+
+func (r *StatementRecorder) TraceBatchQuery(_ context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
+	r.record(data.SQL)
+}
+
+func (*StatementRecorder) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+
+func (r *StatementRecorder) record(sql string) {
+	r.mu.Lock()
+	r.sql = append(r.sql, sql)
+	r.mu.Unlock()
+}
+
+// Statements is the SQL of every statement r has recorded, in the order it recorded them.
 func (r *StatementRecorder) Statements() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()

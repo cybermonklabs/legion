@@ -32,13 +32,16 @@ var sqlFunctionDefinition = regexp.MustCompile(
 const sharedPool = "github.com/sjawhar/envoy/internal/dispatch/store.Pool"
 
 // poolStatementReceivers are the types whose statement methods run SQL outside any transaction of
-// the shared pool, so outside the commit step: the shared pool's own bare statements, and every
-// pool or connection handed out beside it, whose transactions the step never joins either.
+// the shared pool, so outside the commit step: the shared pool's own bare statements, the raw
+// pools a caller works through as pgx pools (store.RawPool: the rooms and leases pools, which
+// wrap the pgx pool to name a full pool's acquire ErrPoolBusy), and every pool or connection
+// handed out beside them, whose transactions the step never joins either.
 var poolStatementReceivers = map[string]bool{
-	sharedPool:                             true,
-	"github.com/jackc/pgx/v5/pgxpool.Pool": true,
-	"github.com/jackc/pgx/v5/pgxpool.Conn": true,
-	"github.com/jackc/pgx/v5.Conn":         true,
+	sharedPool: true,
+	"github.com/sjawhar/envoy/internal/dispatch/store.RawPool": true,
+	"github.com/jackc/pgx/v5/pgxpool.Pool":                     true,
+	"github.com/jackc/pgx/v5/pgxpool.Conn":                     true,
+	"github.com/jackc/pgx/v5.Conn":                             true,
 }
 
 // keyedWriteGuardStops are the functions the guard does not follow, each with the reason what it
@@ -54,9 +57,13 @@ var keyedWriteGuardStops = map[string]string{
 	// (repo, number) and hold what GitHub says, so a repeat after a takeover writes exactly the
 	// same rows; a failure is only logged, and the result is never undone for it.
 	"api.server.readThroughPullRequests": "stores what GitHub says about a commit's pull requests, after the result marked its key",
-	// The pool itself: its statement methods are what the guard looks for at their call sites.
+	// The pools themselves: their statement methods are what the guard looks for at their call
+	// sites, and a raw pool's own body is the pgx pool's statement of the SQL its caller gave it.
 	"store.Pool.Exec": "", "store.Pool.Query": "", "store.Pool.QueryRow": "", "store.Pool.SendBatch": "",
 	"store.Pool.CopyFrom": "", "store.Pool.Begin": "", "store.Pool.BeginTx": "", "store.Pool.begin": "",
+	"store.RawPool.Exec": "", "store.RawPool.Query": "", "store.RawPool.QueryRow": "",
+	"store.RawPool.SendBatch": "", "store.RawPool.CopyFrom": "", "store.RawPool.Begin": "",
+	"store.RawPool.BeginTx": "",
 }
 
 // keyedWriteGuardAllowed are the bare writes a keyed route may make, each with the reason the
@@ -85,6 +92,24 @@ var keyedWriteGuardAllowed = map[string]string{
 	// and an admission deletes the rows of every process that is no member, so a count a crash
 	// left behind is cleared rather than replayed.
 	"docs.Service.releaseConditionalEdit": "writes the queue's own count after the edit, which no key marks",
+	// The latest edit source a closing room's record holds, written to the document's
+	// pending-settlement row under the document's lock (docs.Service.persistLastActor): bookkeeping
+	// of the room, never the request's own work. It runs on the room-appends pool, whose wait for
+	// that lock no bound ends, because only a request's own wait for a document's lock is bounded
+	// (lockDocumentRoom); a request-pool transaction would be refused at the write lock bound and
+	// drop the source. The write is refused unless the record still reads closed at the credit
+	// sequence the source was read at and the row still reads as the close's snapshot read it, so
+	// a repeat after a takeover finds the row moved and writes nothing a second time.
+	"docs.Service.persistLastActor": "writes a closing room's latest edit source, the room's bookkeeping, refused once the row has moved",
+	// The lease a settlement takes on its document's pending-settlement row as it begins its work
+	// (docs.leaseSettlementPending), and the give-back of that lease as it ends without committing
+	// (docs.releaseSettlementLease), which an issue's close reaches through the settlement it runs
+	// before its transaction (settleIssueBeforeClose): the settlement's bookkeeping, never the
+	// request's own work, each one statement outside any transaction so it holds no lock across the
+	// document's work. A repeat after a takeover runs the settlement again, whose lease only moves
+	// the lease's end, and the give-back clears only the lease it names.
+	"docs.leaseSettlementPending": "marks a settlement's own pending row held while it runs; a repeat only moves the lease's end",
+	"docs.releaseSettlementLease": "clears a settlement's own lease as it ends, only where the row still holds that lease",
 }
 
 // keyedWriteOffence is one statement a keyed route's handler can reach that commits a write outside

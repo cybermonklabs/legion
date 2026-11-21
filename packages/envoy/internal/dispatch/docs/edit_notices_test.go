@@ -819,9 +819,99 @@ func TestEditNoticeSweepSkipsDeletedArtifact(t *testing.T) {
 	}
 }
 
-// answerDecision answers the harness's ask as the answer route does: the row first, then the
+// A sweep that meets a notice whose document owner's lock another transaction holds past the bound
+// of a lock's wait (store's lockWait), as a holder whose database stopped answering it
+// would, ends that wait at the bound, as every owner lock does: it logs the notice it could not
+// send and leaves it due, gives its background connection back, and goes on to the next due
+// notice, which it sends. The notice it left is sent by a later sweep once the owner is free - the
+// loop's next pass, which a notice still due asks for (editNoticePass). The bound is the test's
+// (store.WithLockWaitForTest) rather than production's ten seconds, and the holder is a
+// transaction of the test's own.
+func TestEditNoticeSweepEndsAnOwnerLockWaitAtItsBoundAndALaterSweepSendsTheNotice(t *testing.T) {
+	logs := &storetest.LockedLog{}
+	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	service, _ := newTestService(t)
+	held := createProjectDocument(t, service.store, "Held.")
+	free := createProjectDocument(t, service.store, "Free.")
+	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
+	addPersonsVersion(t, service.store, held, 2, "Held, edited.\n", alice)
+	addPersonsVersion(t, service.store, free, 2, "Free, edited.\n", alice)
+	ctx := context.Background()
+	if _, err := service.store.Pool.Exec(ctx, `
+		update document_edit_notices set due_at = due_at - interval '1 minute' where artifact_id = $1
+	`, held); err != nil {
+		t.Fatalf("make the held document's notice the first due: %v", err)
+	}
+	holder, err := service.store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder: %v", err)
+	}
+	defer func() { _ = holder.Rollback(ctx) }()
+	if err := store.LockOwner(ctx, holder, store.ArtifactOwner(held)); err != nil {
+		t.Fatalf("take the held document's owner lock: %v", err)
+	}
+
+	const bound = 300 * time.Millisecond
+	type sweepResult struct {
+		sent int
+		err  error
+	}
+	swept := make(chan sweepResult, 1)
+	started := time.Now()
+	go func() {
+		sent, err := service.sendDueEditNotices(store.WithLockWaitForTest(context.Background(), bound))
+		swept <- sweepResult{sent, err}
+	}()
+	var result sweepResult
+	select {
+	case result = <-swept:
+	case <-time.After(10 * time.Second):
+		waited := time.Since(started)
+		_ = holder.Rollback(ctx)
+		<-swept
+		t.Fatalf("the sweep was still waiting on the held document's owner lock %s after it began, past its wait's "+
+			"bound of %s: it holds its background connection for as long as the holder stands", waited.Round(time.Millisecond), bound)
+	}
+	if result.err != nil || result.sent != 1 {
+		t.Fatalf("the sweep beside the held owner = %d sent, %v; want the free document's notice sent", result.sent, result.err)
+	}
+	if edits := humanEdits(t, service.store, free); len(edits) != 1 {
+		t.Fatalf("the free document's edit notices = %d, want 1: the sweep did not go on past the held one", len(edits))
+	}
+	if edits := humanEdits(t, service.store, held); len(edits) != 0 {
+		t.Fatalf("the held document's edit notices = %d, want none while its owner is held", len(edits))
+	}
+	if _, open := readEditNotice(t, service, held); !open {
+		t.Fatal("the held document's notice is no longer due: the sweep that could not send it dropped it")
+	}
+	if logged := logs.String(); !strings.Contains(logged, `msg="dispatch: send an edit notice" artifact=`+held) {
+		t.Fatalf("the sweep did not log the notice it could not send:\n%s", logged)
+	}
+	if waiting, _ := storetest.OwnerLockWaiters(t, service.store); waiting != 0 {
+		t.Fatalf("%d sessions still wait on an owner lock after the sweep returned, want none", waiting)
+	}
+	background, err := service.store.Pool.Background()
+	if err != nil {
+		t.Fatalf("open the background pool: %v", err)
+	}
+	if acquired := background.Stat().AcquiredConns(); acquired != 0 {
+		t.Fatalf("the background pool has %d connections out after the sweep returned, want none", acquired)
+	}
+
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatalf("let the held document's owner lock go: %v", err)
+	}
+	if sent, err := service.sendDueEditNotices(store.WithLockWaitForTest(ctx, bound)); err != nil || sent != 1 {
+		t.Fatalf("the next sweep, with the owner free = %d sent, %v; want the held document's notice sent", sent, err)
+	}
+	if edits := humanEdits(t, service.store, held); len(edits) != 1 {
+		t.Fatalf("the held document's edit notices after the next sweep = %d, want 1", len(edits))
+	}
+}
+
+// answerHarnessAsk answers the harness's ask as the answer route does: the row first, then the
 // block's server-owned attributes, written as the person who answered.
-func answerDecision(t *testing.T, service *Service, artifactID, askID string, person model.Actor) {
+func answerHarnessAsk(t *testing.T, service *Service, artifactID, askID string, person model.Actor) {
 	t.Helper()
 	answeredAt := time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)
 	answerJSON, err := json.Marshal(model.AskAnswer{User: person.ID, Selected: []string{"REST"}, At: answeredAt})
@@ -844,7 +934,7 @@ func answerDecision(t *testing.T, service *Service, artifactID, askID string, pe
 func TestEditNoticeAnAnswerAloneSendsNone(t *testing.T) {
 	service, artifactID, askID, settle, _ := blockAskHarness(t)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
-	answerDecision(t, service, artifactID, askID, alice)
+	answerHarnessAsk(t, service, artifactID, askID, alice)
 	settle()
 	if _, open := readEditNotice(t, service, artifactID); !open {
 		t.Fatal("the answer's version opened no window; this test needs one to show the sweep drops it")
@@ -893,7 +983,7 @@ func TestEditNoticeAResolveAloneSendsNone(t *testing.T) {
 func TestEditNoticeAnAnswerAndATypedEditSendOne(t *testing.T) {
 	service, artifactID, askID, settle, _ := blockAskHarness(t)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
-	answerDecision(t, service, artifactID, askID, alice)
+	answerHarnessAsk(t, service, artifactID, askID, alice)
 	settle()
 	editAsConnectedPeer(t, service, artifactID, 1, alice, replaceRun("no drift.", "no drift at all."))
 	settle()
@@ -934,7 +1024,7 @@ func TestEditNoticeAPersonsRebuildOpensTheWindow(t *testing.T) {
 func TestEditNoticeAPersonsQuestionEditSendsOne(t *testing.T) {
 	service, artifactID, _, settle, _ := blockAskHarness(t)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
-	if err := joinedWrite(service, func(ctx context.Context) error {
+	if err := joinedWrite(service, artifactID, func(ctx context.Context) error {
 		_, err := service.SetAskBlockText(ctx, artifactID, "decision", AskBlockEdit{Question: new("Which transport, gRPC or REST?")}, alice)
 		return err
 	}); err != nil {
@@ -973,7 +1063,7 @@ func TestOutsideReviewColdAgentVersionLastHuman(t *testing.T) {
 	second := New(Deps{Store: storetest.SecondProcess(t, first.store), Events: events.NewBroker(), Settle: time.Hour})
 	t.Cleanup(func() { _ = second.Shutdown(context.Background()) })
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
-	if err := joinedWrite(second, func(ctx context.Context) error {
+	if err := joinedWrite(second, artifactID, func(ctx context.Context) error {
 		if _, err := second.ApplyOps(ctx, artifactID, []model.EditOp{{Op: "replace", Find: "Third.", With: "Third, by agent."}}, agent, nil); err != nil {
 			return err
 		}
@@ -1004,7 +1094,7 @@ func TestOutsideReviewJoinedHumanEditLastHuman(t *testing.T) {
 	adam := model.Actor{Kind: "user", ID: "adam@example.com"}
 	editAsConnectedPeer(t, service, artifactID, 1, zoe, replaceRun("First.", "First, by zoe."))
 	waitForLandedAppends(t, service, artifactID)
-	if err := joinedWrite(service, func(ctx context.Context) error {
+	if err := joinedWrite(service, artifactID, func(ctx context.Context) error {
 		if _, err := service.ApplyOps(ctx, artifactID, []model.EditOp{{Op: "replace", Find: "Second.", With: "Second, by adam."}}, adam, nil); err != nil {
 			return err
 		}
@@ -1080,7 +1170,7 @@ func TestEditNoticeABrowserEditAfterAJoinedWriteNamesTheBrowserEditor(t *testing
 	settleCurrentGeneration(t, service, artifactID)
 	adam := model.Actor{Kind: "user", ID: "adam@example.com"}
 	zoe := model.Actor{Kind: "user", ID: "zoe@example.com"}
-	if err := joinedWrite(service, func(ctx context.Context) error {
+	if err := joinedWrite(service, artifactID, func(ctx context.Context) error {
 		if _, err := service.ApplyOps(ctx, artifactID, []model.EditOp{
 			{Op: "replace", Find: "First.", With: "First, by adam's API write."},
 		}, adam, nil); err != nil {
@@ -1226,7 +1316,7 @@ func TestEditNoticeAClosedAndReopenedIssueNamesTheLaterBrowserEditor(t *testing.
 	settleCurrentGeneration(t, service, artifactID)
 	adam := model.Actor{Kind: "user", ID: "adam@example.com"}
 	zoe := model.Actor{Kind: "user", ID: "zoe@example.com"}
-	if err := joinedWrite(service, func(ctx context.Context) error {
+	if err := joinedWrite(service, artifactID, func(ctx context.Context) error {
 		if _, err := service.ApplyOps(ctx, artifactID, []model.EditOp{
 			{Op: "replace", Find: "First.", With: "First, by adam's API write."},
 		}, adam, nil); err != nil {

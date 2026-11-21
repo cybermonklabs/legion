@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The forms of a step's names. A task id is a plan's slug, `default` for an issue whose owner gave
@@ -157,7 +158,11 @@ func (other *nodeOfAnotherIssue) Error() string { return "the node is part of " 
 //
 // Two writes of one id at one time take turns: the insert that makes the node comes before the
 // read of what it holds, and that read locks the row (for update), so the second write waits for
-// the first to commit and then reads everything the first wrote.
+// the first to commit and then reads everything the first wrote. The wait is a bounded one
+// (store.LockRowsWithinBound): no owner lock orders the writers of a node, and an admitted write has
+// no deadline, so a second write behind a holder that stands would wait as long as it stood. One
+// still held when the bound runs out is refused store.ErrPoolBusy, which a request answers 503
+// DATABASE_BUSY with Retry-After, and nothing of the write is left.
 func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, error) {
 	writer, err := json.Marshal(write.actor)
 	if err != nil {
@@ -180,6 +185,11 @@ func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, error) {
 		}
 	}
 
+	if err := store.LockRowsWithinBound(ctx, tx, `
+		select 1 from workflow_nodes where kind = $1 and id = $2 for update
+	`, write.kind, write.id); err != nil {
+		return nil, fmt.Errorf("lock %s %s: %w", write.kind, write.id, err)
+	}
 	var heldText []byte
 	err = tx.QueryRow(ctx, `
 		select attributes from workflow_nodes where kind = $1 and id = $2 for update

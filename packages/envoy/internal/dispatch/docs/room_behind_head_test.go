@@ -877,7 +877,7 @@ func TestACloseOfAReplacedRoomHoldsItAgainstTheIdleSweep(t *testing.T) {
 	const sweepBudget = 30 * time.Second
 	var holdErr error
 	var heldThrough bool
-	service.afterRoomClosePinned = func(room string) {
+	service.roomCloseHeld = func(room string) {
 		browser.Close()
 		// The service forgets the browser once ygo's teardown of it has returned, which is after
 		// that teardown stamped the room idle.
@@ -899,7 +899,7 @@ func TestACloseOfAReplacedRoomHoldsItAgainstTheIdleSweep(t *testing.T) {
 		}
 		heldThrough = service.srv.GetDoc(room) == live
 	}
-	closed, err := service.closeRoomInstance(context.Background(), artifactID, live)
+	closed, err := service.closeRoomInstance(context.Background(), artifactID, live, true, service.srv.Apply)
 	if err != nil {
 		t.Fatalf("close the room: %v", err)
 	}
@@ -1519,7 +1519,7 @@ func TestAWriteDoesNotForkFromTheStoreInsideAnAppendsCursorWindow(t *testing.T) 
 	var forked string
 	written := make(chan error, 1)
 	go func() {
-		written <- joinedWrite(service, func(ctx context.Context) error {
+		written <- joinedWrite(service, artifactID, func(ctx context.Context) error {
 			if err := service.ProjectMark(ctx, artifactID, "mark-in-the-window", MarkRecord{
 				Kind: "comment", By: "user:bob", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Text: "note",
 			}, model.Actor{Kind: "user", ID: "bob"}); err != nil {
@@ -1794,7 +1794,7 @@ func TestAMarginWriteFromAColdForkIsRenderedByTheRoomItIsPublishedInto(t *testin
 	pair.leaveTaskABehindWith(t, 1, bob, withoutTopLevelBlock("Second."))
 	alice := model.Actor{Kind: "user", ID: "alice-on-task-a"}
 	var cold bool
-	if err := joinedWrite(pair.taskA, func(ctx context.Context) error {
+	if err := joinedWrite(pair.taskA, pair.artifactID, func(ctx context.Context) error {
 		if err := pair.taskA.ProjectMark(ctx, pair.artifactID, "comment-on-task-a", MarkRecord{
 			Kind: "comment", By: "user:alice-on-task-a", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Text: "a reply",
 		}, alice); err != nil {
@@ -1867,7 +1867,7 @@ func TestAMarginWriteFromAWarmForkKeepsTheRenderingOfTheRoomItWasForkedFrom(t *t
 	state.askAuthors[goneAsk] = alice
 	pair.taskA.unlockState(pair.artifactID, state)
 	var cold bool
-	if err := joinedWrite(pair.taskA, func(ctx context.Context) error {
+	if err := joinedWrite(pair.taskA, pair.artifactID, func(ctx context.Context) error {
 		precondition, err := replacementPrecondition(ctx, pair.taskA, pair.artifactID)
 		if err != nil {
 			return err
@@ -1963,7 +1963,7 @@ func TestARoomLoadingWhileThisProcessesWriteCommitsStandsAtTheHead(t *testing.T)
 	if _, _, err := lockArtifactOwner(ctx, tx, artifactID); err != nil {
 		t.Fatalf("lock document owner: %v", err)
 	}
-	joined, ledger := service.Join(ctx, tx)
+	joined, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	defer ledger.Discard()
 	if _, err := service.ApplyOps(joined, artifactID, []model.EditOp{
 		{Op: "insert", Markdown: "Agent's paragraph.", After: "Second."},

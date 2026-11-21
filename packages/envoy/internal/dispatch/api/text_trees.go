@@ -3,10 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -19,6 +22,12 @@ import (
 // never inside the transaction, because a tree that cannot be stored must never fail the write,
 // and the read makes it then exactly as it does for a text whose row is not written yet.
 //
+// A write that holds a document's writer gate stores behind it rather than under it
+// (docs.AfterWriterGateRelease): the gate admits one writer of a document at a time, so this
+// INSERT run under it is one every writer behind this request waits out, and no reader of this
+// request's answer waits for it. The store still runs inside the request, on the goroutine that
+// releases the gate; a caller holding no gate stores where it stands.
+//
 // A failure is logged under subject - the issue, or the id of the row the texts were written for -
 // and changes no answer. Nothing else is reported: the answer a reader is given is the same either
 // way.
@@ -28,11 +37,15 @@ import (
 // so its tree is stored by the first read of it (getArtifactVersion) and by nothing else.
 //
 // The store itself is texttrees.StoreFor, the one policy every path that writes a stored text
-// keeps, which is also why a caller still holding a pooled connection stores nothing.
+// keeps, which is also why a caller still holding a pooled connection stores nothing. It runs on
+// the store ctx names (workStore): a request's own pool, or the background pool for background
+// work that runs through this server.
 func (s *server) storeDisplayTrees(ctx context.Context, subject string, texts ...string) {
-	if err := texttrees.StoreFor(ctx, s.deps.Store, pmdoc.DisplayLatest, texts...); err != nil {
-		slog.Warn("dispatch: store display trees failed", "subject", subject, "error", err)
-	}
+	docs.AfterWriterGateRelease(ctx, func() {
+		if err := texttrees.StoreFor(ctx, s.workStore(ctx), pmdoc.DisplayLatest, texts...); err != nil {
+			slog.Warn("dispatch: store display trees failed", "subject", subject, "error", err)
+		}
+	})
 }
 
 // displayTreeReader is one request's reading of the display trees its answer carries: every
@@ -267,6 +280,16 @@ func (r *displayTreeReader) storedTrees(sums [][32]byte) map[[32]byte]json.RawMe
 // be an INSERT a cold reader with misses waits out, after its answer is built and before it has
 // every byte of it.
 //
+// It runs on the background pool and not the request pool (store.Pool.Background), which is what
+// keeps it out of every read route's weight: a route's weight is the most request-pool
+// connections one request holds at once (apiRoute.Weight), and this goroutine runs beside the
+// request that started it - a pinned read holds its own connection throughout (PinConnection) -
+// so on the request pool a weight-1 GET would hold two. On the background pool it holds none of
+// theirs, as every other piece of work a request leaves running behind it does
+// (mentionSenderPool). A background pool with nothing free refuses the store (ErrPoolBusy),
+// which costs the next reader of these texts a reading and nothing else. A server with no
+// background pool - one whose store cannot open it - stores nothing, for the same reason.
+//
 // It runs on the request's context detached from its cancellation (context.WithoutCancel), since
 // a reader who goes away must not leave the saving to the next one, and bounded by
 // storeTreesTimeout, which is what bounds it once cancellation no longer does. The hold mark is
@@ -293,11 +316,16 @@ func (r *displayTreeReader) storeOf(missing []int) {
 	if len(built) == 0 {
 		return
 	}
+	background, err := r.server.treeStorePool()
+	if err != nil {
+		slog.Warn("dispatch: store display trees failed", "mode", int(r.mode), "texts", len(built), "error", err)
+		return
+	}
 	storing := store.ForConcurrentWorker(context.WithoutCancel(r.ctx))
 	r.server.detached.goDetached(func() {
 		ctx, cancel := context.WithTimeout(storing, storeTreesTimeout)
 		defer cancel()
-		if err := texttrees.For(r.server.deps.Store).StoreTrees(ctx, r.mode, built); err != nil {
+		if err := texttrees.New(background).StoreTrees(ctx, r.mode, built); err != nil {
 			// Nothing the request carried is named here. The subject a route had at hand was
 			// the caller's own address on one of them (listMyAnswers), and a person's address
 			// is not something a server log should hold; the mode, the count of texts and the
@@ -307,6 +335,24 @@ func (r *displayTreeReader) storeOf(missing []int) {
 		}
 	})
 }
+
+// treeStorePool is the pool a read's own store of the trees it built runs on: the background
+// pool, as every piece of work a request leaves behind it runs on (mentionSenderPool). A server
+// built with no database has none, and its reads store nothing, as every route of it refuses
+// anyway.
+func (s *server) treeStorePool() (*store.Pool, error) {
+	if s.deps.Store == nil || s.deps.Store.Pool == nil {
+		return nil, errNoStoreForTrees
+	}
+	background, err := s.deps.Store.Pool.Background()
+	if err != nil {
+		return nil, fmt.Errorf("open the display trees' pool: %w", err)
+	}
+	return background, nil
+}
+
+// errNoStoreForTrees is a server with no database asked where to store the trees it read.
+var errNoStoreForTrees = errors.New("no database pool for the display trees")
 
 // storeTreesTimeout bounds the store of a read's own trees, which runs detached from the request
 // that read them and so from every cancellation that would otherwise end it. It is generous

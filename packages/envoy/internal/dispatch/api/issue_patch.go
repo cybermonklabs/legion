@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,7 +57,7 @@ type updateIssueInput struct {
 func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	var input updateIssueInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -68,7 +69,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		var err error
 		blockers, err = normalizeIssueBlockers(*input.BlockedBy)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -77,7 +78,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		var err error
 		advances, err = normalizeIssueAdvances(*input.Advances)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -119,7 +120,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		var err error
 		labels, err = normalizeIssueLabels(*input.Labels)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -127,34 +128,44 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		var err error
 		labelsAdd, err = normalizeIssueLabels(*input.LabelsAdd)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	priority, priorityProvided, err := parseIssuePriority(input.Priority)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	assignee, assigneeProvided, err := s.parseIssueAssignee(r.Context(), input.Assignee)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	parent, parentProvided, err := parseIssueParent(input.Parent)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	components, componentsProvided, err := parseIssueComponents(input.Components)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	repo, repoProvided, err := parseIssueRepo(input.Repo)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
+	}
+	// A link's URL syntax is the request's own; refusing it here keeps a PATCH that can never
+	// land out of the documents' writer gates below.
+	if input.ExternalLinks != nil {
+		for _, link := range *input.ExternalLinks {
+			if err := validateExternalURL(link.URL); err != nil {
+				s.writeHandlerError(w, r, err)
+				return
+			}
+		}
 	}
 
 	key := r.PathValue("key")
@@ -166,11 +177,162 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		// lock.
 		s.settleIssueBeforeClose(outlivingTheClient(r), key)
 	}
-	tx, err := s.begin(r.Context())
+	// issuePatchWrite is the PATCH's open transaction, holding the owner lock of every issue it
+	// names, the issue as that transaction read it, whether this write closes or reopens it, and
+	// the priority ids the issue advanced as that read found them (heldAdvances, set only when the
+	// write carries advances).
+	type issuePatchWrite struct {
+		tx           pgx.Tx
+		before       model.Issue
+		closing      bool
+		reopening    bool
+		heldAdvances []string
+	}
+	// A credential that names one project is refused a target outside it where a target's
+	// project is read, since this route's own address names no target (project_scope.go): the
+	// lock step refuses it before any lock, and writeBlockedBy again under them.
+	callerProject, _ := s.callerProject(r)
+	// openPatch locks the rows the PATCH names, reads the issue under them, and refuses what only
+	// those rows can decide: a stale expected_sequence, an invalid parent, a closed issue, an
+	// advances write the revision rule refuses, and documents other than the ones gated. The
+	// caller rolls tx back on every refusal.
+	openPatch := func(ctx context.Context, tx pgx.Tx, gated []string) (issuePatchWrite, error) {
+		dependencyWrite := input.BlockedBy != nil || parentProvided
+		if dependencyWrite || input.Rank != nil {
+			var project string
+			if err := tx.QueryRow(ctx, `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
+				return issuePatchWrite{}, err
+			}
+			if dependencyWrite {
+				if err := lockIssueDependencyWrite(ctx, tx, project, callerProject, blockers); err != nil {
+					return issuePatchWrite{}, err
+				}
+			}
+			if input.Rank != nil {
+				if err := lockProjectRankAllocation(ctx, tx, project); err != nil {
+					return issuePatchWrite{}, err
+				}
+			}
+		}
+
+		// A PATCH takes the owner lock of every issue it names in one lock order before it reads any
+		// of them: the issue, its current parent when a status change or a reparent appends to it,
+		// the proposed parent and the rank neighbours (lockPatchOwners, lockPatchOwnersAndParent). It
+		// never holds one of those locks while waiting for another that a second write holds.
+		// Validation, the dependency walk and the rank reads below are plain reads of issues whose
+		// locks it holds.
+		named := make([]string, 0, 3)
+		if parent != nil {
+			named = append(named, *parent)
+		}
+		if input.Rank != nil {
+			// Each neighbour is trimmed once, here, so the key the lock below takes is the key
+			// rankForInput reads.
+			if input.Rank.After != nil {
+				*input.Rank.After = strings.TrimSpace(*input.Rank.After)
+				named = append(named, *input.Rank.After)
+			}
+			if input.Rank.Before != nil {
+				*input.Rank.Before = strings.TrimSpace(*input.Rank.Before)
+				named = append(named, *input.Rank.Before)
+			}
+		}
+		lock := lockPatchOwners
+		if input.Status != nil || parentProvided {
+			lock = lockPatchOwnersAndParent
+		}
+		if err := lock(ctx, tx, key, named...); err != nil {
+			return issuePatchWrite{}, err
+		}
+		before, err := s.loadIssue(ctx, tx, key)
+		if err != nil {
+			return issuePatchWrite{}, err
+		}
+		if input.ExpectedSeq != nil && *input.ExpectedSeq != int64(before.LastSeq) {
+			return issuePatchWrite{}, errorf(http.StatusConflict, "ISSUE_CHANGED", "issue changed since the hand-over read")
+		}
+		if parentProvided && parent != nil {
+			if err := validateIssueParent(ctx, tx, key, before.Project, *parent); err != nil {
+				return issuePatchWrite{}, err
+			}
+		}
+		closing := closes && before.ClosedAt == nil
+		reopening := input.Status != nil && !closes && before.ClosedAt != nil
+		if before.ClosedAt != nil {
+			// A closed issue takes only its rank (board order), its component attachment
+			// (classified without reopening), and an external_links write that adds no URL the issue
+			// does not already have (so a link can move to the issue that replaced it; a same-set
+			// resend or a kept URL's retyped kind rewrites the rows and emits issue.updated the same
+			// as any other accepted write here, it just adds nothing new) — alone or beside a
+			// reopening status; every other field, its repository included, and closing it again,
+			// waits for a reopen.
+			addsLink := input.ExternalLinks != nil && !isExternalLinksSubset(*input.ExternalLinks, before.ExternalLinks)
+			others := input.Title != nil || input.Labels != nil || input.LabelsAdd != nil || priorityProvided || input.Route != nil || addsLink || assigneeProvided || parentProvided || input.BlockedBy != nil || input.Advances != nil || repoProvided
+			if others || (input.Status != nil && !reopening) || (input.Status == nil && input.Rank == nil && !componentsProvided && input.ExternalLinks == nil) {
+				return issuePatchWrite{}, errorf(http.StatusConflict, "ISSUE_CLOSED", "issue is closed")
+			}
+		}
+		// The `advances` revision rule is decided here, beside the other refusals of this handler
+		// and before the first row is written: a refused write leaves the issue exactly as it was.
+		// The held set and the revision are the issue as this write read it under its owner lock,
+		// which every writer of the issue's own relations takes (an issue create and an issue
+		// patch: writeIssueAdvances), so two writes of one issue decide the rule one after the
+		// other rather than together. Its read is a plain one, so the rule holds no transaction id.
+		var heldAdvances []string
+		if input.Advances != nil {
+			heldAdvances = ownAdvances(before.Advances)
+			if err := refuseAdvancesRevision(heldAdvances, before.AdvancesRevision, input.AdvancesRevision, advances); err != nil {
+				return issuePatchWrite{}, err
+			}
+		}
+		if closing || reopening {
+			// The documents the close or reopen writes, named under the issue's owner lock, where
+			// they cannot move: ones other than those gated - a document added, or the status
+			// moved, since the gates were taken - leave this attempt to be gated again
+			// (gatedWrite).
+			named, err := issueDocuments(ctx, tx, key)
+			if err != nil {
+				return issuePatchWrite{}, err
+			}
+			if !sameDocuments(gated, named) {
+				return issuePatchWrite{}, errDocumentsMoved
+			}
+		}
+		return issuePatchWrite{before: before, closing: closing, reopening: reopening, heldAdvances: heldAdvances}, nil
+	}
+	// A close withdraws the issue's open asks and a reopen restores them, writing their blocks into
+	// the issue's documents, so a status move that would close or reopen the issue queues for every
+	// one's writer gate before its transaction opens; under the issue's owner lock it names them
+	// again, and documents that moved in between are gated once more (gatedWrite).
+	opened, gatedCtx, release, err := gatedWrite(r.Context(), s.deps.Docs,
+		func(ctx context.Context) ([]string, error) {
+			if input.Status == nil {
+				return nil, nil
+			}
+			return s.issueStatusDocuments(ctx, key, closes)
+		},
+		func(ctx context.Context, gated []string) (issuePatchWrite, error) {
+			tx, err := s.begin(ctx)
+			if err != nil {
+				return issuePatchWrite{}, err
+			}
+			write, err := openPatch(ctx, tx, gated)
+			if err != nil {
+				_ = tx.Rollback(ctx)
+				return issuePatchWrite{}, err
+			}
+			write.tx = tx
+			return write, nil
+		})
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
+	// The gates end once this write has committed, published and swept (sweepClosedIssueAsks
+	// writes the same documents, so it runs under them); the defer is the error paths' release.
+	defer release()
+	r = r.WithContext(gatedCtx)
+	tx, before, closing, reopening, heldAdvances := opened.tx, opened.before, opened.closing, opened.reopening, opened.heldAdvances
 	defer tx.Rollback(r.Context())
 	// A close withdraws the issue's open asks and a reopen restores them, writing their blocks
 	// into the issue's documents, which reach their rooms through the ledger's commit. That
@@ -180,107 +342,6 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// it (a component or blocker refusal, a taken external link).
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
-
-	dependencyWrite := input.BlockedBy != nil || parentProvided
-	// A credential that names one project is refused a target outside it where a target's
-	// project is read, since this route's own address names no target (project_scope.go): the
-	// lock step refuses it before any lock, and writeBlockedBy again under them.
-	callerProject, _ := s.callerProject(r)
-	if dependencyWrite || input.Rank != nil {
-		var project string
-		if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		if dependencyWrite {
-			if err := lockIssueDependencyWrite(r.Context(), tx, project, callerProject, blockers); err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-		}
-		if input.Rank != nil {
-			if err := lockProjectRankAllocation(r.Context(), tx, project); err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-		}
-	}
-
-	// A PATCH takes the owner lock of every issue it names in one lock order before it reads any
-	// of them: the issue, its current parent when a status change or a reparent appends to it, the
-	// proposed parent and the rank neighbours (lockPatchOwners, lockPatchOwnersAndParent). It never
-	// holds one of those locks while waiting for another that a second write holds. Validation, the
-	// dependency walk and the rank reads below are plain reads of issues whose locks it holds.
-	named := make([]string, 0, 3)
-	if parent != nil {
-		named = append(named, *parent)
-	}
-	if input.Rank != nil {
-		// Each neighbour is trimmed once, here, so the key the lock below takes is the key
-		// rankForInput reads.
-		if input.Rank.After != nil {
-			*input.Rank.After = strings.TrimSpace(*input.Rank.After)
-			named = append(named, *input.Rank.After)
-		}
-		if input.Rank.Before != nil {
-			*input.Rank.Before = strings.TrimSpace(*input.Rank.Before)
-			named = append(named, *input.Rank.Before)
-		}
-	}
-	lock := lockPatchOwners
-	if input.Status != nil || parentProvided {
-		lock = lockPatchOwnersAndParent
-	}
-	if err := lock(r.Context(), tx, key, named...); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	before, err := s.loadIssue(r.Context(), tx, key)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if input.ExpectedSeq != nil && *input.ExpectedSeq != int64(before.LastSeq) {
-		writeError(w, "ISSUE_CHANGED", http.StatusConflict, "issue changed since the hand-over read")
-		return
-	}
-	if parentProvided && parent != nil {
-		if err := validateIssueParent(r.Context(), tx, key, before.Project, *parent); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
-	closing := closes && before.ClosedAt == nil
-	reopening := input.Status != nil && !closes && before.ClosedAt != nil
-	if before.ClosedAt != nil {
-		// A closed issue takes only its rank (board order), its component attachment
-		// (classified without reopening), and an external_links write that adds no URL the issue
-		// does not already have (so a link can move to the issue that replaced it; a same-set
-		// resend or a kept URL's retyped kind rewrites the rows and emits issue.updated the same
-		// as any other accepted write here, it just adds nothing new) — alone or beside a
-		// reopening status; every other field, its repository included, and closing it again,
-		// waits for a reopen.
-		addsLink := input.ExternalLinks != nil && !isExternalLinksSubset(*input.ExternalLinks, before.ExternalLinks)
-		others := input.Title != nil || input.Labels != nil || input.LabelsAdd != nil || priorityProvided || input.Route != nil || addsLink || assigneeProvided || parentProvided || input.BlockedBy != nil || input.Advances != nil || repoProvided
-		if others || (input.Status != nil && !reopening) || (input.Status == nil && input.Rank == nil && !componentsProvided && input.ExternalLinks == nil) {
-			writeError(w, "ISSUE_CLOSED", http.StatusConflict, "issue is closed")
-			return
-		}
-	}
-	// The `advances` revision rule is decided here, beside the other refusals of this handler
-	// and before the first row is written: a refused write leaves the issue exactly as it was.
-	// The held set and the revision are the issue as this write read it under its owner lock,
-	// which every writer of the issue's own relations takes (an issue create and an issue patch:
-	// writeIssueAdvances), so two writes of one issue decide the rule one after the other rather
-	// than together. Its read is a plain one, so the rule holds no transaction id.
-	var heldAdvances []string
-	if input.Advances != nil {
-		heldAdvances = ownAdvances(before.Advances)
-		if err := refuseAdvancesRevision(heldAdvances, before.AdvancesRevision, input.AdvancesRevision, advances); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
 	// The default assignee of the issue's project, for an assignee move that leaves one side
 	// holding nobody: a question on an issue nobody holds reaches its project's default, the
 	// chain's last step (askedOfPersonExpression), so that side of the move names the default
@@ -292,7 +353,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	var projectDefault string
 	if assigneeProvided && (before.Assignee == nil) != (assignee == nil) {
 		if err := tx.QueryRow(r.Context(), `select default_assignee from projects where key = $1`, before.Project).Scan(&projectDefault); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -327,7 +388,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if input.Rank != nil {
 		issueRank, err := s.rankForInput(r.Context(), tx, before.Project, key, *input.Rank)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		set("rank", issueRank)
@@ -348,7 +409,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if input.LabelsAdd != nil {
 		labels, err = mergeIssueLabels(before.Labels, labelsAdd)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		set("labels", labels)
@@ -388,7 +449,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The advice is read here, before the patch's first write, so its queries hold no transaction
@@ -407,60 +468,60 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if input.Labels != nil || input.LabelsAdd != nil {
 		afterRow.labels = labels
 	}
-	advice := s.writeAdviceBefore(r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, afterStatus, afterRow, adviceAsks{
+	advice, err := s.writeAdviceBefore(r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, afterStatus, afterRow, adviceAsks{
 		excluded: askIDs(closingAsks),
 		opened:   askIDs(reopenedAsks),
 	})
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
 	// The write phase: the statements from here on run back to back.
 	if changed {
 		sets = append(sets, "updated_at = "+issueUpdatedNow)
 		if _, err := tx.Exec(r.Context(), `update issues set `+strings.Join(sets, ", ")+` where key = $1`, args...); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if previousClaim != nil {
 		// Closing releases the claim through the one writer of those columns.
 		if err := writeIssueClaim(r.Context(), tx, key, nil); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if componentsProvided {
 		if err := writeIssueComponents(r.Context(), tx, key, before.Project, *components); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if input.BlockedBy != nil {
 		if err := writeBlockedBy(r.Context(), tx, key, before.Project, callerProject, blockers); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if input.Advances != nil {
 		if err := writeIssueAdvances(r.Context(), tx, key, heldAdvances, advances, actor, time.Now().UTC()); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if parentProvided && parent != nil {
 		if err := assertParentLeavesNoDependencyCycle(r.Context(), tx, key, *parent); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 
 	if input.ExternalLinks != nil {
 		if _, err := tx.Exec(r.Context(), `delete from issue_external_links where issue_key = $1`, key); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		for _, link := range *input.ExternalLinks {
-			if err := validateExternalURL(link.URL); err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
 			kind := link.Kind
 			if kind == "" {
 				kind = "url"
@@ -475,7 +536,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if !errors.Is(err, pgx.ErrNoRows) {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			if _, err := tx.Exec(r.Context(), `insert into issue_external_links (issue_key, url, kind) values ($1, $2, $3)`, key, link.URL, kind); err != nil {
@@ -483,7 +544,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 					writeError(w, "EXTERNAL_LINK_TAKEN", http.StatusConflict, fmt.Sprintf("%s is already linked from another issue", link.URL))
 					return
 				}
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 		}
@@ -492,9 +553,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if !changed {
 		// Nothing was written, so the row the advice read is the stored one.
 		if err := ledger.Commit(r.Context()); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
+		release()
 		WriteJSON(w, http.StatusOK, withAdvice(before, advice))
 		return
 	}
@@ -525,7 +587,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(owners) > 1 {
 		if err := s.deps.Events.LockOwners(r.Context(), tx, owners...); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -535,7 +597,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	appended := append([]*model.Event{}, restoredEvents...)
 	if closing {
 		if withdrawn, appended, err = s.recordWithdrawnAsksTx(documentCtx, tx, ledger, key, closingAsks, actor); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -547,7 +609,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// here.
 	after, err := s.loadIssue(r.Context(), tx, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	eventType := "issue.updated"
@@ -561,12 +623,12 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	changedFields := issueChangedFields(before, after)
 	edgeChanges, err := issueEdgeChanges(r.Context(), tx, before, after, slices.Contains(changedFields, "title"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	payload, err := newIssueEventPayload(r.Context(), tx, after, edgeChanges, changedFields)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// nil on a write that left the assignee alone, which is what names the status move's logins
@@ -601,14 +663,14 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	event, err := s.queueLoggedEvent(ledger, issueOwner(key).event(eventType, actor, payload), logins, "", "")
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	appended = append(appended, event)
 	if previousClaim != nil {
 		released, err := s.queueEvent(ledger, claimEvent("issue.released", key, actor, after, previousClaim, "closed"))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		appended = append(appended, released)
@@ -620,7 +682,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			map[string]any{"child_key": after.Key, "from": before.Status, "to": after.Status},
 		))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		appended = append(appended, childEvent)
@@ -631,7 +693,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 				"child.removed", actor, map[string]any{"child_key": after.Key},
 			))
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			appended = append(appended, removedEvent)
@@ -641,7 +703,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 				"child.added", actor, map[string]any{"child_key": after.Key},
 			))
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			appended = append(appended, addedEvent)
@@ -667,12 +729,12 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			`, key).QueryRow(func(row pgx.Row) error { return row.Scan(&after.ClosedAt) })
 			return nil
 		}); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	after.LastSeq = appendedIssueLastSeq(key, appended)
@@ -687,6 +749,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		// It runs after the publish so every event reaches subscribers in commit order.
 		s.sweepClosedIssueAsks(outlivingTheClient(r), key, withdrawn, actor)
 	}
+	release()
 	WriteJSON(w, http.StatusOK, withAdvice(after, advice))
 }
 

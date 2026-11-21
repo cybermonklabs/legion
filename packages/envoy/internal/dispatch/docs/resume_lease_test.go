@@ -7,8 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -44,7 +43,7 @@ func TestTwoResumptionRunnersResumeAnOwedSettlementOncePerPeriod(t *testing.T) {
 	done := make(chan struct{}, 2)
 	for _, runner := range []struct {
 		service *Service
-		leases  *pgxpool.Pool
+		leases  *store.RawPool
 	}{{first, firstLeases}, {other, secondLeases}} {
 		go func() {
 			defer func() { done <- struct{}{} }()
@@ -66,5 +65,27 @@ func TestTwoResumptionRunnersResumeAnOwedSettlementOncePerPeriod(t *testing.T) {
 	if ran() != 1 || skipped() != 1 || resumed != 1 {
 		t.Fatalf("two resumption runners in one period: %d passes ran, %d skipped, the owed settlement resumed %d times; want one, one and once:\n%s",
 			ran(), skipped(), resumed, logs.Lines("lease="))
+	}
+}
+
+// A resumption pass is background work: no request waits on it, so the one statement that picks
+// and stamps the owed rows (resumeOwedSettlements) runs on the background pool and takes no
+// connection of the request pool, which admission counts for requests. Pointed back at the request
+// pool, as main's statement was written, it moves that pool's acquires and this fails.
+func TestAResumptionPassTakesNoRequestPoolConnection(t *testing.T) {
+	service, _ := newTestService(t)
+	background, err := service.store.Pool.Background()
+	if err != nil {
+		t.Fatalf("open the background pool: %v", err)
+	}
+	requests, backgroundPicks := service.store.Pool.Stat().AcquireCount(), background.Stat().AcquireCount()
+	if err := service.resumeOwedSettlements(context.Background(), settlementResumeAge); err != nil {
+		t.Fatalf("run a resumption pass: %v", err)
+	}
+	if took := service.store.Pool.Stat().AcquireCount() - requests; took != 0 {
+		t.Errorf("the resumption pass took %d request-pool connection(s), want none: it picks the owed rows on the background pool", took)
+	}
+	if background.Stat().AcquireCount() == backgroundPicks {
+		t.Error("the resumption pass took no background-pool connection, so it picked the owed rows somewhere else")
 	}
 }

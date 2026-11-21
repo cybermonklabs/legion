@@ -60,7 +60,7 @@ type planTaskInput struct {
 func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 	var input planRecordInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a plan")
@@ -70,7 +70,7 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -99,11 +99,11 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, codePlanOtherIssue, http.StatusConflict, err.Error())
 		return
 	case err != nil:
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, planRecord(written))
@@ -137,12 +137,12 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 	}
 	key := r.PathValue("key")
 	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, key); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	finished, err := workflowstore.ProjectPlans(r.Context(), s.deps.Store.Pool, key, window)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	read := model.ProjectPlans{Project: key, Issues: make([]model.FinishedIssue, len(finished))}

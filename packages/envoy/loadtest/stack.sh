@@ -87,21 +87,34 @@
 # checkout holding this script); LOADTEST_DISPATCH_SRC (default LOADTEST_SRC: the checkout
 # envoy-dispatch is built from); the ports, which follow LOADTEST_ROOT (common.sh: the root's block
 # k of the path's sha256 modulo 200 gives postgres B+10k, proxy B+1+10k, nats B+2+10k,
-# nats_monitor B+3+10k, listener B+4+10k, dispatch B+5+10k, pprof B+6+10k, proxy_stats B+7+10k,
-# envoy_proxy B+8+10k, where B is 15000 unless the ephemeral range, ip_local_port_range, starts
-# below 17000, and then the 2000 ports just below it, so no stack port is inside that range; setup
-# refuses when no 2000 ports fit below it above 1023), so two roots on one machine hold the same 9
-# ports about 1 pair in 200 and otherwise none, and a collision is refused by start, not shared;
-# start refuses a port inside the ephemeral range; LOADTEST_PORT_RANGE_FILE reads the range from
+# nats_monitor B+3+10k, listener B+4+10k, dispatch B+5+10k, pprof B+6+10k, metrics B+7+10k,
+# proxy_stats B+8+10k, envoy_proxy B+9+10k, where B is 10000 unless the ephemeral range,
+# ip_local_port_range, starts below 12000, and then the 2000 ports just below it, so no stack port
+# is inside that range; setup refuses when no 2000 ports fit below it above 1023), so two roots on
+# one machine hold the same 10 ports about 1 pair in 200 and otherwise none, and a collision is
+# refused by start, not shared; setup moves a port stack.json recorded inside the machine's
+# ephemeral range to the root's default and refuses one a LOADTEST_*_PORT sets inside it
+# (common.sh: check_ephemeral_ports), which an outbound connection would take from the stack, and
+# start refuses a port inside it (check_port); LOADTEST_PORT_RANGE_FILE reads the range from
 # another file than /proc/sys/net/ipv4/ip_local_port_range, for a test; LOADTEST_PG_PORT,
 # LOADTEST_PROXY_PORT, LOADTEST_PROXY_STATS_PORT (the proxy's wire counts), LOADTEST_NATS_PORT,
-# LOADTEST_NATS_MONITOR_PORT, LOADTEST_LISTENER_PORT, LOADTEST_DISPATCH_PORT, LOADTEST_PPROF_PORT
-# and LOADTEST_ENVOY_PROXY_PORT each override their own port, read by setup into stack.json
-# (`stack.sh status` prints them); LOADTEST_PROXY_RTT (1ms); LOADTEST_PG_DIRECT=1 starts Dispatch
-# on Postgres without the proxy; LOADTEST_ENVOY_RTT=<duration> starts Dispatch with ENVOY_URL
-# through a latency proxy (envoy_proxy) in front of the listener;
-# LOADTEST_DISPATCH_COMMIT (setup, above); LOADTEST_GOMAXPROCS, Dispatch's GOMAXPROCS (default: nproc);
-# LOADTEST_REPLAY_ISSUE, the issue the replay's parts are file artifacts of (replay-get, above).
+# LOADTEST_NATS_MONITOR_PORT, LOADTEST_LISTENER_PORT, LOADTEST_DISPATCH_PORT, LOADTEST_PPROF_PORT,
+# LOADTEST_METRICS_PORT and LOADTEST_ENVOY_PROXY_PORT each override their own port, read by setup
+# into stack.json (`stack.sh status` prints them); LOADTEST_PROXY_RTT (1ms);
+# LOADTEST_PG_DIRECT=1 starts Dispatch on Postgres without the proxy;
+# LOADTEST_ENVOY_RTT=<duration> starts Dispatch with ENVOY_URL through a latency proxy
+# (envoy_proxy) in front of the listener;
+# LOADTEST_DISPATCH_COMMIT (setup, above); LOADTEST_GOMAXPROCS, Dispatch's GOMAXPROCS (default: the
+# number of CPUs in LOADTEST_SERVER_CPUS when it is set, else nproc; common.sh gomaxprocs);
+# LOADTEST_REPLAY_ISSUE, the issue the replay's parts are file artifacts of (replay-get, above);
+# LOADTEST_SERVER_CPUS and LOADTEST_GENERATOR_CPUS, two CPU lists (common.sh, CPU pinning), empty
+# by default: every stack process starts under `taskset -c LOADTEST_SERVER_CPUS` (spawn), which
+# refuses a list other than the one the processes still running started on, and every loadgen
+# runs under `taskset -c LOADTEST_GENERATOR_CPUS`; every command but stop, status and build-info
+# refuses a list taskset refuses, two lists that overlap and a generator list too wide for the
+# pod's CPU quota, and settles an unset or `auto` generator list beside the server list
+# (common.sh check_cpu_lists, generator_cpus), and every command that starts Dispatch refuses a
+# LOADTEST_GOMAXPROCS other than the server list's CPU count, before it stops anything.
 #
 # Every stack process starts under `env -i` with an explicit environment, so this shell's
 # DISPATCH_URL, ENVOY_URL, ENVOY_NATS_URL, AWS_*, HOME and XDG_* never reach it, and every process is
@@ -162,7 +175,10 @@ base_env=(
 
 # loadgen_env adds what loadgen needs: the root, the go toolchain for `loadgen tables`
 # (`go tool pprof`), this script's path and the run's lock token, for `loadgen run -restart-at`'s
-# `stack.sh restart-dispatch`, and LOADTEST_NO_RESUME when it is set.
+# `stack.sh restart-dispatch`, LOADTEST_NO_RESUME when it is set, and the two CPU lists, the
+# generator's as check_cpu_lists settled it, which `loadgen run` records and its restart-dispatch
+# pins Dispatch to, with the server list's CPU count (LOADTEST_SERVER_CPU_COUNT, server_cpu_count),
+# which `loadgen run` holds Dispatch's GOMAXPROCS to.
 loadgen_env() {
   local gobin
   gobin=$(command -v go || true)
@@ -171,13 +187,18 @@ loadgen_env() {
   printf '%s\n' "${base_env[@]:1}" "PATH=$path" "LOADTEST_ROOT=$ROOT" "LOADTEST_STACK_SH=$here/stack.sh"
   [ -z "${LOADTEST_LOCK_TOKEN:-}" ] || printf '%s\n' "LOADTEST_LOCK_TOKEN=$LOADTEST_LOCK_TOKEN"
   [ -z "${LOADTEST_NO_RESUME:-}" ] || printf '%s\n' "LOADTEST_NO_RESUME=$LOADTEST_NO_RESUME"
+  [ -z "${LOADTEST_SERVER_CPUS:-}" ] ||
+    printf '%s\n' "LOADTEST_SERVER_CPUS=$LOADTEST_SERVER_CPUS" "LOADTEST_SERVER_CPU_COUNT=$(server_cpu_count)"
+  [ -z "${LOADTEST_GENERATOR_CPUS:-}" ] || printf '%s\n' "LOADTEST_GENERATOR_CPUS=$LOADTEST_GENERATOR_CPUS"
 }
 
-# loadgen runs the stack's loadgen binary under the stack's environment, from the root.
+# loadgen runs the stack's loadgen binary under the stack's environment, from the root, pinned to
+# LOADTEST_GENERATOR_CPUS when it is set.
 loadgen() {
-  local envs
+  local envs pin
   mapfile -t envs < <(loadgen_env)
-  (cd -- "$ROOT" && env -i "${envs[@]}" "$BIN/loadgen" "$@")
+  mapfile -t pin < <(pin_words "${LOADTEST_GENERATOR_CPUS:-}")
+  (cd -- "$ROOT" && env -i "${envs[@]}" "${pin[@]}" "$BIN/loadgen" "$@")
 }
 
 # psql_db DB ARGS...: a psql client on the stack's Postgres, no ~/.psqlrc, no PG* from this shell.
@@ -198,6 +219,12 @@ need_stack() { [ -f "$STACK" ] || die "$STACK does not exist; run stack.sh setup
 port() {
   need_stack
   jq -er --arg n "$1" '.ports[$n]' "$STACK"
+}
+
+# recorded_ports: the ports stack.json records, "KEY PORT" a line, as stack_ports prints them.
+recorded_ports() {
+  need_stack
+  jq -r '(.ports // {}) | to_entries[] | "\(.key) \(.value)"' "$STACK"
 }
 
 stack_name() { jq -er .name "$STACK"; }
@@ -225,8 +252,9 @@ set_pid() { stack_set '.pids[$n] = $p' --arg n "$1" --argjson p "$2"; }
 # LOADTEST_*_PORT). A later setup keeps the ports the file records and moves only those whose
 # variable this environment sets, and those inside the ephemeral range (port_in_ephemeral), which a
 # stack recorded before its blocks moved below that range holds: those take this root's default. So
-# a rerun with no port variable set keeps the stack's ports; it refuses to move a port while the
-# stack runs. The name, tokens and pids are kept.
+# a rerun with no port variable set keeps the stack's ports. It adds a port key that stack.json
+# lacks (one that a newer stack.sh added, such as metrics) even while the stack runs, but refuses
+# to move or drop a port stack.json holds while the stack runs. The name, tokens and pids are kept.
 write_stack_json() {
   local ports k p var defaults args=()
   defaults=$(stack_ports "$ROOT") || die "no block of the stack's ports fits below this machine's ephemeral range (common.sh, port_base, says why above)"
@@ -257,9 +285,13 @@ write_stack_json() {
   done <<<"$defaults"
   ports=$(jq -n "${args[@]}" '$ARGS.named')
   if [ "$(jq -c .ports "$STACK")" != "$(jq -c . <<<"$ports")" ]; then
-    for k in "${PROCESSES[@]}"; do
-      running "$k" && die "the port variables in the environment, or the ephemeral range, move ports of $STACK while $k is running; stack.sh stop first"
-    done
+    local moved
+    moved=$(jq -r --argjson ports "$ports" '.ports | to_entries | map(select($ports[.key] != .value) | .key) | join(", ")' "$STACK")
+    if [ -n "$moved" ]; then
+      for k in "${PROCESSES[@]}"; do
+        running "$k" && die "the port variables in the environment, or the ephemeral range, move ports of $STACK ($moved) while $k is running; stack.sh stop first"
+      done
+    fi
     stack_set '.ports = $ports' --argjson ports "$ports"
     note "ports in $STACK updated from the environment and the ephemeral range ($(ephemeral_range)): $(jq -c . <<<"$ports")"
   fi
@@ -304,7 +336,8 @@ port_open() { (: <"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
 
 # spawn [--append] NAME LOG ENV_ARRAY CMD...: start CMD in its own session under `env -i` with the
 # named environment, its output to LOG (appended with --append, else LOG is truncated), and record
-# its pid in NAME's pidfile.
+# its pid in NAME's pidfile. CMD runs under `taskset -c LOADTEST_SERVER_CPUS` when that list is
+# set (server_cpus_check).
 spawn() {
   local append=false
   if [ "$1" = --append ]; then
@@ -314,16 +347,19 @@ spawn() {
   local name=$1 log=$2
   local -n spawn_env=$3
   shift 3
-  local f
+  server_cpus_check "$name"
+  local f pin
+  mapfile -t pin < <(pin_words "${LOADTEST_SERVER_CPUS:-}")
   f=$(pidfile "$name")
   mkdir -p -- "$RUN" "$(dirname -- "$log")" "$ROOT/tmp"
   rm -f -- "$f"
   $append || : >"$log"
-  # The shell writes its own pid and execs CMD, so the pidfile names CMD's process. Descriptor 9,
-  # the run lock (common.sh), is closed, so a stack process never holds the lock.
+  # The shell writes its own pid and execs CMD (through taskset, which execs it in turn), so the
+  # pidfile names CMD's process. Descriptor 9, the run lock (common.sh), is closed, so a stack
+  # process never holds the lock.
   # shellcheck disable=SC2016
   setsid -f env -i "${spawn_env[@]}" /bin/sh -c 'echo "$$" >"$0.tmp" && mv -f -- "$0.tmp" "$0" && exec "$@"' \
-    "$f" "$@" >>"$log" 2>&1 </dev/null 9>&-
+    "$f" "${pin[@]}" "$@" >>"$log" 2>&1 </dev/null 9>&-
   # Wait until the pidfile names a process running NAME's binary (the shell has exec'd).
   local i
   for ((i = 0; i < 100; i++)); do
@@ -332,6 +368,24 @@ spawn() {
   done
   tail -n 40 -- "$log" >&2 || true
   die "$name did not start; see $log"
+}
+
+# server_cpus_check NAME: every server process of the stack runs on one CPU list. stack.json's
+# server_cpus is the list the running processes started on; NAME (a process about to start, or
+# "stack.sh <command>" for a whole command, before it stops anything) is refused when another
+# stack process still runs and that list is not LOADTEST_SERVER_CPUS, since a reset restarts
+# Dispatch, NATS and the listener but leaves Postgres and the proxy running on the list they
+# started with. Otherwise LOADTEST_SERVER_CPUS becomes the stack's list.
+server_cpus_check() {
+  local name=$1 p others="" recorded want=${LOADTEST_SERVER_CPUS:-}
+  for p in "${PROCESSES[@]}"; do
+    if [ "$p" != "$name" ] && running "$p"; then others+="${others:+, }$p"; fi
+  done
+  recorded=$(jq -r '.server_cpus // ""' "$STACK")
+  if [ -n "$others" ] && [ "$recorded" != "$want" ]; then
+    die "$name would start on LOADTEST_SERVER_CPUS='$want', and the stack's running processes ($others) started on '$recorded' ('' is unpinned): the server side runs on one CPU list. Run stack.sh stop, then start the stack again with the list you want"
+  fi
+  [ "$recorded" = "$want" ] || stack_set '.server_cpus = $c' --arg c "$want"
 }
 
 # wait_for WHAT SECONDS NAME LOG CMD...: poll CMD every 0.5 s until it succeeds; fail with LOG's tail
@@ -410,7 +464,7 @@ port_holder() {
 # check_port NAME PORT_KEY: refuse a port another process holds, naming it when this PID namespace
 # can see it, and saying that it cannot when it cannot. A port this namespace cannot see is most
 # often another Legion role of the pod whose LOADTEST_ROOT hashed into this root's block of ports
-# (common.sh: a block out of 200, so about 1 pair of roots in 200 collides), and then all 7 ports
+# (common.sh: a block out of 200, so about 1 pair of roots in 200 collides), and then all 9 ports
 # are the same, so the refusal names the block and both remedies. It says that only of a port this
 # root's block still sets: a port stack.json recorded under another block, or one a LOADTEST_*_PORT
 # overrides, is held by whoever holds it, which this root's block says nothing about. It refuses
@@ -429,14 +483,14 @@ check_port() {
   block=$(port_block "$LOADTEST_ROOT")
   [ "$p" = "$(default_port "$key" "$block")" ] ||
     die "port $p ($key, for $name) is already in use, and no process of this PID namespace holds it: another Legion role of this pod, or another PID namespace, may hold it, in the network namespace they share. This port is not the default of this root's port block $block (stack.json records it, or ${PORT_VAR[$key]} sets it). Stop whatever holds it and rerun stack.sh start, or set ${PORT_VAR[$key]} to a port no one holds and rerun stack.sh setup with it set, then stack.sh start (start reads the ports stack.json records, so a port variable takes effect only through setup)"
-  die "port $p ($key, for $name) is already in use, and no process of this PID namespace holds it: another Legion role of this pod, or another PID namespace, may hold it, in the network namespace they share. This root is in port block $block of $PORT_BLOCKS (the block is the hash of $LOADTEST_ROOT modulo $PORT_BLOCKS), and a second root in block $block holds these same 7 ports. Stop that stack from the role that started it and rerun stack.sh start; or set the LOADTEST_*_PORT variables (${PORT_VAR[$key]} for this one) to ports no one holds and rerun stack.sh setup with them set, then stack.sh start (start reads the ports stack.json records, so a port variable takes effect only through setup); or move this stack to another LOADTEST_ROOT, which picks another block with probability $((PORT_BLOCKS - 1))/$PORT_BLOCKS, and run stack.sh setup and stack.sh start there"
+  die "port $p ($key, for $name) is already in use, and no process of this PID namespace holds it: another Legion role of this pod, or another PID namespace, may hold it, in the network namespace they share. This root is in port block $block of $PORT_BLOCKS (the block is the hash of $LOADTEST_ROOT modulo $PORT_BLOCKS), and a second root in block $block holds these same 10 ports. Stop that stack from the role that started it and rerun stack.sh start; or set the LOADTEST_*_PORT variables (${PORT_VAR[$key]} for this one) to ports no one holds and rerun stack.sh setup with them set, then stack.sh start (start reads the ports stack.json records, so a port variable takes effect only through setup); or move this stack to another LOADTEST_ROOT, which picks another block with probability $((PORT_BLOCKS - 1))/$PORT_BLOCKS, and run stack.sh setup and stack.sh start there"
 }
 
 ports_of() {
   case $1 in
     proxy) printf '%s\n' proxy proxy_stats ;;
     nats) printf '%s\n' nats nats_monitor ;;
-    dispatch) printf '%s\n' dispatch pprof ;;
+    dispatch) printf '%s\n' dispatch pprof metrics ;;
     *) printf '%s\n' "$1" ;;
   esac
 }
@@ -545,13 +599,6 @@ start_envoy_proxy() {
   note "envoy_proxy pid $(pid_of envoy_proxy) on 127.0.0.1:$(port envoy_proxy) toward the listener (rtt $rtt)"
 }
 
-# gomaxprocs: LOADTEST_GOMAXPROCS (default: nproc), refused unless a positive integer.
-gomaxprocs() {
-  local n=${LOADTEST_GOMAXPROCS:-$(nproc)}
-  [[ $n =~ ^[1-9][0-9]*$ ]] || die "LOADTEST_GOMAXPROCS='$n' is not a positive integer"
-  printf '%s\n' "$n"
-}
-
 # start_dispatch LOG [BINARY [DB [SECONDS]]]: BINARY (default $BIN/envoy-dispatch) on database DB
 # (default dispatch), through the latency proxy unless LOADTEST_PG_DIRECT=1, and with ENVOY_URL
 # through envoy_proxy when LOADTEST_ENVOY_RTT is set; waits up to SECONDS (default 120) for
@@ -577,6 +624,7 @@ launch_dispatch() {
   procs=$(gomaxprocs) || exit 1
   check_port dispatch dispatch
   check_port dispatch pprof
+  check_port dispatch metrics
   local pg_port envoy_port
   pg_port=$(port proxy)
   if [ "$direct" = true ]; then
@@ -599,9 +647,10 @@ launch_dispatch() {
   mkdir -p -- "$webdist" "$STACK_HOME"
   # scripts/e2e/dispatch-session-settings.sh's Dispatch, on the stack's ports and tokens. No
   # DISPATCH_SIGNING_KEY: Dispatch keeps its key under the stack's HOME (XDG_DATA_HOME), so it is the
-  # same across steps. No AWS_*: no Bedrock calls. Of the settings below, the only one 35efd326 (the
-  # replay seed's build) lacks is DISPATCH_PPROF_PORT: it has no pprof.go, so the overlay's
-  # LOADTEST_DISPATCH_PPROF_PORT stands in for it.
+  # same across steps. No AWS_*: no Bedrock calls. DISPATCH_METRICS_ADDR serves the /metrics that the
+  # 5 s sampler scrapes; a build older than that endpoint ignores it. Of the settings below, the only
+  # one 35efd326 (the replay seed's build) lacks is DISPATCH_PPROF_PORT: it has no pprof.go, so the
+  # overlay's LOADTEST_DISPATCH_PPROF_PORT stands in for it.
   # shellcheck disable=SC2034
   local dispatch_env=("${base_env[@]}"
     "DATABASE_URL=postgres://postgres@127.0.0.1:$pg_port/$db?sslmode=disable"
@@ -613,6 +662,7 @@ launch_dispatch() {
     "DISPATCH_SERVER_URL=http://127.0.0.1:$(port dispatch)"
     "DISPATCH_WEB_DIST=$webdist"
     "$pprof_var=$(port pprof)"
+    "DISPATCH_METRICS_ADDR=127.0.0.1:$(port metrics)"
     "GOMAXPROCS=$procs"
     "NATS_URLS=nats://127.0.0.1:$(port nats)"
     "ENVOY_URL=http://127.0.0.1:$envoy_port"
@@ -636,7 +686,7 @@ launch_dispatch() {
   stack_set '.pg_direct = $d | .envoy_rtt = $r | .dispatch_log = $l | .dispatch_binary = $b | .dispatch_db = $db | .dispatch_healthz_seconds = $s' \
     --argjson d "$direct" --arg r "$rtt" --arg l "$log" --arg b "$binary" --arg db "$db" --argjson s "$healthz_seconds"
   wait_for "Dispatch /healthz to report ok and NATS" "$healthz_seconds" dispatch "$log" dispatch_healthy
-  note "dispatch pid $(pid_of dispatch) ($binary, database $db, GOMAXPROCS $procs) on 127.0.0.1:$(port dispatch), pprof $(port pprof), postgres via port $pg_port, listener via port $envoy_port; log $log"
+  note "dispatch pid $(pid_of dispatch) ($binary, database $db, GOMAXPROCS $procs) on 127.0.0.1:$(port dispatch), pprof $(port pprof), metrics $(port metrics), postgres via port $pg_port, listener via port $envoy_port; log $log"
 }
 
 # ---- builds ------------------------------------------------------------------------------------------
@@ -801,12 +851,15 @@ log_line_prefix = '%m [%p] %a '
 EOF
   fi
   write_stack_json
+  check_ephemeral_ports "$(recorded_ports)"
 }
 
 cmd_start() {
   need_stack
   [ -f "$PGDATA/PG_VERSION" ] || die "no Postgres data directory at $PGDATA; run stack.sh setup first"
-  # Every port a stopped process needs is checked before anything starts.
+  # Every port a stopped process needs is checked before anything starts (check_port): free here,
+  # and outside the range the kernel gives to outbound connections (a stack.json from before the
+  # port base moved below that range still records one inside it, until a setup moves it).
   local p k
   for p in "${START_ORDER[@]}"; do
     running "$p" && continue
@@ -1043,6 +1096,21 @@ cmd_status() {
 
 case ${1:-} in
   setup | start | seed | reset | restart-dispatch | stop | replay-seed-patch-check | replay-seed | replay-get | replay-prepare) lock_root "$ROOT" ;;
+esac
+case ${1:-} in
+  stop | status | build-info | '') ;;
+  *) check_cpu_lists ;;
+esac
+# A command that starts stack processes is refused on another server list than the running
+# processes' before it stops any of them (a reset stops NATS, the listener and Dispatch first), and
+# one that starts Dispatch on a LOADTEST_GOMAXPROCS that is not that list's CPU count (gomaxprocs).
+case ${1:-} in
+  start | seed | reset | restart-dispatch | replay-seed | replay-get | replay-prepare)
+    [ ! -f "$STACK" ] || server_cpus_check "stack.sh $1"
+    ;;
+esac
+case ${1:-} in
+  seed | reset | restart-dispatch | replay-seed | replay-prepare) gomaxprocs >/dev/null ;;
 esac
 case ${1:-} in
   setup) cmd_setup ;;

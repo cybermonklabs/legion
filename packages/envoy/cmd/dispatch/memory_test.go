@@ -25,18 +25,20 @@ import (
 const (
 	// requestMemoryBound is the most one request may raise a fresh server's resident memory above
 	// what it held idle, and concurrentMemoryBound the most two at once may (LEGION-481). Production
-	// runs one task of 4,096 MiB. Every measured server collects at GOGC=25 (memoryHarness.start),
-	// so what these hold is the memory a request holds plus the collector's margin at that
-	// setting, and not the resident memory production shows at Go's default GOGC=100, where the
-	// collector lets the heap grow to twice the live set before it collects and a request can
-	// raise resident memory by up to about twice what it holds. Neither number changes for it.
+	// runs one container of 16 CPU and 20 GiB (agent-infra dispatch/Pulumi.prod.yaml, appCpu and
+	// appMemory). Every measured server collects at GOGC=25 (memoryHarness.start), so what these
+	// hold is the memory a request holds plus the collector's margin at that setting, and not the
+	// resident memory production shows at Go's default GOGC=100, where the collector lets the heap
+	// grow to twice the live set before it collects and a request can raise resident memory by up
+	// to about twice what it holds. Neither number changes for it.
 	requestMemoryBound    = 256 << 20
 	concurrentMemoryBound = 512 << 20
 	documentCap           = 1 << 20
-	// documentReadBudgetForTest mirrors docs.documentReadBudget, the cold reads' cache budget of a
-	// process with no Go memory limit, which the server this test starts runs under and reports
-	// (TestColdReadCacheEvictionPlateaus reads it back). The cache's test hook supplies each
-	// entry's real accounting weight, so this process can build two complete cache fills.
+	// documentReadBudgetForTest mirrors the cold reads' cache budget of the server this test
+	// starts: docs.readBudgetFor's sixteenth of the 4 GiB GOMEMLIMIT every measured server runs
+	// under (memoryHarness.start), whatever cgroup limit the box puts it in, which that server
+	// reports (TestColdReadCacheEvictionPlateaus reads it back). The cache's test hook supplies
+	// each entry's real accounting weight, so this process can build two complete cache fills.
 	documentReadBudgetForTest = 256 << 20
 	// marginEditAllowance is the most a margin filled to its bounds may add to the live heap a cold
 	// edit of its document holds (coldEditLiveHeap). Read that way on a 288-CPU host, two cold edits
@@ -365,7 +367,7 @@ func TestTwoUploadsAtOnceStayWithinTheMemoryBound(t *testing.T) {
 // one inline node, held 565 MiB for two reads and 1,190 MiB for four, images, of which four cold
 // reads held up to 1,044 MiB while an image weighed one, and escaped syntax, of which four cold
 // reads of a stored `\)\_` held 973 MiB before an escape weighed an element. Four reads at once are
-// logged beside them, the production task being 4,096 MiB.
+// logged beside them, production's container being 20 GiB.
 func TestConcurrentColdReadsStayWithinTheMemoryBound(t *testing.T) {
 	memory := newMemoryHarness(t)
 	var shapes []admittedShape

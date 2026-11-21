@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // work recomputes g's dirty views and the expired ones, one at a time, and keeps the freshness
@@ -222,18 +223,20 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 	h.finishRecompute(spec, cause, started, read.prs, read.runs, subscribers, sent)
 }
 
-// read is recompute's read and compute, outside the hub's lock, on g's context. Once it holds the
-// newest change position it takes over the view's marks, under the lock: every change, event and
-// subscribe that marked the view until then was committed before the reads that follow, which
-// answer it, so it clears dirty, and from there a change at or before the position marks nothing
-// (readingSeq) while what the intake hears about the view is kept for recompute to judge the
-// read's answer by (reading, recheckHeardLocked). A reset of the change log since the recompute
-// began leaves dirty set: the position may name the old log, so the marks are taken over only
-// while the generation stands at the epoch the recompute read.
+// read is recompute's read and compute, outside the hub's lock, on g's context and through the
+// live pool (liveRead). Once it holds the newest change position it takes over the view's marks,
+// under the lock: every change, event and subscribe that marked the view until then was committed
+// before the reads that follow, which answer it, so it clears dirty, and from there a change at or
+// before the position marks nothing (readingSeq) while what the intake hears about the view is
+// kept for recompute to judge the read's answer by (reading, recheckHeardLocked). A reset of the
+// change log since the recompute began leaves dirty set: the position may name the old log, so the
+// marks are taken over only while the generation stands at the epoch the recompute read.
 func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLiveSpec, epoch int64) (deliveryViewRead, error) {
-	ctx, pool := g.readContext(), h.server.deps.Store.Pool
 	var read deliveryViewRead
-	var err error
+	ctx, pool, err := h.liveRead(g)
+	if err != nil {
+		return read, err
+	}
 	if read.seq, err = delivery.LatestChangeSeq(ctx, pool); err != nil {
 		return read, err
 	}
@@ -253,7 +256,7 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 		}
 	}
 	now := h.clock.Now()
-	body, err := spec.classes().read(h, ctx, spec, now, &read)
+	body, err := spec.classes().read(h, ctx, pool, spec, now, &read)
 	if err != nil {
 		return read, err
 	}
@@ -262,14 +265,15 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 }
 
 // readLegionBoardView is a Legion board's read: the project's own daemon state as the sampler
-// recorded it. It reads no delivery settings — its own are the project's Legion setting, and a
-// deployment that configured one and not the other still shows the board. A project that does
-// not exist is loadProject's refusal, as GET /api/v1/projects/{key}/legion/board answers it.
-func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
-	if _, err := h.server.loadProject(ctx, h.server.deps.Store.Pool, spec.project); err != nil {
+// recorded it, read through pool, the live pool (liveRead), as every view's read is. It reads no
+// delivery settings — its own are the project's Legion setting, and a deployment that configured
+// one and not the other still shows the board. A project that does not exist is loadProject's
+// refusal, as GET /api/v1/projects/{key}/legion/board answers it.
+func (h *deliveryHub) readLegionBoardView(ctx context.Context, pool *store.Pool, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
+	if _, err := h.server.loadProject(ctx, pool, spec.project); err != nil {
 		return nil, err
 	}
-	board, err := h.server.readLegionBoard(ctx, spec.project)
+	board, err := h.server.readLegionBoard(ctx, pool, spec.project)
 	if err != nil {
 		return nil, err
 	}
@@ -279,10 +283,10 @@ func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLive
 	return legionBoardCompute(board, now), nil
 }
 
-// readPipelineView is a pipeline view's read: the delivery settings and the runs, jobs and merges
-// of the seven days ending on its at, or on the present for a view that names none.
-func (h *deliveryHub) readPipelineView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
-	pool := h.server.deps.Store.Pool
+// readPipelineView is a pipeline view's read, through pool, the live pool (liveRead): the delivery
+// settings and the runs, jobs and merges of the seven days ending on its at, or on the present for
+// a view that names none.
+func (h *deliveryHub) readPipelineView(ctx context.Context, pool *store.Pool, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	var err error
 	if read.settings, err = delivery.GetSettings(ctx, pool); err != nil {
 		return nil, err
@@ -291,7 +295,7 @@ func (h *deliveryHub) readPipelineView(ctx context.Context, spec deliveryLiveSpe
 	if spec.at != nil {
 		read.at = *spec.at
 	}
-	if read.pipe, err = h.server.readPipelinePopulation(ctx, read.settings, read.at); err != nil {
+	if read.pipe, err = h.server.readPipelinePopulation(ctx, pool, read.settings, read.at); err != nil {
 		return nil, err
 	}
 	body := deliveryPipelineCompute(read.settings, read.pipe, read.at, now)
@@ -304,10 +308,10 @@ func (h *deliveryHub) readPipelineView(ctx context.Context, spec deliveryLiveSpe
 	return body, nil
 }
 
-// readDeliveryView is a timeline or measures view's read: the delivery settings, the population
-// of its window and facets, and the ancestors of every issue that population names.
-func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
-	pool := h.server.deps.Store.Pool
+// readDeliveryView is a timeline or measures view's read, through pool, the live pool (liveRead):
+// the delivery settings, the population of its window and facets, and the ancestors of every
+// issue that population names.
+func (h *deliveryHub) readDeliveryView(ctx context.Context, pool *store.Pool, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	var err error
 	if read.settings, err = delivery.GetSettings(ctx, pool); err != nil {
 		return nil, err
@@ -316,7 +320,7 @@ func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpe
 	if spec.preset > 0 {
 		from, to = now.Add(-spec.days()), now
 	}
-	if read.pop, err = h.server.readDeliveryPopulation(ctx, read.settings, from, to, spec.query, spec.kind == deliveryLiveTimeline); err != nil {
+	if read.pop, err = h.server.readDeliveryPopulation(ctx, pool, read.settings, from, to, spec.query, spec.kind == deliveryLiveTimeline); err != nil {
 		return nil, err
 	}
 	read.issues = map[string]struct{}{}
@@ -351,7 +355,9 @@ func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpe
 // expire answers a view whose preset window, or whose pipeline day, moved past something it holds,
 // reading nothing: the compute over the population as last read, narrowed to the window now, with
 // the settings that read held. The population and its read's start stay as read, and the next
-// expiry comes from the narrowed population.
+// expiry comes from the narrowed population. Reading nothing, it records no read position, so a
+// change caught up while it computes marks the view dirty as any other does (catchUpChanges) and
+// that mark stands through the expiry, which clears none.
 func (h *deliveryHub) expire(g *hubGeneration, view *deliveryView) {
 	started := time.Now()
 	h.mu.Lock()

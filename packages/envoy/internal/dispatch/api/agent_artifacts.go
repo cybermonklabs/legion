@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -61,9 +62,9 @@ func (target artifactTarget) ownerLookup(ownerQuery, agentQuery string) (query, 
 // lockAgentArtifacts serialises one conversation's uploads for the rest of tx. A conversation is
 // no owner with a lock of its own (store.LockOwner), so its uploads take their slugs and version
 // numbers one after another under this transaction-scoped advisory lock instead, as an issue's do
-// under the issue's owner lock.
+// under the issue's owner lock. Its wait is bounded as an owner lock's is (store.LockWithinBound).
 func lockAgentArtifacts(ctx context.Context, tx pgx.Tx, session string) error {
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('agent-artifacts:' || $1))`, session); err != nil {
+	if err := store.LockWithinBound(ctx, tx, `select pg_advisory_xact_lock(hashtext('agent-artifacts:' || $1))`, session); err != nil {
 		return fmt.Errorf("lock the agent's artifacts: %w", err)
 	}
 	return nil
@@ -101,7 +102,7 @@ func (s *server) uploadAgentArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	session, err := requestSessionID(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.uploadArtifactFor(w, r, artifactTarget{Session: session})

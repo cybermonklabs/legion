@@ -456,6 +456,96 @@ func TestRegistersWaitEndsWithItsContext(t *testing.T) {
 	}
 }
 
+// Behind a pooler that drops startup parameters, the database role's lock_timeout - which
+// cmd/dispatch/README.md has such a deployment set for the request pool's sake - reaches the
+// registry's connection, whose own startup parameter asks for no bound. The registration's
+// transaction sets none for itself (store.RawPool.BeginWaitingForLocks), so a registration that
+// meets the registry's lock held past the role's bound waits until the lock is free and registers
+// then, as it does with no such setting, rather than failing with lock_not_available (55P03),
+// which ends the boot. The registry pool opens without its lock_timeout parameter here
+// (store.Pool.DropLockTimeoutParameterForTest), as such a pooler opens it, and the role's setting
+// is the one of this test's own database alone, so no other test's session meets it.
+func TestARegistrationWaitsForTheRegistryLockPastARoleLockTimeout(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	const roleSetting, held = "1s", 3 * time.Second
+	if _, err := database.Pool.Exec(ctx, `do $$ begin
+		execute format('alter role current_user in database %I set lock_timeout = %L', current_database(), '`+roleSetting+`');
+	end $$`); err != nil {
+		t.Fatalf("set lock_timeout on the test's role in its own database: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := database.Pool.Exec(ctx, `do $$ begin
+			execute format('alter role current_user in database %I reset lock_timeout', current_database());
+		end $$`); err != nil {
+			t.Errorf("reset the role's lock_timeout in the test's database: %v", err)
+		}
+	})
+	database.Pool.DropLockTimeoutParameterForTest(store.RegistryPool)
+
+	holder, err := pgx.Connect(ctx, database.Pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("connect the session that holds the registry's lock: %v", err)
+	}
+	t.Cleanup(func() { _ = holder.Close(ctx) })
+	gate, err := holder.Begin(ctx)
+	if err != nil {
+		t.Fatalf("open the transaction holding the registry's lock: %v", err)
+	}
+	if _, err := gate.Exec(ctx, `select pg_advisory_xact_lock($1)`, registryLock); err != nil {
+		t.Fatalf("take the registry's lock: %v", err)
+	}
+
+	type answer struct {
+		registration *Registration
+		err          error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		registration, err := register(t, database, "c1", "K0")
+		answered <- answer{registration, err}
+	}()
+	if waiting := storetest.WaitForLockWaiters(t, gate, 1, 10*time.Second); waiting < 1 {
+		select {
+		case got := <-answered:
+			t.Fatalf("the registration answered %v without queuing behind the registry's lock", got.err)
+		default:
+			t.Fatal("the registration did not queue behind the registry's lock within 10 s")
+		}
+	}
+	select {
+	case got := <-answered:
+		t.Fatalf("the registration answered %v while the registry's lock was held, before %v and past the role's lock_timeout of %s; want it to wait until the lock is free", got.err, held, roleSetting)
+	case <-time.After(held):
+	}
+	if err := gate.Rollback(ctx); err != nil {
+		t.Fatalf("release the registry's lock: %v", err)
+	}
+
+	var got answer
+	select {
+	case got = <-answered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the registration did not answer within 10 s of the registry's lock being released")
+	}
+	if got.err != nil {
+		t.Fatalf("the registration failed once the registry's lock was free: %v", got.err)
+	}
+	if ids := liveIDs(t, database); !slices.Equal(ids, []string{got.registration.ID}) {
+		t.Errorf("live = %v, want the registration %s", ids, got.registration.ID)
+	}
+	// What the registration waited past is the role's bound: the registry's session carries it,
+	// as a session behind a pooler that drops startup parameters does, and not the parameter's
+	// none.
+	var setting string
+	if err := got.registration.pool.QueryRow(ctx, `select current_setting('lock_timeout')`).Scan(&setting); err != nil {
+		t.Fatalf("read the registry connection's lock_timeout: %v", err)
+	}
+	if setting != roleSetting {
+		t.Errorf("the registry's connection carries lock_timeout = %q, want the role's %q", setting, roleSetting)
+	}
+}
+
 // underRegistryLock runs change in one transaction holding the registry's lock, so no heartbeat
 // lands between its statements: a row aged and a peer added there are what the next heartbeat
 // finds together.

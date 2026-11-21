@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -48,8 +47,11 @@ const (
 // hold's renewal's (store.LeaseCallers.ForAll), and answers the pool they are taken from, which is
 // the Config.Leases Run takes. The server reserves them while it wires itself, as every caller of
 // the lease pool does, so the count it checks against store.LeasePoolSize is the one the pool is
-// sized for.
-func ReserveLeases(callers *store.LeaseCallers) (*pgxpool.Pool, error) {
+// sized for. Every acquire on that pool is bounded, and one that waits its bound out is refused
+// with store.ErrPoolBusy: a batch or a read refused so fails its pass, which is tried again, a
+// try for the hold refused so is tried again as a standby's next try, and a renewal refused so
+// leaves the hold's loss deadline where it was, for the next renewal to move.
+func ReserveLeases(callers *store.LeaseCallers) (*store.RawPool, error) {
 	return callers.ForAll(fillCaller, fillRenewalCaller)
 }
 
@@ -58,7 +60,7 @@ type Config struct {
 	// Leases is the lease pool the fill takes its hold on, renews it on and writes its batches
 	// through (ReserveLeases): on a pool of its own, a batch waits for no request and a renewal
 	// waits for no batch.
-	Leases *pgxpool.Pool
+	Leases *store.RawPool
 	// Horizon is the process's one event horizon, which every pass reads the log up to.
 	Horizon *events.Horizon
 	// Latency is the statistic of the answers reads this process serves, which the server

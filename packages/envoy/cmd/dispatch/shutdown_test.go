@@ -53,8 +53,8 @@ import (
 
 // promptShutdown bounds a SIGTERM's whole ordered shutdown with a dashboard open. Closing the
 // sockets, finishing the requests in flight and settling one small document take milliseconds; a
-// connection that held the HTTP drain open would cost httpDrainBeforeDocuments, eleven seconds,
-// alone.
+// connection that held the HTTP drain open would hold it for its whole share of the shutdown's
+// deadline, six seconds, alone.
 const promptShutdown = 3 * time.Second
 
 // streamedSessionID is the session whose conversation the test's agent view watches; an agent
@@ -101,13 +101,13 @@ func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing
 	process.checkSettledAtShutdown(t, database, artifactID)
 }
 
-// A request in flight can hold the HTTP drain for its whole share of the budget, here a title change
-// queued behind another writer's lock on the issue. The document service starts once that share
-// ends, so the settlement owed by the edit before the signal still runs and commits. Settlement waits
-// on the same lock: the edit's own timer starts one two seconds in, during the drain, and Shutdown
-// starts another. The lock is released once Shutdown's is queued behind it too, or two seconds after
-// the document service started, which is ample for it to read what is owed; a release before that
-// read could let the timer's settlement commit first.
+// A request in flight can hold the HTTP drain for its whole share of the shutdown's deadline, here a
+// title change queued behind another writer's lock on the issue. The document service starts once
+// that share ends, so the settlement owed by the edit before the signal still runs and commits.
+// Settlement waits on the same lock: the edit's own timer starts one two seconds in, during the
+// drain, and Shutdown starts another. The lock is released once Shutdown's is queued behind it too,
+// or two seconds after the document service started, which is ample for it to read what is owed; a
+// release before that read could let the timer's settlement commit first.
 func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *testing.T) {
 	database := storetest.Open(t)
 	process := startDispatchProcess(t, database.Pool.Config().ConnString())
@@ -138,14 +138,20 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 	process.checkSettledAtShutdown(t, database, artifactID)
 }
 
-// A write in flight at SIGTERM can wait on a lock past the HTTP drain's share, the document
-// service's budget and the point a fixed shutdown bound would end it, here a title change behind
-// another writer that holds the issue for 27 seconds after the signal, 3 s inside the runtime's
-// kill. The database is answering, so Dispatch keeps the request's connection open until the write
-// commits and its answer is sent, and only then closes the pool, as the deferred close of the pool
-// before this shutdown order did.
+// A write in flight at SIGTERM can be waiting on another writer's lock, here a title change behind
+// another writer that holds the issue's owner lock. The database is answering, so Dispatch keeps
+// the request's connection open until the write commits and its answer is sent, and only then
+// closes the pool: a write still waiting when the signal comes is committed and answered before
+// exit. The signal comes about 2 s into the wait and the lock is let go 6 s into it: a write waits
+// on an owner lock no longer than that wait's bound (store's lockWait, ten seconds) and is refused
+// 503 past it, and the spawned process runs under that production bound, since the test's shorter
+// one rides a request's context (store.WithLockWaitForTest), which no request to another process
+// carries. So the hold stays 4 s inside the bound.
 func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.T) {
-	const lockHeldAfterSIGTERM = 27 * time.Second
+	const (
+		signalIntoTheWait  = 2 * time.Second
+		releaseIntoTheWait = 6 * time.Second
+	)
 	database := storetest.Open(t)
 	process := startDispatchProcess(t, database.Pool.Config().ConnString())
 	process.waitHealthy(t)
@@ -166,16 +172,19 @@ func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.
 	if waiting := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); waiting < 1 {
 		t.Fatalf("the title change never queued behind the issue lock:\n%s", process.Output.String())
 	}
+	queued := time.Now()
 
+	time.Sleep(time.Until(queued.Add(signalIntoTheWait)))
 	signalled := process.Terminate(t)
 	select {
 	case <-process.Exited:
 		t.Errorf("Dispatch exited %v after SIGTERM, with the write still waiting on the lock", time.Since(signalled))
-	case <-time.After(time.Until(signalled.Add(lockHeldAfterSIGTERM))):
+	case <-time.After(time.Until(queued.Add(releaseIntoTheWait))):
 	}
 	if err := holder.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the issue lock: %v", err)
 	}
+	t.Logf("released the issue lock %v into the title change's wait, %v after SIGTERM", time.Since(queued), time.Since(signalled))
 	process.WaitExit(t, "SIGTERM")
 	t.Logf("exited %v after SIGTERM", time.Since(signalled))
 	select {
@@ -484,11 +493,13 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
-		shutdown(server.Config, documentService, database.Pool, func() {
+		stopping, stopped := shutdownContext()
+		defer stopped()
+		shutdown(stopping, server.Config, documentService, database.Pool, func() {
 			close(entered)
 			<-release
 			background.Wait()
-		}, func() {}, func() {}, nil)
+		}, func() {}, func(context.Context) {}, nil)
 	}()
 	select {
 	case <-entered:
@@ -619,7 +630,9 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		shutdown(server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped)
+		stopping, stopped := shutdownContext()
+		defer stopped()
+		shutdown(stopping, server.Config, documentService, database.Pool, background.Wait, func() {}, func(context.Context) {}, outboxStopped)
 	}()
 	select {
 	case <-done:
@@ -773,12 +786,16 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 	documentService := docs.New(docs.Deps{Store: database, Events: events.NewBroker()})
+	server := &http.Server{Handler: http.NotFoundHandler()}
 	served := make(chan error, 1)
 	go func() {
 		// As main does: the stop of the intakes, which begins as ctx is cancelled, is what shutdown
 		// waits for beside the delivery sockets.
-		served <- serveUntilStopped(ctx, cancel, &http.Server{Handler: http.NotFoundHandler()}, listener, documentService,
-			database.Pool, func() {}, stopIntakes, func() {}, nil, nil)
+		err := serveUntilStopped(ctx, cancel, server, listener, nil)
+		stopping, stopped := shutdownContext()
+		defer stopped()
+		shutdown(stopping, server, documentService, database.Pool, func() {}, stopIntakes, func(context.Context) {}, nil)
+		served <- err
 	}()
 	cancel()
 	select {
@@ -809,6 +826,104 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 	if recorded == nil {
 		t.Fatalf("the message was acknowledged but its handler's writes never landed (last_event_at null): the pool closed "+
 			"under the handler; consumer delivered=%d ack_floor=%d", info.Delivered.Consumer, info.AckFloor.Consumer)
+	}
+}
+
+// backgroundHeldDeadline is the deadline TestAShutdownThatGivesUpOnItsBackgroundWorkStillStopsTheIntakes
+// gives its shutdown in place of production's 27 s (shutdownContext), so the row waits seconds for
+// the background stage it holds to run the deadline out.
+const backgroundHeldDeadline = 3 * time.Second
+
+// A shutdown whose background work - a keyed handler, a detached delivery, a live socket - is still
+// running at its deadline gives up on that work there, and must still have stopped the GitHub
+// intakes within the same deadline: their NATS clients closed and their holds released, so a
+// standby takes each durable over at once. Their stop began at the signal, and shutdown waits for
+// it beside the background work. Waited for only once the background work had ended, it was never
+// asked for on this path, and main's deferred stop only cancels once shutdown has run
+// (stopIntakesOnExit), so the clients stayed open to the exit and a hold whose hand-back the close
+// would have settled lapsed at its TTL instead.
+func TestAShutdownThatGivesUpOnItsBackgroundWorkStillStopsTheIntakes(t *testing.T) {
+	database := storetest.Open(t)
+	seedDeliverySettings(t, database)
+	_, natsURL := testnats.Start(t)
+	// The publisher owns the stream, as the server's does, so the intakes bind their durables.
+	publisher, err := bus.ConnectOwningStream([]string{natsURL})
+	if err != nil {
+		t.Fatalf("connect the publisher: %v", err)
+	}
+	t.Cleanup(publisher.Close)
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, "[]")
+	}))
+	t.Cleanup(github.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var mu sync.Mutex
+	var clients []*bus.Client
+	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
+		client, err := bus.Connect([]string{natsURL}, bus.WithName(name))
+		if err == nil {
+			mu.Lock()
+			clients = append(clients, client)
+			mu.Unlock()
+		}
+		return client, err
+	}, database.Pool, intakeLeasesOf(t, database.Pool), testGitHubApp(t, github.URL), events.NewBroker(), nil, nil)
+	if err != nil {
+		t.Fatalf("start the intakes: %v", err)
+	}
+	t.Cleanup(stopIntakes)
+	holdNames := make([]string, 0, len(deliveryDurables))
+	for _, durable := range deliveryDurables {
+		holdNames = append(holdNames, "delivery-intake-"+durable)
+	}
+	holds := func() int {
+		var held int
+		if err := database.Pool.QueryRow(context.Background(),
+			`select count(*) from duty_holds where name = any($1)`, holdNames).Scan(&held); err != nil {
+			t.Fatalf("read the intakes' holds: %v", err)
+		}
+		return held
+	}
+	waitUntil(t, 30*time.Second, "both intakes to hold and bind their durables", func() bool {
+		for _, durable := range deliveryDurables {
+			if info, err := publisher.JS().ConsumerInfo(bus.Stream, durable); err != nil || !info.PushBound {
+				return false
+			}
+		}
+		return holds() == len(holdNames)
+	})
+
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	documentService := docs.New(docs.Deps{Store: database, Events: events.NewBroker()})
+	server := &http.Server{Handler: http.NotFoundHandler()}
+	// The signal: the process context ends, and with it the intakes' Runs begin their stop.
+	cancel()
+	stopping, stopped := context.WithTimeout(context.Background(), backgroundHeldDeadline)
+	defer stopped()
+	began := time.Now()
+	shutdown(stopping, server, documentService, database.Pool, func() { <-release }, stopIntakes, func(context.Context) {}, nil)
+	if returned := time.Since(began); returned > backgroundHeldDeadline+time.Second {
+		t.Errorf("shutdown returned %v after it began with its background work held, want within its %v deadline and a second",
+			returned, backgroundHeldDeadline)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(clients) != len(deliveryDurables) {
+		t.Fatalf("the intakes connected %d NATS clients, want one per durable (%d)", len(clients), len(deliveryDurables))
+	}
+	for _, client := range clients {
+		if conn := client.Connection(); conn != nil && !conn.IsClosed() {
+			t.Errorf("an intake's NATS client (%s) is still open after a shutdown that gave up on its background work: the intakes' stop was never waited for",
+				conn.Opts.Name)
+		}
+	}
+	if held := holds(); held != 0 {
+		t.Errorf("%d of the intakes' holds outlived a shutdown that gave up on its background work, want each released", held)
 	}
 }
 
@@ -860,7 +975,7 @@ func TestAPanicAfterTheIntakesStartEndsTheProcess(t *testing.T) {
 	recovered := make(chan any, 1)
 	go func() {
 		defer func() { recovered <- recover() }()
-		defer stopIntakesOnExit(cancel, stopIntakes)
+		defer stopIntakesOnExit(cancel, stopIntakes, false)
 		panic(boot)
 	}()
 	select {
@@ -874,6 +989,413 @@ func TestAPanicAfterTheIntakesStartEndsTheProcess(t *testing.T) {
 	if ctx.Err() == nil {
 		t.Fatal("the deferred stop returned with the process context still live")
 	}
+}
+
+// heldIntakeConnection is the NATS connection the intake-close rows below hold: the events
+// intake's own client, which delivery.StartIntakes names so, and the first the intakes' stop
+// closes (stopIntakes).
+const heldIntakeConnection = "dispatch-intake"
+
+// deliveryHoldName is the duty hold the events intake delivers its durable under (the delivery
+// package's intakeHoldName of bus.DispatchDeliveryDurable).
+const deliveryHoldName = "delivery-intake-" + bus.DispatchDeliveryDurable
+
+// A deploy's SIGTERM can come while a write holds nats.go's connection lock on an intake's client,
+// as on a link that has stopped taking the client's bytes: the write waits out its one-minute
+// deadline (natsgo.DefaultFlusherTimeout), and the intakes' stop waits for that lock in
+// Client.Close. shutdown gives up on the intakes at its one deadline and says so; the process must
+// then write that line and exit on its own, within shutdownMargin of the deadline, before the
+// runtime kills it at stopGrace. main's deferred stop of the intakes waited for that same stop
+// (waitIntakes is a sync.OnceFunc, so a second call waits for the first), which kept the process
+// running past the deadline until the kill.
+func TestSIGTERMWithAnIntakesCloseHeldPastTheDeadlineExitsOnItsOwn(t *testing.T) {
+	intakes := startIntakesThroughWriteHold(t)
+	intakes.link.hold(t, heldIntakeConnection)
+	signalled := intakes.process.Terminate(t)
+	intakes.process.requireOwnExitWithinTheMargin(t, signalled, "its intake's close held")
+	intakes.process.requireShutdownGaveUpOnTheIntakes(t)
+}
+
+// main's rule for an intake's hold (the delivery package's heldDurable.stop): it is released only
+// once every hand-back the intake published has reached the server, since one landing after a
+// standby recreated the durable would move the standby's pending entry for that message. Here the
+// hand-back is one the intake makes before the signal - an envelope whose pull request's head row
+// could not be stored, handed back for redelivery (Intake.deliver) - while a write holds nats.go's
+// lock, so the hand-back waits for that lock, and so does Client.Close after the stop: Close is the
+// slow step. The process exits on its own at the shutdown's deadline with the hand-back never sent,
+// and must leave the hold where it is, renewed until the exit and live after it, to lapse at its
+// TTL; and no hand-back of the envelope may have reached the server.
+func TestAnIntakesHoldOutlivesTheProcessWhileItsHandBackHasNotReachedTheServer(t *testing.T) {
+	intakes := startIntakesThroughWriteHold(t)
+	ctx := context.Background()
+	answers := make(chan *natsgo.Msg, 64)
+	watcher := testnats.Connect(t, intakes.natsURL)
+	if _, err := watcher.ChanSubscribe("$JS.ACK."+bus.Stream+"."+bus.DispatchDeliveryDurable+".>", answers); err != nil {
+		t.Fatalf("watch the delivery durable's answers: %v", err)
+	}
+	if err := watcher.Flush(); err != nil {
+		t.Fatalf("flush the answers' watch: %v", err)
+	}
+	// The head write's first read, the repository's canonical name (refs.CanonicalRepo), waits
+	// behind this lock until the row cancels it, so the envelope is in its handler when the write
+	// is held, and the head write's failure, and so its hand-back, come after.
+	holder, err := intakes.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the repo_projects lock: %v", err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+	if _, err := holder.Exec(ctx, "lock table repo_projects in access exclusive mode"); err != nil {
+		t.Fatalf("lock repo_projects: %v", err)
+	}
+	publisher, err := bus.Connect([]string{intakes.natsURL}, bus.WithName("shutdown-test-publisher"))
+	if err != nil {
+		t.Fatalf("connect the publisher: %v", err)
+	}
+	t.Cleanup(publisher.Close)
+	payload, err := json.Marshal(map[string]string{
+		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "7",
+		"head_sha": "abc", "head_ref": "feature", "base_ref": "main",
+	})
+	if err != nil {
+		t.Fatalf("encode the payload: %v", err)
+	}
+	if err := publisher.Publish(contracts.Envelope{
+		EventID: "hold-pr-7", Source: "github", SourceEventID: "hold-pr-7", TraceID: "hold-pr-7",
+		Topic: contracts.GithubResourceSubject("acme", "widgets", "pr", "7"), Payload: string(payload), IssuedAt: time.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("publish the pull request: %v", err)
+	}
+	waitUntil(t, 30*time.Second, "the envelope's head read to wait behind the repo_projects lock", func() bool {
+		return canonicalRepoReadsWaiting(t, intakes.database, false) > 0
+	})
+	intakes.link.hold(t, heldIntakeConnection)
+	if cancelled := canonicalRepoReadsWaiting(t, intakes.database, true); cancelled == 0 {
+		t.Fatal("control: no head read waited behind the lock to be cancelled")
+	}
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatalf("release the repo_projects lock: %v", err)
+	}
+	intakes.process.waitForLog(t, 30*time.Second, `msg="dispatch delivery: a pull request's head row was not stored; handing the envelope back"`)
+	intakes.process.waitForLog(t, 30*time.Second, `msg="dispatch delivery: NATS did not answer a call in time, so it goes on without waiting for it"`,
+		`call="hand a message back for redelivery"`)
+
+	signalled := intakes.process.Terminate(t)
+	intakes.process.requireOwnExitWithinTheMargin(t, signalled, "its intake's close held and a hand-back waiting")
+	intakes.process.requireShutdownGaveUpOnTheIntakes(t)
+	if !intakes.process.logged("level=WARN", `msg="dispatch delivery: a hand-back has not reached NATS by the stop's deadline, so the intake's hold stays renewing until it does"`) {
+		t.Errorf("control: the intake's stop did not end with its hand-back still waiting for NATS:\n%s", intakes.process.Output.String())
+	}
+	var live bool
+	switch err := intakes.database.Pool.QueryRow(ctx, `select expires_at > now() from duty_holds where name = $1`, deliveryHoldName).Scan(&live); {
+	case errors.Is(err, pgx.ErrNoRows):
+		t.Errorf("the intake's hold was released with its hand-back never sent to the server")
+	case err != nil:
+		t.Fatalf("read the intake's hold: %v", err)
+	case !live:
+		t.Errorf("the intake's hold was lapsed at once with its hand-back never sent to the server, rather than left to its TTL")
+	}
+	if err := watcher.Flush(); err != nil {
+		t.Fatalf("flush the answers' watch: %v", err)
+	}
+	for len(answers) > 0 {
+		if answer := <-answers; strings.HasPrefix(string(answer.Data), "-NAK") {
+			t.Errorf("a hand-back of the envelope reached the server: %q on %s", answer.Data, answer.Subject)
+		}
+	}
+}
+
+// canonicalRepoRead is how refs.CanonicalRepo's statement, the head write's first read, begins in
+// pg_stat_activity, which keeps each backend's statement text.
+const canonicalRepoRead = "select coalesce((select max(rename.rename_target) from (%"
+
+// canonicalRepoReadsWaiting counts the backends whose canonical-name read waits for a lock, and
+// with cancel cancels each one's statement (pg_cancel_backend), so its caller fails.
+func canonicalRepoReadsWaiting(t *testing.T, database *store.Store, cancel bool) int {
+	t.Helper()
+	query := `select count(*) from pg_stat_activity where wait_event_type = 'Lock' and query like $1`
+	if cancel {
+		query += ` and pg_cancel_backend(pid)`
+	}
+	var count int
+	if err := database.Pool.QueryRow(context.Background(), query, canonicalRepoRead).Scan(&count); err != nil {
+		t.Fatalf("read the waiting canonical-name reads: %v", err)
+	}
+	return count
+}
+
+// intakesThroughWriteHold is a Dispatch process whose NATS connections all go through link, with a
+// GitHub App and the delivery settings, so both intakes have bound their durables. natsURL is the
+// server's own address, which the row's own clients use.
+type intakesThroughWriteHold struct {
+	database *store.Store
+	process  *dispatchProcess
+	link     *natsWriteHold
+	natsURL  string
+}
+
+func startIntakesThroughWriteHold(t *testing.T) intakesThroughWriteHold {
+	t.Helper()
+	database := storetest.Open(t)
+	seedDeliverySettings(t, database)
+	_, natsURL := testnats.Start(t)
+	link := startNATSWriteHold(t, natsURL)
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, "[]")
+	}))
+	t.Cleanup(github.Close)
+	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
+		NATSURL: link.url,
+		Env:     githubAppEnv(t, github.URL),
+	})
+	process.waitHealthy(t)
+	for _, durable := range deliveryDurables {
+		process.waitForLog(t, 30*time.Second, `msg="dispatch delivery: NATS consumer bound"`, "name="+durable)
+	}
+	return intakesThroughWriteHold{database: database, process: process, link: link, natsURL: natsURL}
+}
+
+// requireOwnExitWithinTheMargin waits for the process to exit until stopGrace after signalled,
+// where the runtime kills it, and kills it then as the runtime does. It fails the test unless the
+// process exited on its own, with 0, within shutdownMargin of the shutdown's deadline and one
+// second of slack for a loaded box, as TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget
+// allows. what names the row's condition.
+func (p *dispatchProcess) requireOwnExitWithinTheMargin(t *testing.T, signalled time.Time, what string) {
+	t.Helper()
+	select {
+	case <-p.Exited:
+	case <-time.After(time.Until(signalled.Add(stopGrace))):
+		_ = p.Cmd.Process.Kill()
+		<-p.Exited
+		t.Errorf("Dispatch with %s was still running stopGrace (%v) after SIGTERM, where the runtime kills it", what, stopGrace)
+		return
+	}
+	exited := time.Since(signalled)
+	t.Logf("exited %v after SIGTERM", exited)
+	if bound := stopGrace - shutdownMargin + time.Second; exited > bound {
+		t.Errorf("Dispatch with %s exited %v after SIGTERM, want within %v", what, exited, bound)
+	}
+	if code := p.Cmd.ProcessState.ExitCode(); code != 0 {
+		t.Errorf("Dispatch with %s exited %d, want 0", what, code)
+	}
+}
+
+// requireShutdownGaveUpOnTheIntakes fails the test unless the process's output, whole once it has
+// exited, holds shutdown's line for intakes it gave up on at its deadline: written, so whoever
+// reads the log learns why the process exited with them still stopping. It logs the process's
+// WARN lines from the signal on, as the row's record of the stop.
+func (p *dispatchProcess) requireShutdownGaveUpOnTheIntakes(t *testing.T) {
+	t.Helper()
+	if !p.logged("level=WARN", `msg="dispatch: exit with the GitHub intakes still stopping at the shutdown deadline"`) {
+		t.Errorf("Dispatch's log does not say its shutdown gave up on the GitHub intakes at its deadline:\n%s", p.Output.String())
+	}
+	output := p.Output.String()
+	if at := strings.Index(output, `msg="dispatch: shutting down"`); at >= 0 {
+		output = output[at:]
+	}
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(line, "level=WARN") {
+			t.Logf("Dispatch logged: %s", line)
+		}
+	}
+}
+
+// holdWriteStall is how long one write of PINGs to a held client may wait before natsWriteHold.hold
+// takes the client to have stopped reading: its reader waits for nats.go's connection lock, which
+// the PONG write it cannot finish holds. A client that reads takes such a write in microseconds.
+const holdWriteStall = 2 * time.Second
+
+// natsWriteHold relays each NATS connection of a Dispatch process to the server at target, and can
+// hold nats.go's connection lock on one of them with a write (hold), as a link that stops taking a
+// client's bytes does. It is testnats.HandshakeHold.HoldWriteLock for a client in another process,
+// which a row cannot make publish: hold stops reading what the client sends and feeds it PINGs,
+// each of which it answers with a PONG, until its socket's buffers are full and nats.go's write
+// blocks under the lock, to its one-minute write deadline. A PONG among the PINGs answers the
+// client's own pings, so its stale-connection check (bus's one-second pings) does not drop the
+// connection before the write blocks. A held connection stays open to its client whatever the
+// server does, so nothing but that deadline ends the write.
+type natsWriteHold struct {
+	url      string
+	target   string
+	listener net.Listener
+	done     chan struct{}
+	mu       sync.Mutex
+	all      []*relayedNATSLink
+	// named is each relayed connection by the name its client's CONNECT gave, the latest of a name.
+	named map[string]*relayedNATSLink
+}
+
+// relayedNATSLink is one client's connection through a natsWriteHold and its own to the server.
+type relayedNATSLink struct {
+	client, server net.Conn
+	// writes keeps the server's bytes and hold's PINGs from interleaving on the way to the client.
+	writes sync.Mutex
+	frozen chan struct{}
+	freeze sync.Once
+}
+
+// startNATSWriteHold relays to the NATS server at natsURL on a loopback port of its own, until the
+// test ends; url is that server through the relay.
+func startNATSWriteHold(t *testing.T, natsURL string) *natsWriteHold {
+	t.Helper()
+	target, err := url.Parse(natsURL)
+	if err != nil || target.Host == "" {
+		t.Fatalf("read the NATS URL %q the write hold relays to: %v", natsURL, err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the write hold: %v", err)
+	}
+	h := &natsWriteHold{
+		url: "nats://" + listener.Addr().String(), target: target.Host, listener: listener,
+		done: make(chan struct{}), named: map[string]*relayedNATSLink{},
+	}
+	t.Cleanup(func() {
+		close(h.done)
+		_ = listener.Close()
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		for _, link := range h.all {
+			_ = link.client.Close()
+			_ = link.server.Close()
+		}
+	})
+	go h.serve()
+	return h
+}
+
+func (h *natsWriteHold) serve() {
+	for {
+		client, err := h.listener.Accept()
+		if err != nil {
+			return
+		}
+		server, err := net.Dial("tcp", h.target)
+		if err != nil {
+			_ = client.Close()
+			continue
+		}
+		link := &relayedNATSLink{client: client, server: server, frozen: make(chan struct{})}
+		h.mu.Lock()
+		h.all = append(h.all, link)
+		h.mu.Unlock()
+		go h.fromClient(link)
+		go link.fromServer()
+	}
+}
+
+// fromClient relays what link's client sends to the server, recording the link under the name the
+// client's CONNECT gives, until the client closes or the link is held, after which it reads nothing
+// more from the client.
+func (h *natsWriteHold) fromClient(link *relayedNATSLink) {
+	buf := make([]byte, 32<<10)
+	var head []byte
+	named := false
+	for {
+		select {
+		case <-link.frozen:
+			<-h.done
+			return
+		default:
+		}
+		n, err := link.client.Read(buf)
+		if n > 0 {
+			if !named {
+				head = append(head, buf[:n]...)
+				if name, ok := natsConnectName(head); ok {
+					h.mu.Lock()
+					h.named[name] = link
+					h.mu.Unlock()
+					named, head = true, nil
+				}
+			}
+			select {
+			case <-link.frozen:
+			default:
+				if _, err := link.server.Write(buf[:n]); err != nil {
+					return
+				}
+			}
+		}
+		if err != nil {
+			_ = link.server.Close()
+			return
+		}
+	}
+}
+
+// fromServer relays what the server sends to link's client, and drops it once the link is held. A
+// server that closes its side closes the client's, unless the link is held.
+func (l *relayedNATSLink) fromServer() {
+	buf := make([]byte, 32<<10)
+	for {
+		n, err := l.server.Read(buf)
+		if n > 0 {
+			l.writes.Lock()
+			select {
+			case <-l.frozen:
+			default:
+				_, _ = l.client.Write(buf[:n])
+			}
+			l.writes.Unlock()
+		}
+		if err != nil {
+			select {
+			case <-l.frozen:
+			default:
+				_ = l.client.Close()
+			}
+			return
+		}
+	}
+}
+
+// natsConnectName reads the name a client's CONNECT gives, once head holds that whole line; a line
+// it cannot read names nothing.
+func natsConnectName(head []byte) (string, bool) {
+	text := string(head)
+	start := strings.Index(text, "CONNECT ")
+	if start < 0 {
+		return "", false
+	}
+	end := strings.Index(text[start:], "\r\n")
+	if end < 0 {
+		return "", false
+	}
+	var connect struct {
+		Name string `json:"name"`
+	}
+	_ = json.Unmarshal([]byte(text[start+len("CONNECT "):start+end]), &connect)
+	return connect.Name, true
+}
+
+// hold holds nats.go's connection lock on the connection whose client named itself name, with a
+// write that blocks under it (natsWriteHold), and returns once the client has stopped reading,
+// failing the test when that has not happened within 30 s.
+func (h *natsWriteHold) hold(t *testing.T, name string) {
+	t.Helper()
+	var link *relayedNATSLink
+	waitUntil(t, 30*time.Second, "a NATS connection named "+name+" through the write hold", func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		link = h.named[name]
+		return link != nil
+	})
+	link.writes.Lock()
+	defer link.writes.Unlock()
+	link.freeze.Do(func() { close(link.frozen) })
+	pings := []byte(strings.Repeat("PING\r\n", 680) + "PONG\r\n")
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		_ = link.client.SetWriteDeadline(time.Now().Add(holdWriteStall))
+		if _, err := link.client.Write(pings); err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				return
+			}
+			t.Fatalf("feed PINGs to the held NATS connection %s: %v", name, err)
+		}
+	}
+	t.Fatalf("the NATS connection %s still took PINGs 30 s after its relay stopped reading it: no write of it held nats.go's lock", name)
 }
 
 // lockIssue holds the issue's owner lock (store.LockOwner) in a transaction of the test's own, as
@@ -990,47 +1512,45 @@ func TestSIGTERMWithAnEditorConnectedSettlesItsDocumentBeforeExit(t *testing.T) 
 }
 
 // A database that stops answering - a failover, a partition - holds every connection waiting on it,
-// and closing the pool waits for every connection in use. Here that is an issue create's: it waits
-// in Postgres on another writer's lock on its project's row when the relay stops forwarding, so
-// whatever Postgres answers it never arrives. HTTP shutdown waits for that request, so the document
-// service starts httpDrainBeforeDocuments after the signal, with no document to settle: the issue
-// it would create has none yet. Dispatch then gives up on the connection when silentProbes health
-// probes in a row have failed with no connection taken back meanwhile, so it exits well inside a
-// runtime's grace period instead of being killed, and says why.
+// and closing the pools waits for every connection in use. Here it stops answering with a write in
+// flight, a title change already waiting at the database behind another writer's lock, which
+// holds the HTTP drain for its whole share, and with a resident room whose edit owes a
+// settlement, which spends the document service's whole share. Writes have no server deadline,
+// so nothing but the shutdown's one deadline bounds that: Dispatch must still give up on the
+// connections once silentProbes health probes in a row have failed, say so, and exit before that
+// deadline rather than be killed at stopGrace without a word.
 func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testing.T) {
-	ctx := context.Background()
 	database := storetest.Open(t)
 	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())
 	process := startDispatchProcess(t, relay.url)
 	process.waitHealthy(t)
-	process.call(t, http.MethodPost, "/api/v1/projects", `{"key":"STOP","name":"Shutdown"}`, http.StatusCreated)
-
-	// An issue create takes its number from the project's row, so it queues behind this lock.
-	holder, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the lock holder: %v", err)
-	}
-	t.Cleanup(func() { _ = holder.Rollback(ctx) })
-	if _, err := holder.Exec(ctx, `select 1 from projects where key = 'STOP' for no key update`); err != nil {
-		t.Fatalf("lock the project: %v", err)
-	}
-	// It is never answered: the process exits with it in flight.
+	key, artifactID := process.createIssue(t)
+	editor := process.openEditor(t, artifactID, "before\n")
+	replaceText(t, editor, "before", "after")
+	waitForRoom(t, editor)
+	holder := lockIssue(t, database, key)
 	go func() {
-		_, _ = process.trySend(http.MethodPost, "/api/v1/issues", `{"project":"STOP","title":"Never answered"}`, asUser(dispatchTestLogin))
+		// It never gets an answer: the database stops answering while it waits.
+		_, _ = process.renameIssue(key, "Never committed")
 	}()
 	if waiting := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); waiting < 1 {
-		t.Fatalf("the issue create never queued behind the project lock:\n%s", process.Output.String())
+		t.Fatalf("the title change never queued behind the issue lock:\n%s", process.Output.String())
 	}
 
 	relay.freeze()
 	signalled := process.Terminate(t)
-	process.WaitExit(t, "SIGTERM with the database unanswering")
+	// The wait outlasts the runtime's kill, so a process that overruns it is measured, not cut.
+	select {
+	case <-process.Exited:
+	case <-time.After(stopGrace + 15*time.Second):
+		t.Fatalf("Dispatch was still running %v after SIGTERM with the database unanswering:\n%s",
+			time.Since(signalled), process.Output.String())
+	}
 	exited := time.Since(signalled)
 	t.Logf("exited %v after SIGTERM", exited)
-	// The request in flight holds the HTTP drain for its whole share, then the document service
-	// returns at once with no room to settle, and each failed probe takes its two seconds and a
-	// poll interval. The slack is a loaded box's jitter on this real binary.
-	if bound := httpDrainBeforeDocuments + silentProbes*(2*time.Second+drainPollInterval) + 5*time.Second; exited > bound {
+	// One second of slack past the deadline covers the deferred stops, the log flush and the
+	// process's exit on a loaded box; the deadline itself is shutdownMargin inside the runtime's kill.
+	if bound := stopGrace - shutdownMargin + time.Second; exited > bound {
 		t.Errorf("Dispatch exited %v after SIGTERM with the database unanswering, want within %v", exited, bound)
 	}
 	output := process.Output.String()
@@ -1044,6 +1564,25 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 		if strings.Contains(line, "level=WARN") {
 			t.Logf("Dispatch logged: %s", line)
 		}
+	}
+}
+
+// waitForRoom returns once the room has answered a request the editor sent after its edit: the
+// room handles one connection's messages in order, so it has applied the edit by then.
+func waitForRoom(t *testing.T, editor *docstest.Peer) {
+	t.Helper()
+	for len(editor.Answers) > 0 {
+		<-editor.Answers
+	}
+	if err := editor.AskForDocument(); err != nil {
+		t.Fatalf("ask the room for the document: %v", err)
+	}
+	select {
+	case <-editor.Answers:
+	case <-editor.Ended:
+		t.Fatal("the editor's connection closed before the room answered")
+	case <-time.After(10 * time.Second):
+		t.Fatal("the room never answered the editor")
 	}
 }
 
@@ -1093,7 +1632,7 @@ func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *
 
 	logged := capturedLog(t)
 	started := time.Now()
-	closePool(pool)
+	closePool(ctx, pool)
 	took := time.Since(started)
 	t.Logf("closePool returned %v after it began", took)
 	if bound := silentProbes*(drainPollInterval+2*time.Second) + 3*time.Second; took > bound {

@@ -55,8 +55,8 @@ func TestHorizonProvesAnObservationOnlyFromALaterSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatalf("observation %d: %v", step+1, err)
 		}
-		if gap := horizon.Gap(); safe != want.safe || gap != want.gap {
-			t.Fatalf("after observation %d: Safe = %d, Gap = %d; want %d, %d", step+1, safe, gap, want.safe, want.gap)
+		if gap := horizon.Gap(safe); safe != want.safe || gap != want.gap {
+			t.Fatalf("after observation %d: Safe = %d, Gap(%d) = %d; want %d, %d", step+1, safe, safe, gap, want.safe, want.gap)
 		}
 	}
 }
@@ -79,11 +79,11 @@ func TestHorizonGapClosesOnAnImmediateSecondObservation(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			db := &scriptedHorizonDB{script: []scriptedObservation{{newest: 8, xmin: 90, xid: 101}, c.second}}
 			horizon := NewHorizon(db)
-			if safe, err := horizon.Safe(ctx); err != nil || safe != 0 || horizon.Gap() != GapUnproven {
-				t.Fatalf("first observation: Safe = %d, %v, Gap = %d; want 0 and GapUnproven", safe, err, horizon.Gap())
+			if safe, err := horizon.Safe(ctx); err != nil || safe != 0 || horizon.Gap(safe) != GapUnproven {
+				t.Fatalf("first observation: Safe = %d, %v, Gap = %d; want 0 and GapUnproven", safe, err, horizon.Gap(safe))
 			}
-			if safe, err := horizon.Safe(ctx); err != nil || safe != c.safe || horizon.Gap() != c.gap {
-				t.Fatalf("second observation: Safe = %d, %v, Gap = %d; want %d and %d", safe, err, horizon.Gap(), c.safe, c.gap)
+			if safe, err := horizon.Safe(ctx); err != nil || safe != c.safe || horizon.Gap(safe) != c.gap {
+				t.Fatalf("second observation: Safe = %d, %v, Gap = %d; want %d and %d", safe, err, horizon.Gap(safe), c.safe, c.gap)
 			}
 		})
 	}
@@ -476,7 +476,7 @@ func TestHorizonProvesItsOwnObservationOnAQuietInstance(t *testing.T) {
 		if err != nil {
 			t.Fatalf("observe: %v", err)
 		}
-		gap := horizon.Gap()
+		gap := horizon.Gap(safe)
 		if safe >= id && gap == GapNone {
 			t.Logf("one observation proved itself on attempt %d: H = %d after committing id %d", attempt, safe, id)
 			return
@@ -694,8 +694,8 @@ func TestHorizonResetForgetsTheOldLog(t *testing.T) {
 	resetEventLog(ctx, t, database)
 	head := commitHorizonEvent(ctx, t, database)
 	horizon.Reset()
-	if gap := horizon.Gap(); gap != GapNone {
-		t.Fatalf("Gap right after Reset = %d, want GapNone", gap)
+	if gap := horizon.Gap(0); gap != GapNone {
+		t.Fatalf("Gap above the forgotten log's floor right after Reset = %d, want GapNone", gap)
 	}
 	// The first observation after Reset answers the new log alone: it reaches the new head when
 	// its own snapshot proves it, and 0 when it does not, never the old log's horizon.
@@ -743,10 +743,11 @@ func TestHorizonResetDiscardsAnObservationInFlight(t *testing.T) {
 
 // Safe must not settle for an observation already in flight when it is called: that one's
 // snapshot can predate an event committed just before the call, and with its A at or below H it
-// leaves no gap (Gap), so a reader would arm no re-read and the event would wait for the next
-// notification however long that takes. Whatever Safe returns, an event committed before the call
-// must be at or below H or keep a gap open. The test lets the observation in flight end only once
-// the call has parked on it, so the call always finds it in flight, however slowly it gets there.
+// leaves no gap above the H it answers (Gap), so a reader would arm no re-read and the event
+// would wait for the next notification however long that takes. Whatever Safe returns, an event
+// committed before the call must be at or below H or keep a gap open above it. The test lets the
+// observation in flight end only once the call has parked on it, so the call always finds it in
+// flight, however slowly it gets there.
 func TestHorizonSafeWaitsOutAnObservationInFlightBeforeTheCall(t *testing.T) {
 	database := storetest.Open(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -792,14 +793,56 @@ func TestHorizonSafeWaitsOutAnObservationInFlightBeforeTheCall(t *testing.T) {
 	if got.err != nil {
 		t.Fatalf("Safe after committing id %d: %v", id, got.err)
 	}
-	if got.safe < id && horizon.Gap() == GapNone {
-		t.Fatalf("Safe after committing id %d = %d with no gap open: a reader would never re-read for it", id, got.safe)
+	if got.safe < id && horizon.Gap(got.safe) == GapNone {
+		t.Fatalf("Safe after committing id %d = %d with no gap open above it: a reader would never re-read for it", id, got.safe)
 	}
 	horizon.mu.Lock()
 	observed := horizon.newest
 	horizon.mu.Unlock()
 	if observed < id {
 		t.Fatalf("Safe after committing id %d returned from observations that saw only up to %d", id, observed)
+	}
+}
+
+// A reader decides whether to re-read on the H it read the log through, and the Horizon's own H
+// moves under it while it reads: the reader takes Safe, pages the log up to what it answered,
+// and asks only then whether anything observed stands above that. Scripted here as the race
+// production runs: a write holding id 7 keeps H at 6 while 9 is committed and observed, the
+// reader reads through 6, and before it asks, the write ends (rolls back, which notifies
+// nothing) and another reader's observation proves 9 final, so H is 9 and nothing stands above
+// the Horizon's own H. Event 9 has been read by nobody, so the decision must be taken against
+// the reader's own 6, which it still stands behind; taken against the Horizon's H it would say
+// there is nothing to re-read for, and 9 would wait for the next commit.
+func TestHorizonBehindAnswersTheSafeItsCallerReadThrough(t *testing.T) {
+	ctx := context.Background()
+	db := &scriptedHorizonDB{script: []scriptedObservation{
+		{newest: 6, xmin: 100, xid: 101},
+		{newest: 9, xmin: 102, xid: 103}, // proves the first: H = 6, with 7 open below the committed 9
+		{newest: 9, xmin: 104, xid: 105}, // another reader's, once 7 has ended: it proves 9
+	}}
+	horizon := NewHorizon(db)
+	if safe, err := horizon.Safe(ctx); err != nil || safe != 0 {
+		t.Fatalf("Safe before any observation is proven = %d, %v; want 0", safe, err)
+	}
+	reader, err := horizon.Safe(ctx)
+	if err != nil || reader != 6 {
+		t.Fatalf("the reader's Safe while id 7 is open below the committed 9 = %d, %v; want 6", reader, err)
+	}
+	proven, err := horizon.Safe(ctx)
+	if err != nil || proven != 9 {
+		t.Fatalf("the other reader's Safe once id 7 has ended = %d, %v; want 9", proven, err)
+	}
+	if horizon.Behind(proven) {
+		t.Fatalf("Behind(%d) is true with the newest id observed proven safe", proven)
+	}
+	if !horizon.Behind(reader) {
+		t.Fatalf("Behind(%d) is false while the committed event %d, which that reader did not read, stands above it",
+			reader, proven)
+	}
+	// No observation holds that gap any more, so the reader reads again at once (GapUnproven),
+	// and finds 9 final.
+	if gap := horizon.Gap(reader); gap != GapUnproven {
+		t.Fatalf("Gap(%d) = %d with every observed id proven, want GapUnproven", reader, gap)
 	}
 }
 
@@ -1249,17 +1292,19 @@ func waitForStallWarnings(logged *storetest.LockedLog, want int) int {
 // does not return within a short wait, while the write holding id is open.
 func requireHorizonBelow(ctx context.Context, t *testing.T, horizon *Horizon, id int64) {
 	t.Helper()
+	var safe int64
 	for range 10 {
-		safe, err := horizon.Safe(ctx)
+		observed, err := horizon.Safe(ctx)
 		if err != nil {
 			t.Fatalf("Safe: %v", err)
 		}
-		if safe >= id {
-			t.Fatalf("Safe = %d while the write holding id %d is open", safe, id)
+		if observed >= id {
+			t.Fatalf("Safe = %d while the write holding id %d is open", observed, id)
 		}
+		safe = observed
 	}
-	if horizon.Gap() == GapNone {
-		t.Fatalf("no gap open while a committed id above the open write's %d is observed", id)
+	if gap := horizon.Gap(safe); gap == GapNone {
+		t.Fatalf("no gap open above Safe's %d while a committed id above the open write's %d is observed", safe, id)
 	}
 	short, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()

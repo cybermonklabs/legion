@@ -117,7 +117,7 @@ func TestARoomWhosePeersUpdatesReachItsPersistenceOutOfOrderSettlesBoth(t *testi
 	state.mu.Lock()
 	generation := state.roomGeneration
 	state.mu.Unlock()
-	service.settleRoom(artifactID, generation)
+	service.settleRoom(context.Background(), artifactID, generation)
 	if attempts.Load() == 0 {
 		t.Fatal("no settlement ran while the first peer's update was held")
 	}

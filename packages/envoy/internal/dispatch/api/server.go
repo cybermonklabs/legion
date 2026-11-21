@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -152,9 +153,25 @@ type Deps struct {
 	Files            files.Store
 	TestHooksEnabled bool
 	// StreamHeartbeat is how often a document socket and a live socket resolve their caller again
-	// (whileCallerResolves), each closing once the caller no longer resolves, and a live socket
-	// pings its page and sends it a heartbeat frame.
+	// (whileCallerResolves), each closing once the caller no longer resolves - at once for a
+	// refusal, at the third transient failure in a row (heartbeatTransientCeiling) - and a live
+	// socket pings its page and sends it a heartbeat frame. It also bounds each of those checks.
 	StreamHeartbeat time.Duration
+	// Heartbeats counts what those checks met (HeartbeatCounts), which cmd/dispatch reads on its
+	// metrics endpoint; nil counts nothing.
+	Heartbeats *HeartbeatCounts
+	// Admission admits every table route's request but the test hooks' (register); nil is a
+	// Limiter at admission.DefaultLimits. A test sets a small one to fill it.
+	Admission *admission.Limiter
+	// ReadDeadline bounds every table route's read (GET, HEAD) that the route itself does not bound
+	// otherwise (apiRoute.Download); zero is defaultReadDeadline. A test sets a short one. A write
+	// has no deadline.
+	ReadDeadline time.Duration
+	// DownloadDeadline replaces the deadline of the four file version downloads
+	// (downloadDeadline, apiRoute.Download), which bounds the work each does before its answer
+	// begins; zero is downloadDeadline's five minutes. Only a test sets one, so a download whose
+	// deadline passes under it is the test's choice rather than five minutes of wall clock.
+	DownloadDeadline time.Duration
 	// RouteRosterTTL replaces how long a stored listener answer serves issue reads and agents
 	// lists (routeRosterTTL, issue_route_status.go). Zero keeps five seconds; only a test process
 	// sets another (cmd/dispatch: DISPATCH_TEST_ROUTE_ROSTER_TTL, under the test hooks), so a row
@@ -286,6 +303,13 @@ type DepsInput struct {
 	// (Deps.StreamHeartbeat). Zero keeps fifteen seconds; a test proving a connection closes
 	// sets a short one.
 	StreamHeartbeat time.Duration
+	// Heartbeats is Deps.Heartbeats.
+	Heartbeats *HeartbeatCounts
+	// Admission, ReadDeadline and DownloadDeadline are Deps.Admission, Deps.ReadDeadline and
+	// Deps.DownloadDeadline.
+	Admission        *admission.Limiter
+	ReadDeadline     time.Duration
+	DownloadDeadline time.Duration
 	// RouteRosterTTL replaces the five seconds a stored listener answer serves issue reads and
 	// agents lists; see Deps.RouteRosterTTL.
 	RouteRosterTTL time.Duration
@@ -395,6 +419,10 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Files:                  input.Files,
 		TestHooksEnabled:       input.TestHooksEnabled,
 		StreamHeartbeat:        heartbeat,
+		Heartbeats:             input.Heartbeats,
+		Admission:              input.Admission,
+		ReadDeadline:           input.ReadDeadline,
+		DownloadDeadline:       input.DownloadDeadline,
 		RouteRosterTTL:         input.RouteRosterTTL,
 		ListenerTakeoverWindow: input.ListenerTakeoverWindow,
 		HorizonStallAfter:      input.HorizonStallAfter,
@@ -458,6 +486,12 @@ type server struct {
 	// directly has none unless the test sets it (directServer sets context.Background()).
 	lifetime   context.Context
 	routeIndex []routeIndexEntry
+	// outside is the request pool's share admission does not hand out, the places of which the
+	// work outside admission that reads the pool takes before it does (admission.Outside): a DPoP
+	// decision (decideBrokerToken) and a socket's heartbeat check (whileCallerResolves). register
+	// takes it from the limiter every row is admitted by; a server a test builds directly has
+	// none, and a nil Outside limits nothing.
+	outside *admission.Outside
 	// readOnlyRefusal is the message every route the read list does not name answers a read-only
 	// token with (refuseReadOnlyToken): the read list as register found it, in words. register
 	// builds it once, before it wraps the first row, so the rows share one text rather than each
@@ -470,12 +504,34 @@ type server struct {
 	// unguardedReplacements counts the document replacements stored naming no token
 	// (noteUnguardedReplacement); nil, which counts nothing, where Deps.Metrics is nil.
 	unguardedReplacements *metrics.Counter
-	adviceQueryHook       func(context.Context, pgx.Tx, string) error
+	// adviceQueryHook runs before each of a write's advice queries, on the savepoint inside the
+	// write's transaction that query runs on, with the query's name. Nil outside tests.
+	adviceQueryHook func(context.Context, pgx.Tx, string) error
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
 	// every server the deployment builds leaves it, means relatedCheckAllowance. Only tests set it
 	// (newFailingAdviceHandler, and the check's bound tests), so a case's outcome is its own choice
 	// rather than its machine's speed.
 	suggestionTimeout time.Duration
+	// relatedCheckEntered runs at the start of every related-item check, before any of its work.
+	// Nil outside tests, and set by a test before the requests it drives, so that a test can hold
+	// a write's post-commit check where production has only a slow one.
+	relatedCheckEntered func()
+	// meaningSearchEntered runs inside the related-item check's meaning stage, with the
+	// request-pool connection that stage's read holds and before its query; nil, which every
+	// server the deployment builds leaves it, calls nothing. Only a test sets it, to hold the
+	// stage where production has only a slow one.
+	meaningSearchEntered func()
+	// relatedSearchEntered runs inside each of the related-item check's searches, with the
+	// connection its rows hold and before they are read; nil, which every server the deployment
+	// builds leaves it, calls nothing. Only a test sets it, to hold a stage where production has
+	// only a slow query.
+	relatedSearchEntered func()
+	// crossProjectScanEntered runs inside the related-item check's cross-project leg, with the
+	// request-pool connection that leg's read transaction holds (beginMeaningScan) and before
+	// its query; nil, which every server the deployment builds leaves it, calls nothing. Only a
+	// test sets it, to hold the leg with that connection taken where production has only a slow
+	// query - which beforeCrossProjectRead, running before the transaction opens, cannot do.
+	crossProjectScanEntered func()
 	// beforeCrossProjectRead runs at the head of relatedOtherProjects, before it reads, and its
 	// error stands in for the read failing. Only a test sets it: it is how a case holds that one
 	// leg of the related-item check past its grace, or makes it fail, while every other leg runs
@@ -574,16 +630,22 @@ type server struct {
 	// leaves them, keeps those. Only a test sets them, so a handler that outlives its lease or its
 	// limit is the test's choice rather than minutes of wall clock.
 	requestKeyLease, requestKeyRenewal, requestKeyRunLimit time.Duration
-	// drainReadLimit replaces how long a drain waits for the rest of a request's body
-	// (bodyDrainLimit, a minute); zero, which every server the deployment builds leaves it, keeps
-	// that. Only a test sets it, so a body that stalls is the test's choice rather than a minute of
-	// wall clock.
-	drainReadLimit time.Duration
+	// transfer replaces the bounds a request's body arrives under and its answer goes out under
+	// (defaultTransferBounds: no silence longer than 20 s, and 32 KiB/s after a minute's grace);
+	// the zero value, which every server the deployment builds leaves it, keeps those. Only a
+	// test sets it, so a body or an answer that stalls is the test's choice rather than twenty
+	// seconds of wall clock.
+	transfer transferBounds
 	// repeatFoundInFlight is called when the keyed layer finds a repeat's key held by a first
 	// request still running, before it reads a byte of the repeat's body; nil, which every server
 	// the deployment builds leaves it, calls nothing. Only a test sets it, to send the rest of a
 	// body it held back once the repeat is waiting on it.
 	repeatFoundInFlight func()
+	// beforePublish is called when a handler is about to publish what it committed (publish),
+	// before the first of its events goes out; nil, which every server the deployment builds
+	// leaves it, calls nothing. Only a test sets it, to hold a write between its commit and its
+	// events and watch what another writer of the same document may do meanwhile.
+	beforePublish func()
 	// slowWrites is the slow-write test hook's delay for each keyed method and path it was armed
 	// for (POST /api/v1/writes/_test/slow), by "METHOD path"; it holds nothing on a server without
 	// TestHooksEnabled, which mounts no hook.
@@ -609,8 +671,8 @@ type server struct {
 	// (ensureSearchTermStats), keyed by project, so a project's many checks start one.
 	termStats singleflight.Group
 	// relatedRecordRetrying is how many records being retried in the background (retryRecord:
-	// related_checks and near_copy_checks rows, run as detached work) hold or wait on a pool
-	// connection right now, at most relatedRecordRetryLimit.
+	// related_checks and near_copy_checks rows, run as detached work) hold or wait on a
+	// background-pool connection right now, at most relatedRecordRetryLimit.
 	relatedRecordRetrying atomic.Int32
 	// branches is what the results reads last learned about each repository's default branch
 	// (delivery.Branches), held across requests so the Verification tab's refetch on every
@@ -666,6 +728,11 @@ type RouteMux interface {
 //
 // Every route refuses a path or query parameter holding U+0000 or a byte that is not UTF-8 before
 // its handler runs (refuseUnstorableParameters), as decodeJSON refuses a U+0000 in a body.
+//
+// Every table route but the test hooks is admitted by Deps.Admission before its handler runs, and
+// a read is bounded by a deadline too (routeHandler), so past capacity a request is refused at once
+// with a retryable 429 instead of queueing without end. The websockets are mounted outside the
+// table and are neither.
 //
 // Every POST and PATCH route takes an Idempotency-Key, and a repeat under one is answered from the
 // key rather than run again (keyedWrites, request_keys.go). Every write route - a POST, PATCH, PUT
@@ -858,9 +925,17 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		panic("api.Register: the route table's shape map names a route the table does not mount: " + strings.Join(unshaped, "; "))
 	}
 	s.routeIndex = routeIndexEntries(routes)
-	replays := s.keyedReplays()
+	limiter := deps.Admission
+	if limiter == nil {
+		limiter = admission.New(admission.DefaultLimits())
+	}
+	s.outside = limiter.Outside()
+	deadline := deps.ReadDeadline
+	if deadline == 0 {
+		deadline = defaultReadDeadline
+	}
 	for _, route := range routes {
-		mux.HandleFunc(route.Method+" "+route.Pattern, s.routeHandler(route, replays[route.Method+" "+route.Pattern]))
+		mux.HandleFunc(route.Method+" "+route.Pattern, s.routeHandler(route, limiter, deadline))
 	}
 	if websocket, ok := deps.Docs.(interface {
 		ServeHTTP(http.ResponseWriter, *http.Request)
@@ -875,20 +950,59 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	return s
 }
 
+// defaultReadDeadline bounds an ordinary read (GET, HEAD). Twenty seconds is below the thirty the
+// load generator and the web app's pages wait before they give up and the sixty the dispatch
+// command waits, so the server stops a read's work before its client abandons it, rather than
+// finishing work nobody is waiting for while the requests behind it queue. The writing of the
+// answer is bounded apart from it (servedAsRead, boundedAnswer), on the silence between its bytes
+// rather than on its length, so a client slow to read does not hold what the read holds past it
+// and one that keeps reading is answered in full. A write has no deadline: once admitted it runs
+// to completion, since an upload takes a minute or more and an architecture import up to two per
+// source, and a write cancelled partway rolls back and makes its page retry it for ever. Its
+// connection acquires stay bounded by each pool's acquire bound, its wait for another writer's
+// owner lock by that lock's own bound (store.LockOwner), and its body by the bounds every
+// request's body arrives under (defaultTransferBounds).
+const defaultReadDeadline = 20 * time.Second
+
 // routeHandler is the chain register mounts one row of the table behind: the row's own handler
 // inside every layer the row runs, in the one order every row runs them. It is the one place that
-// order is written, so register and a test that walks the table with each row's handler replaced
-// (read_only_token_test.go) build the same chain. replay is the row's keyed replay
-// (keyedReplays), nil for a row that has none.
-func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFunc {
+// order is written, so register and a test that builds a row's chain with the row's handler
+// replaced (read_only_token_test.go, which walks the whole table so) build the same chain.
+// limiter is what every row but a test hook and a stream is admitted by, and deadline what bounds
+// every read but a download (Deps.Admission, Deps.ReadDeadline, register). Its layers, outermost
+// first: the access log, the answers reads' timing on that route alone (timedAnswersReads), the
+// compression of its answer (compressAnswers), the transaction tracking, the drain a write's early
+// answer waits behind, the broker token's decision (decideBrokerToken), admission, a read's
+// deadline and pinned connection, the Vary every answer
+// carries (varyOnDisplayTrees), the read-only gate (refuseReadOnlyToken), the row's OAuth scopes,
+// the parameter refusal every route has, the id prefixes a path carries short, the changed-login
+// check, the signed-in person a write needs, a write's project and session scope, an upload's
+// closed-issue refusal, and the keyed layer.
+//
+// Admission comes before the deadline so a request's wait for room is bounded by admission's own
+// wait, and the deadline counts only the work the read was admitted to do; the pinned connection
+// comes inside both, so only an admitted read takes one and it is back in the pool before the
+// read's admission unit is. A refused request never reaches the keyed layer, so it claims no key -
+// and the drain is outside admission so that admission's own 429 waits for the body as every other
+// early answer does (drainBeforeAnswer), rather than draining it a second way. The drain is also
+// where a write's body gets the bounds it arrives under (drainedBody): a write with no room to
+// run in reads its body there before it waits for room (admitted), and one admitted at once
+// parks its units at that body's first read, so a body a client trickles holds none of them
+// either way. A test hook is neither admitted nor bounded: it is a test's own; nor is a stream
+// (apiRoute.Streams), which its reader holds open for the run behind it. The broker token's
+// decision is outside admission too, and writes on the request pool, so it takes a place of that
+// pool's share admission leaves instead, waiting up to a second for one, and is refused
+// admission's own 429 where it is refused one (decideBrokerToken, admission.Outside); it is inside
+// the drain, so that 429 waits for the body as admission's own does.
+func (s *server) routeHandler(route apiRoute, limiter *admission.Limiter, deadline time.Duration) http.HandlerFunc {
 	handler := route.Handler
 	if keyedMethod(route.Method) {
-		handler = s.keyedWrites(route.Method, route.Pattern, handler, replay)
+		handler = s.keyedWrites(route, handler)
 	}
-	if route.Method+" "+route.Pattern == issueUploadRoute {
+	if route.RefusesClosedIssue {
 		handler = s.refuseUploadToAClosedIssue(handler)
 	}
-	if route.Method != http.MethodGet {
+	if !admission.Reads(route.Method) {
 		// Outside the keyed layer and the upload's spool, so a write to another project's
 		// object, into another session's own rows, or by a credential that names no person
 		// claims no idempotency key and costs no body (withinProjectScope,
@@ -917,7 +1031,10 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 		// write belongs to another project or another session, and its refusal claims no
 		// idempotency key, so the person who ticks the scope back is not answered the stored
 		// refusal under the same key. It is inside the drain, so a client that asked to be
-		// told to continue is handled as it is for every other early answer.
+		// told to continue is handled as it is for every other early answer, and inside
+		// admission and a read's deadline and pin, since resolving the caller reads the
+		// database as the changed-login check below it does: an unadmitted request runs no
+		// statement, and a read's runs on its pinned connection.
 		handler = s.gateRouteScopes(route.OAuthScopes, handler)
 	}
 	// Outside the scope gate and every layer inside it, so a read-only token on a row the read
@@ -926,16 +1043,44 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	// sign-in check, which would tell it to sign a person in; and before a Dispatch-Login check,
 	// an id prefix's lookup, the project and session checks and the Idempotency-Key, none of
 	// which it reaches, so it claims no key. It is inside the drain, as the scope gate is, so a
-	// client that asked to be told to continue is handled as for every other early answer.
+	// client that asked to be told to continue is handled as for every other early answer, and
+	// inside admission and a read's deadline, since the Vary outside it is: it reads nothing but
+	// the decision decideBrokerToken carried, so it runs no statement on the unit it holds.
 	handler = s.refuseReadOnlyToken(route.ReadScope, handler)
 	// One place for the whole table: every answer says its body depends on Dispatch-Trees
-	// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with
-	// trees an answer written for a reader without them. It is outside the scope gate and the
-	// read-only gate, so a refusal by either carries the header too. The answer's other Vary,
-	// on Accept-Encoding, is added outside it, where the encoding is chosen (compressAnswers).
+	// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with trees
+	// an answer written for a reader without them. It is outside the scope gate and the
+	// read-only gate, so a refusal by either carries the header too, and inside admission, whose
+	// refusal is no body a cache keeps. The answer's other Vary, on Accept-Encoding, is added
+	// where the encoding is chosen (compressAnswers, outside this).
 	handler = varyOnDisplayTrees(handler)
-	if route.Method != http.MethodGet {
-		// Every layer above may answer before the body is read; the answer waits for the body.
+	if !route.TestHook {
+		if admission.Reads(route.Method) {
+			// A download's work before its answer is bounded at downloadDeadline's five
+			// minutes, which a test shortens (Deps.DownloadDeadline); it is also the read
+			// whose deadline stops at its answer, as a stream's does: what the deadline
+			// bounds there is the reads before the first frame, and the run behind the
+			// stream, not this deadline, decides how long the frames take.
+			if route.Download {
+				deadline = cmp.Or(s.deps.DownloadDeadline, downloadDeadline)
+			}
+			handler = s.servedAsRead(deadline, route.Download || route.Streams, route.pinsConnection(), handler)
+		}
+		// A stream takes no admission unit (apiRoute.Streams): its reader holds it open for
+		// the run behind it, and a unit of the read class held for all of that would be held
+		// against every other read, where the polls that fill it take a request-pool
+		// connection only while each one runs. The live socket register mounts outside the
+		// table is served the same way.
+		if !route.Streams {
+			handler = admitted(limiter, route.Weight, route.Lane, handler)
+		}
+	}
+	// Outside admission, which it comes before, and inside the drain, so its refusal for room
+	// waits for a write's body as admission's own does (decideBrokerToken).
+	handler = s.decideBrokerToken(handler)
+	if !admission.Reads(route.Method) {
+		// Every layer below may answer before the body is read - the broker token's refusal and
+		// admission's included; the answer waits for the body.
 		//
 		// A client that asked to be told to continue before it sends its body (Expect:
 		// 100-continue) and is answered early sends none of it, and its connection closes after
@@ -945,25 +1090,186 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 		// own response keeps (go1.27's response.ecReader and reqBody), not from the request's
 		// Body, so it is not that trackTransactions hands this layer a copy of the request: the
 		// handling holds with the drain's body put on net/http's own request. What keeps the body
-		// unread is the drain's guard (drainingWriter.askedContinue) and the keyed layer's
+		// unread is the drain's guard (drainedBody.askedContinue) and the keyed layer's
 		// (answerDrainedRepeat), which TestAnEarlyAnswerToAClientWaitingToContinueAsksForNoBody
 		// pins: without either, the client is told to continue and the answer waits on its body.
-		handler = s.drainBeforeAnswer(route.Method, route.Pattern, handler)
+		handler = s.drainBeforeAnswer(route, handler)
 	}
 	// The access-log line is outermost, so it records what every layer answered - a keyed
-	// replay, a refused login, an early answer the drain held - and the caller the first of
-	// them resolved. Compression sits just inside it, with nothing between them but the answers
-	// read's timing below, so every one of those answers is compressed for a caller that takes
-	// gzip and the line counts the bytes that went on the wire. The two websockets register
-	// mounts beside the table carry no compressed answer: the upgrade is not a body, and the
-	// frames after it are the socket's (compressAnswers).
-	served := compressAnswers(s.decideBrokerToken(trackTransactions(handler)))
+	// replay, a refused login, an early answer the drain held, admission's refusal - and the
+	// caller the first of them resolved. Compression sits just inside it, with nothing between
+	// them but the answers read's timing below, so every one of those answers is compressed for
+	// a caller that takes gzip and the line counts the bytes that went on the wire. The two
+	// websockets register mounts beside the table carry no compressed answer: the upgrade is not
+	// a body, and the frames after it are the socket's (compressAnswers).
+	served := compressAnswers(trackTransactions(handler))
 	if route.Method+" "+route.Pattern == sessionAnswersRoute && s.deps.AnswersLatency != nil {
 		// Just inside the access-log line, so the time of an answers read the keyword fill
 		// pauses on is the time the line records for it, every layer of the chain included.
+		// Admission's wait for room is one of those layers, so a server that queues its
+		// answers reads pauses the fill for that wait too.
 		served = timedAnswersReads(s.deps.AnswersLatency, served)
 	}
 	return accesslog.HandlerFunc(route.Pattern, served)
+}
+
+// admitted runs handler once limiter admits the request at weight, with the ticket on the
+// request's context so a wait elsewhere can park it (admission.Ticket.Park), and answers a
+// refusal 429 OVERLOADED.
+//
+// The request takes its place in admission's arrival order first (admission.Limiter.Arrive) and
+// is admitted there and then where the server has room for it. Where it has none, a write whose
+// client is already sending reads its whole body off the connection before it joins the queue
+// (drainedBody.readWhole) and waits holding no unit: with the body off the connection net/http's
+// own read of it runs, so a client that hangs up while its write is queued cancels the request
+// there and then and is recorded as the 499 it is, where a queued write with an unread body held
+// its slot for its whole wait and was answered a 429 nobody read. The queue serves the write at
+// the place it arrived, ahead of every write that arrived while its body did, and the wait it
+// then has is the one wait the queue costs it, so no write is refused for waiting twice.
+//
+// The ticket goes to the drain's body as well as to the context: a body still arriving after its
+// request was admitted parks it, so a client still sending holds none of the units
+// (drainedBody.park). A body that did not arrive is answered by the drain
+// (drainingWriter.refuseUnreadBody) and asks for no room at all.
+//
+// Such a body asks for the units again at its end, and admission may refuse it there: the
+// handler is then cancelled with that refusal as its context's cause (drainedBody.resume), so
+// its statements and its commit fail where they stand and nothing of the request is written,
+// whether or not the handler reads the refusal from the read that ended its body. Its answer is
+// the refusal, which admission.WriteUnserved writes from the cause: the client is still there,
+// so this cancellation is never the 499 of a client that went away.
+//
+// A request whose client went away while it waited is answered nothing, since nobody is left to
+// read it, and its line carries 499 rather than the 200 of a handler that wrote nothing: under
+// load a client that gives up while queued is the most frequent way a request ends unanswered.
+// A heavy read takes its lane before it asks for units (admission.EnterLane, apiRoute.Lane): a
+// lane is one route's own limit, and a request waiting for it holds no class unit, so the routes
+// whose statements the database spends its processors on cannot take them from everything else.
+// Its refusal is the same 429 OVERLOADED, naming the lane. The arrival is taken before the lane
+// and passed to it, so the lane's wait is what is left of the request's one wait and the class
+// queue gets the rest, and a read the lane held waits in the class queue at the place it
+// arrived rather than behind everything that arrived while it waited: before that a lane route
+// cost up to two whole waits, one in the lane and a fresh one in its class (INFRA-592).
+func admitted(limiter *admission.Limiter, weight int, lane admission.Lane, handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		arrival := limiter.Arrive(admission.ClassOf(r.Method), weight)
+		if lane != admission.NoLane {
+			leave, err := limiter.EnterLane(r.Context(), lane, arrival)
+			if err != nil {
+				var refusal *admission.Refusal
+				if errors.As(err, &refusal) {
+					admission.WriteRefused(w, refusal)
+					return
+				}
+				accesslog.ClientGone(r.Context())
+				return
+			}
+			defer leave()
+		}
+		ticket := arrival.AdmitNow()
+		if ticket == nil {
+			if body, drained := r.Body.(*drainedBody); drained && !body.readWhole() {
+				return
+			}
+			var err error
+			if ticket, err = arrival.Admit(r.Context()); err != nil {
+				var refusal *admission.Refusal
+				if errors.As(err, &refusal) {
+					admission.WriteRefused(w, refusal)
+					return
+				}
+				accesslog.ClientGone(r.Context())
+				return
+			}
+		}
+		defer ticket.Release()
+		ctx := admission.WithTicket(r.Context(), ticket)
+		if body, drained := r.Body.(*drainedBody); drained {
+			var refused context.CancelCauseFunc
+			ctx, refused = context.WithCancelCause(ctx)
+			defer refused(nil)
+			body.admit(ticket, refused)
+		}
+		handler(w, r.WithContext(ctx))
+	}
+}
+
+// servedAsRead runs a read's handler under deadline, whose passing writeHandlerError answers 503
+// REQUEST_TIMEOUT, and, where pin is set, with every request-pool statement it runs on the one
+// connection its first statement takes, given back when the handler returns
+// (store.PinConnection, apiRoute.pinsConnection). The answer is written under bounds of its own
+// (boundedAnswer), the server's own transfer bounds, read at each request as the drain reads
+// them (drainBeforeAnswer).
+//
+// An ordinary read is bounded for its whole length (admission.WithDeadline): its work is the
+// database's, and an answer it has begun is written from what it already read. A file version
+// download (download, apiRoute.Download) and a stream (streamed, apiRoute.Streams) are bounded
+// only until the answer begins (untilAnswer, admission.WithDeadlineUntilAnswer): the deadline
+// bounds the work before the first byte - the download's row read and store open, the stream's
+// two reads of its run - and the answer's own transfer bound decides how long the bytes that
+// follow may take, since from there the read is waiting on its reader's pace, or on the run
+// behind the stream, and nothing else. boundedAnswer stops it at the answer's first header or
+// byte (boundedAnswer.beginsAnswer).
+//
+// A download tells that bound which of its own waiting the floor must not judge it on
+// (boundsAnswerFloor, leaveOutOfAnswerFloor): the time its reads of the file store take is the
+// store's pace, not its reader's, and the store is held to a floor of its own (storeBody).
+//
+// The last of an answer leaves under the bound as the rest of it did: net/http holds what the
+// handler wrote last in its response buffer and the connection's, and writes them after the
+// handler returns, over a connection whose deadline was lifted and a server that sets no
+// WriteTimeout, so a reader that stopped just before the end held the goroutine and the
+// connection until TCP gave up and the access line read status=200 with every byte accounted
+// for. The flush sends them here instead, armed as every other write is (boundedAnswer.sent).
+//
+// An answer any of whose writes failed or fell short, the flush of its last bytes included, is
+// cut: the header is already on the wire, so the client cannot be told the connection is
+// closing, and net/http drops it after the response without a word (shouldReuseConnection), so
+// the next request a client writes onto that connection reads an EOF with no answer and leaves
+// no access line of its own (INFRA-592). The handler is aborted for it,
+// http.ErrAbortHandler, which logs at INFO and makes the line carry aborted=true rather than the
+// status=200 of an answer that went out whole, and leaves the connection to net/http to drop.
+//
+// It runs after the pin is given back, and only where the handler returned normally: a flush
+// can wait out the idle bound and the send buffer's drain, which the pinned request-pool
+// connection would otherwise be held for, and a panic unwinding - a download's own abort -
+// leaves the connection to net/http rather than flushing a connection that is already going.
+// Giving the pin back twice costs nothing (store.PinConnection), so the deferred unpin still
+// covers the panic.
+func (s *server) servedAsRead(deadline time.Duration, untilAnswer bool, pin bool, handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var ctx context.Context
+		var cancel context.CancelFunc
+		var beginsAnswer func()
+		if untilAnswer {
+			ctx, cancel, beginsAnswer = admission.WithDeadlineUntilAnswer(r.Context(), deadline)
+		} else {
+			ctx, cancel = admission.WithDeadline(r.Context(), deadline)
+		}
+		defer cancel()
+		control := http.NewResponseController(w)
+		answer := &boundedAnswer{
+			ResponseWriter: w,
+			movingDeadline: movingDeadline{set: control.SetWriteDeadline, bounds: s.transfer.orDefault(), buffered: true},
+			control:        control,
+			beginsAnswer:   beginsAnswer,
+		}
+		defer answer.lift()
+		ctx = boundsAnswerFloor(ctx, func(elapsed func() time.Duration) { answer.outside = elapsed })
+		unpin := func() {}
+		if pin {
+			ctx, unpin = store.PinConnection(ctx)
+			defer unpin()
+		}
+		handler(answer, r.WithContext(ctx))
+		unpin()
+		answer.cut(answer.sent())
+		if answer.failure != nil {
+			slog.Info("dispatch: a read's answer was cut: its reader did not take all of it",
+				"path", r.URL.Path, "written", answer.moved, "until_answer", untilAnswer, "error", answer.failure)
+			panic(http.ErrAbortHandler)
+		}
+	}
 }
 
 // liveSocketPattern is the path of the live socket, which register mounts beside the table.
@@ -992,17 +1298,38 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 
 // whileCallerResolves serves a connection that outlives its request, a websocket, only while the
 // credential it was admitted with resolves: on every StreamHeartbeat it asks stillResolves of the
-// request again, and once that refuses (a logout, a membership the sign-in issuer no longer
-// confirms, a revoked token) it cancels the connection's context, on which the document server and
-// the live socket close the socket. stillResolves is the mount's own admission asked again, never
-// a wider one: the live socket's is callerStillResolves, which resolves whichever credential
-// admitted it, and the document socket's is signInStillResolves, the browser credential alone
-// (a sign-in cookie, or an Identity-Aware Proxy assertion), since that is all the document service
-// admits it by. A check that resolved anything the request carries would let a credential that
-// admitted nothing keep the socket open once the one that did had ended. The check runs beside
-// the handler, which holds pooled connections of its own while it admits the socket, so it marks a
-// context of its own for the pool (store.ErrNestedAcquire), and it resolves on a context detached
-// from the access-log line, which names the caller the socket was admitted as (accesslog.Detached).
+// request again (checkEveryHeartbeat), and once that refuses (a logout, a membership the sign-in
+// issuer no longer confirms, a revoked token) it cancels the connection's context, on which the
+// document server and the live socket close the socket. stillResolves is the mount's own
+// admission asked again, never a wider one: the live socket's is callerStillResolves, which
+// resolves whichever credential admitted it, and the document socket's is signInStillResolves,
+// the browser credential alone (a sign-in cookie, or an Identity-Aware Proxy assertion), since
+// that is all the document service admits it by. A check that resolved anything the request
+// carries would let a credential that admitted nothing keep the socket open once the one that did
+// had ended. The check runs beside the handler, which holds pooled connections of its own while it
+// admits the socket, so it marks a context of its own for the pool (store.ErrNestedAcquire), and
+// it resolves on a context detached from the access-log line, which names the caller the socket
+// was admitted as (accesslog.Detached).
+//
+// A check that fails for a transient reason keeps the socket and is asked again at the next
+// heartbeat: the database did not serve its read - the pool had no connection free within its
+// bound, the database stopped answering, or the connection ended under the read
+// (transientCheckFailure, store.UnservedRead) - the check's own bound passed (checkCaller), or the
+// request pool's share outside admission refused it a place, so it was never made
+// (errHeartbeatCheckSkipped). None of them says anything of the caller. Only
+// heartbeatTransientCeiling of them in a row close the socket, as a refusal does, with the last of
+// them as the cause, and only a check that resolves the caller ends the run.
+// Before, every failure closed the socket, so under load the pool's bounded acquire closed
+// connected editors' sockets and sent them back into the load: 1,000 editors made 33,499
+// handshakes in INFRA-592's stress step (tester round 38).
+//
+// The cancellation carries errCallerNoLongerResolves as its cause, so a handler can tell it from
+// its client's own going: net/http ends a request's context with the plain context.Canceled when
+// the client leaves, and the checks can fail while the client is still there - under load, the
+// read of the session or the record of the person finds the pool busy (store.ErrPoolBusy) at the
+// ceiling - and a socket still being admitted must then be refused, not left unanswered as a
+// client gone (docs.Service.ServeHTTP). The cause changes nothing for a reader of the context's
+// Err, which is context.Canceled either way.
 //
 // A refusal that is only the credential's own life ending (identity.ErrCredentialExpired: an IAP
 // assertion, which lives about ten minutes while IAP signs a fresh one for every request it
@@ -1018,30 +1345,178 @@ func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, ha
 		ctx, closeConnection := context.WithCancelCause(r.Context())
 		defer closeConnection(nil)
 		check := r.WithContext(store.WithTransactionTracking(accesslog.Detached(ctx)))
-		go func() {
-			heartbeat := time.NewTicker(s.deps.StreamHeartbeat)
-			defer heartbeat.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-heartbeat.C:
-					// The check resolves the admission's credential from a detached copy of
-					// the request, which for a broker-issued token on the live socket asks the
-					// broker's answer alone rather than the proof the upgrade already spent
-					// (callerStillResolves).
-					if err := stillResolves(check); err != nil {
-						if errors.Is(err, identity.ErrCredentialExpired) {
-							closeConnection(errCredentialExpired)
-						} else {
-							closeConnection(nil)
-						}
-						return
-					}
-				}
-			}
-		}()
+		go s.checkEveryHeartbeat(ctx, check, stillResolves, closeConnection)
 		handler(w, r.WithContext(ctx))
+	}
+}
+
+// checkEveryHeartbeat is whileCallerResolves' heartbeat: every StreamHeartbeat until ctx, the
+// connection's, ends, it checks the caller with stillResolves (checkCaller) and closes the
+// connection with closeConnection on a refusal, or on heartbeatTransientCeiling transient
+// failures in a row: with errCredentialExpired for a credential that has only expired, and with
+// errCallerNoLongerResolves wrapping the check's error for every other.
+func (s *server) checkEveryHeartbeat(ctx context.Context, check *http.Request, stillResolves func(*http.Request) error, closeConnection context.CancelCauseFunc) {
+	heartbeat := time.NewTicker(s.deps.StreamHeartbeat)
+	defer heartbeat.Stop()
+	failedInARow := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-heartbeat.C:
+		}
+		// The check resolves the admission's credential from a detached copy of the request,
+		// which for a broker-issued token on the live socket asks the broker's answer alone rather
+		// than the proof the upgrade already spent (callerStillResolves).
+		err := s.checkCaller(check, stillResolves)
+		switch {
+		case ctx.Err() != nil:
+			// The connection ended while the check ran - its client left, or its handler
+			// returned - and the cause it ended with stands.
+			return
+		case err == nil:
+			failedInARow = 0
+			continue
+		case transientCheckFailure(ctx, err):
+			s.deps.Heartbeats.noteTransientFailure()
+			failedInARow++
+			if failedInARow < heartbeatTransientCeiling {
+				continue
+			}
+			s.deps.Heartbeats.noteCloseAtCeiling()
+		case errors.Is(err, identity.ErrCredentialExpired):
+			// A refusal that is only the credential's own life ending: the socket closes with the
+			// code on which its page reopens it at once (errCredentialExpired).
+			closeConnection(errCredentialExpired)
+			return
+		}
+		// Any other refusal, or the ceiling's transient failure.
+		closeConnection(fmt.Errorf("%w: %w", errCallerNoLongerResolves, err))
+		return
+	}
+}
+
+// heartbeatTransientCeiling is how many heartbeat checks in a row may fail for a transient reason
+// (transientCheckFailure) before the socket closes as one whose caller no longer resolves: 3, so a
+// socket outlives two and closes on the third, three heartbeats, about 45 s at the 15 s heartbeat
+// (defaultStreamHeartbeat).
+//
+// It is a ceiling because a check that fails is a check not made, and only a check that is made
+// finds a sign-in revoked, a token revoked or a membership ended meanwhile. So while the database
+// is busy a socket whose sign-in was revoked stays open for up to those 45 s, where a free pool
+// closes it at its next heartbeat, within 15 s: that is a cost to authorization, paid so that a
+// busy minute does not close every connected editor's socket and send them all to reconnect into
+// it. A check the request pool's share outside admission refuses a place - its queue full, or no
+// place free within the second it waits - is not made either, so it counts toward the ceiling as
+// a failure does (errHeartbeatCheckSkipped): were it to leave the count as it stands, a socket
+// would stay open for as long as that share stayed held, unbounded.
+const heartbeatTransientCeiling = 3
+
+// checkCaller asks stillResolves of check once, bounded at a heartbeat, so a check whose pool or
+// database stops answering ends by the time the next is due rather than holding the heartbeat, and
+// what the check holds, for as long as it hangs. A failure once that bound has passed is the
+// bound's (errHeartbeatCheckBound), whatever the check answered.
+func (s *server) checkCaller(check *http.Request, stillResolves func(*http.Request) error) error {
+	ctx, cancel := context.WithTimeoutCause(check.Context(), s.deps.StreamHeartbeat, errHeartbeatCheckBound)
+	defer cancel()
+	err := stillResolves(check.WithContext(ctx))
+	if err != nil && errors.Is(context.Cause(ctx), errHeartbeatCheckBound) {
+		return fmt.Errorf("%w: %w", errHeartbeatCheckBound, err)
+	}
+	return err
+}
+
+// transientCheckFailure reports whether err, a heartbeat check's failure on the connection whose
+// context is ctx, says nothing of the caller: the database did not serve the check's read - its
+// pool had no connection free within its bound, the database stopped answering it, or its
+// connection ended under it (store.UnservedRead) - the check's own bound passed
+// (errHeartbeatCheckBound), or the check was never made, refused a place
+// (errHeartbeatCheckSkipped). Every other failure is a refusal - a logout, a revoked or expired
+// token, a membership the sign-in issuer no longer confirms, or any other error - and closes the
+// socket at once.
+func transientCheckFailure(ctx context.Context, err error) bool {
+	return store.UnservedRead(ctx, err) || errors.Is(err, errHeartbeatCheckBound) || errors.Is(err, errHeartbeatCheckSkipped)
+}
+
+// errCallerNoLongerResolves is the cause whileCallerResolves ends a connection's context with
+// when a heartbeat's re-resolution of its caller is refused, or fails for a transient reason
+// heartbeatTransientCeiling times in a row (stillResolves), wrapping the last check's own error.
+var errCallerNoLongerResolves = errors.New("the connection's caller did not resolve again on its heartbeat")
+
+// errHeartbeatCheckBound is the cause a heartbeat check's context ends with when its bound, a
+// heartbeat, passes (checkCaller), and what that check's failure wraps.
+var errHeartbeatCheckBound = errors.New("the heartbeat's check of its caller ran out its bound")
+
+// errHeartbeatCheckSkipped is a heartbeat check refused a place of the request pool's share
+// outside admission (admission.Outside: the queue for one full, or its second's wait run out) and
+// so read nothing: it was not made, which says nothing of the caller and counts toward the ceiling
+// as a transient failure does. It wraps the refusal.
+var errHeartbeatCheckSkipped = errors.New("the heartbeat's check was refused a place of the request pool's share outside admission, and was not made")
+
+// takeHeartbeatPlace takes a place of the request pool's share outside admission for a heartbeat
+// check that reads the pool, waiting for one as admission.Outside.Take does, for at most a second,
+// well inside the check's own bound of a heartbeat (checkCaller). It answers the place, which the
+// caller gives back with its Release once the check is done, and r carrying it
+// (admission.WithPlace), which the check resolves its caller with: the resolution holds the place
+// for its reads alone, and gives it back while the sign-in issuer renews a lapsed confirmation, or
+// while IAP's key set is read to verify an IAP assertion, neither of which reads the pool
+// (identity.Membership.Confirm, identity.IAPIdentity.Login). A check refused one is skipped
+// (errHeartbeatCheckSkipped, wrapping the refusal), and one whose context ends while it waits
+// answers that context's error, which checkCaller reads as its bound where the bound ended it.
+func (s *server) takeHeartbeatPlace(r *http.Request) (*http.Request, *admission.Place, error) {
+	place, err := s.outside.Hold(r.Context(), admission.HeartbeatCheck)
+	var refusal *admission.OutsideRefusal
+	if errors.As(err, &refusal) {
+		return nil, nil, fmt.Errorf("%w: %w", errHeartbeatCheckSkipped, err)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	return r.WithContext(admission.WithPlace(r.Context(), place)), place, nil
+}
+
+// HeartbeatCounts counts what the heartbeat checks of one API server's sockets met
+// (checkEveryHeartbeat): the checks that failed for a transient reason, a skipped one and the one
+// that closes its socket at the ceiling included, and the sockets closed at that ceiling
+// (heartbeatTransientCeiling). cmd/dispatch makes one, hands it to its API server
+// (Deps.Heartbeats) and reads it on its metrics endpoint, so the counts are that server's, and two
+// servers in one process - a test's - count apart. A nil HeartbeatCounts counts nothing and reads
+// zero.
+type HeartbeatCounts struct {
+	transientFailures, closesAtCeiling atomic.Uint64
+}
+
+// TransientFailures is how many of the server's sockets' heartbeat checks have failed for a
+// transient reason (transientCheckFailure): the dispatch_socket_heartbeat_transient_failures_total
+// counter of the metrics endpoint.
+func (c *HeartbeatCounts) TransientFailures() uint64 {
+	if c == nil {
+		return 0
+	}
+	return c.transientFailures.Load()
+}
+
+// ClosesAtCeiling is how many of the server's sockets were closed for heartbeatTransientCeiling
+// transient failures of their heartbeat check in a row: the
+// dispatch_socket_heartbeat_ceiling_closes_total counter of the metrics endpoint.
+func (c *HeartbeatCounts) ClosesAtCeiling() uint64 {
+	if c == nil {
+		return 0
+	}
+	return c.closesAtCeiling.Load()
+}
+
+// noteTransientFailure counts one heartbeat check failed for a transient reason.
+func (c *HeartbeatCounts) noteTransientFailure() {
+	if c != nil {
+		c.transientFailures.Add(1)
+	}
+}
+
+// noteCloseAtCeiling counts one socket closed at the ceiling.
+func (c *HeartbeatCounts) noteCloseAtCeiling() {
+	if c != nil {
+		c.closesAtCeiling.Add(1)
 	}
 }
 
@@ -1075,11 +1550,21 @@ func (credentialExpired) CloseCode() (int, string) {
 // either: resolved here, it would hold the socket open for the token's whole life after the cookie
 // ended, a read-only token's included, which the read list lets read no document at all
 // (readScopeRoutes).
+//
+// The credential's rows - the cookie's session, the person record an IAP assertion's Login
+// writes - are read and written on the request pool outside admission, so the check takes a place
+// of that pool's share outside admission first (takeHeartbeatPlace), and is skipped where it is
+// refused one, which counts toward the heartbeat's ceiling.
 func (s *server) signInStillResolves(r *http.Request) error {
 	if s.deps.Identity == nil {
 		return errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
 	}
-	_, err := s.deps.Identity.Login(r)
+	check, place, err := s.takeHeartbeatPlace(r)
+	if err != nil {
+		return err
+	}
+	defer place.Release()
+	_, err = s.deps.Identity.Login(check)
 	return err
 }
 
@@ -1192,12 +1677,57 @@ func (s *server) refuseChangedLogin(handler http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// optionalActor resolves the request's caller. The authentication scheme decides the credential
-// before anything reads a token: RFC 9449 Section 7.2 refuses a DPoP-bound token presented under
-// any other scheme, so a broker-issued token reaches Dispatch under DPoP alone and a DPoP
-// presentation is never retried as another kind. Each branch names that caller on the request's
-// access-log line (accesslog.Note), which costs the line what the authentication already
-// resolved and never a lookup of its own.
+// credentialKind is the credential a request's caller is resolved by (requestCredential).
+type credentialKind int
+
+const (
+	// brokerTokenCredential is an access token the secrets broker issued, presented under the
+	// DPoP scheme (brokerTokenActor).
+	brokerTokenCredential credentialKind = iota
+	// emptyBearerCredential is the bearer scheme with no token, refused 401 UNAUTHORIZED.
+	emptyBearerCredential
+	// sharedTokenCredential is the deployment's one shared agent token, a comparison with the
+	// token it holds (auth.MatchesSharedAgentToken).
+	sharedTokenCredential
+	// serviceTokenCredential is a JWT-shaped bearer where service-account tokens are verified, a
+	// Kubernetes pod's projected token checked against its issuer's keys (serviceTokenActor).
+	serviceTokenCredential
+	// personalTokenCredential is every other bearer, a personal token's row (personalTokenActor).
+	personalTokenCredential
+	// signInCookieCredential is no Authorization credential at all: the person Deps.Identity
+	// resolves, a sign-in cookie's session.
+	signInCookieCredential
+)
+
+// requestCredential names the credential optionalActor resolves r's caller by, and the bearer
+// token where it is one, judged on r alone with nothing read. It is optionalActor's order, written
+// once: the authentication scheme decides before anything reads a token - RFC 9449 Section 7.2
+// refuses a DPoP-bound token presented under any other scheme, so a broker-issued token reaches
+// Dispatch under DPoP alone and a DPoP presentation is never retried as another kind - then the
+// bearer, then the sign-in. Work that must know what a resolution will read before it runs it - a
+// heartbeat that takes a place of the request pool's share only for a resolution that reads the
+// pool (callerStillResolves) - asks this, so a credential kind added here reaches both.
+func (s *server) requestCredential(r *http.Request) (credentialKind, string) {
+	if _, presented := ciphertoken.Presented(r); presented {
+		return brokerTokenCredential, ""
+	}
+	token, present := auth.BearerToken(r)
+	switch {
+	case !present:
+		return signInCookieCredential, ""
+	case token == "":
+		return emptyBearerCredential, ""
+	case auth.MatchesSharedAgentToken(r, token, s.deps.AgentTokens):
+		return sharedTokenCredential, token
+	case s.deps.OIDC != nil && oidc.LooksLikeJWT(token):
+		return serviceTokenCredential, token
+	}
+	return personalTokenCredential, token
+}
+
+// optionalActor resolves the request's caller by the credential it presents (requestCredential).
+// Each branch names that caller on the request's access-log line (accesslog.Note), which costs the
+// line what the authentication already resolved and never a lookup of its own.
 func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	// The caller may already be decided: a keyed write resolves before its handler
 	// (keyedWrites), and a DPoP presentation is decided once a request however many layers
@@ -1206,22 +1736,20 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	if caller, ok := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); ok {
 		return caller.actor, caller.human, caller.err
 	}
-	if _, presented := ciphertoken.Presented(r); presented {
+	kind, token := s.requestCredential(r)
+	switch kind {
+	case brokerTokenCredential:
 		return s.brokerTokenActor(r)
-	}
-	if token, present := auth.BearerToken(r); present {
-		if token == "" {
-			return model.Actor{}, false, errorf(http.StatusUnauthorized, "UNAUTHORIZED", "invalid bearer token")
-		}
-		if auth.MatchesSharedAgentToken(r, token, s.deps.AgentTokens) {
-			accesslog.Note(r.Context(), accesslog.KindSharedToken, "")
-			// A credential that holds no scope, not the absence of one: the deployment's one
-			// shared token is nobody's, so it acts as no person.
-			return model.Actor{Credential: scopelessCredential}, false, nil
-		}
-		if s.deps.OIDC != nil && oidc.LooksLikeJWT(token) {
-			return s.serviceTokenActor(r, token)
-		}
+	case emptyBearerCredential:
+		return model.Actor{}, false, errorf(http.StatusUnauthorized, "UNAUTHORIZED", "invalid bearer token")
+	case sharedTokenCredential:
+		accesslog.Note(r.Context(), accesslog.KindSharedToken, "")
+		// A credential that holds no scope, not the absence of one: the deployment's one
+		// shared token is nobody's, so it acts as no person.
+		return model.Actor{Credential: scopelessCredential}, false, nil
+	case serviceTokenCredential:
+		return s.serviceTokenActor(r, token)
+	case personalTokenCredential:
 		actor, err := s.personalTokenActor(r.Context(), token)
 		if err != nil {
 			return model.Actor{}, false, err
@@ -1356,17 +1884,17 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 // as identity.WriteError renders both; anything else as writeHandlerError does. Only identity's
 // own sentinels reach identity.WriteError, so a service-account token's issuer outage
 // (serviceTokenActor's OIDC_ISSUER_UNAVAILABLE) never reads as the sign-in issuer's.
-func (s *server) writeAuthenticationError(w http.ResponseWriter, err error) {
+func (s *server) writeAuthenticationError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, identity.ErrNoIdentity) || errors.Is(err, identity.ErrSignInUnavailable) {
-		identity.WriteError(w, err)
+		identity.WriteError(w, r, err)
 		return
 	}
-	s.writeHandlerError(w, err)
+	s.writeHandlerError(w, r, err)
 }
 
 func (s *server) requireAuthenticated(w http.ResponseWriter, r *http.Request) bool {
 	if _, _, err := s.optionalActor(r); err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return false
 	}
 	return true
@@ -1375,7 +1903,7 @@ func (s *server) requireAuthenticated(w http.ResponseWriter, r *http.Request) bo
 func (s *server) requireActor(w http.ResponseWriter, r *http.Request, supplied *model.Actor) (model.Actor, bool) {
 	actor, err := s.actorFrom(r, supplied)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return model.Actor{}, false
 	}
 	return actor, true
@@ -1389,7 +1917,7 @@ func (s *server) decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst 
 		return true
 	}
 	if err := decodeJSON(r, dst); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return false
 	}
 	return true
@@ -1436,7 +1964,7 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor, human, err := s.optionalActor(r)
 		if err != nil {
-			s.writeAuthenticationError(w, err)
+			s.writeAuthenticationError(w, r, err)
 			return
 		}
 		for _, scope := range scopes {
@@ -1516,7 +2044,7 @@ func (s *server) refuseReadOnlyToken(listed bool, next http.HandlerFunc) http.Ha
 func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Actor, bool) {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return model.Actor{}, false
 	}
 	if !actor.Credential.Holds(model.ScopePerson) {
@@ -1619,7 +2147,7 @@ func (s *server) callerHoldsScope(r *http.Request, scope string) bool {
 func (s *server) requireCallerScope(w http.ResponseWriter, r *http.Request, scope string) bool {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return false
 	}
 	if !actor.Credential.Holds(scope) {
@@ -1726,7 +2254,8 @@ func decodeJSON(r *http.Request, value any) error {
 	return decodeJSONWithin(r, value, maxJSONRequestBytes, errJSONTooLarge)
 }
 
-// decodeJSONWithin is decodeJSON for a route whose body has a limit of its own (routeBody): a body
+// decodeJSONWithin is decodeJSON for a route whose body has a limit of its own
+// (apiRoute.bodyLimit): a body
 // past limit bytes is tooLarge, the 413 that route answers one with.
 func decodeJSONWithin(r *http.Request, value any, limit int64, tooLarge *apiError) error {
 	body, err := readJSONBody(r, value, limit, tooLarge)
@@ -1817,27 +2346,88 @@ func (s *server) appendEvent(ctx context.Context, tx pgx.Tx, event model.Event) 
 	return s.deps.Events.Append(ctx, tx, event)
 }
 
-// publish hands each event to the broker and then stores the display trees of the stored texts
-// their payloads carry (storeEventDisplayTrees). ctx is the caller's own: a route's request
-// context, which by here has committed and holds no connection of the pool, or a background
-// writer's. A caller that publishes while its transaction is still open stores nothing, and loses
-// no tree by it: such an event carries a text its own write already stored.
+// publish fans out what a handler committed, after its transaction committed and while it still
+// holds whatever it took to write - a document's writer gate among them, which ends only once
+// these events are out (editArtifact, storeArtifact) - and stores the display trees of the
+// stored texts their payloads carry (storeEventDisplayTrees). ctx is the caller's own: a route's
+// request context, which by here has committed and holds no connection of the pool, or a
+// background writer's. The fan-out is what the gate waits for; the store behind it is not, and
+// stands back until the gate is released (docs.AfterWriterGateRelease, storeDisplayTrees). A
+// caller that publishes while its transaction is still open stores nothing, and loses no tree by
+// it: such an event carries a text its own write already stored.
 func (s *server) publish(ctx context.Context, events ...model.Event) {
+	if s.beforePublish != nil {
+		s.beforePublish()
+	}
 	for _, event := range events {
 		s.deps.Events.Publish(event)
 	}
 	s.storeEventDisplayTrees(ctx, events)
 }
 
+// begin opens the transaction of a request: every transaction an API handler opens comes from
+// here, so requestTx is what each of them commits and rolls back. It opens it on the store ctx
+// names (workStore): the request pool for every request, and the background pool for the
+// background work that runs through this server (resumeOwedDeliveries).
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {
-	if s.deps.Store == nil || s.deps.Store.Pool == nil {
+	database := s.workStore(ctx)
+	if database == nil || database.Pool == nil {
 		return nil, errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
 	}
-	tx, err := s.deps.Store.Pool.Begin(ctx)
+	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin transaction: %w", err)
 	}
-	return tx, nil
+	return requestTx{Tx: tx}, nil
+}
+
+type workStoreKey struct{}
+
+// withWorkStore names database as the store every statement this server makes under ctx runs
+// on, in place of its own (workStore). The server's own store is the request pool's, which is
+// right for a request and wrong for background work: a loop no client waits on, running through
+// the server that answers the requests, names the background pool's store at its entry, so the
+// whole path below it - its reads, its transactions (begin) and the display trees its events
+// carry (storeDisplayTrees) - takes no connection admission counts for requests. The delivery
+// sweep's resume is that loop (resumeOwedDeliveries).
+func withWorkStore(ctx context.Context, database *store.Store) context.Context {
+	return context.WithValue(ctx, workStoreKey{}, database)
+}
+
+// workStore is the store a statement this server makes under ctx runs on: the one ctx names
+// (withWorkStore), else the server's own.
+func (s *server) workStore(ctx context.Context) *store.Store {
+	if database, named := ctx.Value(workStoreKey{}).(*store.Store); named {
+		return database
+	}
+	return s.deps.Store
+}
+
+// requestTx is a request's transaction (server.begin): the pool's transaction, which rolls back
+// apart from its caller's cancellation already (store.RollbackContext) and commits apart from it
+// (store.CommitContext), with one rule of the request's own - no commit is started for a request
+// that has already ended.
+//
+// The commit itself must not be cut mid-way, since its outcome would then be unknown and every
+// room the transaction wrote would be failed; but a request whose client went away, or whose own
+// bound passed, before its commit began has nothing to protect. Started, that commit would hold
+// the rows it locked, its documents' writer gates and the event horizon for up to ten more
+// seconds over an answer nobody will read. Refused, the handler's deferred rollback ends the
+// transaction at once and writeHandlerError answers the request as the client-gone it is
+// (store.ErrRequestEnded).
+//
+// A document write commits through its ledger, which refuses the same request before it records
+// anything of its own (docs.Ledger.Commit): the check here is for the transactions a handler
+// commits itself.
+type requestTx struct {
+	pgx.Tx
+}
+
+func (tx requestTx) Commit(ctx context.Context) error {
+	if err := store.CommitRefusal(ctx); err != nil {
+		return err
+	}
+	return tx.Tx.Commit(ctx)
 }
 
 // readyPool is the pool a route reads through before it opens its transaction, with the

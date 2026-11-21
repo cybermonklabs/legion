@@ -149,12 +149,23 @@ func TestTheOwnerLockRowsDecideTheirCaseByThePreviousBuildsProtocol(t *testing.T
 	}
 }
 
-// The application_name each build's connections carry, so the test tells their backends apart in
-// pg_stat_activity.
+// The application_name each build's connection string names, so the test tells their backends
+// apart in pg_stat_activity (buildConnection).
 const (
 	previousApplication = "dispatch-previous-build"
 	currentApplication  = "dispatch-current-build"
 )
+
+// buildConnection is the SQL condition that name, an expression of a backend's application_name,
+// is a connection of the build whose connection string names application, an SQL expression of
+// that name. A build carries it in one of two forms: alone, as a build before store's pool names
+// does on every connection it does not name itself, or before a slash and each pool's own name,
+// <application>/dispatch-<pool>, as this tree does (store's applicationName). The previous build is
+// either kind: dispatch-two-builds pairs this tree with the newest release, and
+// dispatch-two-builds-same with its own build.
+func buildConnection(name, application string) string {
+	return fmt.Sprintf("(%[1]s = %[2]s or starts_with(%[1]s, %[2]s::text || '/'))", name, application)
+}
 
 // previousRowLock is the statement the previous build's PATCH takes an issue's row with, first,
 // before it reads the issue (its api.lockIssueRows).
@@ -192,9 +203,9 @@ func (b *twoBuilds) startNamed(t *testing.T, previous bool, application string) 
 	return b.b
 }
 
-// queuedBackend waits up to within for a backend whose connections carry application, and whose
-// current statement matches statement, to queue behind a lock holder holds (storetest.QueuedBehind),
-// and answers its process id and statement.
+// queuedBackend waits up to within for a backend of the build whose connections carry application
+// (buildConnection), and whose current statement matches statement, to queue behind a lock holder
+// holds (storetest.QueuedBehind), and answers its process id and statement.
 func queuedBackend(t *testing.T, database *store.Store, holder pgx.Tx, application string, statement *regexp.Regexp, within time.Duration) (uint32, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -202,7 +213,7 @@ func queuedBackend(t *testing.T, database *store.Store, holder pgx.Tx, applicati
 	for {
 		rows, err := database.Pool.Query(ctx, `
 			select pid, query from pg_stat_activity
-			where datname = current_database() and application_name = $1 and wait_event_type = 'Lock'`, application)
+			where datname = current_database() and `+buildConnection("application_name", "$1")+` and wait_event_type = 'Lock'`, application)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -434,7 +445,7 @@ func gateWaiter(t *testing.T, database *store.Store, blocker uint32) (uint32, st
 	err := database.Pool.QueryRow(context.Background(), `
 		select activity.pid, activity.query
 		from pg_stat_activity activity join pg_locks lock on lock.pid = activity.pid
-		where activity.datname = current_database() and activity.application_name = $1
+		where activity.datname = current_database() and `+buildConnection("activity.application_name", "$1")+`
 		  and lock.locktype = 'advisory' and not lock.granted and lock.mode = 'ExclusiveLock'
 		  and lock.classid::bigint = $2 and lock.objid::bigint = $3 and lock.objsubid = 2
 		  and $4::integer = any(pg_blocking_pids(activity.pid))`,
@@ -448,11 +459,11 @@ func gateWaiter(t *testing.T, database *store.Store, blocker uint32) (uint32, st
 	return pid, query
 }
 
-// pauseLabelWrites holds each write of an issue's labels by a backend whose connections carry
-// application as that statement opens, before it reaches a row, until the transaction it returns
-// ends: a trigger has each UPDATE naming issues.labels on such a backend take a shared hold on a
-// key the returned transaction holds. A writer of the issue's row on a backend of the other build,
-// or of the test, passes through.
+// pauseLabelWrites holds each write of an issue's labels by a backend of the build whose
+// connections carry application (buildConnection) as that statement opens, before it reaches a
+// row, until the transaction it returns ends: a trigger has each UPDATE naming issues.labels on
+// such a backend take a shared hold on a key the returned transaction holds. A writer of the
+// issue's row on a backend of the other build, or of the test, passes through.
 func pauseLabelWrites(t *testing.T, database *store.Store, application string) pgx.Tx {
 	t.Helper()
 	ctx := context.Background()
@@ -465,7 +476,7 @@ func pauseLabelWrites(t *testing.T, database *store.Store, application string) p
 		end;
 		$$`,
 		fmt.Sprintf(`create trigger dispatch_test_hold_labels before update of labels on issues for each statement
-			when (current_setting('application_name') = '%s') execute function dispatch_test_hold_labels('%d')`, application, holdLabels),
+			when %s execute function dispatch_test_hold_labels('%d')`, buildConnection("current_setting('application_name')", "'"+application+"'"), holdLabels),
 	} {
 		if _, err := database.Pool.Exec(ctx, statement); err != nil {
 			t.Fatalf("hold the label writes of %s: %v", application, err)

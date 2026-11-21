@@ -95,7 +95,8 @@ func parseIntakeHoldToken(token string) intakeHoldToken {
 }
 
 // intakeLeases is the pool an intake takes its durable's hold and consumer lease on and renews the
-// hold through: store.Pool.Leases, which StartIntakes hands each intake. A *pgxpool.Pool is both.
+// hold through: its reservation of the lease pool (store.LeaseCallers.For, ReserveIntakeLeases),
+// which StartIntakes hands each intake. A *store.RawPool is both.
 type intakeLeases interface {
 	duty.Leases
 	duty.Holds

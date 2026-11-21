@@ -94,13 +94,16 @@ const (
 )
 
 // clauseVerdict is one clause's result: n/a is a clause the step's own load leaves nothing to
-// judge (the baseline step drives no unit session), which is no failure.
+// judge (the baseline step drives no unit session), which is no failure, and set aside is the
+// set-aside rule's verdict on a step whose generator broke its schedule, or recorded nothing
+// scheduled of a kind the step was to send, which is neither a pass nor a failure (pacing.go).
 type clauseVerdict string
 
 const (
-	clauseOK   clauseVerdict = "ok"
-	clauseFail clauseVerdict = "FAIL"
-	clauseNA   clauseVerdict = "n/a"
+	clauseOK       clauseVerdict = "ok"
+	clauseFail     clauseVerdict = "FAIL"
+	clauseNA       clauseVerdict = "n/a"
+	clauseSetAside clauseVerdict = setAsideWord
 )
 
 // stepClause is one named clause of the check: what it read, and its verdict.
@@ -941,7 +944,7 @@ func (sc *stepCheck) r8Clauses() []stepClause {
 			out = append(out, failClause(name, "no pass and no fail: "+sc.critReading(c)))
 		}
 	}
-	return append(out, sc.voidClause())
+	return append(out, sc.voidClause(), sc.setAsideClause())
 }
 
 // naByLoad says why a criterion has no verdict because of what the step was told to drive, and
@@ -1060,34 +1063,60 @@ func (sc *stepCheck) voidClause() stepClause {
 	return okClause(name, fmt.Sprintf("%s at %s of its processors", role, num(share, 2)))
 }
 
+// setAsideClause is the set-aside rule (pacing.go): set aside, neither a pass nor a failure, when
+// a second of the window ran more than overScheduleLimit over its schedule, or a kind the step was
+// to send recorded nothing scheduled (summary.json set_aside); FAIL when the step records no
+// pacing at all, since then nothing says its generator kept its schedule, as the void rule holds
+// of a step that records no generator.
+func (sc *stepCheck) setAsideClause() stepClause {
+	name := fmt.Sprintf("R8 set-aside rule: every kind the step was to send recorded, and no second of the window over its schedule by more than %s", percent(overScheduleLimit))
+	s := sc.step.sum
+	switch {
+	case s.SetAside != nil:
+		return stepClause{name: name, reading: setAsideWord + ": " + s.SetAside.Why, verdict: clauseSetAside}
+	case s.Pacing == nil:
+		return failClause(name, "summary.json records no pacing, so nothing says the generator kept its schedule")
+	}
+	return okClause(name, fmt.Sprintf("requests most over schedule %s, events %s",
+		overCell(s.Pacing.Requests.MaxOver, s.Pacing.Requests.MaxOverSecond), overCell(s.Pacing.Events.MaxOver, s.Pacing.Events.MaxOverSecond)))
+}
+
 // --- the command ----------------------------------------------------------------------------
 
 // printStepCheck writes the step's line, one line per clause and the verdict, and answers how
-// many clauses failed.
+// many clauses failed. A set-aside step's verdict line says so first: its clauses describe the
+// test bed, not Dispatch.
 func printStepCheck(w io.Writer, sc *stepCheck, clauses []stepClause) int {
 	s := sc.step.sum
 	fmt.Fprintf(w, "step %s: factor %s, %s s window after a %s s warm-up (%s)\n",
 		sc.step.name, fmtFloat(sc.step.factor), num(s.Config.DurationS, 0), num(s.Config.WarmupS, 0), sc.dir)
-	failed, na := 0, 0
+	failed, na, aside := 0, 0, 0
 	for _, c := range clauses {
 		switch c.verdict {
 		case clauseFail:
 			failed++
 		case clauseNA:
 			na++
+		case clauseSetAside:
+			aside++
 		}
 		fmt.Fprintf(w, "%s: %s — %s\n", c.name, c.reading, c.verdict)
 	}
-	judged := len(clauses) - na
+	judged := len(clauses) - na - aside
+	verdict := fmt.Sprintf("step-check %s: ", sc.step.name)
+	if aside > 0 {
+		verdict += "SET ASIDE, neither a pass nor a failure: the generator did not deliver the step's schedule; "
+	}
 	if failed == 0 {
-		fmt.Fprintf(w, "step-check %s: no clause failed, %d passed, %d n/a\n", sc.step.name, judged, na)
+		fmt.Fprintf(w, "%sno clause failed, %d passed, %d n/a\n", verdict, judged, na)
 	} else {
-		fmt.Fprintf(w, "step-check %s: %d of %d clauses failed, %d n/a\n", sc.step.name, failed, judged, na)
+		fmt.Fprintf(w, "%s%d of %d clauses failed, %d n/a\n", verdict, failed, judged, na)
 	}
 	return failed
 }
 
-// runStepCheck judges one step directory against A3 and exits non-zero when a clause fails.
+// runStepCheck judges one step directory against A3 and exits non-zero when a clause fails, and
+// when the step is set aside: its own files then say neither pass nor fail.
 func runStepCheck(args []string) error {
 	fs := flag.NewFlagSet("step-check", flag.ExitOnError)
 	fs.Usage = func() {
@@ -1110,6 +1139,9 @@ func runStepCheck(args []string) error {
 	clauses := sc.clauses()
 	if failed := printStepCheck(os.Stdout, sc, clauses); failed > 0 {
 		return fmt.Errorf("%d of %d clauses failed", failed, len(clauses))
+	}
+	if sc.step.setAside() {
+		return fmt.Errorf("the step is set aside, neither a pass nor a failure: %s", sc.step.sum.SetAside.Why)
 	}
 	return nil
 }

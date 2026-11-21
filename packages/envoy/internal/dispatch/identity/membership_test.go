@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -388,6 +390,108 @@ func TestMembershipRefreshesOnceForConcurrentRequests(t *testing.T) {
 	}
 	if refreshes := rig.issuer.Refreshes(); refreshes != 1 {
 		t.Fatalf("refreshes for 16 concurrent requests = %d, want 1", refreshes)
+	}
+}
+
+// placedPeopleStore is a people store that records, at each read of a person's row and each
+// confirmation it writes, how many places of outside are held.
+type placedPeopleStore struct {
+	auth.PeopleStore
+	outside *admission.Outside
+	mu      sync.Mutex
+	held    []int
+}
+
+func (s *placedPeopleStore) record() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.held = append(s.held, s.outside.Stats().InUse)
+}
+
+func (s *placedPeopleStore) recorded() []int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]int(nil), s.held...)
+}
+
+func (s *placedPeopleStore) Membership(ctx context.Context, email string) (auth.PersonMembership, bool, error) {
+	s.record()
+	return s.PeopleStore.Membership(ctx, email)
+}
+
+func (s *placedPeopleStore) Confirm(ctx context.Context, email, refreshToken string) error {
+	s.record()
+	return s.PeopleStore.Confirm(ctx, email, refreshToken)
+}
+
+// Work outside admission holds its place of the request pool's share for a sign-in's reads alone
+// (Confirm): a lapsed confirmation's refresh holds the place of the work that leads it while it
+// reads the person's row again and writes the renewed confirmation, and none while the issuer
+// answers, and another work that finds the same confirmation lapsed meanwhile holds none while it
+// waits on that refresh. Each read and write of the row is made under one place, and each Confirm
+// returns with its place given back; the issuer is asked once.
+func TestALapsedConfirmationsRefreshHoldsAPlaceForThePersonsRowAlone(t *testing.T) {
+	rig := newMembershipRig(t)
+	rig.now = rig.now.Add(2 * time.Hour)
+	outside := admission.New(admission.DefaultLimits()).Outside()
+	people := &placedPeopleStore{PeopleStore: rig.people, outside: outside}
+	rig.membership.People = people
+	issuer := rig.membership.SignIn
+	entered, release := make(chan int, 1), make(chan struct{})
+	rig.membership.SignIn = refresherFunc(func(ctx context.Context, refreshToken string) (oidc.Session, error) {
+		entered <- outside.Stats().InUse
+		<-release
+		return issuer.Refresh(ctx, refreshToken)
+	})
+	confirm := func(user admission.OutsideUser) (*admission.Place, <-chan error) {
+		t.Helper()
+		place, err := outside.Hold(context.Background(), user)
+		if err != nil {
+			t.Fatalf("a place for a %s: %v", user, err)
+		}
+		confirmed := make(chan error, 1)
+		go func() {
+			confirmed <- rig.membership.Confirm(admission.WithPlace(context.Background(), place), memberEmail)
+		}()
+		return place, confirmed
+	}
+
+	leader, led := confirm(admission.HeartbeatCheck)
+	if held := <-entered; held != 0 {
+		t.Errorf("%d places held while the refresh waits on the issuer, want none", held)
+	}
+	follower, followed := confirm(admission.SocketAdmission)
+	deadline := time.Now().Add(5 * time.Second)
+	for len(people.recorded()) < 3 || outside.Stats().InUse != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the second work's read and its place given back: %d reads made and %d places held, want 3 and none", len(people.recorded()), outside.Stats().InUse)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+	for _, confirmed := range []<-chan error{led, followed} {
+		if err := <-confirmed; err != nil {
+			t.Fatalf("Confirm once the issuer renewed the confirmation: %v", err)
+		}
+	}
+	if held := outside.Stats().InUse; held != 0 {
+		t.Errorf("%d places held once both Confirms returned, want none: each gave its place back", held)
+	}
+	leader.Release()
+	follower.Release()
+	if held := outside.Stats().InUse; held != 0 {
+		t.Errorf("%d places held once the works released what they held, want none", held)
+	}
+	for i, held := range people.recorded() {
+		if held != 1 {
+			t.Errorf("read or write %d of the person's row was made with %d places held, want 1: the work's own", i+1, held)
+		}
+	}
+	if confirmation, _ := rig.people.get(memberEmail); confirmation.ConfirmedAt != rig.now {
+		t.Errorf("the confirmation after the refresh is dated %s, want %s: the renewal written", confirmation.ConfirmedAt, rig.now)
+	}
+	if refreshes := rig.issuer.Refreshes(); refreshes != 1 {
+		t.Errorf("refreshes for two works that found one confirmation lapsed = %d, want 1", refreshes)
 	}
 }
 

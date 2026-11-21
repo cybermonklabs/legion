@@ -37,7 +37,7 @@ func TestSettlementBetweenCommitAndPublishWaitsForTheWrite(t *testing.T) {
 	settled := make(chan struct{})
 	go func() {
 		defer close(settled)
-		service.settleRoom(artifactID, generation)
+		service.settleRoom(context.Background(), artifactID, generation)
 	}()
 	t.Cleanup(func() {
 		select {
@@ -62,7 +62,7 @@ func TestSettlementBetweenCommitAndPublishWaitsForTheWrite(t *testing.T) {
 	if _, _, err := lockArtifactOwner(ctx, tx, artifactID); err != nil {
 		t.Fatalf("lock document owner: %v", err)
 	}
-	joined, ledger := service.Join(ctx, tx)
+	joined, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	defer ledger.Discard()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	if _, err := service.ApplyOps(joined, artifactID, []model.EditOp{{Op: "replace", Find: "before", With: "after"}}, alice, nil); err != nil {
@@ -107,7 +107,7 @@ func TestFailedLiveWritesReloadTheDurableDocument(t *testing.T) {
 		t.Fatalf("begin edit transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
+	joined, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	if _, err := service.ApplyOps(joined, artifactID, []model.EditOp{{Op: "replace", Find: "before", With: "after"}}, model.Actor{Kind: "user", ID: "alice"}, nil); err != nil {
 		t.Fatalf("apply joined edit: %v", err)
 	}
@@ -135,7 +135,8 @@ func TestARolledBackWriteIsNoAuthorOfTheNextVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin edit transaction: %v", err)
 	}
-	joined, ledger := service.Join(ctx, tx)
+	rolledBackCtx, release := gatedContext(t, service, ctx, artifactID)
+	joined, ledger := service.Join(rolledBackCtx, tx)
 	rolledBack := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	if _, err := service.ReplaceText(joined, artifactID, "rolled back", rolledBack, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("replace text in the transaction: %v", err)
@@ -144,6 +145,7 @@ func TestARolledBackWriteIsNoAuthorOfTheNextVersion(t *testing.T) {
 		t.Fatalf("roll back edit transaction: %v", err)
 	}
 	ledger.Discard()
+	release()
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	if _, err := joinedReplaceText(service, artifactID, "after", alice); err != nil {
@@ -184,7 +186,8 @@ func TestAJoinedWritesVersionNamesItsWriterNotAConnectedBrowser(t *testing.T) {
 	if _, _, err := lockArtifactOwner(ctx, tx, artifactID); err != nil {
 		t.Fatalf("lock document owner: %v", err)
 	}
-	joined, ledger := service.Join(ctx, tx)
+	writeCtx, release := gatedContext(t, service, ctx, artifactID)
+	joined, ledger := service.Join(writeCtx, tx)
 	defer ledger.Discard()
 	writer := model.Actor{Kind: "user", ID: "bob"}
 	if _, err := service.ApplyOps(joined, artifactID, []model.EditOp{{Op: "replace", Find: "before", With: "during"}}, writer, nil); err != nil {
@@ -198,6 +201,7 @@ func TestAJoinedWritesVersionNamesItsWriterNotAConnectedBrowser(t *testing.T) {
 		t.Fatalf("commit edit transaction: %v", err)
 	}
 	ledger.publish()
+	release()
 	if want := []model.Actor{writer}; !reflect.DeepEqual(snapshot.Version.Authors, want) {
 		t.Fatalf("joined edit's version authors = %#v, want only the writer %v (browser %v only watched)", snapshot.Version.Authors, want, browser)
 	}
@@ -249,7 +253,7 @@ func TestAWriteAfterItsTransactionStoredTheRoomsLingeringUpdateForksTheRoom(t *t
 	if cursor == nil || cursor.heldThrough() != held {
 		t.Fatalf("the room's cursor does not stand at the stored head %d before the snapshot", held)
 	}
-	err := joinedWrite(service, func(ctx context.Context) error {
+	err := joinedWrite(service, artifactID, func(ctx context.Context) error {
 		if _, err := service.SnapshotVersion(ctx, artifactID, alice); err != nil {
 			return fmt.Errorf("snapshot the document: %w", err)
 		}

@@ -93,16 +93,30 @@ const biome = Bun.which("biome", {
 if (biome === null) {
   throw new Error("gen-api needs Biome: run `bun install` at the repository root");
 }
+// Biome ignores, and formats to nothing, an input past its files-max-size (1 MiB unless set),
+// which the unformatted render passes, so the call names a limit well above it.
+const biomeMaxSize = 8388608;
+const input = new TextEncoder().encode(rendered);
 const formatted = Bun.spawnSync({
-  cmd: [biome, "format", `--stdin-file-path=${relative(repoRoot, output)}`],
+  cmd: [
+    biome,
+    "format",
+    `--files-max-size=${biomeMaxSize}`,
+    `--stdin-file-path=${relative(repoRoot, output)}`,
+  ],
   cwd: repoRoot,
-  stdin: new TextEncoder().encode(rendered),
+  stdin: input,
   stderr: "inherit",
 });
 if (formatted.exitCode !== 0) {
   throw new Error("biome format failed");
 }
 const source = formatted.stdout.toString();
+if (source === "") {
+  throw new Error(
+    `biome format wrote nothing for a render of ${input.length} bytes (files-max-size ${biomeMaxSize})`
+  );
+}
 
 // `--check` compares the fresh render with the committed file and writes nothing, so an OpenAPI
 // document regenerated from the Go route table without regenerating this module fails CI instead

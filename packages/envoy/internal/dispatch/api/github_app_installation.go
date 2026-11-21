@@ -30,7 +30,7 @@ func (s *server) getAppInstallation(w http.ResponseWriter, r *http.Request) {
 	}
 	owner, name, err := repoProjectPath(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	installed, err := s.deps.GitHub.Installed(r.Context(), owner, name)

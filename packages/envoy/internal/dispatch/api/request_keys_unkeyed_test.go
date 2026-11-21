@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,8 +10,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 )
 
@@ -64,7 +67,7 @@ func newLookupRig(t *testing.T) *lookupRig {
 
 func (rig *lookupRig) write(_ int32, w http.ResponseWriter, r *http.Request) {
 	if _, _, err := rig.server.optionalActor(r); err != nil {
-		rig.server.writeHandlerError(w, err)
+		rig.server.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusCreated, map[string]int32{"stored": rig.stored.Add(1)})
@@ -157,8 +160,10 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 	}
 
 	// Every POST and PATCH row of the table, each through the chain register mounts it behind
-	// (routeHandler), with its handler replaced by a recorder that resolves no caller, as the
-	// read-only walk builds them (read_only_token_test.go): a keyed write whose caller lookup fails
+	// (routeHandler, under the admission and the read deadline register gives a server whose Deps
+	// set neither), with its handler replaced by a recorder that resolves no caller, as the
+	// read-only walk builds them (read_only_token_test.go), each row the registered server's own so
+	// its keyed replay (apiRoute.Replay) is that server's: a keyed write whose caller lookup fails
 	// runs no handler, whichever layer of the row looks first, and its resend under the key, once
 	// the lookup works, runs it once. Each row's control is the fallback the layer took before: the
 	// write handed on with no key, which a row that names OAuth scopes holds back at its scope gate
@@ -174,7 +179,7 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 		createArtifactIssue(t, handler)
 		flaky := &flakyIdentity{inner: served.deps.Identity}
 		served.deps.Identity = flaky
-		replays := served.keyedReplays()
+		limiter := admission.New(admission.DefaultLimits())
 		t.Run("control", func(t *testing.T) {
 			// A write row mounted with its handler bare, as register would mount one it forgot to
 			// wrap, answers the malformed key with its handler's own answer, not the keyed layer's.
@@ -191,7 +196,7 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 			}
 		})
 		walked, handedOn := 0, 0
-		for row, route := range readOnlyTable() {
+		for row, route := range served.routes() {
 			if !keyedMethod(route.Method) {
 				continue
 			}
@@ -204,7 +209,7 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 			}
 			// On a mux of its own, as register mounts it, so the path's values reach every layer.
 			alone := http.NewServeMux()
-			alone.HandleFunc(name, served.routeHandler(route, replays[name]))
+			alone.HandleFunc(name, served.routeHandler(route, limiter, defaultReadDeadline))
 			// send sends the row's probe under key, none when key is empty, with every caller
 			// lookup failing while failing is set.
 			send := func(key string, failing bool) *httptest.ResponseRecorder {
@@ -272,4 +277,75 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 		t.Logf("walked %d POST and PATCH rows of the table (test hooks in): %d ran a write handed on with no key, %d were held by their scope gate",
 			walked, handedOn, walked-handedOn)
 	})
+}
+
+// A keyed write the server has no room for is refused at admission, 429 OVERLOADED with
+// Retry-After, before the keyed layer looks its caller up: admission is outside the keyed layer
+// in every row's chain (routeHandler), so a server over its bound neither reads the request pool
+// for a caller it would refuse nor answers that caller's 401 or 503 where a client is owed the
+// refusal it retries after. Each caller's control is the same write with room, which the keyed
+// layer answers with the caller's own refusal after one lookup, so the row tells the two orders
+// apart: a chain that looked the caller up ahead of admission answers the full server's write
+// as the control is answered, or counts a lookup.
+func TestAKeyedWriteTheServerHasNoRoomForIsRefusedBeforeItsCallerIsLookedUp(t *testing.T) {
+	limiter := admission.New(admission.Limits{
+		Read: 4, Write: 1, ReadWait: 50 * time.Millisecond, WriteWait: 50 * time.Millisecond,
+	})
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{admission: limiter})
+	// TEST-1, open, so nothing the route checks before the keyed layer refuses the write first.
+	createArtifactIssue(t, handler)
+	flaky := &flakyIdentity{inner: served.deps.Identity}
+	served.deps.Identity = flaky
+	for _, caller := range []struct {
+		name    string
+		login   string
+		failing bool
+		// roomy is what the keyed layer answers the caller where the server has room.
+		roomy int
+	}{
+		{name: "a caller that resolves to nobody", roomy: http.StatusUnauthorized},
+		{name: "a caller whose lookup fails", login: "alice", failing: true, roomy: http.StatusServiceUnavailable},
+	} {
+		// send sends the caller's keyed comment and answers how many identity lookups it made.
+		send := func() (*httptest.ResponseRecorder, int32) {
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/issues/TEST-1/comments", strings.NewReader(`{"body":"no room"}`))
+			request.Header.Set("Content-Type", "application/json")
+			if caller.login != "" {
+				request.Header.Set("X-Dispatch-User", caller.login)
+			}
+			request.Header.Set(contracts.IdempotencyKeyHeader, "no-room-1")
+			flaky.failures.Store(0)
+			if caller.failing {
+				flaky.failures.Store(1 << 30)
+			}
+			before := flaky.failures.Load()
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			return response, before - flaky.failures.Load()
+		}
+		t.Run(caller.name, func(t *testing.T) {
+			t.Run("control", func(t *testing.T) {
+				if response, lookups := send(); response.Code != caller.roomy || lookups == 0 {
+					t.Fatalf("with room: status=%d lookups=%d body=%s, want the keyed layer's %d after a lookup",
+						response.Code, lookups, response.Body.String(), caller.roomy)
+				}
+			})
+
+			held, err := limiter.Admit(context.Background(), admission.Write, 1)
+			if err != nil {
+				t.Fatalf("hold the write class's one unit: %v", err)
+			}
+			defer held.Release()
+			response, lookups := send()
+			if response.Code != http.StatusTooManyRequests || refusalCode(response.Body.Bytes()) != admission.CodeOverloaded {
+				t.Fatalf("no room: status=%d body=%s, want admission's 429 %s", response.Code, response.Body.String(), admission.CodeOverloaded)
+			}
+			if retryAfter := response.Header().Get("Retry-After"); retryAfter != admission.RetryAfter {
+				t.Fatalf("no room: Retry-After = %q, want %s", retryAfter, admission.RetryAfter)
+			}
+			if lookups != 0 {
+				t.Fatalf("no room: the refused write looked its caller up %d times, want none before admission", lookups)
+			}
+		})
+	}
 }

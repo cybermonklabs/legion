@@ -137,8 +137,8 @@ type roomState struct {
 	// (unusedLocked), so it is ended on the record it was taken on.
 	retiring       chan struct{}
 	settleFailures int
-	// settling counts the settlements running on this state (settleRoomWithin), which hold it
-	// across their database work.
+	// settling counts the settlements running on this state (settleRoomWithin), from before their
+	// wait for a settlement slot to the end of their database work, which they hold it across.
 	settling int
 	// closed is whether the document's issue is closed as of closedRead: when the newest read of
 	// the issue recorded here began, or when a close or reopen of the issue was recorded
@@ -162,9 +162,25 @@ type roomState struct {
 	// returns, and the replacement is not the reserving close's to answer for (closeRoomBehindHead).
 	reloading   bool
 	reservedFor *crdt.Doc
+	// loadFailure is the latest failure of a load of this room: the error its read of the store or
+	// its load hook ended it with (servicePersistenceAdapter.LoadDoc, onLoadDocument;
+	// noteLoadFailed). ygo answers every join waiting on a failed load with its own 500, and this is
+	// what the socket of such a join reads to tell a pool that was busy from a load that broke
+	// (socketAnswerWriter.refuseFailedLoad). It is never cleared: a socket reads only a failure
+	// recorded since its admission took this record (loadFailedSince), so an older one answers for
+	// nothing.
+	loadFailure *roomLoadFailure
 	// released marks a state the service has forgotten (forgetLocked), so a lookup that found it
 	// before it went takes the document's current state instead.
 	released bool
+	// lastUsed is when the room this state holds was last used: its load, the return of a
+	// Server.Apply on it, or the last browser leaving it (noteRoomUsed). It is the order the
+	// budget of resident peerless rooms closes them in, least recently used first
+	// (peerlessRoomsOverBudget), and the start of the window the budget leaves a room alone for
+	// (roomBudgetMinIdle). weight is the heap that room is taken to hold, from the bytes
+	// its load decoded (roomWeight); both are read by the budget alone.
+	lastUsed time.Time
+	weight   int64
 }
 
 // documentUpdateClass is what the room's update observer recorded for one update, which its
@@ -229,6 +245,16 @@ func (s *Service) lockState(room string) *roomState {
 // lockExistingState returns room's state locked, or nil when the service holds none.
 func (s *Service) lockExistingState(room string) *roomState {
 	return s.lookUpState(room, false)
+}
+
+// roomGone reports whether room's state is no longer this service's to write into: the service is
+// stopping, or the room has failed. Whoever failed it - or the shutdown - answers for the work left
+// on it, so a settlement that meets it writes nothing more and ends. A room whose record reads its
+// issue closed (closed) is not gone: a closed issue's document settles as an open one's does, by
+// the issue row the settlement's transaction locks (settlementPass.issueClosed), never by that
+// record, which a close this process has not heard of yet leaves open. The caller holds state.mu.
+func (s *Service) roomGone(state *roomState) bool {
+	return s.stopping.Load() || state.failed != nil
 }
 
 // newRoomState is a document's record with nothing of a room on it yet.
@@ -390,6 +416,9 @@ func (s *Service) handOverFailedRoomLocked(room string, state *roomState) {
 	}
 	successor := newRoomState()
 	maps.Copy(successor.connected, state.connected)
+	// The latest load failure goes with the browsers: a socket whose join waited on the load that
+	// failed reads that failure under the room's name (loadFailedSince).
+	successor.loadFailure = state.loadFailure
 	successor.updateClasses = carried
 	successor.pendingUpdates = state.pendingUpdates
 	successor.queuedBytes = carriedBytes
@@ -403,14 +432,15 @@ func (s *Service) handOverFailedRoomLocked(room string, state *roomState) {
 }
 
 // unusedLocked is whether state holds nothing that outlasts its room. These are every holder: an
-// open writer, a running or armed settlement, a latest edit source no settlement has read, a
-// failure being recovered from (whose eviction forgets the state itself, evictRoom), a connected
-// browser, a document socket's admission (admitting), an update the room's persistence has not
-// taken or appended, a commit's parked bytes not yet stored, an in-flight credit whose append has
-// not landed, and a retirement's reservation (retiring). Its caller holds state.mu.
+// open writer, a settlement this process owes (owesSettlementLocked: one running, one armed, one
+// a live write took over, and a latest edit source no settlement has read), a failure being
+// recovered from (whose eviction forgets the state itself, evictRoom), a connected browser, a
+// document socket's admission (admitting), an update the room's persistence has not taken or
+// appended, a commit's parked bytes not yet stored, an in-flight credit whose append has not
+// landed, and a retirement's reservation (retiring). Its caller holds state.mu.
 func (s *Service) unusedLocked(state *roomState) bool {
-	return state.liveWriter == nil && state.settling == 0 && !s.isSettleTimerArmed(state.settle) &&
-		!state.unsettled && state.failed == nil && len(state.connected) == 0 && state.admitting == 0 &&
+	return state.liveWriter == nil && !owesSettlementLocked(state, s.isSettleTimerArmed(state.settle)) &&
+		state.failed == nil && len(state.connected) == 0 && state.admitting == 0 &&
 		state.pendingUpdates == 0 && state.durableAppends.Load() == 0 && len(state.inflight) == 0 &&
 		len(state.parked) == 0 && state.retiring == nil
 }
@@ -758,6 +788,65 @@ func (s *Service) releaseAdmission(room string, state *roomState) {
 	state.mu.Lock()
 	state.admitting--
 	s.unlockState(room, state)
+}
+
+// roomLoadFailure is one failed load of a room as the load recorded it on the room's record
+// (noteLoadFailed): the error it ended with. Each failure is a record of its own, so a socket tells
+// a failure recorded since it looked (loadFailedSince) from the one it found there.
+type roomLoadFailure struct{ err error }
+
+// noteLoadFailed records err, what a load of room ended with, on room's record, for the sockets
+// whose joins ygo answers with that load's failure (socketAnswerWriter.refuseFailedLoad). A
+// document with no record has no socket being admitted to it, so nothing is recorded for it.
+func (s *Service) noteLoadFailed(room string, err error) {
+	state := s.lockExistingState(room)
+	if state == nil {
+		return
+	}
+	state.loadFailure = &roomLoadFailure{err: err}
+	s.unlockState(room, state)
+}
+
+// latestLoadFailure is the load failure last recorded on state (noteLoadFailed), nil for none.
+func (state *roomState) latestLoadFailure() *roomLoadFailure {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.loadFailure
+}
+
+// failureSinceLocked is the error of the load failure last recorded on state, nil when it holds
+// none or the one it holds is before, the one a socket found as its admission took the room's
+// record. Its caller holds state.mu.
+func (state *roomState) failureSinceLocked(before *roomLoadFailure) error {
+	if state.loadFailure == nil || state.loadFailure == before {
+		return nil
+	}
+	return state.loadFailure.err
+}
+
+// loadFailedSince is the error of the latest failure of a load of room recorded since a socket's
+// admission took held, the record registered for the room then, on which it found before: a
+// failure recorded on held, or else one on the record registered under the room's name now when
+// that is another. A failed room's eviction hands held's place to a successor, which takes the
+// latest failure with it (handOverFailedRoomLocked), and a load that fails after that records its
+// failure there (noteLoadFailed): a failure the successor holds is since the hold unless it is the
+// one held had then. nil when neither holds one.
+func (s *Service) loadFailedSince(room string, held *roomState, before *roomLoadFailure) error {
+	held.mu.Lock()
+	err := held.failureSinceLocked(before)
+	held.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	state := s.lockExistingState(room)
+	if state == nil {
+		return nil
+	}
+	defer s.unlockState(room, state)
+	if state == held {
+		return nil
+	}
+	return state.failureSinceLocked(before)
 }
 
 // roomSlots is the places the room cap (roomCap) counts: every room ygo holds, from its load

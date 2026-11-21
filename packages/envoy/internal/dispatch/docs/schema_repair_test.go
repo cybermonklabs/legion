@@ -120,7 +120,7 @@ func TestSchemaRepairKeepsOpenAskBlocks(t *testing.T) {
 	first := newSchemaRepairService(database)
 	const ask = ":::ask{#keep urgency=\"med\" multiple=\"false\" state=\"open\"}\nKeep this decision?\n:::\n"
 	seedServiceText(t, first, artifactID, ask)
-	first.settleRoom(artifactID, 0)
+	first.settleRoom(context.Background(), artifactID, 0)
 	var askID string
 	if err := database.Pool.QueryRow(context.Background(), `
 		select id::text from asks where block_artifact_id = $1 and block_id = 'keep' and state = 'open'

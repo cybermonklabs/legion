@@ -22,7 +22,7 @@ func TestCloseGatesDoNotOutliveTheirRooms(t *testing.T) {
 	service.settle = time.Hour
 	ctx := context.Background()
 	generation := owedStamp(t, service, first)
-	service.settleRoom(first, generation) // a repair (applySuppressed)
+	service.settleRoom(context.Background(), first, generation) // a repair (applySuppressed)
 	if err := service.srv.CloseRoom(first, true); err != nil {
 		t.Fatalf("close the settled room: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestARepairRefusesRatherThanWaitsForACloseUnderWay(t *testing.T) {
 	settled := make(chan struct{})
 	go func() {
 		defer close(settled)
-		service.settleRoom(artifactID, generation)
+		service.settleRoom(context.Background(), artifactID, generation)
 	}()
 	select {
 	case <-settled:
@@ -140,7 +140,7 @@ func TestEvictWithACancelledContextLeavesTheRoomResident(t *testing.T) {
 func TestACancelledEvictionLeavesTheFailedRoomForItsOwnEviction(t *testing.T) {
 	server := websocket.NewServer()
 	server.RoomIdleTimeout = time.Hour
-	service := &Service{srv: newRoomServer(server)}
+	service := &Service{srv: newRoomServer(server, nil)}
 	entered, release, applied := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	evicting, evict := make(chan struct{}), make(chan struct{})
 	var released, evicted sync.Once
@@ -212,7 +212,7 @@ func TestAnEvictionHandsOverFailureOnlyAfterTheRoomCloses(t *testing.T) {
 		{"shutdown", websocket.ErrServerShutdown, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			service := &Service{srv: newRoomServer(websocket.NewServer())}
+			service := &Service{srv: newRoomServer(websocket.NewServer(), nil)}
 			state := newRoomState()
 			state.failed = errors.New("failed room")
 			service.rooms.Store("room", state)

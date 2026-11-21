@@ -209,6 +209,14 @@ fail() {
   exit 1
 }
 pass() { printf 'PASS: %s\n' "$*"; }
+# perm_bits PATH: PATH's permission bits in octal, without the setgid, setuid or sticky digit a
+# directory made under a setgid $TMPDIR inherits (every Legion pod's is): 2700 reads 700.
+perm_bits() {
+  local m
+  m=$(stat -c %a "$1")
+  ((${#m} == 4)) && m=${m#?}
+  printf '%s' "$m"
+}
 
 mkdir -p "$fake" "$bin" "$fake/stepdir"
 
@@ -244,8 +252,11 @@ c=${cmd[*]:-}
 # credential_reader JOB DIR LOG: the job a call that carries the copy's credentials starts here
 # (runner_start -c, replay_checksum) in place of loadgen: one line per file of DIR, "JOB FILE MODE
 # DIR-MODE CONTENT", appended to LOG -- what the job would read, and how the runner kept it.
+# DIR-MODE is the permission bits alone: a setgid, setuid or sticky digit, which a directory made
+# under a setgid $TMPDIR inherits (every Legion pod's is), is dropped, so 2700 reads 700 and 2750
+# still reads 750.
 # shellcheck disable=SC2016 # expanded by the runner's sh
-credential_reader='for f in "$2"/*; do printf "%s %s %s %s %s\n" "$1" "${f##*/}" "$(stat -c %a "$f")" "$(stat -c %a "$2")" "$(cat "$f")"; done >>"$3"'
+credential_reader='d=$(stat -c %a "$2"); case $d in ????) d=${d#?} ;; esac; for f in "$2"/*; do printf "%s %s %s %s %s\n" "$1" "${f##*/}" "$(stat -c %a "$f")" "$d" "$(cat "$f")"; done >>"$3"'
 # flags_name_dir DIR ARG...: every -token-file, -listener-token-file and -pg-file of the job's
 # command ARG... names a file in DIR, the directory its start claims, and there is one at least:
 # a job whose flags named another directory would open no file at all.
@@ -1310,6 +1321,80 @@ grep -q -- "pass --run $other_run" "$tmp/out" || fail "down's refusal of another
 [ -f "$fake/lock.json" ] || fail "down deleted another run's lock without --run"
 pass "down refuses another run's lock unless --run names it"
 
+# ---- prebuilt binaries: LOADTEST_CLUSTER_LOADGEN and LOADTEST_CLUSTER_CHECKER -----------------------
+
+prebuilt=$tmp/prebuilt
+mkdir -p "$prebuilt"
+printf '#!/usr/bin/env bash\necho "prebuilt loadgen: $*"\n' >"$prebuilt/loadgen"
+printf '#!/usr/bin/env bash\necho "prebuilt checker: $*"\n' >"$prebuilt/envoy-dispatch"
+reset_fake
+export LOADTEST_CLUSTER_LOADGEN=$prebuilt/loadgen LOADTEST_CLUSTER_CHECKER=$prebuilt/envoy-dispatch
+run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC != 0)) || fail "up accepted a LOADTEST_CLUSTER_LOADGEN that is not executable"
+grep -qF "up: LOADTEST_CLUSTER_LOADGEN='$prebuilt/loadgen' names no executable file" "$tmp/out" ||
+  fail "up's refusal of a prebuilt loadgen that is not executable does not name the variable: $(cat "$tmp/out")"
+checker_refused "a prebuilt loadgen that is not executable"
+pass "up refuses, before it creates anything, a prebuilt binary that is not executable"
+
+chmod +x "$prebuilt/loadgen" "$prebuilt/envoy-dispatch"
+reset_fake
+rm -f -- "$fake/go.log"
+run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 0)) || fail "up with both binaries prebuilt exited $RC: $(tail -5 "$tmp/out")"
+! grep -q '^build' "$fake/go.log" 2>/dev/null || fail "up ran go build with both binaries prebuilt: $(cat "$fake/go.log")"
+run_dir=$LOADTEST_CLUSTER_ROOT/$(jq -r .data.run "$fake/lock.json")
+cmp -s "$prebuilt/loadgen" "$run_dir/loadgen" || fail "the run's loadgen is not the prebuilt one"
+cmp -s "$prebuilt/envoy-dispatch" "$run_dir/envoy-dispatch" || fail "the run's stored-order checker is not the prebuilt one"
+jq -e --arg c "$commit_ok" --arg s "$(sha256sum <"$prebuilt/envoy-dispatch" | cut -d' ' -f1)" \
+  '.stored_order == {dispatch_commit: $c, built_from: $c, overlay_source: null, overlay_files: [], registration: null, renderer_matches: true, sha256: $s, prebuilt: true}' \
+  "$run_dir/state.json" >/dev/null || fail "state.json does not record the prebuilt checker: $(jq -c .stored_order "$run_dir/state.json")"
+printf '#!/usr/bin/env bash\necho "prebuilt checker of another commit: $*"\n' >"$prebuilt/envoy-dispatch-2"
+chmod +x "$prebuilt/envoy-dispatch-2"
+LOADTEST_CLUSTER_CHECKER=$prebuilt/envoy-dispatch-2
+run_cluster redeploy --namespace "$ns" --dispatch-commit "$commit_ok"
+((RC == 0)) || fail "redeploy with a prebuilt checker exited $RC: $(tail -5 "$tmp/out")"
+cmp -s "$prebuilt/envoy-dispatch-2" "$run_dir/envoy-dispatch" || fail "redeploy did not install the prebuilt checker"
+jq -e --arg s "$(sha256sum <"$prebuilt/envoy-dispatch-2" | cut -d' ' -f1)" '.stored_order.sha256 == $s and .stored_order.prebuilt == true and .stored_order.renderer_matches' \
+  "$run_dir/state.json" >/dev/null || fail "state.json does not record redeploy's prebuilt checker: $(jq -c .stored_order "$run_dir/state.json")"
+unset LOADTEST_CLUSTER_LOADGEN LOADTEST_CLUSTER_CHECKER
+pass "up copies prebuilt loadgen and checker binaries in place of their go builds, and state.json records the checker as prebuilt; redeploy installs a prebuilt checker for the commit it deploys"
+
+# ---- --listener-without-oidc ----------------------------------------------------------------------
+
+oidc_env=(ENVOY_OIDC_ISSUER ENVOY_OIDC_AUDIENCE ENVOY_OIDC_ACCOUNTS ENVOY_DISPATCH_PRINCIPAL ENVOY_ACCOUNT_TOKEN_FILE)
+reset_fake
+run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 0)) || fail "up without --listener-without-oidc exited $RC: $(tail -5 "$tmp/out")"
+for name in "${oidc_env[@]}"; do
+  [ "$(grep -c -- "^ *- name: $name\$" "$fake/applied.yaml")" = 1 ] || fail "the default render does not keep $name once"
+done
+default_lines=$(wc -l <"$fake/applied.yaml")
+run_dir=$LOADTEST_CLUSTER_ROOT/$(jq -r .data.run "$fake/lock.json")
+jq -e 'has("listener_without_oidc") | not' "$run_dir/state.json" >/dev/null || fail "state.json of a default run records listener_without_oidc"
+pass "the default render keeps the listener's OIDC settings and Dispatch's account token file"
+
+reset_fake
+run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok" --listener-without-oidc
+((RC == 0)) || fail "up --listener-without-oidc exited $RC: $(tail -5 "$tmp/out")"
+for name in "${oidc_env[@]}"; do
+  ! grep -q -- "^ *- name: $name\$" "$fake/applied.yaml" || fail "--listener-without-oidc left $name in the render"
+done
+for name in ENVOY_API_TOKEN ENVOY_TOKEN ENVOY_URL NATS_URLS; do
+  grep -q -- "^ *- name: $name\$" "$fake/applied.yaml" || fail "--listener-without-oidc dropped $name, which it must keep"
+done
+(($(wc -l <"$fake/applied.yaml") == default_lines - 2 * ${#oidc_env[@]})) ||
+  fail "--listener-without-oidc removed other than the five entries' ten lines: $default_lines lines by default, $(wc -l <"$fake/applied.yaml") with it"
+run_dir=$LOADTEST_CLUSTER_ROOT/$(jq -r .data.run "$fake/lock.json")
+jq -e '.listener_without_oidc == true' "$run_dir/state.json" >/dev/null || fail "state.json does not record listener_without_oidc"
+pass "up --listener-without-oidc drops the listener's OIDC settings and principal and Dispatch's account token file, and nothing else"
+
+run_cluster replay --namespace "$ns" r1
+((RC != 0)) || fail "replay ran on a run made with --listener-without-oidc"
+grep -qF -- "replay: run $(jq -r .run "$run_dir/state.json") was made with --listener-without-oidc" "$tmp/out" ||
+  fail "replay's refusal does not name --listener-without-oidc: $(tail -3 "$tmp/out")"
+! grep -q '^replay-r1 ' "$fake/runner-starts" 2>/dev/null || fail "replay started a loadgen run before refusing"
+pass "replay refuses a run made with --listener-without-oidc, naming the setting"
+
 # ---- (c) the whole path, and -n on every kubectl call ------------------------------------------------
 
 reset_fake
@@ -1607,7 +1692,8 @@ grep -qF 'stored-order: open database: failed to connect' "$run_dir/steps/r16/st
 start=$(grep '^replay-r16 ' "$fake/runner-starts") || fail "replay r16 started no loadgen run in the runner"
 for want in "env LOADTEST_ROOT=/work/root LOADTEST_GOMAXPROCS=16 /work/loadgen run -allow-foreign -source replay " \
   "-events 0 -requests 0 -replay-inputs /work/bundle -replay-rate 1 -replay-from 0 -replay-to 39m -rng-seed 1 -warmup 30s " \
-  "-copy-meta /work/meta/r16.json" "-pprof http://dispatch-pprof.$ns.svc:6061" "-nats-server-name nats-0"; do
+  "-copy-meta /work/meta/r16.json" "-pprof http://dispatch-pprof.$ns.svc:6061" "-metrics http://dispatch-metrics.$ns.svc:6062" \
+  "-nats-server-name nats-0"; do
   [[ $start == *"$want"* ]] || fail "replay r16's loadgen run lacks '$want': $start"
 done
 [[ $start =~ \ -token-file\ (/work/secrets/replay-r16\.[0-9a-f]+)/dispatch-token\  ]] || fail "replay r16's loadgen run has no -token-file of a directory of its own: $start"
@@ -2253,8 +2339,8 @@ command -v dash >/dev/null ||
       ((++naps <= 200)) || fail "the $wrapper shell wrote no credentials into $dir"
       sleep 0.05
     done
-    [ "$(stat -c %a "$dir")" = 700 ] && [ "$(stat -c %a "$dir/pg-url")" = 600 ] ||
-      fail "the $wrapper shell's directory is mode $(stat -c %a "$dir") and its pg-url $(stat -c %a "$dir/pg-url"), not 700 and 600"
+    [ "$(perm_bits "$dir")" = 700 ] && [ "$(stat -c %a "$dir/pg-url")" = 600 ] ||
+      fail "the $wrapper shell's directory is mode $(perm_bits "$dir") and its pg-url $(stat -c %a "$dir/pg-url"), not 700 and 600"
     kill -"$sig" "$pid"
     rc=0
     if [ "$sig" = INT ]; then

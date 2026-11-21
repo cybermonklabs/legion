@@ -165,7 +165,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	written, err := s.recordResultWithFreshWords(
 		r.Context(), request.issueKey, request.check, request.input, request.linkedCommitRepo, request.actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The read-through runs before the event: the Verification tab refetches on
@@ -213,7 +213,7 @@ func (s *server) dryRunCheckResult(w http.ResponseWriter, r *http.Request) {
 // answers false.
 func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resultRequest, bool) {
 	refused := func(err error) (resultRequest, bool) {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return resultRequest{}, false
 	}
 	var input checkResultInput
@@ -535,12 +535,12 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	}
 	issueKey := r.PathValue("key")
 	if err := s.requireIssueExists(r.Context(), issueKey); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	artifact, held, err := s.verificationDocument(r.Context(), s.deps.Store.Pool, issueKey, "")
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	body := issueCheckResults{Checks: []model.CheckBlock{}, Issue: issueKey, VerificationArtifactID: artifact.ID}
@@ -551,17 +551,17 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	checks, err := s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact, trees)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	recorded, err := loadCheckResults(r.Context(), s.deps.Store.Pool, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	retracted, err := loadCheckResultRetractions(r.Context(), s.deps.Store.Pool, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	for index := range checks {
@@ -577,7 +577,7 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		checks[index].Results = results
 	}
 	if err := s.deriveCIResults(r.Context(), issueKey, checks); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Each result's observed text is registered for its tree once no check's results are replaced

@@ -1,0 +1,28 @@
+kind: Changed
+body: |-
+  Dispatch holds the rooms it keeps resident for documents no browser is connected to to a budget:
+  a quarter of the memory the process may use, at least 256 MiB and at most 8 GiB, and 256 MiB
+  when no limit is known. That memory is GOMEMLIMIT where it is set, else the container's cgroup
+  limit (cgroup v2's memory.max, else cgroup v1's memory.limit_in_bytes), so production's 20 GiB
+  container, which sets no GOMEMLIMIT, keeps 5 GiB of such rooms. The cold reads' cache now
+  follows the same limit: it took a sixteenth of GOMEMLIMIT alone, and so 256 MiB in production,
+  and takes a sixteenth of the container's limit there, at its cap of 1 GiB. Boot logs both
+  budgets and where the limit came from (`dispatch: document rooms' limits`, `read_budget_bytes`,
+  `room_budget_bytes`, `memory_limit_source`). A room still stays resident for a minute after its
+  last peer leaves or its last write returns, but when those rooms together hold more than the
+  budget - each weighed by the bytes its load decoded, since a document's heap is about forty
+  times its stored size - the least recently used go first, however recent their minute is, and a
+  room a browser is in is never one of them. The budget also leaves alone a room the service used
+  in the last five seconds and a room owing a settlement, both of which it is about to want again:
+  loading one back reads the store four times where the resident room read it once, so while the
+  rooms over the budget are all that young, or all owe a settlement, the heap stands above the
+  budget and comes back to it as those rooms age. The next write or read of a document whose room
+  the budget did close reloads it, as it does for a room the idle timeout evicted, so nothing is
+  lost by the close. Before this, a burst of agent writes left every room it touched resident for
+  its whole minute, each holding its document and a second decoded copy for its update observer:
+  the load test's recovery step held 391 to 447 MB of documents and 327 to 398 MB of those copies
+  at its peak, a live heap of 1.7 to 2.0 GiB, and 1.2 to 1.4 GiB a minute after the burst, where
+  each garbage collection's marking cost the whole process seconds of latency and requests
+  answered at a 1.0 to 2.1 second p99 a minute after the load had dropped. Four new series say
+  what the budget holds: `dispatch_doc_rooms_resident`, `dispatch_doc_rooms_peerless`,
+  `dispatch_doc_rooms_peerless_bytes` and `dispatch_doc_rooms_budget_closed_total`.

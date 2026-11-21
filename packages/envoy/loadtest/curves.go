@@ -486,9 +486,12 @@ func (s *curveStep) markVoid() error {
 
 // passes is true when no criterion the step's series judges is FAIL. A void step is no pass: its
 // files do not show its generator keeping up, so it measured nothing to pass by (markVoid), and
-// every renderer says void of it rather than yes or no (passWord).
+// every renderer says void of it rather than yes or no (passWord). Nor is a set-aside step, whose
+// generator sent a burst over its schedule, or recorded nothing of a kind the step was to send
+// (summary.json set_aside, pacing.go): every renderer says set aside of it, neither a pass nor a
+// failure.
 func (s *curveStep) passes() bool {
-	if s.void {
+	if s.void || s.setAside() {
 		return false
 	}
 	for _, c := range s.se.crits {
@@ -498,6 +501,11 @@ func (s *curveStep) passes() bool {
 	}
 	return true
 }
+
+// setAside is set when the step is set aside (summary.json set_aside): its generator broke its
+// schedule in a second of the window, or recorded nothing of a kind the step was to send. Every
+// series reads it the same way.
+func (s *curveStep) setAside() bool { return s.sum.SetAside != nil }
 
 // tripped are the criteria of the step's series that it fails, in the series' order.
 func (s *curveStep) tripped() []int {
@@ -881,15 +889,16 @@ type knee struct {
 }
 
 // findKnees are the knees of series, the knee-series steps in factor order. The walk takes the
-// steps that are neither failed nor void: a failed row gives no number, so it is judged by (f)
-// alone (judge), and a void step measured its own generator (markVoid), so neither is a knee or
-// the end of a bracket. A knee is a step that fails after the previous judged step passed, or
-// the first judged step when it fails.
+// steps that are neither failed, void nor set aside: a failed row gives no number, so it is
+// judged by (f) alone (judge), a void step measured its own generator (markVoid), and a set-aside
+// step's generator did not deliver its schedule (pacing.go), so none of them is a knee or the end
+// of a bracket. A knee is a step that fails after the previous judged step passed, or the first
+// judged step when it fails.
 func findKnees(series []*curveStep) []knee {
 	var out []knee
 	var prev *curveStep
 	for _, s := range series {
-		if s.failed || s.void {
+		if s.failed || s.void || s.setAside() {
 			continue
 		}
 		if !s.passes() {
@@ -1077,7 +1086,10 @@ func renderCurvesCSV(se *curveSeries, steps []*curveStep) (string, error) {
 			row = append(row, string(s.verdicts[i]))
 		}
 		result := strconv.FormatBool(s.passes())
-		if s.void {
+		switch {
+		case s.setAside():
+			result = setAsideWord
+		case s.void:
 			result = voidWord
 		}
 		if err := w.Write(append(row, result)); err != nil {
@@ -1189,6 +1201,31 @@ func passTableMD(md *markdown, se *curveSeries, steps []*curveStep) {
 		}
 	}
 	voidNoteMD(md, steps)
+	setAsideNoteMD(md, steps)
+}
+
+// setAsideNoteMD says what a set-aside step is, and names each of them with why, under the Pass
+// table.
+func setAsideNoteMD(md *markdown, steps []*curveStep) {
+	aside := setAsideSteps(steps)
+	if len(aside) == 0 {
+		return
+	}
+	md.line("\n`%s`: nothing shows the step's generator delivered the load the step claims (summary.json `set_aside`): in a second of the window it sent more than %s over that second's schedule, the burst of a generator the box stalled, or it recorded nothing scheduled of a kind the step was to send, which the rule refuses to judge. A set-aside step is neither a pass nor a failure: it ends no knee bracket, and it is run again where the generator keeps, and records, its schedule.", setAsideWord, percent(overScheduleLimit))
+	for _, s := range aside {
+		md.line("- %s: %s.", s.label(), s.sum.SetAside.Why)
+	}
+}
+
+// setAsideSteps are the set-aside steps of steps, in their row order.
+func setAsideSteps(steps []*curveStep) []*curveStep {
+	var out []*curveStep
+	for _, s := range steps {
+		if s.setAside() {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // voidNoteMD says what a void step is, and names each of them, under the Pass table of a series
@@ -1219,10 +1256,14 @@ func voidSteps(steps []*curveStep) []*curveStep {
 // cell, and curves.csv's passes column.
 const voidWord = "void"
 
-// passWord is the Pass column of s: void for a step whose files do not show its generator
-// keeping up, else yes or no.
+// passWord is the Pass column of s: set aside for a step whose generator broke its schedule or
+// did not record it, void for a step whose files do not show its generator keeping up, else yes
+// or no.
 func passWord(s *curveStep) string {
-	if s.void {
+	switch {
+	case s.setAside():
+		return setAsideWord
+	case s.void:
 		return voidWord
 	}
 	return yesNo(s.passes())
@@ -1299,8 +1340,8 @@ func pairTableMD(md *markdown, p [2]*curveStep, cols []curveCol) {
 	}
 }
 
-// renderKnees is KNEES.md: the series' failed and void rows, which no knee can be, then each
-// knee's tripped criteria, bracket, measured limit and evidence.
+// renderKnees is KNEES.md: the series' failed, void and set-aside rows, which no knee can be,
+// then each knee's tripped criteria, bracket, measured limit and evidence.
 func renderKnees(series []*curveStep, knees []knee) string {
 	var md markdown
 	md.line("# Knees\n")
@@ -1324,6 +1365,13 @@ func renderKnees(series []*curveStep, knees []knee) string {
 		for _, s := range voids {
 			md.line("- %sx (step %s): %s (%s): its files do not show its own generator keeping up, so the step measures the generator, or nothing at all, rather than Dispatch. It is neither a pass nor a failure and ends no bracket; run it again, from a larger generator or with the generator recorded.",
 				fmtFloat(s.factor), s.name, voidWord, s.voidWhy)
+		}
+	}
+	if aside := setAsideSteps(series); len(aside) > 0 {
+		md.line("")
+		for _, s := range aside {
+			md.line("- %sx (step %s): %s (%s): nothing shows its generator delivered the load the step claims, so it is neither a pass nor a failure and ends no bracket; run it again where the generator keeps, and records, its schedule.",
+				fmtFloat(s.factor), s.name, setAsideWord, s.sum.SetAside.Why)
 		}
 	}
 	if len(knees) == 0 {

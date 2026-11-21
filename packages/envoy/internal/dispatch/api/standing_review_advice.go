@@ -52,22 +52,16 @@ const standingReviewReasonLimit = 500
 // version's carry queued - the table holds only once Commit has run them, so the specification
 // is read as the question's write leaves it.
 //
-// Like every other advice query this runs behind a savepoint of its own (adviceSavepoint),
-// because a failed statement aborts the transaction it ran in and this must never fail the write
-// it describes. It writes nothing, so the savepoint is always rolled back, which also restores
-// the statement_timeout it set.
-func (s *server) standingReviewAdvice(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, route, issueKey string) *standingReview {
-	adviceTx, ok := s.adviceSavepoint(ctx, tx, route, issueKey, "standing_review")
-	if !ok {
-		return nil
-	}
-	defer func() { _ = adviceTx.Rollback(ctx) }()
-	review, err := standingSpecReview(ctx, adviceTx, ledger, issueKey)
-	if err != nil {
-		s.logAdviceError(route, issueKey, "standing_review", err)
-		return nil
-	}
-	return review
+// Like every other advice query this runs behind a savepoint of its own (adviceReport),
+// because a failed statement aborts the transaction it ran in and a failed read must never fail
+// the write it describes. It writes nothing, so the savepoint is always rolled back, which also
+// restores the statement_timeout it set (endAdviceSavepoint). A savepoint that could not be
+// opened or rolled back has cost the write its transaction, and is the error this answers, for
+// the write to fail with.
+func (s *server) standingReviewAdvice(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, route, issueKey string) (*standingReview, error) {
+	return adviceReport(ctx, s, tx, route, issueKey, "standing_review", func(adviceTx pgx.Tx) (*standingReview, error) {
+		return standingSpecReview(ctx, adviceTx, ledger, issueKey)
+	})
 }
 
 // standingSpecReview is standingReviewAdvice's rule, over whatever queryer the caller holds: the

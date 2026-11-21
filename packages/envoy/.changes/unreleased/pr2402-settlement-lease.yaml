@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  A document whose every settlement takes longer than the settlement resumption's minute settles
+  again. The resumption armed every owed document a minute old at each pass, the one whose
+  settlement was still running included, and arming a document ends the settlement under way
+  writing nothing, so such a document was armed again under each settlement and never versioned.
+  A settlement now holds a lease on its document's pending-settlement row while it runs, which the
+  pass leaves alone; migration `20261120124333` adds `doc_settlements_pending.leased_until` for
+  it. A settlement that ends without committing gives the lease back, so the next pass resumes the
+  document at once; one whose process dies leaves it to run out, after at most 210 seconds. The
+  settlement an issue's close runs first now ends at the 60 seconds every settlement has, where an
+  unkeyed close's had no deadline, and a room's load of its stored history ends at the 60 seconds
+  its other reads have, where a read behind a table lock or on a stalled connection held the load
+  and every browser joining the room with no end.

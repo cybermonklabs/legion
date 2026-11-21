@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 type adviceAsk struct {
@@ -88,8 +90,11 @@ type writeAdvice struct {
 // suggestionsOnlyAdvice is the advice of a write with no issue state to report: an ask on an
 // unlinked project document, which has no issue status, no writes-since-human count and no
 // issue-scoped open-ask list, or an issue or ask write whose write-advice read failed. It still
-// carries the related-item check's result (withSuggestions).
+// carries the related-item check's result and, for a create that seeded a spec, the block report
+// that create read of it (withSuggestions): both are the write's own, and neither depends on the
+// issue advice beside them.
 type suggestionsOnlyAdvice struct {
+	*documentBlocks
 	Suggestions *model.Suggestions `json:"suggestions"`
 }
 
@@ -224,35 +229,22 @@ func (s *server) computeWriteAdvice(
 // (withSuggestions). Nothing runs after this step, so the advice already assembled is complete
 // without it.
 //
-// The walk takes a savepoint of its own inside the advice savepoint, because a failed statement
-// aborts the transaction it ran in: run directly on the advice savepoint, its failure would also
-// take the statement_timeout reset and the release that follow it (writeAdvice), and the advice
-// would be dropped anyway. The failure is logged once, in the shape every omitted advice query
-// takes. The 500 ms bound writeAdvice set still covers it: SET LOCAL holds across a savepoint
-// opened under it.
+// The walk takes a savepoint of its own inside the advice savepoint (adviceStep), because a
+// failed statement aborts the transaction it ran in, and the walk's failure must cost its own
+// line and no other. The failure is logged once, in the shape every omitted advice query takes.
+// The 500 ms bound adviceReport set still covers it: SET LOCAL holds across a savepoint opened
+// under it.
 func (s *server) legionManagedStatusAdvice(ctx context.Context, tx pgx.Tx, route, issueKey string, row *adviceIssueRow) *bool {
-	walk, err := tx.Begin(ctx)
+	managed, err := adviceStep(ctx, tx, "legion_managed_status", func(walk pgx.Tx) (bool, error) {
+		if err := s.runAdviceQueryHook(ctx, walk, "legion_managed_status"); err != nil {
+			return false, err
+		}
+		if row != nil {
+			return legionManagedStatusOfRow(ctx, walk, issueKey, row.parent, row.labels)
+		}
+		return legionManagedStatus(ctx, walk, issueKey)
+	})
 	if err != nil {
-		s.logAdviceError(route, issueKey, "legion_managed_status", err)
-		return nil
-	}
-	if err := s.runAdviceQueryHook(ctx, walk, "legion_managed_status"); err != nil {
-		_ = walk.Rollback(ctx)
-		s.logAdviceError(route, issueKey, "legion_managed_status", err)
-		return nil
-	}
-	var managed bool
-	if row != nil {
-		managed, err = legionManagedStatusOfRow(ctx, walk, issueKey, row.parent, row.labels)
-	} else {
-		managed, err = legionManagedStatus(ctx, walk, issueKey)
-	}
-	if err != nil {
-		_ = walk.Rollback(ctx)
-		s.logAdviceError(route, issueKey, "legion_managed_status", err)
-		return nil
-	}
-	if err := walk.Commit(ctx); err != nil {
 		s.logAdviceError(route, issueKey, "legion_managed_status", err)
 		return nil
 	}
@@ -272,18 +264,10 @@ func (s *server) legionManagedStatusAdvice(ctx context.Context, tx pgx.Tx, route
 // about - the write it just made, and its own open asks - while this one only keeps it from
 // asking again what a person has already refused to answer.
 func (s *server) declinedAsksAdvice(ctx context.Context, tx pgx.Tx, route, issueKey string) []adviceDeclinedAsk {
-	read, err := tx.Begin(ctx)
+	declined, err := adviceStep(ctx, tx, "declined_asks", func(read pgx.Tx) ([]adviceDeclinedAsk, error) {
+		return s.readDeclinedAsks(ctx, read, issueKey)
+	})
 	if err != nil {
-		s.logAdviceError(route, issueKey, "declined_asks", err)
-		return nil
-	}
-	declined, err := s.readDeclinedAsks(ctx, read, issueKey)
-	if err != nil {
-		_ = read.Rollback(ctx)
-		s.logAdviceError(route, issueKey, "declined_asks", err)
-		return nil
-	}
-	if err := read.Commit(ctx); err != nil {
 		s.logAdviceError(route, issueKey, "declined_asks", err)
 		return nil
 	}
@@ -327,7 +311,7 @@ func declinedAskHead(text string) string {
 const declinedAsk = `state = 'resolved' and resolution->>'kind' = '` + model.AskResolutionDeclined + `'`
 
 // readDeclinedAsks is declinedAsksAdvice's read, apart so its rows are closed before the
-// savepoint they were read on is released. Nil, not an empty list, where the issue holds no
+// savepoint they were read on is rolled back. Nil, not an empty list, where the issue holds no
 // declined ask: the field is omitted rather than sent empty.
 //
 // The cut is here rather than in the statement because what it must match is the reader, not
@@ -386,6 +370,11 @@ func (s *server) runAdviceQueryHook(ctx context.Context, tx pgx.Tx, query string
 // issue's declined asks are read for (computeWriteAdvice): the ask route passes true, a
 // document edit passes whether its ops added an ask block, and every other write passes false
 // and runs no such read.
+//
+// The advice is nil where its read failed, and the write goes on without it. The error is the
+// write's own: a savepoint the advice could not open or roll back (adviceReport) has ended the
+// write's transaction, and the write is refused with it, in its read phase, before any of its
+// statements has run.
 func (s *server) writeAdvice(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -396,7 +385,7 @@ func (s *server) writeAdvice(
 	status string,
 	appending string,
 	opensAQuestion bool,
-) *writeAdvice {
+) (*writeAdvice, error) {
 	return s.adviseWrite(ctx, tx, route, issueKey, actor, asks, status, appending, opensAQuestion, nil)
 }
 
@@ -414,7 +403,8 @@ type adviceIssueRow struct {
 // change the row's labels, its parent or its status. status and row are the row as the write
 // leaves it, and asks what it moves about the issue's open asks (adviceAsks), so the answer is
 // the one the same read gave after the write; the write appends no counted event, puts no
-// question to a person, and a new issue has neither events nor asks.
+// question to a person, and a new issue has neither events nor asks. It answers as writeAdvice
+// does.
 func (s *server) writeAdviceBefore(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -424,7 +414,7 @@ func (s *server) writeAdviceBefore(
 	status string,
 	row adviceIssueRow,
 	asks adviceAsks,
-) *writeAdvice {
+) (*writeAdvice, error) {
 	return s.adviseWrite(ctx, tx, route, issueKey, actor, asks, status, "", false, &row)
 }
 
@@ -440,10 +430,10 @@ func (s *server) adviseWrite(
 	appending string,
 	opensAQuestion bool,
 	row *adviceIssueRow,
-) *writeAdvice {
+) (*writeAdvice, error) {
 	// A person's write has no advice query to run - every one of them is about the calling
 	// session, and the triage line this answers is about what a session is told - so it is
-	// answered here, outside the savepoint and the two statement_timeout statements that would
+	// answered here, outside the savepoint and the statement_timeout statement that would
 	// otherwise run inside the write's own transaction while it holds the issue's owner lock.
 	// Such a write still gets the triage advice, which is true for a reader who may move the
 	// status. Two kinds of actor reach a write: a session, which every bearer naming itself
@@ -454,72 +444,107 @@ func (s *server) adviseWrite(
 	// guard is on the kind rather than on "is a human" so an actor kind the server does not
 	// produce today cannot silently acquire session-shaped advice.
 	if actor.Kind != "session" {
-		return &writeAdvice{YourOpenAsks: []adviceAsk{}, IssueStatus: status}
+		return &writeAdvice{YourOpenAsks: []adviceAsk{}, IssueStatus: status}, nil
 	}
-	adviceTx, err := tx.Begin(ctx)
-	if err != nil {
-		s.logAdviceError(route, issueKey, "savepoint", err)
-		return nil
-	}
-	// Healthy advice queries complete in single-digit milliseconds. Bound them at 500 ms so a
-	// future plan regression cannot hold the issue's owner lock and a pool connection indefinitely.
-	if _, err := adviceTx.Exec(ctx, "set local statement_timeout = '500ms'"); err != nil {
-		_ = adviceTx.Rollback(ctx)
-		s.logAdviceError(route, issueKey, "statement_timeout", err)
-		return nil
-	}
-	advice, err := s.computeWriteAdvice(ctx, adviceTx, route, issueKey, actor, asks, status, appending, opensAQuestion, row)
-	if err != nil {
-		_ = adviceTx.Rollback(ctx)
-		query := "unknown"
-		if queryErr, ok := err.(*adviceQueryError); ok {
-			query = queryErr.query
-		}
-		s.logAdviceError(route, issueKey, query, err)
-		return nil
-	}
-	// SET LOCAL crosses a released savepoint, so restore the outer transaction's default before
-	// releasing this one. An error path rolls back the savepoint and clears the setting.
-	if _, err := adviceTx.Exec(ctx, "set local statement_timeout = default"); err != nil {
-		_ = adviceTx.Rollback(ctx)
-		s.logAdviceError(route, issueKey, "statement_timeout_reset", err)
-		return nil
-	}
-	if err := adviceTx.Commit(ctx); err != nil {
-		s.logAdviceError(route, issueKey, "savepoint", err)
-		return nil
-	}
-	return advice
+	return adviceReport(ctx, s, tx, route, issueKey, "issue_advice", func(adviceTx pgx.Tx) (*writeAdvice, error) {
+		return s.computeWriteAdvice(ctx, adviceTx, route, issueKey, actor, asks, status, appending, opensAQuestion, row)
+	})
 }
 
 func (s *server) logAdviceError(route, issueKey, query string, err error) {
 	slog.Warn("dispatch: write advice omitted", "route", route, "issue", issueKey, "query", query, "error", err)
 }
 
-// adviceSavepoint opens the savepoint one document report runs behind and bounds its statements,
-// or reports false when the savepoint or the bound could not be set, logging that failure under
-// field, the report's own name. Each report runs behind one of these rather than sharing a
-// savepoint with the report beside it, so a failed read costs its own report and no other.
+// adviceReport runs read, one report of a write's advice - the issue advice (writeAdvice) or one
+// document report - behind a savepoint of its own inside the write's transaction tx, its
+// statements bounded, and answers what read reports. Each report runs behind one of these rather
+// than sharing a savepoint with the report beside it, because a failed statement aborts the
+// transaction it ran in and a failed read must never fail the write it describes, nor the report
+// beside it. A report writes nothing, so its savepoint is always rolled back rather than released
+// (endAdviceSavepoint), and that rollback restores the statement_timeout set here.
 //
-// The caller rolls the savepoint back, in a defer of its own: a report writes nothing, so its
-// savepoint is always rolled back rather than released, and that rollback restores the
-// statement_timeout this set. Where this answers false it has rolled back already, and there is
-// no savepoint for the caller to hold.
-func (s *server) adviceSavepoint(ctx context.Context, tx pgx.Tx, route, issueKey, field string) (pgx.Tx, bool) {
+// A read that failed - read's error, or a bound that could not be set - costs the report alone:
+// it is logged under the query that failed where read names one (adviceQueryError), else under
+// field, the report's own name, and the report is nil. A savepoint that could not be opened or
+// rolled back is another matter: the write cannot commit after it, so that failure is the error
+// this answers, with no report, for the write to fail with.
+func adviceReport[T any](
+	ctx context.Context,
+	s *server,
+	tx pgx.Tx,
+	route, issueKey, field string,
+	read func(adviceTx pgx.Tx) (*T, error),
+) (report *T, ended error) {
 	adviceTx, err := tx.Begin(ctx)
 	if err != nil {
-		s.logAdviceError(route, issueKey, field, err)
-		return nil, false
+		return nil, fmt.Errorf("open the savepoint of the write's %s report: %w", field, err)
 	}
+	defer func() {
+		if err := endAdviceSavepoint(ctx, adviceTx, field); err != nil {
+			report, ended = nil, err
+		}
+	}()
 	// Healthy advice queries complete in single-digit milliseconds. Bound them at 500 ms so a
-	// future plan regression cannot hold the write's row locks and a pool connection
+	// future plan regression cannot hold the write's owner lock and a pool connection
 	// indefinitely.
 	if _, err := adviceTx.Exec(ctx, "set local statement_timeout = '500ms'"); err != nil {
-		_ = adviceTx.Rollback(ctx)
 		s.logAdviceError(route, issueKey, field, err)
-		return nil, false
+		return nil, nil
 	}
-	return adviceTx, true
+	if report, err = read(adviceTx); err != nil {
+		query := field
+		var queryErr *adviceQueryError
+		if errors.As(err, &queryErr) {
+			query = queryErr.query
+		}
+		s.logAdviceError(route, issueKey, query, err)
+		return nil, nil
+	}
+	return report, nil
+}
+
+// adviceStep runs read, one step of the issue advice whose failure the advice survives
+// (declinedAsksAdvice, legionManagedStatusAdvice), behind a savepoint of its own inside tx, the
+// advice's own savepoint (adviceReport): a failed statement aborts the savepoint it ran in, so run
+// on the advice's, a failed step would take every step after it. A step writes nothing, so its
+// savepoint is always rolled back, on a context of its own (endAdviceSavepoint). It answers read's
+// result, or the error of read or of the savepoint, which the step logs and survives: a savepoint
+// that could not be rolled back has ended the write's transaction, and the advice's own rollback,
+// which adviceReport always runs after it, answers that to the write.
+func adviceStep[T any](ctx context.Context, tx pgx.Tx, field string, read func(step pgx.Tx) (T, error)) (T, error) {
+	var none T
+	step, err := tx.Begin(ctx)
+	if err != nil {
+		return none, err
+	}
+	result, err := read(step)
+	if ended := endAdviceSavepoint(ctx, step, field); ended != nil {
+		return none, ended
+	}
+	return result, err
+}
+
+// endAdviceSavepoint rolls back the savepoint a report of the write's advice ran behind, on a
+// context of its own (store.RollbackContext): on the cancelled context of a request whose client
+// went away it was never sent, and the write's own rollback then had a savepoint still open under
+// it. It answers nil when the savepoint rolled back, which leaves the write's transaction as the
+// report found it.
+//
+// A rollback that failed has ended the write's transaction, and its error is the write's: pgconn
+// closes the connection under a call it could not finish, and Postgres aborts a transaction whose
+// rollback to a savepoint it refused. The write must not go on. Dropped, the error left the write
+// to its next statement, which pgconn refused `conn closed`: in INFRA-592's ten-times freeze an
+// edit's rollback here ran out its five-second bound, and its settlement record answered the edit
+// 500 INTERNAL. A rollback whose own bound ran out is the database not answering within a bound
+// of the server's, and is named so (store.RanOutTheRollbackBound), so the write is refused 503
+// DATABASE_BUSY.
+func endAdviceSavepoint(ctx context.Context, adviceTx pgx.Tx, field string) error {
+	rollback, cancel := store.RollbackContext(ctx)
+	defer cancel()
+	if err := adviceTx.Rollback(rollback); err != nil {
+		return fmt.Errorf("roll back the savepoint of the write's %s report: %w", field, store.RanOutTheRollbackBound(rollback, err))
+	}
+	return nil
 }
 
 // documentBlocks is what a document write's advice reports about the typed blocks in the document
@@ -610,10 +635,13 @@ type supersededApprovalGate struct {
 // that newest review approves the version right below this one: an older approval was already
 // stale before this write, and a newer changes request had already closed the gate.
 //
-// Like every other advice query this runs behind a savepoint of its own (adviceSavepoint),
-// because a failed statement aborts the transaction it ran in and this must never fail the write
+// Like every other advice query this runs behind a savepoint of its own (adviceReport), because
+// a failed statement aborts the transaction it ran in and a failed read must never fail the write
 // it describes. It writes nothing, so the savepoint is always rolled back, which also restores
-// the statement_timeout it set.
+// the statement_timeout it set (endAdviceSavepoint). A savepoint that could not be opened or
+// rolled back is another matter: the write cannot commit after it, so that failure is the error
+// this answers, and the write fails with it. A review the ledger answers for opens no savepoint
+// at all.
 func (s *server) supersededApprovalAdvice(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -622,39 +650,38 @@ func (s *server) supersededApprovalAdvice(
 	issueKey string,
 	artifactID string,
 	version int,
-) *supersededApproval {
+) (*supersededApproval, error) {
 	// A review this transaction queued is newer than every stored one and no read of the table
 	// can see it before the write phase runs, so it answers for the newest review by itself.
 	if review, queued := ledger.PendingReview(artifactID); queued {
-		return supersededBy(&review, version)
+		return supersededBy(&review, version), nil
 	}
-	adviceTx, ok := s.adviceSavepoint(ctx, tx, route, issueKey, "superseded_approval")
-	if !ok {
-		return nil
-	}
-	defer func() { _ = adviceTx.Rollback(ctx) }()
-	approval, err := newestReviewAsApproval(ctx, adviceTx, artifactID, version)
-	if err != nil {
-		s.logAdviceError(route, issueKey, "superseded_approval", err)
-		return nil
-	}
-	if approval == nil {
-		// A write that superseded no approval asks no question about gates, so there is no
-		// gate read either: the clause the gates qualify is the one this read did not write.
-		return nil
-	}
-	// The gates run on the savepoint the approval read ran on, under the statement_timeout set
-	// above: one more statement on a connection the write already holds. A failed or timed-out
-	// read of them costs the gate list alone - never the write, which commits as it always
-	// does, and never the first sentence, since the approval this write superseded is true
-	// whatever Dispatch holds about gates.
-	gates, err := supersededApprovalGates(ctx, adviceTx, artifactID)
-	if err != nil {
-		s.logAdviceError(route, issueKey, "superseded_approval", err)
-		return approval
-	}
-	approval.DesignGates = gates
-	return approval
+	return adviceReport(ctx, s, tx, route, issueKey, "superseded_approval", func(adviceTx pgx.Tx) (*supersededApproval, error) {
+		if err := s.runAdviceQueryHook(ctx, adviceTx, "superseded_approval"); err != nil {
+			return nil, err
+		}
+		approval, err := newestReviewAsApproval(ctx, adviceTx, artifactID, version)
+		if err != nil {
+			return nil, err
+		}
+		if approval == nil {
+			// A write that superseded no approval asks no question about gates, so there is no
+			// gate read either: the clause the gates qualify is the one this read did not write.
+			return nil, nil
+		}
+		// The gates run on the savepoint the approval read ran on, under the statement_timeout
+		// set above: one more statement on a connection the write already holds. A failed or
+		// timed-out read of them costs the gate list alone - never the write, which commits as it
+		// always does, and never the first sentence, since the approval this write superseded is
+		// true whatever Dispatch holds about gates.
+		gates, err := supersededApprovalGates(ctx, adviceTx, artifactID)
+		if err != nil {
+			s.logAdviceError(route, issueKey, "superseded_approval", err)
+			return approval, nil
+		}
+		approval.DesignGates = gates
+		return approval, nil
+	})
 }
 
 // supersededApprovalGates reads Dispatch's record of which issues' design gates record this
@@ -772,11 +799,13 @@ type movedApprovalDocument struct {
 // the quiet flag of a later move (docs.MoveApprovalAsk) apply, asked here of the request as this
 // write left it.
 //
-// Like every other advice query this runs behind a savepoint of its own (adviceSavepoint),
-// because a failed statement aborts the transaction it ran in and this must never fail the write
-// it describes. It writes nothing, so the savepoint is always rolled back, which also restores
-// the statement_timeout it set. A failure costs the report alone: the write commits as it always
-// does, and the agent is left where it is today, with the request unnamed.
+// Like every other advice query this runs behind a savepoint of its own (adviceReport),
+// because a failed statement aborts the transaction it ran in and a failed read must never fail
+// the write it describes. It writes nothing, so the savepoint is always rolled back, which also
+// restores the statement_timeout it set (endAdviceSavepoint). A failed read costs the report
+// alone: the write commits as it always does, and the agent is left where it is today, with the
+// request unnamed. A savepoint that could not be opened or rolled back has cost the write its
+// transaction, and is the error this answers, for the write to fail with.
 func (s *server) movedApprovalRequestAdvice(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -784,70 +813,65 @@ func (s *server) movedApprovalRequestAdvice(
 	route string,
 	issueKey string,
 	artifactID string,
-) *movedApprovalRequest {
-	adviceTx, ok := s.adviceSavepoint(ctx, tx, route, issueKey, "moved_approval_request")
-	if !ok {
-		return nil
-	}
-	defer func() { _ = adviceTx.Rollback(ctx) }()
-	ask, queued := ledger.PendingApproval(artifactID)
-	if !queued {
-		stored, err := docs.OpenApprovalAsk(ctx, adviceTx, artifactID)
+) (*movedApprovalRequest, error) {
+	return adviceReport(ctx, s, tx, route, issueKey, "moved_approval_request", func(adviceTx pgx.Tx) (*movedApprovalRequest, error) {
+		ask, queued := ledger.PendingApproval(artifactID)
+		if !queued {
+			stored, err := docs.OpenApprovalAsk(ctx, adviceTx, artifactID)
+			if err != nil {
+				return nil, err
+			}
+			if stored == nil {
+				return nil, nil
+			}
+			ask = *stored
+		}
+		if ask.State != "open" || ask.Approval == nil {
+			// A request this write's own carry answered is the person's no longer, so it took
+			// nothing back from them.
+			return nil, nil
+		}
+		if !docs.ApprovalAwaitsHandBack(ask.Approval.Documents) {
+			// The request still waits on the person, so this write took nothing back from them.
+			return nil, nil
+		}
+		rows, err := movedApprovalArtifacts(ctx, adviceTx, ask.Approval.Documents)
 		if err != nil {
-			s.logAdviceError(route, issueKey, "moved_approval_request", err)
-			return nil
+			return nil, err
 		}
-		if stored == nil {
-			return nil
+		moved := &movedApprovalRequest{
+			AskID:     ask.ID,
+			Documents: make([]movedApprovalDocument, 0, len(ask.Approval.Documents)),
 		}
-		ask = *stored
-	}
-	if ask.State != "open" || ask.Approval == nil {
-		// A request this write's own carry answered is the person's no longer, so it took
-		// nothing back from them.
-		return nil
-	}
-	if !docs.ApprovalAwaitsHandBack(ask.Approval.Documents) {
-		// The request still waits on the person, so this write took nothing back from them.
-		return nil
-	}
-	rows, err := movedApprovalArtifacts(ctx, adviceTx, ask.Approval.Documents)
-	if err != nil {
-		s.logAdviceError(route, issueKey, "moved_approval_request", err)
-		return nil
-	}
-	moved := &movedApprovalRequest{
-		AskID:     ask.ID,
-		Documents: make([]movedApprovalDocument, 0, len(ask.Approval.Documents)),
-	}
-	// The owner is the first document's, because that is the document the request was opened on
-	// and the one a hand-back command names. A document whose row this read did not return
-	// leaves the request unplaced rather than placing it wrongly.
-	if lead, ok := rows[ask.Approval.Documents[0].ArtifactID]; ok {
-		if lead.IssueKey != nil {
-			moved.Issue = *lead.IssueKey
-		} else {
-			moved.Project = lead.Project
+		// The owner is the first document's, because that is the document the request was opened
+		// on and the one a hand-back command names. A document whose row this read did not return
+		// leaves the request unplaced rather than placing it wrongly.
+		if lead, ok := rows[ask.Approval.Documents[0].ArtifactID]; ok {
+			if lead.IssueKey != nil {
+				moved.Issue = *lead.IssueKey
+			} else {
+				moved.Project = lead.Project
+			}
 		}
-	}
-	for _, document := range ask.Approval.Documents {
-		// The request's own order, because the client's hand-back command names its first
-		// document, and the request's own record for a document whose row is gone or was not
-		// returned: the report never drops a document the request names.
-		entry := movedApprovalDocument{
-			ArtifactID:       document.ArtifactID,
-			Name:             document.Name,
-			RequestedVersion: document.RequestedVersion,
-			Version:          document.Version,
+		for _, document := range ask.Approval.Documents {
+			// The request's own order, because the client's hand-back command names its first
+			// document, and the request's own record for a document whose row is gone or was not
+			// returned: the report never drops a document the request names.
+			entry := movedApprovalDocument{
+				ArtifactID:       document.ArtifactID,
+				Name:             document.Name,
+				RequestedVersion: document.RequestedVersion,
+				Version:          document.Version,
+			}
+			if artifact, ok := rows[document.ArtifactID]; ok {
+				entry.Name = artifact.Name
+				entry.Primary = artifact.Primary
+				entry.Role = documentRoleOf(artifact)
+			}
+			moved.Documents = append(moved.Documents, entry)
 		}
-		if artifact, ok := rows[document.ArtifactID]; ok {
-			entry.Name = artifact.Name
-			entry.Primary = artifact.Primary
-			entry.Role = documentRoleOf(artifact)
-		}
-		moved.Documents = append(moved.Documents, entry)
-	}
-	return moved
+		return moved, nil
+	})
 }
 
 // movedApprovalArtifacts reads the artifacts rows of every document the request names, keyed by

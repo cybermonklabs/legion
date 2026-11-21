@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The order a priority holds is a fractional key, written as the issue board's rank is
@@ -77,13 +78,21 @@ func RankAt(ctx context.Context, tx pgx.Tx, id, before, after string) (string, e
 	return rank.Between(previous, next), nil
 }
 
-// Move writes one priority's order: the key RankAt answers for the neighbours named, onto the
-// node row and into the log, in the caller's one transaction. It answers the key it wrote, which
-// is what the route hands back. An id the store does not hold is ErrNoPriority, and a neighbour
-// it does not hold is ErrRankNeighbor.
-func Move(ctx context.Context, tx pgx.Tx, id, before, after string, actor model.Actor, at time.Time) (string, error) {
+// Move writes one priority's order - the key RankAt answers for the neighbours named - and the
+// other attributes values names beside it, onto the node row and into the log, in the caller's
+// one transaction. It answers the key it wrote, which is what the route hands back. An id the
+// store does not hold is ErrNoPriority, and a neighbour it does not hold is ErrRankNeighbor.
+//
+// It takes the order's allocation lock and reads the gap (RankAt) before it writes anything,
+// values included, as a create takes it before its insert: a transaction that has written holds
+// a transaction id, and one that then waited for the lock would hold that id for the whole wait.
+// values is written first and the order after it, so the log states them in that order.
+func Move(ctx context.Context, tx pgx.Tx, id, before, after string, values map[string]string, actor model.Actor, at time.Time) (string, error) {
 	key, err := RankAt(ctx, tx, id, before, after)
 	if err != nil {
+		return "", err
+	}
+	if err := SetAttributes(ctx, tx, id, values, actor, at); err != nil {
 		return "", err
 	}
 	if err := SetAttributes(ctx, tx, id, map[string]string{AttributeRank: key}, actor, at); err != nil {
@@ -94,9 +103,10 @@ func Move(ctx context.Context, tx pgx.Tx, id, before, after string, actor model.
 
 // lockRankAllocation serialises the whole order, as lockProjectRankAllocation serialises one
 // project's board. There is one lock and not one per project, because a priority is in no
-// project: every move reads the same neighbourhood.
+// project: every move reads the same neighbourhood. Its wait is bounded as an owner lock's is
+// (store.LockWithinBound): a write queued behind a holder past the bound is refused busy.
 func lockRankAllocation(ctx context.Context, tx pgx.Tx) error {
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('priority-rank'))`); err != nil {
+	if err := store.LockWithinBound(ctx, tx, `select pg_advisory_xact_lock(hashtext('priority-rank'))`); err != nil {
 		return fmt.Errorf("lock priority rank allocation: %w", err)
 	}
 	return nil

@@ -13,6 +13,7 @@ import (
 	"github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // connectionState is one document socket as its admission (ServeHTTP) found it and ygo's
@@ -34,6 +35,15 @@ type connectionState struct {
 	// records it, the answer to the socket's token reads it (authorizeSchemaVersion), a re-check
 	// revokes it (RunSchemaAdmission), and ServeHTTP forgets it once the socket has ended.
 	admission *schemaAdmission
+	// fleet is the live server processes' schema numbers, which the admission reads before ygo
+	// authorizes the socket (ServeHTTP) and authorize admits the page against, so a read of them
+	// the pool could not serve is the admission's refusal rather than ygo's 401.
+	fleet schemaFleet
+	// refusal is the failure of the room authorize refused the socket for (state.failed), nil
+	// while it refused nothing: ygo answers that refusal with its own 401, and the socket's writer
+	// reads this to answer its own refusal instead when a pool's bound failed the room
+	// (socketAnswerWriter.refuseFailedRoom).
+	refusal error
 }
 
 type connectionContextKey struct{}
@@ -180,7 +190,12 @@ type servicePersistenceAdapter struct {
 // load's record (roomLoad.read), and the room's own load hook decodes it (bootstrapLoadedState,
 // whose comment states how), because ygo's own apply runs the format cleanup a remote apply runs
 // and the room's stored history already holds every cleanup the room made. A preload
-// (takePreload), which the socket's admission check decoded, goes on the record as a read would.
+// (takePreload), which the socket's admission check decoded, goes on the record as a read would,
+// once the one statement that checks it against the head has read that head and the document's
+// pending-settlement row, which goes on the record too. A load whose preload check fails has read
+// nothing it could load from, and fails with that read's error: reading the whole history again
+// on the pool that just refused the check waited out that pool's bound a second time before the
+// socket that offered the preload was answered.
 //
 // The record also carries the history's size and what a socket's admission made of that history
 // when the load takes that socket's preload: the tree it read from it and the rendering it made of
@@ -206,7 +221,16 @@ type servicePersistenceAdapter struct {
 // healthy, which left the failure to whichever caller's Apply met it - a caller that cannot tell
 // the load it waited on from the load that began after it, since ygo removes the room before any
 // waiter wakes (server.go:2025-2034). Recovered here, a load's failure is the load's own
-// (sjawhar/legion#2519).
+// (sjawhar/legion#2519). It is recorded on the room's record before the room fails
+// (noteLoadFailed), for the sockets whose joins ygo answers with it.
+//
+// Its reads - the check of a socket's preload (takePreload) or the stored history - are bounded as
+// the hook's reads after them are (onLoadDocument): at coldReadTimeout, with errLoadReadsBound as
+// the cause (withLoadReadsBound, loadReadFailed). ygo hands the load no context, and a read the
+// database left unanswered - one waiting behind a table lock a migration or other DDL holds, or on
+// a connection that stopped answering - held the room's load, every join waiting on it and a
+// settlement's warm-up with no end; a settlement's lease on its document's pending-settlement row
+// counts on this bound (settlementLease).
 func (a *servicePersistenceAdapter) LoadDoc(room string) (_ []byte, err error) {
 	load := a.service.beginRoomLoad(room)
 	defer func() {
@@ -214,18 +238,24 @@ func (a *servicePersistenceAdapter) LoadDoc(room string) (_ []byte, err error) {
 			err = fmt.Errorf("panic: %v", recovered)
 		}
 		if err != nil {
+			a.service.noteLoadFailed(room, err)
 			a.service.failRoomLoad(room, load, err)
 		}
 	}()
-	if loaded, rendered, ok := a.service.takePreload(room); ok {
-		load.read(loaded.Version, loaded.Update, rendered)
+	reads, cancel := withLoadReadsBound(context.Background())
+	defer cancel()
+	taken, err := a.service.takePreload(reads, room, load)
+	if err != nil {
+		return nil, loadReadFailed(reads, err)
+	}
+	if taken {
 		return nil, nil
 	}
-	result, err := a.store.Load(context.Background(), room)
-	if err == nil {
-		err = loadableHistory(result.Update)
-	}
+	result, err := a.store.Load(reads, room)
 	if err != nil {
+		return nil, loadReadFailed(reads, err)
+	}
+	if err := loadableHistory(result.Update); err != nil {
 		return nil, err
 	}
 	load.read(result.Version, result.Update, admissionRendering{})
@@ -546,10 +576,15 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// created the placeholder owns the load and every other caller for that name waits on its
 	// ready barrier (sjawhar/ygo v1.55.1-sami.2, provider/websocket/server.go:1744-1764) - and
 	// this runs on that load's own goroutine, so the record read here is this load's own
-	// (sjawhar/legion#2519).
+	// (sjawhar/legion#2519). Whatever ends it, the failure is recorded on the room's record for
+	// the sockets whose joins ygo answers with it (noteLoadFailed).
 	load, held := s.roomLoads.Load(room)
 	defer func() {
-		if err != nil && held {
+		if err == nil {
+			return
+		}
+		s.noteLoadFailed(room, err)
+		if held {
 			s.roomLoads.CompareAndDelete(room, load)
 		}
 	}()
@@ -610,22 +645,44 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// The issue is read once per room load. A cold socket's admission, which holds the room's state
 	// while its load runs, has read it and recorded it there, as has a close or reopen of the issue
 	// since (admittedIssueRead); a load no admission holds - a settlement's warm-up, a committed
-	// write's publish - reads it here.
+	// write's publish - reads it here. The document's pending-settlement row is read here too,
+	// unless the load read it already in the statement that checked a socket's preload against the
+	// head: its record then holds what it read and where the room's record stood just before
+	// (takePreload), which is this load's read of the row, so an admitted cold socket's load reads
+	// the rooms pool once.
 	issue, admitted := s.admittedIssueRead(room)
+	var checked *owedSettlement
+	if held {
+		checked = load.(*roomLoad).takeSettlement()
+	}
+	// The load belongs to the room, not to the request whose join began it: ygo hands every join
+	// waiting on this load the load's error, so a read the joiner's own end cut short - its browser
+	// left, or the server ended its request - failed every other join with it. The reads below run
+	// detached from that end, keeping ctx's values, under the bound a cold read's fold of the same
+	// history runs under (withLoadReadsBound), and each acquire under the rooms pool's own bound. A
+	// read that bound ends fails the load as one a bound of this server's ended (loadReadFailed).
+	// A load that reads neither, both read already, holds the bound unused.
+	reads, cancel := withLoadReadsBound(ctx)
+	defer cancel()
 	if !admitted {
-		if issue, err = s.readIssue(ctx, rooms, room); err != nil {
-			return err
+		if issue, err = s.readIssue(reads, rooms, room); err != nil {
+			return loadReadFailed(reads, err)
 		}
 	}
 	// The load takes no advisory lock, which a durable writer can hold for as long as its
 	// transaction runs: the row it reads is written whole by each writer's transaction, so a
 	// plain read sees one writer's commit or the one before it. What the record has recorded by
 	// then is taken first, so an edit source recorded after the read is told from one before it.
-	mark := s.markEditSource(room)
-	owed, lastActor, err := readOwedSettlement(ctx, rooms, room)
-	if err != nil {
-		return err
+	var settlement owedSettlement
+	if checked != nil {
+		settlement = *checked
+	} else {
+		settlement.mark = s.markEditSource(room)
+		if settlement.owed, settlement.lastActor, err = readOwedSettlement(reads, rooms, room); err != nil {
+			return loadReadFailed(reads, err)
+		}
 	}
+	mark, owed, lastActor := settlement.mark, settlement.owed, settlement.lastActor
 	// The room is still loading: ygo hands its document to no peer or caller until this hook
 	// returns (sjawhar/ygo v1.55.1-sami.2, provider/websocket/server.go:1903-1994: loadRoom closes
 	// the room's ready barrier after it), so nothing writes the tree while this walks it. Its
@@ -667,9 +724,17 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// (countResidentBytes).
 	s.countResidentBytes(counted, int64(size))
 	// The room this load publishes holds the state it takes from here until ygo retires it
-	// (releaseIfUnusedLocked). The issue's state is the newest the record holds, this load's read
-	// or a close recorded after it began.
+	// (releaseIfUnusedLocked). The load is this room's first use, which is where the peerless-room
+	// budget orders it from until something uses it again (noteRoomUsed), and the bytes it decoded
+	// are what that budget weighs the room by (roomWeight). The trim is not run
+	// here: the room is not ygo's to close until this hook has returned, and the Apply that caused
+	// the load runs it on that return (roomServer.Apply) - a load a browser's join caused is a
+	// room with a peer, which the budget does not count, and the next Apply or disconnect trims
+	// whatever its arrival pushed past the budget. The issue's state is the newest the record
+	// holds, this load's read or a close recorded after it began.
 	state := s.lockState(room)
+	state.lastUsed = s.now()
+	state.weight = roomWeight(stored)
 	state.recordIssueLocked(issue)
 	open := !state.closed
 	// A room a late departure's settlement loaded is that settlement's until a browser or a writer
@@ -786,6 +851,43 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	})
 	resident = true
 	return nil
+}
+
+// errLoadReadsBound is the cause a room's load's reads end with when their bound, a cold read's
+// (coldReadTimeout), passes before the database answered them (onLoadDocument), and what that
+// load's failure wraps (loadReadFailed): a bound of this server's own, which says nothing of the
+// document, so a socket whose join met it is refused as one whose load found a pool busy is
+// (socketAnswerWriter.refuseFailedLoad).
+var errLoadReadsBound = errors.New("the room's load ran out its reads' bound")
+
+// loadReadFailed is err, the failure of a read a room's load made on reads, wrapping
+// errLoadReadsBound where reads' own bound ended it.
+func loadReadFailed(reads context.Context, err error) error {
+	if errors.Is(context.Cause(reads), errLoadReadsBound) {
+		return fmt.Errorf("%w: %w", errLoadReadsBound, err)
+	}
+	return err
+}
+
+// withLoadReadsBound is the context a room's load reads under, made from ctx: its values, detached
+// from its end, since the load is the room's and not its caller's, and bounded at a cold read's
+// bound (coldReadTimeout) with errLoadReadsBound as the cause, so a read the database left
+// unanswered fails the load as one a bound of this server's ended (loadReadFailed). A cold load
+// reads under two in turn, each with the bound whole: the preload check or the stored history
+// (servicePersistenceAdapter.LoadDoc), then the issue and the pending-settlement row
+// (onLoadDocument), which is why a settlement's lease counts two cold reads (settlementLease).
+func withLoadReadsBound(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeoutCause(context.WithoutCancel(ctx), coldReadTimeout, errLoadReadsBound)
+}
+
+// loadEndedByOwnBound reports whether err is a failure a bound of this server's own ended before
+// the database answered: a pool that could not serve the call (store.Unserved under ctx: no
+// connection came free within the pool's acquire bound, or the database stopped answering under
+// it), or a room load's reads' bound (errLoadReadsBound). It says nothing of the document, so a
+// settlement that stopped short on one is left to resume (settleRoomWithin) and a socket whose
+// room's load failed on one is refused as unserved (socketAnswerWriter.refuseFailedLoad).
+func loadEndedByOwnBound(ctx context.Context, err error) bool {
+	return store.Unserved(ctx, err) || errors.Is(err, errLoadReadsBound)
 }
 
 // onPeerUpdate stores what a peer's update parked, once ygo has applied it. ygo hands the room's
@@ -1130,7 +1232,10 @@ func (s *Service) registerConnectionLocked(state *roomState, id uint64, actor mo
 // The service's count of connections drops only for an id the record held: a failed room's
 // browsers are found on the record that replaced it (handOverFailedRoomLocked), so each leaves
 // the count once. The departure of the last browser of an actor is when the unrecorded marks that
-// actor wrote start to age (sweepUnrecordedMarks).
+// actor wrote start to age (sweepUnrecordedMarks). The last browser to leave is also when a room
+// becomes one of the rooms the peerless-room budget counts, so the room is stamped used from here
+// (noteRoomUsed): the state is stamped under the lock this already holds, and the trim runs after
+// it.
 func (s *Service) removeConnection(room string, id uint64) {
 	state := s.lockExistingState(room)
 	if state == nil {
@@ -1142,7 +1247,9 @@ func (s *Service) removeConnection(room string, id uint64) {
 		s.connections.Add(-1)
 		recordMarkAuthorDeparture(state, actor, s.now())
 	}
+	state.lastUsed = s.now()
 	s.unlockState(room, state)
+	s.trimPeerlessRooms()
 }
 
 // settleLastPeer runs the settlement a room's last browser leaving owes now rather than when its
@@ -1175,5 +1282,5 @@ func (s *Service) settleLastPeer(_ context.Context, room string) {
 		state.settling--
 		s.unlockState(room, state)
 	}()
-	s.followUpSettlement(room, s.settleRoomWithin(withSettlementLoad(context.Background()), room, generation, false))
+	s.settleRoom(withSettlementLoad(context.Background()), room, generation)
 }

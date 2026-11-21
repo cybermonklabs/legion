@@ -19,22 +19,21 @@ import (
 // model honest on its own.
 const SyncInterval = 5 * time.Minute
 
-// architectureImportLease names the lease one import pass runs under. Every pass re-reads each
-// enabled source's tree from GitHub against one installation's rate limit, so N processes
-// importing is N times those calls for one result.
-const architectureImportLease = "architecture-import"
-
 // Run re-imports every enabled architecture source about every SyncInterval, one source at a time,
 // until ctx is cancelled. The first tick is jittered within one interval so a restart does not
 // stampede GitHub, each later one comes at most SyncInterval after the pass before it ended, and a
 // server without App credentials logs once and stops: no sync can be signed. Shares its
-// jittered-ticker loop with delivery.Reconcile.Run via duty.RunJittered.
+// jittered-ticker loop with delivery.Reconcile.Run via duty.RunJittered. cmd/dispatch hands it the
+// importer on the background pool (Importer.On), so a pass neither waits for the requests'
+// connections nor takes one.
 //
-// Each pass runs under architectureImportLease for one period of duty.LeasePeriod(SyncInterval),
-// so one process imports per period however many serve the database - the second process's tick,
-// jittered to a phase of its own, finds that period imported and skips rather than spending the
-// same GitHub calls again; leases is required, as it is of every leased loop (cmd/dispatch exits at
-// boot if the lease pool cannot be opened).
+// Each pass runs under duty.ArchitectureImportLease for one period of
+// duty.LeasePeriod(SyncInterval), so one process imports per period however many serve the
+// database: every pass re-reads each enabled source's tree from GitHub against one installation's
+// rate limit, so N processes importing is N times those calls for one result. The second process's
+// tick, jittered to a phase of its own, finds that period imported and skips rather than spending
+// the same GitHub calls again; leases is required, as it is of every leased loop (cmd/dispatch
+// exits at boot if the lease pool cannot be opened).
 //
 // atStart runs one pass as Run starts, before its jittered ticks, for an end-to-end test that must
 // see a pass inside its window (DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START, under the test hooks),
@@ -68,7 +67,7 @@ func Run(ctx context.Context, importer *Importer, leases duty.Leases, atStart bo
 // the context the lease handed the pass, so a pass this process's shutdown cut short records
 // nothing.
 func syncAllLeased(ctx context.Context, importer *Importer, leases duty.Leases, due time.Time) {
-	duty.Exclusive(ctx, leases, architectureImportLease, due, duty.LeasePeriod(SyncInterval), func(caller context.Context) {
+	duty.Exclusive(ctx, leases, duty.ArchitectureImportLease, due, duty.LeasePeriod(SyncInterval), func(caller context.Context) {
 		ctx, attempt := githubreads.Begin(caller)
 		defer githubreads.Finish(caller, githubreads.ArchitectureImport, attempt, importer.GitHubReads, nil)
 		syncAll(ctx, importer)

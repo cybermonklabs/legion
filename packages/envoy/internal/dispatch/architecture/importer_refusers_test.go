@@ -255,3 +255,50 @@ func TestARefuserOfOneSourceIsNeverAnsweredAnotherSourcesFlight(t *testing.T) {
 		t.Fatalf("the refuser of %s answered %q's row (err %v); want %s's", archRepo, answer.source.Repo, answer.err, archRepo)
 	}
 }
+
+// The routes' importer and the ticker's, which main derives from it on the background pool
+// (Importer.On), share one record of ended flights, as they share one set of flights: a caller of
+// the routes' importer that refused a flight takes the next flight the ticker's importer ran,
+// rather than starting one of its own. The routes' caller joins a flight held in its blob reads
+// after its head lookup, at commitOne, and the branch moves to commitTwo before the flight is
+// released, so the caller refuses it once it ends, and is held there while a sync of the ticker's
+// importer runs the next flight, which reads commitTwo. Released, the refuser takes that flight's
+// answer, so the two importers' callers make two head lookups in all. An importer that held its
+// record by value had one of its own once On copied it, and the refuser, finding only the flight
+// it refused in its own importer's record, made a third.
+func TestARefuserOfTheRoutesImporterTakesTheNextFlightTheTickersImporterRan(t *testing.T) {
+	rig := newRefusersRig(t, 1)
+	background, err := rig.database.Pool.Background()
+	if err != nil {
+		t.Fatalf("open the background pool: %v", err)
+	}
+	// As cmd/dispatch derives the ticker's importer from the routes' (main.go's architectureTicker).
+	ticker := rig.process.On(&store.Store{Pool: background}, rig.process.github)
+	first := rig.holdTheFirstFlight(t)
+	refuser := rig.joinTheFirstFlight(t, 1)
+	rig.branch.moveHead(commitTwo)
+	rig.branch.releaseHeld()
+	if answer := receiveBeforeTheDeadline(t, "the first caller's answer", first); answer.err != nil || commitOf(answer) != commitOne {
+		t.Fatalf("the first caller answered commit %s (err %v); want %s, the first flight's", commitOf(answer), answer.err, commitOne)
+	}
+	testwait.WithinPolling(t, beforeTheDeadline(t), testwait.Poll, "the routes' caller to refuse the first flight",
+		func() bool { return rig.refusals.Load() >= 1 })
+
+	ticked, err := ticker.Sync(context.Background(), "CORE", archRepo)
+	if err != nil || ticked.LastCommit == nil || *ticked.LastCommit != commitTwo {
+		t.Fatalf("the ticker's sync answered %v (err %v); want commit %s, the next flight's", ticked.LastCommit, err, commitTwo)
+	}
+	rig.releaseLate()
+	answer := receiveBeforeTheDeadline(t, "the answer of the refuser held while the ticker synced", refuser)
+	if answer.err != nil || commitOf(answer) != commitTwo {
+		t.Fatalf("the refuser answered commit %s (err %v); want %s, the ticker's flight's", commitOf(answer), answer.err, commitTwo)
+	}
+
+	t.Logf("refusals=%d head lookups=%d", rig.refusals.Load(), rig.lookups.Load())
+	if got := rig.refusals.Load(); got != 1 {
+		t.Fatalf("the routes' later caller refused %d flights, want 1: without the refusal the head lookups say nothing about refusers", got)
+	}
+	if got := rig.lookups.Load(); got != 2 {
+		t.Fatalf("the routes' two callers and the ticker's one made %d head lookups, want 2: the first flight's and the ticker's, which the refuser shares", got)
+	}
+}

@@ -239,7 +239,7 @@ func TestThePrioritiesListInRankOrderAndAMoveWritesTheKeyBetweenTwoOfThem(t *tes
 	var moved string
 	writeOnce(t, pool, func(tx pgx.Tx) error {
 		var err error
-		moved, err = Move(ctx, tx, "third", "second", "first", bob, at.Add(time.Minute))
+		moved, err = Move(ctx, tx, "third", "second", "first", nil, bob, at.Add(time.Minute))
 		return err
 	})
 	assertOnlyAppended(t, beforeMove, wholeLog(t, pool), 1)
@@ -277,19 +277,19 @@ func TestThePrioritiesListInRankOrderAndAMoveWritesTheKeyBetweenTwoOfThem(t *tes
 
 	for name, move := range map[string]func(pgx.Tx) error{
 		"a neighbour that is the priority itself": func(tx pgx.Tx) error {
-			_, err := Move(ctx, tx, "third", "third", "", bob, at)
+			_, err := Move(ctx, tx, "third", "third", "", nil, bob, at)
 			return err
 		},
 		"a neighbour no row names": func(tx pgx.Tx) error {
-			_, err := Move(ctx, tx, "third", "", "fourth", bob, at)
+			_, err := Move(ctx, tx, "third", "", "fourth", nil, bob, at)
 			return err
 		},
 		"a neighbour whose state is gone": func(tx pgx.Tx) error {
-			_, err := Move(ctx, tx, "third", "", "retired", bob, at)
+			_, err := Move(ctx, tx, "third", "", "retired", nil, bob, at)
 			return err
 		},
 		"neighbours in the wrong order": func(tx pgx.Tx) error {
-			_, err := Move(ctx, tx, "third", "first", "second", bob, at)
+			_, err := Move(ctx, tx, "third", "first", "second", nil, bob, at)
 			return err
 		},
 	} {
@@ -298,7 +298,7 @@ func TestThePrioritiesListInRankOrderAndAMoveWritesTheKeyBetweenTwoOfThem(t *tes
 		}
 	}
 	if err := tryWrite(pool, func(tx pgx.Tx) error {
-		_, err := Move(ctx, tx, "fourth", "", "", bob, at)
+		_, err := Move(ctx, tx, "fourth", "", "", nil, bob, at)
 		return err
 	}); !errors.Is(err, ErrNoPriority) {
 		t.Errorf("moving a priority no row names answered %v, want %v", err, ErrNoPriority)

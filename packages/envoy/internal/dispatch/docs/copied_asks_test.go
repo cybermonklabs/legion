@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1038,6 +1039,10 @@ func sharesOneAsk(t *testing.T, service *Service, copies []string, opener string
 // copyLockWait is the LIKE pattern of a statement waiting on a project's copy lock.
 const copyLockWait = "%" + projectCopiesLock + "%"
 
+// settlementLeaseWait is the LIKE pattern of a settlement's lease statement
+// (leaseSettlementPendingStatement) waiting on its document's pending-settlement row.
+const settlementLeaseWait = "%set leased_until = now()%"
+
 // settlementBarrier is a settlement hook (afterSettleLock, afterSettleReconcile) that holds each
 // settlement calling it until all n have called it or wait on their project's copy lock
 // (lockProjectCopies). It runs on settlement's goroutine, so a failed read is reported with
@@ -1128,7 +1133,7 @@ func TestThreeProjectCopiesOfARetractedAskSettlingAtOnceShareOneAsk(t *testing.T
 	service.afterSettleReconcile = settlementBarrier(t, service, len(copies))
 	var settling sync.WaitGroup
 	for index, copy := range copies {
-		settling.Go(func() { service.settleRoom(copy, generations[index]) })
+		settling.Go(func() { service.settleRoom(context.Background(), copy, generations[index]) })
 	}
 	settling.Wait()
 	service.afterSettleLock, service.afterSettleReconcile = nil, nil
@@ -1151,13 +1156,40 @@ func TestThreeProjectCopiesOfARetractedAskSettlingAtOnceShareOneAsk(t *testing.T
 // A copy settling while its source is answered: the answer runs in the answer route's order (the
 // source's owner row and ask row, then SettleCopiesOf, which marks the copy owed and holds its
 // pending row, then the source's block, then the ask.answered event), and the copy's settlement,
-// whose block the copy no longer holds, takes no copy lock and so runs beside it. The settlement
-// deletes its own pending row before it appends an event, so it waits for the answer holding no
-// lock the answer needs, and both finish. Its events lock only the copy's own row, which the
-// answer, appending on its source's owner, never takes, so a settlement that deleted the row after
-// them would wait for the answer too; what fails this test is a lock the two come to share in
-// opposite orders.
+// whose block the copy no longer holds, takes no copy lock and so runs beside it. Its events lock
+// only the copy's own row, which the answer, appending on its source's owner, never takes; what
+// fails this test is a lock the two come to share in opposite orders.
+//
+// A settlement first takes its lease on its document's pending-settlement row
+// (leaseSettlementPending), outside any transaction and holding nothing, so a copy's settlement
+// that begins while the answer holds the copy's row - the copy's write timer, the resumption or
+// the last browser leaving arming it then - waits for the answer there, in the lease's
+// statement, and its pass starts only once the answer has committed. One that took its lease
+// before the answer marked the copy owed meets the answer at its own delete of the row
+// (TestACopyWhoseSettlementIsUnderWayWhenItsSourceIsAnsweredWaitsForTheAnswerAndNeitherFails).
 func TestACopySettlingWhileItsSourceIsAnsweredWaitsForTheAnswerAndNeitherFails(t *testing.T) {
+	settleCopyBesideItsSourcesAnswer(t, false)
+}
+
+// A copy's settlement already under way when its source is answered - it took its lease before
+// the answer reached SettleCopiesOf, as one a write's timer armed shortly before does - deletes its
+// own pending row before it appends an event, so it waits for the answer at that delete holding
+// no lock the answer needs, and both finish.
+func TestACopyWhoseSettlementIsUnderWayWhenItsSourceIsAnsweredWaitsForTheAnswerAndNeitherFails(t *testing.T) {
+	settleCopyBesideItsSourcesAnswer(t, true)
+}
+
+// settleCopyBesideItsSourcesAnswer runs a settlement of a copy whose live text has dropped its
+// source's block while the source is answered, commits the answer once the settlement waits on
+// it, and requires both to finish: the settlement failing nothing and versioning the copy without
+// the block, the source answered and the copy owing nothing after. Without underWay the
+// settlement begins while the answer holds the copy's pending row, and waits in its lease's
+// statement; the answer marks that row owed and keeps it (owedCopiesOf), so once it commits the
+// lease answers the row and the settlement settles the copy. With underWay the settlement has
+// taken its lease before the answer began, and waits at its delete of the row
+// (clearSettlementPending).
+func settleCopyBesideItsSourcesAnswer(t *testing.T, underWay bool) {
+	t.Helper()
 	service, _ := newTestService(t)
 	service.settle = time.Hour
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -1180,15 +1212,28 @@ func TestACopySettlingWhileItsSourceIsAnsweredWaitsForTheAnswerAndNeitherFails(t
 	generation := roomGeneration(t, service, copied)
 
 	settled := make(chan error, 1)
+	settle := func() {
+		service.settleRoom(context.Background(), copied, generation)
+		settled <- nil
+	}
+	start, wait, answered := func() { go settle() }, settlementLeaseWait, func() {}
+	if underWay {
+		start, wait = settleUnderWay(t, ctx, service, copied, settle), "%delete from doc_settlements_pending%"
+	} else {
+		// The answer arms the copy's own settlement once it has committed (SettleCopiesOf,
+		// Ledger.Commit), which moves the room's generation, and a pass that read the generation
+		// before that ends superseded, leaving the copy to the newer arming. The settlement that
+		// waited in its lease goes on once the answer has returned, so its pass reads the
+		// generation the answer left.
+		answered = holdPastItsLease(t, ctx, service, copied)
+	}
 	if err := answerSource(ctx, service, original, source, func() {
-		go func() {
-			service.settleRoom(copied, generation)
-			settled <- nil
-		}()
-		waitForLockWait(t, ctx, service.store, "%delete from doc_settlements_pending%", settled)
+		start()
+		waitForLockWait(t, ctx, service.store, wait, settled)
 	}); err != nil {
 		t.Fatal(err)
 	}
+	answered()
 	select {
 	case <-settled:
 	case <-ctx.Done():
@@ -1209,6 +1254,75 @@ func TestACopySettlingWhileItsSourceIsAnsweredWaitsForTheAnswerAndNeitherFails(t
 	}
 	if strings.Contains(text, "#shared") {
 		t.Fatalf("the copy's settlement did not version its text without the block:\n%s", text)
+	}
+	if askState, owed := blockAskOn(t, service, original, "shared").State, copyOwed(t, service, copied); askState != "answered" || owed != 0 {
+		t.Fatalf("after both finished the source ask is %s and the copy owes %d settlements, want it answered and none owed", askState, owed)
+	}
+}
+
+// An answer to a project document's ask queued on its project's copy lock (SettleCopiesOf, which
+// the answer route takes it through) behind a holder that keeps the lock past the bound of a
+// lock's wait (store's lockWait) is refused busy once that bound runs out, which its request
+// answers 503 DATABASE_BUSY with Retry-After, and writes nothing: the ask is still open. Once the
+// holder lets go, the same answer goes through. The bound is the test's
+// (store.WithLockWaitForTest) rather than production's ten seconds.
+func TestAnAnswerQueuedOnAHeldCopyLockIsRefusedBusyAtItsBound(t *testing.T) {
+	const bound = 300 * time.Millisecond
+	service, _ := newTestService(t)
+	service.settle = time.Hour
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	shared := ":::ask{#shared urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
+	original := createProjectDocument(t, service.store, "# Original")
+	seedServiceText(t, service, original, "Context\n\n"+shared)
+	settleCurrentGeneration(t, service, original)
+	source := blockAskOn(t, service, original, "shared")
+	holder, err := service.store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the copy lock's holder: %v", err)
+	}
+	defer holder.Rollback(context.Background())
+	if err := lockProjectCopies(ctx, holder, artifactOwner{Project: "DOC"}); err != nil {
+		t.Fatalf("hold the project's copy lock: %v", err)
+	}
+
+	answered := make(chan error, 1)
+	started := time.Now()
+	go func() {
+		answered <- answerSource(store.WithLockWaitForTest(ctx, bound), service, original, source, nil)
+	}()
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1, roomWait(t)); waiting < 1 {
+		t.Fatal("the answer never came to wait on the project's copy lock")
+	}
+	var refused error
+	select {
+	case refused = <-answered:
+	case <-time.After(10 * time.Second):
+		waited := time.Since(started)
+		_ = holder.Rollback(context.Background())
+		<-answered
+		t.Fatalf("the answer was still waiting on the project's copy lock %s after it began, past its wait's bound of %s: "+
+			"a request queued on a busy copy lock waits until the holder lets go", waited.Round(time.Millisecond), bound)
+	}
+	if waited := time.Since(started); !store.IsPoolBusy(refused) || waited < bound {
+		t.Fatalf("the answer queued on the held copy lock answered %v after %s, want ErrPoolBusy (503 DATABASE_BUSY) once its wait's bound of %s ran out",
+			refused, waited.Round(time.Millisecond), bound)
+	}
+	if waiting := storetest.WaitForLockWaiters(t, holder, 0, time.Second); waiting != 0 {
+		t.Fatalf("%d sessions still wait on the project's copy lock after the refusal, want none", waiting)
+	}
+	if state := blockAskOn(t, service, original, "shared").State; state != "open" {
+		t.Fatalf("the refused answer left the ask %s, want it open", state)
+	}
+
+	if err := holder.Rollback(context.Background()); err != nil {
+		t.Fatalf("release the project's copy lock: %v", err)
+	}
+	if err := answerSource(ctx, service, original, source, nil); err != nil {
+		t.Fatalf("the answer once the copy lock was let go: %v", err)
+	}
+	if state := blockAskOn(t, service, original, "shared").State; state != "answered" {
+		t.Fatalf("the answer sent once the copy lock was free left the ask %s, want it answered", state)
 	}
 }
 
@@ -1232,12 +1346,17 @@ func answerSource(ctx context.Context, service *Service, original string, source
 // It returns its error rather than failing the test, so it can run off the test's goroutine.
 func closeSource(ctx context.Context, service *Service, original, blockID string, source model.Ask, answer *model.AskAnswer, between func()) error {
 	alice := model.Actor{Kind: "user", ID: "alice"}
+	gated, release, err := takeWriterGates(service, ctx, original)
+	if err != nil {
+		return err
+	}
+	defer release()
 	tx, err := service.store.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin closing the source: %w", err)
 	}
 	defer tx.Rollback(context.Background())
-	closing, ledger := service.Join(ctx, tx)
+	closing, ledger := service.Join(gated, tx)
 	defer ledger.Discard()
 	owner, _, err := lockArtifactOwner(ctx, tx, original)
 	if err != nil {
@@ -1318,6 +1437,22 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 	}
 	committed := make(chan error, 1)
 	go func() { committed <- ledger.Commit(ctx) }()
+	// The commit runs on the ledger and the transaction the deferred Discard and Rollback above
+	// touch, so every way out of here opens the gate and waits for the commit before those run:
+	// a between that fails the test ends this goroutine through runtime.Goexit, which runs this
+	// deferred call first, and the failure is then the test's own message and no data race.
+	var commitErr error
+	commitReturned := false
+	awaitCommit := func() error {
+		if !commitReturned {
+			commitErr, commitReturned = <-committed, true
+		}
+		return commitErr
+	}
+	defer func() {
+		_ = openGate()
+		_ = awaitCommit()
+	}()
 	reached := func() error {
 		for {
 			waiting, err := storetest.CountLockWaits(ctx, service.store, "%close_source_gate%")
@@ -1344,7 +1479,7 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 		between()
 	}
 	openErr := openGate()
-	commitErr := <-committed
+	commitErr = awaitCommit()
 	switch {
 	case reachErr != nil:
 		return reachErr
@@ -1366,8 +1501,19 @@ const closeSourceGate int64 = 0x434C4F5345474154
 // settlement holds the copy's owner row, which the answer's mark of the copy's pending row reaches
 // only through a foreign key's `for key share`. Both finish, the copy shows the answer once the
 // settlement after the answer has run, and nothing is owed after that.
+//
+// A settlement first takes its lease on its document's pending-settlement row
+// (leaseSettlementPending), outside any transaction and holding nothing, so a copy's settlement
+// that begins while the answer holds the copy lock and the copy's row ("answer first") waits for
+// the answer there, in the lease's statement, and takes the copy lock only once the answer has
+// committed. One that took its lease before the answer began - armed by a write's timer shortly
+// before, say - meets the answer at the copy lock itself ("answer first with the settlement under
+// way"). Left unordered under the production settle delay, the copy's settlement that waited in
+// its lease races the settlement the answer arms for the copy as it commits, and where the newer
+// arming supersedes it, that settlement settles the copy ("answer first, left to the answer's own
+// settlement").
 func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *testing.T) {
-	for _, order := range []string{"answer first", "settlement first"} {
+	for _, order := range []string{"answer first", "answer first with the settlement under way", "answer first, left to the answer's own settlement", "settlement first"} {
 		t.Run(order, func(t *testing.T) {
 			service, _ := newTestService(t)
 			service.settle = time.Hour
@@ -1389,20 +1535,80 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 
 			settled := make(chan error, 1)
 			settle := func() {
-				service.settleRoom(copied, generation)
+				service.settleRoom(context.Background(), copied, generation)
 				settled <- nil
 			}
 			switch order {
-			case "answer first":
+			case "answer first", "answer first with the settlement under way":
 				// The answer holds the copy lock and the copy's pending row while the copy's settlement
-				// waits on the lock, then appends its event and commits.
+				// waits on the row, in its lease's statement, or, once under way with its lease, on the
+				// lock; then the answer appends its event and commits.
+				//
+				// The answer arms the copy's own settlement once it has committed (SettleCopiesOf,
+				// Ledger.Commit), which moves the room's generation, and a pass that read the
+				// generation before that arming and reaches its stamp after it ends superseded
+				// (applyStamp), leaving the copy to the newer arming. So the settlement goes on past
+				// the answer's commit only once the answer has returned: the one that waited in its
+				// lease before its first pass reads the generation, the one under way once its pass
+				// has read its source under the lock, before the next pass reads it.
+				start, wait := func() { go settle() }, settlementLeaseWait
+				var answered func()
+				if order == "answer first with the settlement under way" {
+					start, wait = settleUnderWay(t, ctx, service, copied, settle), copyLockWait
+					service.afterSettleReconcile, _, answered = holdUntilReleased(t, copied)
+				} else {
+					answered = holdPastItsLease(t, ctx, service, copied)
+				}
 				if err := answerSource(ctx, service, original, source, func() {
-					go settle()
-					waitForLockWait(t, ctx, service.store, copyLockWait, settled)
+					start()
+					waitForLockWait(t, ctx, service.store, wait, settled)
 				}); err != nil {
 					t.Fatal(err)
 				}
+				answered()
 				awaitDone(t, ctx, "the copy's settlement", settled)
+			case "answer first, left to the answer's own settlement":
+				// Nothing orders the copy's settlement, which waits in its lease's statement behind
+				// the answer, against the settlement the answer arms for the copy once it has
+				// committed (SettleCopiesOf, Ledger.Commit), which moves the room's generation: a
+				// pass of the copy's settlement that read the generation before that arming and
+				// reaches its stamp after it ends superseded (applyStamp) and writes nothing, and the
+				// newer arming, a settle delay later, settles the copy. Either way the copy ends
+				// settled under the generation the answer left, showing the answer and owing nothing.
+				// The delay is production's (New), written once, before the answer arms it.
+				service.settle = 2 * time.Second
+				var warmed atomic.Int32
+				service.afterSettleWarm = func(room string) {
+					if room == copied {
+						warmed.Add(1)
+					}
+				}
+				if err := answerSource(ctx, service, original, source, func() {
+					go settle()
+					waitForLockWait(t, ctx, service.store, settlementLeaseWait, settled)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				newer := roomGeneration(t, service, copied)
+				if newer == generation {
+					t.Fatalf("the answer armed no settlement of the copy: the copy's room is still at generation %d", generation)
+				}
+				awaitDone(t, ctx, "the copy's settlement", settled)
+				superseded := copyOwed(t, service, copied) == 1
+				// The settlement the answer armed: past its generation check and its lease it counts
+				// itself running (settling) and warms (afterSettleWarm), the copy's own settlement
+				// having warmed once before it, and it has ended once nothing counts itself running.
+				state := service.room(copied)
+				waitFor(t, roomWait(t), "the settlement the answer armed to settle the copy", func() bool {
+					state.mu.Lock()
+					running := state.settling
+					state.mu.Unlock()
+					return warmed.Load() >= 2 && running == 0 && copyOwed(t, service, copied) == 0
+				})
+				if now := roomGeneration(t, service, copied); now != newer {
+					t.Fatalf("the copy's room moved to generation %d after the answer left it at %d", now, newer)
+				}
+				t.Logf("the copy's own settlement ended with the copy still owed, superseded by the answer's arming: %v", superseded)
 			case "settlement first":
 				// The copy's settlement holds the copy lock, reconciled, while the answer waits on it.
 				reconciled, proceed := make(chan struct{}), make(chan struct{})
@@ -1468,6 +1674,66 @@ func awaitDone(t *testing.T, ctx context.Context, what string, done <-chan error
 	case <-ctx.Done():
 		t.Fatalf("%s never finished", what)
 	}
+}
+
+// settleUnderWay starts settle, a settlement of room, on a goroutine of its own and holds it once
+// it has taken its lease on room's pending-settlement row (afterSettleWarm, which runs after the
+// lease and the warm-up, before the first pass), as a settlement already under way holds it when
+// another transaction then takes the row or a lock its pass waits for. It requires the row to
+// carry the lease, and returns what lets the settlement go on, which the test's cleanup runs too.
+func settleUnderWay(t *testing.T, ctx context.Context, service *Service, room string, settle func()) (goOn func()) {
+	t.Helper()
+	hook, held, goOn := holdUntilReleased(t, room)
+	service.afterSettleWarm = hook
+	go settle()
+	select {
+	case <-held:
+	case <-ctx.Done():
+		t.Fatal("the settlement never took its lease")
+	}
+	if settlementLeaseOf(t, service, room) == nil {
+		t.Fatal("the settlement held past its lease left no lease on the document's pending-settlement row")
+	}
+	return goOn
+}
+
+// holdPastItsLease holds the first settlement of room once it has taken its lease
+// (afterSettleWarm, before its first pass), and returns what waits until it is held there,
+// requires room's pending-settlement row to carry its lease - the transaction it waited behind
+// kept the row, so the lease answered it - and lets it go on.
+func holdPastItsLease(t *testing.T, ctx context.Context, service *Service, room string) (goOn func()) {
+	t.Helper()
+	hook, held, release := holdUntilReleased(t, room)
+	service.afterSettleWarm = hook
+	return func() {
+		t.Helper()
+		select {
+		case <-held:
+		case <-ctx.Done():
+			t.Fatal("the settlement that waited in its lease's statement never went on to its first pass")
+		}
+		if settlementLeaseOf(t, service, room) == nil {
+			t.Fatal("the settlement that waited in its lease's statement holds no lease on the document's pending-settlement row")
+		}
+		release()
+	}
+}
+
+// holdUntilReleased is a settlement hook (afterSettleWarm, afterSettleReconcile) that holds the
+// first settlement of room to call it until release is called, a channel closed once that
+// settlement is held, and release, which the test's cleanup calls too.
+func holdUntilReleased(t *testing.T, room string) (hook func(string), held <-chan struct{}, release func()) {
+	var holding atomic.Bool
+	holdingNow, released := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(released) }) }
+	t.Cleanup(release)
+	return func(at string) {
+		if at == room && holding.CompareAndSwap(false, true) {
+			close(holdingNow)
+			<-released
+		}
+	}, holdingNow, release
 }
 
 // copyOwed is how many pending settlements document owes: 0 or 1.

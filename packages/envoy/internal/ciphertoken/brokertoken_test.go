@@ -250,8 +250,8 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 			if !errors.Is(err, ciphertoken.ErrNotASession) {
 				t.Fatalf("Live answered %v, want ErrNotASession", err)
 			}
-			if !reflect.DeepEqual(live, ciphertoken.Caller{}) {
-				t.Fatalf("Live = %+v, want no caller at all", live)
+			if !reflect.DeepEqual(live.Caller(), ciphertoken.Caller{}) {
+				t.Fatalf("Live = %+v, want no caller at all", live.Caller())
 			}
 		})
 	}
@@ -306,8 +306,8 @@ func TestAnAnswerOfABrokerBeforeTheListIsRefused(t *testing.T) {
 	if decided, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token)); !errors.Is(err, ciphertoken.ErrNotASession) || !reflect.DeepEqual(decided, ciphertoken.Caller{}) {
 		t.Fatalf("Verify of an older broker's named answer = %+v, %v; want no caller and ErrNotASession", decided, err)
 	}
-	if decided, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token)); !errors.Is(err, ciphertoken.ErrNotASession) || !reflect.DeepEqual(decided, ciphertoken.Caller{}) {
-		t.Fatalf("Live of an older broker's named answer = %+v, %v; want no caller and ErrNotASession", decided, err)
+	if decided, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token)); !errors.Is(err, ciphertoken.ErrNotASession) || !reflect.DeepEqual(decided.Caller(), ciphertoken.Caller{}) {
+		t.Fatalf("Live of an older broker's named answer = %+v, %v; want no caller and ErrNotASession", decided.Caller(), err)
 	}
 	const control = "the-same-answer-without-project"
 	rig.broker.SaysRaw(control, strings.Replace(legacy, `"project":"INFRA",`, "", 1))
@@ -332,7 +332,8 @@ func TestANamedAnswerNamingNoProjectIsAPublicSession(t *testing.T) {
 			return rig.verifier.Verify(t.Context(), caller.at(resourcePath, token))
 		},
 		"Live": func() (ciphertoken.Caller, error) {
-			return rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
+			live, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
+			return live.Caller(), err
 		},
 	} {
 		decided, err := decide()
@@ -403,8 +404,8 @@ func TestATokenNamingAServiceAndNoPersonIsASessionsCredential(t *testing.T) {
 		t.Fatalf("Verify = %+v, want %+v: the session and the service, with no person and no project", decided, want)
 	}
 	live, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
-	if err != nil || !reflect.DeepEqual(live, want) {
-		t.Fatalf("Live = %+v, %v; want %+v", live, err, want)
+	if err != nil || !reflect.DeepEqual(live.Caller(), want) {
+		t.Fatalf("Live = %+v, %v; want %+v", live.Caller(), err, want)
 	}
 }
 
@@ -488,8 +489,8 @@ func TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) {
 					t.Fatalf("Verify = %+v, %v; want %+v, %v", decided, err, want, wantErr)
 				}
 				live, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
-				if !errors.Is(err, wantErr) || !reflect.DeepEqual(live, want) {
-					t.Fatalf("Live = %+v, %v; want %+v, %v", live, err, want, wantErr)
+				if !errors.Is(err, wantErr) || !reflect.DeepEqual(live.Caller(), want) {
+					t.Fatalf("Live = %+v, %v; want %+v, %v", live.Caller(), err, want, wantErr)
 				}
 			})
 		}

@@ -292,12 +292,12 @@ func (s *server) listArtifactReviews(w http.ResponseWriter, r *http.Request) {
 	}
 	artifact, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	reviews, err := s.loadReviews(r.Context(), s.deps.Store.Pool, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
@@ -342,7 +342,7 @@ func (s *server) createArtifactVersionReview(w http.ResponseWriter, r *http.Requ
 func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, versioned bool) {
 	var input createArtifactReviewInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.actingPerson(w, r)
@@ -382,7 +382,7 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -392,7 +392,7 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 	defer ledger.Discard()
 	artifact, err := s.loadArtifact(r.Context(), tx, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if artifact.Kind != "doc" {
@@ -400,12 +400,12 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 		return
 	}
 	if err := s.requireOpenOwner(r.Context(), tx, ownerForArtifact(artifact)); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	version, err := settledVersionNumber(r.Context(), tx, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if version == 0 {
@@ -416,7 +416,7 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 	// thread as the review's provenance.
 	open, err := docs.OpenApprovalAsk(r.Context(), tx, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Without a request open, this reviews the document at its latest settled version; with one,
@@ -436,7 +436,7 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 	// request names for it, which the caller does not name and this check does not compare.
 	entry := approval.Document(artifact.ID)
 	if entry == nil {
-		s.writeHandlerError(w, fmt.Errorf("the open approval request %s names no entry for the document %s it was found by", open.ID, artifact.ID))
+		s.writeHandlerError(w, r, fmt.Errorf("the open approval request %s names no entry for the document %s it was found by", open.ID, artifact.ID))
 		return
 	}
 	recorded := entry.Version
@@ -455,7 +455,7 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 		}
 		answered, answeredEvents, err := s.closeAskTx(documentCtx, tx, ledger, open.ID, actor, answerTransition(actor, []string{selected}, reason, answerOptions{}))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		appended = append(appended, answeredEvents...)
@@ -463,12 +463,12 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 	}
 	review, reviewEvents, err := s.queueApprovalReviews(documentCtx, tx, ledger, artifact, approval.Documents, state, actor, reason, askID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	appended = append(appended, reviewEvents...)
 	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), appendedEvents(appended...)...)
@@ -578,20 +578,20 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	}
 	pool, err := s.readyPool()
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The coverage is read before the transaction opens, and a read that fails leaves the
 	// request recorded all the same (approvalCoverage).
 	coverage, coverageUnread, err := s.approvalCoverage(r.Context(), pool, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -603,7 +603,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	defer ledger.Discard()
 	artifact, err := s.loadArtifact(r.Context(), tx, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if artifact.Kind != "doc" {
@@ -615,7 +615,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	// blocker rather than a command that would be refused too.
 	owner := ownerForArtifact(artifact)
 	if err := s.requireOpenOwner(r.Context(), tx, owner); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if documentPlays(artifact, model.ArtifactRolePlan) {
@@ -634,7 +634,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	}
 	version, err := settledVersionNumber(r.Context(), tx, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if version == 0 {
@@ -647,7 +647,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	if input.IncludeVerification {
 		verification, err := s.verificationDocumentFor(r.Context(), tx, *artifact.IssueKey)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		documents = append(documents, verification)
@@ -655,12 +655,12 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	// A supplied summary is validated even when this request opens no row.
 	question, err := approvalQuestion(documents, summary)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	trees := wantsDisplayTrees(r)
 	if err := s.attachApproval(r.Context(), tx, &artifact); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// An approval of every document this request names, each at its current version, needs no
@@ -668,7 +668,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	settled, err := docs.NamedDocumentsApproved(r.Context(), tx, documents, artifact.ID,
 		artifact.Approval != nil && artifact.Approval.State == "approved")
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if settled {
@@ -690,7 +690,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	}
 	open, err := docs.OpenApprovalAskForDocuments(r.Context(), tx, named)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The person this request reaches, named on the answer as the question create names it
@@ -706,7 +706,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	}
 	waitingOnPerson, err := askWaitingOnPerson(r.Context(), tx, reached, askedOf)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	ask := open
@@ -714,12 +714,12 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	var opened *model.Event
 	if open != nil {
 		if appended, err = s.renewApprovalAsk(documentCtx, tx, ledger, open, actor, documents, summary); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	} else {
 		if ask, opened, err = s.openApprovalAsk(documentCtx, tx, ledger, owner, artifact, actor, documents, question); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		appended = []*model.Event{opened}
@@ -729,7 +729,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	// The approval as this request leaves it: awaiting, waiting on whom the request now waits on.
 	approval := approvalAfterRequest(*artifact.Approval, *ask)
 	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if opened != nil {
@@ -1107,7 +1107,7 @@ type createPlanReviewInput struct {
 func (s *server) createArtifactPlanReview(w http.ResponseWriter, r *http.Request) {
 	var input createPlanReviewInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -1116,7 +1116,7 @@ func (s *server) createArtifactPlanReview(w http.ResponseWriter, r *http.Request
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -1126,7 +1126,7 @@ func (s *server) createArtifactPlanReview(w http.ResponseWriter, r *http.Request
 	defer ledger.Discard()
 	artifact, err := s.loadArtifact(r.Context(), tx, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !documentPlays(artifact, model.ArtifactRolePlan) {
@@ -1135,12 +1135,12 @@ func (s *server) createArtifactPlanReview(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := s.requireOpenOwner(r.Context(), tx, ownerForArtifact(artifact)); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	latest, err := settledVersionNumber(r.Context(), tx, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if latest == 0 {
@@ -1160,11 +1160,11 @@ func (s *server) createArtifactPlanReview(w http.ResponseWriter, r *http.Request
 				review, *reviewEvent = written, event
 			})
 	}); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), *reviewEvent)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The Go mirror of packages/contracts/src/dispatch-api.ts's Live* and DeliveryLive* frames: what an
@@ -297,9 +298,10 @@ type deliveryLiveClasses struct {
 	// parse reads a subscribed view's own fields into its spec, or refuses it: what the matching
 	// GET route reads of a query, including the key one view of this kind is held under.
 	parse func(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError
-	// read is the kind's own read and compute, outside the hub's lock: it fills the parts of the
-	// read its kind holds and answers the body, which the caller encodes by these classes.
-	read func(h *deliveryHub, ctx context.Context, spec deliveryLiveSpec, now time.Time, into *deliveryViewRead) (any, error)
+	// read is the kind's own read and compute, outside the hub's lock, through pool, the live
+	// pool (deliveryHub.liveRead) and never the request pool: it fills the parts of the read its
+	// kind holds and answers the body, which the caller encodes by these classes.
+	read func(h *deliveryHub, ctx context.Context, pool *store.Pool, spec deliveryLiveSpec, now time.Time, into *deliveryViewRead) (any, error)
 }
 
 // deliveryLiveKinds is each view kind's classes. The timeline's waiting entries have no id, and

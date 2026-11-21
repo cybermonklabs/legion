@@ -93,7 +93,10 @@ type asset struct {
 // Publish stores the build at distDir: every file below its assets directory under its key, the
 // build's row with commit (the image's stamped commit, or empty), and the build's link to each
 // file, in one transaction that holds lockName shared, so publishes run together and a prune waits
-// for them. A build already stored with all its files only has its last start renewed, and no
+// for them. Its lock waits run under ctx's deadline rather than a request's write lock bound
+// (store.WaitForLocksUntilDeadline): a publish of the same build by another process holds the
+// build's row, and one of another build an asset path both store, across its whole upload. A
+// build already stored with all its files only has its last start renewed, and no
 // file of it is read or sent, so a restart writes no bytes. A file another build stored first is
 // linked, not written; one stored with other bytes than this build's is a content-hash collision,
 // logged at ERROR naming its path, and the stored bytes are kept. A file over
@@ -116,6 +119,9 @@ func Publish(ctx context.Context, pool *store.Pool, distDir, commit string) (Pub
 		return Published{}, fmt.Errorf("begin the dashboard publish: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.WaitForLocksUntilDeadline(ctx, tx); err != nil {
+		return Published{}, fmt.Errorf("bound the dashboard publish's lock waits: %w", err)
+	}
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock_shared(hashtext($1))`, lockName); err != nil {
 		return Published{}, fmt.Errorf("lock the dashboard assets: %w", err)
 	}
@@ -265,7 +271,8 @@ type Pruned struct {
 // recently, and then every asset no build still links, in one transaction holding lockName
 // exclusive, so it waits for every publish in flight and none starts until it ends: an asset is
 // deleted only once no build links it, and a publish that links one after the prune sees it gone
-// and stores it again.
+// and stores it again. It waits under ctx's deadline rather than a request's write lock bound, as
+// Publish does (store.WaitForLocksUntilDeadline), since a publish holds lockName across its upload.
 func Prune(ctx context.Context, pool *store.Pool, live []string) (Pruned, error) {
 	// A nil slice is SQL null, and `<> all(null)` is never true, which would keep every build.
 	if live == nil {
@@ -276,6 +283,9 @@ func Prune(ctx context.Context, pool *store.Pool, live []string) (Pruned, error)
 		return Pruned{}, fmt.Errorf("begin the dashboard prune: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.WaitForLocksUntilDeadline(ctx, tx); err != nil {
+		return Pruned{}, fmt.Errorf("bound the dashboard prune's lock waits: %w", err)
+	}
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext($1))`, lockName); err != nil {
 		return Pruned{}, fmt.Errorf("lock the dashboard assets: %w", err)
 	}

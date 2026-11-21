@@ -38,12 +38,12 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	}
 	askID, err := parseAskID(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	var input askAskedOfInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if input.AskedOf == "" {
@@ -58,13 +58,13 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	// signed in is therefore told so before the ask is read.
 	askedOf, err := s.allowedLogin(r.Context(), input.AskedOf)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -74,16 +74,16 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	// always open, so a document ask passes.
 	unlockedAsk, err := s.loadAsk(r.Context(), tx, askID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := s.requireOpenOwner(r.Context(), tx, ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	ask, err := s.readAskForTransition(r.Context(), tx, askID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if ask.State != "open" {
@@ -104,7 +104,7 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		from asks a`+askedOfPersonJoins+`
 		where a.id = $1
 	`, ask.ID).Scan(&waitedOn, &assignee); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Handing an ask to the assignee of its own issue empties the field instead of repeating
@@ -126,7 +126,7 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		where id = $1
 		returning asked_of_at
 	`, ask.ID, stored, handedOnBy).Scan(&handedOnAt); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	ask.AskedOf = stored
@@ -144,7 +144,7 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		"ask.asked_of", actor, payload,
 	))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// What the 200 answers: the ask as every other read of it answers, read back under this
@@ -157,11 +157,11 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	// stays the locked row, which is the shape every ask.* payload has (ask_rows.go).
 	answer, err := s.loadAsk(r.Context(), tx, ask.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)

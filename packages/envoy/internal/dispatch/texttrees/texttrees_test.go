@@ -3,8 +3,12 @@ package texttrees_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
+	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -188,5 +192,51 @@ func TestATableWithNoPoolAnswersAnError(t *testing.T) {
 	}
 	if _, err := table.Read(ctx, pmdoc.DisplayLatest, [][32]byte{pmdoc.TextSum("A text.")}); err == nil {
 		t.Error("the read on a table with no pool answered no error")
+	}
+}
+
+// Two stores naming the same new texts in opposite orders both land, whichever starts first: the
+// insert takes the texts' sums in their own order (StoreTrees), so neither waits on the other in
+// a cycle, which Postgres ends by killing one of them (40P01). They are a read's store of the trees
+// it read beside a write's store of what it committed, each its own statement outside any
+// transaction. Every round stores fresh texts, since only a sum not yet stored is one two inserts
+// wait on each other for, and each store is bounded, so one held waiting fails the round rather
+// than the run.
+func TestOverlappingStoresInOppositeOrdersBothLand(t *testing.T) {
+	table := texttrees.New(storetest.Open(t).Pool)
+	const rounds, size = 100, 64
+	for round := range rounds {
+		trees := make([]texttrees.Tree, size)
+		for index := range trees {
+			text := fmt.Sprintf("Round %d, text %d: the *store* lands.", round, index)
+			trees[index] = texttrees.Tree{Sum: pmdoc.TextSum(text), Tree: pmdoc.DisplayTreeToStore(text, pmdoc.DisplayLatest)}
+		}
+		reversed := slices.Clone(trees)
+		slices.Reverse(reversed)
+		batches := [][]texttrees.Tree{trees, reversed}
+		if round%2 == 1 {
+			batches[0], batches[1] = batches[1], batches[0]
+		}
+		start := make(chan struct{})
+		failed := make(chan error, len(batches))
+		var stores sync.WaitGroup
+		for _, batch := range batches {
+			stores.Add(1)
+			go func() {
+				defer stores.Done()
+				<-start
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				failed <- table.StoreTrees(ctx, pmdoc.DisplayLatest, batch)
+			}()
+		}
+		close(start)
+		stores.Wait()
+		close(failed)
+		for err := range failed {
+			if err != nil {
+				t.Fatalf("round %d: a store of %d texts beside one of the same texts in the opposite order failed: %v", round, size, err)
+			}
+		}
 	}
 }

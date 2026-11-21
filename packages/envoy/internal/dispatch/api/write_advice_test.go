@@ -582,6 +582,37 @@ func TestWriteAdviceAnswersWhoOwnsTheIssuesStatus(t *testing.T) {
 	}
 }
 
+// A write that reads its advice before it writes the issue row (writeAdviceBefore: a create, a
+// patch) answers who owns the issue's status for the row as the write leaves it, which no read of
+// the table can see yet (legionManagedStatusOfRow): a session's create of an issue labelled legion,
+// whose row does not exist when the advice is read, and a session's patch that adds the label to
+// an issue in triage, whose stored row does not hold it yet, are each told that Legion owns it.
+func TestWriteAdviceAnswersWhoOwnsTheStatusOfTheRowTheWriteLeaves(t *testing.T) {
+	handler := newTestHandler(t)
+	createAdviceProject(t, handler, "ROWOWNED")
+	actor := adviceSessionActor("session-row-owner")
+
+	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "ROWOWNED", "title": "Rotate the signing keys", "labels": []string{"legion"}, "force": true,
+		"actor": actor,
+	})
+	advice := adviceFromResponse(t, created.Code, created.Body.String())
+	if advice.LegionManagedStatus == nil || !*advice.LegionManagedStatus {
+		t.Fatalf("a session's create labelled legion: legion_managed_status = %v, want true: %s",
+			advice.LegionManagedStatus, created.Body.String())
+	}
+
+	plain := createAdviceIssue(t, handler, "ROWOWNED", "Tidy the runbook", nil)
+	patched := sessionRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+plain.Key, map[string]any{
+		"labels_add": []string{"legion"}, "actor": actor,
+	})
+	advice = adviceFromResponse(t, patched.Code, patched.Body.String())
+	if advice.LegionManagedStatus == nil || !*advice.LegionManagedStatus {
+		t.Fatalf("a session's patch adding the legion label: legion_managed_status = %v, want true: %s",
+			advice.LegionManagedStatus, patched.Body.String())
+	}
+}
+
 // The walk runs where its answer is used and nowhere else: an issue past triage prints no triage
 // line whatever the answer would be, so an ordinary write on an ordinary issue gains no query.
 func TestWriteAdviceLeavesWhoOwnsTheStatusUnaskedPastTriage(t *testing.T) {
@@ -941,6 +972,41 @@ func TestDocumentEditAdviceKeepsCountWhenIssueAdviceFails(t *testing.T) {
 	checks, _ := decisionBlockChecksOf(t, edited)
 	if len(rawAdvice) != 2 || len(checks) != 1 || checks[0].BlockID != "window" || checks[0].Suggestions == nil {
 		t.Fatalf("count-only advice fields = %#v, want decision_blocks_added and the block's check alone", rawAdvice)
+	}
+}
+
+// Only a session's write runs the issue-advice queries, so only a session's create can meet one
+// that fails; what it keeps is the block report of the spec it seeded - its own read of the
+// document it wrote - beside the related-item check's result.
+func TestIssueCreateKeepsTheSeededSpecsBlocksWhenIssueAdviceFails(t *testing.T) {
+	handler, _ := newFailingAdviceHandler(t, "session_writes_since_human", 0)
+	createAdviceProject(t, handler, "SEEDED")
+
+	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "SEEDED", "title": "Seeded spec with a decision block", "force": true,
+		"spec":  "# Seeded\n\n:::ask{#window}\nWhich deployment window?\n:::",
+		"actor": adviceSessionActor("session-seeded-spec"),
+	})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create with failed write advice: status=%d body=%s", created.Code, created.Body.String())
+	}
+	advice := adviceFromResponse(t, created.Code, created.Body.String())
+	if advice.DecisionBlocks == nil || *advice.DecisionBlocks != 1 {
+		t.Fatalf("create advice = %#v, want the one decision block its spec seeded: %s", advice, created.Body.String())
+	}
+	if suggestions := issueSuggestions(t, "the create with failed write advice", created); suggestions.Outcome == "" {
+		t.Fatalf("create advice carries no related-item check beside the block count: %s", created.Body.String())
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(created.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode the create's response: %v", err)
+	}
+	var rawAdvice map[string]json.RawMessage
+	if err := json.Unmarshal(body["advice"], &rawAdvice); err != nil {
+		t.Fatalf("decode block-count advice: %v body=%s", err, created.Body.String())
+	}
+	if len(rawAdvice) != 2 {
+		t.Fatalf("advice fields = %#v, want decision_blocks and suggestions alone", rawAdvice)
 	}
 }
 

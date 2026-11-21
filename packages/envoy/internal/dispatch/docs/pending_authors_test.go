@@ -543,7 +543,7 @@ func TestAnUploadClearsOnlyTheEditsItsForkHeld(t *testing.T) {
 		t.Fatalf("begin the upload: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
+	joined, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	defer ledger.Discard()
 	const uploaded = "First.\n\nSecond, uploaded.\n"
 	if _, err := service.ReplaceText(joined, artifactID, uploaded, uploader, liveDocumentToken(t, service, artifactID)); err != nil {
@@ -744,7 +744,7 @@ func TestAJoinedWritesAuthorsAreRecordedByTheAppendsThatCreditedThem(t *testing.
 		t.Fatalf("begin the writes: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
+	joined, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	defer ledger.Discard()
 	if _, err := service.ReplaceText(joined, artifactID, "First, once.\n\nSecond.\n", first, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("first actor's write: %v", err)
@@ -825,7 +825,8 @@ func TestAFailedUploadLeavesItsRoomsHeldUpdatesAsTheyWere(t *testing.T) {
 		t.Fatalf("begin the failing upload: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	joined, ledger := taskA.Join(ctx, refusedCommitTx{Tx: tx})
+	uploadCtx, releaseUpload := gatedContext(t, taskA, ctx, artifactID)
+	joined, ledger := taskA.Join(uploadCtx, refusedCommitTx{Tx: tx})
 	const uploaded = "First.\n\nSecond, uploaded on task A.\n"
 	uploader := model.Actor{Kind: "session", ID: "uploader-on-task-a"}
 	if _, err := taskA.ReplaceText(joined, artifactID, uploaded, uploader, liveDocumentToken(t, taskA, artifactID)); err != nil {
@@ -842,6 +843,7 @@ func TestAFailedUploadLeavesItsRoomsHeldUpdatesAsTheyWere(t *testing.T) {
 		t.Fatal("the upload's commit succeeded, want the injected refusal")
 	}
 	ledger.Discard()
+	releaseUpload()
 	if after := hold.snapshot(); after.through != before.through || !slices.Equal(after.since, before.since) {
 		t.Fatalf("task A's room holds %v past %d after the failed upload, want %v past %d as before it", after.since, after.through, before.since, before.through)
 	}
@@ -878,7 +880,9 @@ func uploadOn(t *testing.T, service *Service, artifactID, markdown string, uploa
 		t.Fatalf("begin the upload: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
+	uploadCtx, release := gatedContext(t, service, ctx, artifactID)
+	defer release()
+	joined, ledger := service.Join(uploadCtx, tx)
 	defer ledger.Discard()
 	if _, err := service.ReplaceText(joined, artifactID, markdown, uploader, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("upload the replacement: %v", err)
@@ -948,7 +952,7 @@ func TestAWriteAfterItsOwnTransactionsVersionStaysPending(t *testing.T) {
 		t.Fatalf("begin the write: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
+	joined, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	defer ledger.Discard()
 	if _, err := service.ReplaceText(joined, artifactID, "First.\n\nSecond, once.\n", agent, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("first write: %v", err)

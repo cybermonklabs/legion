@@ -862,7 +862,7 @@ func TestAJoinedTransactionAnnouncesEachDocumentOnceWithItsLastVersion(t *testin
 		t.Fatalf("begin the transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
+	joined, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	defer ledger.Discard()
 	agent := model.Actor{Kind: "session", ID: "agent-session"}
 	for _, paragraph := range []string{"Agent's first.", "Agent's second."} {
@@ -902,6 +902,53 @@ func TestARebuildAnnouncesTheDocumentsChange(t *testing.T) {
 	}
 	// The store under test is built outside New, so it announces with no sender.
 	requireAnnouncement(t, heard, artifactID, report.Head, "", "the rebuild")
+}
+
+// A catch-up's confirmation of a replaced history (historyReplacedUnderLock) bounds its own
+// transaction's idle time as a request connection's is bounded: inside it, under the document's
+// lock, idle_in_transaction_session_timeout reads store.RequestIdleInTransactionTimeout
+// (store.BoundIdleInTransaction), since that lock is one every request writing the document waits
+// on. The bound is the transaction's and not the rooms pool's: a load's read-only transaction on
+// that pool carries none, on the very connection the confirmation ran on once it has ended. With
+// no bound, a confirmation orphaned with its connection held the lock until Postgres noticed.
+func TestACatchUpsConfirmationBoundsItsOwnTransactionsIdleTime(t *testing.T) {
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "# First")
+	service, _ := newTestServiceInstance(t, database)
+	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
+	ctx := context.Background()
+	if err := service.warmLiveDocument(ctx, artifactID); err != nil {
+		t.Fatalf("load the room: %v", err)
+	}
+	waitForLandedAppends(t, service, artifactID)
+	room := service.srv.GetDoc(artifactID)
+	if service.cursorOf(room) == nil {
+		t.Fatal("the room has no cursor, so its confirmation would take no lock and nothing here is tested")
+	}
+	rooms, err := database.Pool.Rooms()
+	if err != nil {
+		t.Fatalf("open the rooms pool: %v", err)
+	}
+	var bound time.Duration
+	var pid int32
+	service.duringReplacedHistoryCheck = func(checked string, tx pgx.Tx) {
+		if checked == artifactID {
+			bound, pid = idleSetting(t, ctx, tx), transactionPID(t, ctx, tx)
+		}
+	}
+
+	replaced, err := service.historyReplacedUnderLock(ctx, artifactID, room)
+	if err != nil || replaced {
+		t.Fatalf("the confirmation answered (replaced %v, err %v), want a history that was not replaced", replaced, err)
+	}
+	if pid == 0 {
+		t.Fatal("the confirmation never reached its transaction under the document's lock, so nothing here is tested")
+	}
+	if bound != store.RequestIdleInTransactionTimeout {
+		t.Errorf("the catch-up's confirmation reads idle_in_transaction_session_timeout = %v, want %v",
+			bound, store.RequestIdleInTransactionTimeout)
+	}
+	requireFoldsCarryNoIdleBound(t, rooms, pid)
 }
 
 // paragraphUpdate is one valid V1 update: an empty paragraph, which any document takes.

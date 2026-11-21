@@ -686,12 +686,14 @@ func heldItemBlockLinks(ctx context.Context, q Queryer, kind ItemKind, tables it
 // queueStateLock queues the item's state row, the first statements of the index's write phase:
 // its insert when it has none, then the row `for no key update`, which the reconciliation takes
 // as well (IndexOwedItemBlocks), so the index of one item is written by one transaction at a
-// time. Its row is not read back: the index was planned from the state the read phase found.
+// time. Its row is not read back: the index was planned from the state the read phase found. The
+// lock waits in a bounded wait (store.WriteBatch.QueueWithinBound): a direct message has no owner,
+// so no owner lock orders the reconciliation's index of one against a reply's repair of it.
 func (i ItemIndexing) queueStateLock(b *store.WriteBatch) {
 	b.Queue(fmt.Sprintf("create the block state of %s %s", i.kind, i.itemID), `
 		insert into `+i.tables.state+` (`+i.tables.item+`) values ($1::uuid) on conflict do nothing
 	`, i.itemID)
-	b.Queue(fmt.Sprintf("lock the block state of %s %s", i.kind, i.itemID), `
+	b.QueueWithinBound(fmt.Sprintf("lock the block state of %s %s", i.kind, i.itemID), `
 		select 1 from `+i.tables.state+` where `+i.tables.item+` = $1::uuid for no key update
 	`, i.itemID)
 }

@@ -372,10 +372,10 @@ func (h *Horizon) Persisted(ctx context.Context) (int64, error) {
 //
 // Like Await, Safe never settles for an observation already in flight when it is called: that
 // one took its snapshot before the call and can miss an id committed just before it, and if its
-// A were at or below H it would leave no gap (Gap), so the reader would arm no re-read for that
-// id. Safe waits it out, then joins one in flight, takes one that ended after the call, or runs
-// one. Its own observation saw every id committed before the call, so each such id is at or below
-// H, or stands above it and keeps a gap open until H reaches it.
+// A were at or below H it would leave no gap above the H it answers (Gap), so the reader would
+// arm no re-read for that id. Safe waits it out, then joins one in flight, takes one that ended
+// after the call, or runs one. Its own observation saw every id committed before the call, so
+// each such id is at or below H, or stands above it and keeps a gap open until H reaches it.
 func (h *Horizon) Safe(ctx context.Context) (int64, error) {
 	after := h.observationBoundary()
 	if _, err := h.observe(ctx, after); err != nil {
@@ -421,7 +421,7 @@ func (h *Horizon) Await(ctx context.Context) (int64, error) {
 		if err == nil {
 			failed = nil
 			h.mu.Lock()
-			proven, safe, gap := h.safeThrough > after, h.safe, h.gapLocked()
+			proven, safe, gap := h.safeThrough > after, h.safe, h.gapLocked(h.safe)
 			if h.ended != nil {
 				taken = max(taken, h.ended.number)
 			}
@@ -453,23 +453,36 @@ func (h *Horizon) Await(ctx context.Context) (int64, error) {
 	}
 }
 
-// Gap reports what a gap above H waits for, as the observations recorded so far leave it: none
-// when every observed id is at or below H, GapUnproven when only the newest observation is
-// unproven, GapHeld when an older one is too.
-func (h *Horizon) Gap() Gap {
+// Gap reports what a gap above safe, the H its caller read the log through, waits for, as the
+// observations recorded so far leave it: none when every observed id is at or below safe,
+// GapUnproven when only the newest observation is unproven, GapHeld when an older one is too.
+// The caller passes the H it read through and not the one the Horizon holds now, because between
+// its Safe and this call another reader's observation can prove the ids it could not read final,
+// which raises H to the newest id observed. Measured against that H nothing stands above, so the
+// events in (safe, newest], which no reader has read, would wait for the next commit to be read.
+// Such a gap, which no observation holds any more, is GapUnproven: its caller reads again at
+// once, and finds those ids final.
+func (h *Horizon) Gap(safe int64) Gap {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.gapLocked()
+	return h.gapLocked(safe)
+}
+
+// Behind reports whether an observed id stands above safe, the H its caller read the log
+// through: a gap that caller must re-read for (Gap).
+func (h *Horizon) Behind(safe int64) bool {
+	return h.Gap(safe) != GapNone
 }
 
 // gapLocked is Gap with h.mu held. The pending list keeps the newest observation whenever its A
 // stands above H (thinPending never drops it), so a gap whose list holds that observation alone
-// waits on nothing older.
-func (h *Horizon) gapLocked() Gap {
+// waits on nothing older, and a gap above safe whose list is empty lies at or below H and waits
+// on nothing.
+func (h *Horizon) gapLocked(safe int64) Gap {
 	switch {
-	case h.newest <= h.safe:
+	case h.newest <= safe:
 		return GapNone
-	case len(h.pending) == 1 && h.pending[0].number == h.recorded:
+	case len(h.pending) == 0, len(h.pending) == 1 && h.pending[0].number == h.recorded:
 		return GapUnproven
 	}
 	return GapHeld

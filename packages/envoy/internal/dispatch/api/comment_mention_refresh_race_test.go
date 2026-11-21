@@ -68,7 +68,7 @@ func TestARefreshThatLosesToAKeyedRepeatKeepsTheRepeatsClaim(t *testing.T) {
 	sender.refreshHeldClaims(context.Background())
 	sender.refresh = realRefresh
 
-	row := attemptClaimedAt(t, database, queued, "session:s1")
+	row := attemptClaimedAt(t, database.Pool, queued, "session:s1")
 	sender.mu.Lock()
 	var held time.Time
 	for key, state := range sender.held {
@@ -82,7 +82,7 @@ func TestARefreshThatLosesToAKeyedRepeatKeepsTheRepeatsClaim(t *testing.T) {
 			"own result over the repeat's claim", held, row)
 	}
 	sender.refreshHeldClaims(context.Background())
-	if again := attemptClaimedAt(t, database, queued, "session:s1"); !again.After(row) {
+	if again := attemptClaimedAt(t, database.Pool, queued, "session:s1"); !again.After(row) {
 		t.Fatalf("the claim on the queued attempt is still %v after the next refresh, want it written again: "+
 			"left alone it lapses a lease later and the sweep may send it out of order", again)
 	}
@@ -170,14 +170,14 @@ func TestARefreshDuringAParkedSendsTryLeavesTheSenderHoldingTheRowsClaim(t *test
 			state, holds := sender.held[key]
 			sender.mu.Unlock()
 			recorded := state.claimed
-			row := attemptClaimedAt(t, database, comment, "session:s1")
+			row := attemptClaimedAt(t, database.Pool, comment, "session:s1")
 			t.Logf("parked again: the sender records claim %v (held %t), the row carries %v", recorded, holds, row)
 			if !holds || !recorded.Equal(row) {
 				t.Fatalf("the sender records the parked send's claim as %v (held %t) while its row carries %v: the refresh writes only a row that carries the claim the sender records, so this one is never written again and lapses with the send still parked",
 					recorded, holds, row)
 			}
 			sender.refreshHeldClaims(context.Background())
-			if again := attemptClaimedAt(t, database, comment, "session:s1"); !again.After(row) {
+			if again := attemptClaimedAt(t, database.Pool, comment, "session:s1"); !again.After(row) {
 				t.Fatalf("the parked send's claim is still %v after the next refresh, want it written again", again)
 			}
 		})
@@ -349,7 +349,7 @@ func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPar
 				sender.refreshHeldClaims(ctx)
 				recorded, unsure := recordedClaim(sender, key)
 				t.Logf("as park waits for the lock, the refresh leaves the sender recording %v (unsure %t), the row carrying %v",
-					recorded, unsure, attemptClaimedAt(t, database, a1, "session:s1"))
+					recorded, unsure, attemptClaimedAt(t, database.Pool, a1, "session:s1"))
 				gate.release()
 			}
 			unpark := <-timers
@@ -358,7 +358,7 @@ func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPar
 			}
 			sender.refreshHeldClaims(ctx)
 			recorded, unsure := recordedClaim(sender, key)
-			row := attemptClaimedAt(t, database, a1, "session:s1")
+			row := attemptClaimedAt(t, database.Pool, a1, "session:s1")
 			t.Logf("parked; after the refresh the sender records %v (unsure %t), the row carries %v", recorded, unsure, row)
 			if unsure || !recorded.Equal(row) {
 				t.Fatalf("the sender trusts claim %v (unsure %t) for A-1 while its row carries %v: the refresh writes only a row that carries the claim the sender records, so this one lapses with the send still parked",
@@ -379,7 +379,7 @@ func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPar
 			for _, delivery := range owed {
 				if delivery.commentID == a1 {
 					t.Fatalf("a lease on, the delivery sweep finds A-1 owed while the sender holds it parked: its claim lapsed (row %v)",
-						attemptClaimedAt(t, database, a1, "session:s1"))
+						attemptClaimedAt(t, database.Pool, a1, "session:s1"))
 				}
 			}
 
@@ -477,7 +477,7 @@ func TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim(t *testing.T) {
 				if err := served.resumeOwedDelivery(ctx, owed[index]); err != nil {
 					t.Fatalf("the sweep's send of the parked one: %v", err)
 				}
-				handedOver := attemptClaimedAt(t, database, comment, "session:s1")
+				handedOver := attemptClaimedAt(t, database.Pool, comment, "session:s1")
 				recorded, _ := recordedClaim(sender, key)
 				t.Logf("parked under %v; the sweep handed the send over under %v, and the sender records %v",
 					parked, handedOver, recorded)
@@ -492,7 +492,7 @@ func TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim(t *testing.T) {
 			if !tc.handOff {
 				unpark = <-timers // the try read the rule alone, waited and parked again
 				recorded, unsure := recordedClaim(sender, key)
-				row := attemptClaimedAt(t, database, comment, "session:s1")
+				row := attemptClaimedAt(t, database.Pool, comment, "session:s1")
 				t.Logf("parked again: the sender records %v (unsure %t), the row carries %v", recorded, unsure, row)
 				if unsure || !recorded.Equal(row) || !row.Equal(parked) {
 					t.Fatalf("parked again, the sender records %v (unsure %t) and the row carries %v, want both the claim it parked under, %v",

@@ -21,10 +21,13 @@ import (
 
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -132,6 +135,25 @@ type testServerOptions struct {
 	lifetime context.Context
 	// streamHeartbeat replaces the sockets' fifteen-second heartbeat.
 	streamHeartbeat time.Duration
+	// admission replaces the server's admission limiter; nil is the deployment's limits.
+	admission *admission.Limiter
+	// readDeadline replaces the server's read deadline; zero is the deployment's.
+	readDeadline time.Duration
+	// downloadDeadline replaces the deadline a file version download's work before its answer
+	// runs under (downloadDeadline, five minutes); zero is the deployment's.
+	downloadDeadline time.Duration
+	// requestPoolSize and acquireBound replace the request pool's size and its acquire bound
+	// (store.BoundAcquires), each when non-zero, so a test can fill the pool and see a request
+	// refused within a fraction of a second.
+	requestPoolSize int32
+	acquireBound    time.Duration
+	// dialRequestPool replaces how the request pool dials Postgres, so a test can put a fault on
+	// the socket pgx reads and writes; nil dials as the deployment does. It rebuilds the pool as
+	// requestPoolSize and acquireBound do.
+	dialRequestPool pgconn.DialFunc
+	// browserPeers lets the document service admit a browser peer by the X-Dispatch-User header,
+	// as connectBrowserPeer connects one; without it the document websocket refuses every peer.
+	browserPeers bool
 	// takeoverWindow replaces the listener take-over window (Deps.ListenerTakeoverWindow); zero is
 	// testTakeoverWindow. A test proving the window itself passes its own, listenerTakeoverWindow
 	// for the production twelve seconds.
@@ -152,6 +174,10 @@ type testServerOptions struct {
 	// dashboardEntry is the entry chunk of the dashboard build the server serves; empty is a
 	// server with no dashboard, as the Go test rigs are.
 	dashboardEntry string
+	// adviceQueryHook is the server's advice seam (server.adviceQueryHook): it runs before each
+	// advice query, on the savepoint inside the write's transaction that query runs on, with the
+	// query's name. Nil is production, which runs nothing.
+	adviceQueryHook func(context.Context, pgx.Tx, string) error
 	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
 	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
 	buildCommit string
@@ -262,8 +288,35 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if database == nil {
 		database = storetest.Open(t)
 	}
+	// The tracer's pool first: Traced replaces the configuration's tracer, so a request pool
+	// reopened below from its configuration keeps the tracer beside its acquire bound
+	// (store.BoundAcquires composes the two), where the other order would drop the bound.
 	if options.tracer != nil {
 		database = &store.Store{Pool: storetest.Traced(t, database.Pool, options.tracer, nil)}
+	}
+	if options.requestPoolSize != 0 || options.acquireBound != 0 || options.dialRequestPool != nil {
+		config := database.Pool.Config()
+		if options.requestPoolSize != 0 {
+			config.MaxConns = options.requestPoolSize
+			config.MinConns, config.MinIdleConns = 0, 0
+		}
+		if options.acquireBound != 0 {
+			store.BoundAcquires(config, options.acquireBound)
+		}
+		if options.dialRequestPool != nil {
+			config.ConnConfig.DialFunc = options.dialRequestPool
+		}
+		pool, err := pgxpool.NewWithConfig(context.Background(), config)
+		if err != nil {
+			t.Fatalf("open the request pool: %v", err)
+		}
+		requests := store.NewPool(pool)
+		// Close the store's whole pool set, not only the pgx pool it wraps: the pools this one
+		// opens on demand (the background loops', the live readers', the rooms') hold connections
+		// to the test's database of their own, and one left open fails storetest's drop of that
+		// database on any login without pg_signal_backend.
+		t.Cleanup(requests.Close)
+		database.Pool = requests
 	}
 	broker := events.NewBroker()
 	var documentPersistence docs.VersionedStore
@@ -274,7 +327,11 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.brokerTokens != nil {
 		brokerTokens = options.brokerTokens(database)
 	}
-	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle})
+	documentDeps := docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle}
+	if options.browserPeers {
+		documentDeps.Identity = headerIdentity(database)
+	}
+	documentService := docs.New(documentDeps)
 	t.Cleanup(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
@@ -310,6 +367,9 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		GitHubAPIBase:    options.githubAPIBase,
 		TestHooksEnabled: options.testHooks,
 		StreamHeartbeat:  options.streamHeartbeat,
+		Admission:        options.admission,
+		ReadDeadline:     options.readDeadline,
+		DownloadDeadline: options.downloadDeadline,
 		EnvoyURL:         options.envoyURL,
 		EnvoyTimeout:     options.envoyTimeout,
 		// Dispatch presents an identity of its own to the listener, as a deployment does: without
@@ -347,6 +407,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.agentWatchInterval != 0 {
 		served.agentWatchInterval = options.agentWatchInterval
 	}
+	served.adviceQueryHook = options.adviceQueryHook
 	served.duplicateBound = options.duplicateBound
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'

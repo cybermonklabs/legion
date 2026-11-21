@@ -77,12 +77,16 @@ func replacementPrecondition(ctx context.Context, documentService docs.API, arti
 	return &model.EditPrecondition{Document: token}, nil
 }
 
-// replaceDocumentText replaces a document's text as an upload of a new version does: inside a
-// transaction joined with Docs.Join, the only way a document write runs, committed when the
-// replacement succeeds. It names the token the document stands at now, as every replacement
-// does. It returns ReplaceText's own error, which tests assert on.
+// replaceDocumentText replaces a document's text as an upload of a new version does: holding the
+// document's writer gate, inside a transaction joined with Docs.Join, the only way a document
+// write runs, committed when the replacement succeeds. It names the token the document stands at
+// now, as every replacement does. It returns ReplaceText's own error, which tests assert on.
 func replaceDocumentText(database *store.Store, documentService docs.API, artifactID, markdown string, actor model.Actor) (string, error) {
-	ctx := context.Background()
+	ctx, release, err := documentService.AcquireDocumentWriter(context.Background(), artifactID)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
 		return "", err
@@ -174,13 +178,18 @@ func (g *firstReplaceGate) AcceptSuggestion(ctx context.Context, artifactID, mar
 	return g.API.AcceptSuggestion(ctx, artifactID, markID, replacement, actor)
 }
 
-func waitForSecondReplacementOrCommentLock(t *testing.T, database *store.Store, secondReplacement <-chan struct{}) {
+// waitForSecondReplacementOrCommentLock returns once the second accept has reached the document
+// service, waits on a database lock, or waits for the document's writer gate the first holds.
+func waitForSecondReplacementOrCommentLock(t *testing.T, database *store.Store, documents *docs.Service, secondReplacement <-chan struct{}) {
 	t.Helper()
 	if !testwait.Holds(time.Second, 5*time.Millisecond, func() bool {
 		select {
 		case <-secondReplacement:
 			return true
 		default:
+		}
+		if documents.QueuedDocumentWriters() > 0 {
+			return true
 		}
 		var waiting int
 		if err := database.Pool.QueryRow(context.Background(), `
@@ -1382,7 +1391,11 @@ func TestAnUploadKeepsTheCreditOfAnEditItsUploaderMakesWhileItWrites(t *testing.
 	peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
 	t.Cleanup(peer.close)
 
-	ctx := context.Background()
+	ctx, release, err := documentService.AcquireDocumentWriter(context.Background(), issue.PrimaryArtifactID)
+	if err != nil {
+		t.Fatalf("take the document's writer gate: %v", err)
+	}
+	defer release()
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin upload transaction: %v", err)
@@ -1570,7 +1583,7 @@ func TestConcurrentSuggestionAcceptAppliesReplacementExactlyOnce(t *testing.T) {
 	go func() {
 		responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
 	}()
-	waitForSecondReplacementOrCommentLock(t, database, gate.secondEntered)
+	waitForSecondReplacementOrCommentLock(t, database, documentService, gate.secondEntered)
 	close(gate.releaseFirst)
 
 	var success, conflict int

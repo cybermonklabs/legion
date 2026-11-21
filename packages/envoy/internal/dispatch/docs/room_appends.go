@@ -74,9 +74,11 @@ import (
 //     alone.
 //   - No holder of a document lock waits for a RoomAppends connection. A batch takes its connection
 //     (store.Pool.RoomAppends) before the document's lock and holds store.HoldsConnection on its
-//     context, so nothing under it takes a second connection; and nothing else takes a connection of
-//     that pool - settlements, live writes and the withRoomLock writers keep theirs. Whoever holds a
-//     lock a batch waits on finishes without one of these connections, so the pool cannot deadlock.
+//     context, so nothing under it takes a second connection; a close's write of a room's latest
+//     edit source (persistLastActor), the one other taker of that pool, takes its connection
+//     before the lock too and nothing after it; and nothing else takes a connection of that pool -
+//     settlements, live writes and the withRoomLock writers keep theirs. Whoever holds a lock a
+//     batch waits on finishes without one of these connections, so the pool cannot deadlock.
 //
 // The ways an update reaches the store, and why none stores a class another transaction stored:
 //

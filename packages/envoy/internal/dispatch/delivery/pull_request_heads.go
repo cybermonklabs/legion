@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -186,10 +187,10 @@ func markHeadNotStored(err error) error {
 // again writes the same pair and costs nothing.
 //
 // A write with nothing to pair and no event to append — an open pull request an incomplete read
-// wrote, a merge whose base branch or merge commit nobody read — runs its one statement on the
-// pool as it always did. A transaction around a single statement buys nothing and costs a round
-// trip at each end, and every caller of this function makes far more writes of that shape than
-// of the other.
+// wrote, a merge whose base branch or merge commit nobody read — runs on the pool as one batch, as
+// it always ran one statement there (upsertHeadRow). A transaction around it would buy nothing
+// and cost a round trip at each end, and every caller of this function makes far more writes of
+// that shape than of the other.
 //
 // broker is what the attribution's own events are appended through, and it may be nil: a nil
 // broker writes the row and appends nothing, so a caller that holds none hands over nothing
@@ -331,12 +332,18 @@ func appendAttributionChange(
 
 // headIssueBefore is the issue the stored row credits the pull request to, read for no key
 // update so that no other writer moves it between this read and the write that follows: the
-// "from" of the move, and nil where no row is stored yet or the row credits nobody.
+// "from" of the move, and nil where no row is stored yet or the row credits nobody. The row is
+// taken in a bounded wait first and read behind it in the same batch
+// (store.LockRowsWithinBoundAndRead): a result's read-through writes it on a request's own
+// transaction, and its other writers - the intake and the reconcile - take no lock that orders
+// them against that one.
 func headIssueBefore(ctx context.Context, tx pgx.Tx, repoFull string, number int) (*string, error) {
 	var issue *string
-	err := tx.QueryRow(ctx, `
+	err := store.LockRowsWithinBoundAndRead(ctx, tx, `
+		select 1 from pull_request_heads where repo = $1 and number = $2 for no key update
+	`, []any{repoFull, number}, `
 		select issue_key from pull_request_heads where repo = $1 and number = $2 for no key update
-	`, repoFull, number).Scan(&issue)
+	`, []any{repoFull, number}, func(row pgx.Row) error { return row.Scan(&issue) })
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -365,17 +372,26 @@ func sameIssue(left, right *string) bool {
 const headWriteRollback = 2 * time.Second
 
 // upsertHeadRow is the head row's own statement, which UpsertPullRequestHead's doc comment
-// explains in full: it is here, on a refs.Execer — the pool, or a transaction already open on
-// it — so that one statement runs on the pool where it is the whole write and inside the
-// transaction where the merge's branch answer, the attribution's own events, or both go with
-// it.
+// explains in full: it is here, on the pool or a transaction already open on it, so that one
+// write runs on the pool where it is the whole write and inside the transaction where the
+// merge's branch answer, the attribution's own events, or both go with it.
+//
+// The statement runs in a bounded wait (store.WriteBatch, QueueWithinBound; sent on the pool the
+// batch is a transaction of its own): the intake, the reconcile and a results read's read-through
+// each write the row taking no lock that orders them against the others, and a write has no
+// deadline, so a write behind a row another held, or behind another's uncommitted insert of the
+// same pull request, waited for as long as that holder stood. At the bound it is refused
+// store.ErrPoolBusy, as ErrHeadNotStored. A row the transaction already holds (headIssueBefore)
+// is written at once.
 //
 // It answers whether the write applied: false where the event-time guard below left the row
 // exactly as it was, which is the one way this statement writes nothing and reports no error.
 // Only an applied write can have moved the row's attribution, so that is what
 // UpsertPullRequestHead tests before it appends an event.
-func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (bool, error) {
-	tag, err := db.Exec(ctx, `
+func upsertHeadRow(ctx context.Context, db store.BatchSender, head PullRequestHead) (bool, error) {
+	var write store.WriteBatch
+	var applied bool
+	write.QueueWithinBound("", `
 		insert into pull_request_heads (
 			repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
 			title, url, event_at, checked_at, attribution_rule
@@ -403,11 +419,14 @@ func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (b
 		head.Repo, head.Number, head.HeadSHA, head.HeadRef, head.BaseRef, head.State,
 		head.IssueKey, head.AttributionSource, head.Title, head.URL, head.EventAt, head.CheckedAt,
 		head.AttributionComplete, AttributionRuleVersion,
-	)
-	if err != nil {
+	).Exec(func(tag pgconn.CommandTag) error {
+		applied = tag.RowsAffected() > 0
+		return nil
+	})
+	if err := write.Send(ctx, db); err != nil {
 		return false, fmt.Errorf("%w: store the head of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
 	}
-	return tag.RowsAffected() > 0, nil
+	return applied, nil
 }
 
 // upsertHeadUnderCanonicalName writes head, which every caller has already keyed by the
@@ -425,7 +444,8 @@ func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (b
 //
 // The write comes before the delete, so a failure between them leaves two rows rather than
 // none: the next pass is handed the old row's key again and re-keys it again, while losing the
-// row would leave the pull request unknown until another event arrived.
+// row would leave the pull request unknown until another event arrived. The delete waits for the
+// old row in a bounded wait, in a batch of its own on the pool, as the write does (upsertHeadRow).
 func upsertHeadUnderCanonicalName(
 	ctx context.Context, pool *store.Pool, broker *events.Broker, head PullRequestHead, storedUnder string,
 ) error {
@@ -435,9 +455,11 @@ func upsertHeadUnderCanonicalName(
 	if strings.EqualFold(storedUnder, head.Repo) {
 		return nil
 	}
-	if _, err := pool.Exec(ctx, `
+	var drop store.WriteBatch
+	drop.QueueWithinBound("", `
 		delete from pull_request_heads where repo = $1 and number = $2
-	`, storedUnder, head.Number); err != nil {
+	`, storedUnder, head.Number)
+	if err := drop.Send(ctx, pool); err != nil {
 		return fmt.Errorf("drop the head of %s#%d, now %s#%d: %w", storedUnder, head.Number, head.Repo, head.Number, err)
 	}
 	return nil

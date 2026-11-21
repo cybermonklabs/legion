@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // copiedAskSources finds the ask each block of blocks was copied from, keyed by block id, among the
@@ -219,12 +220,14 @@ const copiedAsksLockNamespace int32 = 0x434F5059
 // row. The copy-source read is the next statement, so under READ COMMITTED its snapshot holds
 // every ask a sibling's settlement committed while this one waited, and the ask createAskBlock
 // opens commits in this transaction, which holds the lock until then. A settlement whose blocks
-// all have asks of their own and that retracts none takes none.
+// all have asks of their own and that retracts none takes none. Its wait is bounded as an owner
+// lock's is (store.LockWithinBound): a taker queued behind a holder past the bound is refused
+// busy, an answer's request with 503 and a settlement stopping short for its resumption.
 func lockProjectCopies(ctx context.Context, tx pgx.Tx, owner artifactOwner) error {
 	if owner.IssueKey != nil || owner.Project == "" {
 		return nil
 	}
-	if _, err := tx.Exec(ctx, projectCopiesLock, copiedAsksLockNamespace, owner.Project); err != nil {
+	if err := store.LockWithinBound(ctx, tx, projectCopiesLock, copiedAsksLockNamespace, owner.Project); err != nil {
 		return fmt.Errorf("lock the project's copied asks: %w", err)
 	}
 	return nil

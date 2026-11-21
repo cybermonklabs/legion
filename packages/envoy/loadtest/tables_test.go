@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,12 +29,80 @@ func TestTablesMarkAStepWhoseStackProcessExited(t *testing.T) {
 	if !strings.Contains(md, "\n(<process> exited): ") {
 		t.Fatalf("no note defines the mark:\n%s", md)
 	}
-	if !strings.Contains(md, "| box busy | box busy before |") || !strings.Contains(md, "| 0% | 42% |") {
-		t.Fatalf("the Resources table lacks box busy before 42%%:\n%s", md)
+	if !strings.Contains(md, "| box busy | box busy before / gate |") || !strings.Contains(md, "| 0% | 42% / - |") {
+		t.Fatalf("the Resources table lacks box busy before 42%% beside no gate reading:\n%s", md)
 	}
-	// The killed step has no resources: its row keeps the box busy before column, empty here.
-	if !strings.Contains(section(md, "Resources"), "| killed (dispatch exited) | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - |\n") {
+	// The killed step has no resources: its row keeps the box busy before column, empty here, and
+	// its throttling column reads - for a cpu.stat not read.
+	if !strings.Contains(section(md, "Resources"), "| killed (dispatch exited) | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - |\n") {
 		t.Fatalf("the killed step's Resources row is not all -:\n%s", md)
+	}
+	checkRowWidths(t, md)
+}
+
+// TestTablesNameTheQuietGatesReadingBesideBoxBusyBefore: the Resources table's box busy before /
+// gate cell gives meta.json's box_busy_before, then the reading of run-step.sh's quiet-box gate the
+// step started on (box_busy_gate), "-" for a reading not taken, and "-" alone for a step with
+// neither; summary.json carries the two readings side by side.
+func TestTablesNameTheQuietGatesReadingBesideBoxBusyBefore(t *testing.T) {
+	before, gate := 0.01, 0.04
+	step := func(name string, meta *metaFile) stepData {
+		return stepData{name: name, sum: summary{Config: summaryConfig{Step: name}, Resources: &resourcesSummary{}}, meta: meta}
+	}
+	md := renderTables([]stepData{
+		step("s-gated", &metaFile{BoxBusyBefore: &before, BoxBusyGate: &gate}),
+		step("s-ungated", &metaFile{BoxBusyBefore: &before}),
+		step("s-gate-only", &metaFile{BoxBusyGate: &gate}),
+		step("s-no-meta", nil),
+	})
+	text := section(md, "Resources")
+	if !strings.Contains(text, "| box busy | box busy before / gate | Dispatch RSS max MiB |") {
+		t.Fatalf("the Resources header does not name the gate's reading beside box busy before:\n%s", text)
+	}
+	for name, want := range map[string]string{"s-gated": "1% / 4%", "s-ungated": "1% / -", "s-gate-only": "- / 4%", "s-no-meta": "-"} {
+		if got, ok := columnCell(text, name, "box busy before / gate"); !ok || got != want {
+			t.Errorf("%s: the box busy before / gate cell %q, want %q:\n%s", name, got, want, text)
+		}
+	}
+	if !strings.Contains(text, "\nbox busy before / gate: ") {
+		t.Errorf("no note says what the box busy before / gate cell holds:\n%s", text)
+	}
+	checkRowWidths(t, md)
+
+	b, err := json.Marshal(summary{BoxBusyBefore: &before, BoxBusyGate: &gate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"box_busy_before":0.01,"box_busy_gate":0.04`) {
+		t.Errorf("summary.json does not carry box_busy_before and box_busy_gate side by side:\n%s", b)
+	}
+	if b, err = json.Marshal(summary{}); err != nil || !strings.Contains(string(b), `"box_busy_before":null,"box_busy_gate":null`) {
+		t.Errorf("a summary.json without the readings does not carry them as null (%v):\n%s", err, b)
+	}
+}
+
+// TestTablesShowThePodsThrottlingInTheResourcesTable: the Resources table's last column is how often
+// and how long CFS stopped the processes of the pod loadgen run ran in over the window (summary.json
+// resources.cpu_throttled_periods and resources.cpu_throttled_ms), 0 / 0 for a step never
+// throttled and "-" for one that read no cpu.stat.
+func TestTablesShowThePodsThrottlingInTheResourcesTable(t *testing.T) {
+	periods, ms, noPeriods, noMs := int64(1234), 5678.4, int64(0), 0.0
+	step := func(name string, r resourcesSummary) stepData {
+		return stepData{name: name, sum: summary{Config: summaryConfig{Step: name}, Resources: &r}}
+	}
+	md := renderTables([]stepData{
+		step("throttled", resourcesSummary{CPUThrottledPeriods: &periods, CPUThrottledMs: &ms}),
+		step("never-throttled", resourcesSummary{CPUThrottledPeriods: &noPeriods, CPUThrottledMs: &noMs}),
+		step("cpu-stat-unread", resourcesSummary{}),
+	})
+	text := section(md, "Resources")
+	if !strings.Contains(text, "| Dispatch CPU-s per operation | "+podThrottledH+" |\n") {
+		t.Fatalf("the Resources header does not end on the throttling column:\n%s", text)
+	}
+	for name, want := range map[string]string{"throttled": "1,234 / 5,678", "never-throttled": "0 / 0", "cpu-stat-unread": "-"} {
+		if got, ok := columnCell(text, name, podThrottledH); !ok || got != want {
+			t.Errorf("%s: the throttling cell %q, want %q:\n%s", name, got, want, text)
+		}
 	}
 	checkRowWidths(t, md)
 }
@@ -147,6 +216,27 @@ func rowCells(text, step string) []string {
 	return nil
 }
 
+// columnCell is the cell of the table row in text whose step cell starts with step (rowCells), in
+// the column headed column; false where text has no such row or its table no such column. The
+// header is text's first table line, which is the row rowCells finds for an empty step.
+func columnCell(text, step, column string) (string, bool) {
+	row := rowCells(text, step)
+	if index := slices.Index(rowCells(text, ""), column); index >= 0 && index < len(row) {
+		return row[index], true
+	}
+	return "", false
+}
+
+// cellOf is columnCell for a cell the test needs: it fails t where text has no such row or column.
+func cellOf(t *testing.T, text, step, column string) string {
+	t.Helper()
+	cell, ok := columnCell(text, step, column)
+	if !ok {
+		t.Fatalf("no %q cell in the row of %s:\n%s", column, step, text)
+	}
+	return cell
+}
+
 func TestTablesResourcesShowFailedSamplerReadsAsMissing(t *testing.T) {
 	step := func(name string, ss ...sample) stepData {
 		return stepData{name: name, sum: summary{Config: summaryConfig{Step: name}, Resources: summarizeResources(ss, 0, 15)}}
@@ -229,17 +319,11 @@ func TestTablesDoNotShowUnreadCommitsAsZero(t *testing.T) {
 	}}
 	md := renderTables([]stepData{read, unread})
 
-	cells := rowCells(section(md, "Events, delivery and requests"), "foreign-notrigger")
-	if cells == nil {
-		t.Fatalf("no Events row for the step:\n%s", md)
-	}
-	if len(cells) < 8 {
-		t.Fatalf("Events row has %d cells:\n%s", len(cells), md)
-	}
-	if rate := cells[3]; strings.HasSuffix(rate, "/ 0.00") {
+	events := section(md, "Events, delivery and requests")
+	if rate := cellOf(t, events, "foreign-notrigger", "events/s target / offered / committed"); strings.HasSuffix(rate, "/ 0.00") {
 		t.Errorf("the committed rate of a step whose commit rows were not read reads %q, a measured zero:\n%s", rate, md)
 	}
-	if receipts := cells[7]; receipts == "0 / 0" {
+	if receipts := cellOf(t, events, "foreign-notrigger", "issue-topic receipts got / expected"); receipts == "0 / 0" {
 		t.Errorf("the issue-topic receipts of a step whose commit rows were not read read %q, a measured zero:\n%s", receipts, md)
 	}
 	for line := range strings.SplitSeq(section(md, "Write latency by kind"), "\n") {
@@ -250,38 +334,38 @@ func TestTablesDoNotShowUnreadCommitsAsZero(t *testing.T) {
 
 	const mark = "foreign-notrigger " + commitsUnreadMark
 	for _, c := range []struct {
-		title string
-		cols  []int // the cells that depend on the commit rows
+		title   string
+		columns []string // the cells that depend on the commit rows
 	}{
-		{"Events, delivery and requests", []int{5, 6, 7}},
+		{"Events, delivery and requests", []string{"delivery ms from arrival p50 / p99", "delivery ms from commit p50 / p99", "issue-topic receipts got / expected"}},
 		{"Write latency by kind", nil},
-		{"Resources", []int{15}},
-		{"Delivery from sending, and live socket frames", []int{1, 3}},
+		{"Resources", []string{"Dispatch CPU-s per operation"}},
+		{"Delivery from sending, and live socket frames", []string{"NATS delivery ms from sent p50 / p99", "live frame ms from write response p50 / p99"}},
 	} {
 		text := section(md, c.title)
-		cells := rowCells(text, "foreign-notrigger")
-		if cells == nil || cells[0] != mark {
+		if label, _ := columnCell(text, "foreign-notrigger", "step"); label != mark {
 			t.Errorf("section %q: the unread step's row is not marked %q:\n%s", c.title, commitsUnreadMark, text)
 			continue
 		}
-		for _, col := range c.cols {
-			if cells[col] != "-" {
-				t.Errorf("section %q: cell %d of the unread step reads %q, want -:\n%s", c.title, col, cells[col], text)
+		for _, column := range c.columns {
+			if cell := cellOf(t, text, "foreign-notrigger", column); cell != "-" {
+				t.Errorf("section %q: the %s cell of the unread step reads %q, want -:\n%s", c.title, column, cell, text)
 			}
 		}
 		if note := noteLine(text, commitsUnreadMark); !strings.Contains(note, "`events.commits_error`") {
 			t.Errorf("section %q has no note of the mark that names summary.json `events.commits_error`:\n%s", c.title, text)
 		}
-		if r := rowCells(text, "read"); r == nil || r[0] != "read" {
+		if label, _ := columnCell(text, "read", "step"); label != "read" {
 			t.Errorf("section %q: the step whose commit rows were read is marked:\n%s", c.title, text)
 		}
 	}
 	// The cells that do not depend on the commit rows keep their values.
-	if cells := rowCells(section(md, "Delivery from sending, and live socket frames"), "foreign-notrigger"); cells[2] != "30 / 80" || cells[4] != "40" {
-		t.Errorf("the unread step's live frames and their latency from created_at: %q", cells)
+	delivery := section(md, "Delivery from sending, and live socket frames")
+	if frames, fromCreated := cellOf(t, delivery, "foreign-notrigger", "live frames"), cellOf(t, delivery, "foreign-notrigger", "live frame ms from created_at p50 / p99"); frames != "40" || fromCreated != "30 / 80" {
+		t.Errorf("the unread step's live frames %q and their latency from created_at %q, want 40 and 30 / 80", frames, fromCreated)
 	}
-	if cells := rowCells(section(md, "Events, delivery and requests"), "foreign-notrigger"); cells[3] != "1.00 / 1.03 / -" {
-		t.Errorf("the unread step's events/s: %q, want the target and offered rates and - committed", cells[3])
+	if rate := cellOf(t, events, "foreign-notrigger", "events/s target / offered / committed"); rate != "1.00 / 1.03 / -" {
+		t.Errorf("the unread step's events/s: %q, want the target and offered rates and - committed", rate)
 	}
 	// The tables that no commit row feeds carry no mark.
 	for _, title := range []string{"Commit-order lock", "Ungranted locks", "Transaction ids"} {
@@ -309,6 +393,155 @@ func TestTablesMarkAFailedTransactionIDRead(t *testing.T) {
 	}
 	if note := noteLine(text, "(1 failed read)"); !strings.Contains(note, "`resources.xid_read_error`") {
 		t.Errorf("no note of the failed-reads mark names summary.json `resources.xid_read_error`:\n%s", text)
+	}
+	checkRowWidths(t, md)
+}
+
+func TestTablesRenderRefusalsPoolsAndRecovery(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	refusals := func(o, d, r, e, ct, cr, rs, rt int, ms stat) refusalSummary {
+		return refusalSummary{
+			Codes:              map[string]int{"OVERLOADED": o, "DATABASE_BUSY": d, "REQUEST_TIMEOUT": r, "EDIT_QUEUE_FULL": e},
+			ConnectionFailures: map[string]int{connectTimeout: ct, connectRefused: cr, connReset: rs, responseTimeout: rt},
+			RefusalMs:          ms,
+		}
+	}
+	sched := schedule{{Factor: 1, DurationS: 60}, {Factor: 5, DurationS: 60}, {Factor: 1, DurationS: 120}}
+	cur := summary{
+		Config: summaryConfig{Step: "burst", EventsPerS: 4, RequestsPerS: 60, Sessions: 400, Schedule: sched},
+		Events: eventsSummary{OfferedPerS: 7.9, CommittedPerS: 7.5, Refusals: refusals(3, 1, 0, 2, 4, 0, 1, 2, stat{N: 6, P50: 2, P99: 950})},
+		Requests: requestsSummary{Sent: 100, OK2xx: 90, SentPerS: 119,
+			Refusals: refusals(1200, 30, 7, 0, 0, 5, 0, 1, stat{N: 1237, P50: 1, P99: 4}),
+			Routes: map[string]routeSummary{
+				"browser GET /api/v1/issues/{key}": {Count: 100, Failures: 10, LatencyMs: stat{N: 100, P50: 5, P99: 80}, Refusals: map[string]int{"OVERLOADED": 8, "REQUEST_TIMEOUT": 2}},
+			}},
+		Metrics: metricsSummary{
+			Scraped: 49, Skipped: 1,
+			Pools: map[string]poolMetrics{
+				"background": {WaitingMax: f(0), InUseMax: f(2), AcquireP99AboveMs: f(30000), Checkouts: f(10)},
+				"requests":   {WaitingMax: f(40), InUseMax: f(64), AcquireP99Ms: f(250), Checkouts: f(2400)},
+			},
+			CheckoutsPerRequest: f(1.5), HTTPQueuedMax: map[string]float64{"read": 12, "write": 3},
+			HTTPInFlightMax: map[string]float64{"read": 16, "write": 4}, HTTPRefused: map[string]float64{"queue_full": 1200},
+			DocWriterQueuedMax: f(2), SettlementsRunningMax: f(1), SettlementsWaitingMax: f(0), LogDropped: f(0),
+		},
+		Recovery: &recoverySummary{
+			Schedule: sched.String(), DropS: 120, FactorBefore: 5, FactorAfter: 1, WindowS: 10, RefP99Ms: f(90), RefSource: recoveryRefLast,
+			RecoverySeconds: f(10),
+			Windows: []recoveryStep{
+				{StartS: 0, Requests: 600, RequestsOK: 300, ReqMs: stat{N: 600, P99: 4000}, Offered: 40, Committed: 20},
+				{StartS: 10, Requests: 600, RequestsOK: 600, ReqMs: stat{N: 600, P99: 100}, Offered: 40, Committed: 40, Recovered: true},
+			},
+		},
+	}
+	// A step from before these columns: its summary.json has none of them.
+	old := summary{Config: summaryConfig{Step: "old", EventsPerS: 4, RequestsPerS: 60}}
+	notRecovered := summary{Config: summaryConfig{Step: "stuck", Schedule: sched}, Recovery: &recoverySummary{
+		Schedule: sched.String(), DropS: 120, FactorBefore: 5, FactorAfter: 1, WindowS: 10, RefP99Ms: f(250), RefSource: recoveryRefFlag,
+		Windows: []recoveryStep{{StartS: 0}},
+	}}
+	md := renderTables([]stepData{{name: "burst", sum: cur}, {name: "old", sum: old}, {name: "stuck", sum: notRecovered}})
+
+	events := section(md, "Events, delivery and requests")
+	for _, header := range []string{
+		"write refusals OVERLOADED / DATABASE_BUSY / REQUEST_TIMEOUT / EDIT_QUEUE_FULL", "write connect timeout / refused / reset / response timeout",
+		"write refusal ms p50 / p99", "req refusals OVERLOADED / DATABASE_BUSY / REQUEST_TIMEOUT / EDIT_QUEUE_FULL",
+		"req connect timeout / refused / reset / response timeout", "req refusal ms p50 / p99",
+	} {
+		if !strings.Contains(events, "| "+header+" |") {
+			t.Errorf("the events table has no column %q:\n%s", header, events)
+		}
+	}
+	want := map[string]string{
+		"events/s target / offered / committed":                                         "8.00 / 7.90 / 7.50",
+		"write refusals OVERLOADED / DATABASE_BUSY / REQUEST_TIMEOUT / EDIT_QUEUE_FULL": "3 / 1 / 0 / 2",
+		"write connect timeout / refused / reset / response timeout":                    "4 / 0 / 1 / 2",
+		"write refusal ms p50 / p99":                                                    "2 / 950",
+		"req/s target / sent":                                                           "120.0 / 119.0",
+		"req refusals OVERLOADED / DATABASE_BUSY / REQUEST_TIMEOUT / EDIT_QUEUE_FULL":   "1,200 / 30 / 7 / 0",
+		"req connect timeout / refused / reset / response timeout":                      "0 / 5 / 0 / 1",
+		"req refusal ms p50 / p99":                                                      "1 / 4",
+	}
+	for column, cell := range want {
+		if got := cellOf(t, events, "burst", column); got != cell {
+			t.Errorf("the %s cell of burst: %q, want %q (the targets are 1x times the mean factor 2):\n%s", column, got, cell, events)
+		}
+	}
+	for column, cell := range map[string]string{
+		"events/s target / offered / committed":                                         "4.00 / 0.00 / 0.00",
+		"write refusals OVERLOADED / DATABASE_BUSY / REQUEST_TIMEOUT / EDIT_QUEUE_FULL": "-",
+		"write connect timeout / refused / reset / response timeout":                    "-",
+		"write refusal ms p50 / p99":                                                    "-",
+		"req refusals OVERLOADED / DATABASE_BUSY / REQUEST_TIMEOUT / EDIT_QUEUE_FULL":   "-",
+	} {
+		if got := cellOf(t, events, "old", column); got != cell {
+			t.Errorf("the %s cell of a step without refusals or a schedule: %q, want %q", column, got, cell)
+		}
+	}
+
+	routes := section(md, "Requests by route")
+	if !strings.Contains(routes, "| 5 / 80 (10/100; OVERLOADED 8, REQUEST_TIMEOUT 2) |") {
+		t.Errorf("the route table lacks the route's refusals:\n%s", routes)
+	}
+
+	pools := section(md, "Pools and admission")
+	if got, want := rowCells(pools, "burst"), []string{"burst", "49 / 1", "requests 40, background 0", "requests 64, background 2",
+		"requests 250, background >30,000", "1.50", "12 / 3", "16 / 4", "1,200 / -", "2", "1 / 0", "0"}; strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("pools row %q, want %q", got, want)
+	}
+	for column, cell := range map[string]string{"metrics samples scraped / skipped": "0 / 0", "pool waiting max": "-", "log records dropped": "-"} {
+		if got := cellOf(t, pools, "old", column); got != cell {
+			t.Errorf("the %s cell of a step without metrics: %q, want %q", column, got, cell)
+		}
+	}
+
+	recovery := section(md, "Recovery")
+	for step, cells := range map[string]string{
+		"burst": "| burst | 1x:60s,5x:60s,1x:120s | 120 (5x -> 1x) | 90 (last 3 windows) | 10 |",
+		"old":   "| old | - | - | - | - |",
+		"stuck": "| stuck | 1x:60s,5x:60s,1x:120s | 120 (5x -> 1x) | 250 (-recovery-ref-p99) | not recovered |",
+	} {
+		if !strings.Contains(recovery, cells+"\n") {
+			t.Errorf("the Recovery row of %s is not %q:\n%s", step, cells, recovery)
+		}
+	}
+	windows := section(md, "Recovery windows")
+	for _, cells := range []string{
+		"| burst | 0-10 | 50.0% | 20 / 40 | 4,000 | no |", "| burst | 10-20 | 100.0% | 40 / 40 | 100 | yes |",
+		"| old | - | - | - | - | - |", "| stuck | 0-10 | - | 0 / 0 | - | no |",
+	} {
+		if !strings.Contains(windows, cells+"\n") {
+			t.Errorf("the Recovery windows table lacks %q:\n%s", cells, windows)
+		}
+	}
+	if strings.Contains(md, "%!") {
+		t.Errorf("the tables print a formatting error (%%!):\n%s", md)
+	}
+	checkRowWidths(t, md)
+}
+
+// TestRecoveryTablesDoNotShowUnreadCommitsAsAVerdict: a window's verdict needs its committed
+// events, so a step whose commit rows were not read shows no recovery seconds, no committed count
+// and no per-window verdict: each is "-", and the row is marked. Its request cells keep their
+// values.
+func TestRecoveryTablesDoNotShowUnreadCommitsAsAVerdict(t *testing.T) {
+	sched := schedule{{Factor: 5, DurationS: 60}, {Factor: 1, DurationS: 60}}
+	unread := summary{
+		Config: summaryConfig{Step: "unread", Schedule: sched},
+		Events: eventsSummary{CommitsError: "read loadtest.event_commits: failed to connect"},
+		Recovery: &recoverySummary{
+			Schedule: sched.String(), DropS: 60, FactorBefore: 5, FactorAfter: 1, WindowS: 10, RefSource: recoveryRefLast,
+			Windows: []recoveryStep{{StartS: 0, Requests: 100, RequestsOK: 100, ReqMs: stat{N: 100, P99: 50}, Offered: 40}},
+		},
+	}
+	md := renderTables([]stepData{{name: "unread", sum: unread}})
+	mark := "unread " + commitsUnreadMark
+	if !strings.Contains(section(md, "Recovery"), "| "+mark+" | 5x:60s,1x:60s | 60 (5x -> 1x) | - (last 3 windows) | - |\n") {
+		t.Errorf("the Recovery row of a step whose commit rows were not read is not marked with '-' recovery seconds:\n%s", md)
+	}
+	windows := section(md, "Recovery windows")
+	if !strings.Contains(windows, "| "+mark+" | 0-10 | 100.0% | - / 40 | 50 | - |\n") {
+		t.Errorf("the Recovery windows row of a step whose commit rows were not read is not marked with '-' committed and verdict:\n%s", windows)
 	}
 	checkRowWidths(t, md)
 }

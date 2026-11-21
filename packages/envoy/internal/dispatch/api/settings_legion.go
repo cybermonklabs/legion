@@ -44,7 +44,7 @@ func (s *server) getLegionSetting(w http.ResponseWriter, r *http.Request) {
 			WriteJSON(w, http.StatusOK, nil)
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, settings)
@@ -65,7 +65,7 @@ type putLegionSettingInput struct {
 func (s *server) putLegionSetting(w http.ResponseWriter, r *http.Request) {
 	var input putLegionSettingInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -83,7 +83,7 @@ func (s *server) putLegionSetting(w http.ResponseWriter, r *http.Request) {
 	}
 	settings, err := legion.PutSettings(r.Context(), s.deps.Store.Pool, project, stateURL, actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// An open Legion board of this project was told LEGION_NOT_CONFIGURED and otherwise waits for
@@ -108,7 +108,7 @@ func (s *server) deleteLegionSetting(w http.ResponseWriter, r *http.Request) {
 	}
 	deleted, err := legion.DeleteSettings(r.Context(), s.deps.Store.Pool, project)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !deleted {
@@ -133,7 +133,7 @@ func (s *server) legionProject(w http.ResponseWriter, r *http.Request) (string, 
 		return "", false
 	}
 	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, project); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return "", false
 	}
 	return project, true

@@ -48,6 +48,7 @@ func (e *IAPExpiredError) Unwrap() error { return ErrExpired }
 // IAPVerifier verifies the assertions IAP signs for one audience, over one key cache.
 type IAPVerifier struct {
 	verifier *Verifier
+	keys     *Keys
 }
 
 // NewIAPVerifier returns the verifier of IAP's assertions to audience, checking each signature
@@ -68,7 +69,23 @@ func NewIAPVerifier(audience string, keys *Keys) *IAPVerifier {
 		issuer:     IAPIssuer,
 		audience:   audience,
 		skipExpiry: true,
-	}}
+	}, keys: keys}
+}
+
+// WouldReadKeySet reports whether Verify of raw, asked now, would read IAP's key set or wait for a
+// read of it under way (Keys.WouldRead for the key id and algorithm raw's header names, which
+// keySet.VerifySignature asks Keys.Key for): the first assertion, the first once the set's Lifetime
+// is up, and a key id the set does not hold while the miss window is open or a read is under way.
+// It reads the header without verifying it, and nothing else, so it costs no round trip. It answers
+// true where it cannot read that header, so a caller that holds something across Verify only where
+// this answers false holds it across no read and no wait for one.
+func (v *IAPVerifier) WouldReadKeySet(raw string) bool {
+	signed, err := jose.ParseSignedCompact(stripSpaces(raw), keySetAlgorithms)
+	if err != nil || len(signed.Signatures) != 1 {
+		return true
+	}
+	header := signed.Signatures[0].Header
+	return v.keys.WouldRead(header.KeyID, header.Algorithm)
 }
 
 // Verify checks raw, an X-Goog-IAP-JWT-Assertion header's value, as Google documents

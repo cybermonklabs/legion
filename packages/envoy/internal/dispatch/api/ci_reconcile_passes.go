@@ -19,7 +19,7 @@ func (s *server) listCIReconcilePasses(w http.ResponseWriter, r *http.Request) {
 	}
 	passes, err := cireconcile.RecentPasses(r.Context(), s.deps.Store.Pool)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, passes)

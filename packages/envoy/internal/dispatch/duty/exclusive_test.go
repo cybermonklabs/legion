@@ -20,13 +20,13 @@ import (
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
 // leasesOf is the pool Exclusive takes its lease connections from, the one the server gives it.
-func leasesOf(t *testing.T, database *store.Store) *pgxpool.Pool {
+func leasesOf(t *testing.T, database *store.Store) *store.RawPool {
 	t.Helper()
 	return storetest.Leases(t, database.Pool)
 }
 
 // Both lines a tick writes name the tick's own due and the aligned period it fell in. The period
-// is periodBoundary of that due, so it already tells a tick of one period from a tick of the
+// is duty.PeriodBoundary of that due, so it already tells a tick of one period from a tick of the
 // next; what the due adds is where inside the period the tick fell. Two processes ticking minutes
 // apart inside one period write the same period, and neither line is written at the moment its
 // tick was due - the skip after the lease and the period read, the ran line after the whole pass
@@ -88,7 +88,7 @@ func TestExclusiveRefusesASecondCallerWhileTheFirstIsInsideItsPass(t *testing.T)
 	inside, finish := make(chan struct{}), make(chan struct{})
 	first := make(chan bool, 1)
 	go func() {
-		first <- duty.Exclusive(ctx, leases, "compaction", time.Time{}, 0, func(context.Context) {
+		first <- duty.Exclusive(ctx, leases, duty.DocumentCompactionLease, time.Time{}, 0, func(context.Context) {
 			close(inside)
 			<-finish
 		})
@@ -96,7 +96,7 @@ func TestExclusiveRefusesASecondCallerWhileTheFirstIsInsideItsPass(t *testing.T)
 	<-inside
 
 	secondRan := false
-	if duty.Exclusive(ctx, leases, "compaction", time.Time{}, 0, func(context.Context) { secondRan = true }) {
+	if duty.Exclusive(ctx, leases, duty.DocumentCompactionLease, time.Time{}, 0, func(context.Context) { secondRan = true }) {
 		t.Error("the second caller took a lease the first holds")
 	}
 	if secondRan {
@@ -116,7 +116,7 @@ func TestExclusiveFreesTheLeaseWhenThePassReturns(t *testing.T) {
 
 	for pass := 1; pass <= 2; pass++ {
 		ran := false
-		if !duty.Exclusive(ctx, leases, "compaction", time.Time{}, 0, func(context.Context) { ran = true }) || !ran {
+		if !duty.Exclusive(ctx, leases, duty.DocumentCompactionLease, time.Time{}, 0, func(context.Context) { ran = true }) || !ran {
 			t.Fatalf("pass %d did not run under its own lease", pass)
 		}
 	}
@@ -130,8 +130,8 @@ func TestExclusiveLeasesOfDifferentNamesDoNotExcludeEachOther(t *testing.T) {
 	ctx := context.Background()
 
 	otherRan := false
-	held := duty.Exclusive(ctx, leases, "compaction", time.Time{}, 0, func(context.Context) {
-		otherRan = duty.Exclusive(ctx, leases, "redelivery sweep", time.Time{}, 0, func(context.Context) {})
+	held := duty.Exclusive(ctx, leases, duty.DocumentCompactionLease, time.Time{}, 0, func(context.Context) {
+		otherRan = duty.Exclusive(ctx, leases, duty.WebhookRedeliveryLease, time.Time{}, 0, func(context.Context) {})
 	})
 	if !held {
 		t.Fatal("the first lease was not taken")
@@ -148,7 +148,7 @@ func TestExclusiveTakesALeaseWhoseHolderDiedWithoutUnlocking(t *testing.T) {
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	ctx := context.Background()
-	const name = "architecture import"
+	const name = duty.ArchitectureImportLease
 
 	holder, err := database.Pool.Acquire(ctx)
 	if err != nil {
@@ -204,7 +204,7 @@ func TestExclusiveSkipsASecondProcessInsideThePeriod(t *testing.T) {
 	second := storetest.SecondProcess(t, database)
 	leases, otherLeases := leasesOf(t, database), leasesOf(t, second)
 	ctx := context.Background()
-	const name = "webhook-redelivery"
+	const name = duty.WebhookRedeliveryLease
 	const period = time.Hour
 
 	ran := false
@@ -236,7 +236,7 @@ func TestExclusiveSkipsASecondProcessInsideThePeriod(t *testing.T) {
 func TestExclusiveLeavesThePeriodUnservedWhenShutdownCutsThePassShort(t *testing.T) {
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
-	const name = "architecture-import"
+	const name = duty.ArchitectureImportLease
 	const period = time.Hour
 
 	stopping, stop := context.WithCancel(context.Background())
@@ -266,12 +266,11 @@ func TestExclusiveLeavesThePeriodUnservedWhenShutdownCutsThePassShort(t *testing
 func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T) {
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
-	var logs bytes.Buffer
-	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
+	logged := captureLog(t)
 	ctx := context.Background()
-	const name = "search-term-stats"
+	const name = duty.SearchTermStatsLease
 
-	if !duty.Exclusive(ctx, leases, "edit-notices", time.Now(), time.Hour, func(context.Context) {}) {
+	if !duty.Exclusive(ctx, leases, duty.EditNoticeLease, time.Now(), time.Hour, func(context.Context) {}) {
 		t.Fatal("the first gate did not run, so the lease connection has no prepared period read")
 	}
 
@@ -299,7 +298,7 @@ func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T)
 	// and the gate returns within milliseconds while duty_passes is still held.
 	select {
 	case <-answered:
-		t.Fatalf("the gate returned while its period read still waited on duty_passes: the cancel ended the read\n%s", logs.String())
+		t.Fatalf("the gate returned while its period read still waited on duty_passes: the cancel ended the read\n%s", logged.String())
 	case <-time.After(500 * time.Millisecond):
 	}
 	if waiting := storetest.WaitForLockWaiters(t, holder, 1, time.Second); waiting < 1 {
@@ -320,7 +319,7 @@ func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T)
 	if passRan {
 		t.Error("the gate started its pass after shutdown")
 	}
-	if output := logs.String(); strings.Contains(output, `msg="dispatch duty: free the lease"`) {
+	if output := logged.String(); strings.Contains(output, `msg="dispatch duty: free the lease"`) {
 		t.Fatalf("the stopped gate could not unlock its lease:\n%s", output)
 	}
 	if stat := leases.Stat(); stat.TotalConns() != 1 || stat.IdleConns() != 1 {
@@ -374,11 +373,11 @@ func TestExclusiveAPeriodHoldsBackOnlyItsOwnLoop(t *testing.T) {
 	ctx := context.Background()
 	const period = time.Hour
 
-	if !duty.Exclusive(ctx, leases, "document-compaction", time.Now(), period, func(context.Context) {}) {
+	if !duty.Exclusive(ctx, leases, duty.DocumentCompactionLease, time.Now(), period, func(context.Context) {}) {
 		t.Fatal("the first loop's pass did not run")
 	}
 	ran := false
-	if !duty.Exclusive(ctx, leases, "webhook-redelivery", time.Now(), period, func(context.Context) { ran = true }) || !ran {
+	if !duty.Exclusive(ctx, leases, duty.WebhookRedeliveryLease, time.Now(), period, func(context.Context) { ran = true }) || !ran {
 		t.Error("a loop's pass was refused by another loop's period")
 	}
 }
@@ -395,7 +394,7 @@ func TestExclusiveDoesNotLockOutALoopWhosePeriodGrows(t *testing.T) {
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	ctx := context.Background()
-	const name = "reference-excerpts"
+	const name = duty.ReferenceExcerptLease
 	const step, interval = 2 * time.Second, 5 * time.Minute
 
 	stepped := false
@@ -601,7 +600,7 @@ func TestExclusiveCountsALateTickInThePeriodItWasDueIn(t *testing.T) {
 }
 
 // beforeNextBoundary is the moment on this process's clock that lies before ahead of a period
-// boundary of that clock - the clock Exclusive buckets a tick's due time on (periodBoundary) - the
+// boundary of that clock - the clock Exclusive buckets a tick's due time on (duty.PeriodBoundary) - the
 // first such moment still at least 100 ms away.
 func beforeNextBoundary(t *testing.T, period, before time.Duration) time.Time {
 	t.Helper()
@@ -681,6 +680,48 @@ func recordedPasses(t *testing.T, database *store.Store, name string) int {
 	return recorded
 }
 
+// captureLog sends the default logger to a log the test reads, until the test ends.
+func captureLog(t *testing.T) *storetest.LockedLog {
+	t.Helper()
+	logged := &storetest.LockedLog{}
+	logtest.SetDefault(t, slog.NewTextHandler(logged, nil))
+	return logged
+}
+
+// With every connection of the lease pool held - every reserved caller's and the two spare - one
+// more Exclusive skips its pass within the pool's two-second acquire bound instead of waiting for
+// a connection, and says so at WARN.
+func TestExclusiveSkipsWhenEveryLeaseConnectionIsHeld(t *testing.T) {
+	database := storetest.Open(t)
+	leases := leasesOf(t, database)
+	logged := captureLog(t)
+	ctx := context.Background()
+
+	for leases.Stat().AcquiredConns() < leases.Stat().MaxConns() {
+		conn, err := leases.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("hold a lease connection: %v", err)
+		}
+		t.Cleanup(conn.Release)
+	}
+
+	started := time.Now()
+	ran := false
+	if duty.Exclusive(ctx, leases, duty.DocumentCompactionLease, time.Now(), time.Hour, func(context.Context) { ran = true }) || ran {
+		t.Fatal("a pass ran with every lease connection held")
+	}
+	if waited := time.Since(started); waited > 2*time.Second+200*time.Millisecond {
+		t.Errorf("the pass skipped after %v, want within the lease pool's 2 s acquire bound + 200 ms", waited)
+	}
+	skip := logged.Lines("no connection of the lease pool came free")
+	if !strings.Contains(skip, "level=WARN") || !strings.Contains(skip, duty.DocumentCompactionLease) {
+		t.Errorf("the skip logged %q, want a WARN line naming the lease", skip)
+	}
+	if failures := logged.Lines("level=ERROR"); failures != "" {
+		t.Errorf("the skip logged an ERROR: %s", failures)
+	}
+}
+
 // LeaseHeld answers for the database it is asked on and no other. pg_locks holds every lock of
 // every database of the server, while an advisory lock is taken within one database, so a read
 // that did not say which database would report a lease as held because another database's
@@ -688,7 +729,7 @@ func recordedPasses(t *testing.T, database *store.Store, name string) int {
 // long as a pass of another deployment on the same server held the lease
 // (cireconcile.RecentPasses).
 func TestALeaseHeldInAnotherDatabaseIsNotHeldHere(t *testing.T) {
-	const name = "ci-reconcile"
+	const name = duty.CIReconcileLease
 	database := storetest.Open(t)
 	elsewhere := storetest.Open(t)
 	taken, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})

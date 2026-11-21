@@ -194,6 +194,13 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 		// about twice what it holds. A test that needs another value sets GOGC in
 		// memoryHarness.env, which is appended after this and wins.
 		"GOGC=25",
+		// Every measured server runs under a Go memory limit of 4 GiB, so its memory budgets -
+		// the cold reads' cache's 256 MiB (documentReadBudgetForTest) and the rooms' 1 GiB -
+		// are the same on every box, where without one they follow the cgroup limit of whatever
+		// container the test runs in (docs.processMemoryLimit). The bounds these servers are
+		// held to (requestMemoryBound, concurrentMemoryBound) lie far below 4 GiB, so it is
+		// GOGC=25 and not the limit that paces their collector.
+		"GOMEMLIMIT=4GiB",
 		// Every server collects and gives its free memory back to the system when it is sent
 		// SIGUSR1 (collectOnSignal), which start asks for before it reads the server's idle.
 		memoryTestCollectEnv + "=1",
@@ -601,7 +608,7 @@ const blockIndexLeaseNamespace int32 = 0x4C4F4F50
 // pass never gave its lease back, and the window cannot be measured with the pass held off.
 const blockIndexLeaseWait = 2 * time.Minute
 
-// holdBlockIndexLease takes the block-index pass's own lease (docs.BlockIndexLease) and answers
+// holdBlockIndexLease takes the block-index pass's own lease (duty.BlockIndexLease) and answers
 // the call that gives it back. duty.Exclusive takes that lease before every pass and skips the
 // pass where another session holds it, so no block-index pass runs while this test holds it:
 // a window that owes the index of what it just wrote leaves that work to a tick after the lease
@@ -622,7 +629,7 @@ func (p *memoryServer) holdBlockIndexLease(t *testing.T) func() {
 	for {
 		var held bool
 		if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1, hashtext($2))`,
-			blockIndexLeaseNamespace, docs.BlockIndexLease).Scan(&held); err != nil {
+			blockIndexLeaseNamespace, duty.BlockIndexLease).Scan(&held); err != nil {
 			conn.Release()
 			t.Fatalf("take the block-index lease: %v", err)
 		}
@@ -632,7 +639,7 @@ func (p *memoryServer) holdBlockIndexLease(t *testing.T) func() {
 		if time.Now().After(deadline) {
 			conn.Release()
 			t.Fatalf("the block-index pass held the %q lease for more than %s, so this window could not be measured with the pass held off:\n%s",
-				docs.BlockIndexLease, blockIndexLeaseWait, p.outputTail())
+				duty.BlockIndexLease, blockIndexLeaseWait, p.outputTail())
 		}
 		// pg_try_advisory_lock answers false rather than queueing behind the holder, so a pass
 		// running at this moment is waited out here: it gives the lease back when it ends.
@@ -640,7 +647,7 @@ func (p *memoryServer) holdBlockIndexLease(t *testing.T) func() {
 	}
 	return func() {
 		if err := duty.FreeSessionLock(conn, `select pg_advisory_unlock($1, hashtext($2))`,
-			blockIndexLeaseNamespace, docs.BlockIndexLease); err != nil {
+			blockIndexLeaseNamespace, duty.BlockIndexLease); err != nil {
 			t.Errorf("give the block-index lease back: %v", err)
 		}
 	}
@@ -888,7 +895,7 @@ func (h *memoryHarness) coldPeaks(t *testing.T, name, artifactID string, edit ma
 // coldReads reads a document on servers that have not loaded it - its text and a websocket load of
 // its room, each on a fresh server, then four reads of its text at once - and fails the test where
 // one of the first two holds more than the bound above idle. Every peak is logged under name; the
-// four reads at once are logged beside the production task's 4,096 MiB.
+// four reads at once are logged beside production's container of 20 GiB.
 func (h *memoryHarness) coldReads(t *testing.T, name, artifactID string) {
 	t.Helper()
 	for _, cold := range []struct {

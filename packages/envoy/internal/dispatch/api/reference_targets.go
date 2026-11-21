@@ -70,7 +70,7 @@ func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	targets, err := s.referenceTargets(r, trees)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	trees.resolve()

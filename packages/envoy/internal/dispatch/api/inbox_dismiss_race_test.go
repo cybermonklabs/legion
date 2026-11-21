@@ -468,9 +468,9 @@ func TestADismissHoldingTheAgentRootGivesTheThreadBackOnTheReply(t *testing.T) {
 	}
 	replied := make(chan *httptest.ResponseRecorder, 1)
 	go func() { replied <- replyTo(t, handler, seed.agent, "And another thing.") }()
-	// Five seconds, where the dismiss's statement_timeout allows it ten at the gate: a reply that
+	// Five seconds, where the dismiss's bounded lock wait allows it ten at the gate: a reply that
 	// has not queued by then is this row's red, and waiting the full ten would spend the dismiss's
-	// own allowance on it and answer 500 instead.
+	// own allowance on it and answer 503 instead.
 	if waiting := storetest.WaitForLockWaiters(t, held.tx, 2, 5*time.Second); waiting < 2 {
 		t.Fatalf("%d transactions queued behind the gate row, want the dismiss and the reply waiting at the root it holds", waiting)
 	}
@@ -554,9 +554,9 @@ func TestADismissHoldingTheAgentRootGivesTheThreadBackOnAnOlderReply(t *testing.
 		t.Fatal("the dismiss never queued on the caller's rows, which it locks after the agent thread's root")
 	}
 	written := writeAgentReplyBehind(replying.tx, seed.agentReply, "session", "s1", stamp)
-	// Five seconds, where the dismiss's statement_timeout allows it ten at the gate: a reply that
+	// Five seconds, where the dismiss's bounded lock wait allows it ten at the gate: a reply that
 	// has not queued by then is this row's red, and waiting the full ten would spend the dismiss's
-	// own allowance on it and answer 500 instead.
+	// own allowance on it and answer 503 instead.
 	if waiting := storetest.WaitForLockWaiters(t, held.tx, 2, 5*time.Second); waiting < 2 {
 		t.Fatalf("%d transactions queued behind the gate row, want the dismiss and the reply waiting at the root it holds", waiting)
 	}

@@ -74,7 +74,7 @@ func (s *PgPeopleStore) SignIn(ctx context.Context, email, refreshToken string) 
 	if err := s.retirePlainBeforeSignIn(ctx, email); err != nil {
 		return err
 	}
-	if _, err := s.pool.Exec(ctx, `
+	if err := s.writeWithinBound(ctx, `
 		insert into people (email, refresh_token, confirmed_at) values ($1, $2, now())
 		on conflict (email) do update
 		set signed_in_at = now(), refresh_token = excluded.refresh_token, confirmed_at = excluded.confirmed_at
@@ -82,6 +82,19 @@ func (s *PgPeopleStore) SignIn(ctx context.Context, email, refreshToken string) 
 		return fmt.Errorf("record sign-in of %q: %w", email, err)
 	}
 	return nil
+}
+
+// writeWithinBound runs sql with args, a write of a person's row that is the whole of its write
+// and answers nothing its caller reads, on the pool in a bounded wait: lock_timeout set to the
+// bound and the statement, sent as one batch (WriteBatch.QueueWithinBound, sent on the pool), so a
+// row another transaction holds - SignInSubject or EndSubject to their commit, or another write of
+// the address - is waited for no longer than lockWait and then refused ErrPoolBusy. No lock orders
+// the writers of a person's row against each other, and a sign-in's or a refresh's write has no
+// deadline. It is one round trip, as the statement alone was.
+func (s *PgPeopleStore) writeWithinBound(ctx context.Context, sql string, args ...any) error {
+	var write WriteBatch
+	write.QueueWithinBound("", sql, args...)
+	return write.Send(ctx, s.pool)
 }
 
 // SignInSubject records a sign-in for a Workspace domain in one transaction
@@ -110,8 +123,15 @@ func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refre
 	if err != nil {
 		return fmt.Errorf("record sign-in of %q: %w", email, err)
 	}
+	// The row is taken in a bounded wait and read behind it (LockRowsWithinBoundAndRead): its other
+	// writers are single statements and EndSubject, none under a lock that orders them against
+	// this one.
 	var stored string
-	if err := tx.QueryRow(ctx, `select coalesce(sub, '') from people where email = $1 for update`, email).Scan(&stored); err != nil {
+	if err := LockRowsWithinBoundAndRead(ctx, tx,
+		`select 1 from people where email = $1 for update`, []any{email},
+		`select coalesce(sub, '') from people where email = $1 for update`, []any{email},
+		func(row pgx.Row) error { return row.Scan(&stored) },
+	); err != nil {
 		return fmt.Errorf("read the subject the sign-in of %q replaces: %w", email, err)
 	}
 	revoked := inserted.RowsAffected() == 0 && stored != subject
@@ -171,7 +191,7 @@ func (s *PgPeopleStore) Membership(ctx context.Context, email string) (auth.Pers
 // Confirm records a refresh that confirmed email's Cognito-pool membership at the database's
 // now(), with the refresh token to use next (auth.PeopleStore.Confirm).
 func (s *PgPeopleStore) Confirm(ctx context.Context, email, refreshToken string) error {
-	if _, err := s.pool.Exec(ctx, `update people set refresh_token = $2, confirmed_at = now() where email = $1`, email, s.seal.seal(email, refreshToken)); err != nil {
+	if err := s.writeWithinBound(ctx, `update people set refresh_token = $2, confirmed_at = now() where email = $1`, email, s.seal.seal(email, refreshToken)); err != nil {
 		return fmt.Errorf("confirm membership of %q: %w", email, err)
 	}
 	return nil
@@ -184,7 +204,7 @@ func (s *PgPeopleStore) Confirm(ctx context.Context, email, refreshToken string)
 // its generation check before the refresh, and the other account's sign-in advanced the
 // generation, so that browser's next request fails the check.
 func (s *PgPeopleStore) ConfirmSubject(ctx context.Context, email, subject, refreshToken string) error {
-	if _, err := s.pool.Exec(ctx, `update people set refresh_token = $2, confirmed_at = now() where email = $1 and sub is not distinct from $3`, email, s.seal.seal(email, refreshToken), subject); err != nil {
+	if err := s.writeWithinBound(ctx, `update people set refresh_token = $2, confirmed_at = now() where email = $1 and sub is not distinct from $3`, email, s.seal.seal(email, refreshToken), subject); err != nil {
 		return fmt.Errorf("confirm membership of %q: %w", email, err)
 	}
 	return nil
@@ -192,7 +212,7 @@ func (s *PgPeopleStore) ConfirmSubject(ctx context.Context, email, subject, refr
 
 // End forgets email's refresh token and confirmation, keeping the person.
 func (s *PgPeopleStore) End(ctx context.Context, email string) error {
-	if _, err := s.pool.Exec(ctx, `update people set refresh_token = null, confirmed_at = null where email = $1`, email); err != nil {
+	if err := s.writeWithinBound(ctx, `update people set refresh_token = null, confirmed_at = null where email = $1`, email); err != nil {
 		return fmt.Errorf("end membership of %q: %w", email, err)
 	}
 	return nil
@@ -251,7 +271,7 @@ func (s *PgPeopleStore) retire(ctx context.Context, email, plain string) error {
 	if err := s.revoker.Revoke(ctx, plain); err != nil {
 		return fmt.Errorf("%w: %w", errNotRevoked, err)
 	}
-	if _, err := s.pool.Exec(ctx, `update people set refresh_token = null, confirmed_at = null where email = $1 and refresh_token = $2`, email, plain); err != nil {
+	if err := s.writeWithinBound(ctx, `update people set refresh_token = null, confirmed_at = null where email = $1 and refresh_token = $2`, email, plain); err != nil {
 		return fmt.Errorf("forget the revoked refresh token of %q: %w", email, err)
 	}
 	return nil
@@ -271,7 +291,11 @@ func (s *PgPeopleStore) EndSubject(ctx context.Context, email, subject string) (
 	}
 	defer tx.Rollback(ctx)
 	var stored string
-	err = tx.QueryRow(ctx, `select coalesce(sub, '') from people where email = $1 for update`, email).Scan(&stored)
+	err = LockRowsWithinBoundAndRead(ctx, tx,
+		`select 1 from people where email = $1 for update`, []any{email},
+		`select coalesce(sub, '') from people where email = $1 for update`, []any{email},
+		func(row pgx.Row) error { return row.Scan(&stored) },
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

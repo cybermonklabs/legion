@@ -83,8 +83,8 @@ func FillToHorizon(ctx context.Context, db *store.Store, horizon *events.Horizon
 	return newFiller(db.Pool, horizon).toHorizon(ctx)
 }
 
-// txBeginner is what the fill needs of a pool: transactions. *store.Pool, the shared pool
-// FillToHorizon writes through, and *pgxpool.Pool, a lease pool's reservation, both satisfy it.
+// txBeginner is what the fill needs of a pool: transactions. *store.Pool, the request pool
+// FillToHorizon writes through, and *store.RawPool, a lease pool's reservation, both satisfy it.
 type txBeginner interface {
 	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
 }
@@ -170,7 +170,7 @@ func (f *filler) toHorizon(ctx context.Context) error {
 // of it has proven it past safe, the horizon the pass read: either way the log holds events above
 // what the pass wrote that a later read of the horizon reaches.
 func (f *filler) heldBelow(safe int64) bool {
-	return f.horizon.Gap() != events.GapNone || f.horizon.Proven() > safe
+	return f.horizon.Gap(safe) != events.GapNone || f.horizon.Proven() > safe
 }
 
 // pass reads the event log's safe horizon once (Horizon.Safe, or Horizon.Await while Safe answers

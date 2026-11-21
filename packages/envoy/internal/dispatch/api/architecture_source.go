@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // A project imports its component model from any number of sources, one per repository, and a
@@ -28,7 +29,7 @@ func (s *server) listArchitectureSources(w http.ResponseWriter, r *http.Request)
 	}
 	sources, err := querySources(r.Context(), s.deps.Store.Pool, `order by project_key, id`)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, sources)
@@ -45,12 +46,12 @@ func (s *server) listProjectArchitectureSources(w http.ResponseWriter, r *http.R
 	key := r.PathValue("key")
 	sources, err := querySources(r.Context(), s.deps.Store.Pool, `where project_key = $1 order by id`, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if len(sources) == 0 {
 		if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1", key).Scan(new(string)); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -70,12 +71,12 @@ func (s *server) getArchitectureSource(w http.ResponseWriter, r *http.Request) {
 	slog.Warn("dispatch: GET /api/v1/projects/{key}/architecture-source called by a dispatch client older than this release; upgrade it, the route will be removed", "project", key)
 	sources, err := querySources(r.Context(), s.deps.Store.Pool, `where project_key = $1 order by id limit 1`, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if len(sources) == 0 {
 		if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1", key).Scan(new(string)); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		WriteJSON(w, http.StatusOK, nil)
@@ -107,7 +108,7 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	var input putArchitectureSourceInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -116,7 +117,7 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 	}
 	owner, name, err := sourcePathRepo(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	branch := strings.TrimSpace(input.Branch)
@@ -125,7 +126,7 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1", key).Scan(new(string)); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
@@ -139,22 +140,30 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 			writeError(w, "SOURCE_ACCESS", http.StatusConflict, err.Error())
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
 	actorJSON, err := encodeJSON(actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
-	source, err := architecture.ScanSource(tx.QueryRow(r.Context(), `
+	// The source's row is taken in a bounded wait and written behind it, in one batch
+	// (store.LockRowsWithinBoundAndRead): a sync holds it through its projection or its failure's
+	// record (architecture's lockProjectSources, lockSourceRow) under no lock this route takes. A
+	// source not saved yet locks nothing, and the insert can then wait only on another save's
+	// uncommitted insert of the same repository, a request whose every wait is bounded so.
+	var source model.ArchitectureSource
+	err = store.LockRowsWithinBoundAndRead(r.Context(), tx,
+		`select 1 from architecture_sources where project_key = $1 and repo = $2 for update`,
+		[]any{key, owner + "/" + name}, `
 		insert into architecture_sources (project_key, repo, branch, enabled, installation_id, created_by)
 		values ($1, $2, $3, true, $4, $5)
 		on conflict (project_key, repo) do update set
@@ -167,20 +176,25 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 			last_tree_sha = null,
 			last_error = null
 		returning `+architecture.SourceColumns,
-		key, owner+"/"+name, branch, installationID, actorJSON))
+		[]any{key, owner + "/" + name, branch, installationID, actorJSON},
+		func(row pgx.Row) (err error) {
+			source, err = architecture.ScanSource(row)
+			return err
+		},
+	)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	event, err := s.appendEvent(r.Context(), tx, projectOwner(key).event(
+	event, err := s.deps.Events.AppendAfterWrite(r.Context(), tx, projectOwner(key).event(
 		"settings.architecture_source.updated", actor, map[string]any{"source": source, "deleted": false},
 	))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)
@@ -224,41 +238,50 @@ func (s *server) deleteArchitectureSource(w http.ResponseWriter, r *http.Request
 	key := r.PathValue("key")
 	owner, name, err := sourcePathRepo(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	repo := owner + "/" + name
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
-	source, err := architecture.ScanSource(tx.QueryRow(r.Context(), `
+	// Taken in a bounded wait and removed behind it, as the save's row is (putArchitectureSource).
+	var source model.ArchitectureSource
+	err = store.LockRowsWithinBoundAndRead(r.Context(), tx,
+		`select 1 from architecture_sources where project_key = $1 and repo = $2 for update`,
+		[]any{key, repo}, `
 		delete from architecture_sources where project_key = $1 and repo = $2
 		returning `+architecture.SourceColumns,
-		key, repo))
+		[]any{key, repo},
+		func(row pgx.Row) (err error) {
+			source, err = architecture.ScanSource(row)
+			return err
+		},
+	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeSourceNotFound(w, key, repo)
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := architecture.DeleteOrphanComponentFacts(r.Context(), tx, source.Project); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	event, err := s.appendEvent(r.Context(), tx, projectOwner(key).event(
+	event, err := s.deps.Events.AppendAfterWrite(r.Context(), tx, projectOwner(key).event(
 		"settings.architecture_source.updated", actor, map[string]any{"source": source, "deleted": true},
 	))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)
@@ -277,7 +300,7 @@ func (s *server) syncArchitectureSource(w http.ResponseWriter, r *http.Request) 
 	key := r.PathValue("key")
 	owner, name, err := sourcePathRepo(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	repo := owner + "/" + name
@@ -290,7 +313,7 @@ func (s *server) syncArchitectureSource(w http.ResponseWriter, r *http.Request) 
 	case source.Project == "":
 		// Sync could not even record the failure on the row: the database, not
 		// the model or GitHub, is what broke.
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 	case architecture.IsAccessFailure(err):
 		writeError(w, "SOURCE_ACCESS", http.StatusConflict, err.Error())
 	default:
@@ -354,13 +377,13 @@ func (s *server) syncProjectSources(w http.ResponseWriter, r *http.Request) ([]m
 		return nil, false
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return nil, false
 	}
 	sources := make([]model.ArchitectureSource, 0, len(results))
 	for _, result := range results {
 		if result.Err != nil && result.Source.Project == "" {
-			s.writeHandlerError(w, result.Err)
+			s.writeHandlerError(w, r, result.Err)
 			return nil, false
 		}
 		sources = append(sources, result.Source)

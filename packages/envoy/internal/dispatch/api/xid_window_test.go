@@ -600,8 +600,8 @@ func xidWindowPlanReview(t *testing.T, f *xidFixture) {
 
 func xidWindowIssueCreateWithSpec(t *testing.T, f *xidFixture) {
 	spec, _ := xidSpec(2)
-	f.measureAdvised(t, http.StatusCreated, storetest.XidWindowOf(10,
-		"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, its blocked_by links and its artifact row - "+
+	f.measureAdvised(t, http.StatusCreated, storetest.XidWindowOf(8,
+		"the create's inline steering writes - the project's next number, the issue row, its blocked_by links and its artifact row - "+
 			"the two reads that load the issue it answers with, the queued batch and its COMMIT"), func(h http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, h, http.MethodPost, "/api/v1/issues", map[string]any{
 			"project": xidProject, "title": "Second large spec for the reviewers", "spec": spec, "force": true,

@@ -166,9 +166,10 @@ func (block *namedBlock) nodeID() *string {
 // lock, the order recordPendingMessageDelivery takes them in, so the index of that parent the
 // transaction may queue (planReplyBlock) and the reply's own writes run under it. It is not FOR
 // UPDATE: the reply's insert then takes the row FOR KEY SHARE through its foreign key, which this
-// lock does not block.
+// lock does not block. It waits in a bounded wait (store.WriteBatch.QueueWithinBound): a direct
+// message has no owner, so no owner lock orders the writers of its row.
 func queueReplyParentMessageLock(b *store.WriteBatch, id string) {
-	b.Queue("", `select 1 from messages where id = $1 for no key update`, id)
+	b.QueueWithinBound("", `select 1 from messages where id = $1 for no key update`, id)
 }
 
 // lockReplyParentMessage takes queueReplyParentMessageLock's lock at once, in a transaction that

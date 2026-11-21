@@ -183,13 +183,13 @@ func (s *server) getLegionBoard(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	population, err := s.readLegionBoard(r.Context(), project)
+	population, err := s.readLegionBoard(r.Context(), s.deps.Store.Pool, project)
 	if err != nil {
 		if errors.Is(err, legion.ErrNoSettings) {
 			writeError(w, legionNotConfiguredCode, http.StatusNotFound, legionNotConfiguredMessage)
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, legionBoardCompute(population, time.Now().UTC()))
@@ -255,10 +255,13 @@ type legionBoardIssue struct {
 	priority *int
 }
 
-// readLegionBoard reads one project's board. A project with no Legion setting is legion's
+// readLegionBoard reads one project's board through pool: the request pool for the route, whose
+// pinned read runs every one of these statements, the snapshot transaction of readSampled among
+// them, on the one connection the read pinned (store.PinConnection); the live pool for the live
+// hub's view (readLegionBoardView). The reads run one after another, never side by side, so the
+// read holds one connection at a time. A project with no Legion setting is legion's
 // ErrNoSettings, which the route answers 404 and the live hub refuses the subscription with.
-func (s *server) readLegionBoard(ctx context.Context, project string) (*legionBoardPopulation, error) {
-	pool := s.deps.Store.Pool
+func (s *server) readLegionBoard(ctx context.Context, pool *store.Pool, project string) (*legionBoardPopulation, error) {
 	if _, err := legion.GetSettings(ctx, pool, project); err != nil {
 		return nil, err
 	}

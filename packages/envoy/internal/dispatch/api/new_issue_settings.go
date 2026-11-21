@@ -79,7 +79,7 @@ func (s *server) setNewIssueSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	var input newIssueSettingsInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	set, problem := newIssueSettingsFrom(input.Label, input.Session)

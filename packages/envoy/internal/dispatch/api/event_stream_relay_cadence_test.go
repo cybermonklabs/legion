@@ -120,7 +120,7 @@ func TestEventStreamRelayClosesAHeldGapOnTheHoldersCommitNotification(t *testing
 		cadenceObservation{xmin: cadenceXid, xid: cadenceXid + 2},                      // it still runs: held
 		cadenceObservation{xmin: cadenceXid + 3, xid: cadenceXid + 3, when: committed}, // it has committed: proves both
 	)
-	lowID, high, commitLow := appendOutOfOrder(t, database, events.NewBroker(), issue.Key, other.Key)
+	lowID, high, commitLow, _ := appendOutOfOrder(t, database, events.NewBroker(), issue.Key, other.Key)
 	low.Store(lowID)
 	horizon.awaitTaken(t, 2, coalesce+10*time.Second)
 	select {

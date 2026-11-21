@@ -281,8 +281,11 @@ func pin(ctx context.Context, db execer, local bool) error {
 // deallocates the server's prepared statements while pgx still names them in its own cache, so the
 // next cached query would fail with SQLSTATE 26000 ("prepared statement ... does not exist").
 // DeallocateAll clears pgx's statement and description caches, so the next query prepares again.
-// The pool's AfterConnect (scanTimestampsInUTC in internal/dispatch/store) registers type codecs
-// on the connection and sets nothing on the server, so this reset takes nothing the pool set up.
+// The pool's AfterConnect (connected in internal/dispatch/store) registers type codecs on the
+// connection and reads a setting, setting nothing on the server, and what the pool sets on the
+// server it sets as startup parameters (application_name, the idle bound, the request pool's
+// lock_timeout), which are the session's reset values that DISCARD ALL gives back, so this reset
+// takes nothing the pool set up.
 func ResetSession(ctx context.Context, conn *pgx.Conn) error {
 	if _, err := conn.Exec(ctx, "discard all"); err != nil {
 		return fmt.Errorf("discard the session's state: %w", err)

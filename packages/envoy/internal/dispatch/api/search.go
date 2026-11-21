@@ -1100,7 +1100,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		keywordsOnly: keywordsOnly, trees: wantsDisplayTrees(r), reading: &reading}
 	response, err := s.runSearch(r.Context(), parameters)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// What search made of the words, and which filters it narrowed every leg by, for a caller
@@ -1114,7 +1114,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	if err := s.attachAskStates(r.Context(), s.deps.Store.Pool, response.Results, reader); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	reader.resolve()

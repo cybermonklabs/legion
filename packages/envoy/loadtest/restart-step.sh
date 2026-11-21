@@ -40,6 +40,12 @@
 # One run at a time per LOADTEST_ROOT: this script takes the root's lock (common.sh) and the
 # run-step.sh it starts inherits it. A failure of this script ends that step, so the root is free
 # for the next run instead of being held by a step that measures on alone.
+#
+# LOADTEST_SERVER_CPUS and LOADTEST_GENERATOR_CPUS (common.sh, CPU pinning) are checked before the
+# lock, as run-series.sh checks them: a list taskset refuses, two lists that overlap, a generator
+# list too wide for the pod's CPU quota and `auto` without the server list are refused before
+# anything starts, and the generator's list is settled once (check_cpu_lists) and exported, so the
+# step's run-step.sh and this script's own stack.sh calls inside the window take it as given.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -81,6 +87,7 @@ for seconds in warm_at kill_at down; do
   [[ ${!seconds} =~ ^[0-9]+$ ]] || die "--${seconds//_/-} is a whole number of seconds, not '${!seconds}'"
 done
 ((warm_at < kill_at)) || die "--warm-at ($warm_at s) must come before --kill-at ($kill_at s)"
+check_cpu_lists
 
 lock_root "$ROOT"
 out=$(realpath -m -- "$out")
@@ -104,13 +111,15 @@ sleep_until() {
 }
 
 # kill_and_restart: SIGKILL the stack's listener, keep it down, start it again with the same
-# binary, arguments and environment, and write restart.json.
+# binary, arguments and environment, on LOADTEST_SERVER_CPUS as stack.sh starts it, and write
+# restart.json.
 kill_and_restart() {
-  local pidf=$RUN/listener.pid pid port token envs cmd
+  local pidf=$RUN/listener.pid pid port token envs cmd pin
   pid=$(cat -- "$pidf")
   [ -r "/proc/$pid/environ" ] || die "the stack's listener (pid $pid) is not running; nothing to restart"
   mapfile -d '' envs <"/proc/$pid/environ"
   mapfile -d '' cmd <"/proc/$pid/cmdline"
+  mapfile -t pin < <(pin_words "${LOADTEST_SERVER_CPUS:-}")
   port=$(jq -er .ports.listener "$ROOT/stack.json")
   token=$(jq -er .listener_token "$ROOT/stack.json")
   local kill_ns first_ns restart_ns ready_ns attempts=0 new up
@@ -128,7 +137,7 @@ kill_and_restart() {
     # not inherited.
     # shellcheck disable=SC2016
     setsid -f env -i "${envs[@]}" /bin/sh -c 'echo "$$" >"$0.tmp" && mv -f -- "$0.tmp" "$0" && exec "$@"' \
-      "$pidf" "${cmd[@]}" >>"$LOGS/listener.out" 2>&1 </dev/null 9>&-
+      "$pidf" "${pin[@]}" "${cmd[@]}" >>"$LOGS/listener.out" 2>&1 </dev/null 9>&-
     until [ -s "$pidf" ]; do sleep 0.02; done
     new=$(cat -- "$pidf")
     up=false
@@ -170,12 +179,11 @@ rc=0
 step=$!
 trap end_step EXIT
 
-# The window opens once the sessions have registered; meta.json carries its start from then on.
-until jq -e '.window_start | type == "string" and (startswith("0001") | not)' "$out/meta.json" >/dev/null 2>&1; do
-  kill -0 "$step" 2>/dev/null || die "the step ended before its window opened; see $out/run.log"
-  sleep 1
-done
-window_start=$(date -d "$(jq -er .window_start "$out/meta.json")" +%s)
+# The window opens once the sessions have registered; meta.json carries its start from then on
+# (common.sh wait_for_window). A step that ends before it is reported from its not-run record.
+window=$(wait_for_window "$out" "$step") ||
+  die "the step ended before its window opened (above); see $(not_run_record "$out")"
+window_start=$(date -d "$window" +%s)
 note "window starts $(date -u -d "@$window_start" +%FT%TZ); kill at $(date -u -d "@$((window_start + kill_at))" +%FT%TZ)"
 
 if $no_resume; then

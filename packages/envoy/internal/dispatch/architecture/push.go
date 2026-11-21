@@ -66,11 +66,13 @@ type pushedSource struct {
 // naming repo and branch (pushAfterCloseMessage). All Pushed knows there is that this process
 // imports nothing for the push: a source on that repository and branch, if there is one, is
 // imported again at its next five-minute pass, by whichever process runs it. Shutdown closes the
-// importer before it waits for the intakes (cmd/dispatch/shutdown.go), so every push of a branch
-// an intake hands over during that wait logs the line, a push to a repository no source is on
-// included. A failed read of the sources is the error. The line and the error show repo and
-// branch as githubapp.ShownBody shows them, because both are GitHub's text. The read is on the
-// pool, so ctx must hold no connection of it.
+// importer in its background wait, which runs beside its wait for the intakes
+// (cmd/dispatch/shutdown.go), so every push of a branch an intake hands over once that Close has
+// begun logs the line, a push to a repository no source is on included, and one handed over
+// before it starts a worker that Close waits for. A failed read of the sources is the error. The
+// line and the error show repo and branch as githubapp.ShownBody shows them, because both are
+// GitHub's text. The read is on the importer's pool (the background pool, in the server), so ctx
+// must hold no connection of it.
 func (i *Importer) Pushed(ctx context.Context, repo, branch string) error {
 	if !i.HasApp() {
 		return nil

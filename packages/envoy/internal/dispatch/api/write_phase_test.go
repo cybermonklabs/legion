@@ -11,8 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -93,6 +98,218 @@ func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 	delete(before, "issues")
 	delete(after, "issues")
 	assertUnchanged(t, "an ask refused for a close it waited out", before, after)
+}
+
+// Two writers queued on one lock, the first holding it past the bound of a lock's wait (store's
+// lockWait), as a holder whose database stopped answering it would: the second waits for the lock
+// holding no transaction id, is refused 503 DATABASE_BUSY with Retry-After once that bound runs out
+// rather than waiting for the first to let go, and writes nothing; once the first lets go, the same
+// write goes through. One row per kind of lock a write waits on behind another writer: the issue's
+// owner lock (store.LockOwner), the deployment's dependency lock, the project's rank-allocation
+// lock, the priorities' rank lock, which a create and a rename that moves a priority each wait on,
+// the session groups' lock and a document's own lock, which an edit and an upload each wait on
+// (store.LockWithinBound; the upload, agent-upload and repository-mapping locks go through the
+// same call, held to it by store's TestALockWithinBoundEndsAtItsBoundAndLeavesTheTransactionUsable,
+// and docs' copy and conditional-edit queue locks by docs' own rows). The bound is the test's
+// (store.WithLockWaitForTest) rather than production's ten seconds, and the first writer is a
+// transaction of the test's own that holds the lock until the test lets it go.
+func TestAWriterQueuedOnABusyLockIsRefusedOnceItsWaitRunsOut(t *testing.T) {
+	const bound = time.Second
+	for _, row := range []struct {
+		name string
+		// hold takes the lock in the first writer's transaction, issue being the issue the test
+		// writes and document that issue's spec.
+		hold func(ctx context.Context, holder pgx.Tx, issue, document string) error
+		// method, path and body are the second writer's request, and written its answer once the
+		// lock is free. The path's {key} is the issue's key and its {doc} the spec's id, and the
+		// body's {base} is the token the spec stands at before the lock is taken: an upload that
+		// replaces the spec names it, so the write checks it under the document's own lock
+		// (docs.Service.ReplaceText) rather than taking it unchecked and counting it
+		// (noteUnguardedReplacement), and both of its sends are answered for the lock and the write.
+		method, path, body string
+		written            int
+		// unchanged, when it is true, holds the refused write to having changed no row anywhere.
+		// A create does more than its transaction before it is refused (its gates' reads and their
+		// records), so its row counts the project's issues instead.
+		unchanged bool
+		// seed, when it is set, writes what the second writer's request names before the first
+		// writer takes the lock.
+		seed func(t *testing.T, handler http.Handler)
+	}{
+		{
+			name: "a title change behind the issue's owner lock",
+			hold: func(ctx context.Context, holder pgx.Tx, issue, _ string) error {
+				return store.LockOwner(ctx, holder, store.IssueOwner(issue))
+			},
+			method: http.MethodPatch, path: "/api/v1/issues/{key}", body: `{"title":"Renamed behind the held lock"}`,
+			written: http.StatusOK, unchanged: true,
+		},
+		{
+			name: "a blocker change behind the deployment's dependency lock",
+			hold: func(ctx context.Context, holder pgx.Tx, _, _ string) error {
+				return lockDeploymentIssueDependencies(ctx, holder)
+			},
+			method: http.MethodPatch, path: "/api/v1/issues/{key}", body: `{"title":"Unblocked behind the held lock","blocked_by":[]}`,
+			written: http.StatusOK, unchanged: true,
+		},
+		{
+			name: "an issue create behind the project's rank-allocation lock",
+			hold: func(ctx context.Context, holder pgx.Tx, _, _ string) error {
+				return lockProjectRankAllocation(ctx, holder, "TEST")
+			},
+			method: http.MethodPost, path: "/api/v1/issues", body: `{"project":"TEST","title":"Ranked behind the held lock","force":true}`,
+			written: http.StatusCreated,
+		},
+		{
+			name: "a priority create behind the priority-rank lock",
+			hold: func(ctx context.Context, holder pgx.Tx, _, _ string) error {
+				_, err := prioritystore.RankAt(ctx, holder, "holding-the-rank", "", "")
+				return err
+			},
+			method: http.MethodPost, path: "/api/v1/priorities", body: `{"id":"ranked-behind-the-held-lock","title":"Ranked behind the held lock"}`,
+			written: http.StatusCreated, unchanged: true,
+		},
+		{
+			// The move's write also renames the priority, which it writes after the lock: a refused
+			// write leaves its title and its place as they were, and its wait holds no transaction id.
+			name: "a priority rename and move behind the priority-rank lock",
+			seed: func(t *testing.T, handler http.Handler) {
+				createTestPriority(t, handler, map[string]any{"id": "moving-priority", "title": "Moving priority"}, "alice")
+				createTestPriority(t, handler, map[string]any{"id": "neighbour-priority", "title": "Neighbour priority"}, "alice")
+			},
+			hold: func(ctx context.Context, holder pgx.Tx, _, _ string) error {
+				_, err := prioritystore.RankAt(ctx, holder, "holding-the-rank", "", "")
+				return err
+			},
+			method: http.MethodPatch, path: "/api/v1/priorities/moving-priority",
+			body:    `{"title":"Renamed behind the held lock","rank":{"after":"neighbour-priority"}}`,
+			written: http.StatusOK, unchanged: true,
+		},
+		{
+			name: "a session group create behind the session-groups lock",
+			hold: func(ctx context.Context, holder pgx.Tx, _, _ string) error {
+				_, err := delivery.CreateSessionGroup(ctx, holder, "Holding the lock", []string{"s-holding"}, model.Actor{Kind: "user", ID: "alice"})
+				return err
+			},
+			method: http.MethodPost, path: "/api/v1/delivery/session-groups", body: `{"name":"Grouped behind the held lock","sessions":["s-queued"]}`,
+			written: http.StatusCreated, unchanged: true,
+		},
+		{
+			name: "a document edit behind the document's lock",
+			hold: func(ctx context.Context, holder pgx.Tx, _, document string) error {
+				return docs.LockDocumentRoom(ctx, holder, document)
+			},
+			method: http.MethodPost, path: "/api/v1/artifacts/{doc}/edits", body: `{"ops":[{"op":"insert","markdown":"Edited behind the held lock.\n","after":"end"}]}`,
+			written: http.StatusOK, unchanged: true,
+		},
+		{
+			name: "a document upload behind the document's lock",
+			hold: func(ctx context.Context, holder pgx.Tx, _, document string) error {
+				return docs.LockDocumentRoom(ctx, holder, document)
+			},
+			method: http.MethodPost, path: "/api/v1/issues/{key}/artifacts",
+			body:    `{"name":"spec.md","content":"Uploaded behind the held lock.\n","precondition":{base}}`,
+			written: http.StatusCreated, unchanged: true,
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			// The seeded spec's settlement takes the owner lock a row holds; keep it out of the queue.
+			handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+			issue := createInteractionIssue(t, handler, "TEST", "Held past the bound", "A spec")
+			if row.seed != nil {
+				row.seed(t, handler)
+			}
+			path := strings.NewReplacer("{key}", issue.Key, "{doc}", issue.PrimaryArtifactID).Replace(row.path)
+			body := row.body
+			if strings.Contains(body, "{base}") {
+				body = strings.ReplaceAll(body, "{base}", encodeUploadBase(t, uploadBase(t, handler, issue.PrimaryArtifactID)))
+			}
+			send := func() *httptest.ResponseRecorder {
+				request := httptest.NewRequest(row.method, path, strings.NewReader(body)).
+					WithContext(store.WithLockWaitForTest(context.Background(), bound))
+				request.Header.Set("Content-Type", "application/json")
+				request.Header.Set("X-Dispatch-User", "alice")
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, request)
+				return response
+			}
+			issues := func() int {
+				t.Helper()
+				var count int
+				if err := database.Pool.QueryRow(context.Background(), `select count(*) from issues where project_key = 'TEST'`).Scan(&count); err != nil {
+					t.Fatalf("count the project's issues: %v", err)
+				}
+				return count
+			}
+			var before map[string]string
+			if row.unchanged {
+				before = databaseFingerprint(t, database)
+			}
+			issuesBefore := issues()
+			ctx := context.Background()
+			holder, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the first writer: %v", err)
+			}
+			defer func() { _ = holder.Rollback(ctx) }()
+			if err := row.hold(ctx, holder, issue.Key, issue.PrimaryArtifactID); err != nil {
+				t.Fatalf("take the lock: %v", err)
+			}
+
+			answered := make(chan *httptest.ResponseRecorder, 1)
+			started := time.Now()
+			go func() { answered <- send() }()
+			if waiting := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); waiting < 1 {
+				t.Fatalf("the second writer never queued behind the lock the first holds")
+			}
+			var holdingXid int
+			if err := holder.QueryRow(ctx, `
+				select count(*) from pg_stat_activity
+				where datname = current_database() and wait_event_type = 'Lock' and backend_xid is not null
+				  and pid <> pg_backend_pid()
+			`).Scan(&holdingXid); err != nil {
+				t.Fatalf("read the waiters' transaction ids: %v", err)
+			}
+			if holdingXid != 0 {
+				t.Errorf("the second writer waits on the lock holding a transaction id: it wrote, or its bounded wait assigned one, before the lock")
+			}
+			var response *httptest.ResponseRecorder
+			select {
+			case response = <-answered:
+			case <-time.After(10 * time.Second):
+				waited := time.Since(started)
+				_ = holder.Rollback(ctx)
+				<-answered
+				t.Fatalf("the second writer was still waiting on the lock the first holds %s after it was sent, past its wait's "+
+					"bound of %s: a writer queued on a busy lock waits until the holder lets go", waited.Round(time.Millisecond), bound)
+			}
+			waited := time.Since(started)
+			if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"code":"`+admission.CodeDatabaseBusy+`"`) ||
+				response.Header().Get("Retry-After") == "" {
+				t.Fatalf("the second writer queued on the held lock: status=%d Retry-After=%q body=%s, want 503 %s with Retry-After",
+					response.Code, response.Header().Get("Retry-After"), response.Body.String(), admission.CodeDatabaseBusy)
+			}
+			if waited < bound {
+				t.Fatalf("the second writer was refused %s after it was sent, inside its wait's bound of %s", waited.Round(time.Millisecond), bound)
+			}
+			if waiting := storetest.WaitForLockWaiters(t, holder, 0, time.Second); waiting != 0 {
+				t.Fatalf("%d sessions still wait behind the held lock after the refusal, want none", waiting)
+			}
+			if row.unchanged {
+				assertUnchanged(t, "a write refused at its lock's bound", before, databaseFingerprint(t, database))
+			}
+			if after := issues(); after != issuesBefore {
+				t.Fatalf("the project holds %d issues after the refusal, %d before it", after, issuesBefore)
+			}
+
+			if err := holder.Rollback(ctx); err != nil {
+				t.Fatalf("let the lock go: %v", err)
+			}
+			if again := send(); again.Code != row.written {
+				t.Fatalf("the write sent again once the lock was free: status=%d body=%s, want %d", again.Code, again.Body.String(), row.written)
+			}
+		})
+	}
 }
 
 // A person marking a thread read while a session's reply to it is in its read phase waits for that
@@ -214,10 +431,15 @@ func awaitNoTransactionIDHolder(t *testing.T, database *store.Store) {
 	}
 }
 
-// Two anchored comments on one spec still run one at a time, and the second waits for the first
-// holding no transaction id, so a transaction waiting its turn holds back no live update capped by
-// the event horizon. Both land, their events in the order they arrived and the issue's sequence
-// without a gap.
+// Two comments on one issue still run one at a time, and the second waits for the first holding no
+// transaction id, so a transaction waiting its turn holds back no live update capped by the event
+// horizon. Both land, their events in the order they arrived and the issue's sequence without a
+// gap. The first is anchored on the spec and held in its read phase; the second is a comment on
+// the issue with no anchor, which writes no document. Two comments anchored on the one spec would
+// meet first at that document's writer gate (docs.Service.AcquireDocumentWriter, in memory, before
+// either opens its transaction), which refuses the second 429 EDIT_QUEUE_FULL once its admission
+// wait runs out while the first is held; a comment that writes no document takes no gate, so the
+// two meet where this test watches them, at the issue's owner lock.
 func TestTwoWritersOfOneOwnerSerializeWithoutATransactionID(t *testing.T) {
 	gate := &gatedMarkQuote{entered: make(chan struct{}), release: make(chan struct{})}
 	handler, _, database := pooledDocumentHandlerWith(t, 8, time.Hour, func(service *docs.Service) docs.API {
@@ -231,13 +453,15 @@ func TestTwoWritersOfOneOwnerSerializeWithoutATransactionID(t *testing.T) {
 	issue := createInteractionIssue(t, handler, "TEST", "Serialized writers", "alpha bravo charlie delta")
 	awaitNoTransactionIDHolder(t, database)
 
-	comment := func(quote, body string) *httptest.ResponseRecorder {
-		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
-			"anchor": map[string]string{"artifact": "spec", "quote": quote}, "body": body,
-		}, "alice")
+	comment := func(anchor map[string]string, body string) *httptest.ResponseRecorder {
+		request := map[string]any{"body": body}
+		if anchor != nil {
+			request["anchor"] = anchor
+		}
+		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", request, "alice")
 	}
 	firsts := make(chan *httptest.ResponseRecorder, 1)
-	go func() { firsts <- comment("alpha", "first") }()
+	go func() { firsts <- comment(map[string]string{"artifact": "spec", "quote": "alpha"}, "first") }()
 	select {
 	case <-gate.entered:
 	case response := <-firsts:
@@ -251,7 +475,7 @@ func TestTwoWritersOfOneOwnerSerializeWithoutATransactionID(t *testing.T) {
 	}
 
 	seconds := make(chan *httptest.ResponseRecorder, 1)
-	go func() { seconds <- comment("bravo", "second") }()
+	go func() { seconds <- comment(nil, "second") }()
 	response, early, holdingXid := storetest.AwaitOwnerLockWaiter(t, database, "the second comment", seconds)
 	if early {
 		t.Fatalf("the second comment answered %d %s without waiting for the owner lock its writer holds", response.Code, response.Body.String())

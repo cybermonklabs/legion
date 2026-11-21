@@ -759,3 +759,139 @@ func TestTryLockOwnersSkipsAnOwnerWhoseRowAWriterOfAnEarlierBuildHolds(t *testin
 		})
 	}
 }
+
+// An owner lock's wait for an owner another transaction holds ends at its bound (lockWait) in
+// both modes: the advisory lock's wait beside no earlier build, and beside one the wait for the
+// owner's row, which a writer of that build holds. The wait that runs out is ErrPoolBusy, and the
+// transaction it ran in holds no row the lock named. Beside no earlier build it is still usable,
+// under its own lock_timeout, and holds neither owner's lock either, the free one taken before the
+// wait ran out given back with the advisory wait's savepoint. Beside one, the row lock waited in
+// the transaction itself, so the refusal aborted it, which its caller rolls back: a row lock in a
+// savepoint would make the transaction's later write of the row a MultiXact (lockOwnerRows). A
+// lock that does not wait leaves the transaction's lock_timeout as it was, and beside no earlier
+// build assigns no transaction id, so the owner lock still comes before the transaction's first.
+// The bound is the test's (WithLockWaitForTest).
+func TestAnOwnerLockWaitEndsAtItsBound(t *testing.T) {
+	for _, state := range []fleetState{fleetStateNamed(t, "no process registered"), fleetStateNamed(t, "a live process of an earlier build")} {
+		t.Run(state.name, func(t *testing.T) {
+			s, owners := openFleetStore(t)
+			state.seed(t, s)
+			ctx := context.Background()
+			var holder pgx.Tx
+			if state.legacy {
+				holder = holdRowAsAnEarlierBuild(t, s, owners.issueB)
+			} else {
+				var err error
+				if holder, err = s.Pool.Begin(ctx); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+				if err := LockOwner(ctx, holder, owners.issueB); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tx, err := s.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(ctx)
+			const own = 42 * time.Second
+			if _, err := tx.Exec(ctx, `select set_config('lock_timeout', $1, true)`, lockTimeoutSetting(own)); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := LockOwner(ctx, tx, owners.issueA); err != nil {
+				t.Fatalf("lock the free owner: %v", err)
+			}
+			expectLockBound(t, ctx, tx, own, "after a lock that did not wait")
+			if !state.legacy {
+				var assigned bool
+				if err := tx.QueryRow(ctx, `select pg_current_xact_id_if_assigned() is not null`).Scan(&assigned); err != nil {
+					t.Fatal(err)
+				}
+				if assigned {
+					t.Error("the owner lock assigned the transaction an id: its bounded wait wrote")
+				}
+			}
+
+			const bound = 200 * time.Millisecond
+			answered := make(chan error, 1)
+			started := time.Now()
+			go func() {
+				answered <- LockOwners(WithLockWaitForTest(ctx, bound), tx, owners.project, owners.issueB)
+			}()
+			err = awaitBoundedWait(t, "the lock of a held owner beside "+state.name, answered, started, bound, func() { _ = holder.Rollback(ctx) })
+			if !IsPoolBusy(err) {
+				t.Fatalf("the lock of a held owner beside %s answered %v, want ErrPoolBusy", state.name, err)
+			}
+			if ownerRowHeld(t, s, owners.project) {
+				t.Error("the row of the free owner the refused lock named is still held")
+			}
+			if state.legacy {
+				var aborted *pgconn.PgError
+				if _, err := tx.Exec(ctx, `select 1`); !errors.As(err, &aborted) || aborted.Code != "25P02" {
+					t.Errorf("a statement after the row lock's refusal answered %v, want the transaction aborted (25P02)", err)
+				}
+				return
+			}
+			expectLockBound(t, ctx, tx, own, "after a wait that ran out")
+			taken, err := TryLockOwners(ctx, s.Pool, owners.project)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(taken) != 1 {
+				t.Error("the free owner the refused lock named is still held: the wait's savepoint kept its lock")
+			}
+		})
+	}
+}
+
+// Every other advisory lock a write takes behind another writer's (LockWithinBound: api's
+// dependency, rank-allocation, upload and repository-mapping locks) waits as an owner lock does:
+// a lock another transaction holds past the bound is ErrPoolBusy, and the transaction it ran in is
+// still usable, under its own lock_timeout; a lock that does not wait leaves that lock_timeout as
+// it was and assigns no transaction id. The bound is the test's (WithLockWaitForTest).
+func TestALockWithinBoundEndsAtItsBoundAndLeavesTheTransactionUsable(t *testing.T) {
+	s, _ := openFleetStore(t)
+	ctx := context.Background()
+	const lock = `select pg_advisory_xact_lock(hashtext('bounded-wait-test:' || $1))`
+	holder, err := s.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+	if err := LockWithinBound(ctx, holder, lock, "held"); err != nil {
+		t.Fatalf("hold the lock: %v", err)
+	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	const own = 42 * time.Second
+	if _, err := tx.Exec(ctx, `select set_config('lock_timeout', $1, true)`, lockTimeoutSetting(own)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := LockWithinBound(ctx, tx, lock, "free"); err != nil {
+		t.Fatalf("take a free lock: %v", err)
+	}
+	expectLockBound(t, ctx, tx, own, "after a lock that did not wait")
+	var assigned bool
+	if err := tx.QueryRow(ctx, `select pg_current_xact_id_if_assigned() is not null`).Scan(&assigned); err != nil {
+		t.Fatal(err)
+	}
+	if assigned {
+		t.Error("the bounded lock assigned the transaction an id: its bounded wait wrote")
+	}
+
+	const bound = 200 * time.Millisecond
+	answered := make(chan error, 1)
+	started := time.Now()
+	go func() { answered <- LockWithinBound(WithLockWaitForTest(ctx, bound), tx, lock, "held") }()
+	err = awaitBoundedWait(t, "the lock another transaction holds", answered, started, bound, func() { _ = holder.Rollback(ctx) })
+	if !IsPoolBusy(err) {
+		t.Fatalf("the lock another transaction holds answered %v, want ErrPoolBusy", err)
+	}
+	expectLockBound(t, ctx, tx, own, "after a wait that ran out")
+}

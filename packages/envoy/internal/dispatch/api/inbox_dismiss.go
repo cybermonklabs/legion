@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // POST /api/v1/me/inbox/dismiss takes a thread out of the person's Inbox, and puts it back. A
@@ -574,12 +575,12 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 	}
 	var input inboxDismissRequest
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	rows, err := parseInboxDismissRows(input.Threads)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Which form the body is, read once here and once in the transaction's own read
@@ -607,7 +608,7 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 	}
 	if named && !input.Restore {
 		if err := readInboxDismissSeen(&rows, input.SeenReplies); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -623,18 +624,18 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, err := parseAgentStateCutoff("dismiss_through", input.DismissThrough); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		scope, err = parseInboxReadScope(input.inboxThreadFilters)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	dismissed, events, err := s.dismissInboxThreads(r.Context(), actor, inboxDismissPlanOf(input), rows, scope)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, inboxStatementEnded(r.Context(), err))
 		return
 	}
 	s.publish(r.Context(), events...)
@@ -664,7 +665,9 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 //
 // Every statement runs under the mark-all's statement_timeout, because this transaction holds the
 // same owners' locks in shared mode: every comment, answer and issue message on those owners waits
-// behind a statement that hangs, so one that cannot finish is better killed.
+// behind a statement that hangs, so one that cannot finish is better killed. A statement it ended
+// is answered as unserved (inboxStatementEnded), and each row lock waits in a bounded wait
+// (store.LockRowsWithinBound), which ends before it.
 func (s *server) dismissInboxThreads(
 	ctx context.Context, actor model.Actor, plan inboxDismissPlan, rows inboxDismissRows, scope inboxReadScope,
 ) (int, []model.Event, error) {
@@ -692,7 +695,7 @@ func (s *server) dismissInboxThreads(
 		// trigger of 20261105093507, so whichever of the two runs first the thread ends in the
 		// Inbox, and a `for update` held over the rest of the transaction would stop that
 		// thread's replies for nothing.
-		if _, err := tx.Exec(ctx, inboxDismissLockAgentRoots, read.agentRoots); err != nil {
+		if err := store.LockRowsWithinBound(ctx, tx, inboxDismissLockAgentRoots, read.agentRoots); err != nil {
 			return 0, nil, fmt.Errorf("lock the agent threads' roots: %w", err)
 		}
 		// Which of those roots the dismissal may still write, read once the lock has been given
@@ -858,7 +861,7 @@ func (read *inboxReadThreads) keepAgentRoots(keep map[string]struct{}) {
 func (s *server) dismissInboxAgentThreads(
 	ctx context.Context, tx pgx.Tx, login string, plan inboxDismissPlan, read inboxReadThreads,
 ) ([]string, int, error) {
-	if _, err := tx.Exec(ctx, inboxDismissLockAgentThreads, login, read.agentRoots); err != nil {
+	if err := store.LockRowsWithinBound(ctx, tx, inboxDismissLockAgentThreads, login, read.agentRoots); err != nil {
 		return nil, 0, fmt.Errorf("lock the caller's agent threads: %w", err)
 	}
 	args := inboxMarkArgs(login, plan.writeMark(), read.agentRoots)

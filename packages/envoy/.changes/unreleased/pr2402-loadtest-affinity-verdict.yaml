@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  A load step that follows another on the same stack is no longer refused for a CPU pin that binds.
+  The check that the runtime enforces `LOADTEST_SERVER_CPUS` timed its busy loops on a box still
+  busy with what the earlier step left, so a pin that binds read short of its 1.6x bar (1.23x on a
+  runc bed after a 10x step). The check now tries three times and refuses only when no try reaches
+  the bar, naming every try, and it keeps a verdict that the pin binds in
+  `$LOADTEST_ROOT/affinity.json` with the boot it was measured on, which the later steps of that
+  boot take instead of measuring again. A verdict that the pin does not bind is never kept.

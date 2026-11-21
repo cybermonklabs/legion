@@ -218,3 +218,67 @@ func TestConditionalEditAdmissionsOfADocumentWaitOnItsQueueLockThroughOneConnect
 		t.Fatalf("after every edit left, the queue holds %d edits in %d rows, want none", queued, rows)
 	}
 }
+
+// A conditional edit's admission queued on its document's queue lock behind a holder that keeps
+// the lock past the bound of a lock's wait (store's lockWait) is refused busy once that bound runs
+// out, rather than holding its shared connection for as long as the holder stands, and its request
+// answers that 503 DATABASE_BUSY with Retry-After (api's writeHandlerError). It counts nothing into
+// the queue, and an admission once the holder lets go is admitted. The bound is the test's
+// (store.WithLockWaitForTest) rather than production's ten seconds.
+func TestAConditionalEditAdmissionQueuedOnAHeldQueueLockIsRefusedBusyAtItsBound(t *testing.T) {
+	const bound = 300 * time.Millisecond
+	ctx := context.Background()
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "# First")
+	service, _ := newTestServiceInstance(t, storetest.SecondProcess(t, database))
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the queue lock's holder: %v", err)
+	}
+	defer holder.Rollback(ctx)
+	if _, err := holder.Exec(ctx, conditionalEditQueueLock, conditionalEditQueueLockNamespace, artifactID); err != nil {
+		t.Fatalf("hold the document's conditional edit queue lock: %v", err)
+	}
+
+	admitted := make(chan error, 1)
+	started := time.Now()
+	go func() {
+		release, err := service.AcquireConditionalEdit(store.WithLockWaitForTest(ctx, bound), artifactID)
+		if err == nil {
+			release()
+		}
+		admitted <- err
+	}()
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1, roomWait(t)); waiting < 1 {
+		t.Fatal("the admission never came to wait on the document's queue lock")
+	}
+	var refused error
+	select {
+	case refused = <-admitted:
+	case <-time.After(10 * time.Second):
+		waited := time.Since(started)
+		_ = holder.Rollback(ctx)
+		<-admitted
+		t.Fatalf("the admission was still waiting on the document's queue lock %s after it began, past its wait's bound of %s: "+
+			"it holds a shared connection for as long as the holder stands", waited.Round(time.Millisecond), bound)
+	}
+	if waited := time.Since(started); !store.IsPoolBusy(refused) || waited < bound {
+		t.Fatalf("the admission queued on the held queue lock answered %v after %s, want ErrPoolBusy (503 DATABASE_BUSY) once its wait's bound of %s ran out",
+			refused, waited.Round(time.Millisecond), bound)
+	}
+	if waiting := storetest.WaitForLockWaiters(t, holder, 0, time.Second); waiting != 0 {
+		t.Fatalf("%d sessions still wait on the document's queue lock after the refusal, want none", waiting)
+	}
+	if queued, rows := queuedAcrossProcesses(t, database, artifactID); queued != 0 || rows != 0 {
+		t.Fatalf("after the refused admission the queue holds %d edits in %d rows, want none", queued, rows)
+	}
+
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatalf("release the document's conditional edit queue lock: %v", err)
+	}
+	release, err := service.AcquireConditionalEdit(ctx, artifactID)
+	if err != nil {
+		t.Fatalf("an admission once the queue lock was let go = %v, want it admitted", err)
+	}
+	release()
+}

@@ -344,6 +344,118 @@ func TestAnAskInTheRoomBeforeASettlementsTakeKeepsItsAuthor(t *testing.T) {
 	}
 }
 
+// A settlement pass that commits repairs and indexes an ask block forgets the block's owed author
+// inside the commit's hold of the room's state, as a pass that versions the document does: a
+// reader that finds the block's ask row committed finds the room owing no author for it, and the
+// commit deleted the author's durable record too. Alice's browser appends an ask block no ask row
+// indexes that reads resolved, as a closed issue's settlement leaves one (resolveUnindexedAskBlock),
+// so the settlement opens the block's ask and repairs its state to open: one pass plans the
+// repair, the next writes it into the room and commits it with the ask row (commitRepairs), and
+// the last versions the document, which forgets the author again and so runs only after the room
+// is read. A new block that reads open needs no repair, and its ask is committed with the version
+// (commitVersion). The room is read once the repair's commit has released its state
+// (afterSettleRepairCommit, which only commitRepairs runs) and again as the pass after it starts
+// (beforeSettleTake) (INFRA-592).
+func TestARepairCommitThatIndexesAnAskForgetsItsAuthorInsideItsHold(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
+	settleCurrentGeneration(t, service, artifactID)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	service.addConnection(artifactID, 1, alice)
+	editAsPeer(t, service, artifactID, appendBlocks(t, ":::ask{#alice-ask urgency=\"high\" multiple=\"false\" state=\"resolved\"}\nWhich transport?\n:::\n"))
+	waitForLandedAppends(t, service, artifactID)
+	state := service.room(artifactID)
+	state.mu.Lock()
+	owed, owes := state.askAuthors["alice-ask"]
+	state.mu.Unlock()
+	if !owes || owed != alice {
+		t.Fatalf("before the settlement the room owes alice-ask to %#v (recorded %t), want alice", owed, owes)
+	}
+	if recorded := recordedAskAuthors(t, service.store, artifactID); recorded["alice-ask"] != alice {
+		t.Fatalf("doc_ask_block_authors before the settlement = %+v, want alice-ask recorded as alice", recorded)
+	}
+	if count := asksOn(t, service, artifactID); count != 0 {
+		t.Fatalf("the document has %d asks before the settlement, want none", count)
+	}
+
+	// authorship is what a reader finds of the block's author: the ask row first, then the
+	// durable record and the room, as a reader that has found the row committed reads them next.
+	type authorship struct {
+		asked    model.Actor
+		recorded map[string]model.Actor
+		owed     model.Actor
+		owes     bool
+		err      error
+	}
+	read := func() (found authorship) {
+		var raw []byte
+		if found.err = service.store.Pool.QueryRow(context.Background(), `
+			select author from asks where block_artifact_id = $1 and block_id = 'alice-ask'
+		`, artifactID).Scan(&raw); found.err != nil {
+			return found
+		}
+		if found.err = json.Unmarshal(raw, &found.asked); found.err != nil {
+			return found
+		}
+		if found.recorded, found.err = readRecordedAskAuthors(context.Background(), service.store.Pool, artifactID); found.err != nil {
+			return found
+		}
+		state.mu.Lock()
+		found.owed, found.owes = state.askAuthors["alice-ask"]
+		state.mu.Unlock()
+		return found
+	}
+	var atCommit, afterCommit *authorship
+	service.afterSettleRepairCommit = func(room string) {
+		if room == artifactID && atCommit == nil {
+			found := read()
+			atCommit = &found
+		}
+	}
+	service.beforeSettleTake = func(room string) {
+		if room == artifactID && atCommit != nil && afterCommit == nil {
+			found := read()
+			afterCommit = &found
+		}
+	}
+	settleCurrentGeneration(t, service, artifactID)
+	service.afterSettleRepairCommit, service.beforeSettleTake = nil, nil
+	if atCommit == nil {
+		t.Fatal("the settlement committed no repairs, want a pass to write the ask block's server attributes into the room and commit them with its row (commitRepairs)")
+	}
+	if afterCommit == nil {
+		t.Fatal("no pass of the settlement followed its repair commit")
+	}
+
+	// After the repair commit: the ask row names alice, and neither the room nor the durable
+	// record owes her as the block's author.
+	if afterCommit.err != nil {
+		t.Fatalf("read alice-ask's author after the repair commit: %v", afterCommit.err)
+	}
+	if afterCommit.asked != alice {
+		t.Errorf("after the repair commit alice-ask's ask names %#v, want alice", afterCommit.asked)
+	}
+	if afterCommit.owes {
+		t.Errorf("after the repair commit the room still owes alice-ask to %#v, want no author: its ask row names her", afterCommit.owed)
+	}
+	if recorded, kept := afterCommit.recorded["alice-ask"]; kept {
+		t.Errorf("after the repair commit doc_ask_block_authors still holds alice-ask as %#v, want no row", recorded)
+	}
+
+	// Inside the hold: once the commit has released the room's state, the first moment a reader
+	// can find the ask row committed, the room already owes no author for the block.
+	if atCommit.err != nil {
+		t.Fatalf("read alice-ask's author as the repair commit released the room: %v", atCommit.err)
+	}
+	if atCommit.asked != alice {
+		t.Errorf("as the repair commit released the room alice-ask's ask names %#v, want alice: the commit indexes the ask", atCommit.asked)
+	}
+	if atCommit.owes {
+		t.Errorf("as the repair commit released the room it still owes alice-ask to %#v while the ask row names her, want the author forgotten inside the commit's hold", atCommit.owed)
+	}
+}
+
 // currentLiveMarkdown is the room's live document as rendered right now, read directly rather than
 // through the room's own (possibly stale) contentMarkdown bookkeeping.
 func currentLiveMarkdown(t *testing.T, service *Service, artifactID string) string {
@@ -418,7 +530,7 @@ func TestAServiceWriteAndABrowserEditLandTogetherEachAskGoesToItsOwnAuthor(t *te
 	current := currentLiveMarkdown(t, service, artifactID)
 	agentAsk := "\n:::ask{#agent-ask urgency=\"high\" multiple=\"false\"}\nWhich database?\n:::\n"
 	release := holdObserver(t, service, artifactID, &service.beforeObserveUpdate, func() error {
-		return joinedWrite(service, func(ctx context.Context) error {
+		return joinedWrite(service, artifactID, func(ctx context.Context) error {
 			precondition, err := replacementPrecondition(ctx, service, artifactID)
 			if err != nil {
 				return err
@@ -462,7 +574,7 @@ func TestAPublishedAgentWriteAndABrowserEditLandTogetherEachAskGoesToItsOwnAutho
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(context.Background())
-	joined, ledger := service.Join(context.Background(), tx)
+	joined, ledger := service.Join(gated(t, service, context.Background(), artifactID), tx)
 	defer ledger.Discard()
 	if _, err := service.ReplaceText(joined, artifactID, current+agentAsk, session, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("agent joined edit: %v", err)
@@ -575,7 +687,7 @@ func TestAConditionalEditIntroducesAnAskCreditedToItsAuthor(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(context.Background())
-	joined, ledger := service.Join(context.Background(), tx)
+	joined, ledger := service.Join(gated(t, service, context.Background(), artifactID), tx)
 	defer ledger.Discard()
 	if _, err := service.ApplyOps(joined, artifactID, []model.EditOp{
 		{Op: "insert", After: "end", Markdown: ":::ask{#agent-ask urgency=\"high\" multiple=\"false\"}\nWhich database?\n:::\n"},
@@ -607,7 +719,8 @@ func TestADiscardedJoinedWriteDoesNotOutrankALaterCommitOfTheSameAskID(t *testin
 	if err != nil {
 		t.Fatalf("begin tx1: %v", err)
 	}
-	joined1, ledger1 := service.Join(context.Background(), tx1)
+	gated1, release1 := gatedContext(t, service, context.Background(), artifactID)
+	joined1, ledger1 := service.Join(gated1, tx1)
 	if _, err := service.ApplyOps(joined1, artifactID, []model.EditOp{
 		{Op: "insert", After: "end", Markdown: ":::ask{#decision urgency=\"high\" multiple=\"false\"}\nAlice's question?\n:::\n"},
 	}, alice, nil); err != nil {
@@ -615,13 +728,14 @@ func TestADiscardedJoinedWriteDoesNotOutrankALaterCommitOfTheSameAskID(t *testin
 	}
 	ledger1.Discard()
 	tx1.Rollback(context.Background())
+	release1()
 
 	tx2, err := service.store.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("begin tx2: %v", err)
 	}
 	defer tx2.Rollback(context.Background())
-	joined2, ledger2 := service.Join(context.Background(), tx2)
+	joined2, ledger2 := service.Join(gated(t, service, context.Background(), artifactID), tx2)
 	defer ledger2.Discard()
 	if _, err := service.ApplyOps(joined2, artifactID, []model.EditOp{
 		{Op: "insert", After: "end", Markdown: ":::ask{#decision urgency=\"high\" multiple=\"false\"}\nBob's question?\n:::\n"},

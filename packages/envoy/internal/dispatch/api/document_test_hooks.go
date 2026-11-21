@@ -110,7 +110,7 @@ func (s *server) holdRoomPersistence(w http.ResponseWriter, r *http.Request) {
 	}
 	var input holdPersistenceInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	duration, err := time.ParseDuration(input.Duration)

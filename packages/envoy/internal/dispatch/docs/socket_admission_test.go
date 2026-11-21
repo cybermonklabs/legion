@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -19,9 +20,12 @@ import (
 
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -87,15 +91,15 @@ func dialSocketAsync(serverURL, id string) <-chan openedSocket {
 }
 
 // refuseSocket opens id's document socket and requires the service to refuse it with
-// ServiceUnavailable before any upgrade, as a cap refuses one.
+// ServiceUnavailable and Retry-After before any upgrade, as a cap refuses one.
 func refuseSocket(t *testing.T, serverURL, id, what string) {
 	t.Helper()
 	connection, response, err := gws.DefaultDialer.Dial(socketURL(serverURL, id), http.Header{"X-Dispatch-User": []string{"alice"}})
 	if connection != nil {
 		leaveDocument(connection)
 	}
-	if err == nil || response == nil || response.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("%s: response=%v err=%v, want the socket refused with 503", what, response, err)
+	if err == nil || response == nil || response.StatusCode != http.StatusServiceUnavailable || response.Header.Get("Retry-After") != admission.RetryAfter {
+		t.Fatalf("%s: response=%v err=%v, want the socket refused with 503 and Retry-After: %s", what, response, err, admission.RetryAfter)
 	}
 }
 
@@ -386,6 +390,13 @@ func TestTheConnectionAndRoomCapsCountWithoutScanning(t *testing.T) {
 	// ygo's idle sweeper reads it when the first room starts it, so it is set before any room:
 	// no room may idle out while the test fills the cap.
 	service.srv.RoomIdleTimeout = time.Hour
+	// Nor may the room budget's trim close one (trimPeerlessRooms, which a budget of 0 turns off):
+	// it closes the peerless rooms past roomBudgetMinIdle while the rooms holding places exceed
+	// the cap less its headroom (peerlessRoomsOverBudget), so wherever loading the thousand rooms
+	// took longer than that window it closed the first of them before the cap was reached, or a
+	// room later, freeing a place the cap then gave out. The counts this test is about are the
+	// caps', which the budget is no part of.
+	service.peerlessRoomBytes.Store(0)
 	ids := createDocuments(t, database, maxLiveRooms+2)
 	resident, spare := ids[:maxLiveRooms], ids[maxLiveRooms:]
 	warmRooms(t, service, resident)
@@ -441,16 +452,23 @@ func TestTheConnectionAndRoomCapsCountWithoutScanning(t *testing.T) {
 // The caps DISPATCH_MAX_LIVE_ROOMS and DISPATCH_MAX_DOC_CONNECTIONS set hold for sockets that open
 // at once, as every browser of a room does after an eviction or a deploy, and not only for sockets
 // that open one after another: a burst of cold opens never leaves more rooms live, or more browsers
-// connected, than the cap, and every socket a cap turns away is answered 503, as the settings say,
-// never 401, which tells a browser it is not signed in. On a real Dispatch with the two settings at 2
-// and 1,000, ten sockets opened at once on ten documents were all admitted and left ten rooms live;
-// with 1,000 and 3, ten sockets on one document left three admitted and seven answered 401.
+// connected, than the cap, and every socket a cap turns away is answered 503 with Retry-After, as
+// the settings say and as every socket the server cannot serve now is, never 401, which tells a
+// browser it is not signed in. On a real Dispatch with the two settings at 2 and 1,000, ten
+// sockets opened at once on ten documents were all admitted and left ten rooms live; with 1,000
+// and 3, ten sockets on one document left three admitted and seven answered 401.
 func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T) {
 	const burst = 10
-	open := func(t *testing.T, serverURL string, ids []string) (admitted []*gws.Conn, refusals map[int]int) {
+	// refused is how the refusals by status and Retry-After are counted, and capRefusal the one
+	// a cap answers.
+	refused := func(status int, retryAfter string) string {
+		return fmt.Sprintf("%d with Retry-After %q", status, retryAfter)
+	}
+	capRefusal := refused(http.StatusServiceUnavailable, admission.RetryAfter)
+	open := func(t *testing.T, serverURL string, ids []string) (admitted []*gws.Conn, refusals map[string]int) {
 		t.Helper()
 		var mu sync.Mutex
-		refusals = map[int]int{}
+		refusals = map[string]int{}
 		start := make(chan struct{})
 		var dials sync.WaitGroup
 		for i := range burst {
@@ -465,11 +483,11 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 					admitted = append(admitted, connection)
 					return
 				}
-				status := 0
+				status, retryAfter := 0, ""
 				if response != nil {
-					status = response.StatusCode
+					status, retryAfter = response.StatusCode, response.Header.Get("Retry-After")
 				}
-				refusals[status]++
+				refusals[refused(status, retryAfter)]++
 			}()
 		}
 		close(start)
@@ -503,11 +521,11 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 		t.Cleanup(server.Close)
 		return service, server.URL
 	}
-	refusedOtherwise := func(refusals map[int]int) map[int]int {
-		other := map[int]int{}
-		for status, count := range refusals {
-			if status != http.StatusServiceUnavailable {
-				other[status] = count
+	refusedOtherwise := func(refusals map[string]int) map[string]int {
+		other := map[string]int{}
+		for refusal, count := range refusals {
+			if refusal != capRefusal {
+				other[refusal] = count
 			}
 		}
 		return other
@@ -519,10 +537,10 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 		ids := createDocuments(t, service.store, burst)
 		admitted, refusals := open(t, serverURL, ids)
 		if live := len(service.srv.Rooms()); live > roomCap || len(admitted) > roomCap {
-			t.Errorf("%d sockets opened at once on %d documents: %d admitted and %d rooms live, want at most the room cap of %d (refusals by status: %v)", burst, burst, len(admitted), live, roomCap, refusals)
+			t.Errorf("%d sockets opened at once on %d documents: %d admitted and %d rooms live, want at most the room cap of %d (refusals: %v)", burst, burst, len(admitted), live, roomCap, refusals)
 		}
 		if other := refusedOtherwise(refusals); len(other) > 0 {
-			t.Errorf("sockets the room cap turned away were answered %v, want 503 for each", other)
+			t.Errorf("sockets the room cap turned away were answered %v, want %s for each", other, capRefusal)
 		}
 	})
 	t.Run("connection cap", func(t *testing.T) {
@@ -534,7 +552,7 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 			t.Errorf("%d sockets opened at once on one document: %d admitted, want at most the connection cap of %d", burst, len(admitted), connectionCap)
 		}
 		if other := refusedOtherwise(refusals); len(other) > 0 {
-			t.Errorf("of %d sockets opened at once on one document with a connection cap of %d, %d were admitted and the rest answered %v: a socket a cap turns away is answered 503, never another status", burst, connectionCap, len(admitted), refusals)
+			t.Errorf("of %d sockets opened at once on one document with a connection cap of %d, %d were admitted and the rest answered %v: a socket a cap turns away is answered %s, never another status", burst, connectionCap, len(admitted), refusals, capRefusal)
 		}
 	})
 }
@@ -698,4 +716,154 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 	if _, kept := service.preloads.Load(artifactID); kept {
 		t.Error("a preload offered while the room loaded is still held after that load, want none: no load of this room will ever read it")
 	}
+}
+
+// A document socket the service refuses because its document could not be admitted logs why, at
+// WARN, with the room, the pool the admission's load read through, and the class of the error
+// that refused it, never that error's text (refuseUnservedSocket). The 503 alone names none of
+// them, so without this line a refusal that reached a person could be placed only from a
+// neighbouring one. The admission's first load fails here (failingOnceVersionedStore), as a
+// connection reset in the middle of that load would, which fails the room (loadTree).
+func TestARefusedSocketAdmissionLogsTheRoomAndThePool(t *testing.T) {
+	logs := &storetest.LockedLog{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "before")
+	service := New(Deps{
+		Store:       database,
+		Persistence: &failingOnceVersionedStore{VersionedStore: NewPgVersioned(database)},
+		Events:      events.NewBroker(),
+		Identity:    headerIdentity(database),
+	})
+	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
+	t.Cleanup(httpServer.Close)
+
+	refuseSocket(t, httpServer.URL, artifactID, "a socket whose document's first load fails")
+
+	logged := logs.String()
+	line := ""
+	for _, candidate := range strings.Split(logged, "\n") {
+		if strings.Contains(candidate, "a document socket was refused") {
+			line = candidate
+			break
+		}
+	}
+	if line == "" {
+		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logged)
+	}
+	for _, want := range []string{"level=WARN", "room=" + artifactID, "pool=" + store.RoomsPool, "error=room_unavailable"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("the refused socket's line %q does not carry %q", line, want)
+		}
+	}
+	if strings.Contains(line, "transient load failure") {
+		t.Fatalf("the refused socket's line %q carries its error's text, want only the error's class", line)
+	}
+}
+
+// A browser that leaves while its socket's document loads is a client gone, not a refused socket:
+// its going ends the load with the request's own cancellation (loadTree hands context.Canceled
+// back as the store answered it), so the service logs no WARN, writes no answer nobody is left to
+// read, and the socket's access-log line carries the 499 of a client that went away
+// (accesslog.ClientGone) rather than a 503. The admission's load is held until the browser's
+// request has ended (leavingDuringLoadStore), and the browser leaves by dropping its connection.
+func TestASocketWhoseClientLeavesDuringTheLoadIsAGoneClientAndNoRefusal(t *testing.T) {
+	logs := &storetest.LockedLog{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "before")
+	loading := make(chan struct{})
+	service := New(Deps{
+		Store:       database,
+		Persistence: &leavingDuringLoadStore{VersionedStore: NewPgVersioned(database), loading: loading},
+		Events:      events.NewBroker(),
+		Identity:    headerIdentity(database),
+	})
+	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	served := make(chan struct{})
+	logged := accesslog.Handler("/ws/doc/{room}", http.HandlerFunc(service.ServeHTTP))
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(served)
+		logged.ServeHTTP(w, r)
+	}))
+	t.Cleanup(httpServer.Close)
+
+	browser, leave := context.WithCancel(context.Background())
+	defer leave()
+	request, err := http.NewRequestWithContext(browser, http.MethodGet,
+		httpServer.URL+"/ws/doc/"+artifactID+"?schema_version="+strconv.Itoa(pmdoc.SchemaVersion()), nil)
+	if err != nil {
+		t.Fatalf("build the socket's request: %v", err)
+	}
+	request.Header.Set("X-Dispatch-User", "alice")
+	answered := make(chan error, 1)
+	go func() {
+		response, err := http.DefaultClient.Do(request)
+		if err == nil {
+			_ = response.Body.Close()
+		}
+		answered <- err
+	}()
+	select {
+	case <-loading:
+	case <-time.After(roomWait(t)):
+		t.Fatal("the socket's admission never loaded its document, so nothing here is tested")
+	}
+	// The browser leaves: the client drops the connection, and the server ends the request's
+	// context once it reads that.
+	leave()
+	if err := <-answered; !errors.Is(err, context.Canceled) {
+		t.Fatalf("the browser's request ended with %v, want it cancelled by the browser", err)
+	}
+	select {
+	case <-served:
+	case <-time.After(roomWait(t)):
+		t.Fatal("the socket's request never ended after its browser left")
+	}
+
+	lines := logs.String()
+	if strings.Contains(lines, "level=WARN") {
+		t.Fatalf("a socket whose browser left during the load logged a WARN, want none; the log was:\n%s", lines)
+	}
+	access := ""
+	for _, line := range strings.Split(lines, "\n") {
+		if strings.Contains(line, `msg="`+accesslog.Message+`"`) {
+			access = line
+		}
+	}
+	if access == "" {
+		t.Fatalf("the socket's request wrote no access-log line; the log was:\n%s", lines)
+	}
+	if want := "status=" + strconv.Itoa(accesslog.StatusClientClosedRequest); !strings.Contains(access, want) {
+		t.Fatalf("the socket's access-log line %q does not carry %s, the client gone", access, want)
+	}
+}
+
+// leavingDuringLoadStore holds its first Load until the context it loads on has ended - the
+// browser that asked for the load has left - and then loads on that ended context, which the
+// store answers context.Canceled (loadStored), as it would had the browser left mid-read. It
+// closes loading as that first Load begins.
+type leavingDuringLoadStore struct {
+	VersionedStore
+	loading chan struct{}
+	once    sync.Once
+}
+
+func (s *leavingDuringLoadStore) Load(ctx context.Context, room string) (persistence.LoadResult, error) {
+	first := false
+	s.once.Do(func() {
+		first = true
+		close(s.loading)
+	})
+	if first {
+		<-ctx.Done()
+	}
+	return s.VersionedStore.Load(ctx, room)
 }

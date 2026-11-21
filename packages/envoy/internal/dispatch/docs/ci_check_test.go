@@ -58,7 +58,7 @@ func settleBrowserWrite(t *testing.T, service *Service, artifactID string) {
 	state.mu.Lock()
 	generation := state.roomGeneration
 	state.mu.Unlock()
-	service.settleRoom(artifactID, generation)
+	service.settleRoom(context.Background(), artifactID, generation)
 	state.mu.Lock()
 	failed, failures := state.failed, state.settleFailures
 	state.mu.Unlock()

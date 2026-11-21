@@ -361,17 +361,28 @@ func (s *server) claimCommentDeliveryAttempt(
 		return claimedCommentDelivery{}, err
 	}
 	// A bound call reads its own attempt, in whatever state; an unbound one the lowest pending.
+	// Either is taken in a bounded wait and read behind it in the same batch
+	// (store.LockRowsWithinBoundAndRead): the mention sender writes its claims on these rows
+	// (comment_mention_claims.go) without the comment's owner lock this transaction holds, so that
+	// lock orders nothing against it.
 	var takeable bool
 	if resume.attempt > 0 {
 		var stands, delivered bool
-		bound, err := scanCommentDelivery(tx.QueryRow(ctx, `
+		var bound model.CommentDelivery
+		err := store.LockRowsWithinBoundAndRead(ctx, tx, `
+			select 1 from comment_deliveries where comment_id = $1 and target = $2 and attempt = $3 for update
+		`, []any{stored.ID, target.Target, resume.attempt}, `
 			select `+commentDeliveryColumns+`, `+model.DeliveryClaimFreeSQL+` or `+model.DeliveryClaimSinceSQL("$4")+`,
 			       `+model.MentionAttemptStandsSQL("comment_deliveries")+`,
 			       `+model.MentionAttemptDeliveredLaterSQL("comment_deliveries")+`
 			from comment_deliveries
 			where comment_id = $1 and target = $2 and attempt = $3
 			for update
-		`, stored.ID, target.Target, resume.attempt, resume.claimedAt), &takeable, &stands, &delivered)
+		`, []any{stored.ID, target.Target, resume.attempt, resume.claimedAt}, func(row pgx.Row) error {
+			var err error
+			bound, err = scanCommentDelivery(row, &takeable, &stands, &delivered)
+			return err
+		})
 		if err != nil {
 			return claimedCommentDelivery{}, fmt.Errorf(
 				"read attempt %d of comment delivery %s/%s: %w", resume.attempt, stored.ID, target.Target, err)
@@ -404,14 +415,25 @@ func (s *server) claimCommentDeliveryAttempt(
 		}
 		return claimed, nil
 	}
-	pending, err := scanCommentDelivery(tx.QueryRow(ctx, `
+	var pending model.CommentDelivery
+	err = store.LockRowsWithinBoundAndRead(ctx, tx, `
+		select 1 from comment_deliveries
+		where comment_id = $1 and target = $2 and state = 'pending'
+		order by attempt
+		limit 1
+		for update
+	`, []any{stored.ID, target.Target}, `
 		select `+commentDeliveryColumns+`, `+model.DeliveryClaimFreeSQL+`
 		from comment_deliveries
 		where comment_id = $1 and target = $2 and state = 'pending'
 		order by attempt
 		limit 1
 		for update
-	`, stored.ID, target.Target), &takeable)
+	`, []any{stored.ID, target.Target}, func(row pgx.Row) error {
+		var err error
+		pending, err = scanCommentDelivery(row, &takeable)
+		return err
+	})
 	switch {
 	case err != nil && !errors.Is(err, pgx.ErrNoRows):
 		return claimedCommentDelivery{}, err
@@ -513,15 +535,31 @@ func (s *server) completeCommentDelivery(
 	sent.State, sent.Error = deliveryOutcome(outcome.failure, outcome.queued)
 	sent.Duplicate, sent.EnvelopeID = outcome.duplicate, outcome.envelopeID
 	return settleDeliveryAttempt(ctx, s, commentDeliveryReceipt(comment, actor, sent),
-		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, error) {
-			return scanCommentDelivery(tx.QueryRow(ctx, `
+		func(ctx context.Context, tx pgx.Tx) (settled model.CommentDelivery, err error) {
+			// The attempt row is taken in a bounded wait and written behind it, in one batch
+			// (store.LockRowsWithinBoundAndRead): the comment's owner lock, which settleDeliveryAttempt
+			// takes, does not order the mention sender's claim statements, which take none
+			// (comment_mention_claims.go).
+			err = store.LockRowsWithinBoundAndRead(ctx, tx, `
+				select 1 from comment_deliveries
+				where comment_id = $1 and target = $2 and attempt = $3
+				  and state = 'pending' and claimed_at = $4
+				for update`,
+				[]any{comment.ID, sent.Target, claim.attempt, claim.claimedAt}, `
 				update comment_deliveries set envelope_id = $5, state = $6, error = $7, duplicate = $8
 				where comment_id = $1 and target = $2 and attempt = $3
 				  and state = 'pending' and claimed_at = $4
 				returning `+commentDeliveryColumns,
-				comment.ID, sent.Target, claim.attempt, claim.claimedAt,
-				sent.EnvelopeID, sent.State, sent.Error, sent.Duplicate,
-			))
+				[]any{
+					comment.ID, sent.Target, claim.attempt, claim.claimedAt,
+					sent.EnvelopeID, sent.State, sent.Error, sent.Duplicate,
+				},
+				func(row pgx.Row) (err error) {
+					settled, err = scanCommentDelivery(row)
+					return err
+				},
+			)
+			return settled, err
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, bool, *string, error) {
 			var mine bool
@@ -563,15 +601,25 @@ func (s *server) supersedeCommentDelivery(
 	failed := bound
 	failed.State, failed.Error = deliveryOutcome(mentionSupersededError, false)
 	return settleDeliveryAttempt(ctx, s, commentDeliveryReceipt(comment, actor, failed),
-		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, error) {
-			return scanCommentDelivery(tx.QueryRow(ctx, `
-				update comment_deliveries set state = 'failed', error = $5, claimed_at = null
+		func(ctx context.Context, tx pgx.Tx) (superseded model.CommentDelivery, err error) {
+			// Taken in a bounded wait and written behind it, as the settle's row is
+			// (completeCommentDelivery).
+			guard := `
 				where comment_id = $1 and target = $2 and attempt = $3 and state = 'pending'
-				  and (`+model.DeliveryClaimFreeSQL+` or `+model.DeliveryClaimSinceSQL("$4")+`)
-				  and `+model.MentionAttemptDeliveredLaterSQL("comment_deliveries")+`
+				  and (` + model.DeliveryClaimFreeSQL + ` or ` + model.DeliveryClaimSinceSQL("$4") + `)
+				  and ` + model.MentionAttemptDeliveredLaterSQL("comment_deliveries")
+			err = store.LockRowsWithinBoundAndRead(ctx, tx,
+				`select 1 from comment_deliveries`+guard+` for update`,
+				[]any{comment.ID, bound.Target, claim.attempt, claim.claimedAt}, `
+				update comment_deliveries set state = 'failed', error = $5, claimed_at = null`+guard+`
 				returning `+commentDeliveryColumns,
-				comment.ID, bound.Target, claim.attempt, claim.claimedAt, mentionSupersededError,
-			))
+				[]any{comment.ID, bound.Target, claim.attempt, claim.claimedAt, mentionSupersededError},
+				func(row pgx.Row) (err error) {
+					superseded, err = scanCommentDelivery(row)
+					return err
+				},
+			)
+			return superseded, err
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, bool, *string, error) {
 			var mine bool
@@ -669,14 +717,27 @@ func (s *server) recordCommentDeliveryResolution(
 		return model.CommentDelivery{}, claim, false, err
 	}
 	defer tx.Rollback(ctx)
-	recorded, err := scanCommentDelivery(tx.QueryRow(ctx, `
+	// The attempt row is taken in a bounded wait and written behind it, in one batch
+	// (store.LockRowsWithinBoundAndRead): this transaction takes no owner lock, and the row's other
+	// holders (the claim, the reply route, a settle) take it under none it holds.
+	var recorded model.CommentDelivery
+	err = store.LockRowsWithinBoundAndRead(ctx, tx, `
+		select 1 from comment_deliveries
+		where comment_id = $1 and target = $2 and attempt = $3
+		  and state = 'pending' and claimed_at = $4
+		for update`,
+		[]any{comment.ID, target.Target, claim.attempt, claim.claimedAt}, `
 		update comment_deliveries
 		set claimed_at = now(), delivery = $5, session_id = coalesce(session_id, $6), resolve_error = $7
 		where comment_id = $1 and target = $2 and attempt = $3
 		  and state = 'pending' and claimed_at = $4
 		returning `+commentDeliveryColumns+`, claimed_at`,
-		comment.ID, target.Target, claim.attempt, claim.claimedAt, target.Delivery, target.SessionID, resolveError,
-	), &renewed.claimedAt)
+		[]any{comment.ID, target.Target, claim.attempt, claim.claimedAt, target.Delivery, target.SessionID, resolveError},
+		func(row pgx.Row) (err error) {
+			recorded, err = scanCommentDelivery(row, &renewed.claimedAt)
+			return err
+		},
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.CommentDelivery{
 			CommentID: comment.ID, Target: target.Target, Attempt: claim.attempt,
@@ -916,14 +977,16 @@ func (s *server) mentionCopyHolder(ctx context.Context, created model.Event, tar
 // mentionLookupTimeout): the route holds the send when the holder is sessionID, as planChains keys
 // the route on whoever holds the role at its next batch, and when the read fails in any way but
 // the listener saying the role has no holder, since sessionID may be the holder - the lane tries
-// again a moment later (mentionOrderRetry).
+// again a moment later (mentionOrderRetry). The read runs on the store ctx names (workStore): the
+// request pool for a request's send, the background pool for the delivery sweep's
+// (resumeOwedDeliveries), whose whole send path takes no request connection.
 func (s *server) mentionCopyHolderFor(
 	ctx context.Context, created model.Event, sessionID string,
 ) (*model.MentionCopyHolder, error) {
 	if !s.deps.OutboxPublishes {
 		return nil, nil
 	}
-	return copyrule.Holder(ctx, s.deps.Store.Pool, created.ID, contracts.LegacyAgentSubject(sessionID),
+	return copyrule.Holder(ctx, s.workStore(ctx).Pool, created.ID, contracts.LegacyAgentSubject(sessionID),
 		func(ctx context.Context, role string) bool { return s.roleHolderMayBe(ctx, role, sessionID) })
 }
 
@@ -969,7 +1032,7 @@ func (s *server) supersedeOvertakenAttempts(
 	if !model.DeliveryTaken(sent.State) || sent.Attempt < 2 {
 		return nil
 	}
-	rows, err := s.deps.Store.Pool.Query(ctx, `
+	rows, err := s.workStore(ctx).Pool.Query(ctx, `
 		select `+commentDeliveryColumns+`
 		from comment_deliveries
 		where comment_id = $1 and target = $2 and attempt < $3
@@ -1088,17 +1151,17 @@ type createCommentDeliveryInput struct {
 func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	var input createCommentDeliveryInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !human {
 		if actor, err = bearerSessionActor(r, actor, input.Actor); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -1115,20 +1178,20 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 		select target from comment_mentions where comment_id = $1 order by target
 	`, comment.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	targets := []string{}
 	for rows.Next() {
 		var target string
 		if err := rows.Scan(&target); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		targets = append(targets, target)
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	rows.Close()
@@ -1159,7 +1222,7 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 	}
 	created, err := s.loadCommentCreatedEvent(r.Context(), s.deps.Store.Pool, comment)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	resolved := ResolvedMention{Target: target, Delivery: input.Delivery}
@@ -1170,7 +1233,7 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 		context.WithoutCancel(r.Context()), comment, created, resolved, actor, attemptClaim{}, s.newTakeoverRetry(),
 	)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if held != nil {
@@ -1253,7 +1316,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	}
 	var input commentReplyInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -1271,7 +1334,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		}
 		// A reply is stored as a comment of its own, so it takes the comment routes' bound.
 		if err := blockBoundError(itemblocks.Check("body", *input.Body)); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -1295,13 +1358,13 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		limit 1
 	`, input.Target, input.Attempt)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -1311,7 +1374,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 			writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment not found")
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Everything this reply is decided on, its own body included, is read here, before the
@@ -1324,7 +1387,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	var plan commentReplyPlan
 	if input.Body != nil {
 		if plan, err = s.planCommentReply(r.Context(), tx, comment, *input.Body, input.ReplyToBlock); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -1336,7 +1399,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		select target from comment_mentions where comment_id = $1 order by target
 	`, comment.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	targets := []string{}
@@ -1344,14 +1407,14 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		var target string
 		if err := rows.Scan(&target); err != nil {
 			rows.Close()
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		targets = append(targets, target)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	rows.Close()
@@ -1377,11 +1440,25 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	attempt, err := scanCommentDelivery(tx.QueryRow(r.Context(), `
+	// The attempt row is taken in a bounded wait and read behind it in the same batch: the mention
+	// sender writes its claims on it without the owner lock this transaction holds
+	// (claimCommentDeliveryAttempt). The lock's failure is the handler's to answer; the read's is a
+	// missing delivery.
+	var attempt model.CommentDelivery
+	var readErr error
+	if err := store.LockRowsWithinBoundAndRead(r.Context(), tx, `
+		select 1 from comment_deliveries where comment_id = $1 and target = $2 and attempt = $3 for update
+	`, []any{comment.ID, target, input.Attempt}, `
 		select `+commentDeliveryColumns+`
 		from comment_deliveries where comment_id = $1 and target = $2 and attempt = $3 for update
-	`, comment.ID, target, input.Attempt))
-	if err != nil {
+	`, []any{comment.ID, target, input.Attempt}, func(row pgx.Row) error {
+		attempt, readErr = scanCommentDelivery(row)
+		return readErr
+	}); err != nil {
+		if readErr == nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
 		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment delivery not found")
 		return
 	}
@@ -1398,15 +1475,15 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	if attempt.ReplyID != nil {
 		reply, err := s.loadComment(r.Context(), tx, *attempt.ReplyID)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if err := hydrateCommentReplyBlocks(r.Context(), tx, &reply); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if err := tx.Commit(r.Context()); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		WriteJSON(w, http.StatusOK, reply)
@@ -1414,7 +1491,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	}
 	if attempt.State == "failed" && input.Error != nil {
 		if err := tx.Commit(r.Context()); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		WriteJSON(w, http.StatusOK, attempt)
@@ -1429,17 +1506,17 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 			comment.ID, attempt.Target, input.Attempt, *input.Error,
 		))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		attempt = updated
 		event, err := s.appendEvent(r.Context(), tx, commentDeliveryReceipt(comment, actor, attempt))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if err := tx.Commit(r.Context()); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		s.publish(r.Context(), event)
@@ -1448,7 +1525,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	}
 	author, err := json.Marshal(actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A callback reply joins its thread exactly as `POST .../comments` would: the shared climb
@@ -1461,13 +1538,13 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// comments route names. Both are read above the locks (planCommentReply), and the refusal
 	// either raises is raised here, where it was raised.
 	if plan.refusal != nil {
-		s.writeHandlerError(w, plan.refusal)
+		s.writeHandlerError(w, r, plan.refusal)
 		return
 	}
 	// The index the named block's comment was found to owe is written here, before the reply's
 	// own writes, as refs.IndexItemIfOwed writes one.
 	if err := plan.parentIndex.Write(r.Context(), tx); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A callback reply requests no turn, so it hands the turn back the way any session reply
@@ -1483,7 +1560,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	`, plan.id, comment.IssueKey, comment.ArtifactID, author, *input.Body, plan.thread.ReplyTo, plan.thread.AskID, turn,
 		plan.thread.ReplyBlock.nodeID(), plan.thread.Answers, plan.createdAt))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The block the reply names was read above its locks, where its row did not exist yet, so
@@ -1494,7 +1571,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	waitingOn := plan.thread.waitingOnAfter(turn)
 	if plan.thread.AskID != nil {
 		if err := asks.FollowAuthor(r.Context(), tx, *plan.thread.AskID, actor); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -1502,46 +1579,46 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// their statements run here as one batch of their own, where the index of a reply this
 	// route wrote has always run.
 	if err := store.RunWrite(r.Context(), tx, plan.write); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if _, err := tx.Exec(r.Context(), `
 		update comment_deliveries set reply_id = $4, state = 'sent', error = null
 		where comment_id = $1 and target = $2 and attempt = $3
 	`, comment.ID, attempt.Target, input.Attempt, reply.ID); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	artifactName, err := s.commentArtifactName(r.Context(), tx, reply)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	payload, err := s.commentEventPayload(
 		r.Context(), tx, &reply, artifactName, plan.thread.eventThread(waitingOn), plan.changes,
 	)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	payload.ThreadLogins, err = commentThreadLogins(r.Context(), tx, reply)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, ownerOf(reply.IssueKey, reply.ArtifactID).event(
 		"comment.answered", actor, payload,
 	))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := refs.Stamp(r.Context(), tx, "comment", reply.ID, event.ID); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)

@@ -12,7 +12,11 @@ import (
 
 // roomServer is the service's ygo server. Its CloseRoom shadows ygo's, so every close of a room
 // the service makes waits for each repair committing into the room (holdOpen) to hand its update
-// to the room's persistence, and holds off new repairs until the room is closed.
+// to the room's persistence, and holds off new repairs until the room is closed. Its Apply shadows
+// ygo's too, so every Apply the service makes notes the room it ran on as used (used,
+// Service.noteRoomUsed): ygo stamps the room idle there, and the service's own budget of resident
+// peerless rooms counts from the same moment (peerlessRoomBudget). The one Apply that does not is
+// the budget's own close (Service.closeBudgetRoom), which is no use of the room.
 //
 // A settlement writes its repairs while it holds the document's advisory lock, and ygo hands a
 // commit's update to the room's persistence inside the commit. Were the room's persistence worker
@@ -29,10 +33,13 @@ import (
 // ygo closes no room a caller is inside - a Server.Apply, a relay Inject, or a browser's join
 // before its peer registers - and answers websocket.ErrRoomInUse instead (sjawhar/ygo
 // v1.55.1-sami.2, reearth/ygo#342). So a close from outside the room waits for those callers to
-// leave (closeWhenFree), and the one close the service makes from inside its own Apply on the
-// room (closeInstance) is ygo's CloseRoomWithin.
+// leave (closeWhenFree), and the closes the service makes from inside its own Apply on the room
+// (closeInstance) are ygo's CloseRoomWithin.
 type roomServer struct {
 	*websocket.Server
+	// used runs after every Apply on a room returns, with that room's name. Nil in a roomServer
+	// built without a service, which the tests of the forks and the close gate alone build.
+	used func(room string)
 	// beforeClose runs ahead of every close of a room the service makes, holding the room's close
 	// gate, once the close knows the room is the one it closes (Service.removeLocalAwareness). It
 	// must not block. Nil runs nothing.
@@ -56,8 +63,21 @@ type closeGate struct {
 	holders int
 }
 
-func newRoomServer(server *websocket.Server) *roomServer {
-	return &roomServer{Server: server, gates: make(map[string]*closeGate)}
+func newRoomServer(server *websocket.Server, used func(room string)) *roomServer {
+	return &roomServer{Server: server, used: used, gates: make(map[string]*closeGate)}
+}
+
+// Apply runs ygo's Apply and then notes room used, whether or not the callback changed anything:
+// an Apply is the one way the service reaches a room with no browser in it - an agent's write
+// publishing into the room, a read or a settlement warming it - and this return is both where
+// ygo stamps the room idle and where the budget's window on it starts (roomBudgetMinIdle), after
+// which the budget may close it, least recently used first.
+func (r *roomServer) Apply(ctx context.Context, room string, mutate func(*crdt.Doc, func(func(*crdt.Transaction)))) error {
+	err := r.Server.Apply(ctx, room, mutate)
+	if r.used != nil {
+		r.used(room)
+	}
+	return err
 }
 
 // CloseRoom closes room through ygo's CloseRoom once no repair is committing into it, holding
@@ -77,7 +97,7 @@ func (r *roomServer) closeRoom(ctx context.Context, room string, force bool) err
 }
 
 // roomInUseFirstWait and roomInUseLongestWait bound how long a close waits before it tries again
-// a room a caller is inside (closeWhenFree): the wait doubles from the first to the longest. A
+// a room a caller is inside (retryWhileInUse): the wait doubles from the first to the longest. A
 // caller inside a room is a write's publish, a read that loads the room, a settlement's repair or
 // a browser's join, each of which leaves within milliseconds.
 const (
@@ -85,27 +105,18 @@ const (
 	roomInUseLongestWait = 50 * time.Millisecond
 )
 
-// closeWhenFree runs try, a close of room, holding room's gate exclusively, until try answers
-// anything but websocket.ErrRoomInUse or ctx ends between attempts. It checks ctx after taking
-// the gate, but cannot cancel the gate lock or try itself. It lets go of the gate between tries,
-// so the callers it waits for are not held behind it: a close of the service's own made from
-// inside an Apply on the room (closeInstance) waits for that gate, and a repair refuses to start
-// while a close holds it.
-func (r *roomServer) closeWhenFree(ctx context.Context, room string, try func() error) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	gate := r.acquireGate(room)
-	defer r.releaseGate(room, gate)
+// retryWhileInUse runs try, one try at a close of a room, until it answers anything but
+// websocket.ErrRoomInUse or ctx ends before a try, waiting between tries from roomInUseFirstWait
+// up to roomInUseLongestWait. It cannot cancel a try once made. Every close the service retries
+// while a caller is inside the room goes through it: a close by name (closeWhenFree) and the
+// budget's close of an instance (Service.closeBudgetRoom).
+func retryWhileInUse(ctx context.Context, try func() error) error {
 	wait := roomInUseFirstWait
 	for {
-		gate.Lock()
 		if err := ctx.Err(); err != nil {
-			gate.Unlock()
 			return err
 		}
 		err := try()
-		gate.Unlock()
 		if !errors.Is(err, websocket.ErrRoomInUse) {
 			return err
 		}
@@ -118,6 +129,28 @@ func (r *roomServer) closeWhenFree(ctx context.Context, room string, try func() 
 		}
 		wait = min(2*wait, roomInUseLongestWait)
 	}
+}
+
+// closeWhenFree runs try, a close of room, holding room's gate exclusively, until try answers
+// anything but websocket.ErrRoomInUse or ctx ends between attempts (retryWhileInUse). It checks
+// ctx after taking the gate, but cannot cancel the gate lock or try itself. It lets go of the gate
+// between tries, so the callers it waits for are not held behind it: a close of the service's own
+// made from inside an Apply on the room (closeInstance) waits for that gate, and a repair refuses
+// to start while a close holds it.
+func (r *roomServer) closeWhenFree(ctx context.Context, room string, try func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	gate := r.acquireGate(room)
+	defer r.releaseGate(room, gate)
+	return retryWhileInUse(ctx, func() error {
+		gate.Lock()
+		defer gate.Unlock()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return try()
+	})
 }
 
 // closeHeld runs attempt, one try at closing room by a caller holding room's gate, after
@@ -137,15 +170,18 @@ func (r *roomServer) closeHeld(room string, attempt func() error) error {
 	return err
 }
 
-// closeInstance closes room through ygo's CloseRoomWithin only while room holds doc, answering
-// whether it closed it. Its caller runs it inside its own Server.Apply on room (closeRoomInstance),
-// which ygo's CloseRoom would refuse as a caller inside the room, so it is that Apply's close; it
-// is refused, with websocket.ErrRoomInUse, while any other caller is inside the room. It holds the
-// close gate as CloseRoom does, so no other close the service makes, and no repair, comes between
-// its check of the instance and ygo's lookup of the room by name. That Apply keeps ygo's idle sweep,
-// the one retirement that takes no gate, off the room for the same span, so the room the check
-// found is the room ygo closes.
-func (r *roomServer) closeInstance(room string, doc *crdt.Doc) (bool, error) {
+// closeInstance closes room through ygo's CloseRoomWithin, with force or without it, only while room
+// holds doc, answering whether it closed it. Its callers run it inside their own Server.Apply on
+// room, which ygo's CloseRoom would refuse as a caller inside the room, so it is that Apply's close:
+// a close of a room whose stored history was replaced (closeRoomInstance), forced, and the budget's
+// close of a peerless room (Service.closeBudgetRoom), which a browser on the room refuses
+// (websocket.ErrRoomHasPeers). It is refused, with websocket.ErrRoomInUse, while any other caller is
+// inside the room. It holds the close gate as CloseRoom does, so no other close the service makes,
+// and no repair, comes between its check of the instance and ygo's lookup of the room by name. That
+// Apply keeps ygo's idle sweep, the one retirement that takes no gate, off the room for the same
+// span, so the room the check found is the room ygo closes, and a nil from ygo is this close's own
+// unload.
+func (r *roomServer) closeInstance(room string, doc *crdt.Doc, force bool) (bool, error) {
 	gate := r.acquireGate(room)
 	defer r.releaseGate(room, gate)
 	gate.Lock()
@@ -153,7 +189,7 @@ func (r *roomServer) closeInstance(room string, doc *crdt.Doc) (bool, error) {
 	if r.GetDoc(room) != doc {
 		return false, nil
 	}
-	if err := r.closeHeld(room, func() error { return r.Server.CloseRoomWithin(room, doc, true) }); err != nil {
+	if err := r.closeHeld(room, func() error { return r.Server.CloseRoomWithin(room, doc, force) }); err != nil {
 		if errors.Is(err, websocket.ErrRoomNotFound) {
 			return false, nil
 		}

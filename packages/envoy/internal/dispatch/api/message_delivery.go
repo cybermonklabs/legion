@@ -27,17 +27,17 @@ type createDeliveryInput struct {
 func (s *server) createDelivery(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	var input createDeliveryInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !human {
 		if actor, err = bearerSessionActor(r, actor, input.Actor); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -57,7 +57,7 @@ func (s *server) createDelivery(w http.ResponseWriter, r *http.Request) {
 	// opens: a Retry asks for none.
 	attempt, err := s.deliverMessage(context.WithoutCancel(r.Context()), message, input.Delivery, actor, nil)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusCreated, attempt)
@@ -136,7 +136,7 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 	}
 	var input actorInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -160,7 +160,7 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 	})
 	tx, err := s.begin(ctx)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(ctx)
@@ -168,9 +168,11 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 	// read cannot move before the update. It is FOR NO KEY UPDATE, which serialises it against
 	// the claim's, and not FOR UPDATE: the session's reply takes the attempt row first and then,
 	// through its insert's foreign key, this row FOR KEY SHARE, which FOR UPDATE would wait for
-	// while this transaction waits for the attempt row the reply holds.
-	if _, err := tx.Exec(ctx, `select 1 from messages where id = $1 for no key update`, message.ID); err != nil {
-		s.writeHandlerError(w, err)
+	// while this transaction waits for the attempt row the reply holds. The wait is a bounded one
+	// (store.LockRowsWithinBound): a direct message has no owner, so no owner lock orders the writers
+	// of its row, and a holder that stands is waited for no longer than any lock a write waits on.
+	if err := store.LockRowsWithinBound(ctx, tx, `select 1 from messages where id = $1 for no key update`, message.ID); err != nil {
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	var sessionID, delivery, state string
@@ -197,7 +199,7 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	switch {
@@ -249,23 +251,33 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("attempt %d was requested more than a minute ago", number))
 		return
 	}
-	accepted, err := scanMessageDelivery(tx.QueryRow(ctx, `
+	// The attempt row is taken in a bounded wait and written behind it, in one batch
+	// (store.LockRowsWithinBoundAndRead): the session's reply, the settle and the claim's renewal
+	// hold it without the message's lock taken above, so that lock orders none of them.
+	var accepted model.MessageDelivery
+	err = store.LockRowsWithinBoundAndRead(ctx, tx,
+		`select 1 from message_deliveries where message_id = $1 and attempt = $2 for update`,
+		[]any{message.ID, number}, `
 		update message_deliveries set accepted_at = now(), accepted_as = $3
 		where message_id = $1 and attempt = $2
 		returning `+messageDeliveryColumns,
-		message.ID, number, acceptedAsUserTurn,
-	))
+		[]any{message.ID, number, acceptedAsUserTurn},
+		func(row pgx.Row) (err error) {
+			accepted, err = scanMessageDelivery(row)
+			return err
+		},
+	)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	appended, err := s.appendEvent(ctx, tx, event)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(ctx, appended)
@@ -319,12 +331,12 @@ func (s *server) messageDeliveryRoute(ctx context.Context, message model.Message
 	var err error
 	if resumeAttempt > 0 {
 		lapsed = true
-		err = s.deps.Store.Pool.QueryRow(ctx, `
+		err = s.workStore(ctx).Pool.QueryRow(ctx, `
 			select session_id from message_deliveries
 			where message_id = $1 and attempt = $2 and state = 'pending'
 		`, message.ID, resumeAttempt).Scan(&pinned)
 	} else {
-		err = s.deps.Store.Pool.QueryRow(ctx, `
+		err = s.workStore(ctx).Pool.QueryRow(ctx, `
 			select session_id, `+model.DeliveryClaimFreeSQL+`
 			from message_deliveries
 			where message_id = $1 and state = 'pending'
@@ -377,9 +389,15 @@ func (s *server) recordPendingMessageDelivery(
 	}
 	// FOR NO KEY UPDATE, as the accept's is: the session's reply takes an attempt row and then
 	// this row FOR KEY SHARE through its insert's foreign key, and FOR UPDATE would wait for that
-	// while this transaction waits below for the attempt row the reply holds.
+	// while this transaction waits below for the attempt row the reply holds. Taken in a bounded
+	// wait first, as the accept's is, and then read under the lock this transaction holds, in the
+	// same batch (store.LockRowsWithinBoundAndRead).
 	var target string
-	if err := tx.QueryRow(ctx, `select target from messages where id = $1 for no key update`, message.ID).Scan(&target); err != nil {
+	if err := store.LockRowsWithinBoundAndRead(ctx, tx,
+		`select 1 from messages where id = $1 for no key update`, []any{message.ID},
+		`select target from messages where id = $1 for no key update`, []any{message.ID},
+		func(row pgx.Row) error { return row.Scan(&target) },
+	); err != nil {
 		return pendingMessageDelivery{}, err
 	}
 	pending := pendingMessageDelivery{resolved: resolved}
@@ -394,14 +412,18 @@ func (s *server) recordPendingMessageDelivery(
 		// resolution means a stale one.
 		var bound model.MessageDelivery
 		var free bool
-		err = tx.QueryRow(ctx, `
+		err = store.LockRowsWithinBoundAndRead(ctx, tx, `
+			select 1 from message_deliveries
+			where message_id = $1 and attempt = $2 and state = 'pending'
+			for update
+		`, []any{message.ID, resumeAttempt}, `
 			select attempt, delivery, session_id, urgency, `+model.ConnectedOnlySQL+`, `+model.DeliveryClaimFreeSQL+`
 			from message_deliveries
 			where message_id = $1 and attempt = $2 and state = 'pending'
 			for update
-		`, message.ID, resumeAttempt).Scan(
-			&bound.Attempt, &bound.Delivery, &bound.SessionID, &pending.urgency, &pending.connectedOnly, &free,
-		)
+		`, []any{message.ID, resumeAttempt}, func(row pgx.Row) error {
+			return row.Scan(&bound.Attempt, &bound.Delivery, &bound.SessionID, &pending.urgency, &pending.connectedOnly, &free)
+		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return s.openFirstMessageDeliveryAttempt(
 				ctx, tx, message, target, actor, resolved, replyThread, resumeAttempt,
@@ -438,16 +460,22 @@ func (s *server) recordPendingMessageDelivery(
 	var stranded model.MessageDelivery
 	var strandedUrgency *string
 	var lapsed bool
-	err = tx.QueryRow(ctx, `
+	err = store.LockRowsWithinBoundAndRead(ctx, tx, `
+		select 1 from message_deliveries
+		where message_id = $1 and state = 'pending'
+		order by attempt
+		limit 1
+		for update
+	`, []any{message.ID}, `
 		select attempt, delivery, session_id, urgency, `+model.ConnectedOnlySQL+`, `+model.DeliveryClaimFreeSQL+`
 		from message_deliveries
 		where message_id = $1 and state = 'pending'
 		order by attempt
 		limit 1
 		for update
-	`, message.ID).Scan(
-		&stranded.Attempt, &stranded.Delivery, &stranded.SessionID, &strandedUrgency, &pending.connectedOnly, &lapsed,
-	)
+	`, []any{message.ID}, func(row pgx.Row) error {
+		return row.Scan(&stranded.Attempt, &stranded.Delivery, &stranded.SessionID, &strandedUrgency, &pending.connectedOnly, &lapsed)
+	})
 	var superseded *model.Event
 	switch {
 	case err != nil && !errors.Is(err, pgx.ErrNoRows):
@@ -692,13 +720,26 @@ func (s *server) completeMessageDelivery(
 		SessionID: pending.resolved.attemptSessionID, State: state, Duplicate: outcome.duplicate, Error: failure,
 	}, pending.resolved.title)
 	return settleDeliveryAttempt(ctx, s, receipt,
-		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, error) {
-			return scanMessageDelivery(tx.QueryRow(ctx, `
+		func(ctx context.Context, tx pgx.Tx) (settled model.MessageDelivery, err error) {
+			// The attempt row is taken in a bounded wait and written behind it, in one batch
+			// (store.LockRowsWithinBoundAndRead): a direct message's receipt has no owner, so the owner
+			// lock settleDeliveryAttempt takes orders none of the row's other holders (the reply,
+			// the accept, the claim's renewal).
+			err = store.LockRowsWithinBoundAndRead(ctx, tx, `
+				select 1 from message_deliveries
+				where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
+				for update`,
+				[]any{message.ID, pending.attempt, pending.claimedAt}, `
 				update message_deliveries set envelope_id = $4, state = $5, error = $6, duplicate = $7
 				where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
 				returning `+messageDeliveryColumns,
-				message.ID, pending.attempt, pending.claimedAt, outcome.envelopeID, state, failure, outcome.duplicate,
-			))
+				[]any{message.ID, pending.attempt, pending.claimedAt, outcome.envelopeID, state, failure, outcome.duplicate},
+				func(row pgx.Row) (err error) {
+					settled, err = scanMessageDelivery(row)
+					return err
+				},
+			)
+			return settled, err
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, bool, *string, error) {
 			var mine bool
@@ -851,13 +892,21 @@ func (s *server) renewMessageDeliveryClaim(
 		return pending, false, err
 	}
 	defer tx.Rollback(ctx)
-	err = tx.QueryRow(ctx, `
+	// The attempt row is taken in a bounded wait and written behind it, in one batch
+	// (store.LockRowsWithinBoundAndRead): its other holders (the reply, the accept, another sender's
+	// settle) take it under no lock this transaction holds.
+	err = store.LockRowsWithinBoundAndRead(ctx, tx, `
+		select 1 from message_deliveries
+		where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
+		for update`,
+		[]any{message.ID, pending.attempt, pending.claimedAt}, `
 		update message_deliveries
 		set claimed_at = now(), session_id = coalesce(nullif(session_id, ''), $4)
 		where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
-		returning claimed_at, session_id
-	`, message.ID, pending.attempt, pending.claimedAt, renewed.resolved.attemptSessionID,
-	).Scan(&renewed.claimedAt, &renewed.resolved.attemptSessionID)
+		returning claimed_at, session_id`,
+		[]any{message.ID, pending.attempt, pending.claimedAt, renewed.resolved.attemptSessionID},
+		func(row pgx.Row) error { return row.Scan(&renewed.claimedAt, &renewed.resolved.attemptSessionID) },
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return pending, false, nil
 	}
@@ -936,7 +985,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	var input messageReplyInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -954,7 +1003,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		// A reply is stored as a message of its own, so it takes the message route's bound.
 		if err := blockBoundError(itemblocks.Check("body", *input.Body)); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -965,7 +1014,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 
 	followUp, err := followUpRequested(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The message's target and the session its attempt names are read before the transaction,
@@ -979,13 +1028,13 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		where m.id = $1
 	`, input.Attempt)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -999,7 +1048,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	if message.IssueKey != nil {
 		if _, err := s.lockIssue(r.Context(), tx, *message.IssueKey); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -1013,22 +1062,35 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	var plan messageReplyPlan
 	if input.Body != nil {
 		if plan, err = s.planMessageReply(r.Context(), tx, message, *input.Body, input.InReplyToBlock); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if input.InReplyToBlock != nil {
 		// Before the attempt row, as the accept route takes them: issue, message, attempt.
 		if err := lockReplyParentMessage(r.Context(), tx, message.ID); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
-	attempt, err := scanMessageDelivery(tx.QueryRow(r.Context(), `
+	// The attempt row is taken in a bounded wait and read behind it in the same batch, as the
+	// message's row is: a direct message has no owner whose lock orders the writers of its
+	// attempts. The lock's failure is the handler's to answer; the read's is a missing delivery.
+	var attempt model.MessageDelivery
+	var readErr error
+	if err := store.LockRowsWithinBoundAndRead(r.Context(), tx, `
+		select 1 from message_deliveries where message_id = $1 and attempt = $2 for update
+	`, []any{message.ID, input.Attempt}, `
 		select `+messageDeliveryColumns+`
 		from message_deliveries where message_id = $1 and attempt = $2 for update
-	`, message.ID, input.Attempt))
-	if err != nil {
+	`, []any{message.ID, input.Attempt}, func(row pgx.Row) error {
+		attempt, readErr = scanMessageDelivery(row)
+		return readErr
+	}); err != nil {
+		if readErr == nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
 		return
 	}
@@ -1053,12 +1115,12 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		answer, err := s.loadMessage(r.Context(), tx, messageIssueKey(message), *attempt.ReplyID)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		read, posted, err := s.replyAfterAnswer(r.Context(), tx, answer, actor, input.Body != nil && followUp, plan, wantsDisplayTrees(r))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		// A message handed back as it is stored reads the block it answers as every read does.
@@ -1066,7 +1128,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		// does, so it stays on the transaction, where replyComment's own replay hydrates too.
 		if posted == nil {
 			if err := hydrateMessageReplyBlocks(r.Context(), tx, &read.Message); err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			// The hydration wrote the block into the row the shape stands in front of, so the
@@ -1087,27 +1149,27 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			message.ID, input.Attempt, *input.Error,
 		))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		receipt, err := s.appendEvent(r.Context(), tx, messageDeliveryReceipt(message, actor, updated, ""))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		response, events = updated, append(events, receipt)
 	default:
 		if plan.refusal != nil {
-			s.writeHandlerError(w, plan.refusal)
+			s.writeHandlerError(w, r, plan.refusal)
 			return
 		}
 		if err := plan.parentIndex.Write(r.Context(), tx); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		reply, answered, err := s.insertSessionReply(r.Context(), tx, message, actor, plan)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		// The session answered, so the message reached it whatever the attempt recorded: a failed
@@ -1116,13 +1178,13 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			update message_deliveries set reply_id = $3, state = 'sent', error = null
 			where message_id = $1 and attempt = $2
 		`, message.ID, input.Attempt, reply.ID); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		response, events, status = replyRead{shapedMessage: newShapedMessage(reply, wantsDisplayTrees(r))}, append(events, answered), http.StatusCreated
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), events...)

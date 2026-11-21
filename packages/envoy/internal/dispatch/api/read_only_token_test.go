@@ -28,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -84,7 +85,8 @@ func readOnlyTable() []apiRoute {
 }
 
 // TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler builds every row's own
-// chain as register does (routeHandler) with the row's handler replaced by a recorder, and sends
+// chain as register does (routeHandler, under the admission and the read deadline register
+// gives a server whose Deps set neither) with the row's handler replaced by a recorder, and sends
 // each a read-only token with a body and a valid Idempotency-Key. Every row the list does not name
 // answers 403 READ_ONLY_TOKEN and never runs its handler; the row the list names runs it once.
 // GET /ws/live is walked the same way through its own chain (liveSocketHandler), with the socket
@@ -98,7 +100,7 @@ func TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler(t *
 	rig.broker.Says(token, readOnlyToken(caller.jkt))
 
 	table := readOnlyTable()
-	replays := rig.served.keyedReplays()
+	limiter := admission.New(admission.DefaultLimits())
 	walked, listed := 0, 0
 	for _, route := range table {
 		name := route.Method + " " + route.Pattern
@@ -108,7 +110,7 @@ func TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler(t *
 			w.WriteHeader(http.StatusNoContent)
 		}
 		response := httptest.NewRecorder()
-		rig.served.routeHandler(route, replays[name]).ServeHTTP(response, caller.presentingProbe(t, route, token))
+		rig.served.routeHandler(route, limiter, defaultReadDeadline).ServeHTTP(response, caller.presentingProbe(t, route, token))
 		if route.ReadScope {
 			listed++
 			if ran != 1 || response.Code != http.StatusNoContent {

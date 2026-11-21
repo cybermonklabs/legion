@@ -37,7 +37,7 @@ func (s *server) getUserState(w http.ResponseWriter, r *http.Request) {
 		from user_issue_state where login = $1 order by issue_key
 	`, actor.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -47,17 +47,17 @@ func (s *server) getUserState(w http.ResponseWriter, r *http.Request) {
 		var value userIssueState
 		var dismissed []byte
 		if err := rows.Scan(&key, &value.Pinned, &value.LastReadSeq, &dismissed, &value.Seq); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if err := json.Unmarshal(dismissed, &value.Dismissed); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		state[key] = value
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, state)
@@ -93,7 +93,7 @@ type userStateStaleError struct {
 func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 	var input userIssueStateInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.actingPerson(w, r)
@@ -110,7 +110,7 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -123,10 +123,10 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 	var project string
 	if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			s.writeHandlerError(w, fmt.Errorf("user state names %s, which no issue row holds", key))
+			s.writeHandlerError(w, r, fmt.Errorf("user state names %s, which no issue row holds", key))
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The owner's lock: advisory, so it assigns no transaction id (store.LockOwner), and the one
@@ -148,11 +148,11 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 	case err != nil:
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	default:
 		if err := json.Unmarshal(encodedDismissed, &value.Dismissed); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -179,7 +179,7 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 	}
 	encodedDismissed, err = encodeJSON(value.Dismissed)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// changed names which of pinned, last_read_seq and dismissed this write moved from the row it
@@ -205,18 +205,18 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 			pinned = excluded.pinned, last_read_seq = excluded.last_read_seq,
 			dismissed = excluded.dismissed, seq = excluded.seq
 	`, actor.ID, key, value.Pinned, value.LastReadSeq, encodedDismissed, value.Seq); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, projectOwner(project).event(
 		"user_state.updated", actor, map[string]any{"login": actor.ID, "state": value, "changed": changed},
 	))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)
@@ -304,7 +304,7 @@ func (s *server) getUserAgentState(w http.ResponseWriter, r *http.Request) {
 	}
 	states, err := s.loadUserAgentStates(r.Context(), actor.ID, nil)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, states)
@@ -362,7 +362,7 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 	}
 	var input userAgentStateInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if input.ClearedBefore == nil && input.ReadThrough == nil && len(input.ReadReplies) == 0 && input.Pinned == nil {
@@ -372,12 +372,12 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 	}
 	clearedBefore, err := parseAgentStateCutoff("cleared_before", input.ClearedBefore)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	readThrough, err := parseAgentStateCutoff("read_through", input.ReadThrough)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// An id is taken in any form uuid.Parse reads and sent to Postgres in the canonical one, which
@@ -386,7 +386,7 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 	for _, id := range input.ReadReplies {
 		parsed, err := uuid.Parse(id)
 		if err != nil {
-			s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_STATE",
+			s.writeHandlerError(w, r, errorf(http.StatusBadRequest, "INVALID_STATE",
 				"read_replies: %q is not a message id", id))
 			return
 		}
@@ -400,13 +400,13 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 	// The state is announced on an event the session owns, and only a session id a route can
 	// name can own one, so any other is refused here rather than failing the write.
 	if _, err := model.ParseRoute("session:" + sessionID); err != nil {
-		s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_STATE",
+		s.writeHandlerError(w, r, errorf(http.StatusBadRequest, "INVALID_STATE",
 			"session id %q is not one Dispatch can route", sessionID))
 		return
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -425,18 +425,22 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 			values ($1, $2, least($3::timestamptz, now()))
 			on conflict (login, session_id) do update set cleared_before = excluded.cleared_before
 		`, actor.ID, sessionID, *clearedBefore); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if readThrough != nil {
-		if _, err := tx.Exec(r.Context(), `
+		// The upsert runs in a bounded wait itself (store.LockRowsWithinBound; it answers nothing this
+		// handler reads), so a concurrent mark of the same login and session - another tab or
+		// device - holding the row, or an uncommitted first mark of it, is waited for no longer
+		// than any lock a write waits on: no owner lock orders the writers of this row.
+		if err := store.LockRowsWithinBound(r.Context(), tx, `
 			insert into user_agent_read (login, session_id, read_through)
 			values ($1, $2, least($3::timestamptz, now()))
 			on conflict (login, session_id) do update set
 				read_through = greatest(user_agent_read.read_through, excluded.read_through)
 		`, model.CanonicalLogin(actor.ID), sessionID, *readThrough); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -457,7 +461,7 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 			`
 		}
 		if _, err := tx.Exec(r.Context(), pin, model.CanonicalLogin(actor.ID), sessionID); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -476,12 +480,12 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 			limit 1
 		`, readReplies, sessionID).Scan(&foreign)
 		if err == nil {
-			s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_STATE",
+			s.writeHandlerError(w, r, errorf(http.StatusBadRequest, "INVALID_STATE",
 				"read_replies: %s is not a message session %s wrote", foreign, sessionID))
 			return
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		// A reply the session's read mark has already passed is read without a row, and the
@@ -501,7 +505,7 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 			on conflict do nothing
 		`, model.CanonicalLogin(actor.ID), sessionID, readReplies)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		announce = announce || inserted.RowsAffected() > 0
@@ -517,11 +521,13 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		//
 		// The dead rows are locked in one order before the delete reaches them, for the reason
 		// written on pruneAgentReplies below, which this route and the Inbox's mark-all share
-		// (markInboxReadThreads names the lock order every writer here takes).
-		if _, err := tx.Exec(r.Context(), pruneAgentReplies,
+		// (markInboxReadThreads names the lock order every writer here takes). The statement runs
+		// in a bounded wait (store.LockRowsWithinBound): no owner lock orders the writers of these
+		// rows, and this route, unlike the mark-all, sets no statement_timeout of its own.
+		if err := store.LockRowsWithinBound(r.Context(), tx, pruneAgentReplies,
 			model.CanonicalLogin(actor.ID), []string{sessionID},
 		); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -532,24 +538,24 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 	if !announce {
 		// Nothing was written; end the transaction before the state is read through the pool.
 		if err := tx.Rollback(r.Context()); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	} else {
 		event, err := s.appendEvent(r.Context(), tx, userAgentStateEvent(actor, sessionID))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if err := tx.Commit(r.Context()); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		s.publish(r.Context(), event)
 	}
 	states, err := s.loadUserAgentStates(r.Context(), actor.ID, &sessionID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, states[sessionID])

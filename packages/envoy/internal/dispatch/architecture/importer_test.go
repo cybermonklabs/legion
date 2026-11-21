@@ -2340,3 +2340,138 @@ func TestACallerAfterTheHeadWasReadIsNotToldTheOlderHead(t *testing.T) {
 		waitForSync(t, afterThePush, "the caller that asked after the push"), commitTwo, infraComponents,
 		[]string{"architecture.synced " + commitOne, "architecture.synced " + commitTwo})
 }
+
+// A sync locks its project's source rows before it projects (lockProjectSources), and the row of
+// its own source before it records a failure (lockSourceRow), and each waits for a row another
+// transaction holds no longer than a write waits for any lock another writer holds (the store's
+// lockWait): at that bound the projection is refused store.ErrPoolBusy, the failure's record is
+// refused it in turn, and the sync answers it with no row, which the sync routes answer 503
+// DATABASE_BUSY with Retry-After (api's syncArchitectureSource, writeHandlerError). A route's sync
+// runs on the request's behalf and no owner lock orders the writers of these rows, so without the
+// bound the request waited for as long as the holder held the row. Once the row is free the same
+// sync projects. The bound is the test's (store.WithLockWaitForTest).
+func TestASyncBehindItsSourcesHeldRowIsRefusedBusyAtItsBound(t *testing.T) {
+	const bound = time.Second
+	ctx := context.Background()
+	fake := &fakeSource{t: t, files: validFiles()}
+	importer, database := newImporterFixture(t, fake)
+
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder: %v", err)
+	}
+	defer func() { _ = holder.Rollback(ctx) }()
+	if _, err := holder.Exec(ctx, `select 1 from architecture_sources where project_key = 'CORE' for update`); err != nil {
+		t.Fatalf("hold the source's row: %v", err)
+	}
+	type synced struct {
+		source model.ArchitectureSource
+		err    error
+	}
+	answered := make(chan synced, 1)
+	started := time.Now()
+	go func() {
+		source, err := importer.Sync(store.WithLockWaitForTest(ctx, bound), "CORE", archRepo)
+		answered <- synced{source: source, err: err}
+	}()
+	var got synced
+	select {
+	case got = <-answered:
+	case <-time.After(10 * time.Second):
+		waited := time.Since(started)
+		_ = holder.Rollback(ctx)
+		<-answered
+		t.Fatalf("the sync was still waiting on its source's held row %s after it began, past its bound of %s: "+
+			"it waits on a held row until its holder lets go", waited.Round(time.Millisecond), bound)
+	}
+	waited := time.Since(started)
+	if !store.IsPoolBusy(got.err) || got.source.Project != "" {
+		t.Fatalf("the sync behind its source's held row: source %+v, err %v; want no row and ErrPoolBusy", got.source, got.err)
+	}
+	if waited < bound {
+		t.Fatalf("the sync was refused %s after it began, inside its bound of %s", waited.Round(time.Millisecond), bound)
+	}
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatalf("let the row go: %v", err)
+	}
+	source, err := importer.Sync(ctx, "CORE", archRepo)
+	if err != nil || source.LastCommit == nil || *source.LastCommit != commitOne || source.LastError != nil {
+		t.Fatalf("the sync once the row was free: source %+v, err %v; want the row at %s with no error", source, err, commitOne)
+	}
+}
+
+// A sync's other writes of its source's row wait for a row another transaction holds no longer
+// than that bound either, each taking the row in a bounded wait and writing behind it in the same
+// batch (store.LockRowsWithinBoundAndRead): the freshness stamp of a head that has not moved (touch),
+// and the record of an installation GitHub moved (resolve), whose refusal is a failure the sync
+// then records, refused at its own lock in turn (lockSourceRow). The sync answers
+// store.ErrPoolBusy with no row, which the sync routes answer 503 DATABASE_BUSY with Retry-After.
+// No owner lock orders the writers of these rows, so without the bound a route's sync waited for
+// as long as the holder held the row. Once the row is free the same sync goes through. The bound
+// is the test's (store.WithLockWaitForTest).
+func TestASyncsWriteBehindItsSourcesHeldRowIsRefusedBusyAtItsBound(t *testing.T) {
+	const bound = time.Second
+	for _, write := range []struct {
+		name string
+		// arrange readies the second sync's GitHub answers once the first has synced.
+		arrange func(fake *fakeSource)
+	}{
+		{"the stamp of a head that has not moved", func(*fakeSource) {}},
+		{"the record of an installation GitHub moved", func(fake *fakeSource) { fake.installationID = 99 }},
+	} {
+		t.Run(write.name, func(t *testing.T) {
+			ctx := context.Background()
+			fake := &fakeSource{t: t, files: validFiles()}
+			importer, database := newImporterFixture(t, fake)
+			if _, err := importer.Sync(ctx, "CORE", archRepo); err != nil {
+				t.Fatalf("the first sync: %v", err)
+			}
+			write.arrange(fake)
+
+			holder, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the holder: %v", err)
+			}
+			defer func() { _ = holder.Rollback(ctx) }()
+			if _, err := holder.Exec(ctx, `select 1 from architecture_sources where project_key = 'CORE' for update`); err != nil {
+				t.Fatalf("hold the source's row: %v", err)
+			}
+			type synced struct {
+				source model.ArchitectureSource
+				err    error
+			}
+			answered := make(chan synced, 1)
+			started := time.Now()
+			go func() {
+				source, err := importer.Sync(store.WithLockWaitForTest(ctx, bound), "CORE", archRepo)
+				answered <- synced{source: source, err: err}
+			}()
+			var got synced
+			select {
+			case got = <-answered:
+			case <-time.After(10 * time.Second):
+				waited := time.Since(started)
+				_ = holder.Rollback(ctx)
+				<-answered
+				t.Fatalf("the sync was still waiting on its source's held row %s after it began, past its bound of %s: "+
+					"it waits on a held row until its holder lets go", waited.Round(time.Millisecond), bound)
+			}
+			waited := time.Since(started)
+			if !store.IsPoolBusy(got.err) || got.source.Project != "" {
+				t.Fatalf("the sync behind its source's held row: source %+v, err %v; want no row and ErrPoolBusy", got.source, got.err)
+			}
+			if waited < bound {
+				t.Fatalf("the sync was refused %s after it began, inside its bound of %s", waited.Round(time.Millisecond), bound)
+			}
+			if err := holder.Rollback(ctx); err != nil {
+				t.Fatalf("let the row go: %v", err)
+			}
+			source, err := importer.Sync(ctx, "CORE", archRepo)
+			if err != nil || source.LastCommit == nil || *source.LastCommit != commitOne || source.LastError != nil ||
+				source.InstallationID != fake.installationID {
+				t.Fatalf("the sync once the row was free: source %+v, err %v; want the row at %s, installation %d, with no error",
+					source, err, commitOne, fake.installationID)
+			}
+		})
+	}
+}

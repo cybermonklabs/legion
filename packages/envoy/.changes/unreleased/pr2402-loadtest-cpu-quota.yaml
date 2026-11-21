@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+  A load step now fits the generator's CPUs to the pod's CPU quota, and records the quota and the
+  throttling of each step. `taskset` reserves nothing inside a CFS quota: once the pod's processes
+  together pass it, CFS throttles all of them, a server pinned with `LOADTEST_SERVER_CPUS` among
+  them. `common.sh` reads the quota from cgroup v2's `cpu.max`, else cgroup v1's
+  `cpu.cfs_quota_us` and `cpu.cfs_period_us`, in whole CPUs rounded down. Beside the server list
+  under a quota, `LOADTEST_GENERATOR_CPUS=auto` and an unset list give the generator the pod's
+  lowest CPUs outside the server list, as many as the quota leaves (at least one): a quota of 8
+  beside `0,1` gives `2,3,4,5,6,7`. A list given whose CPUs and the server list's add up to more
+  than the quota is refused before anything starts, naming the quota, both lists and the list
+  `auto` gives; without a quota an unset or given list stands as before, and `auto` is every CPU
+  of the pod outside the server list. `meta.json` records `generator_cpus`, and `cpu_quota` (the
+  `cpu.max` text, or cgroup v1's two numbers) and `quota_cpus` of the pod `loadgen run` runs in;
+  each step reads that pod's `cpu.stat` at the window's start and end, and `summary.json` keeps the
+  difference as `resources.cpu_throttled_periods` and `resources.cpu_throttled_ms` (`null` when
+  `cpu.stat` was not read), which the Resources table's `pod CPU throttled periods / ms` column
+  shows. On the local stack that pod is the server's too, so a throttled step ran with its pinned
+  server throttled; on a cluster copy it is the runner pod alone, and Dispatch's throttling is
+  `cgroup.json`'s `throttled_s`.

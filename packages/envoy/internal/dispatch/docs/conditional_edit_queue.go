@@ -173,7 +173,9 @@ func (s *Service) admitConditionalEdit(ctx context.Context, artifactID string, g
 		return fmt.Errorf("begin the conditional edit queue's admission: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, conditionalEditQueueLock, conditionalEditQueueLockNamespace, artifactID); err != nil {
+	// The queue lock's wait is bounded as an owner lock's is (store.LockWithinBound): an admission
+	// queued behind a holder past the bound is refused busy, which its request answers 503.
+	if err := store.LockWithinBound(ctx, tx, conditionalEditQueueLock, conditionalEditQueueLockNamespace, artifactID); err != nil {
 		return fmt.Errorf("lock the document's conditional edit queue: %w", err)
 	}
 	// write is taken before the sum, whose deletion takes this process's own row when it is no

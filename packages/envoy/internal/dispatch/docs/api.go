@@ -31,6 +31,7 @@ type API interface {
 	SnapshotVersion(ctx context.Context, artifactID string, actor model.Actor) (VersionResult, error)
 	SettleIssueDocuments(ctx context.Context, issueKey string) error
 	WriteIssueAskStates(ctx context.Context, issueKey string, asks []model.Ask, actor model.Actor, markUnindexed bool) ([]BlockRef, error)
+	AcquireDocumentWriter(ctx context.Context, artifactIDs ...string) (context.Context, func(), error)
 	MarkReopenOwedAskDocuments(ctx context.Context, issueKey string) error
 	FollowClosedIssueVersions(ctx context.Context, issueKey string) error
 	AcquireConditionalEdit(ctx context.Context, artifactID string) (func(), error)

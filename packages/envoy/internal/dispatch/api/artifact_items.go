@@ -5,7 +5,7 @@ import "net/http"
 func (s *server) documentOwnerForHandler(w http.ResponseWriter, r *http.Request) (owner, bool) {
 	_, documentOwner, err := s.documentOwnerFromRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return owner{}, false
 	}
 	return documentOwner, true
@@ -21,12 +21,12 @@ func (s *server) listArtifactAsks(w http.ResponseWriter, r *http.Request) {
 	}
 	state, err := parseAskListState(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	asks, _, err := s.queryOwnerAsks(r.Context(), s.deps.Store.Pool, owner, state)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
@@ -81,12 +81,12 @@ func (s *server) listArtifactEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	options, err := parseEventListOptions(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	events, err := s.readEvents(r.Context(), owner, options)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))

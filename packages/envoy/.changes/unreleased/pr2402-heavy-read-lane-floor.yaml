@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  Dispatch's heavy-read lanes are never narrower than three requests, so a one- or two-processor server no longer refuses heavy reads it could serve; a server of four or more processors keeps one request a processor, at most seven.

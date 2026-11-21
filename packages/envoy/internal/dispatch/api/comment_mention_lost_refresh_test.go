@@ -69,7 +69,7 @@ func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t
 				defer sender.mu.Unlock()
 				return sender.held[key].claimed
 			}
-			parked := attemptClaimedAt(t, database, comment, "session:s1")
+			parked := attemptClaimedAt(t, database.Pool, comment, "session:s1")
 			if !recorded().Equal(parked) {
 				t.Fatalf("the parked send's claim is recorded as %v, its row carries %v", recorded(), parked)
 			}
@@ -77,7 +77,7 @@ func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t
 			lossy.armed.Store(tc.lose)
 			sender.refreshHeldClaims(context.Background())
 			lossy.armed.Store(false)
-			written := attemptClaimedAt(t, database, comment, "session:s1")
+			written := attemptClaimedAt(t, database.Pool, comment, "session:s1")
 			t.Logf("parked under %v; the refresh wrote %v, and the sender records %v; connections dropped: %d",
 				parked, written, recorded(), lossy.dropped.Load())
 			if !written.After(parked) {
@@ -88,7 +88,7 @@ func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t
 			}
 
 			sender.refreshHeldClaims(context.Background())
-			again := attemptClaimedAt(t, database, comment, "session:s1")
+			again := attemptClaimedAt(t, database.Pool, comment, "session:s1")
 			t.Logf("the next refresh: the row carries %v, and the sender records %v", again, recorded())
 			if !again.After(written) {
 				t.Fatalf("the next refresh left the row's claim at %v, the one the refresh whose answer was lost wrote: the sender named its claim from before, %v, which the row no longer carries, so no refresh writes the row again and the claim lapses with the send still parked",
@@ -179,7 +179,7 @@ func TestALostRefreshNeverRevivesALapsedClaim(t *testing.T) {
 				}
 			}
 			ageClaimAndRecord(t, database, sender, key, tc.age)
-			aged := attemptClaimedAt(t, database, parkedOne, "session:s1")
+			aged := attemptClaimedAt(t, database.Pool, parkedOne, "session:s1")
 
 			lossy.armed.Store(tc.lose)
 			sender.refreshHeldClaims(ctx)
@@ -187,7 +187,7 @@ func TestALostRefreshNeverRevivesALapsedClaim(t *testing.T) {
 			if want := int32(map[bool]int{false: 0, true: 1}[tc.lose]); lossy.dropped.Load() != want {
 				t.Fatalf("%d connections dropped after the refresh's statement, want %d", lossy.dropped.Load(), want)
 			}
-			row := attemptClaimedAt(t, database, parkedOne, "session:s1")
+			row := attemptClaimedAt(t, database.Pool, parkedOne, "session:s1")
 			recorded, unsure := recordedClaim(sender, key)
 			t.Logf("the claim aged to %v; after the refresh the row carries %v, and the sender records %v (unsure %t)",
 				aged, row, recorded, unsure)

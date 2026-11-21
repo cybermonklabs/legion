@@ -53,7 +53,7 @@ const (
 func anchorToAMark(service *Service, artifactID, markID string, actor model.Actor, join joinPoint) (Anchored, VersionResult, error) {
 	var anchored Anchored
 	var snapshot VersionResult
-	err := joinedWrite(service, func(ctx context.Context) (err error) {
+	err := joinedWrite(service, artifactID, func(ctx context.Context) (err error) {
 		ctx = WithCommentMarks(ctx)
 		if anchored, err = service.VerifyMark(ctx, artifactID, MarkComment, markID); err != nil {
 			return err
@@ -138,7 +138,7 @@ func TestAMarkAnchorFlushesTheOtherProcessesRoomBeforeTheDocumentsLock(t *testin
 	if !strings.Contains(markdown, "Alpha") || !strings.Contains(markdown, "by bob") {
 		t.Fatalf("the pinned version reads %q, want the text the mark is in and the other process's edit the flush stored", markdown)
 	}
-	if err := joinedWrite(pair.taskA, func(ctx context.Context) error {
+	if err := joinedWrite(pair.taskA, pair.artifactID, func(ctx context.Context) error {
 		_, err := pair.taskA.VerifyMark(WithCommentMarks(ctx), pair.artifactID, MarkComment, "c1")
 		return err
 	}); err != nil {
@@ -172,7 +172,7 @@ func TestAMarkAnchorOnAClosedIssueAsksItsFlushBeforeTheDocumentsLock(t *testing.
 	if markdown := versionMarkdown(t, pair.database, pair.artifactID, snapshot.Version.Number); !strings.Contains(markdown, "Alpha") {
 		t.Fatalf("the pinned version reads %q, want the stored document the mark is in", markdown)
 	}
-	if err := joinedWrite(pair.taskA, func(ctx context.Context) error {
+	if err := joinedWrite(pair.taskA, pair.artifactID, func(ctx context.Context) error {
 		_, err := pair.taskA.VerifyMark(WithCommentMarks(ctx), pair.artifactID, MarkComment, "c1")
 		return err
 	}); err != nil {

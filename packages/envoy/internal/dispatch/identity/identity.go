@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 )
 
@@ -38,6 +39,25 @@ type Identity interface {
 	Login(r *http.Request) (email string, err error)
 }
 
+// Presents reports whether r presents a credential i could resolve at all, judged on r alone with
+// nothing read: a session cookie signed with one of a CookieIdentity's keys
+// (auth.SessionFromRequest), a HeaderIdentity's header, an IAPIdentity's assertion header
+// (HasIAPAssertion), and nothing on a server nobody signs in to (NoBrowserIdentity). Login refuses
+// every other request ErrNoIdentity before it reads anything, so work that holds what it resolves
+// the caller under - a document socket's place of the request pool's share outside admission
+// (docs.Service.ServeHTTP) - asks this first, and a request that can only be refused costs none of
+// it. An Identity of another kind cannot say, and is answered true: its Login decides.
+func Presents(i Identity, r *http.Request) bool {
+	p, ok := i.(presenter)
+	return !ok || p.presents(r)
+}
+
+// presenter is an Identity that can tell from a request alone whether it presents a credential
+// the Identity could resolve at all (Presents).
+type presenter interface {
+	presents(r *http.Request) bool
+}
+
 // CookieIdentity resolves a signed Dispatch session cookie, signed with any key of SigningKey.
 type CookieIdentity struct {
 	SigningKey auth.SigningKeys
@@ -51,7 +71,11 @@ type CookieIdentity struct {
 
 // Login returns the email of a valid session cookie whose generation is current and whose person
 // is still a member; otherwise ErrNoIdentity, an error matching ErrSignInUnavailable when a lapsed
-// confirmation could not be renewed (Membership.Confirm), or the store's own error.
+// confirmation could not be renewed (Membership.Confirm), or the store's own error. A place of the
+// request pool's share that r's context carries (admission.PlaceFrom) is held for its reads alone:
+// it is given back where a lapsed confirmation is renewed, since the renewal waits on the sign-in
+// issuer, which reads no pool (Membership.Confirm), and the caller takes it again for what it
+// reads after.
 func (i CookieIdentity) Login(r *http.Request) (string, error) {
 	session, ok := auth.SessionFromRequest(r, i.SigningKey)
 	if !ok {
@@ -75,6 +99,13 @@ func (i CookieIdentity) Login(r *http.Request) (string, error) {
 	return session.Login, nil
 }
 
+// presents is whether r carries a session cookie signed with one of i's keys, which Login reads
+// before anything else and refuses ErrNoIdentity without.
+func (i CookieIdentity) presents(r *http.Request) bool {
+	_, signed := auth.SessionFromRequest(r, i.SigningKey)
+	return signed && i.Sessions != nil
+}
+
 // HeaderIdentity resolves the person a test or local harness names in Header, by email. Every
 // person it resolves is recorded as having signed in.
 type HeaderIdentity struct {
@@ -94,6 +125,11 @@ func (i HeaderIdentity) Login(r *http.Request) (string, error) {
 	return email, nil
 }
 
+// presents is whether r carries i's header, which Login refuses ErrNoIdentity without.
+func (i HeaderIdentity) presents(r *http.Request) bool {
+	return strings.TrimSpace(r.Header.Get(i.Header)) != ""
+}
+
 // NoBrowserIdentity is the identity of a cookie server with no sign-in configured: nobody can sign
 // in there, and a cookie minted while sign-in was on must not outlive that configuration, since
 // the key signing it is the deployment's and lives on. Every request that needs a person is
@@ -105,15 +141,33 @@ func (NoBrowserIdentity) Login(*http.Request) (string, error) {
 	return "", ErrNoIdentity
 }
 
+// presents is false: no request presents a person on a server nobody signs in to.
+func (NoBrowserIdentity) presents(*http.Request) bool { return false }
+
 // signInUnavailableMessage is what WriteError answers, with the code SIGNIN_UNAVAILABLE, a request
 // that needs the sign-in issuer while the issuer cannot be reached.
 const signInUnavailableMessage = "the sign-in issuer cannot be reached; try again in a minute"
 
-// WriteError renders an Identity error, or a sign-in's, as Dispatch's JSON error response: 401
-// NO_IDENTITY for ErrNoIdentity; 503 SIGNIN_UNAVAILABLE for ErrSignInUnavailable (Membership: the
-// person stays signed in, and the first request after the issuer answers is served); and 500
-// IDENTITY_ERROR for anything else.
-func WriteError(w http.ResponseWriter, err error) {
+// WriteError renders an Identity error, or a sign-in's, for request r as Dispatch's JSON error
+// response: 401 NO_IDENTITY for ErrNoIdentity; 503 SIGNIN_UNAVAILABLE for ErrSignInUnavailable
+// (Membership: the person stays signed in, and the first request after the issuer answers is
+// served); and 500 IDENTITY_ERROR for anything else. A lookup that failed because r could not be
+// served - its deadline passed, its client went away, or a bound of the server's own ended one
+// of its calls before the database answered it - is answered as admission.WriteUnserved answers
+// it, a retryable 503 or nothing, rather than as a failure of the identity service. An
+// unreachable sign-in issuer is answered as itself: the timeout its error carries is the call to
+// the issuer's, which no longer reads as a want of database room (store.IsPoolBusy).
+//
+// Resolving the caller reads (CookieIdentity.Login), and a lapsed membership's renewal also
+// writes the person's own row - its confirmation, or the end of its sign-in (Membership.refresh,
+// SignInRule.WriteConfirm, SignInRule.End) - outside any transaction. So a statement the
+// database stopped answering here may have committed, and the request's method decides as it
+// does everywhere else (admission.Reads): a read is told to try again, since repeating it only
+// re-runs the same idempotent update of that row, and a write is told its outcome is unknown.
+func WriteError(w http.ResponseWriter, r *http.Request, err error) {
+	if admission.WriteUnserved(w, r.Context(), err, !admission.Reads(r.Method)) {
+		return
+	}
 	status := http.StatusInternalServerError
 	body := map[string]string{"error": "identity resolution failed", "code": "IDENTITY_ERROR"}
 	switch {

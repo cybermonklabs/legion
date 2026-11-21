@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -459,6 +460,123 @@ func TestALiveWriteAndAKeystrokeQueueOnTheRoomsLockAndNeitherIsLost(t *testing.T
 		if !strings.Contains(stored, want) {
 			t.Fatalf("the stored document is %q, want %q in it: one of the two writers lost its edit", stored, want)
 		}
+	}
+}
+
+// A request's wait for a document's lock is bounded and every other taker's is not
+// (lockDocumentRoom): while a transaction of the test's own holds the lock past the bound of a
+// lock's wait (store's lockWait; the test's own here, store.WithLockWaitForTest), a taker whose
+// context carries a request's admission ticket is refused busy once that bound runs out, which its
+// request answers 503 DATABASE_BUSY with Retry-After. A taker carrying no ticket under the same
+// bound - a settlement a timer runs, a background pass - and a browser's keystroke, which the room
+// stores through its own append (appendRoomTx), both still wait at three times the bound, and both
+// land once the holder lets go.
+//
+// The request's taker runs on the request pool, as a request does, and the taker with no ticket on
+// the settlements pool, as a settlement does: no taker with no ticket runs on the request pool,
+// whose every transaction carries the write lock bound (store.Pool's begin) and would refuse its
+// wait there whatever lockDocumentRoom does. A close's write of a room's latest edit source, the
+// boot's ask repair, a catch-up's confirmation and the block-id backfill each take their
+// transaction off that pool for the same reason (INFRA-592).
+func TestOnlyARequestsWaitOnTheDocumentLockIsBounded(t *testing.T) {
+	const bound = 300 * time.Millisecond
+	service, artifactID, _ := tracedRoomService(t)
+	head := storedHead(t, service.store, artifactID)
+	ctx := context.Background()
+	holder, err := service.store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that holds the room's lock: %v", err)
+	}
+	defer holder.Rollback(ctx)
+	if err := lockDocumentRoom(ctx, holder, artifactID); err != nil {
+		t.Fatalf("hold the room's lock: %v", err)
+	}
+	editAsConnectedPeer(t, service, artifactID, 1, storedOrderBob, replaceRun("Second.", "Second, bob."))
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1, roomWait(t)); waiting < 1 {
+		t.Fatal("the keystroke's append never came to wait on the room's lock")
+	}
+
+	limiter := admission.New(admission.Limits{Read: 1, Write: 1, ReadWait: time.Second, WriteWait: time.Second})
+	ticket, err := limiter.Admit(ctx, admission.Write, 1)
+	if err != nil {
+		t.Fatalf("admit the request: %v", err)
+	}
+	defer ticket.Release()
+	settlements, err := service.store.Pool.Settlements()
+	if err != nil {
+		t.Fatalf("open the settlements pool: %v", err)
+	}
+	// take takes the document's lock in a transaction of its own on pool, under ctx, and commits.
+	take := func(ctx context.Context, pool *store.Pool) <-chan error {
+		taken := make(chan error, 1)
+		go func() {
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				taken <- err
+				return
+			}
+			defer tx.Rollback(context.Background())
+			if err := lockDocumentRoom(ctx, tx, artifactID); err != nil {
+				taken <- err
+				return
+			}
+			taken <- tx.Commit(ctx)
+		}()
+		return taken
+	}
+	bounded := store.WithLockWaitForTest(ctx, bound)
+	started := time.Now()
+	request := take(admission.WithTicket(bounded, ticket), service.store.Pool)
+	background := take(bounded, settlements)
+	if waiting := storetest.WaitForLockWaiters(t, holder, 3, roomWait(t)); waiting < 3 {
+		t.Fatalf("%d sessions wait on the room's lock, want the keystroke's append and both takers", waiting)
+	}
+	var refused error
+	select {
+	case refused = <-request:
+	case <-time.After(10 * time.Second):
+		waited := time.Since(started)
+		_ = holder.Rollback(ctx)
+		<-request
+		<-background
+		t.Fatalf("the request was still waiting on the document's lock %s after it began, past its wait's bound of %s: "+
+			"a request queued on a busy document waits until the holder lets go", waited.Round(time.Millisecond), bound)
+	}
+	if waited := time.Since(started); !store.IsPoolBusy(refused) || waited < bound {
+		t.Fatalf("the request queued on the held document lock answered %v after %s, want ErrPoolBusy (503 DATABASE_BUSY) once its wait's bound of %s ran out",
+			refused, waited.Round(time.Millisecond), bound)
+	}
+	time.Sleep(time.Until(started.Add(3 * bound)))
+	select {
+	case err := <-background:
+		t.Fatalf("the taker with no request's ticket answered %v %s after it began, while the holder still held the lock: it must wait for the holder",
+			err, time.Since(started).Round(time.Millisecond))
+	default:
+	}
+	if waiting := storetest.WaitForLockWaiters(t, holder, 2, time.Second); waiting != 2 {
+		t.Fatalf("%d sessions wait on the room's lock three bounds into the wait, want the keystroke's append and the taker with no ticket", waiting)
+	}
+	if moved := storedHead(t, service.store, artifactID); moved != head {
+		t.Fatalf("the document moved from update %d to %d while the room's lock was held", head, moved)
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("release the room's lock: %v", err)
+	}
+
+	select {
+	case err := <-background:
+		if err != nil {
+			t.Fatalf("the taker with no request's ticket, once the lock was free: %v", err)
+		}
+	case <-time.After(roomWait(t)):
+		t.Fatal("the taker with no request's ticket never took the lock once it was free")
+	}
+	waitForLandedAppends(t, service, artifactID)
+	if moved := storedHead(t, service.store, artifactID); moved != head+1 {
+		t.Fatalf("the document moved from update %d to %d, want the keystroke's one append", head, moved)
+	}
+	if stored := storedMarkdown(t, service.store, artifactID); !strings.Contains(stored, "Second, bob.") {
+		t.Fatalf("the stored document is %q, want the keystroke's edit in it", stored)
 	}
 }
 

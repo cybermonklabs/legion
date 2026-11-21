@@ -29,6 +29,13 @@ func TestEveryRoomStateHolderKeepsADetachedState(t *testing.T) {
 			hold: func(_ *Service, state *roomState) { state.settling = 1 },
 		},
 		{
+			// A settlement a live write took over is owed as much as a running one: the write
+			// arms it again when it ends, and a state released before then loses it
+			// (owesSettlementLocked, which unusedLocked reads).
+			name: "deferred settlement",
+			hold: func(_ *Service, state *roomState) { state.settleDeferred = true },
+		},
+		{
 			name: "armed settlement timer",
 			hold: func(service *Service, state *roomState) {
 				service.settleWG.Add(1)

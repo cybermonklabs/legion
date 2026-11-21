@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // SessionGroup is one of the Delivery page's session groups (LEGION-682, migration 0093): a
@@ -141,8 +142,10 @@ func getSessionGroup(ctx context.Context, q Querier, id string) (SessionGroup, e
 // lockSessionGroups serialises every group write. The members' primary key and the name index
 // already refuse membership and name races; the lock is for the title rule, which reads other
 // groups' rows, so a rename and a removal checked at once cannot together strand a titled session.
+// Its wait is bounded as an owner lock's is (store.LockWithinBound): a write queued behind a holder
+// past the bound is refused busy.
 func lockSessionGroups(ctx context.Context, tx pgx.Tx) error {
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('delivery-session-groups'))`); err != nil {
+	if err := store.LockWithinBound(ctx, tx, `select pg_advisory_xact_lock(hashtext('delivery-session-groups'))`); err != nil {
 		return fmt.Errorf("lock session groups: %w", err)
 	}
 	return nil

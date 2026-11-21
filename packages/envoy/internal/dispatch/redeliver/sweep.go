@@ -267,14 +267,6 @@ type Sweeper struct {
 	state bus.KeyValue
 }
 
-// webhookRedeliveryLease names the lease one sweep of Run's loop runs under. It is not what makes
-// the sweep safe to run twice: every redelivery is already claimed by a compare-and-set on the
-// delivery's record in the sweep's NATS KV bucket, so two processes sweeping at once ask GitHub
-// for no delivery twice. It is the GitHub rate limit: each sweep lists every failed attempt in
-// its window, page by page, against one installation's limit, and N processes sweeping is N
-// times those list calls for one result.
-const webhookRedeliveryLease = "webhook-redelivery"
-
 // jittered is the wait Run leaves after each sweep (duty.JitteredWithin). It is a variable only so
 // a test can fix the draw.
 var jittered = duty.JitteredWithin
@@ -286,18 +278,24 @@ var jittered = duty.JitteredWithin
 // drift apart rather than reaching the lease in step every interval for the life of both. The
 // first sweep is not delayed: a process that starts sweeps at once, as it always has.
 //
-// Each sweep runs under webhookRedeliveryLease for one period of duty.LeasePeriod(interval), 0.9
-// of the interval, so one sweep's listings are what the installation's rate limit pays for that
+// Each sweep runs under duty.WebhookRedeliveryLease for one period of duty.LeasePeriod(interval),
+// 0.9 of the interval, so one sweep's listings are what the installation's rate limit pays for that
 // period however many processes sweep - a process that starts in the middle of another's period,
-// which is what a rolling update makes, finds that period swept and skips. The period follows
-// interval, the loop's own tick, and not the package's Interval. Each sweep's due time, the moment
-// it hands duty.Exclusive and the one its period is judged by, is the moment Run started for the
-// first and the moment its timer fired for every later one - never the moment the lease was taken,
-// which a slow lease would carry into the next period and so cost the sweep after it that period.
-// A timer armed once the sweep before has returned waits longer than one period, so it always
-// reaches the next period, and neither a slow lease nor the jitter ever makes a process skip its
-// own next sweep. leases is required, as it is of every leased loop (cmd/dispatch exits at boot if
-// the lease pool cannot be opened).
+// which is what a rolling update makes, finds that period swept and skips. The lease is not what
+// makes the sweep safe to run twice: every redelivery is already claimed by a compare-and-set on
+// the delivery's record in the sweep's NATS KV bucket, so two processes sweeping at once ask GitHub
+// for no delivery twice. It is the GitHub rate limit: each sweep lists every failed attempt in its
+// window, page by page, against one installation's limit, and N processes sweeping is N times those
+// list calls for one result.
+//
+// The period follows interval, the loop's own tick, and not the package's Interval. Each sweep's
+// due time, the moment it hands duty.Exclusive and the one its period is judged by, is the moment
+// Run started for the first and the moment its timer fired for every later one - never the moment
+// the lease was taken, which a slow lease would carry into the next period and so cost the sweep
+// after it that period. A timer armed once the sweep before has returned waits longer than one
+// period, so it always reaches the next period, and neither a slow lease nor the jitter ever makes
+// a process skip its own next sweep. leases is required, as it is of every leased loop
+// (cmd/dispatch exits at boot if the lease pool cannot be opened).
 func (s *Sweeper) Run(ctx context.Context, interval time.Duration, leases duty.Leases) {
 	s.run(ctx, interval, leases, duty.Exclusive)
 }
@@ -309,7 +307,7 @@ func (s *Sweeper) Run(ctx context.Context, interval time.Duration, leases duty.L
 func (s *Sweeper) run(ctx context.Context, interval time.Duration, leases duty.Leases, exclusive duty.ExclusiveFunc) {
 	due := time.Now()
 	for {
-		exclusive(ctx, leases, webhookRedeliveryLease, due, duty.LeasePeriod(interval), s.sweepAndReport)
+		exclusive(ctx, leases, duty.WebhookRedeliveryLease, due, duty.LeasePeriod(interval), s.sweepAndReport)
 		timer := time.NewTimer(jittered(interval))
 		select {
 		case <-ctx.Done():

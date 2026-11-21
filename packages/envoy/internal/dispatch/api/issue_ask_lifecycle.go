@@ -40,10 +40,11 @@ func withdrawnReason(issueKey string) string {
 // (docs.Service.RunSettlementResumption).
 //
 // ctx must not end when the client goes away (outlivingTheClient): a settlement runs to its end
-// whether or not the client waits for the close, as the settlement it stands in for would. On a
-// keyed request it still ends at the keyed run's bound (keyedRunLimit). issueSettleBudget
-// (docs.SettleIssueDocuments) bounds only the waits for the rooms' durable appends and whether a
-// retry starts, not a settlement already running.
+// whether or not the client waits for the close, as the settlement it stands in for would. Each
+// settlement ends at its own deadline, as every settlement does (docs' settleTimeout), and on a
+// keyed request at the keyed run's bound (keyedRunLimit) where that comes first.
+// issueSettleBudget (docs.SettleIssueDocuments) bounds only the waits for the rooms' durable
+// appends and whether a retry starts, not a settlement already running.
 func (s *server) settleIssueBeforeClose(ctx context.Context, issueKey string) {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return
@@ -244,7 +245,10 @@ func (s *server) recordRestoredAsksTx(ctx context.Context, ledger *docs.Ledger, 
 // repair's interval pass sweeps a closed issue's document that still owes a settlement when it
 // runs (RunIssueAskRepair).
 //
-// ctx must not end when the client goes away (outlivingTheClient), and no transaction is open.
+// ctx must not end when the client goes away (outlivingTheClient), and no transaction is open. It
+// carries the writer gates of the issue's documents the close took before its transaction
+// (docs.Service.AcquireDocumentWriter): no document is added to a closed issue, so those are every
+// document the sweep writes, and it takes no gate of its own.
 func (s *server) sweepClosedIssueAsks(ctx context.Context, issueKey string, withdrawn []model.Ask, actor model.Actor) {
 	if err := s.sweepClosedIssueAsksTx(ctx, issueKey, withdrawn, actor); err != nil {
 		slog.Error("dispatch: sweep the ask blocks of a closed issue", "issue", issueKey, "error", err)

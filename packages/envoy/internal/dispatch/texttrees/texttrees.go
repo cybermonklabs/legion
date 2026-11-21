@@ -104,6 +104,16 @@ func (t Table) Store(ctx context.Context, mode pmdoc.DisplayMode, texts ...strin
 // The whole batch is one statement. A request that writes several texts - an ask's question and
 // every option's label and description - stores them in one round trip, and a tree repeated
 // among them is sent once. A tree with no bytes is no reading and is left out.
+//
+// The statement inserts its rows in the order of their sums, whatever order trees holds. Two
+// stores of overlapping texts run at once wherever two callers store them - a read's store of
+// what it read (api's displayTreeReader.storeOf) beside a write's store of what it committed,
+// two reads of one page, the background fill beside either - and an insert that meets a sum
+// the other has inserted and not yet committed waits for that one to end. Taken in two orders,
+// each could hold a sum the other waits for, which Postgres ends by killing one of them
+// (40P01); in one order, a store waiting at a sum holds only lower ones, and the store it waits
+// for, already past that sum, waits only at higher ones, so neither waits on the other in a cycle
+// (TestOverlappingStoresInOppositeOrdersBothLand).
 func (t Table) StoreTrees(ctx context.Context, mode pmdoc.DisplayMode, trees []Tree) error {
 	if t.pool == nil {
 		return errNoPool
@@ -130,6 +140,7 @@ func (t Table) StoreTrees(ctx context.Context, mode pmdoc.DisplayMode, trees []T
 		insert into text_trees (sum, mode, version, tree)
 		select stored.sum, $1, $2, stored.tree
 		from unnest($3::bytea[], $4::bytea[]) as stored (sum, tree)
+		order by stored.sum
 		on conflict do nothing
 	`, int16(mode), pmdoc.DisplayTreeVersionNow(), sums, encoded); err != nil {
 		return fmt.Errorf("store %d display trees: %w", len(sums), err)

@@ -34,7 +34,7 @@ func (s *server) renameArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	var input renameArtifactInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The name is trimmed of spaces before every rule, as an upload's name is
@@ -46,11 +46,11 @@ func (s *server) renameArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	if artifact.Kind != "doc" {
-		s.writeHandlerError(w, artifactIsNoDocumentRefusal(artifact))
+		s.writeHandlerError(w, r, artifactIsNoDocumentRefusal(artifact))
 		return
 	}
 	if isSpecDocument(artifact) {
-		s.writeHandlerError(w, specNameRefusal())
+		s.writeHandlerError(w, r, specNameRefusal())
 		return
 	}
 	if name == "" {
@@ -58,7 +58,7 @@ func (s *server) renameArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if refusal := newArtifactNameRefusal(name); refusal != nil {
-		s.writeHandlerError(w, refusal)
+		s.writeHandlerError(w, r, refusal)
 		return
 	}
 	// The owner's names are read under its lock. The document the name or the slug finds is a
@@ -67,10 +67,10 @@ func (s *server) renameArtifact(w http.ResponseWriter, r *http.Request) {
 	held, err := lookupArtifactByNameOrSlug(r.Context(), tx, target, name)
 	switch {
 	case err == nil && held.ID != artifact.ID:
-		s.writeHandlerError(w, artifactNameTakenRefusal(name, held))
+		s.writeHandlerError(w, r, artifactNameTakenRefusal(name, held))
 		return
 	case err != nil && !errors.Is(err, pgx.ErrNoRows):
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The slug the new name would give decides, as it decides the role a new document takes
@@ -79,31 +79,31 @@ func (s *server) renameArtifact(w http.ResponseWriter, r *http.Request) {
 	// `plan.md` as any other title is.
 	slug := artifactSlug(name)
 	if role := documentRole(target, artifact.Kind, slug); role != nil && !documentPlays(artifact, *role) {
-		s.writeHandlerError(w, renameRoleNameRefusal(name, slug, *role))
+		s.writeHandlerError(w, r, renameRoleNameRefusal(name, slug, *role))
 		return
 	}
 	renamed, err := scanArtifact(tx.QueryRow(r.Context(), `
 		update artifacts set name = $2 where id = $1
 		returning `+artifactColumns, artifact.ID, name))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The row as it now is, with the versions and the approval every artifact read carries, is
 	// what GET /api/v1/artifacts/{id} answers and what this route answers too.
 	if err := loadArtifactDetails(r.Context(), tx, []*model.Artifact{&renamed}); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, ownerForArtifact(artifact).event(
 		"artifact.renamed", actor, map[string]any{"artifact": renamed, "previous_name": artifact.Name},
 	))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)

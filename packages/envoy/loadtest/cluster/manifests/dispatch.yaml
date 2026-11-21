@@ -11,8 +11,10 @@
 # and no GitHub App, secrets broker or embedder. No GOMAXPROCS, GOGC or GOMEMLIMIT, as in
 # production. DISPATCH_SIGNING_KEY comes from the run's Secret, as production's comes from its
 # own: the key is the same in every pod of the run, so HOME keeps nothing a pod recreated between
-# steps needs, and HOME is an emptyDir. The profiler binds 127.0.0.1:6060 inside the pod; the
-# pprof sidecar forwards :6061 to it for loadgen's -pprof.
+# steps. The profiler binds 127.0.0.1:6060 inside the pod; the pprof sidecar forwards :6061 to it
+# for loadgen's -pprof. DISPATCH_METRICS_ADDR serves /metrics on :6062 for loadgen's -metrics: the
+# per-pool and admission series a step's samples.json reads. A build without that setting (main
+# before it) ignores the variable and serves nothing there.
 apiVersion: v1
 kind: Service
 metadata:
@@ -48,6 +50,24 @@ spec:
     - name: pprof
       port: 6061
       targetPort: 6061
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dispatch-metrics
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/part-of: dispatch-loadtest
+    dispatch-loadtest/run: __RUN_ID__
+spec:
+  type: ClusterIP
+  selector:
+    dispatch-loadtest/run: __RUN_ID__
+    dispatch-loadtest/role: dispatch
+  ports:
+    - name: metrics
+      port: 6062
+      targetPort: 6062
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -110,6 +130,8 @@ spec:
               value: http://dispatch.__NAMESPACE__.svc:8766
             - name: DISPATCH_PPROF_PORT
               value: "6060"
+            - name: DISPATCH_METRICS_ADDR
+              value: 0.0.0.0:6062
             - name: NATS_URLS
               value: nats://nats.__NAMESPACE__.svc:4222
             - name: ENVOY_ALLOW_REMOTE_NATS
@@ -132,6 +154,8 @@ spec:
           ports:
             - name: http
               containerPort: 8766
+            - name: metrics
+              containerPort: 6062
           readinessProbe:
             exec:
               command: [curl, -fsS, http://127.0.0.1:8766/healthz]

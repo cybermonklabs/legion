@@ -7,7 +7,14 @@
 #   cluster.sh up --namespace NS --storage-class SC --dispatch-commit SHA --pg-major 16|18
 #                 --production-repo OWNER/REPO [--pg-volume 100Gi] [--listener-image REF]
 #                 [--stored-order-source SHA | --stored-order-checker-commit SHA]
-#                 [--browsertype-commit SHA]
+#                 [--browsertype-commit SHA] [--listener-without-oidc]
+#       --listener-without-oidc (off by default) renders the listener without ENVOY_OIDC_ISSUER,
+#       ENVOY_OIDC_AUDIENCE, ENVOY_OIDC_ACCOUNTS and ENVOY_DISPATCH_PRINCIPAL, and Dispatch without
+#       ENVOY_ACCOUNT_TOKEN_FILE, for a namespace whose pods cannot reach the cluster's token issuer
+#       (loadtest's NetworkPolicy lets them reach only each other and DNS, and a listener that
+#       cannot discover its issuer does not start). Dispatch then makes no send for a role route,
+#       which only the replay needs, so replay-prepare and replay refuse such a run. state.json
+#       records listener_without_oidc true.
 #       Refuses, before it creates anything, a commit with no ghcr.io envoy:<commit> image (naming
 #       the newest first-parent ancestor that has one), a --pg-major other than the production
 #       repository's dispatch/main.go databaseVersion, an image tag that does not resolve to a
@@ -29,11 +36,14 @@
 #       requests and limits and the size of the Postgres data volume.
 #   cluster.sh seed --namespace NS            loadgen seed, seed-refs and seed-finish, then the template
 #                                             database dispatch_seed.
-#   cluster.sh step --namespace NS NAME FACTOR [--duration 10m] [--reads-only] [--typing
-#                   [--typing-peers 2] [--typing-rate 5] [--typing-docs 20]]
+#   cluster.sh step --namespace NS NAME FACTOR [--duration 10m | --schedule 0.5x:60s,10x:60s,...]
+#                   [--reads-only] [--typing [--typing-peers 2] [--typing-rate 5] [--typing-docs 20]]
 #       Reset, then one loadgen run at FACTOR × (4 events/s, 60 requests/s) with the
 #       series-sessions count (--reads-only: 0 events), then the crash check, the stored-order
 #       check, cgroup-merge, tables. --typing adds browser typing (below).
+#       --schedule changes the rate inside the window (loadgen run -schedule: each segment's
+#       factor multiplies FACTOR's rates, and the window is the segments' total, so it takes no
+#       --duration); summary.json then carries the recovery after the last drop.
 #       FACTOR may be fractional (8.5). Postgres's write-out counters (pg_stat_bgwriter, and
 #       pg_stat_checkpointer from Postgres 17) go into pg-stats-before.json and pg-stats-after.json.
 #   cluster.sh series --namespace NS [--duration 10m]   1x 2x 3x 5x 7x 10x, then 10x-reads, then
@@ -44,6 +54,8 @@
 #   cluster.sh db-size --namespace NS CPU MEMORY        Postgres resized to the Cloud SQL tier of
 #                                                       CPU and MEMORY (Gi), on the same PVC.
 #   cluster.sh redeploy --namespace NS --dispatch-commit SHA   Dispatch's image only, then a reset.
+#       With LOADTEST_CLUSTER_CHECKER set, that file becomes the run's stored-order checker for SHA
+#       (Prebuilt binaries, below), so the steps after the redeploy check with SHA's renderer.
 #   cluster.sh replay-prepare --namespace NS [--manifest FILE] [--from-dir DIR]
 #       INFRA-639's LINUX replay inputs (default manifest ../replay-2026-10-26.json) into the
 #       template database dispatch_replay. Refuses, before it touches the copy, a manifest whose
@@ -112,6 +124,15 @@
 # records dispatch_commit, built_from (the commit whose tree was built), overlay_source (or null),
 # overlay_files, registration (the file the overlay edited, or null), renderer_matches and the
 # binary's sha256; up builds the checker before it takes the lock.
+#
+# Prebuilt binaries: a build is heavy work for the pod that drives the copy, so two variables let
+# the caller build elsewhere (a cluster Job) and name the results. LOADTEST_CLUSTER_LOADGEN names a
+# static loadgen, which up copies to the run's loadgen in place of its go build of ./loadtest.
+# LOADTEST_CLUSTER_CHECKER names a static envoy-dispatch built from the tree the checker would be
+# built from (above), which up copies in place of build_at_commit and redeploy installs as the
+# checker of the commit it deploys. up refuses, before it creates anything, a variable that names
+# no executable file. The caller vouches for the tree a prebuilt checker came from, so state.json
+# stored_order records prebuilt true beside the commits up was given.
 #
 # The stored-order check (INFRA-707's oracle): after each step's and each replay's loadgen run,
 # while Dispatch still runs, the runner runs the checker's `stored-order --since <meta.json
@@ -660,7 +681,7 @@ apply_manifest() {
   err=$RUN_DIR/tmp/apply-$name.err
   mkdir -p -- "$RUN_DIR/tmp"
   for try in 1 2 3 4 5; do
-    if render_manifest "$MANIFESTS/$name" "${values[@]}" | kube "$@" >/dev/null 2>"$err"; then
+    if render_manifest "$MANIFESTS/$name" "${values[@]}" | without_oidc_env | kube "$@" >/dev/null 2>"$err"; then
       return 0
     fi
     if ! grep -q 'the object has been modified' "$err" || ((try == 5)); then break; fi
@@ -850,7 +871,9 @@ loadgen_local() { LOADTEST_ROOT=$RUN_DIR "$LOADGEN" "$@"; }
 # JOB.<random>, so two starts of one job name, of this command or of another one of the run, never
 # share one. The three credentials are their -…-file forms, naming the files runner_start -c and
 # replay_checksum write there (RUNNER_CREDENTIALS), so no credential is an argument of kubectl here
-# or of anything in the runner pod.
+# or of anything in the runner pod. -metrics is Dispatch's DISPATCH_METRICS_ADDR
+# (manifests/dispatch.yaml), whose series each step's samples.json reads; a build that serves none
+# leaves those samples' metrics empty.
 endpoints() {
   JOB_SECRETS=$RUNNER_SECRETS/$1.$(random_hex 8)
   [[ $JOB_SECRETS =~ ^/work/secrets/[A-Za-z0-9._-]+$ ]] || die "the runner job name '$1' is not letters, digits, '.', '_' and '-' alone"
@@ -858,7 +881,8 @@ endpoints() {
     -url "http://dispatch.$NS.svc:8766" -token-file "$JOB_SECRETS/dispatch-token"
     -listener "http://listener.$NS.svc:9020" -listener-token-file "$JOB_SECRETS/listener-token"
     -nats "nats://nats.$NS.svc:4222" -nats-mon "http://nats-0.nats-headless.$NS.svc:8222"
-    -pprof "http://dispatch-pprof.$NS.svc:6061" -pg-file "$JOB_SECRETS/pg-url" -nats-server-name nats-0
+    -pprof "http://dispatch-pprof.$NS.svc:6061" -metrics "http://dispatch-metrics.$NS.svc:6062"
+    -pg-file "$JOB_SECRETS/pg-url" -nats-server-name nats-0
   )
 }
 
@@ -1867,6 +1891,14 @@ commit_source() {
 # tree_has COMMIT PATH: COMMIT's tree in this checkout's git store holds PATH.
 tree_has() { git -C "$REPO_DIR" cat-file -e "$1:$2" 2>/dev/null; }
 
+# prebuilt_valid VAR CMD: die, naming VAR and CMD, when VAR is set and names no executable regular
+# file (Prebuilt binaries, above); nothing when it is unset.
+prebuilt_valid() {
+  local path=${!1:-}
+  [ -z "$path" ] || { [ -f "$path" ] && [ -x "$path" ]; } ||
+    die "$2: $1='$path' names no executable file; build the binary first, or unset $1 to build it here"
+}
+
 # build_at_commit COMMIT PACKAGE OUT [SOURCE]: a static binary of COMMIT's Go package PACKAGE (a
 # path under packages/envoy, as ./cmd/dispatch) at OUT (an absolute path): `git archive` of this
 # checkout's git store unpacked in a scratch directory beside OUT, with SOURCE's stored-order
@@ -1992,17 +2024,24 @@ stored_order_build() {
   else
     from=$commit what="dispatch commit $commit"
   fi
-  note "building the stored-order checker, envoy-dispatch (static) of $what"
-  if ! build_at_commit "$from" ./cmd/dispatch "$CHECKER_TMP/envoy-dispatch" "$source" 2>"$err"; then
+  if [ -n "${LOADTEST_CLUSTER_CHECKER:-}" ]; then
+    note "the stored-order checker: the prebuilt $LOADTEST_CLUSTER_CHECKER (LOADTEST_CLUSTER_CHECKER), named as envoy-dispatch (static) of $what; nothing is built here"
+    install -m 755 -- "$LOADTEST_CLUSTER_CHECKER" "$CHECKER_TMP/envoy-dispatch" ||
+      die "up: copying the prebuilt checker $LOADTEST_CLUSTER_CHECKER (LOADTEST_CLUSTER_CHECKER) failed"
+  else
+    note "building the stored-order checker, envoy-dispatch (static) of $what"
+  fi
+  if [ -z "${LOADTEST_CLUSTER_CHECKER:-}" ] && ! build_at_commit "$from" ./cmd/dispatch "$CHECKER_TMP/envoy-dispatch" "$source" 2>"$err"; then
     cat -- "$err" >&2
     first=$(grep -v -m1 -e '^#' -e '^[[:space:]]*$' "$err") || first="go build failed with no error line"
     die "up: the stored-order checker does not build (dispatch commit $commit, source commit ${source:-none}${checker:+, checker commit $checker}): $first"
   fi
   # shellcheck disable=SC2016 # $d, $b, $s, $f, $r, $m and $sha are jq's variables
   STORED_ORDER_STATE=$(jq -nc --arg d "$commit" --arg b "$from" --arg s "$source" --argjson f "$files" --arg r "$registry" \
-    --argjson m "$matches" --arg sha "$(sha256_of "$CHECKER_TMP/envoy-dispatch")" \
+    --argjson m "$matches" --arg sha "$(sha256_of "$CHECKER_TMP/envoy-dispatch")" --arg p "${LOADTEST_CLUSTER_CHECKER:-}" \
     '{dispatch_commit: $d, built_from: $b, overlay_source: (if $s == "" then null else $s end), overlay_files: $f,
-      registration: (if $r == "" then null else $r end), renderer_matches: $m, sha256: $sha}')
+      registration: (if $r == "" then null else $r end), renderer_matches: $m, sha256: $sha}
+      + (if $p == "" then {} else {prebuilt: true} end)')
   note "the stored-order checker's sha256 is $(jq -r .sha256 <<<"$STORED_ORDER_STATE"), renderer_matches $matches"
 }
 
@@ -2663,11 +2702,23 @@ save_pod_logs() {
   wait "${pids[@]}" || true
 }
 
-# run_step NAME FACTOR DURATION READS_ONLY PHASE: one step (see the header), into steps/NAME; with
-# --typing (TYPING), browser typing into typing_plan_step's documents, the ones its own loadgen
-# run plans the most versions for.
+# run_step NAME FACTOR DURATION READS_ONLY PHASE [SCHEDULE]: one step (see the header), into
+# steps/NAME; with --typing (TYPING), browser typing into typing_plan_step's documents, the ones its
+# own loadgen run plans the most versions for. With SCHEDULE (loadgen run -schedule), DURATION is
+# ignored: the window is the schedule's total.
 run_step() {
-  local name=$1 factor=$2 duration=$3 reads=$4 phase=$5
+  local name=$1 factor=$2 duration=$3 reads=$4 phase=$5 schedule=${6:-}
+  local scheduled=()
+  if [ -n "$schedule" ]; then
+    [[ $schedule =~ ^[0-9]+(\.[0-9]+)?x:[1-9][0-9]*(s|m|h)(,[0-9]+(\.[0-9]+)?x:[1-9][0-9]*(s|m|h))*$ ]] ||
+      die "--schedule '$schedule' is not <factor>x:<duration>,... with whole s, m or h durations"
+    local segment total=0
+    for segment in ${schedule//,/ }; do
+      total=$((total + $(duration_seconds "${segment#*:}")))
+    done
+    duration=${total}s
+    scheduled=(-schedule "$schedule")
+  fi
   valid step "$name" || die "step name '$name' may hold only letters, digits, '.', '_' and '-'"
   if ! valid factor "$factor" || ! awk -v f="$factor" 'BEGIN { exit !(f > 0) }'; then
     die "factor '$factor' is not a number above 0"
@@ -2709,7 +2760,7 @@ run_step() {
     /work/loadgen run -allow-foreign -name "$name" -out "/work/steps/$name" \
     -seed /work/seed.json -copy-meta "/work/meta/$name.json" -build-commit "$(state .dispatch_commit)" \
     -events "$events" -sessions "$sessions" -requests "$requests" -duration "$duration" \
-    -warmup "$warmup" -grace 20s -rng-seed "$rng_seed" -heap-samples "${ENDPOINTS[@]}"
+    -warmup "$warmup" -grace 20s -rng-seed "$rng_seed" -heap-samples "${scheduled[@]}" "${ENDPOINTS[@]}"
   note "step $name done: $dir"
 }
 
@@ -3441,10 +3492,35 @@ down_run() {
   kube get "$COPY_KINDS" -l "$RUN_LABEL=$RUN" 2>&1
 }
 
+# without_oidc_env: a rendered manifest on standard input, with the env entries
+# --listener-without-oidc drops (WITHOUT_OIDC_ENV, each a `- name:` line and its one `value:`
+# line) taken out when state.json records listener_without_oidc, and unchanged otherwise. Fails
+# when such an entry's next line is not its value, so no entry is half removed.
+WITHOUT_OIDC_ENV=(ENVOY_OIDC_ISSUER ENVOY_OIDC_AUDIENCE ENVOY_OIDC_ACCOUNTS ENVOY_DISPATCH_PRINCIPAL ENVOY_ACCOUNT_TOKEN_FILE)
+without_oidc_env() {
+  if [ "$(state '.listener_without_oidc // false')" != true ]; then
+    cat
+    return
+  fi
+  awk -v names=" ${WITHOUT_OIDC_ENV[*]} " '
+    skip { skip = 0; if ($1 != "value:") bad = 1; next }
+    $1 == "-" && $2 == "name:" && index(names, " " $3 " ") { skip = 1; next }
+    { print }
+    END { if (bad || skip) exit 1 }'
+}
+
+# refuse_without_oidc CMD: die, naming --listener-without-oidc, when the run was made with it:
+# CMD (replay-prepare or replay) needs Dispatch's sends for role routes, which that run cannot
+# make.
+refuse_without_oidc() {
+  [ "$(state '.listener_without_oidc // false')" != true ] ||
+    die "$1: run $RUN was made with --listener-without-oidc, so the listener verifies no projected token and Dispatch makes no send for a role route, which the replay's role-routed issues need; make the replay's run without it, in a namespace whose pods reach the cluster's token issuer"
+}
+
 # ---- subcommands ----------------------------------------------------------------------------------
 
 cmd_up() {
-  parse "namespace storage-class dispatch-commit pg-major production-repo pg-volume listener-image stored-order-source stored-order-checker-commit browsertype-commit" "" "$@"
+  parse "namespace storage-class dispatch-commit pg-major production-repo pg-volume listener-image stored-order-source stored-order-checker-commit browsertype-commit" "listener-without-oidc" "$@"
   positional 0 "no positional arguments"
   trap up_exit EXIT
   up_run
@@ -3491,6 +3567,8 @@ up_run() {
   valid uid "${POD_UID:-}" || die "up: POD_UID ('${POD_UID:-}') is not a pod uid; the lock names its holder's uid (a Legion pod sets POD_UID)"
   valid issue "${LEGION_ISSUE:-}" || die "up: LEGION_ISSUE ('${LEGION_ISSUE:-}') is not an issue key; the lock names it (a Legion pod sets LEGION_ISSUE)"
   stored_order_args "$commit" "$so_source" "$so_checker"
+  prebuilt_valid LOADTEST_CLUSTER_LOADGEN up
+  prebuilt_valid LOADTEST_CLUSTER_CHECKER up
   if [ -n "$bt_commit" ]; then
     valid commit "$bt_commit" || die "up: --browsertype-commit '$bt_commit' is not a full 40-hex commit sha"
     commit_source browsertype-commit "$bt_commit" packages/envoy/loadtest/browsertype \
@@ -3569,13 +3647,22 @@ up_run() {
   chmod 600 "$STATE"
   start_daemon heartbeat
 
-  note "building loadgen (static) into $LOADGEN"
-  (cd -- "$ENVOY_DIR" && CGO_ENABLED=0 go build -o "$LOADGEN" ./loadtest) || die "go build of loadgen failed"
+  if [ -n "${LOADTEST_CLUSTER_LOADGEN:-}" ]; then
+    note "loadgen: the prebuilt $LOADTEST_CLUSTER_LOADGEN (LOADTEST_CLUSTER_LOADGEN), copied into $LOADGEN; nothing is built here"
+    install -m 755 -- "$LOADTEST_CLUSTER_LOADGEN" "$LOADGEN" || die "copying the prebuilt loadgen $LOADTEST_CLUSTER_LOADGEN failed"
+  else
+    note "building loadgen (static) into $LOADGEN"
+    (cd -- "$ENVOY_DIR" && CGO_ENABLED=0 go build -o "$LOADGEN" ./loadtest) || die "go build of loadgen failed"
+  fi
   if [ -n "$bt_commit" ]; then
     # shellcheck disable=SC2016 # $c and $s are jq's variables
     state_set '.browsertype = {commit: $c, sha256: $s}' --arg c "$bt_commit" --arg s "$(sha256_of "$BROWSERTYPE_BIN")"
   fi
 
+  if [ -n "${OPT[listener-without-oidc]:-}" ]; then
+    state_set '.listener_without_oidc = true'
+    note "--listener-without-oidc: the listener runs without ENVOY_OIDC_ISSUER, ENVOY_OIDC_AUDIENCE, ENVOY_OIDC_ACCOUNTS and ENVOY_DISPATCH_PRINCIPAL, and Dispatch without ENVOY_ACCOUNT_TOKEN_FILE: no send for a role route, and replay-prepare and replay refuse this run"
+  fi
   note "installing the copy in $NS"
   apply_manifest secrets.yaml.tmpl
   apply_manifest postgres.yaml
@@ -3669,13 +3756,15 @@ seed_run() {
 }
 
 cmd_step() {
-  parse "namespace run duration typing-peers typing-rate typing-docs" "reads-only typing" "$@"
+  parse "namespace run duration schedule typing-peers typing-rate typing-docs" "reads-only typing" "$@"
   positional 2 "NAME FACTOR"
   use_run
   typing_parse
   local reads=false
   [ -z "${OPT[reads-only]:-}" ] || reads=true
-  run_step "${POS[0]}" "${POS[1]}" "${OPT[duration]:-10m}" "$reads" steps
+  [ -z "${OPT[schedule]:-}" ] || [ -z "${OPT[duration]:-}" ] ||
+    die "step: --schedule sets the window, so give it without --duration"
+  run_step "${POS[0]}" "${POS[1]}" "${OPT[duration]:-10m}" "$reads" steps "${OPT[schedule]:-}"
 }
 
 cmd_series() {
@@ -3712,6 +3801,7 @@ cmd_redeploy() {
   [ -n "$commit" ] || die "redeploy: --dispatch-commit is required"
   valid commit "$commit" || die "redeploy: --dispatch-commit '$commit' is not a full 40-hex commit sha"
   use_run
+  prebuilt_valid LOADTEST_CLUSTER_CHECKER redeploy
   image=$(image_for_commit "$commit")
   ensure_daemons
   # shellcheck disable=SC2016 # $c and $i are jq's variables
@@ -3719,7 +3809,14 @@ cmd_redeploy() {
   scale_to dispatch 0
   apply_manifest dispatch.yaml
   note "Dispatch now runs $image (commit $commit)"
-  if [ "$(state '.stored_order.dispatch_commit // empty')" != "$commit" ]; then
+  if [ -n "${LOADTEST_CLUSTER_CHECKER:-}" ]; then
+    install -m 755 -- "$LOADTEST_CLUSTER_CHECKER" "$STORED_ORDER_BIN" ||
+      die "redeploy: copying the prebuilt checker $LOADTEST_CLUSTER_CHECKER (LOADTEST_CLUSTER_CHECKER) failed"
+    # shellcheck disable=SC2016 # $c and $s are jq's variables
+    state_set '.stored_order = {dispatch_commit: $c, built_from: $c, overlay_source: null, overlay_files: [], registration: null,
+      renderer_matches: true, sha256: $s, prebuilt: true}' --arg c "$commit" --arg s "$(sha256_of "$STORED_ORDER_BIN")"
+    note "the stored-order checker is now the prebuilt $LOADTEST_CLUSTER_CHECKER, named as dispatch commit $commit's (sha256 $(state .stored_order.sha256))"
+  elif [ "$(state '.stored_order.dispatch_commit // empty')" != "$commit" ]; then
     note "WARNING: the stored-order checker was built for dispatch commit $(state '.stored_order.dispatch_commit // "none"'), not $commit: its renderer may differ from this Dispatch's, so each step's stored-order.json records renderer_matches false"
   fi
   if db_exists dispatch_seed; then
@@ -3754,6 +3851,7 @@ cmd_replay_prepare() {
     die "replay-prepare: LOADTEST_REPLAY_ISSUE is not set: set it to the issue the replay's parts are file artifacts of (the manifest names none); refusing before it touches the copy"
   [ -z "$from_dir" ] || [ -d "$from_dir" ] || die "replay-prepare: --from-dir $from_dir is not a directory"
   use_run
+  refuse_without_oidc replay-prepare
   replay_prepare_run "$manifest" "$from_dir"
 }
 
@@ -3761,6 +3859,7 @@ cmd_replay() {
   parse "namespace run from to typing-peers typing-rate typing-docs" "typing" "$@"
   positional 1 "NAME"
   use_run
+  refuse_without_oidc replay
   typing_parse
   run_replay "${POS[0]}" "${OPT[from]:-0}" "${OPT[to]:-39m}" replay
 }

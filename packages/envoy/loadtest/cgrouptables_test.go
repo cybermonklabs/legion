@@ -121,8 +121,8 @@ func TestTablesWithoutCgroupJSONAreUnchanged(t *testing.T) {
 	if st.cgroup != nil || st.failed || strings.Contains(md, cgroupWorkingSetH) || strings.Contains(md, "cgroup") || strings.Contains(md, "(failed") {
 		t.Fatalf("a step without cgroup.json or step-failed.json renders cgroup or failed text:\n%s", md)
 	}
-	if c := rowCells(section(md, "Resources"), "local"); len(c) != 16 || c[1] != "1.50 / 1.90" {
-		t.Errorf("the Resources row %q, want 16 cells with Dispatch 1.50 / 1.90", c)
+	if cores := cellOf(t, section(md, "Resources"), "local", "Dispatch cores mean / peak 5 s"); cores != "1.50 / 1.90" {
+		t.Errorf("the Resources row's Dispatch cores %q, want 1.50 / 1.90", cores)
 	}
 }
 

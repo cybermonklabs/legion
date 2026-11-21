@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/reearth/ygo/crdt"
 
@@ -502,13 +503,17 @@ func TestACompactionHoldsNoSharedOrRoomsConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the compaction pool: %v", err)
 	}
-	before, compactionAcquires := database.Pool.Use(), compactionPool.Stat().AcquireCount()
+	// Use reports every pool this store has opened unless it is asked about some, and the
+	// compaction's own pool is one of them: the question here is the request pool's and the
+	// document-rooms pool's, so those are the two it is asked about.
+	measured := []string{store.RequestsPool, store.RoomsPool}
+	before, compactionAcquires := database.Pool.Use(measured...), compactionPool.Stat().AcquireCount()
 	var during store.ConnectionUse
-	duringCompactionFold(versioned, artifactID, func() { during = database.Pool.Use() })
+	duringCompactionFold(versioned, artifactID, func() { during = database.Pool.Use(measured...) })
 	if result := compactUnderTail(t, versioned, artifactID); result.outcome != compactCompacted {
 		t.Fatalf("compaction = %+v, want it compacted", result)
 	}
-	after := database.Pool.Use()
+	after := database.Pool.Use(measured...)
 	if during.InUse != 0 {
 		t.Fatalf("%d shared or rooms connections in use inside the compaction's fold, want none", during.InUse)
 	}
@@ -518,6 +523,39 @@ func TestACompactionHoldsNoSharedOrRoomsConnection(t *testing.T) {
 	if taken := compactionPool.Stat().AcquireCount() - compactionAcquires; taken != 2 {
 		t.Fatalf("the compaction took %d compaction-pool connections, want its read's and its write's", taken)
 	}
+}
+
+// A compaction's write bounds its own transaction's idle time as a request connection's is
+// bounded: inside it, under the document's lock, idle_in_transaction_session_timeout reads
+// store.RequestIdleInTransactionTimeout (store.BoundIdleInTransaction), since that lock is one
+// every request writing the document waits on. The bound is the write's transaction's and not the
+// compaction pool's: a fold's read-only transaction on that pool, as a compaction's read folds in
+// (readCompaction), carries none, on the very connection the write ran on once it has ended.
+func TestACompactionsWriteBoundsItsOwnTransactionsIdleTime(t *testing.T) {
+	database, versioned, artifactID := newHeldCompactionDocument(t)
+	pool, err := database.Pool.Compaction()
+	if err != nil {
+		t.Fatalf("open the compaction pool: %v", err)
+	}
+	var bound time.Duration
+	var pid int32
+	versioned.duringCompactionWrite = func(room string, tx pgx.Tx) {
+		if room == artifactID {
+			ctx := context.Background()
+			bound, pid = idleSetting(t, ctx, tx), transactionPID(t, ctx, tx)
+		}
+	}
+	if result := compactUnderTail(t, versioned, artifactID); result.outcome != compactCompacted {
+		t.Fatalf("compaction = %+v, want it compacted", result)
+	}
+	if pid == 0 {
+		t.Fatal("the compaction never reached its write's transaction, so nothing here is tested")
+	}
+	if bound != store.RequestIdleInTransactionTimeout {
+		t.Errorf("the compaction's write transaction reads idle_in_transaction_session_timeout = %v, want %v",
+			bound, store.RequestIdleInTransactionTimeout)
+	}
+	requireFoldsCarryNoIdleBound(t, pool, pid)
 }
 
 // A compaction that does not wait for the room's lock holds none of it while it waits for a

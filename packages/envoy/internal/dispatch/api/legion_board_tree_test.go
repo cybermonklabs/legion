@@ -466,7 +466,7 @@ func TestAFailedLegionReadLeavesTheDeliveryFeedRunning(t *testing.T) {
 	}
 	seedLegionRead(t, rig.database, "INFRA", now.Add(-time.Minute), "")
 	legionExec(t, rig.database, `alter table handoffs rename to handoffs_unreadable`)
-	if _, err := rig.hub.server.readLegionBoard(t.Context(), "INFRA"); err == nil {
+	if _, err := rig.hub.server.readLegionBoard(t.Context(), rig.deps.Store.Pool, "INFRA"); err == nil {
 		t.Fatal("the board's read succeeded with no handoffs table, so nothing here fails a Legion read")
 	}
 

@@ -1136,12 +1136,13 @@ func (c mentionComment) holdFallbackCopy(kind mentionKind, key, destination stri
 // commit, so a reader sees the attempt fail, and the outbox publishes them like any event.
 //
 // The transaction runs inside the statement gate the batches of one scan share (lanes.statement):
-// it waits on the owner's lock for as long as whoever holds that lock takes, and a batch beside it
-// reading or recording meanwhile on the scan's one tracked context would be refused a second
-// connection (store.ErrNestedAcquire), which fails that batch and the scan with it - or, the other
-// way round, fails this settle and backs its event off. The gate is a no-op for a batch run by
-// itself and for the fallback pass, neither of which has lanes. The receipts are published once
-// the transaction has committed, outside the gate.
+// it waits on the owner's lock no longer than the write lock bound (Broker.LockOwners, a bounded
+// wait refused store.ErrPoolBusy past it), and a batch beside it reading or recording meanwhile on
+// the scan's one tracked context would be refused a second connection (store.ErrNestedAcquire),
+// which fails that batch and the scan with it - or, the other way round, fails this settle and
+// backs its event off. The gate is a no-op for a batch run by itself and for the fallback pass,
+// neither of which has lanes. The receipts are published once the transaction has committed,
+// outside the gate.
 func (c mentionComment) settleAbandoned(kind mentionKind, key string) (state mentionState, err error) {
 	ctx, deps, event, commentID := c.ctx, c.deps, c.event, c.id
 	defer func() {

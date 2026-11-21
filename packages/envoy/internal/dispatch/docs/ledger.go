@@ -74,6 +74,12 @@ type Ledger struct {
 	// ledgerVersion because a version a writer records nothing else about - one written with no
 	// author capture - still stores its tree.
 	versionTexts []ledgerVersionText
+	// treePool is the pool the commit stores those trees through (storeWrittenTrees): a
+	// settlement names the settlements pool its transaction ran on (settlePass). Nil is the
+	// service's own pool, the request pool, which is the right one for a request: its transaction
+	// has committed and given its connection back, so the store is one more connection of the
+	// request's own, inside its weight.
+	treePool *store.Pool
 	// seeds holds, per document this transaction seeded (SeedText), the actor that wrote its
 	// first text and the tree it wrote, which credit records and registers as that actor's ask
 	// blocks once the transaction has committed.
@@ -964,11 +970,26 @@ func collectVersionText(ctx context.Context, artifactID, markdown string) {
 // statements after it) and commits it, then credits, releases and publishes what its document
 // operations recorded (see Ledger), publishes the events they appended, so a caller's own events,
 // published after Commit returns, follow them, and stores the display trees of the versions'
-// markdown (storeVersionTrees). A statement of the write phase that fails, or a callback that
-// refuses its result, stops it: the transaction rolls back, nothing reaches a room, and Commit
-// returns the first such error unchanged. When the commit itself returns an error its outcome is
-// unknown, so the rooms the transaction wrote are failed and reload the durable document.
+// markdown (storeVersionTrees), which stands behind the write's gates rather than under them.
+// A statement of the write phase that fails, or a callback that refuses its result, stops it:
+// the transaction rolls back, nothing reaches a room, and Commit returns the first such error
+// unchanged, unless the commit's own bound is what ended it (commit). When the commit itself
+// returns an error its outcome is unknown, so the rooms the transaction wrote are failed and
+// reload the durable document. That is why ctx's cancellation and deadline do not reach the
+// commit (commit): the publish that follows it already runs on a context of its own
+// (publishLiveUpdate).
+//
+// A request that has already ended - its client gone, its own bound passed - starts no commit
+// at all (store.CommitRefusal). The refusal comes before commit, so nothing of this ledger has
+// run and no room is failed: the caller's deferred Discard and rollback end the transaction as
+// they end one any step before the commit failed, and the write is all-or-nothing as it always
+// was. Checked inside the commit instead, the same request would have recorded its settlement
+// credit, announced its appends and then failed every room it wrote, over a commit that was
+// never going to be read.
 func (l *Ledger) Commit(ctx context.Context) error {
+	if err := store.CommitRefusal(ctx); err != nil {
+		return err
+	}
 	if err := l.commit(ctx); err != nil {
 		return err
 	}
@@ -997,21 +1018,43 @@ func (l *Ledger) publishEvents() {
 // stored must not fail a write that has committed: a read of a version whose tree is missing
 // reads the markdown, exactly as it did before there was a table.
 //
-// A failure is logged with the documents it was for and changes no answer. The store itself is
-// texttrees.StoreFor, the one policy every path that writes a stored text keeps, which is also
-// why a caller still holding a pooled connection stores nothing; the texts are gathered only
-// where there is something to store, so that caller builds no slice either.
+// It is an INSERT after the commit, so it runs after the write's gates are dropped and never
+// under them (AfterWriterGateRelease): the writer gate serialises every writer of a
+// document, and a statement run under it is one every writer behind this one waits out. A
+// transaction with no gate on its context - a settlement, the block-id backfill - holds nothing
+// up and stores its trees where it stands.
+//
+// Its pool is the writer's (treeTable). A request's store runs on the request pool, once its
+// transaction has given its connection back, so it is one connection of the request's own. A
+// settlement's runs on the settlements pool its transaction ran on (treePool), so it takes no
+// connection admission counts for requests. The block-id backfill, an operator command that
+// serves no request, stores on the one pool its process opened.
+//
+// A failure is logged with the documents it was for and changes no answer. A caller still
+// holding a pooled connection stores nothing, as texttrees.StoreFor's policy for every path that
+// writes a stored text says; the texts are gathered only where there is something to store, so
+// that caller builds no slice either.
 func (l *Ledger) storeVersionTrees(ctx context.Context) {
-	if len(l.versionTexts) == 0 || store.HoldsPooledConnection(ctx) {
+	if len(l.versionTexts) == 0 {
 		return
 	}
 	written := l.versionTexts
 	l.versionTexts = nil
+	AfterWriterGateRelease(ctx, func() { l.storeWrittenTrees(ctx, written) })
+}
+
+// storeWrittenTrees is the store itself, of the versions written: the pooled-connection check
+// stands here, where the store runs, because a caller that held a connection at its commit may
+// have given it back by the time its gates are released.
+func (l *Ledger) storeWrittenTrees(ctx context.Context, written []ledgerVersionText) {
+	if store.HoldsPooledConnection(ctx) {
+		return
+	}
 	texts := make([]string, 0, len(written))
 	for _, one := range written {
 		texts = append(texts, one.markdown)
 	}
-	if err := texttrees.StoreFor(ctx, l.service.store, pmdoc.DisplayLatest, texts...); err != nil {
+	if err := l.treeTable().Store(ctx, pmdoc.DisplayLatest, texts...); err != nil {
 		// The documents are listed for this line alone, so they are gathered where it is written
 		// rather than on every committed write.
 		documents := make([]string, 0, len(written))
@@ -1022,10 +1065,31 @@ func (l *Ledger) storeVersionTrees(ctx context.Context) {
 	}
 }
 
+// treeTable is the text_trees table on the pool this ledger stores its versions' trees through:
+// the one its writer named (treePool), else the service's own.
+func (l *Ledger) treeTable() texttrees.Table {
+	if l.treePool != nil {
+		return texttrees.New(l.treePool)
+	}
+	return texttrees.For(l.service.store)
+}
+
 // commit is Commit up to the publish. Another transaction can run between the two, and tests
 // call them apart to hold that window open.
+//
+// It runs on store.CommitContext - ctx's values, bounded at its own ten seconds, and neither
+// ctx's cancellation nor its deadline - from the write phase (runQueue: the queued writes, then
+// the settlement credit and the announcement, commitWrites, in one batch) to the commit itself.
+// A request whose client goes away or whose deadline passes mid-commit would otherwise cut the
+// commit short, leave its outcome unknown and fail every room the transaction wrote, a room's
+// peers losing their connection over a write that may well have committed. A statement of that
+// work the bound runs out before the COMMIT is sent is a refusal the client may repeat, not an
+// outcome nobody knows (store.RanOutTheCommitBound).
 func (l *Ledger) commit(ctx context.Context) error {
+	ctx, cancel := store.CommitContext(ctx)
+	defer cancel()
 	if err := l.runQueue(ctx, l.commitWrites); err != nil {
+		err = store.RanOutTheCommitBound(ctx, err)
 		// The transaction rolls back, so its writes reached neither the store nor a room: what it
 		// leaves behind is what a transaction that never committed leaves (Discard).
 		_ = l.tx.Rollback(context.Background())

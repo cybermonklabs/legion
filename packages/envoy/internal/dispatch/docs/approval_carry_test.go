@@ -602,16 +602,19 @@ func TestAForgedAnsweredBlockOnTheSocketCarriesNoApproval(t *testing.T) {
 	}
 }
 
-// joined runs op inside a transaction joined to the service (Join), committed through its ledger,
-// as the answer route and the named-version route run their writes.
-func joined(t *testing.T, service *Service, op func(ctx context.Context, tx pgx.Tx) error) {
+// joined runs op on artifactID inside a transaction joined to the service (Join), committed
+// through its ledger, as the answer route and the named-version route run their writes: holding
+// the document's writer gate, taken before the transaction opens.
+func joined(t *testing.T, service *Service, artifactID string, op func(ctx context.Context, tx pgx.Tx) error) {
 	t.Helper()
-	tx, err := service.store.Pool.Begin(context.Background())
+	gated, release := gatedContext(t, service, context.Background(), artifactID)
+	defer release()
+	tx, err := service.store.Pool.Begin(gated)
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(context.Background())
-	ctx, ledger := service.Join(context.Background(), tx)
+	ctx, ledger := service.Join(gated, tx)
 	defer ledger.Discard()
 	if err := op(ctx, tx); err != nil {
 		t.Fatal(err)
@@ -632,7 +635,7 @@ func answerBlockAs(t *testing.T, service *Service, artifactID, blockID, login st
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined(t, service, func(ctx context.Context, tx pgx.Tx) error {
+	joined(t, service, artifactID, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `update asks set state = 'answered', answer = $3 where block_artifact_id = $1 and block_id = $2`, artifactID, blockID, encoded); err != nil {
 			return err
 		}
@@ -696,7 +699,7 @@ func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 		if repeat {
 			editLiveTree(t, service, artifactID, appendSecondRegionAsk(t))
 		}
-		joined(t, service, func(ctx context.Context, tx pgx.Tx) error {
+		joined(t, service, artifactID, func(ctx context.Context, tx pgx.Tx) error {
 			_, err := service.NamedVersion(ctx, artifactID, "Named by the agent", model.Actor{Kind: "session", ID: "session-0123456789abcdef"})
 			return err
 		})
@@ -755,7 +758,7 @@ func TestATransactionCannotCarryOneDocumentsApprovalTwice(t *testing.T) {
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	// The approved version is one this service wrote, so the version named below restores its
 	// text byte for byte, which is what carries the approval (restoresApprovedText).
-	joined(t, service, func(ctx context.Context, tx pgx.Tx) error {
+	joined(t, service, artifactID, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := service.NamedVersion(ctx, artifactID, "Named before the approval", agent)
 		return err
 	})

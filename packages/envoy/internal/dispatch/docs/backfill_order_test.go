@@ -2,13 +2,17 @@ package docs
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // The block-id backfill is a durable writer of the room like every other, so the rule this change
@@ -128,5 +132,74 @@ func TestStoredOrderBackfillDoesNotStoreTheRoomsCommittedEditTwice(t *testing.T)
 	checked := assertStoredOrder(t, service, artifactID)
 	if checked.UpdatesChecked == 0 {
 		t.Fatal("the check compared no update, so a clean result means nothing")
+	}
+}
+
+// The block-id backfill stores a document's stamp in a transaction on the settlements pool, under
+// the document's lock, which every request writing the document waits on, so that transaction runs
+// with its idle time bounded as a request connection's is: inside it,
+// idle_in_transaction_session_timeout reads store.RequestIdleInTransactionTimeout, the bound every
+// settlements-pool connection carries (store.Pool.Settlements). A trigger on the stamp's insert
+// reads it, since a trigger runs in the inserting transaction, with the application_name that
+// names the connection's pool. With no bound, a backfill orphaned with its connection held the
+// document's lock until Postgres noticed, refusing every request that wrote the document.
+func TestTheBackfillsStoreRunsUnderTheSettlementsPoolsIdleBound(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "before")
+	seedUnidentifiedProofDocument(t, database, artifactID, "before")
+	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown document service: %v", err)
+		}
+	})
+	for _, statement := range []string{
+		`create table backfill_seen (bound interval not null, pool text not null)`,
+		`create function backfill_seen() returns trigger language plpgsql as $$
+		begin
+			insert into backfill_seen
+			values (current_setting('idle_in_transaction_session_timeout')::interval, current_setting('application_name'));
+			return null;
+		end $$`,
+		`create trigger backfill_seen after insert on doc_updates
+			for each statement execute function backfill_seen()`,
+	} {
+		if _, err := database.Pool.Exec(ctx, statement); err != nil {
+			t.Fatalf("install the trigger that reads the stamp's transaction: %v", err)
+		}
+	}
+
+	report := service.backfillBlockIDs(ctx, artifactID)
+	if report.Err != nil || report.Stamped == 0 {
+		t.Fatalf("backfill the document's block ids = %+v, want a stamp", report)
+	}
+
+	rows, err := database.Pool.Query(ctx, `select bound, pool from backfill_seen`)
+	if err != nil {
+		t.Fatalf("read what the inserting transactions carried: %v", err)
+	}
+	defer rows.Close()
+	stored := false
+	for rows.Next() {
+		var bound time.Duration
+		var pool string
+		if err := rows.Scan(&bound, &pool); err != nil {
+			t.Fatalf("read an inserting transaction: %v", err)
+		}
+		if !strings.HasSuffix(pool, "dispatch-"+store.SettlementsPool) {
+			continue
+		}
+		stored = true
+		if bound != store.RequestIdleInTransactionTimeout {
+			t.Errorf("the backfill's transaction reads idle_in_transaction_session_timeout = %v, want %v",
+				bound, store.RequestIdleInTransactionTimeout)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read what the inserting transactions carried: %v", err)
+	}
+	if !stored {
+		t.Fatal("no insert into doc_updates ran on the settlements pool, so the backfill's store was never read and nothing here is tested")
 	}
 }

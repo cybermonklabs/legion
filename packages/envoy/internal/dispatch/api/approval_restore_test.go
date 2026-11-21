@@ -189,6 +189,29 @@ func TestAnUploadOfTheApprovedTextCarriesTheApproval(t *testing.T) {
 	}
 }
 
+// An upload of the approved text right over the approved version carries the approval to the
+// version it writes, and supersedes nothing. The write reads its report in its read phase, where
+// the carry's review is queued on the ledger and not written (docs.Ledger.PendingReview): the
+// stored newest review is the approval of the version right below, which read alone would name a
+// superseded approval the carry has just renewed.
+func TestAnUploadOfTheApprovedTextOverTheApprovedVersionSupersedesNothing(t *testing.T) {
+	handler := approvalCarryHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Upload the approved text over itself", restoreSpec)
+	if review := reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", ""); review.Version != 1 {
+		t.Fatalf("review = %#v, want an approval of version 1", review)
+	}
+	uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
+		"actor": sessionActor(), "name": "spec.md", "content": versionMarkdown(t, handler, issue.PrimaryArtifactID, 1),
+		"precondition": uploadBase(t, handler, issue.PrimaryArtifactID),
+	})
+	advice := adviceFromResponse(t, uploaded.Code, uploaded.Body.String())
+	waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 2)
+	requireReviewCarriedWith(t, handler, issue.PrimaryArtifactID, 2, 1, restoreSentence(1), nil)
+	if advice.SupersededApproval != nil {
+		t.Fatalf("the upload's superseded_approval = %#v, want none: its version carries the approval", advice.SupersededApproval)
+	}
+}
+
 // approveThenOthersAnswer writes restoreSpec and waveAsk into a new issue's spec, has alice approve
 // version 1 while the block is open, and has bob answer the block, which settlement writes into
 // version 2: the approval is stale, and the block's row now holds bob's decision.

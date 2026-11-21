@@ -147,6 +147,41 @@ func TestIAPVerifierReportsAnUnreadableKeySetAsUnavailable(t *testing.T) {
 	}
 }
 
+// WouldReadKeySet answers from the assertion's header and the cache alone whether Verify reads
+// IAP's key set: the first assertion does, the next under the same key does not, one under a key
+// the set does not hold does, and one whose header cannot be read is answered as one that does.
+// Asking reads nothing.
+func TestIAPVerifierSaysWhetherAVerificationReadsTheKeySet(t *testing.T) {
+	rig := newIAPRig(t)
+	assertion := rig.server.Mint(t, rig.signing, iapClaims())
+	unpublished := rig.server.Mint(t, oidctest.NewES256Key(t, "rotated-in"), iapClaims())
+	for _, step := range []struct {
+		name, raw string
+		reads     bool
+	}{
+		{name: "the first assertion", raw: assertion, reads: true},
+		{name: "an assertion under a key the read set holds", raw: assertion, reads: false},
+		{name: "an assertion under a key the set does not hold", raw: unpublished, reads: true},
+		{name: "an assertion whose header cannot be read", raw: "not-an-assertion", reads: true},
+	} {
+		before := rig.server.JWKSFetches()
+		if got := rig.verifier.WouldReadKeySet(step.raw); got != step.reads {
+			t.Errorf("%s: WouldReadKeySet = %t, want %t", step.name, got, step.reads)
+		}
+		if fetches := rig.server.JWKSFetches(); fetches != before {
+			t.Fatalf("%s: WouldReadKeySet read the key set (%d reads, want %d)", step.name, fetches, before)
+		}
+		if step.raw == assertion {
+			if _, err := rig.verifier.Verify(context.Background(), step.raw); err != nil {
+				t.Fatalf("%s: Verify: %v", step.name, err)
+			}
+			if read := rig.server.JWKSFetches() > before; read != step.reads {
+				t.Errorf("%s: Verify read the key set %t, where WouldReadKeySet answered %t", step.name, read, step.reads)
+			}
+		}
+	}
+}
+
 // An expired assertion IAP signed is refused with an *IAPExpiredError that carries the account the
 // signature covers, so its caller can tell whether that person would still be admitted; it is
 // ErrExpired, and Reason names it so. The domain is the caller's rule, so an account of another

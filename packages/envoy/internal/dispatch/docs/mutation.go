@@ -33,12 +33,12 @@ type versionWrite struct {
 	authors          []model.Actor
 	capture          *authorCapture
 	docUpdateVersion *int64
-	// closedIssue is set by a settlement of a closed issue's document (settlement.issueClosed),
+	// closedIssue is set by a settlement of a closed issue's document (settlementPass.issueClosed),
 	// whose version moves no approval request and carries no approval (writeVersionTx): a move
 	// rewrites an open request and appends its ask.edited, a carry appends an artifact.approved in
 	// the reviewer's name, each an event that reaches a person, and such a settlement wakes nobody.
 	closedIssue bool
-	// settlement is set by a settlement's version alone (settlement.commitVersion), the one
+	// settlement is set by a settlement's version alone (settlementPass.commitVersion), the one
 	// version write whose move of the open approval request may keep it waiting on the person
 	// (MoveApprovalAsk's bySettlement). A version a route writes - a named version, an edit, a
 	// summary edit - moves the request to its agent, whatever text it stores.
@@ -1914,7 +1914,7 @@ func editTree(current pmdoc.ValidDocument, read func() (*pmdoc.Node, error)) (*b
 // transactional live-document mutation path. An ask's answer the document has no room for - its
 // words or the options it selects (pmdoc.IsAnswerAttribute), which are caller text - is left out of
 // the block: the block is written without either, saying who answered and when, and the caller's
-// ask keeps the answer, as settlement leaves a returning block's answer out (withholdAnswers).
+// ask keeps the answer, as settlement leaves a returning block's answer out (weighAnswers).
 // attributes' names are the server's own, never taken from a request (pmdoc.SetBlockAttributes).
 func (s *Service) SetBlockAttributes(
 	ctx context.Context,

@@ -204,7 +204,7 @@ func (s *server) publishAgentStreamFrame(w http.ResponseWriter, r *http.Request)
 		// This body is the test's alone, so a member it does not declare is a mistake in the
 		// test and is refused by name, as every test hook's body is (decodeJSONTestHook).
 		if err := refuseUndeclaredMembers(&body, frame); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		call.As, call.Responding = as, body.Responding

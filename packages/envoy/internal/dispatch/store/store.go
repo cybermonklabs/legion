@@ -32,7 +32,7 @@ type Store struct {
 var migrationFiles embed.FS
 
 // poolSizeParam is the connection-string parameter Open refuses. Open fixes MaxConns at
-// sharedPoolSize, so a connection string that asks for a pool size is asking for something
+// SharedPoolSize, so a connection string that asks for a pool size is asking for something
 // that will not happen, and ignoring it silently would leave the operator tuning a number
 // nobody reads.
 //
@@ -42,9 +42,14 @@ var migrationFiles embed.FS
 const poolSizeParam = "pool_max_conns"
 
 // Open connects to databaseURL and verifies the database is reachable. The pool's size is
-// sharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
-// string that names its database. Every connection it opens scans timestamptz in UTC
-// (scanTimestampsInUTC), as do the pools Pool.separate copies from its configuration.
+// SharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
+// string that names its database. It is the request pool (RequestsPool): its connections carry
+// dispatch-requests in application_name, after the connection string's own name where it names one
+// (applicationName), and the write lock bound in lock_timeout, and its acquires are bounded at
+// requestAcquireBound. Every connection it opens scans timestamptz in UTC
+// (scanTimestampsInUTC), as do the pools Pool.separate copies from its configuration, and is
+// refused where its session does not carry the lock bound its configuration asks for
+// (requireLockBound, connected).
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	declared, err := declaresPoolSize(databaseURL)
 	if err != nil {
@@ -52,24 +57,37 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	if declared {
 		return nil, fmt.Errorf(
-			"DATABASE_URL sets %s, which Dispatch does not honour: the pool is fixed at %d in code (store.sharedPoolSize). Remove the parameter",
-			poolSizeParam, sharedPoolSize)
+			"DATABASE_URL sets %s, which Dispatch does not honour: the pool is fixed at %d in code (store.SharedPoolSize). Remove the parameter",
+			poolSizeParam, SharedPoolSize)
 	}
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse Postgres URL: %w", err)
 	}
-	config.MaxConns = sharedPoolSize
-	config.AfterConnect = scanTimestampsInUTC
+	config.MaxConns = SharedPoolSize
+	configurePool(config, RequestsPool, requestAcquireBound)
+	config.AfterConnect = connected
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("open Postgres pool: %w", err)
 	}
-	if err := pool.Ping(ctx); err != nil {
+	// The process's first connection, dialled before anything is served: it waits under
+	// coldDialBound, not the request pool's own bound (forColdDial).
+	if err := pool.Ping(forColdDial(ctx)); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("ping Postgres: %w", err)
 	}
 	return &Store{Pool: NewPool(pool)}, nil
+}
+
+// connected readies each new connection of a pool opened from Open's configuration, the separate
+// pools copied from it included: its timestamps scan in UTC (scanTimestampsInUTC), and a session
+// that does not carry the lock_timeout its pool asks for is refused (requireLockBound).
+func connected(ctx context.Context, conn *pgx.Conn) error {
+	if err := scanTimestampsInUTC(ctx, conn); err != nil {
+		return err
+	}
+	return requireLockBound(ctx, conn)
 }
 
 // scanTimestampsInUTC makes every timestamptz a connection scans come back in UTC, whatever zone
@@ -140,6 +158,11 @@ func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 	if s == nil || s.Pool == nil {
 		return fmt.Errorf("migrate: store pool required")
 	}
+	// Every acquire below is the boot's, before the process serves anything, and each may pay a
+	// fresh dial: a concurrent index's migration hijacks the connection it runs on and closes it
+	// (applyNonTransactionalMigration), so the migration after it finds the pool empty. They
+	// wait under coldDialBound rather than the request pool's own three seconds (forColdDial).
+	ctx = forColdDial(ctx)
 	migrations, err := pgmigrate.Load(fsys, "migrations")
 	if err != nil {
 		return fmt.Errorf("migrations refused, none applied: %w", err)

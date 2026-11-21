@@ -135,6 +135,48 @@ func TestAReadOfAnUnstoredTextBuildsItsTreeAndStoresIt(t *testing.T) {
 	}
 }
 
+// A cold read of a text the table holds no tree for stores the tree it built on the background
+// pool (treeStorePool), which is what keeps a weight-1 pinned GET to the one request-pool
+// connection it pins: the store runs beside the request on a goroutine of the server's background
+// work, and on the request pool it would be a second connection while the pin is held. So the
+// cold read takes exactly one request-pool connection, its pin - the caller's identity read
+// (identity.HeaderIdentity, the first statement) and every read of the route run on it - the
+// background pool hands out the store's, and the tree is stored. The wait for the store is the
+// server's detached work alone (detached.wait): awaitBackgroundWrites reads the projects on the
+// request pool itself, which would count as the request's.
+func TestAColdPinnedReadTakesNoRequestPoolConnectionBeyondItsPin(t *testing.T) {
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	const commentBody = "A body the *cold* read stores on the background pool."
+	key := commentingIssue(t, handler, "COLDP", commentBody)
+	if _, err := database.Pool.Exec(context.Background(), `delete from text_trees`); err != nil {
+		t.Fatalf("drop the stored trees: %v", err)
+	}
+	awaitBackgroundWrites(t, served)
+	target := "/api/v1/issues/" + key + "/comments"
+
+	requests := settledAcquires(t, database, store.RequestsPool)
+	background := settledAcquires(t, database, store.BackgroundPool)
+	builds := pmdoc.DisplayTreeBuilds()
+	cold := treesRequest(t, handler, target, true)
+	served.detached.wait()
+	coldRequests := poolAcquires(database, store.RequestsPool) - requests
+	coldBackground := poolAcquires(database, store.BackgroundPool) - background
+
+	if built := pmdoc.DisplayTreeBuilds() - builds; built != 1 {
+		t.Fatalf("the cold read built %d display trees for one unstored body, want 1", built)
+	}
+	if coldRequests != 1 {
+		t.Errorf("the cold read took %d request-pool connection(s), want 1, its pin: its store of the tree it built runs on the background pool, not beside the pin", coldRequests)
+	}
+	if coldBackground < 1 {
+		t.Errorf("the cold read took %d background-pool connection(s), want its store's", coldBackground)
+	}
+	if _, held := storedTreeOf(t, database, commentBody); !held {
+		t.Fatalf("the cold read answered %q and stored no tree of it", commentBody)
+	}
+	requireAnsweredTree(t, cold, "0.body_tree", commentBody)
+}
+
 // A tree stored at another display parser version is never served: the reading the stored bytes
 // hold is not the reading this build makes, so the read builds its own and stores it beside the
 // row it would not take (texttrees.Read keys by pmdoc.DisplayTreeVersionNow).

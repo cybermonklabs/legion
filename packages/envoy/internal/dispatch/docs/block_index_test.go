@@ -1804,8 +1804,12 @@ func TestRetirementSpendsOneBudgetAcrossTheKindsAndKeepsEveryKindsCursor(t *test
 	}
 	commentCursor := ahead[commentAhead-1]
 
+	background, err := service.backgroundPool()
+	if err != nil {
+		t.Fatalf("the background pool: %v", err)
+	}
 	first := BlockIndexTick{}
-	if err := service.retireWholeText(ctx, map[string]string{comments.kind: commentCursor}, &first); err != nil {
+	if err := service.retireWholeText(ctx, background, map[string]string{comments.kind: commentCursor}, &first); err != nil {
 		t.Fatalf("the first tick of the retirement: %v", err)
 	}
 	if first.Retired != blockIndexRetireBatch {
@@ -1830,7 +1834,7 @@ func TestRetirementSpendsOneBudgetAcrossTheKindsAndKeepsEveryKindsCursor(t *test
 	}
 
 	second := BlockIndexTick{}
-	if err := service.retireWholeText(ctx, first.Cursor.Retire, &second); err != nil {
+	if err := service.retireWholeText(ctx, background, first.Cursor.Retire, &second); err != nil {
 		t.Fatalf("the second tick of the retirement: %v", err)
 	}
 	// What says each kind read on from its cursor rather than from the start is what the

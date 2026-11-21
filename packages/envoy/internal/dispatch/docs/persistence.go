@@ -15,6 +15,7 @@ import (
 	"github.com/reearth/ygo/encoding"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -70,6 +71,10 @@ type PgVersioned struct {
 	// takes the room's lock to write the fold back. Nil outside tests; tests use it to hold a
 	// compaction inside its fold while another writer changes the document.
 	duringCompactionFold func(room string)
+	// duringCompactionWrite runs inside a compaction's write transaction (writeCompaction), once
+	// that transaction has bounded its idle time and taken the document's lock and before it runs
+	// anything else. Nil outside tests; tests read the transaction's own settings there.
+	duringCompactionWrite func(room string, tx pgx.Tx)
 	// beforeFold runs as a load or a compaction starts to fold a room's rows (foldRead): once its
 	// read transaction has committed when it read them into memory, inside that transaction when
 	// it streams them. Nil outside tests; tests use it to see which connection a fold holds.
@@ -124,11 +129,11 @@ func NewPgVersioned(database *store.Store) *PgVersioned {
 
 // Load returns the room's state at its head (stateThrough), constrained by a pending prune
 // checkpoint when one exists, read as every document load reads (loadStored): in one
-// repeatable-read transaction on the rooms pool, folded once that transaction has committed when
-// the rows total at most foldBufferBytes, so a fold holds no connection a room load waits for, and
-// inside it while it streams them when they total more; and noted once it has read more than one
-// row. A room's load decodes the state it returns once more, in the room's load hook
-// (onLoadDocument).
+// repeatable-read transaction on the pool that owns loads, or the one its context names, folded
+// once that transaction has committed when the rows total at most foldBufferBytes, so a fold holds
+// no connection a room load waits for, and inside it while it streams them when they total more;
+// and noted once it has read more than one row. A room's load decodes the state it returns once
+// more, in the room's load hook (onLoadDocument).
 func (p *PgVersioned) Load(ctx context.Context, room string) (persistence.LoadResult, error) {
 	var update []byte
 	stamp, err := p.loadStored(ctx, room, func(head persistence.Version, updates updateSource) (err error) {
@@ -141,23 +146,59 @@ func (p *PgVersioned) Load(ctx context.Context, room string) (persistence.LoadRe
 	return persistence.LoadResult{Update: update, Version: persistence.Version(stamp.Version)}, nil
 }
 
+// loadTxSource is where a load of a room's stored history opens its transaction: the pool the
+// caller's context names (withQueryPool), else the pool that owns loads (store.Pool.Rooms).
+//
+// The rooms pool is the fallback because a load is what a caller holding one of the request pool's
+// connections waits on - a write forking a document no room holds (coldFork) is inside its
+// transaction, and ygo's room load is waited on by every caller of that room - so a load that
+// asked the request pool for a connection would wait for one only those callers can release. A
+// caller that names a pool has made that argument for its own: a cold read's fold on the request
+// pool's connections that admission never hands out, which is where the work a handler leaves
+// running belongs (foldDocument). Keeping it off the rooms pool is what keeps a room's load from
+// queueing behind the reads of requests (INFRA-592). A settlement's warm-up names the settlements
+// pool for its reads (settleRoomWithin), but ygo hands a room's load no context
+// (servicePersistenceAdapter.LoadDoc), so that load reads the rooms pool, as every room load does.
+func loadTxSource(ctx context.Context, pool *store.Pool) (txSource, error) {
+	if named, ok := ctx.Value(queryPoolKey{}).(*store.Pool); ok {
+		return named, nil
+	}
+	return pool.Rooms()
+}
+
+// loadPoolName names, for a log line, the pool a load on ctx reads through (loadTxSource): the rooms
+// pool, unless the caller's context names a pool of its own, which a settlement and a cold read's
+// fold do and a document socket's admission does not.
+func loadPoolName(ctx context.Context) string {
+	if _, ok := ctx.Value(queryPoolKey{}).(*store.Pool); ok {
+		return "the caller's own"
+	}
+	return store.RoomsPool
+}
+
+// txSource opens a transaction of its own, which both the pool that owns loads and the pools a
+// context names do (store.RawPool.BeginTx, store.Pool.BeginTx).
+type txSource interface {
+	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
+}
+
 // loadStored is the read every document load (Load, LoadDocument) makes of the room's stored
-// updates: in one repeatable-read read-only transaction on the rooms pool, the stamp of the state
-// at their head and the count and bytes of the rows at or below it (readStoredLog), then those
-// rows, which it hands use with the head to fold (foldRead): once the transaction has committed
-// when they total at most foldBufferBytes, while it streams them inside it when they total more. A
-// room with no stored update commits and hands use nothing. It returns the stamp it read, and once
-// its transaction has ended it notes the room (noted) when it read more than one row: one row has
-// nothing to fold, and any later append notes the room itself.
+// updates: in one repeatable-read read-only transaction on the pool loadTxSource names, the stamp
+// of the state at their head and the count and bytes of the rows at or below it (readStoredLog),
+// then those rows, which it hands use with the head to fold (foldRead): once the transaction has
+// committed when they total at most foldBufferBytes, while it streams them inside it when they
+// total more. A room with no stored update commits and hands use nothing. It returns the stamp it
+// read, and once its transaction has ended it notes the room (noted) when it read more than one
+// row: one row has nothing to fold, and any later append notes the room itself.
 func (p *PgVersioned) loadStored(ctx context.Context, room string, use func(head persistence.Version, updates updateSource) error) (DocumentStamp, error) {
 	if err := ctx.Err(); err != nil {
 		return DocumentStamp{}, err
 	}
-	rooms, err := p.store.Pool.Rooms()
+	from, err := loadTxSource(ctx, p.store.Pool)
 	if err != nil {
 		return DocumentStamp{}, err
 	}
-	tx, err := rooms.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	tx, err := from.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return DocumentStamp{}, fmt.Errorf("begin document load: %w", err)
 	}
@@ -185,7 +226,10 @@ func (p *PgVersioned) loadStored(ctx context.Context, room string, use func(head
 }
 
 // Head is the version Load folds the room up to now, read through the pool that owns loads, as
-// Load reads it: a room load (servicePersistenceAdapter.LoadDoc) asks it.
+// Load reads it: a rebuild asks it for the head of the history it judges before it loads that
+// history (Service.RebuildDocument). A room load that checks a socket's preload reads the same
+// head (headVersion) in the statement that reads the document's pending settlement beside it
+// (preloadCheckStatement), not through this.
 func (p *PgVersioned) Head(ctx context.Context, room string) (persistence.Version, error) {
 	rooms, err := p.store.Pool.Rooms()
 	if err != nil {
@@ -194,14 +238,12 @@ func (p *PgVersioned) Head(ctx context.Context, room string) (persistence.Versio
 	return p.head(ctx, rooms, room)
 }
 
-// DocumentStamp is the room's DocumentStamp now, read through the pool that owns loads, as Head
-// reads the head.
+// DocumentStamp is the room's DocumentStamp now, read where every read this service makes for its
+// caller reads (readQuerier): one statement of the cold read that asked for it, on that read's own
+// transaction or its pinned connection, not on the pool that owns loads, where a room's load would
+// queue behind it (coldRead, INFRA-592).
 func (p *PgVersioned) DocumentStamp(ctx context.Context, room string) (DocumentStamp, error) {
-	rooms, err := p.store.Pool.Rooms()
-	if err != nil {
-		return DocumentStamp{}, err
-	}
-	return readDocumentStamp(ctx, rooms, room)
+	return readDocumentStamp(ctx, readQuerier(ctx, p.store.Pool), room)
 }
 
 // AppendUpdate validates and stores one incremental V1 update as content: a batch of one
@@ -248,6 +290,22 @@ func (p *PgVersioned) AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string
 // takes it here; withRoomLock takes the session-level form on its own connection, and
 // lockSettlementCursor takes it for a settlement, waiting at most 100 ms under lock_timeout at
 // shutdown.
+//
+// Wait. A request's wait for this lock is bounded as an owner lock's is (store.LockWithinBound):
+// a request - an edit, an upload, a rebuild, a removal, an agent's live write, the settlement an
+// issue's close runs before it - is told apart by the admission ticket its context carries
+// (admission.TicketFrom), and one queued behind a holder past the bound is refused busy, which it
+// answers 503 DATABASE_BUSY with Retry-After. Every other taker waits until the holder lets go, as
+// before: the room's own appends and compactions, which are the holders' path, a settlement a
+// timer or the resumption runs, a background pass. A browser's keystrokes reach the store only
+// through the room's appends, so its room behaves as it did; those appends and a compaction's
+// write take the session-level form first (appendRoomTx, lockRoom) on pools of their own whose
+// connections carry no lock_timeout, so that wait is never bounded. Every other taker with no
+// ticket takes its transaction from a pool that carries none either (the room-appends, rooms,
+// settlements and background pools), never from the request pool, whose every connection and
+// transaction carries the write lock bound. The one exception is withRoomLock's writers
+// (CaptureSnapshot, PruneAfter, Delete), which take the session-level form on the request pool:
+// only ygo's conformance tests call them, and there the bound would refuse a wait past it.
 // The rule between this lock and a document's owner has two halves, and both are load-bearing.
 //
 // Level. A writer serialises against the other writers of its document's owner on the owner's
@@ -293,11 +351,20 @@ func (p *PgVersioned) AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string
 // against a settlement if it takes them the other way round: two exclusive holds of one owner's
 // advisory lock conflict with each other.
 func lockDocumentRoom(ctx context.Context, tx pgx.Tx, room string) error {
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext($1))`, room); err != nil {
+	var err error
+	if admission.TicketFrom(ctx) != nil {
+		err = store.LockWithinBound(ctx, tx, documentRoomLock, room)
+	} else {
+		_, err = tx.Exec(ctx, documentRoomLock, room)
+	}
+	if err != nil {
 		return fmt.Errorf("lock document room: %w", err)
 	}
 	return nil
 }
+
+// documentRoomLock is the statement lockDocumentRoom takes a document's lock with.
+const documentRoomLock = `select pg_advisory_xact_lock(hashtext($1))`
 
 // LockDocumentRoom takes the room's lock of the document artifactID inside tx, for a transaction
 // of another package that must hold it before it reads live state. It is lockDocumentRoom under

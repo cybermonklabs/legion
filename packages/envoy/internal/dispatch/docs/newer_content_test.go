@@ -109,7 +109,7 @@ func TestSettlementSkipsADocumentHoldingNewerContent(t *testing.T) {
 	state.mu.Lock()
 	generation := state.roomGeneration
 	state.mu.Unlock()
-	service.settleRoom(artifactID, generation)
+	service.settleRoom(context.Background(), artifactID, generation)
 
 	var versions int
 	if err := service.store.Pool.QueryRow(context.Background(), `

@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
@@ -329,12 +330,42 @@ func TestTheKeywordFillWritesWhileTheServerAnswers(t *testing.T) {
 // on the server's own sessionanswers.Latency, while it catches up a backlog of 4,000 events. A
 // transaction locks message_deliveries, which the answers read reads, so an answers read through
 // the handler runs past 800 ms: within one batch the cursor stops, and the fill says it paused.
-// For the 20 s the lock then holds, while events are written, the cursor does not move. Once the
-// lock is released, reads answer within 800 ms, and for the 10 s after the slow read ended the
-// cursor still stands; then the fill says it continues and the cursor moves, and every event,
-// those written under the lock included, gets its rows.
+// For the 20 s the lock then holds, while events are written, the cursor does not move. No one
+// answers read stays slow for those 20 s, because the request pool's lock_timeout refuses its wait
+// for the lock at that bound, so the test starts a new answers read at an interval shorter than
+// that bound and than the window the fill judges the reads slow over, while the lock holds, as an
+// agent whose read was refused tries it again. Each read that ends before the release is that
+// refusal, and each still in flight at the release answers once the lock is released. Then reads
+// answer within 800 ms, and for the 10 s after the slow reads ended the cursor still stands; then
+// the fill says it continues and the cursor moves, and every event, those written under the lock
+// included, gets its rows.
 func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 	server := newKeywordServer(t)
+	// The request pool's lock bound, as its connections carry it: an answers read waits for the
+	// lock this long and is refused. A new read starts every readEvery, half the shorter of that
+	// bound and the window the fill judges the reads slow over (sessionanswers.SlowWithin).
+	var lockMillis int64
+	if err := server.database.Pool.QueryRow(t.Context(),
+		`select setting::bigint from pg_settings where name = 'lock_timeout'`).Scan(&lockMillis); err != nil {
+		t.Fatalf("read the request pool's lock_timeout: %v", err)
+	}
+	lockBound := time.Duration(lockMillis) * time.Millisecond
+	readEvery := min(lockBound, sessionanswers.SlowWithin) / 2
+	// A read refused at the bound is a slow end, which keeps the fill paused for SlowWithin
+	// (sessionanswers.Latency.Slow), and the read after it began at most readEvery after it began
+	// and so has run past SlowRead by readEvery + SlowRead: that must come inside SlowWithin, or a
+	// batch could slip into the gap between a refusal and the next slow read.
+	if readEvery+sessionanswers.SlowRead >= sessionanswers.SlowWithin {
+		t.Fatalf("a read every %v has run past %v only %v after the one before it began, not inside the %v a refused read keeps the fill paused",
+			readEvery, sessionanswers.SlowRead, readEvery+sessionanswers.SlowRead, sessionanswers.SlowWithin)
+	}
+	// The reads are refused half an interval either side of the release and never at it, so the
+	// bound is a whole number of intervals, and a read in flight at the release, begun at least
+	// half an interval before it, has run past SlowRead by then.
+	if lockBound%readEvery != 0 || readEvery/2 <= sessionanswers.SlowRead {
+		t.Fatalf("the request pool's lock_timeout %v is not a whole number of %v intervals, or half an interval is not past %v",
+			lockBound, readEvery, sessionanswers.SlowRead)
+	}
 	backlog := seedKeywordBacklog(t, server.database, server.deps.Events, 4000)
 	last := backlog[len(backlog)-1].ID
 	issue := createInteractionIssue(t, server.handler, "TEST", "Rotate the signing keys", "# Rotation\n")
@@ -350,8 +381,23 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 		t.Fatalf("lock message_deliveries: %v", err)
 	}
 	const answers = "/api/v1/agents/" + answersSession + "/answers"
-	held := make(chan *httptest.ResponseRecorder, 1)
-	go func() { held <- dispatchRequest(t, server.handler, http.MethodGet, answers, nil, "alice") }()
+	// answersRead is one answers read started while the lock holds: when it began and ended, and
+	// its answer.
+	type answersRead struct {
+		began, ended time.Time
+		response     *httptest.ResponseRecorder
+	}
+	var reads []chan answersRead
+	startRead := func() {
+		done := make(chan answersRead, 1)
+		reads = append(reads, done)
+		began := time.Now()
+		go func() {
+			response := dispatchRequest(t, server.handler, http.MethodGet, answers, nil, "alice")
+			done <- answersRead{began: began, ended: time.Now(), response: response}
+		}()
+	}
+	startRead()
 	waitForDatabaseLocks(t, holder, 1)
 	testwait.WithinPolling(t, 5*time.Second, testwait.Poll, "the answers read held by the lock to turn slow within 5 s", func() bool {
 		return server.latency.Slow(time.Now())
@@ -378,13 +424,29 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 	// The lock holds 20 s while events are written, and the cursor stands. The loop reads the
 	// cursor for the whole 20 s and writes on a tick, rather than waiting for something to hold,
 	// so it keeps its own clock.
+	//
+	// It starts an answers read every readEvery, at times counted back from the release by half
+	// of readEvery, so each read's lock wait runs out half an interval or more away from the
+	// release and none at it: those started within one bound of the release are in flight at the
+	// release, and the answers reads stay slow for the whole 20 s.
 	writes := 0
 	releaseAt := time.Now().Add(20 * time.Second)
+	var starts []time.Time
+	for start := releaseAt.Add(-readEvery / 2); start.After(time.Now()); start = start.Add(-readEvery) {
+		starts = append([]time.Time{start}, starts...)
+	}
 	for time.Now().Before(releaseAt) {
 		writes++
 		keywordWriteUnderLock(t, server, issue.Key, writes)
 		fill.Wake()
 		for sampled := time.Now(); time.Since(sampled) < 2*time.Second && time.Now().Before(releaseAt); {
+			for len(starts) > 0 && !time.Now().Before(starts[0]) {
+				startRead()
+				starts = starts[1:]
+			}
+			if now := time.Now(); !server.latency.Slow(now) {
+				t.Fatalf("the answers reads were not slow %v before the lock's release", releaseAt.Sub(now))
+			}
 			if cursor := textversionstest.Cursor(t, server.database); cursor != paused {
 				t.Fatalf("the cursor moved from %d to %d while the answers read was held by the lock", paused, cursor)
 			}
@@ -394,17 +456,31 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 	if batches := len(fill.Lines(t, keywordBatchLine)); batches != batchesBeforePause {
 		t.Fatalf("the fill logged %d batches while paused, want none", batches-batchesBeforePause)
 	}
+	releasing := time.Now()
 	if err := holder.Rollback(t.Context()); err != nil {
 		t.Fatalf("release message_deliveries: %v", err)
 	}
 	released := time.Now()
-	select {
-	case response := <-held:
-		if response.Code != http.StatusOK {
-			t.Fatalf("the held answers read answered %d: %s", response.Code, response.Body.String())
+	// Each read that ended before the release ran its lock wait out and was refused; each read
+	// still in flight at the release, every read started within one bound of it among them,
+	// answers within 10 s of the release.
+	for index, done := range reads {
+		select {
+		case read := <-done:
+			if read.ended.Before(releasing) {
+				if read.began.After(releasing.Add(-lockBound)) {
+					t.Fatalf("answers read %d began %v before the release and ended %v before it: a read started within the lock bound %v of the release must still be in flight at the release",
+						index+1, releasing.Sub(read.began), releasing.Sub(read.ended), lockBound)
+				}
+				assertRetryable(t, read.response.Result(), http.StatusServiceUnavailable, admission.CodeDatabaseBusy)
+				continue
+			}
+			if read.response.Code != http.StatusOK {
+				t.Fatalf("answers read %d, held by the lock, answered %d: %s", index+1, read.response.Code, read.response.Body.String())
+			}
+		case <-time.After(time.Until(released.Add(10 * time.Second))):
+			t.Fatalf("answers read %d, in flight at the release, did not answer within 10 s of the lock's release", index+1)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the held answers read did not answer within 10 s of the lock's release")
 	}
 
 	// For the 10 s after the slow read ended, reads answer within 800 ms, and the cursor stands:
