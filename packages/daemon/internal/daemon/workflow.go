@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"slices"
 	"strconv"
 	"sync"
@@ -27,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -39,6 +41,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // workflowRuntime is the daemon-owned integration surface around the pure transition engine.
@@ -89,9 +92,12 @@ type workflowRuntime struct {
 	consumers *intake.Consumers
 	// setRepositories replaces the repositories GitHub intake hears, the one route the runtime
 	// reaches that stream call by (updateSubscription). The boot leaves it nil, which means
-	// w.consumers.SetRepositories; a test sets it to a stand-in, since consumers is the concrete
-	// *intake.Consumers and a test of the mapping refresh's ordering has to hold the call while it
-	// proves no transaction waits on it (INFRA-3169).
+	// w.consumers.SetRepositories: the boot opens the consumers (connect) before anything that
+	// hears a repository runs — a fact that records an issue, a launch, the refresher's backfill —
+	// so no caller asks whether they are open. A test sets it to a stand-in, since consumers is the
+	// concrete *intake.Consumers: a test of the heard set's publication, which has to hold the call
+	// while it proves no transaction waits on it (INFRA-3169), and a test whose runtime opens no
+	// consumers and whose launch or backfill hears a repository (hearsNothing).
 	setRepositories func(ctx context.Context, repositories []ghrepo.Repository) error
 	outbox          *outbox
 	// outboxWake is the outbox as the records' wake reaches it (wakeOutbox): the records are built
@@ -169,85 +175,86 @@ type workflowRuntime struct {
 	githubAPI string
 	// defaultBranches is each repository as GitHub names it and its default branch, read under
 	// githubAPI and kept defaultBranchTTL: what an issue's record takes its repository and default
-	// branch from when it is first recorded (ResolveRepository), and what the mapping serves each
-	// repository as (nameAccepted). Every read of it is made of the repository the mapping serves
-	// the asked-for one as (repositories.serving), so a name recorded before a configured
-	// rename's transfer is read on the installation that holds the repository now.
+	// branch from when it is first recorded (ResolveRepository, through the repository state that
+	// its preparations fill). Every read of it is made of the repository the rename rule serves
+	// the asked-for one as (repositories.serving), so a name recorded before a configured rename's
+	// transfer is read on the installation that holds the repository now.
 	defaultBranches *defaultBranches
-	// startWaits is the start's waits for GitHub's rate limit, one policy and one clock for every
-	// App call and default-branch read of the start (startRateLimits), which openWorkflow makes.
-	// A runtime a test builds as a literal leaves it nil: each wait then has the maximum and no
-	// end (startWaits.readUntil).
-	startWaits *startWaits
-	// repositories is the project's repository mapping as the daemon serves it (loadMapping at
-	// boot, refreshMapping on a mapping change); installs answers each App's installation on a
-	// mapped repository; mappingMu serializes the mapping's re-reads; mappingChanged carries a
-	// request for a read to refreshOnMappingChange, one waiting at most. mappingRequested counts
-	// the reads asked for (requestMappingRead) and mappingApplied is the last request a finished
-	// read covers; awaiting is each held admission event's request (awaitMappingRead), by issue key
-	// and then the sequence it was delivered at, under awaitingMu. recovering is each repository,
+	// repositories is the repository state: what GitHub answered for each repository the daemon
+	// prepared, and the repositories the live records name. installs answers each App's
+	// installation on a repository (prepareName). recovering is each repository,
 	// lowercased, GitHub answered for again whose issues are still to recover from Dispatch's
-	// listing (recoverRepositories): one a read of the mapping stopped leaving out for a read
-	// GitHub did not answer (its installation read, or its default-branch read past GitHub's
-	// rate limit: markRecovered), and one no mapping names that a preparation left unread and
-	// whose reads a later preparation got answered (readAnswered),
-	// under recoveringMu. silenced is, by the same repository, each issue whose apply said nothing
-	// because the repository was unread (noteUnread), which the repository's recovery takes into its
-	// scope whatever the issue resolves to by then; releaseWaits is, by repository, each child a
-	// release_children left unrecorded on it (awaitRecovery), whose architect the recovery tells
-	// of each it did not record (tellReleaseWaits), and which leave with the repository's own
-	// marker where a pass stops reading GitHub for it (settleRecovery, tellLetGoWaits);
-	// recoveryHeldSince is when a recovery's listing was first found held with waits to tell (zero
-	// for none), so a hold past recoveryHoldBound tells them.
-	// recheckAfter is refreshOnMappingChange's wait before a read of its own, time.After when nil;
-	// a test sees each wait through it.
+	// listing (recoverRepositories): one a preparation left unread and whose reads a later
+	// preparation got answered (readAnswered), under recoveringMu. silenced is, by the same
+	// repository, each issue whose apply said nothing because the repository was unread
+	// (noteUnread), which the repository's recovery takes into its scope whatever the issue
+	// resolves to by then; releaseWaits is, by repository, each child a release_children left
+	// unrecorded on it (awaitRecovery), whose architect the recovery tells of each it did not
+	// record (tellReleaseWaits), and which leave with the repository's own marker where a pass
+	// stops reading GitHub for it (settleRecovery, tellLetGoWaits); recoveryHeldSince is when a
+	// recovery's listing was first found held with waits to tell (zero for none), so a hold past
+	// recoveryHoldBound tells them.
+	// recheckAfter is the refresher's wait before it runs a job of its own (refreshRepositories),
+	// time.After when nil; a test sees each wait through it.
 	repositories      *repositories
 	installs          appauth.Installations
-	mappingMu         sync.Mutex
-	mappingChanged    chan struct{}
-	mappingRequested  atomic.Uint64
-	mappingApplied    atomic.Uint64
-	awaitingMu        sync.Mutex
-	awaiting          map[string]map[int64]uint64
 	recoveringMu      sync.Mutex
 	recovering        map[string]bool
 	silenced          map[string]map[string]bool
 	releaseWaits      map[string]map[string]releaseWait
 	recoveryHeldSince time.Time
 	recheckAfter      func(time.Duration) <-chan time.Time
-	// heard is what GitHub intake hears (heardRepositories): the boot's set (heardAtBoot) and then
-	// each read of the mapping's (refreshMapping), with each repository a record first names added
-	// to it with no read of the records (hearRecorded). Every write holds mappingMu, so no read of
-	// the mapping overwrites what a record just added, and publishes a new set whole; a recording
-	// reads it with no lock at all, so one whose repository it names waits on no read of the
-	// mapping (hearRepository, which says why reading it without the lock is sound).
-	// heardPending marks a consumer update a record's repository could not be given, which the
-	// refresher's next read publishes in full. unread is each repository no mapping names whose
-	// GitHub reads a preparation could not make (leaveUnread) or the boot's listing did not make
-	// (leaveForRecovery), lowercased, with why, under recoveringMu: while any is, the refresher
-	// reads again of its own and recovers the issues each left. unreadMarks is, by the same
-	// repository, the last mark a preparation's failure or GitHub's answer gave it (markUnread,
-	// readAnswered), each a value of the sequence unreadMarked no mark held before, under
-	// recoveringMu. It exists because a marker already present is no evidence that nothing
-	// happened: leaveUnread returns at once when the repository was unread already, recording
-	// nothing, so without the mark a preparation that failed inside a recovery's own window — an
-	// issue moved to todo after its listing was read — is invisible to the pass that then lets the
-	// repository go, and that issue's note of its silence is read by no later pass
-	// (settleRecovery). cacheRepos is what the runtime keeps a repository cache of
-	// (cacheRepositories), published for the sweep to read without a lock.
+	// rereadWake, recoverWake, heardWake, heldWake and liveWake are the refresher's wakes, one
+	// request held at most each (wake): a bad answer kept outside the refresher (its second job's
+	// clock), a repository left unread or answered again (its third, recoverRepositories), a
+	// consumer update JetStream refused (its fourth, republishHeard), a default branch held through
+	// a rate limit (its fifth, rereadHeldBranches), and a write that can change the live records
+	// (its sixth, refreshLive). heldReads is each repository whose default branch is held through a
+	// rate limit, by its lowercased <owner>/<name>, with the limit's end (heldThroughLimit), under
+	// heldMu. backfillPending marks a record the backfill left without its repository columns,
+	// which the second job tries again (backfillLater).
+	rereadWake, recoverWake, heardWake, heldWake, liveWake chan struct{}
+	heldMu                                                 sync.Mutex
+	heldReads                                              map[string]limitedRead
+	backfillPending                                        atomic.Bool
+	// heard is what GitHub intake hears (heardRepositories): the boot's set (heardAtBoot), each
+	// repository a record first names, a launch works or the refresher's backfill writes on a
+	// record added to it with no read of the records (hearOrPend, hearRepository), and the whole set
+	// published again after JetStream refused an addition (republishHeard). Every write holds
+	// heardMu, and publishes a set that holds every repository the one before it held; a recording
+	// reads it with no lock at all, so one whose repository it names waits on nothing
+	// (hearRepository, which says why reading it without the lock is sound).
+	// heardPending marks a consumer update JetStream refused, and heardMissed is each repository
+	// whose own addition it refused, under heardMu, which the refresher's next publication adds.
+	// unread is each repository whose GitHub reads a preparation could not make (leaveUnread) or
+	// the boot's listing did not make (leaveForRecovery), lowercased, with why, under
+	// recoveringMu: while any is, the refresher recovers again of its own and so reads GitHub again
+	// for the issues each left. unreadMarks is, by the same repository, the last mark a
+	// preparation's failure or GitHub's answer gave it (markUnread, readAnswered), each a value of
+	// the sequence unreadMarked no mark held before, under recoveringMu. It exists because a
+	// marker already present is no evidence that nothing happened: leaveUnread returns at once
+	// when the repository was unread already, recording nothing, so without the mark a preparation
+	// that failed inside a recovery's own window — an issue moved to todo after its listing was
+	// read — is invisible to the pass that then lets the repository go, and that issue's note of
+	// its silence is read by no later pass (settleRecovery). cacheRepos is what the runtime keeps
+	// a repository cache of (cacheRepositories), published for the sweep to read without a lock.
+	heardMu      sync.Mutex
 	heard        atomic.Pointer[[]ghrepo.Repository]
 	heardPending atomic.Bool
+	heardMissed  []ghrepo.Repository
 	unread       map[string]string
 	unreadMarks  map[string]uint64
 	unreadMarked uint64
 	cacheReposMu sync.Mutex
 	cacheRepos   atomic.Pointer[[]ghrepo.Repository]
-	// commitIssueTrailerRepos is the project's `commit_issue_trailer_repos`, the repositories
-	// whose commits a pane stamps with the issue key, as the file names them: a launch stamps
-	// when its own repository is one of these names, whatever the mapping holds. The boot's
-	// mapping load names each of these the mapping does not hold, which catches a typo
-	// (logUnmappedCommitIssueTrailerRepos); nothing else in the daemon reads it.
-	commitIssueTrailerRepos []ghrepo.Repository
+	// launched is the repository and default branch kept for each issue the workflow does not
+	// record, by its lowercased key, at the first launch of a claim on it (unrecordedRepository),
+	// under launchedMu; workspaceHeld is whether an issue still holds its workspace, which a kept
+	// one is answered only while it does (keptRepository): its Sandbox under Kubernetes, its
+	// workspace directory otherwise, set at attach, and nil — no workspace held — before it.
+	launchedMu    sync.Mutex
+	launched      map[string]ghbranch.Repository
+	workspaceHeld func(issue string, repo ghrepo.Repository) bool
 	// reviewAppLogin is the review App's bot login from its boot lease, as the engine holds it: a
 	// review it submits decides a round by that login and the reviewer's recorded session
 	// (workflow's DecidesRound), so reviewerCanWrite asks GitHub nothing about it.
@@ -309,18 +316,19 @@ type workflowRuntime struct {
 // it is logged, and the notices it would have released still go on their schedule.
 const readyReleaseTimeout = 30 * time.Second
 
-// appMintAttempt bounds one attempt at the boot's App tokens, both Apps' mints: installation
-// discovery, the exchange and the bot identity lookups each answer in well under a second, so an
-// attempt that runs this long holds a request GitHub never answered.
+// appMintAttempt bounds one attempt at the boot's App calls, the logins read (appLoginsAtBoot) and
+// the key proof (proveAppKeys): the bot identity lookups and each App's read of its installations
+// under its JWT answer in well under a second, so an attempt that runs this long holds a request
+// GitHub never answered.
 var appMintAttempt = 15 * time.Second
 
 // appMintRetry is the wait between attempts that failed transiently: 5 s doubling to 30 s, five
 // attempts. At worst the boot waits 2 min 20 s (five 15 s attempts and 65 s between them) before it
-// refuses, naming the last failure. The API listens only after the mint, so /healthz is refused
-// meanwhile; the rest of a boot takes a second or two, which leaves a boot that passes on the last
-// attempt inside the 180 s Stage 3 gives a daemon to answer /healthz. A wait for GitHub's rate
-// limit is none of these attempts: it lasts until the time GitHub names, within the start's own
-// bound (appAttempt, startRateLimits).
+// refuses, naming the last failure. The API listens only after the key proof, so /healthz is
+// refused meanwhile; the rest of a boot takes a second or two, which leaves a boot that passes on
+// the last attempt inside the 180 s Stage 3 gives a daemon to answer /healthz. A wait for GitHub's
+// rate limit is none of these attempts: it lasts until the time GitHub names, within the start's
+// own bound (appAttempt, startRateLimits).
 var appMintRetry = bootprobe.Retry{Initial: 5 * time.Second, Max: 30 * time.Second, Attempts: 5}
 
 // appTransient is a failure GitHub reports as its own trouble (appauth.TransientError).
@@ -329,53 +337,49 @@ func appTransient(err error) bool {
 	return errors.As(err, &transient)
 }
 
-// appAttempt is one attempt at the boot's App reads, call, bounded by appMintAttempt: pending when a
-// token_command is still running past the bound (appauth.ErrCommandPending, most often a grant
-// that waits on a person's approval), and otherwise startOutcome's, appTransient its transient. A
-// pending attempt spends no retry: the command goes on, and the next attempt joins it, so the boot
-// waits for the grant with one request and never kills it. A rate limit spends none either: it
-// says nothing about the App, and the start waits until the time GitHub names, within the start's
-// bound on such waits.
+// appAttempt is one attempt at call, an App call of the start (the App logins read or the key
+// proof), bounded by appMintAttempt. The error the attempt returns decides its outcome, in this
+// order. No error passes. A token_command still running past the bound (appauth.ErrCommandPending,
+// most often for a grant that waits on a person's approval) is pending, and a pending attempt
+// spends no retry: the command goes on, and the next attempt joins it, so the start waits for the
+// grant with one request and never kills it. GitHub's rate limit is a wait on the start's waits
+// until the time GitHub names, and spends no retry either, since it says nothing about the App;
+// once those waits reach the start's end, it is a refusal (limitOutcome). GitHub's own trouble
+// (appTransient) is transient. So is an attempt that failed because its own bound ended while the
+// start's ctx is still alive: a request GitHub has not answered is GitHub's trouble, not the
+// App's, and it runs again within appMintRetry rather than refusing the start (#1347). Any other
+// error is a refusal.
+//
+// Under an App's JWT the next attempt of its installation read joins the shared read still in
+// flight (appauth.Manager.InstalledOwners), which appauth drops at its installationReadLimit
+// (1 min) when GitHub never answers it, inside appMintRetry's worst case of 2 min 20 s, so an
+// attempt after that asks GitHub afresh. In token mode the installation read and the logins read
+// are both the App's token_command's release of every installation, whose run appauth's
+// runTokenCommand shares: an attempt whose bound ends while the command runs is pending
+// (ErrCommandPending), the next attempt joins the run still going, and a run that finishes
+// between two attempts is kept for the next one (appauth's finishedRunKeep), so the command does
+// not run again for it. The logins read takes and forgets every run it is answered with, so the
+// key proof that follows it never takes a release the logins read was answered with (appauth's
+// anyInstallation).
 func appAttempt(waits *startWaits, call string, attempt func(context.Context) error) func(context.Context) bootprobe.Outcome {
 	return func(ctx context.Context) bootprobe.Outcome {
 		bounded, cancel := context.WithTimeout(ctx, appMintAttempt)
 		defer cancel()
 		err := attempt(bounded)
+		if err == nil {
+			return bootprobe.Outcome{Passed: true}
+		}
 		if errors.Is(err, appauth.ErrCommandPending) {
 			return bootprobe.Outcome{Pending: err.Error()}
 		}
-		return startOutcome(err, appTransient, waits, call)
+		if outcome, limited := limitOutcome(err, waits, call); limited {
+			return outcome
+		}
+		if appTransient(err) || errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			return bootprobe.Outcome{Detail: err.Error()}
+		}
+		return bootprobe.Outcome{Refusal: err}
 	}
-}
-
-// boundedAttempt is readinessAttempt for an attempt of the start, call, that mints App tokens on
-// its way: GitHub's rate limit on such a mint is waited out on the start's waits before transient
-// is asked (startOutcome), as appAttempt waits it out. The start's repository reads (nameMapping)
-// are such attempts: each read mints the implement App's token (defaultBranches.fetch), whose
-// failure no reading of the read's own rate limit (defaultBranchLimit) finds, since appauth's
-// errors hide GitHub's answer from it.
-func boundedAttempt(attempt func(context.Context) error, bound time.Duration, transient func(error) bool, waits *startWaits, call string) func(context.Context) bootprobe.Outcome {
-	return func(ctx context.Context) bootprobe.Outcome {
-		bounded, cancel := context.WithTimeout(ctx, bound)
-		defer cancel()
-		return startOutcome(attempt(bounded), transient, waits, call)
-	}
-}
-
-// startOutcome is the outcome of an attempt at the start's call that returned err: passed on nil;
-// a wait for GitHub's rate limit on the start's waits, or the refusal once they have ended
-// (limitOutcome); transient when transient recognizes err; refused otherwise.
-func startOutcome(err error, transient func(error) bool, waits *startWaits, call string) bootprobe.Outcome {
-	if err == nil {
-		return bootprobe.Outcome{Passed: true}
-	}
-	if outcome, limited := limitOutcome(err, waits, call); limited {
-		return outcome
-	}
-	if transient(err) {
-		return bootprobe.Outcome{Detail: err.Error()}
-	}
-	return bootprobe.Outcome{Refusal: err}
 }
 
 // limitOutcome is the outcome of an attempt at the start's call that failed with err, when err is
@@ -403,6 +407,106 @@ func limitSummary(answer *githubrest.Answer) string {
 	limit := answer.Limit
 	return fmt.Sprintf("%d (Retry-After %q, X-RateLimit-Remaining %q, X-RateLimit-Reset %q, X-RateLimit-Resource %q)",
 		answer.Status, limit.RetryAfter, limit.Remaining, limit.Reset, limit.Resource)
+}
+
+// bootLimit is GitHub's answer to an App call of the start that failed with err — the App logins
+// read or the key proof, whose error carries the answer appauth read (appauth.AnswerError) — when
+// that answer is GitHub's rate limit (answerLimit), with how long GitHub asks the start to wait.
+func bootLimit(err error) (*githubrest.Answer, time.Duration, bool) {
+	var refused *appauth.AnswerError
+	if !errors.As(err, &refused) {
+		return nil, 0, false
+	}
+	wait, limited := answerLimit(refused.Answer)
+	if !limited {
+		return nil, 0, false
+	}
+	return refused.Answer, wait, true
+}
+
+// rateLimitPolicy is how the start waits for GitHub's rate limit (dispatch://INFRA-2597/spec R4):
+// Max, the longest one wait lasts, whatever GitHub names; Bound, how long after the start's first
+// such wait every one of them ends, none ending at all when it is zero; and NoTime, the wait for a
+// call's first refusal that names no time, doubled for each further one of the same call.
+type rateLimitPolicy struct {
+	Max, Bound, NoTime time.Duration
+}
+
+// startRateLimits is the start's policy. A wait lasts at most an hour, the window of GitHub's REST
+// limit, so a spent counter is waited until its reset and a Retry-After longer than that is not
+// waited whole. All waits of one start end 70 minutes after the first, the hour and ten minutes
+// more: the refusals of 2026-11-14 and 2026-11-15 ended 5.6 to 13.9 minutes after the first exit.
+// A refusal that names no time waits a minute, the least GitHub's REST documentation gives. Tests
+// shorten its fields.
+var startRateLimits = rateLimitPolicy{Max: time.Hour, Bound: 70 * time.Minute, NoTime: time.Minute}
+
+// startWaits is one start's waits for GitHub's rate limit on one policy and one clock, now: the
+// App logins read and then the key proof, which openWorkflow runs one after the other (wait). end
+// is the start's end, zero until its first wait sets it Bound after that wait begins; noTime is the
+// last wait each App call took for a refusal that named no time; and waited is the time the start
+// has spent in its waits.
+type startWaits struct {
+	policy rateLimitPolicy
+	now    func() time.Time
+	end    time.Time
+	noTime map[string]time.Duration
+	waited time.Duration
+}
+
+// newStartWaits is one start's waits on policy and the clock now.
+func newStartWaits(policy rateLimitPolicy, now func() time.Time) *startWaits {
+	return &startWaits{policy: policy, now: now, noTime: map[string]time.Duration{}}
+}
+
+// wait is the wait for GitHub's rate limit on the start's App call call (the logins read, the key
+// proof), asked as soon as the call's attempt returned with answer, GitHub's refusal, from which
+// answerLimit read githubWait. Where GitHub named a time (namesTime), the wait is githubWait with
+// at most Max; where it named none, NoTime for the call's first such refusal of the start and two
+// times its wait before for each further one. It says until when, at the start's end at the
+// latest, and the time the start has waited so far, this wait included (register); or, once now is
+// at or past the start's end, ended, with no wait: the call then ends the start.
+func (s *startWaits) wait(call string, answer *githubrest.Answer, githubWait time.Duration) (until time.Time, waited time.Duration, ended bool) {
+	now := s.now()
+	if !s.end.IsZero() && !now.Before(s.end) {
+		return now, s.waited, true
+	}
+	wait := min(githubWait, s.policy.Max)
+	if !namesTime(answer.Limit, now) {
+		wait = s.policy.NoTime
+		if last, ok := s.noTime[call]; ok {
+			wait = 2 * last
+		}
+		s.noTime[call] = wait
+	}
+	until, waited = s.register(now, now.Add(wait))
+	return until, waited, false
+}
+
+// register counts a wait from begin until until, cut at the start's end, and says until and the
+// time the start has waited so far: the sum of its waits, each cut at the end. The start's calls
+// run one after the other, so no two of its waits overlap. The start's first wait sets its end,
+// Bound after that wait begins.
+func (s *startWaits) register(begin, until time.Time) (time.Time, time.Duration) {
+	if s.end.IsZero() && s.policy.Bound > 0 {
+		s.end = begin.Add(s.policy.Bound)
+	}
+	if !s.end.IsZero() && until.After(s.end) {
+		until = s.end
+	}
+	s.waited += until.Sub(begin)
+	return until, s.waited
+}
+
+// namesTime is whether limit, the rate-limit headers of GitHub's answer, names when the limit ends,
+// as GitHub's REST documentation reads them: a Retry-After of more than 0 seconds, or no call left
+// (X-RateLimit-Remaining 0) with an X-RateLimit-Reset still ahead of now. A 403 named by its body
+// alone, and a reset already past, name none.
+func namesTime(limit githubrest.LimitHeaders, now time.Time) bool {
+	if seconds, err := strconv.Atoi(limit.RetryAfter); err == nil && seconds > 0 {
+		return true
+	}
+	reset, err := strconv.ParseInt(limit.Reset, 10, 64)
+	return limit.Remaining == "0" && err == nil && time.Unix(reset, 0).After(now)
 }
 
 // appLoginsAtBoot reads each App's bot login under its own JWT (appauth.Logins), which needs no
@@ -436,37 +540,70 @@ func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, waits *startWaits
 	return logins[appauth.Review], nil
 }
 
-// mintAtBoot mints the implement and then the review App token on owner's installation, as one
-// attempt run again after a failure GitHub reports as its own trouble (appauth.TransientError)
-// and after GitHub's rate limit, waited out on the start's waits (appAttempt); any other failure
-// is refused at once. The token manager keeps a lease it minted, so an attempt after the
-// implement token passed asks GitHub only for the review token. A mint asks for what each App's
-// installation is granted of the role's set and says on stderr what it left out (appauth's
-// exchangeGranted), so a permission an account has not approved no longer stops the boot: what
-// does is an App with no installation on the owner, an installation granted none of the set at
-// all, an answer the mint refuses, GitHub's own trouble lasting past the retries, or its rate
-// limit lasting past the start's end of such waits.
-func mintAtBoot(ctx context.Context, tokens appauth.Tokens, owner string, waits *startWaits, log *slog.Logger) error {
-	const call = "GitHub App tokens mint"
-	return bootprobe.Run(ctx, call, appMintRetry, log, appAttempt(waits, call, func(ctx context.Context) error {
+// proveAppKeys proves each role App's key with GitHub's App-level read of its installations
+// (appauth.OwnerInstallations.InstalledOwners: GET /app/installations under the App's JWT, or, for
+// an App on token_command, the command's release of every installation), one App after the other,
+// both reads as one attempt run again after a failure GitHub reports as its own trouble
+// (appauth.TransientError), with a pending command spending no attempt (appAttempt): the two Apps
+// share one retry budget, so the boot spends at most appMintRetry on GitHub's trouble however the
+// failures fall between them, and an attempt after one App's read answered reads only the other's.
+// GitHub's rate limit on either read spends no attempt either: it is waited out on the start's
+// waits until the time GitHub names (appAttempt), and a read GitHub still refuses for it once
+// those waits have reached the start's end stops the boot, naming the call, the time waited,
+// GitHub's answer and the App (limitOutcome). Any other failure stops the boot with a refusal that
+// names the App. A key GitHub takes is the whole proof: an App with no installation boots, and one
+// WARN line names it, since a project works in each repository both role Apps reach and an
+// operator may install an App after the daemon is up. The owners each read answers are recorded
+// as the boot's read of that App's installations (appauth.Installed.RecordProof) once both are
+// proved, so every launch's addressing names its App's own owners from the first launch on
+// (plan.appOwners). That read is kept apart from a bundle's: the drift check never compares a pod
+// against it (appauth.GitHubDirs), since no mint has run at boot to say which of those owners a
+// bundle leaves out. Nothing of the boot mints a token for an owner.
+func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installed *appauth.Installed, waits *startWaits, log *slog.Logger) error {
+	const call = "GitHub App key proof"
+	owners := make(map[appauth.AppRole][]string, len(appauth.Roles))
+	err := bootprobe.Run(ctx, call, appMintRetry, log, appAttempt(waits, call, func(ctx context.Context) error {
 		for _, role := range appauth.Roles {
-			if _, err := tokens.Token(ctx, role, owner); err != nil {
-				return fmt.Errorf("mint %s GitHub App token at boot for %s: %w", role, owner, err)
+			if _, proved := owners[role]; proved {
+				continue
 			}
+			read, err := apps.InstalledOwners(ctx, role)
+			if err != nil {
+				return fmt.Errorf("prove the %s App's key by reading its installations: %w", role, err)
+			}
+			owners[role] = read
 		}
 		return nil
 	}))
+	if err != nil {
+		return err
+	}
+	for _, role := range appauth.Roles {
+		installed.RecordProof(role, owners[role])
+		if len(owners[role]) == 0 {
+			log.Warn("workflow: a GitHub App is installed on no account, so its role reaches no repository until an account installs it",
+				"app", string(role))
+			continue
+		}
+		log.Info("legion workflow proved a GitHub App's key", "app", string(role), "installedOn", owners[role])
+	}
+	return nil
 }
 
 // openWorkflow opens the workflow in the order a refusal names its cause: the configuration, the
-// Dispatch bearer prepare read, the project's repository mapping from Dispatch (each repository
-// checked for both GitHub Apps) into repos, the owner accounts every role's gh bundle reads its
-// directories from, which each App's own installations give (appauth.InstalledOwners) and no
-// repository list decides, the Apps' logins, the App tokens minted on each served owner account, the
-// fill of any record written before the record carried its repository, then the deployment's
-// design-gate steps queued for the project's Dispatch row (queueGatedStepsPublish) and the
-// recorded gate of every issue Dispatch has not closed queued for its own
-// (queueRecordedGatesPublish).
+// Apps' logins, the proof of each App's key (proveAppKeys, which records the owners each App is
+// installed on into installed), the records and the pool, the fill of any record written before
+// the record carried its repository (backfillRepositories, which leaves a record it cannot fill
+// for the refresher), then the deployment's design-gate steps queued for the project's Dispatch
+// row (queueGatedStepsPublish) and the recorded gate of every issue Dispatch has not closed queued
+// for its own (queueRecordedGatesPublish). The key proof under the App's JWT mints no token for an
+// owner. It reads GitHub for a repository only to fill a record that lacks its repository columns,
+// one read per such record bounded by installReadAttempt (backfillRead), which mints the token that
+// read needs, a read that fails leaving the record for the refresher; the preparation of the
+// repositories the records name is the refresher's first job, once the API serves
+// (prepareAtStart), beside the boot, so no other read of GitHub for a repository here can stop or
+// slow the boot. The boot's one-time rename pass, which runs after this (renameAtBoot), reads
+// GitHub for a configured pair only while a stored row still names the pair's `from`.
 //
 // hookPrompts are the words boot read for every hook whose `prompt_file` names a file, by hook
 // name (readBoot): the engine is given each hook's words, never a path.
@@ -480,7 +617,7 @@ func mintAtBoot(ctx context.Context, tokens appauth.Tokens, owner string, waits 
 // clock is the daemon's one clock (the machines', overrides.clock), which the engine and this
 // runtime's idle, wake and stuck passes read (workflowRuntime.now); production passes the wall
 // clock.
-func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time) (opened *workflowRuntime, _ error) {
+func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -504,7 +641,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	}
 	installs, ok := tokens.(appauth.Installations)
 	if !ok {
-		return nil, fmt.Errorf("the GitHub App token source answers no App installation, which the repository mapping is checked against")
+		return nil, fmt.Errorf("the GitHub App token source answers no App installation on a repository, which the daemon reads both role Apps' installations on each repository it works with")
 	}
 	logins, ok := tokens.(appauth.Logins)
 	if !ok {
@@ -517,58 +654,34 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	w := &workflowRuntime{
 		tokens: tokens, apps: tokens, forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchToken), repositories: repos,
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
-		failed: make(chan error, 1), mappingChanged: make(chan struct{}, 1),
+		failed:     make(chan error, 1),
+		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1),
+		heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1),
 		readied: newWakeSet[claim.Token](), handedOff: newWakeSet[string](), mergeStates: newWakeSet[string](),
 		mergeStateRunning: map[string]*mergeStateRun{},
 		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock,
-		commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos,
-		defaultBranches:         newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
-		// One policy and one clock for every wait of the start for GitHub's rate limit: the App
-		// logins read, the mints, and the repository reads (startRateLimits).
-		startWaits: newStartWaits(startRateLimits, time.Now),
+		defaultBranches: newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
 	}
 	// A read of a default branch GitHub's rate limit refuses, answered from the branch held, is
 	// logged and read again once the limit has passed, wherever it is made.
 	w.defaultBranches.onHold = w.heldThroughLimit
-	log.Info("legion workflow boot stage", "stage", "dispatch")
-	if err := w.loadMapping(ctx); err != nil {
-		return nil, err
-	}
-	reviewAppLogin, err := appLoginsAtBoot(ctx, logins, w.startWaits, log)
+	log.Info("legion workflow boot stage", "stage", "appauth")
+	// One policy and one clock for every wait of the start for GitHub's rate limit: the App logins
+	// read, then the key proof (startRateLimits).
+	waits := newStartWaits(startRateLimits, time.Now)
+	reviewAppLogin, err := appLoginsAtBoot(ctx, logins, waits, log)
 	if err != nil {
 		return nil, err
 	}
-	// A token reaches every repository its App's installation holds, and the account that
-	// installs the App chooses those, so the boot proves each App's key once for each owner
-	// account of the repositories the mapping serves rather than once for each repository: an
-	// App with no installation on an owner, or one granted none of the permissions a role's
-	// write token asks for, stops the boot naming that owner, where it would otherwise leave a
-	// role with no gh files at its launch. An installation granted some of the set mints with
-	// what it is granted, and the mint says the rest on stderr (appauth's exchangeGranted), so
-	// one permission awaiting an account's approval costs the role no gh files at all. An owner
-	// the App is installed on that the mapping does not reach is not proved at boot: the boot
-	// would then depend on installations no work of this project needs.
-	//
-	// The owners are the mapping's own answer (repositories.Owners), deduplicated as a token's
-	// scope is (appauth's leaseScope: lowercased), so two repositories of one account are one
-	// mint, and minted in their sorted order, so one boot's log reads like the next's.
-	for _, owner := range w.repositories.Owners() {
-		if err := mintAtBoot(ctx, tokens, owner, w.startWaits, log); err != nil {
-			return nil, err
-		}
+	if err := proveAppKeys(ctx, tokens, installed, waits, log); err != nil {
+		return nil, err
 	}
 	// The database is shared by every project's daemon: the workflow reads this project's issues.
 	// The rows the workflow writes through these records wake the outbox's lanes (projectRecords),
-	// through the runtime, since the outbox itself is built later (attach). The records and the
-	// pool are the workflow's before it reads GitHub's spelling of each repository, since a
-	// repository whose read GitHub's rate limit refuses is served on the default branch a record
-	// of the project holds for it (holdLimited).
-	w.records = projectRecords{Store: record.NewStore(), project: cfg.Project, wake: w.wakeOutbox, log: log}
+	// through the runtime, since the outbox itself is built later (attach), and each write that can
+	// change the live records asks the refresher to read them again at its commit (wakeLive).
+	w.records = projectRecords{Store: record.NewStore(), project: cfg.Project, wake: w.wakeOutbox, live: w.wakeLive, log: log}
 	w.pool = st.Pool()
-	log.Info("legion workflow boot stage", "stage", "appauth")
-	if err := w.nameMapping(ctx); err != nil {
-		return nil, err
-	}
 	engineCfg := engineConfig(cfg, reviewAppLogin, hookPrompts)
 	// The engine reads and writes the pod tables of the idle release through the store's own
 	// view of this project (store.Store.PodRecordsOf), which derives the claim token's spelling
@@ -610,9 +723,11 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// blocked-by-only edit this mirror exists for, and admission runs second in any case.
 	w.handlers, w.reviewAppLogin = []intake.Handler{blockers.NewMirror(w.records, cfg.Project), w.engine, w.admission}, reviewAppLogin
 	w.gatedSteps = cfg.Gates.Steps()
-	if err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, cfg.Project, cfg.StateDir, w.defaultBranches, cfg.RepositoryRenames, log); err != nil {
+	_, left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, cfg.Project, cfg.StateDir, w.defaultBranches, cfg.RepositoryRenames, log)
+	if err != nil {
 		return nil, err
 	}
+	w.backfillPending.Store(left)
 	if err := w.queueGatedStepsPublish(ctx); err != nil {
 		return nil, err
 	}
@@ -929,16 +1044,26 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 		w.conn.Store(nil)
 		return err
 	}
+	// servesNone is whether the live records the boot just read (heardAtBoot) name no repository,
+	// as a fresh install's do: the daemon then serves none until an issue names one, and says so
+	// once, at info, for an operator to read (dispatch://INFRA-4401 A2). It says it once the
+	// consumers are open, so an attempt that fails after the read, whose next attempt reads the
+	// records again, says nothing.
+	servesNone := len(w.repositories.liveNames()) == 0
 	w.consumers, err = intake.OpenConsumers(ctx, js, w.pool, intake.ConsumerSpec{
 		Project: cfg.Project, Repositories: heard, Renames: cfg.RepositoryRenames,
 		AckWait: cfg.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
 		ReviewPermission: w.reviewerCanWrite, ReviewBody: w.reviewBody,
-		RepositoryMapping: w.mappingChange, PrepareRepository: w.prepareRepository, PrepareArtifact: w.prepareArtifact,
+		PrepareRepository: w.prepareRepository, PrepareArtifact: w.prepareArtifact,
 	})
 	if err != nil {
 		conn.Close()
 		w.conn.Store(nil)
 		return natsauth.WithLastError(err, conn)
+	}
+	if servesNone {
+		w.log.Info("workflow: no live record of the project names a repository, so the daemon serves no repository until an issue names one",
+			"project", cfg.Project)
 	}
 	w.bootID = fmt.Sprintf("%d", time.Now().UnixNano())
 	return nil
@@ -1260,7 +1385,7 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 				return fmt.Errorf("prepare the repository of %s for admission: %w", summary.Key, err)
 			}
 			// What the preparation read: the chain it walked, and the refusal GitHub answered for
-			// a repository no mapping names, which this listing's own apply says on the issue
+			// the repository the issue resolves to, which this listing's own apply says on the issue
 			// (intake.DispatchIssue.RepositoryRefusal).
 			fact.Ancestry, fact.RepositoryRefusal = prepared.Ancestry, prepared.RepositoryRefusal
 		case labelledTriageRoot && records[summary.Key] == nil:
@@ -1284,9 +1409,9 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	}
 	// The reconcile is its own transaction, so it owns the commit hooks its admission and workflow
 	// changes register (intake.OnCommit), as ApplyFact does for a fact, and it records issues, so it
-	// takes the lock every fact applies under: a mapping refresh never unsubscribes a repository it
-	// is recording an issue on. It settles the runs its writes end as a fact does
-	// (intake.OpenSettlers), before it commits.
+	// takes the lock every fact applies under: a read of the live records for the repository
+	// caches (refreshLive) never publishes over an issue it is recording. It settles the runs its
+	// writes end as a fact does (intake.OpenSettlers), before it commits.
 	scoped, committed := intake.WithCommitHooks(ctx)
 	scoped, settle := intake.OpenSettlers(scoped, w.handlers...)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
@@ -1364,9 +1489,10 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 // is fetched once per App and cached).
 //
 // recorded is the repository the issue's record names, and the mint is made for the owner GitHub
-// serves it under now (repositories.serving): the record keeps the name it was written under for
-// its whole life, while after a transfer the installation that covers the repository is the owner
-// it moved to's. Taking the repository rather than an owner is what keeps that mapping here, in
+// serves it under now (repositories.serving): the record keeps the name it was written under
+// until the one-time rename pass writes the pair's `to` over it (renamePass), while after a
+// transfer the installation that covers the repository is the owner it moved to's. Taking the
+// repository rather than an owner is what keeps that rule here, in
 // the one place both callers reach — a launch's spec (specs.SpawnSpec) and a working copy's
 // adoption (adoptIdentity) — so neither can mint on an owner the repository has left and fail
 // every launch of a tree open at the transfer.
@@ -1500,7 +1626,10 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // read again (readPullRequest, applyMergeability, mergeStateWait); a second read whose last
 // attempt read no answer hands the head to this runtime's merge-state reader to follow
 // (queueMergeStateFollow). All are set before the records' wake can reach the outbox
-// (outboxWake).
+// (outboxWake). Whether an issue still holds its workspace, which a repository kept for an
+// unrecorded issue is answered while (keptRepository), is read from the runtime (workspaceHeldBy),
+// and so is the rule the end of an issue's pod runs the rename pass under, the outbox's podEnded,
+// which also drops that repository (podEndsOn).
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
@@ -1509,6 +1638,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
+	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
 	supervision.supervisor.OnDurableState(w.claimDurableState)
@@ -1520,6 +1650,42 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		w.outbox.refreshPause = w.pauses.service.Refresh
 	}
 	w.attachIdleRelease(supervision)
+	w.workspaceHeld = workspaceHeldBy(supervision.supervisor.deps.Runtime, w.stateDir)
+}
+
+// workspaceHeldBy is whether an issue holds its workspace under rt: its Sandbox, where rt keeps
+// one per issue (issuePods, the Kubernetes runtime's), and otherwise the workspace directory a
+// daemon on its own host provisions for the issue and repo under stateDir (workspace.Location).
+//
+// Its one reader, keptRepository, asks it of an issue the workflow does not record. IssueSandbox
+// answers a Sandbox its store holds absent only where a release kept it with the issue's volume
+// (ReleaseIssue), and the store authorizes neither the release nor the close of an issue it holds
+// no row of (store.IssueRelease, store.IssueSuspension). So such an issue's Sandbox answers
+// present for as long as it lives.
+func workspaceHeldBy(rt runtime.Runtime, stateDir string) func(issue string, repo ghrepo.Repository) bool {
+	if pods, ok := rt.(issuePods); ok {
+		return func(issue string, _ ghrepo.Repository) bool {
+			_, present := pods.IssueSandbox(issue)
+			return present
+		}
+	}
+	return func(issue string, repo ghrepo.Repository) bool {
+		_, err := workspaceDir(stateDir, repo, issue)
+		return err == nil
+	}
+}
+
+// workspaceDir is the workspace directory a daemon on its own host provisions for issue and repo
+// under stateDir (workspace.Location), "" where Location names none, and what os.Stat answers for
+// it, Location's refusal where it names none. Each caller keeps its own rule for what that means:
+// a held workspace (workspaceHeldBy) and a rename the pass keeps an issue from (workspaceKeep).
+func workspaceDir(stateDir string, repo ghrepo.Repository, issue string) (string, error) {
+	location, err := workspace.Location(stateDir, repo, issue)
+	if err != nil {
+		return "", err
+	}
+	_, err = os.Stat(location.Dir)
+	return location.Dir, err
 }
 
 // idleRelease is the deployment's idle release, and whether the deployment releases pods at all:
@@ -1823,7 +1989,7 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 		return nil
 	})
 	group.Go(func() error {
-		w.refreshOnMappingChange(store.ForConcurrentWorker(running))
+		w.refreshRepositories(store.ForConcurrentWorker(running))
 		return nil
 	})
 	group.Go(func() error {

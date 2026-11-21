@@ -211,10 +211,6 @@ func (r *statusRecorder) Handoff(_ context.Context, id string) (dispatch.Handoff
 	return handoff, nil
 }
 
-func (r *statusRecorder) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
-}
-
 func (r *statusRecorder) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
 }

@@ -109,9 +109,6 @@ func (d *gatePublishDispatch) Approval(context.Context, string) (dispatch.Approv
 func (d *gatePublishDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
-func (d *gatePublishDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
-}
 func (d *gatePublishDispatch) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
 }

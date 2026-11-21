@@ -1985,7 +1985,6 @@ Each item below names a check, then what it does and what it requires.
   `git ls-remote` of sjawhar/legion-smoke through the clone's `legion git-credential` helper answers its `HEAD`;
   and the request a `git push` there opens with, `GET https://github.com/sjawhar/legion-smoke.git/info/refs?service=git-receive-pack` sent with the credential that same helper gives for it, answers `200` and an `application/x-git-receive-pack-advertisement`, which is what GitHub answers a token that may write.
   The role of an issue on one owner's repository writes another owner's: what it reaches is the accounts its App is installed on.
-  The run maps both repositories, so the check shows reach across owners and nothing about a repository no mapping names.
   Negative control: the real gh with the issue owner's own directory answers `404` on sjawhar/legion-smoke, which is private to its owner, so the wrapper's pick is what reads it.
   Nothing is pushed to either repository: the advertisement request is the read a push opens with, and writes no ref
 
@@ -2437,7 +2436,7 @@ A signal to the whole process group does not stop the removal:
 - a teardown command that fails prints `cleanup warning: line N exited S`, never a check's `FAIL` line, and leaves the exit status the checks set.
 
 - **Production NATS, stream `ENVOY_NOTIFICATIONS`**: the daemon's three durable consumers.
-  They are named by the Dispatch key: `legion-go-<project>-dispatch` (`notifications.dispatch.issue.>` and the project's repository-mapping subject), `legion-go-<project>-github` (`notifications.github.sjawhar.legion-smoke.>`) and `legion-go-<project>-wake` (`notifications.legion.wake`) — `LEGSMOKE` by default.
+  They are named by the Dispatch key: `legion-go-<project>-dispatch` (`notifications.dispatch.issue.>`), `legion-go-<project>-github` (`notifications.github.sjawhar.legion-smoke.>`) and `legion-go-<project>-wake` (`notifications.legion.wake`) — `LEGSMOKE` by default.
 
   - The teardown deletes every consumer named under `legion-go-<project>-` and notes each it deleted or could not delete, so a consumer the daemon gains needs no change here.
 
@@ -3813,7 +3812,6 @@ Each item below names an observation, then what it judges; an item that names no
   for each of them, `200` and an `application/x-git-receive-pack-advertisement`, which is what GitHub answers a token that may write.
   O, the issue's own repository, is the control that the network, the helper and the token are sound;
   T is a repository of another owner, so its `200` is the reach the App's installations give across owners.
-  The observation reads no repository mapping, so it says nothing of whether a mapping names T.
   A `403` for either, a `404`, any other status, no answer or any other content type is a FAIL.
   The request writes nothing: it is the read a push opens with, and no ref of either repository changes.
   No git runs: git reads `~/.netrc`, `~/.gitconfig`, the repository's own `.git/config`, any scratch repository's and the `GIT_*` variables, all of which the agent's uid can write while the check runs;
@@ -3826,7 +3824,7 @@ Each item below names an observation, then what it judges; an item that names no
 - `cache <issue> <pod> [container]`
 
   the named pod's `legion.dev/issue` label matches the issue (refusing an unrelated pod outright), its fetch container's log (`kubectl logs`, default container `workspace-fetch`) carries the producer's exact, anchored cache-stream-with-delta success line (`packages/daemon/cmd/legion/workspace_fetch.go:83`, the form `workspace_fetch_test.go:572` pins
-  — a whole-line match, not a loose substring), and `.repositories.mapped[] | select(.repo==<repo>) | .cache.ready` is `true`
+  — a whole-line match, not a loose substring), and `.repositories.live[] | select(.repo==<repo>) | .cache.ready` is `true`
 
 - `negative pr-in-x before|after <run id>? <T child>`
 
@@ -3839,7 +3837,7 @@ Each item below names an observation, then what it judges; an item that names no
 - `negative no-repo <KEY>`
 
   `.issues | has(<KEY>)` is `false` (refusing outright, never vacuously passing, when `.issues` is not even an object), Dispatch's own `.resolved_repo` is still `null`, and the **latest** repository note among the messages claiming the daemon's actor (`{kind:"session", id:"legion-daemon:<PROJECT>"}`) is the exact no-repository admission refusal, word for word, with the daemon's outbox marker
-  — `"Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name) and move it to todo again.\n\n<!-- legion-outbox:<id> -->"` (`packages/daemon/internal/workflow/repository.go:76`, `packages/daemon/internal/record/outbox.go:71-73,104-106`).
+  — `"Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project <PROJECT>, in Dispatch, and move it to todo again.\n\n<!-- legion-outbox:<id> -->"` (`packages/daemon/internal/workflow/repository.go:119-120`, `packages/daemon/internal/record/outbox.go:71-73,104-106`).
   Dispatch takes a bearer session's actor id from the request body (`packages/envoy/internal/dispatch/api/server.go`, `bearerSessionActor`), so the note shows what Dispatch holds, never who posted it;
   what shows the daemon declined the issue is its own state read.
 
@@ -3922,7 +3920,7 @@ The cluster is deleted on any exit.
 What the proof stands in for lies outside the reservation path:
 each role's agent is a sleep stub, so nothing dials a model, Dispatch or NATS (their addresses in the files are documentation placeholders);
 the store answers as the daemon's does for an issue's first launch;
-the mapping names one public repository, which GitHub clones for its cache without asking for the placeholder provisioning token;
+the runtime's cache set names one public repository, which GitHub clones for its cache without asking for the placeholder provisioning token;
 and the roles' gh files hold a placeholder token.
 The pod's reservation, its admission, scheduling and QoS class, Agent Sandbox's pod and gVisor are the real ones.
 `burstable_kind_test.go`, untagged, builds both files through the loader and each runtime through `sandboxOptions` and `sandbox.New` on every `go test`, so a contract change that refuses either fails CI, not the next live run.
@@ -3948,7 +3946,7 @@ its cluster is [`lib/kind-sandbox.sh`](#libkind-sandboxsh)'s, `legion-controller
 
 What the proof stands in for lies outside the sweep:
 the controller's agent is a sleep stub, so nothing dials a model, Dispatch or NATS (their addresses in the file are documentation placeholders);
-its App tokens are placeholders; and no repository is mapped, so its gh files name no owner.
+its App tokens are placeholders; and no record names a repository, and its gh files name no owner.
 The claim the supervisor would store is written to the store by the driver, as the supervisor writes it before a launch begins.
 The store, the runtime's sweep and launch, Agent Sandbox's controller, its foreground deletion of the volume claim, and gVisor are the real ones.
 `controller_sweep_kind_test.go`, untagged, builds the proof's `legion.yaml` through the loader and its runtime through boot's factory and `sandbox.New` on every `go test`, so a contract change that refuses either fails CI, not the next live run.
@@ -5023,7 +5021,7 @@ The driver builds `packages/envoy`'s `cmd/dispatch` and runs it as `packages/dis
 `DISPATCH_AGENT_TOKEN` (a token of the run's own, which the daemon's `dispatch_token_file` and the CLI's `DISPATCH_TOKEN` carry), NATS off (`DISPATCH_NATS_DISABLED=1`), the trusted identity header the setup writes through, no `DISPATCH_*`, `ENVOY_*` or `NATS_*` variable of the caller's shell, and a database `dispatch_handoff_records_<random>` of its own.
 On it the driver creates a project of the run's own (`HR<6 hex>`, since a Dispatch project key is at most ten characters and the daemon's project is its Dispatch project), maps `acme/widgets` to it as its default, and creates seven issues.
 It boots the whole daemon through `run`, the function `legion start` calls, with `dispatch_url` at that server, so its every Dispatch read and write
-— the repository mapping, the issue list, status writes and messages, and the read of the record a completion names — goes to the real routes.
+— the issue list, status writes and messages, and the read of the record a completion names — goes to the real routes.
 Four of the issues are seeded in the daemon's store, each the root of its own tree with its slot:
 two in `planning`, one in `testing` and one `implementing` on open pull requests, each phase's worker a launch a previous daemon began, which the boot relaunches serving run 1.
 Each worker is brought to ready over the daemon's worker stream as its pane's shim brings it (answering the daemon's negotiation, state probes and prompts, each prompt starting a turn the step ends after its completion), registered under a session the step names, and completes with a grant minted for it over `POST /legion/v1/handoff/complete`.

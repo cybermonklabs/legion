@@ -311,9 +311,14 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 }
 
 // RequestCore sends a core NATS request on subject carrying header and no body, and returns its
-// one reply. It is the request the listener's connection probe makes (cmd/listener): one on a
-// session's relay subject (DeliverSubject) carrying the Envoy-Probe header, whose answer says
-// whether a plugin of that session still subscribes the subject. Its publish is confirmed as
+// one reply, which it takes on the reply subject reply names. It is the request the listener's
+// connection probe makes (cmd/listener): one on a session's relay subject (DeliverSubject)
+// carrying the Envoy-Probe header, on a reply subject that names that session
+// (SessionReplySubject), whose answer says whether a plugin of that session still subscribes the
+// subject. Once natsgrant.Session publishes SessionReplies in place of every _INBOX. subject,
+// only that session among the sessions on that grant may answer it; a holder of the shared
+// session user or of a host user reads every relay subject and may publish to every _INBOX.
+// subject, so it still can. Its publish is confirmed as
 // requestConfirmed's is (publishConfirmed), so a request the server refuses under the
 // connection's publish permissions returns ErrPublishDenied at once; one publishConfirmed cannot
 // confirm for another reason still waits for its reply, and returns that reason if ctx ends
@@ -334,7 +339,7 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 // a request whose connection is closed or drained under it waits out ctx and returns ctx's error,
 // where requestConfirmed returns nats.ErrConnectionClosed at once. The probe counts both as
 // connected, and the case is a shutdown race.
-func (c *Client) RequestCore(ctx context.Context, subject string, header nats.Header) (*nats.Msg, error) {
+func (c *Client) RequestCore(ctx context.Context, subject, reply string, header nats.Header) (*nats.Msg, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, storedMessageWait)
@@ -344,23 +349,22 @@ func (c *Client) RequestCore(ctx context.Context, subject string, header nats.He
 		return nil, err
 	}
 	conn := c.Connection()
-	inbox := conn.NewInbox()
 	replies := make(chan *nats.Msg, nats.RequestChanLen)
-	subscription, err := conn.ChanSubscribe(inbox, replies)
+	subscription, err := conn.ChanSubscribe(reply, replies)
 	if err != nil {
 		return nil, err
 	}
 	defer subscription.Unsubscribe()
-	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: inbox, Header: header}, conn.PublishMsg)
+	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: reply, Header: header}, conn.PublishMsg)
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
 		return nil, err
 	}
 	select {
-	case reply := <-replies:
-		if len(reply.Data) == 0 && reply.Header.Get("Status") == "503" {
+	case answer := <-replies:
+		if len(answer.Data) == 0 && answer.Header.Get("Status") == "503" {
 			return nil, nats.ErrNoResponders
 		}
-		return reply, nil
+		return answer, nil
 	case <-ctx.Done():
 		return nil, cmp.Or(err, ctx.Err())
 	}

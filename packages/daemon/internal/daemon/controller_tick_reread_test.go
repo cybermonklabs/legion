@@ -291,9 +291,6 @@ func (d *tickDispatch) Approval(context.Context, string) (dispatch.Approval, err
 func (d *tickDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
-func (d *tickDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
-}
 func (d *tickDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
 func (d *tickDispatch) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
 	return dispatch.ArtifactChanges{}, nil

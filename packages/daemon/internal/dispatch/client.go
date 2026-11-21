@@ -86,20 +86,6 @@ func (c *HTTPClient) GetIssue(ctx context.Context, key string) (Issue, error) {
 	return response.issue(), nil
 }
 
-// ListRepoProjects reads GET /api/v1/settings/repo-projects: every project's repository mappings,
-// which the caller filters to its own project.
-func (c *HTTPClient) ListRepoProjects(ctx context.Context) ([]RepoProject, error) {
-	var response []repoProjectResponse
-	if err := c.request(ctx, http.MethodGet, "/api/v1/settings/repo-projects", nil, &response); err != nil {
-		return nil, err
-	}
-	mappings := make([]RepoProject, 0, len(response))
-	for _, mapping := range response {
-		mappings = append(mappings, RepoProject{Repo: mapping.Repo, Project: mapping.Project, Default: mapping.Default})
-	}
-	return mappings, nil
-}
-
 // WebhookAppInstalled reads GET /api/v1/github/app-installation/{owner}/{repo}: whether
 // Dispatch's GitHub App, the one GitHub sends repo's webhook events through to Envoy, is installed
 // on repo (owner/name). A Dispatch older than the route answers 404, an *Error Missing reports.
@@ -748,12 +734,6 @@ func (c *claimResponse) unread() bool {
 // holder is the claim as Claim.Holder writes it.
 func (c *claimResponse) holder() string {
 	return c.claim().Holder()
-}
-
-type repoProjectResponse struct {
-	Repo    string `json:"repo"`
-	Project string `json:"project"`
-	Default bool   `json:"default"`
 }
 
 type issueEventResponse struct {

@@ -82,18 +82,17 @@ func (g Gates) Steps() []record.DesignStep {
 
 // Project is a Dispatch project prefix's configuration: the Slack channels whose @-mentions reach
 // its controller, and whether a merge that closes one of its issues opens a production check at
-// all. Dispatch's mapping (Settings → Repositories → Projects) names the project's default
-// repository and the repositories the daemon prepares before an issue names one. The daemon reads
-// that mapping at boot and when it changes, never this file.
+// all. It names no repository: the daemon takes each issue's repository from Dispatch, which
+// resolves it from the issue, its ancestors or the project, and never from this file.
 type Project struct {
 	// SlackChannels are `slack_channels`, the Slack channel ids whose app mentions the project's
 	// controller subscribes to, in the file's order; nil when the file names none.
 	SlackChannels []string
 	// CommitIssueTrailerRepos are `commit_issue_trailer_repos`, the repositories whose commits a
 	// pane stamps with the issue key, in the file's order, and nil when the file names none. A
-	// pane stamps the commit when its launch's repository is one of these names. The boot checks
-	// each name against Dispatch's mapping for this project alone, which catches a typo. That
-	// mapping decides no reach: an issue may name any repository.
+	// pane stamps the commit when its launch's repository is one of these names. The load checks
+	// each name's shape and refuses two names of one repository; nothing compares them with
+	// anything at boot, since a project works in each repository both role Apps reach.
 	CommitIssueTrailerRepos []ghrepo.Repository
 	// Memory is `memory`, the project's per-tree memory setting; its zero value is off, which a
 	// file that names no block leaves.
@@ -217,7 +216,7 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	var unknown unknownKeyError
 	if errors.As(err, &unknown) {
 		if unknown.name == "repo" {
-			return Project{}, nil, fmt.Errorf(`Unknown key %q: Dispatch holds the project's repository mapping (Settings → Repositories → Projects)`, key+".repo")
+			return Project{}, nil, fmt.Errorf(`Unknown key %q: the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project`, key+".repo")
 		}
 		// The shipped loader's own words (validateProjectEntry, config.ts).
 		return Project{}, nil, fmt.Errorf(`Unknown key %q`, key+"."+unknown.name)

@@ -190,9 +190,6 @@ func (d *outboxDispatch) Approval(context.Context, string) (dispatch.Approval, e
 func (d *outboxDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
-func (d *outboxDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
-}
 func (d *outboxDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
 func (d *outboxDispatch) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
 	return dispatch.ArtifactChanges{}, nil
@@ -359,21 +356,6 @@ func TestAReopenBetweenTheHandOverCheckAndItsPatchKeepsTheChild(t *testing.T) {
 	}
 	if got.Tree != root || got.Phase != phase.Planning || got.Generation != 1 || got.Status != "in_progress" {
 		t.Fatalf("child after reopen race = %#v, want its live root's planning run", got)
-	}
-}
-
-// The old tree's queued closes name the generation a child had before its hand-over. Carrying the
-// child into a new root generation makes those rows finish at the generation fence before checking
-// their old tree name, so they never retry forever on a tree mismatch.
-func TestAnOldTreeCloseOfAHandedOverChildFinishesAtTheGenerationFence(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "child", Phase: phase.Retro, Generation: 2, Status: "retro"}
-	putOutboxIssue(t, pool, records, issue)
-	row := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "tree_close", Tree: "LEGION-207", Role: claim.RoleImplementer, Generation: 1, Linger: 1}, time.Now())
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	if err := (&outbox{pool: pool, records: records, supervisor: sup, log: quietLogger()}).execute(context.Background(), row); err != nil {
-		t.Fatalf("old tree close = %v, want its older generation to finish without checking the old tree", err)
 	}
 }
 
@@ -2778,17 +2760,20 @@ func (outboxTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string,
 	return []string{"legion"}, nil
 }
 
-// legionRepos is a project whose one repository is legion/legion, as the sandbox rigs here name
-// it, and legionDirs the gh directories a bundle built over it holds. legionInstalled is the
-// record those bundles write and legionDirs reads, as the daemon's own three share one
-// (appauth.Installed, sandboxRuntime): before the first bundle of an App it names no directory
-// for that App and no pod is moved, as it does for a bundle it cannot describe.
+// servesLegion is the `served` predicate of a project that has prepared one repository,
+// legion/legion, as the sandbox rigs here name it (repositories.servesRepository), and legionDirs
+// the gh directories a bundle built over it holds. legionInstalled is the record those bundles
+// write and legionDirs reads, as the daemon's own three share one (appauth.Installed,
+// sandboxRuntime): before the first bundle of an App it names no directory for that App and no pod
+// is moved, as it does for a bundle it cannot describe.
 var legionInstalled = appauth.NewInstalled()
 
-func legionRepos() []ghrepo.Repository { return []ghrepo.Repository{ghrepo.MustParse("legion/legion")} }
+func servesLegion(repo ghrepo.Repository) bool {
+	return strings.EqualFold(repo.String(), "legion/legion")
+}
 
 func legionDirs(repo ghrepo.Repository, roles []appauth.AppRole) []string {
-	return appauth.GitHubDirs(legionRepos, ghrepo.Renames{}, legionInstalled, nil, roles, repo)
+	return appauth.GitHubDirs(servesLegion, ghrepo.Renames{}, legionInstalled, nil, roles, repo)
 }
 
 type outboxSpecs struct{}
