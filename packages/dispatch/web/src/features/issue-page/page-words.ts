@@ -391,6 +391,10 @@ export const VERIFICATION_WORDS = freeze({
   /** After the count of a check's other results, which the line opens in place (ruling 6). */
   earlier_many: "earlier results",
   earlier_one: "earlier result",
+  /** After the count of the checks the coverage read counts for a statement beyond those the
+   *  view draws with it, which serve it from an issue under this one. */
+  elsewhere_many: "more checks elsewhere",
+  elsewhere_one: "more check elsewhere",
   /** The heading over each check's latest result. */
   latest_result: "Latest result",
   /** Between the two numbers of the covered count. */
@@ -618,6 +622,22 @@ export const STATE_LINES = freeze({
    *  (`features/issue/SubscribedAgents.tsx`). */
   subscription_wider:
     "Its subscription covers other issues and documents too, so it cannot be unsubscribed from this one alone.",
+  /** What the outline says over its rows, on load as much as later, of each read they come from
+   *  that stands failed, beside that read's Retry (`outline-reads.ts`): the names the rows cite,
+   *  which checks serve each statement, the issue's decisions, the checks' results, the
+   *  questions, the comments, the messages, and each document whose blocks it draws, named by
+   *  the part the document plays. */
+  names_unreadable: "Could not load the names this issue's rows cite.",
+  coverage_unreadable: "Could not load which checks serve each statement.",
+  issue_decisions_unreadable: "Could not load this issue's decisions.",
+  results_unreadable: "Could not load the checks' results.",
+  asks_unreadable: "Could not load the questions.",
+  comments_unreadable: "Could not load the comments.",
+  messages_unreadable: "Could not load the messages.",
+  spec_unreadable: "Could not load the spec.",
+  plan_unreadable: "Could not load the plan.",
+  verification_unreadable: "Could not load the verification document.",
+  decisions_document_unreadable: "Could not load the decisions document.",
 } as const);
 
 /**
@@ -645,9 +665,6 @@ export const ANSWER_LINES = freeze({
    *  read, and when they could not be (`HistoryHandoff.tsx`). */
   loading_handoff: "Loading handoff…",
   handoff_unreadable: "Could not load the handoff.",
-  /** What the Spec filter says over its columns when the decisions could not be read, so the
-   *  column beside each statement cannot say what shaped it. */
-  decisions_unreadable: "Could not load the decisions.",
   /** What the list of what references the focused row says while its read, which the reader
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",

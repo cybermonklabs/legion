@@ -113,8 +113,13 @@ every agent session on a machine logged in to the broker. The app needs the
 for approval, or denied, posts nothing, and the tool says which; Slack's own refusal comes back as
 Slack's error code, such as `not_in_channel`. A reply is at most 4,000 characters, and the tool
 sends each one once, since a post whose answer was lost may already be in the thread. A session
-posts into any channel the app has been added to: the tool does not know which project a channel
-belongs to.
+whose credential names no private Dispatch project posts into any channel the app has been added
+to: the tool does not know which project a channel belongs to. Once the token carries the tag
+`project-channels=slack`, a session whose credential names a private project gets it only behind
+the broker's airlock, which spends it on `POST /api/chat.postMessage` to a channel that project's
+owner named and on nothing else, so such a session posts only to its project's channels and cannot
+read a thread with the token
+([A private project's secrets](/legion/broker/concepts/#a-private-projects-secrets)).
 
 ## How Dispatch's events arrive
 
@@ -462,8 +467,8 @@ path, and the key is missing altogether on a listener older than the field.
 
 Legion's daemon reads Dispatch, GitHub and listener events from the stream through a durable
 consumer per project for each: `legion-go-<project>-dispatch` (filtering
-`notifications.dispatch.issue.>` and the project's repository-mapping subject),
-`legion-go-<project>-github` (filtering each of the project's repositories) and
+`notifications.dispatch.issue.>` alone), `legion-go-<project>-github` (filtering each repository
+the project works in) and
 `legion-go-<project>-wake` (filtering `notifications.legion.wake`, the listener's own wake).
 It sends its own notices to roles and to the
 controller through the listener's HTTP API, not over NATS.
@@ -527,9 +532,9 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 | `ENVOY_NATS_SOCKS5_PROXY` | A SOCKS5 proxy, as `host:port` (for example `127.0.0.1:1055`), that every NATS connection goes through, each server's host name handed to the proxy unresolved. Needs `ENVOY_ALLOW_REMOTE_NATS=1`, since the proxy decides which server a connection reaches. |
 | `ENVOY_LISTEN_HOST`, `PORT` | Where to listen. Defaults: `127.0.0.1` and `9020`. |
 | `ENVOY_API_TOKEN` | The bearer token `/v1` callers must send. |
-| `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE` | Also accept Kubernetes service-account tokens from that issuer for that audience. Set both or neither. |
+| `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE` | Also accept Kubernetes service-account tokens from that issuer for that audience. Set both or neither. The listener reads the issuer's discovery document in the background and when such a token needs it, never before it starts: while the issuer cannot be read, the listener serves everything else and answers such a token `503` with `Retry-After`, so its caller tries again. A listener started then still becomes ready, so watch `/healthz`'s `oidc` field or the `envoy_listener_oidc_issuer_discovered{issuer="cluster"}` gauge, which read `false` and `0` until the issuer is read. |
 | `ENVOY_OIDC_ACCOUNTS` | The service accounts whose tokens the OIDC pair admits, as `system:serviceaccount:<namespace>:<name>` subjects separated by commas or spaces. Unset or empty, every account the issuer signs for is admitted; a value that names no account, only spaces or commas, refuses startup, and so does a stray comma that leaves an entry empty. Any pod of a cluster can get a token for any audience, so set it on a listener that takes no shared token. |
-| `ENVOY_OIDC_GOOGLE_AUDIENCE`, `ENVOY_OIDC_GOOGLE_ACCOUNTS` | Also accept a Google identity token that Google signed for that audience, for a caller that runs on Google Cloud and holds no Kubernetes token, such as a Cloud Run service. The accounts are service account addresses separated by commas or spaces; the token must name one of them, with its address verified, so the caller asks its metadata server for the token with `format=full`. Set both or neither. |
+| `ENVOY_OIDC_GOOGLE_AUDIENCE`, `ENVOY_OIDC_GOOGLE_ACCOUNTS` | Also accept a Google identity token that Google signed for that audience, for a caller that runs on Google Cloud and holds no Kubernetes token, such as a Cloud Run service. The accounts are service account addresses separated by commas or spaces; the token must name one of them, with its address verified, so the caller asks its metadata server for the token with `format=full`. Set both or neither. Google's discovery document is read as the issuer's above: while it cannot be read, such a token is answered `503` and the listener serves everything else, and `/healthz`'s `google` field and the gauge's `issuer="google"` series report it. |
 | `ENVOY_DISPATCH_PRINCIPAL` | Dispatch's own account: a `system:serviceaccount:<namespace>:<name>` subject the OIDC pair admits, or a Google service account address the Google pair admits. Only a send whose token proves this account may carry `role`, the role a Dispatch message for a `role:` route is sent for; any other caller that sends `role` is refused `403`, and so is every caller while this is unset. When the role has moved to another session by the time such a send arrives, the listener keeps the message for the role's holder and answers `202` with `kept`. A value no configured pair could prove refuses startup. |
 | `ENVOY_ALLOWED_HOSTS` | Comma-separated host names or addresses, with no port, that a listener with no bearer serves `/v1` to besides loopback. Set it to each name clients reach such a listener by, such as a forward to it. |
 | `ENVOY_NATS_REPLICAS` | The deployment's replica count, a whole number from 1 to 5; default `1`. The listener creates the `ENVOY_NOTIFICATIONS` stream and its buckets with this many copies and raises one it finds with fewer, at start and every 30 seconds after ([Keeping the stream](#keeping-the-stream)). More than 1 needs a clustered NATS: a single server refuses it, and the listener then exits at start with an error naming the variable. Any other value refuses startup. Give every Envoy program of a deployment the same value: a clustered deployment sets it in every listener and in Dispatch's server. |
@@ -563,10 +568,11 @@ without case.
 
 `/metrics` counts every `/v1` request the listener admits in `envoy_listener_requests_total`, by
 `credential` — `shared_token`, `none` (a listener with no bearer, which admits a request with no
-credential), `oidc`, `google` or `broker` — and by `path`, the route that served it. A request
-admitted on the shared token or with no credential also logs a warning, at most once a minute
-each, naming the route and the caller's address, so callers that still use either can be found
-and moved to a token of their own.
+credential), `none_broker_token` (that listener, taking no broker token, admitting a request that
+presents one, unverified), `oidc`, `google` or `broker` — and by `path`, the route that served it.
+A request admitted on the shared token, with no credential or on an unverified broker token also
+logs a warning, at most once a minute each, naming the route and the caller's address, so callers
+that still use one of them can be found and moved to a credential the listener verifies.
 
 Raising a bucket to `ENVOY_NATS_REPLICAS` copies is an update of the bucket's stream, so the
 listener's NATS user needs `$JS.API.STREAM.UPDATE.KV_<bucket>` for each of its buckets beside the

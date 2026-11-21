@@ -69,6 +69,7 @@ $ agent-secrets self
 enrollment_id: edd9a18c-41ff-46f9-8a15-bddb30f0abc3
 kind: session
 operator: ada@example.com
+projects: -
 lease_expires_at: 2026-10-03T03:39:03Z
 source: the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 $ agent-secrets DEMO_READ_TOKEN -- printenv DEMO_READ_TOKEN

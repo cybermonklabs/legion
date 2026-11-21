@@ -549,7 +549,7 @@ func closedAddress(t *testing.T) string {
 // that names the failure and the URL's host and path, and holds no part of the credential.
 func TestAReadRedirectedWithAURLCredentialIsRefusedWithACauseThatHoldsNoneOfIt(t *testing.T) {
 	dead := closedAddress(t)
-	const download = "/theorem-labs/agent-infra/legacy.tar.gz/refs/tags/" + theTag
+	const download = "/example-org/deployment/legacy.tar.gz/refs/tags/" + theTag
 	for _, tc := range []struct {
 		name, redirect string
 		// transport is what Go's client writes of the credential into the read's own error.

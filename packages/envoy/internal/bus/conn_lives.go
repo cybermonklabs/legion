@@ -12,8 +12,8 @@ import (
 )
 
 // lifeCheckEvery is how often connLife reads the connection's state itself, on a goroutine of its
-// own: to stop following a connection nats.go closed without reporting it, and to replace a
-// listener nats.go dropped (connLife.check). It is read as each connection is first followed, and
+// own: to stop following a connection nats.go closed without reporting it, and to end a life whose
+// report nats.go dropped (connLife.check). It is read as each connection is first followed, and
 // is a variable so a row can keep the watch quiet and drive the check itself.
 var lifeCheckEvery atomic.Int64
 
@@ -27,12 +27,15 @@ func init() { lifeCheckEvery.Store(int64(10 * time.Second)) }
 // each report and ends the current life at once, so a check of whether a life has ended
 // (window.current) takes no lock nats.go holds and waits for nothing.
 //
-// nats.go removes a listener when it finds one unread report in that listener's channel. The drain
-// does nothing else, so it normally takes every report. The watch handles the exceptional missed
-// report: the first window pinned in a life records nats.go's reconnect count after it has read
-// CONNECTED. A later count means that connection has reconnected in that pinned life, whether the
-// listener received the report or not, so the watch replaces the listener and ends the life. A new
-// window then records the count of the new life. The watch holds no window lock while it reads nats.go.
+// nats.go sends a report to a listener only when its channel has room, and drops the report
+// otherwise; it removes a listener only once that listener's channel is closed (nats.go@v1.55.0
+// sendStatusEvent and notifyStatusListener, nats.go:6877-6900). The channel holds ten reports
+// (StatusChanged) and the drain does nothing but take them, so it normally has room. The watch
+// handles the exceptional dropped report: the first window pinned in a life records nats.go's
+// reconnect count after it has read CONNECTED. A later count means that connection has reconnected
+// in that pinned life, whether the drain took the report or not, so the watch ends the life, with
+// a new listener in place of the old. A new window then records the count of the new life. The
+// watch holds no window lock while it reads nats.go.
 type connLife struct {
 	conn *nats.Conn
 
@@ -141,8 +144,8 @@ func (l *connLife) watch(every time.Duration) {
 }
 
 // check reads the connection itself and reports whether it is closed, which ends the following. A
-// count past the first pin of a life means nats.go reconnected in that life without its listener
-// ending it, so check replaces that listener and ends the life.
+// count past the first pin of a life means nats.go reconnected in that life without the drain
+// ending it, a report dropped, so check ends the life and puts a new listener in place of the old.
 func (l *connLife) check() (closed bool) {
 	if l.conn.IsClosed() {
 		l.end(nats.CLOSED)

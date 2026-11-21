@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
@@ -90,8 +91,8 @@ const (
 	ReasonNameMalformed = "name-malformed"
 	// ReasonOwnerTagMissing: the secret has no owner tag.
 	ReasonOwnerTagMissing = "owner-tag-missing"
-	// ReasonOwnerTagMalformed: the owner tag is not shared, a lowercase email, or a registered
-	// service.
+	// ReasonOwnerTagMalformed: the owner tag is not shared, a lowercase email, a group as
+	// group:<lowercase email>, or a registered service.
 	ReasonOwnerTagMalformed = "owner-tag-malformed"
 	// ReasonTierTagMissing: the secret has no tier tag.
 	ReasonTierTagMissing = "tier-tag-missing"
@@ -133,15 +134,17 @@ const (
 	// by anything but their lowercase sign-in email, or names a service the deployment does not
 	// register (ParseRequesters).
 	ReasonRequestersMalformed = "requesters-malformed"
-	// ReasonMaxGrantRequired: an admin secret, or a google-service-account one, sets no max-grant,
-	// or one longer than an hour (TagRules). Both release a credential whose grant is reviewed
-	// while it is live, so it lasts an hour at most.
+	// ReasonMaxGrantRequired: an admin secret, a google-service-account one or an
+	// anthropic-federation one sets no max-grant, or one longer than an hour (TagRules). Each
+	// releases a credential whose grant is reviewed while it is live, so it lasts an hour at most.
 	ReasonMaxGrantRequired = "max-grant-required"
-	// ReasonRequestersNotOwner: a google-service-account secret whose requesters are not its one
-	// person owner, once — no list, no entry naming the owner, more than one person, or a person
-	// who is not the owner — or which lists a service at agent tier, where no person approves the
-	// pod that asks (TagRules). A human-tier secret may list registered services beside its owner,
-	// unless the deployment binds it to a dev-<name> account, whose token is that one person's.
+	// ReasonRequestersNotOwner: a google-service-account or anthropic-federation secret whose
+	// requesters are not its owner, once — for a person owner, no list, no entry naming the owner,
+	// more than one person, a person who is not the owner, or a group; for a group owner, no list,
+	// another group, more than one group, or a person — or which lists a service at agent tier,
+	// where no person approves the pod that asks (TagRules). A human-tier secret may list
+	// registered services beside its owner, unless the deployment binds it to a dev-<name>
+	// account, whose token is that one person's.
 	ReasonRequestersNotOwner = "requesters-not-owner"
 	// ReasonAdminMalformed: the admin tag is set to anything but "true" (TagAdmin), the empty
 	// string included. A tag whose value says nothing is a mistake, not a secret that is no
@@ -153,6 +156,10 @@ const (
 	// ReasonAdminRequesters: an admin secret carries no requesters tag (TagRules). Who may ask for
 	// an administrator's credential is named, never left to owner and tier alone.
 	ReasonAdminRequesters = "admin-requesters"
+	// ReasonTypeHumanTier: a secret of a type the broker serves at human tier alone,
+	// anthropic-federation, is agent tier (TagRules). Its token can be an organization
+	// administrator's, which a person approves each release of.
+	ReasonTypeHumanTier = "type-human-tier"
 	// ReasonScopesMalformed: the scopes tag holds a comma, names no scope, names one twice, or
 	// holds an entry that is no scope name — a whole https://www.googleapis.com/auth/… URL
 	// included (ParseScopes).
@@ -160,6 +167,26 @@ const (
 	// ReasonScopesType: a secret that is not a google-service-account one carries a scopes tag
 	// (TagRules). No other minter reads it, so the tag would narrow nothing while saying it had.
 	ReasonScopesType = "scopes-type"
+	// ReasonProjectMalformed: the dispatch-project tag is not one Dispatch project key
+	// (ParseProject): another case, white space, an empty value or the word none. A tag the
+	// broker cannot read names no project it could check, so the secret goes to nobody rather
+	// than to every session as an untagged one would.
+	ReasonProjectMalformed = "project-malformed"
+	// ReasonProjectUnchecked: the secret carries a dispatch-project tag and the broker holds no
+	// client of Dispatch's project access (Loader.ProjectChecks is false), so it cannot tell
+	// whether the project is private. It is refused rather than served by owner and tier alone,
+	// which would release a private project's secret to every session.
+	ReasonProjectUnchecked = "project-unchecked"
+	// ReasonProjectChannelsMalformed: the project-channels tag is not ProjectChannelsSlack, its
+	// one value. A value the broker cannot read names no limit it could apply, so the secret goes
+	// to nobody rather than out unlimited to a private project's credential.
+	ReasonProjectChannelsMalformed = "project-channels-malformed"
+	// ReasonProjectTagMisspelled: a tag key differs from dispatch-project or project-channels
+	// only in case or in its separators (Dispatch-Project, dispatch_project, PROJECT-CHANNELS,
+	// dispatchproject). The broker reads tag keys as written, so such a secret would otherwise
+	// load as one carrying no project tag and go by owner and tier to every session, which is
+	// what the owner who wrote it meant to stop.
+	ReasonProjectTagMisspelled = "project-tag-misspelled"
 	// ReasonValueMalformed: a type secret's stored value is one secrets.ParseValue refuses under
 	// its type, or one that is not text (secrets.ErrValueNotText), so no release could
 	// mint from it. It is no tag's: a load sets it from the value Current reads and decodes once
@@ -183,6 +210,13 @@ func ValidPersonOwner(owner string) bool {
 	return emailPattern.MatchString(owner)
 }
 
+// ValidGroupOwner reports whether an owner tag, or a requesters entry, names a Google group:
+// record.GroupPrefix and the group's lowercase email, group:<address>.
+func ValidGroupOwner(owner string) bool {
+	address, ok := strings.CutPrefix(owner, record.GroupPrefix)
+	return ok && emailPattern.MatchString(address)
+}
+
 // Loader reads the policy from the secret store: every secret whose name starts with Prefix, with
 // its owner and tier tags, whether it is on the agent-secrets key, and whether it has a current
 // value.
@@ -201,12 +235,12 @@ type Loader struct {
 	// BROKER_SERVICES. An owner tag naming any other service is refused as malformed.
 	Services []string
 	// ServiceAccounts is the deployment's BROKER_SERVICE_ACCOUNT_SECRETS: each google-service-account
-	// secret's Name to the one account email the deployment binds to it. The loader reads it for
-	// one rule alone — a secret bound to a dev-<name> account, which is one person's own, may list
-	// no service among its requesters (TagRules) — and the minter is what refuses a mint for any
-	// account but the bound one, so a stored value rewritten to name another account releases no
-	// token. An empty or nil map binds nothing, and every such secret then stands on its tags
-	// alone.
+	// and anthropic-federation secret's Name to the one account email the deployment binds to it.
+	// The loader reads it for one rule alone — a secret bound to a dev-<name> account, which is
+	// one person's own, may list no service among its requesters (TagRules) — and the minter is
+	// what refuses a mint for any account but the bound one, so a stored value rewritten to name
+	// another account releases no token. An empty or nil map binds nothing, and every such secret
+	// then stands on its tags alone.
 	ServiceAccounts map[string]string
 	// AirlockDigest is the fingerprint of the secret's airlock entry, "" for a secret the rules
 	// do not name. In production: the loaded rules' Rules.Digest. A nil field is "" for every
@@ -220,6 +254,15 @@ type Loader struct {
 	// all the same. In production: NewStoreReads on the registry the metrics port serves. A nil
 	// counter counts nothing, which is every Loader a test builds that is not about the count.
 	StoreReads *metrics.Counter
+	// Groups is the broker's group reader (groups.Reader): Current stamps it on every set it
+	// makes live (Set.Groups), so each decision asks it who is a member of a group. A nil
+	// directory admits nobody to any group.
+	Groups record.Directory
+	// ProjectChecks is true when the broker holds a client of Dispatch's project access
+	// (BROKER_PROJECT_ACCESS_URL), which resolves whether a tagged secret's project is private
+	// before Evaluate reads it. A loader without one refuses every secret carrying a
+	// dispatch-project tag (ReasonProjectUnchecked) and serves every other secret as before.
+	ProjectChecks bool
 	// now is the clock the loader weighs a secret waiting for its value by (pendingAt): Current's
 	// own, which NewCurrent sets, and time.Now while it is nil, for a Loader no Current holds.
 	now func() time.Time
@@ -390,6 +433,8 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 	switch {
 	case s.Owner == OwnerShared:
 		s.ownership = ownerShared
+	case ValidGroupOwner(s.Owner):
+		s.ownership = ownerGroup
 	case ValidPersonOwner(s.Owner):
 		s.ownership = ownerPerson
 	case slices.Contains(l.Services, s.Owner):
@@ -440,9 +485,13 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 	// read here too, since the rules weigh them against the type, the tier and the requesters
 	// alike. A type whose own rules demand a list is refused for a missing one, so TagRules runs
 	// whether the tags are there or not.
+	// The project tags' rollback guard is no requester (RequestersRollbackGuard): it is taken out
+	// before the list is read, and a tag that held it alone is no list.
 	if raw, tagged := ls.Tags[TagRequesters]; tagged {
-		if s.Requesters, err = ParseRequesters(raw, l.Services); err != nil {
-			return Secret{}, ReasonRequestersMalformed, nil
+		if rest, guarded := SplitRequestersGuard(raw); !guarded || rest != "" {
+			if s.Requesters, err = ParseRequesters(rest, l.Services); err != nil {
+				return Secret{}, ReasonRequestersMalformed, nil
+			}
 		}
 	}
 	if raw, tagged := ls.Tags[TagAdmin]; tagged {
@@ -468,6 +517,28 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 	}); reason != "" {
 		return Secret{}, reason, nil
 	}
+	// Read after the rules that weigh the other tags: no rule of TagRules reads the project.
+	// A misspelled key, and then a malformed tag, is the tag's own fault, refused before whether
+	// the broker could check it.
+	if misspelledProjectKey(ls.Tags) {
+		return Secret{}, ReasonProjectTagMisspelled, nil
+	}
+	if raw, tagged := ls.Tags[TagProject]; tagged {
+		if s.Project, err = ParseProject(raw); err != nil {
+			return Secret{}, ReasonProjectMalformed, nil
+		}
+		if !l.ProjectChecks {
+			return Secret{}, ReasonProjectUnchecked, nil
+		}
+	}
+	// The same place, for the same reason: no rule of TagRules reads it, and a value the broker
+	// cannot read names no limit it could apply.
+	if raw, tagged := ls.Tags[TagProjectChannels]; tagged {
+		if raw != ProjectChannelsSlack {
+			return Secret{}, ReasonProjectChannelsMalformed, nil
+		}
+		s.ProjectChannels = raw
+	}
 	if !ls.HasCurrentValue {
 		// A secret `agent-secrets secret create` made before its value (Unfilled: the create label,
 		// no version) is a create waiting for that value for PendingValueWindow (pendingAt), whose
@@ -484,4 +555,30 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 		s.AirlockDigest = l.AirlockDigest(s.Name)
 	}
 	return s, "", nil
+}
+
+// misspelledProjectKey reports whether tags hold a key that is not TagProject or
+// TagProjectChannels as written but is one of them once both are read without case and without
+// any character that is not a letter or a digit (ReasonProjectTagMisspelled).
+func misspelledProjectKey(tags map[string]string) bool {
+	fold := func(key string) string {
+		return strings.Map(func(r rune) rune {
+			switch {
+			case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+				return r
+			case r >= 'A' && r <= 'Z':
+				return r + ('a' - 'A')
+			}
+			return -1
+		}, key)
+	}
+	for key := range tags {
+		if key == TagProject || key == TagProjectChannels {
+			continue
+		}
+		if folded := fold(key); folded == fold(TagProject) || folded == fold(TagProjectChannels) {
+			return true
+		}
+	}
+	return false
 }

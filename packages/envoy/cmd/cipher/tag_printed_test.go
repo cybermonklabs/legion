@@ -20,7 +20,8 @@ func TestARefusedTagValueOrNameIsNotPrinted(t *testing.T) {
 		check func() error
 		says  string
 	}{
-		{"--owner", func() error { _, err := checkOwnerTier(secret, ""); return err }, "--owner is me, shared or a person's email (the value is not printed)"},
+		{"--owner", func() error { _, err := checkOwnerTier(secret, ""); return err }, "--owner is me, shared, a person's email or group:EMAIL, a group's lowercase email (the value is not printed)"},
+		{"--owner, a group whose address is not lowercase", func() error { _, err := checkOwnerTier("group:"+secret+"@example.com", ""); return err }, "--owner group:EMAIL names a group by its lowercase email"},
 		{"--tier", func() error { _, err := checkOwnerTier("", secret); return err }, "--tier is agent or human (the value is not printed)"},
 		{"--type", func() error { return checkType(secret) }, "--type is "},
 		{"--github-owners, an entry that is no login", func() error { _, err := checkGitHubOwners(secret, false); return err }, "--github-owners: github-owners names GitHub logins"},
@@ -54,6 +55,9 @@ func TestARefusedTagValueOrNameIsNotPrinted(t *testing.T) {
 	t.Run("control: each rule takes a value it accepts", func(t *testing.T) {
 		if owner, err := checkOwnerTier("Ada@Example.com", "agent"); err != nil || owner != "ada@example.com" {
 			t.Errorf("checkOwnerTier = %q, %v; want ada@example.com", owner, err)
+		}
+		if owner, err := checkOwnerTier("group:approvers@example.com", "agent"); err != nil || owner != "group:approvers@example.com" {
+			t.Errorf("checkOwnerTier = %q, %v; want group:approvers@example.com", owner, err)
 		}
 		for name, err := range map[string]error{
 			"--type":          checkType("github-app"),

@@ -13,7 +13,7 @@ lines, its only comments are the lines of the blocks .github/scripts/check-ci-fi
 .github/scripts/check-ts-filters.sh write. A comment of it that said which files a job reads
 was deleted, since the filter beneath it is that record.
 In the text moved here, "this file" and "this workflow" refer to `.github/workflows/ci.yaml`,
-where every one of these comments stood before this change, the filters' comments among them.
+where every one of these comments first stood, the filters' comments among them.
 
 ## How a filter of the filters file is written
 
@@ -194,7 +194,7 @@ worker_image name it too and the image check, .github/scripts/check-image-trigge
 
 The airlock's rules, its decision and its header swap. Not the whole tree: lean/
 holds the model, which airlock-lean alone reads, and testdata/ the fuzz seeds and
-the mutant patches, which the airlock package's own tests read - the daemon
+the mutant patches, which the proxyrules package's own tests read - the daemon
 compiles that package without running them.
 
 ## daemon_envoy_deps: The daemon reads the Envoy session timings (heartbeat
@@ -230,8 +230,8 @@ nats-server versions the daemon refuses, for the same reason.
 ## daemon_go_tests: The daemon-go job: what its two Go steps read together
 
 The daemon-go job: what its two Go steps read together — the plain step, which
-tests every package of packages/daemon but the three concurrent ones, and the race
-step, which tests those three — so the filter covers the whole module's closure,
+tests every package of packages/daemon but the five concurrent ones, and the race
+step, which tests those five — so the filter covers the whole module's closure,
 and what the Stage 1 proof, ci-job-daemon-go.yaml's "Stage 1 live proof" step, builds and sources. The
 packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 builds
 for internal/daemon/outbox_scratch_dispatch_test.go:354, and what their tests read
@@ -694,7 +694,7 @@ that run the tests: the chat client and the router.
 
 The Lean model of the airlock and the Go code it covers (airlock-lean): `lake build`
 and the axiom print read the model's own project, and the two fuzz runs compile the
-airlock package and compare it against the model's program, so a change to either
+proxyrules package and compare it against the model's program, so a change to either
 side runs the job. Both sides live under internal/cipher/proxyrules, which one glob
 names, and the Go side also compiles internal/fold, the case fold it compares names
 in; the axiom check is a script of its own, which check k15 runs too; the Lean
@@ -907,9 +907,9 @@ start it too, though the row leaves them out: this filter takes no `!` pattern.
 ## envoy_go_race: The shared race job: the closure of `go test -race`
 
 The shared race job: the closure of `go test -race` over delivery, the Dispatch
-store, the bus, the listener, the registry store, the session cache, kvwatch, natscred
-and the NATS auth service (`go list -deps -test -race` in packages/envoy), and every
-.md file under packages/envoy, which internal/dispatch/store's
+store, the bus, the listener, the registry store, the session cache, kvwatch, natscred,
+the NATS auth service and the sign-in code flow (`go list -deps -test -race` in
+packages/envoy), and every .md file under packages/envoy, which internal/dispatch/store's
 search_text_test.go:104-120 walks (the RULES row for
 that file in .github/scripts/ci_job_reads.py declares packages/envoy/**/*.md). The
 filter names the wide root rather than that package list and that glob, and its
@@ -974,8 +974,9 @@ envoy-go-docs-finalizers on it).
 ## private_names_port: The private-name port harness, in a job of its own: it
 
 The private-name port harness, in a job of its own: it builds the `legion` binary
-of this head (.github/scripts/check-private-names-port.test.sh:70) and holds the
-rules that binary carries to the frozen shell script's verdicts, case for case.
+of this head (.github/scripts/check-private-names-port.test.sh, its `go build` of
+./cmd/legion) and holds the rules that binary carries to the frozen shell
+script's verdicts, case for case.
 That build is why this list is as long as it is - legion_command is what the
 binary is made of, the rule file packages/daemon/internal/leakguard embeds among
 it - and why the step has a job: while it was the test job's, the whole closure
@@ -984,9 +985,9 @@ shell harnesses and the Bun suites of scripts/ with it (dispatch://INFRA-1413).
 
 ## private_names_port: test-lib.sh, which the harness sources for check/is/summary
 
-test-lib.sh, which the harness sources for check/is/summary (:63), and the
-frozen script it runs every case through beside the binary, symlinked into each
-fixture (:213,421,467,556). That script is the subject of
+test-lib.sh, which the harness sources for check/is/summary (its `source` line), and
+the frozen script it runs every case through beside the binary, symlinked into each
+fixture (its four `ln -s "$frozen_script"` lines). That script is the subject of
 the check_private_names_test filter, which gates another job's step: this job reads
 it as the engine it compares against.
 
@@ -1162,7 +1163,9 @@ ci-ok reports there, so the required checks pass on the merged tree before anyth
 that tree again, and .github/workflows/ci-caches.yaml fills the Go caches on that push instead.
 workflow_dispatch is the bypass check's (.github/workflows/main-bypass-check.yaml): it starts a
 run at main's tip when a commit reached main without a passing merge-group ci-ok, and `changes`
-selects every job there.
+selects every job there. A dispatch of any other ref is a full run started by hand (`gh
+workflow run ci.yaml --ref <branch>`), and it reports under names of its own
+(.github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own).
 
 ## The commit main pointed at before the push the bypass check read
 
@@ -1764,8 +1767,10 @@ applies, natscred, whose service keeper probes with the connection's options whi
 internal/bus may be setting its handlers (natscred/probe_race_test.go, which only the race
 build compiles, so this lane is its one run), the NATS auth service
 (internal/cipher/natscallout), which starts a goroutine per request from nats.go's delivery
-callback, counts those waiting for a decision slot and waits them out at Close, and the
-Dispatch API and the document service - all under the race detector. A read
+callback, counts those waiting for a decision slot and waits them out at Close, the sign-in
+code flow (internal/oidc), whose sign-ins and refreshes use one shared x/oauth2 config at the
+same time (TestCodeFlowGrantsUseTheDiscoveredConfigWithoutARace checks that use for a data
+race), the Dispatch API and the document service - all under the race detector. A read
 that walks a live document without its lock races the room's peers, which no ordinary run
 shows: envoy-go's unit-test step runs without -race (LEGION-499). The lane sits beside
 envoy-go because -race runs these packages several times slower, and each job carries a
@@ -1776,8 +1781,9 @@ what the race build cannot run at all or at full size", which runs the handful o
 assertions the detector makes impossible or shrinks and nothing else.
 
 The lane is three jobs: envoy-go-race (delivery, the Dispatch store, the bus, the listener,
-the registry store, the session cache, kvwatch, natscred and the NATS auth service),
-envoy-go-race-api and envoy-go-race-docs, whose notes, .github/ci-notes/ci.md#why-the-document-service-runs-alone-under-the-race-detector,
+the registry store, the session cache, kvwatch, natscred, the NATS auth service and the sign-in
+code flow), envoy-go-race-api and envoy-go-race-docs, whose notes,
+.github/ci-notes/ci.md#why-the-document-service-runs-alone-under-the-race-detector,
 say why the document service runs alone.
 
 api sits apart because isolation is what made it fast: sharing a runner, the race binaries
@@ -1805,12 +1811,13 @@ runs in the test process (internal/testnats), so no job here needs a container r
 own.
 
 Delivery, the Dispatch store, the bus, the listener, the registry store, the session cache,
-kvwatch, natscred and the NATS auth service share this runner. The Dispatch store's tests
+kvwatch, natscred, the NATS auth service and the sign-in code flow share this runner. The
+Dispatch store's tests
 (store_test.go:28) and delivery's take their databases from storetest.Open
 (storetest.go:64-66), which reads DISPATCH_TEST_DATABASE_URL and skips without it, and
 cmd/listener/dispatch_resolution_test.go:158 gets its database through internal/testpg, so the
 job carries the lane's Postgres service; the registry store itself is the NATS KV view, and
-natscred's and the auth service's tests open no store, so they need none.
+natscred's, the auth service's and the code flow's tests open no store, so they need none.
 
 ## The mention sender's claim model alone, on a runner of its own
 
@@ -2068,7 +2075,11 @@ pr-title from this job, and a fork's head gets one too: a job's check run costs 
 scope, where a POST needs `checks: write`, which a fork's run's read-only GITHUB_TOKEN does
 not carry. A dispatched run carries
 neither a pull request nor a group and has no text to check, which is why the `if:` names the
-two events this job runs on rather than excluding the draft alone.
+two events this job runs on rather than excluding the draft alone. Skipped there, the job still
+posts a check run, and a skipped one is a pass. GitHub does not evaluate the name of a job it
+skips, so on every run that skips this one, a dispatch of any branch and a draft's run, the
+check run carries its `name:` expression's own text and not `pr-title`
+(.github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own).
 
 ## What the pr-title job's scopes are for
 
@@ -2260,4 +2271,79 @@ run that failed and was re-run green would stay blocked by it. This step sets ev
 check run on the head but this job's own to what this job concluded, so one verdict stands
 at the end of every attempt (ci-ok-reconcile.sh says what it passes over and why a refusal
 only warns). `job.status` is this job's conclusion, and `always()` is what runs the step
-after the verdict, the "Judge every job of this run" step, failed.
+after the verdict, the "Judge every job of this run" step, failed. On a dispatch of any ref but
+exactly refs/heads/main the step is skipped: that run's verdict is not the head's ci-ok, so it
+sets no ci-ok of the head either (the next section says why).
+
+## Why a dispatched run off main reports under names of its own
+
+A workflow_dispatch run of a ref other than main tests that ref's own tree, while a pull
+request's run tests the merge of the branch with its base. Both put their check runs on the
+same commit, the branch's head, which is the pull request's head, so under the plain names that
+commit carried two ci-ok check runs with two verdicts over two trees, and a pr-title that the
+dispatched run skips. Pull request #3513 at a368687e is the case, read on 2026-11-21: its
+pull_request run 44860489650, over the merge with main, failed in dispatch-browser / binaries,
+dispatch-ui and docs / build, and its ci-ok check run 136722779787 concluded failure at
+03:58:53Z; workflow_dispatch run 44860519340 of the branch passed, and its ci-ok check run
+136723497213 concluded success at 04:02:35Z; the same run posted pr-title check run
+136712596880, skipped. GitHub's own reading of the pull request did not take the dispatched
+run's: the commit's statusCheckRollup held 74 contexts, 73 check runs of pull_request runs and
+one of CodeQL, and no check run of the dispatched run, ci-ok failure among them. That is
+GitHub's documented rule (docs.github.com, "Troubleshooting
+required status checks", "Checks from some workflow jobs are not evaluated": the checks of a
+workflow_dispatch run's jobs do not appear in a pull request's checks and satisfy no required
+check). A reader that takes the commit's check runs by name did:
+`commits/<sha>/check-runs?check_name=ci-ok` lists both, the dispatched run's first, and a
+record that keeps one check run per name and lets the higher id replace the lower, as
+packages/envoy/internal/cistore's does (cistore.go's check-run update), would hold the
+dispatched run's success as the head's ci-ok, and its skipped pr-title as the head's pr-title.
+
+So on such a run the `ci-ok` job is named `ci-ok (dispatch)`, and the reconcile step, "Set every
+other ci-ok on this head to this job's conclusion", is skipped, since every ci-ok that step could
+set is the pull request's or the queue's. GitHub evaluates a job's name only when the job runs.
+ci-ok runs on every event, so it is `ci-ok` on a pull request, a merge group and the bypass
+check's dispatch on main, and GitHub evaluates its name when the job is queued, after its needs:
+on scratch run 44872165102 the queued check run 136750697832 was already named ci-ok. pr-title
+runs only on a pull request that is not a draft and on a merge group, and is named pr-title
+there. Every run that skips it, a dispatch of any ref, main's included, and a draft's run,
+leaves its name unevaluated, and its check run carries the text of the expression,
+`github.event_name == 'workflow_dispatch' && … || 'pr-title'`, with the conclusion skipped:
+check run 136745386648 of scratch dispatch run 44871030917, and check run 136755360755 of draft
+scratch run 44874260916, whose own ci-ok, 136755360774, concluded failure (read 2026-11-21).
+Either way it is not named pr-title, so a draft's head carries no pr-title from this file, and
+marking the pull request ready starts the run that checks it. (pr-title.yaml, which runs on an
+edit of a pull request, draft or not, still posts its own.) pr-title needs no job, so its name
+can read nothing but the event: `${{ github.event_name == 'workflow_dispatch' && 'pr-title
+(dispatch)' || 'pr-title' }}`. Its dispatch arm is never evaluated, since the job runs on no
+dispatch, and what keeps a skipped pr-title from posting a pass under that name is that its name
+is an expression at all.
+
+Which dispatch is of main is read by a shell test, not by an expression. GitHub's expression
+`==` and `!=` ignore case, so `github.ref != 'refs/heads/main'` is false for the branches
+refs/heads/Main and refs/heads/MAIN, which git accepts (`git check-ref-format` passes both),
+and `github.ref_name != 'main'` is false for those and for a tag named main too: a dispatch of
+any of them would report ci-ok and run the reconcile step. The changes job's step "Read whether
+this run's ref is exactly refs/heads/main" runs `[ "$GITHUB_REF" = refs/heads/main ]`, whose `=`
+is case-sensitive, and writes is_main=true for exactly that ref and is_main=false for every
+other; the job hands it on as the output `ref_is_main`. ci-ok's name is `${{ github.event_name ==
+'workflow_dispatch' && needs.changes.outputs.ref_is_main != 'true' && 'ci-ok (dispatch)' ||
+'ci-ok' }}` and the reconcile step's if: is `${{ always() && (github.event_name !=
+'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') }}`. The comparisons left
+are of a fixed event name and of the string the step wrote, which case cannot change. A dispatch
+whose changes job failed or was cancelled wrote no output, and reads as a dispatch of another
+ref: it is named `ci-ok (dispatch)` and skips the reconcile step, main's included. Evaluated with
+GitHub's expression library (@actions/expressions 0.3.61) and the step run by bash for each ref
+(2026-11-21): the expression form read Main, MAIN and Main with changes failed as main, and the
+shell form reads only exactly refs/heads/main as main.
+
+The dispatched run still reaches its verdict and shows it on the head under its own name, so a
+reader by name finds one ci-ok and one pr-title on a pull request's head, and they are the pull
+request's own. Only a pull_request run, a merge-group run and the bypass check's dispatch on
+main report ci-ok, and only the first two report pr-title: they are the runs the ruleset and the
+queue read, and the bypass check's run posts its verdict on main's tip, which is no pull
+request's head and where a person reading that commit looks for it. The name is chosen by the
+event and the ref of the run alone, so no run has to read whether another run exists, and
+nothing races. check-ci-filters.sh holds both jobs to their one `name:` (ci_filter_coverage.py's
+DISPATCH_NAMES), the reconcile step to its one `if:` (RECONCILE_IF), the changes job to the
+output and the exact step (REF_OUTPUT, REF_STEP_RUN), and every other job to a name that can
+evaluate to neither check.

@@ -22,11 +22,12 @@ body: |-
   after the ten minutes is not stored, and a prompt waiting in the background for `fg` gives up
   then too. On AWS, where it
   makes nothing first, the read has no limit. Each `gcloud auth print-access-token` that refreshes a gcloud login's
-  token has the 60-second store-call deadline of its own. On AWS, a `CreateSecret` the SDK tried
-  once and that was refused before Secrets Manager acted (a name taken, access denied, a request, a
-  parameter or a limit refused) says nothing was stored; any other failure, and any create the SDK
-  tried more than once, says the store may hold the secret, with its value, or not, and names
-  `agent-secrets secret show NAME`. Every command the create prints for settling what it left signs
+  token has the 60-second store-call deadline of its own. On AWS, a `CreateSecret` each of whose
+  attempts Secrets Manager refused before it acted (a name taken, access denied, a request, a
+  parameter or a limit refused) says nothing was stored; any other failure, and any create one of
+  whose attempts ended another way before the SDK retried it, says the store may hold the secret,
+  with its value, or not, and names `agent-secrets secret show NAME`. Every command the create
+  prints for settling what it left signs
   in as the create did: the `AWS_PROFILE` or `AWS_DEFAULT_PROFILE` that chose the AWS sign-in,
   the Google sign-in's `GOOGLE_APPLICATION_CREDENTIALS` or `CLOUDSDK_CORE_ACCOUNT`, and for gcloud
   the matching `CLOUDSDK_CORE_ACCOUNT` or `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE`, followed by the

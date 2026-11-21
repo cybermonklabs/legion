@@ -10,23 +10,30 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // ownerMe is the --owner value that names the person the sign-in names (secretSession.ownerTag).
 const ownerMe = "me"
 
-// checkOwnerTier answers the owner --owner names - me, shared, or a person's email, lowercased,
-// which must be one the broker accepts as a person owner (policy.ValidPersonOwner) - and refuses
-// any other --owner and a --tier that is neither agent nor human; "" passes either, for a form
-// where it is optional. A value it refuses is not printed, as no tag flag's is (valueNotPrinted).
+// checkOwnerTier answers the owner --owner names - me, shared, a person's email, lowercased,
+// which must be one the broker accepts as a person owner (policy.ValidPersonOwner), or a group as
+// group: and its lowercase email (policy.ValidGroupOwner) - and refuses any other --owner and a
+// --tier that is neither agent nor human; "" passes either, for a form where it is optional. A
+// group is refused rather than lowercased when it holds an upper-case letter, as a requesters
+// entry naming it is (policy.ErrRequestersEntry): a group-owned google-service-account secret's
+// list names its owner group exactly as the owner tag does (policy.RequesterRule), so the two are
+// written alike. A value it refuses is not printed, as no tag flag's is (valueNotPrinted).
 func checkOwnerTier(owner, tier string) (string, error) {
 	var errs []error
 	switch lower := strings.ToLower(owner); {
-	case owner == "", owner == ownerMe, owner == policy.OwnerShared:
+	case owner == "", owner == ownerMe, owner == policy.OwnerShared, policy.ValidGroupOwner(owner):
+	case policy.ValidGroupOwner(lower):
+		errs = append(errs, fmt.Errorf("--owner group:EMAIL names a group by its lowercase email, as every requesters entry naming the group does, so it is written in lower case %s", valueNotPrinted))
 	case policy.ValidPersonOwner(lower):
 		owner = lower
 	default:
-		errs = append(errs, fmt.Errorf("--owner is %s, %s or a person's email %s", ownerMe, policy.OwnerShared, valueNotPrinted))
+		errs = append(errs, fmt.Errorf("--owner is %s, %s, a person's email or group:EMAIL, a group's lowercase email %s", ownerMe, policy.OwnerShared, valueNotPrinted))
 	}
 	if tier != "" && tier != policy.TierAgent && tier != policy.TierHuman {
 		errs = append(errs, fmt.Errorf("--tier is %s or %s %s", policy.TierAgent, policy.TierHuman, valueNotPrinted))
@@ -55,9 +62,9 @@ func ruleOf(err error, rules ...error) string {
 	return "the value does not parse " + valueNotPrinted
 }
 
-// tagNone is the value of --type, --github-owners, --requesters, --scopes, --admin,
-// --max-grant and --default-grant that removes the tag, the one the broker refuses as a
-// github-owners login (policy.TagRemoved).
+// tagNone is the value of --type, --github-owners, --requesters, --scopes, --admin, --project,
+// --project-channels, --max-grant and --default-grant that removes the tag, the one the broker
+// refuses as a github-owners login (policy.TagRemoved).
 const tagNone = policy.TagRemoved
 
 // checkType is --type's rule: a type the broker mints (policy.ValidType), or none.
@@ -133,16 +140,18 @@ func checkGitHubOwnersFor(secretType, owners string, named bool) error {
 }
 
 // checkRequesters is --requesters' rule, the broker's own (policy.ParseRequesterShapes): people
-// by their lowercase sign-in email and services by their registered name, separated by spaces,
-// which the shell quotes as one argument; a comma is refused. This CLI checks shapes rather than
-// the registered list, since it holds none: an entry naming a service is checked for a service
-// name's shape alone here, and a name the deployment does not register is caught by the broker's
-// answer to the reread that follows the write. none is a sentinel, not a requester: alone, and
-// only where orNone allows it (retag), it removes the tag; given on create, or beside a
-// requester, it is refused, since it would otherwise be written as a service named none or
-// dropped as the removal (optionalTags), leaving a secret nobody but none may ask for. It
-// answers the list as the broker reads it, sorted, each entry once and single-spaced, so the tag
-// is written as it will be served.
+// by their lowercase sign-in email, Google groups as group: and the group's lowercase email, and
+// services by their registered name, separated by spaces, which the shell quotes as one argument;
+// a comma is refused. This CLI checks shapes rather than the registered list, since it holds
+// none: an entry naming a service is checked for a service name's shape alone here, and a name
+// the deployment does not register is caught by the broker's answer to the reread that follows
+// the write. Nor does it read a group's members: an entry naming a group is checked for the
+// form's shape alone, and the broker reads who is in the group. none is a sentinel, not a
+// requester: alone, and only where orNone allows it (retag), it removes the tag; given on
+// create, or beside a requester, it is refused, since it would otherwise be written as a service
+// named none or dropped as the removal (optionalTags), leaving a secret nobody but none may ask
+// for. It answers the list as the broker reads it, sorted, each entry once and single-spaced, so
+// the tag is written as it will be served.
 func checkRequesters(list string, orNone bool) (string, error) {
 	if list == "" || (orNone && list == tagNone) {
 		return list, nil
@@ -215,6 +224,44 @@ func checkAdmin(admin string, orNone bool) error {
 	return usageErr{fmt.Errorf("--admin is %s %s, or the broker refuses the secret as %s; leave --admin off for a secret whose grant is no administrator's", adminTrue, valueNotPrinted, policy.ReasonAdminMalformed)}
 }
 
+// checkProject is --project's rule, the broker's own (policy.ParseProject): one Dispatch project
+// key as written, an upper-case letter then one to nine upper-case letters or digits, or none
+// where orNone allows it (retag) to remove the tag. Any other value — a key in lower case, two
+// keys, white space around one, and on create the word none — is refused here, before anything
+// is read or written, as the broker refuses it on the reread, policy.ReasonProjectMalformed,
+// named as the broker names it: a tag the broker cannot read names no project it could check,
+// and a secret carrying one is served to nobody. The value it refuses is not printed
+// (valueNotPrinted).
+func checkProject(project string, orNone bool) error {
+	if project == "" || (orNone && project == tagNone) {
+		return nil
+	}
+	if _, err := policy.ParseProject(project); err == nil {
+		return nil
+	}
+	if orNone {
+		return usageErr{fmt.Errorf("--project is one Dispatch project key (%s) or %s %s, or the broker refuses the secret as %s", contracts.ProjectKeyRule, tagNone, valueNotPrinted, policy.ReasonProjectMalformed)}
+	}
+	return usageErr{fmt.Errorf("--project is one Dispatch project key (%s) %s, or the broker refuses the secret as %s; leave --project off for a secret of no project", contracts.ProjectKeyRule, valueNotPrinted, policy.ReasonProjectMalformed)}
+}
+
+// checkProjectChannels is --project-channels' rule: slack, the one value the broker reads
+// (policy.ProjectChannelsSlack), or none where orNone allows it (retag) to remove the tag. Any
+// other value — slack in another case, white space around it, a channel id, and on create the word
+// none — is refused here, before anything is read or written, as the broker refuses it on the
+// reread, policy.ReasonProjectChannelsMalformed, named as the broker names it: a value the broker
+// cannot read names no limit it could apply, and a secret carrying one is served to nobody. The
+// value it refuses is not printed (valueNotPrinted).
+func checkProjectChannels(channels string, orNone bool) error {
+	if channels == "" || channels == policy.ProjectChannelsSlack || (orNone && channels == tagNone) {
+		return nil
+	}
+	if orNone {
+		return usageErr{fmt.Errorf("--project-channels is %s or %s %s, or the broker refuses the secret as %s", policy.ProjectChannelsSlack, tagNone, valueNotPrinted, policy.ReasonProjectChannelsMalformed)}
+	}
+	return usageErr{fmt.Errorf("--project-channels is %s %s, or the broker refuses the secret as %s; leave --project-channels off for a secret no project's owner limits", policy.ProjectChannelsSlack, valueNotPrinted, policy.ReasonProjectChannelsMalformed)}
+}
+
 // checkTagsFor applies the broker's cross-tag rules (policy.TagRules) to the tags a secret will
 // hold once a write lands — its type, owner, tier, requesters, scopes, admin mark and
 // max grant — so create (cmdSecretCreate) and retag (cmdSecretRetag) refuse, before any write,
@@ -238,18 +285,22 @@ func checkAdmin(admin string, orNone bool) error {
 // max-grant-malformed before it weighs policy.TagRules at all. The admin mark is the tag being
 // adminTrue; a stored admin tag holding anything else is no rule of TagRules but
 // policy.ReasonAdminMalformed, which the broker answers to the reread that follows the write,
-// exactly as it answers for a stored requesters or scopes tag this CLI cannot repair. The one
+// exactly as it answers for a stored requesters or scopes tag this CLI cannot repair. The
+// requesters are read without the project tags' rollback guard (policy.SplitRequestersGuard), as
+// the broker reads them: the guard has no @, so the rules would otherwise weigh it as a service on
+// the list. The one
 // field of the set left empty is BoundAccount, the deployment's BROKER_SERVICE_ACCOUNT_SECRETS
 // binding, which `agent-secrets` never sees, just as it never sees BROKER_SERVICES and so calls
 // ParseRequesterShapes rather than ParseRequesters: the rule it feeds, the one refusing a
 // service on a secret bound to a dev-<name> account, is the broker's to apply on that reread.
 func checkTagsFor(tags map[string]string) error {
 	duration, _ := policy.ParseMaxGrant(tags[policy.TagMaxGrant])
+	requesters, _ := policy.SplitRequestersGuard(tags[policy.TagRequesters])
 	set := policy.TagSet{
 		Type:         policy.TypeFromTags(tags),
 		Owner:        tags[policy.TagOwner],
 		Tier:         tags[policy.TagTier],
-		Requesters:   tags[policy.TagRequesters],
+		Requesters:   requesters,
 		Scopes:       tags[policy.TagScopes],
 		BoundAccount: "",
 		Admin:        tags[policy.TagAdmin] == adminTrue,
@@ -258,12 +309,40 @@ func checkTagsFor(tags map[string]string) error {
 	return tagRefusal(policy.TagRules(set), set, tags)
 }
 
+// guardRequesters puts the project tags' rollback guard (policy.RequestersRollbackGuard) into the
+// requesters tag of tags, the tags a secret holds once a write lands, when they carry a
+// dispatch-project or a project-channels tag, after the list the tag holds and never in place of
+// it; and takes it out when they carry neither, removing the requesters tag when the guard was
+// all it held. A requesters tag no guard was written into is left exactly as it is, a malformed
+// one included, which the broker refuses on the reread. A broker from before the project tags
+// reads the guard as a service no deployment can register and refuses the secret, rather than
+// serve a project's secret by owner and tier to every session; this broker takes it out before
+// it reads the list.
+func guardRequesters(tags map[string]string) {
+	raw, listed := tags[policy.TagRequesters]
+	list, guarded := policy.SplitRequestersGuard(raw)
+	_, project := tags[policy.TagProject]
+	_, channels := tags[policy.TagProjectChannels]
+	switch {
+	case project || channels:
+		if !listed {
+			list = ""
+		}
+		tags[policy.TagRequesters] = policy.WithRequestersGuard(list)
+	case guarded && list == "":
+		delete(tags, policy.TagRequesters)
+	case guarded:
+		tags[policy.TagRequesters] = list
+	}
+}
+
 // tagRefusal says one cross-tag refusal as the flag that fixes it: reason is what
 // policy.TagRules answered for set, and tags is the map set was built from. It answers nil for
 // "", the answer for a secret the rules allow, and a usage error for every other reason, so it
 // is this CLI's whole mirror of TagRules: an arm for
 // policy.ReasonScopesType, policy.ReasonAdminTier, policy.ReasonAdminRequesters,
-// policy.ReasonMaxGrantRequired and policy.ReasonRequestersNotOwner, and one fallback refusal
+// policy.ReasonTypeHumanTier, policy.ReasonMaxGrantRequired and policy.ReasonRequestersNotOwner,
+// and one fallback refusal
 // after the switch, which quotes the reason TagRules gave. That reason is this binary's own
 // TagRules answer, so a reason, or a requesters fault, with no arm here is a gap in this build
 // of agent-secrets, which the fallback refuses the write for rather than leave it to be written
@@ -288,8 +367,10 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 		return usageErr{fmt.Errorf("an admin secret releases an administrator's credential, which a person approves each release of, so it is human tier, not %q: write --tier %s, or the broker refuses it as %s", set.Tier, policy.TierHuman, policy.ReasonAdminTier)}
 	case policy.ReasonAdminRequesters:
 		return usageErr{fmt.Errorf("an admin secret names who may ask for an administrator's credential, never leaving it to owner and tier alone: write --requesters, or the broker refuses it as %s", policy.ReasonAdminRequesters)}
+	case policy.ReasonTypeHumanTier:
+		return usageErr{fmt.Errorf("%s secret can release an organization administrator's credential, which a person approves each release of, so it is human tier, not %q: write --tier %s, or the broker refuses it as %s", withArticle(set.Type), set.Tier, policy.TierHuman, policy.ReasonTypeHumanTier)}
 	case policy.ReasonMaxGrantRequired:
-		demands := fmt.Sprintf("a %s secret", policy.TypeGoogleServiceAccount)
+		demands := withArticle(set.Type) + " secret"
 		if set.Admin {
 			demands = "an admin secret"
 		}
@@ -307,23 +388,27 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 		// true beside it: a secret owned by shared is answered for its owner however its list
 		// and tier read, and a list naming a service at agent tier is answered for the tier and
 		// not for the person it leaves out.
-		switch policy.RequesterRule(set) {
+		switch fault := policy.RequesterRule(set); fault {
 		case policy.RequesterFaultOwnerNotPerson:
-			return usageErr{fmt.Errorf("%s secret mints a token acting as that account, so it is served to the one person who owns it, and %q is no person: own it with --owner me, or the broker refuses it as %s", withArticle(set.Type), set.Owner, policy.ReasonRequestersNotOwner)}
+			return usageErr{fmt.Errorf("%s secret mints a token acting as that account, so it is served to the one person who owns it, or to the members of the one group that does, and %q is neither a person nor a group: own it with --owner me or --owner group:EMAIL, or the broker refuses it as %s", withArticle(set.Type), set.Owner, policy.ReasonRequestersNotOwner)}
 		case policy.RequesterFaultServiceBelowHumanTier:
-			_, services := policy.SplitRequesters(set.Requesters)
+			_, services, _ := policy.SplitRequesters(set.Requesters)
 			return usageErr{fmt.Errorf("%s secret lists a registered service, here %q, only at %s tier, where a person approves each pod that asks: write --tier %s, or leave the service out of --requesters, or the broker refuses it as %s", withArticle(set.Type), services[0], policy.TierHuman, policy.TierHuman, policy.ReasonRequestersNotOwner)}
-		case policy.RequesterFaultNotTheOwnerOnce:
+		case policy.RequesterFaultNotTheOwnerOnce, policy.RequesterFaultNotTheOwnerGroupOnce:
 			// One message for every way a list fails to name the owner exactly once — no list
-			// at all, a list of services alone, a list naming another person — because one
-			// write fixes them all: the owner, beside the registered services the list already
+			// at all, a list of services alone, a list naming another person or a group, and
+			// for a group owner a list naming a person or another group — because one write
+			// fixes them all: the owner, beside the registered services the list already
 			// names, which a human-tier secret of this type may keep. A list the secret holds
 			// is quoted too, so the reader sees what the suggestion replaces.
-			_, services := policy.SplitRequesters(set.Requesters)
+			_, services, _ := policy.SplitRequesters(set.Requesters)
 			wanted := strings.Join(append([]string{set.Owner}, services...), " ")
 			held := ""
 			if set.Requesters != "" {
 				held = fmt.Sprintf(", not %q", set.Requesters)
+			}
+			if fault == policy.RequesterFaultNotTheOwnerGroupOnce {
+				return usageErr{fmt.Errorf("%s secret owned by a group is served to the group's members, beside the registered services a %s-tier one may list, so its requesters name %s once and no person%s: write --requesters %q, or the broker refuses it as %s", withArticle(set.Type), policy.TierHuman, set.Owner, held, wanted, policy.ReasonRequestersNotOwner)}
 			}
 			return usageErr{fmt.Errorf("%s secret is served to the one person who owns it, beside the registered services a %s-tier one may list, so its requesters name %s once%s: write --requesters %q, or the broker refuses it as %s", withArticle(set.Type), policy.TierHuman, set.Owner, held, wanted, policy.ReasonRequestersNotOwner)}
 		}
@@ -337,27 +422,29 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 }
 
 // tagFlags is the value of each tag flag a create or a retag names, one field per flag. It is a
-// struct rather than eight string parameters for the reason policy.TagSet is one: a caller
+// struct rather than ten string parameters for the reason policy.TagSet is one: a caller
 // passing that many values in order would transpose two of them, and every transposition
 // compiles and writes each value as another tag.
 type tagFlags struct {
-	Type         string
-	GitHubOwners string
-	Requesters   string
-	Scopes       string
-	Admin        string
-	MaxGrant     string
-	DefaultGrant string
+	Type            string
+	GitHubOwners    string
+	Requesters      string
+	Scopes          string
+	Admin           string
+	Project         string
+	ProjectChannels string
+	MaxGrant        string
+	DefaultGrant    string
 }
 
-// optionalTags is the type, github-owners, requesters, scopes, admin, max-grant and
-// default-grant tags the flags set: each flag's value when it names one, and nothing for one
-// left unset or set to none. A type brings the rollback guard with it (policy.TagRollbackGuard),
-// which only the brokers from legion-envoy-v13.19.0 to the release before v16.0.0 read, and
-// refuse: every broker from v16.0.0 to the release before the type tag ignores it and serves a
-// secret that carries type alone as a stored secret. What keeps a type secret's key from such a
-// broker is requireTypeTag, before this CLI writes, and a rollback floor at the release that reads
-// the type tag, which the deployment keeps.
+// optionalTags is the type, github-owners, requesters, scopes, admin, dispatch-project,
+// project-channels, max-grant and default-grant tags the flags set: each flag's value when it
+// names one, and nothing for one left unset or set to none. A type brings the rollback guard with
+// it (policy.TagRollbackGuard), which only the brokers from legion-envoy-v13.19.0 to the release
+// before v16.0.0 read, and refuse: every broker from v16.0.0 to the release before the type tag
+// ignores it and serves a secret that carries type alone as a stored secret. What keeps a type
+// secret's key from such a broker is requireTypeTag, before this CLI writes, and a rollback floor
+// at the release that reads the type tag, which the deployment keeps.
 func optionalTags(f tagFlags) map[string]string {
 	named := func(value string) bool { return value != "" && value != tagNone }
 	tags := map[string]string{}
@@ -376,6 +463,12 @@ func optionalTags(f tagFlags) map[string]string {
 	}
 	if named(f.Admin) {
 		tags[policy.TagAdmin] = f.Admin
+	}
+	if named(f.Project) {
+		tags[policy.TagProject] = f.Project
+	}
+	if named(f.ProjectChannels) {
+		tags[policy.TagProjectChannels] = f.ProjectChannels
 	}
 	if named(f.MaxGrant) {
 		tags[policy.TagMaxGrant] = f.MaxGrant

@@ -132,7 +132,18 @@ instead. The one claim freed past a holder session that still answers is one a h
 (`handed_back`), and only once its own renewal has lapsed: the mark is the holder's own word that
 it gave the role up and no registration renews a marked claim, so a role an older client handed
 back comes free one live window plus up to one reap interval later — about ten minutes with the
-shipped defaults — while that client is still registering. A registration renews every unmarked
+shipped defaults — while that client is still registering. The mark lands only on the grant the
+hand-back read: every grant writes a `grant_id` it draws at random, which renewals and the
+adoption carry over, so once every listener runs a build that writes it, a claim granted again
+before the mark's write, in the same millisecond or later, is left unmarked. A record with no
+`grant_id`, which an earlier build wrote, is told from a grant by its `claimed_at`, as that build
+tells it. While a listener of an earlier build still writes the bucket, three gaps stay open: a
+grant that build writes in the millisecond of the claim a hand-back read reads as that claim; a
+hand-back that listener serves follows its own `claimed_at` rule and drops `grant_id` from the
+claim it marks; and a grant written in that millisecond with a `grant_id`, which that listener
+renews before the mark reads the claim again, has lost its id and is marked, which no code can
+prevent. All three close when the last listener of the earlier build is upgraded. A registration
+renews every unmarked
 claim its own process holds among the roles it weighs: the role topics of the interest record its
 own write read from the bucket, and the roles the listener's copy of the claims names for the
 session, each renewed as its own claim record says, whatever topics the registration carries. One
@@ -288,15 +299,18 @@ route retries, because a holder that stopped answering keeps its claim and there
 a second read to see past. `store.Registry` bounds that claim read by the caller's context itself
 (`RoleClaim`), since nats.go's KV calls take none.
 
-A send and a publish stamp the envelope's `sender` from the sender's interest record (`senderStamp`,
-`cmd/listener/api.go`), which a cache miss reads through to the bucket within one second of the
-same budget (`senderStampReadTimeout`; `store.Registry.Get` bounds the bucket read alone, so a
-cache hit answers in the caller's goroutine). The stamp is only enrichment: a read that does not
-answer leaves it the session id and the title this listener's cache holds, and the publish that
-follows meets the same silent bus and answers the 503 above inside the caller's attempt. The
-stamp's `roles` are the roles whose claims name the sender, from the claims view the session routes
-read; a view that is not complete (`store.ErrRoleViewNotReady`) leaves them out, and the send goes
-on.
+A send and a publish stamp the envelope's `sender` from the sender's interest record and session
+entry (`senderStamp`, `cmd/listener/api.go`), whose cache misses are read through to their buckets
+within one second of the same budget (`senderStampReadTimeout`; `store.Registry.Get` bounds the
+bucket read alone, so a cache hit answers in the caller's goroutine). The `machine` and `cwd` are
+the interest record's, and the session entry's where that record is not found or not read, since
+each registration writes both; a sender whose entry is not read either, from this listener's cache
+or from the bucket within the same window, gets neither. The stamp is only enrichment: a read that
+does not answer leaves it the session id and what this listener's session cache holds, and the
+publish that follows meets the same silent bus and answers the 503 above inside the caller's
+attempt. The stamp's `roles` are the roles whose claims name the sender, from the claims view the
+session routes read; a view that is not complete (`store.ErrRoleViewNotReady`) leaves them out,
+and the send goes on.
 
 A publish whose caller's context has already ended puts nothing on the wire; on these two routes it
 is answered the 503 above. A role send's forward, published as a core message whose reply carries

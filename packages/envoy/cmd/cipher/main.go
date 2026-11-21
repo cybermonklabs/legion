@@ -20,13 +20,13 @@
 // prints a credential AGENT_SECRETS_URL carries (internal/redact).
 //
 //	agent-secrets keygen --out <dir>
-//	agent-secrets enroll --helper --runtime-id <id> --thumbprint <tp> [--session-id <id>]
-//	agent-secrets enroll --pod --service <name> [--pod-token-file <file>] [--out <dir>]
+//	agent-secrets enroll --helper --runtime-id <id> --thumbprint <tp> [--session-id <id>] [--projects <keys>]
+//	agent-secrets enroll --pod --service <name> [--pod-token-file <file>] [--out <dir>] [--projects <keys>]
 //	agent-secrets unenroll --helper --enrollment <id>
 //	agent-secrets machine login|login-status|list [--json]|revoke <credential_id>
 //	agent-secrets grant list [--json]|revoke <grant_id>
 //	agent-secrets login
-//	agent-secrets register [--wait SECONDS] [--session-id ID] [--exec -- COMMAND [ARGS...]]
+//	agent-secrets register [--wait SECONDS] [--session-id ID] [--projects KEYS] [--exec -- COMMAND [ARGS...]]
 //	agent-secrets identity [--source]
 //	agent-secrets renew [--pod-token-file FILE]
 //	agent-secrets request NAME... [--reason TEXT] [--ttl DURATION] [--json]
@@ -104,6 +104,8 @@ import (
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipherclient"
@@ -136,8 +138,8 @@ type command struct {
 var commands = []command{
 	{"keygen", "agent-secrets keygen --out <dir>",
 		"Write a new signing key to <dir>/key.pem and print its thumbprint. A box's launcher runs it\ninside the box before enrolling it."},
-	{"enroll", "agent-secrets enroll --helper --runtime-id <id> --thumbprint <tp> [--session-id <id>] | --pod --service <name> [--pod-token-file <file>] [--out <dir>]",
-		"Enroll a session key a launcher holds (a box's) through this machine's agent-secrets-helper,\nor, with --pod, enroll this Kubernetes pod itself, for the broker-side service --service\nnames: a pod proves who it is with the projected service-account token its own kubelet\nmounts (--pod-token-file, default " + defaultPodTokenFile + ").\nEach writes the enrollment id to AGENT_SECRETS_KEY_DIR/enrollment and prints it, alone, on\nstdout. --pod also writes key.pem there, reusing the one already in --out: a re-run keeps\nthat key's enrollment and renews its lease, and runs on one directory take turns. A pod keeps\nits own lease alive with the command --pod prints, which names the key directory because renew\nreads AGENT_SECRETS_KEY_DIR and never --out:\n`AGENT_SECRETS_KEY_DIR=<dir> agent-secrets renew --pod-token-file <file>`."},
+	{"enroll", "agent-secrets enroll --helper --runtime-id <id> --thumbprint <tp> [--session-id <id>] [--projects <keys>] | --pod --service <name> [--pod-token-file <file>] [--out <dir>] [--projects <keys>]",
+		"Enroll a session key a launcher holds (a box's) through this machine's agent-secrets-helper,\nor, with --pod, enroll this Kubernetes pod itself, for the broker-side service --service\nnames: a pod proves who it is with the projected service-account token its own kubelet\nmounts (--pod-token-file, default " + defaultPodTokenFile + ").\nEach writes the enrollment id to AGENT_SECRETS_KEY_DIR/enrollment and prints it, alone, on\nstdout. --pod also writes key.pem there, reusing the one already in --out: a re-run keeps\nthat key's enrollment and renews its lease, and runs on one directory take turns. A pod keeps\nits own lease alive with the command --pod prints, which names the key directory because renew\nreads AGENT_SECRETS_KEY_DIR and never --out:\n`AGENT_SECRETS_KEY_DIR=<dir> agent-secrets renew --pod-token-file <file>`.\nWith --projects (default AGENT_SECRETS_PROJECTS), the box's session, or a person's pod, names\nthe Dispatch projects it works on, as register does; a service's pod names none."},
 	{"unenroll", "agent-secrets unenroll --helper --enrollment <id>",
 		"End an enrollment `enroll --helper` made, through this machine's agent-secrets-helper."},
 	{"machine login", "agent-secrets machine login",
@@ -151,11 +153,11 @@ var commands = []command{
 	{"grant list", "agent-secrets grant list [--json]",
 		"List the live grants of your sessions and those you approved, under this machine's login:\neach one's id, secrets, how it was granted, who approved it, who decided it (the model judge\nfor a grant it approved), its session and operator, and when it expires. Dispatch's Live\ngrants page lists the same."},
 	{"grant revoke", "agent-secrets grant revoke <grant_id>",
-		"End a grant. From your own shell, end it as its operator or approver, under this\nmachine's login, as Dispatch's Live grants page does; ending an automatic grant also\nmakes its session ask before it gets those secrets again. Inside a session, end a grant\ngiven to the broker identity this session signs as, as `revoke` does; any other grant is\nrefused NOT_YOURS."},
+		"End a grant. From your own shell, end it as its operator or approver, under this\nmachine's login, as Dispatch's Live grants page does; ending an automatic grant also\nmakes its session ask before it gets those secrets again. Inside a session, end a grant\ngiven to the broker identity this session signs as, as `revoke` does; any other grant is\nrefused NOT_YOURS, or answered as an unknown grant (NOT_FOUND) when it is a private\nproject's grant this session does not name."},
 	{"login", "agent-secrets login",
 		"Sign in on this machine as yourself: print the code to type in at Google, then record the\nsign-in at the secrets broker, which binds it to a box key this machine makes. Every session\nof yours on this machine then acts as you. A second person signs in beside you, and\nAGENT_SECRETS_PERSON then says which of you a session acts for."},
-	{"register", "agent-secrets register [--wait SECONDS] [--session-id ID] [--exec -- COMMAND [ARGS...]]",
-		"Register a machine session with agent-secrets-helper. With --exec, register this process and\nrun COMMAND as this same process, so it and everything it starts are that session. Without\n--exec, name the session this process runs inside, or else the session launcher (omp) above\nit, never this process, which ends with the command; with neither, exit 1 and say to relaunch\nunder --exec. With --session-id, the session keeps one broker identity — and the requests and\ngrants bound to it — across a restart of the helper or of the machine, rather than enrolling\nafresh as a new pid; run it again with the id from inside a session that could not name one\nat launch."},
+	{"register", "agent-secrets register [--wait SECONDS] [--session-id ID] [--projects KEYS] [--exec -- COMMAND [ARGS...]]",
+		"Register a machine session with agent-secrets-helper. With --exec, register this process and\nrun COMMAND as this same process, so it and everything it starts are that session. Without\n--exec, name the session this process runs inside, or else the session launcher (omp) above\nit, never this process, which ends with the command; with neither, exit 1 and say to relaunch\nunder --exec. With --session-id, the session keeps one broker identity — and the requests and\ngrants bound to it — across a restart of the helper or of the machine, rather than enrolling\nafresh as a new pid; run it again with the id from inside a session that could not name one\nat launch. With --projects (default AGENT_SECRETS_PROJECTS), the session names the Dispatch\nprojects it works on, fixed at its first register."},
 	{"identity", "agent-secrets identity [--source]",
 		"Exit 0 when this process has a launcher's key dir or a helper session and 1 when it does not,\nasking the broker nothing. With --source, print the source of the broker identity a use\ncommand would take (key-dir, sign-in, helper or machine) and what it is, asking the broker\nand the metadata server where it must and registering nothing; exit 1 with every source's\nreason when none has one."},
 	{"--version", "agent-secrets --version",
@@ -973,6 +975,7 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 	case "pending":
 		return exitPending
 	case "denied":
+		projectHint(stderr, result.Detail)
 		return exitDenied
 	default:
 		return 0
@@ -1125,8 +1128,8 @@ func cmdSelf(name string, args []string, stdout, stderr io.Writer) int {
 		operator = *result.Operator
 	}
 	words := c.baseURL.Words
-	fmt.Fprintf(stdout, "enrollment_id: %s\nkind: %s\noperator: %s\nlease_expires_at: %s\nsource: %s\n",
-		idWords(c.baseURL, result.EnrollmentID), words(result.Kind), words(operator), result.LeaseExpiresAt.Format(time.RFC3339), c.source(ctx))
+	fmt.Fprintf(stdout, "enrollment_id: %s\nkind: %s\noperator: %s\nprojects: %s\nlease_expires_at: %s\nsource: %s\n",
+		idWords(c.baseURL, result.EnrollmentID), words(result.Kind), words(operator), words(orDash(oauthwire.JoinProjects(result.Projects))), result.LeaseExpiresAt.Format(time.RFC3339), c.source(ctx))
 	for _, g := range result.Grants {
 		if g.ExpiresAt == nil {
 			fmt.Fprintf(stdout, "grant: %s (request %s, until this session ends)\n", idWords(c.baseURL, g.GrantID), idWords(c.baseURL, g.RequestID))
@@ -1292,6 +1295,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		return exitPending
 	case "denied":
 		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was denied%s\n", shownID, src(), deniedBecause(c.baseURL, detail))
+		projectHint(stderr, detail)
 		return exitDenied
 	case "cancelled", "expired":
 		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was %s\n", shownID, src(), state)
@@ -1374,6 +1378,21 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0 // unreachable: syscall.Exec replaces this process on success
+}
+
+// projectNotNamedHint is the line a denial for an unnamed private project adds: what the session
+// can do about it. It names no project, because the broker names none — the person asking may be
+// one who may not see it — so it says where the project is to be found instead.
+const projectNotNamedHint = "agent-secrets: this secret belongs to a private project this session does not name; start the session with " +
+	cipherclient.ProjectsVar + " naming that project (its owner, or `agent-secrets secret show NAME` under a credential that reads the store, says which)"
+
+// projectHint writes projectNotNamedHint after a denial whose detail carries
+// policy.ReasonProjectNotNamed, the one reason a session is told for a private project's secret
+// it does not name; any other denial adds nothing.
+func projectHint(stderr io.Writer, detail *string) {
+	if detail != nil && strings.Contains(*detail, policy.ReasonProjectNotNamed) {
+		fmt.Fprintln(stderr, projectNotNamedHint)
+	}
 }
 
 // sessionIdentityVars are the AGENT_SECRETS_* variables the exec form's child keeps: the broker's

@@ -13,7 +13,14 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 
 - A bounded wait is the module's `internal/testwait`.
   `Eventually` is the wait a test usually wants, a minute or the binary's own deadline less a second, at `Poll`, the package's own pace, failing with what it waited for; `WithinPolling` takes a bound and a pace of its own; `Holds` answers rather than fails, for a caller whose failure text is its own diagnostic dump or is built at give-up; and `Bounded` is that deadline clamp alone, for a wait that keeps a loop or a margin of its own, as the idle rig's do.
+  `Receive`, in both modules, waits for one receive from a channel, such as the answer of a call the test started, and sets no span of its own: it gives up 30 s before the binary's deadline, writes why to stderr at once and then fails the test, so a call that waits for ever fails by name, even without `-v`, and a call that is merely slow passes.
+  A row whose verdict is what a call answers, a refusal or a replaced file, waits for it with `Receive`.
   A loop that is not a wait-for keeps its body: one that runs its check for a whole span rather than stopping at the first success, one that sends or serves on a tick, one that drives a stand-in process's own main loop, and one that retries a compare-and-set.
+
+- A fifo that the code under test must replace without opening it for writing is planted with the daemon module's `internal/testfifo`.
+  `Plant(t, path, perm)` makes the fifo and holds a reader on it until the test ends, so an open of it for writing returns at once rather than waiting for a reader, and `OpenedForWriting` answers what that reader was shown: POLLHUP once a writer opened and closed the fifo, POLLIN for bytes it wrote, a writer that holds it open, and nothing otherwise, with no clock.
+  `Plant` first proves, on a scratch fifo of its own, that a held reader sees a writer's open and nothing before it, and fails the test by name on a kernel where it does not.
+  It does not see an open for reading, which shows the reader nothing, and it does not keep a plain open for reading from waiting for a writer: a row whose code must refuse a fifo that it opens keeps the fifo bare and waits for the refusal with `testwait.Receive`.
 
 - A fixture that runs git or jj takes its runner and its `init` argv from `packages/daemon/internal/fixturegit`.
   `Runner` holds the test and the child's whole environment — `Isolated(t, home)` is the usual one — and runs one command four ways: `Run` trimmed, `Raw` untrimmed, `Out` for standard output alone, and `Try` for a caller that keeps the error.
@@ -35,6 +42,18 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://INFRA-3904).
   It holds no listening socket and hands nothing to a child: a process the test starts takes a socket the test holds (`cmdtest.HoldPort` and `Pass`, `DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`, `LEGION_LISTEN_FD`) or binds port 0 and names its port, never a port the test picked and let go of.
 
+- A listener a client dials — a test NATS server, a relay, proxy or fake in front of one — listens on `testport.ListenLoopback()` in `packages/envoy` and on `testnats.ListenLoopback()` in `packages/daemon`: a port the kernel chooses at a loopback address of its own, one of `127.0.0.0/8` chosen at random on Linux (`LoopbackIP`), and `127.0.0.1` elsewhere.
+  A client a test leaves behind keeps dialing its server's address (a bus client reconnects forever), and the kernel or Docker gives a freed port to the next listener that asks, in the same test binary or in another one `go test` runs beside it; on `127.0.0.1` that listener's test takes the stranger's connections for its own.
+  So does every server `packages/envoy/internal/testnats` and `packages/daemon/internal/testnats` start: an in-process server's relay and nats-server's own client, monitoring and route listeners, and a container's published client port (the daemon's containers' monitoring port too), so a leftover client cannot reach it, whichever port it gets.
+  So do the `nats-server` processes `packages/envoy/infra/gcp`'s natslive tests run as the clustered hub's pods: each test's servers listen at one such address (`-a`), with their ports reserved there (`reservePortsOn`).
+  A port another process binds, such as the host side of a port Docker publishes, is chosen by the kernel on that address (`testport.LoopbackPorts`): Docker asked for port 0 picks from its own record of what it has published there, and in envoy-infra-go it picked a port already held. The probe is released before the bind, so a start a taken port refuses (`testport.AddressInUse`) is tried again on a fresh address and port.
+  Four listeners stay where they were, each for its own reason.
+  `internal/testnats/cmd/natsd`, the standalone server of the scripts and the TypeScript stacks, stays on `127.0.0.1`: no Go test runs it.
+  `internal/smoke`'s NATS container keeps Docker's default binding: envoy-smoke runs that binary alone on its runner, and its one client, the listener container, reaches it over the Docker network.
+  `infra/core`'s `nats_monitor_test.go` server keeps the address its start script binds, which is what that test checks.
+  `infra/host/heldportwrapper`'s test address accepts no connection, so a stranger changes nothing it checks.
+  A test still closes every client it opens before its server, and registers the close as soon as the connect succeeds, so a setup that fails closes it too: `cmd/listener`'s `setupTestNATS` left ten tests' bus clients dialing for minutes after their tests had ended, and they reached the test servers of other packages' binaries.
+
 - A test that a command line keeps the rules of a cobra command line takes `packages/envoy/clitest`, one body for both modules: `packages/daemon` can import it through its `replace` of `packages/envoy`, and it imports the standard library alone.
   `Conformance` runs the built binary, of any framework, and checks help on every command; a typo, an unknown flag at the root and on each command, an unknown shell for `completion` and an unknown topic for `help` that each exit 2, print the word they refuse, are no Go runtime crash and make no contact with its `Recorder`; a flag read after a positional; the completion script of each shell; and `__complete`.
   The package documentation is the whole list and the rule each check holds.
@@ -46,7 +65,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 `bun test` runs every file of a package in one process, so what one file leaves behind is what the
 next file reads: a directory, an environment variable, a port, a container, a cache. These rules are
 how a file leaves nothing behind. `@legion/test-fixtures` holds the shared pieces, and nine
-packages depend on it: broker-client, claude-envoy, contracts, dispatch, envoy-client, pi-envoy,
+packages depend on it: cipher-client, claude-envoy, contracts, dispatch, envoy-client, pi-envoy,
 pi-legion, pi-shared and proof-editor. The one Bun package that does not is the fixture package
 itself, whose tests import its sources by relative path.
 
@@ -256,6 +275,15 @@ and each command runs there.
   a report of every row that failed, with how many of its runs failed, its seed and the command
   that runs it again, and of every failure that belongs to no row.
   `.github/workflows/dispatch-unit-repeat.yaml` runs it weekly, each lane under three seeds.
+
+- A rerun of a file keeps every module the run before loaded, so a module-level store or cache
+  keeps what that run left in it. Where a row needs such state empty, the module exports a reset and
+  the preload (`web/src/__tests__/setup.ts`) runs it after each row (`resetRowReferenceReadings`,
+  for the readings and key-list ids `row-references.ts` keeps, runs before each row too). State a
+  module keeps across rows on purpose stays, such as the loaded Markdown engine
+  (`markdown-engine.ts`). Without that reset, `row-references.test.ts` fails on a rerun: a row that
+  counts readings finds texts read, or ids of lists of keys given, by rows that ran before it, and
+  counts fewer reads than it expects.
 
 - `bun run test:web:cold` is `test:web` with `web/src/__tests__/hold-lazy-loads.ts` added last to
   its preloads. That file registers its plugin in its `beforeAll`, where the test file's rows
@@ -627,6 +655,13 @@ pods, a write blocked for a third of a second completed the moment the page sent
 `TestARepeatedSubReplacesAnotherKind` then waited for a queued frame the writer had already
 written, and failed 8 of 300 runs. Those two helpers are for tests of a slow page itself, such as
 one whose queue overflows.
+
+## A fake HTTP server whose client gives up on requests
+
+A fake `httptest` server whose handler fails the test on a request body it cannot read stops with `Shutdown` before `Close` when its client sends requests the test does not wait for, as the Cloud SQL connector does when it gives up on a refresh.
+With `Close` alone, the stop can close a connection whose request headers the server has read but whose handler has not started: the handler then runs on the closed connection, reads the body as `use of closed network connection`, and fails the test for nothing the code under test did, as `TestTheWriterTokenFileIsReadAgainAtEachExchange` failed in CI's daemon-go (job 136636895793).
+`stopServing` in `packages/daemon/internal/sessionproxy/connector_test.go` is that stop, and its comment says why it calls `Shutdown` before `Close` and where net/http checks Shutdown's mark; `TestStopServingRunsNoHandlerOnAConnectionItCloses` beside it fails with `Close` alone.
+A fake whose handler fails the test on every request keeps `Close` alone, so a request whose headers the server has read by then still fails the test.
 
 ## A test that starts jj or git names a working directory
 

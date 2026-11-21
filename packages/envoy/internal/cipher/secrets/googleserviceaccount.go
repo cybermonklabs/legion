@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -16,22 +17,23 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
-// googleIAMCredentialsURL is the IAM Service Account Credentials API, which mints an access token
-// for a service account the caller may impersonate.
-const googleIAMCredentialsURL = "https://iamcredentials.googleapis.com"
+// GoogleIAMCredentialsURL is the IAM Service Account Credentials API, which mints an access token
+// for a service account the caller may impersonate: this minter's endpoint, and the group
+// reader's for its reader account's token (groups.NewTokenSource).
+const GoogleIAMCredentialsURL = "https://iamcredentials.googleapis.com"
 
-// googleCloudPlatformScope is the scope the broker holds its own credential at (ownSource) and
-// the one a secret that names no scopes mints with: the type exists so a person's own machine
-// acts as a service account of their fleet, and that account's IAM roles, not a narrower scope,
-// are what bound it. A secret whose scopes tag names scopes asks Google for those instead
-// (MintRequest.GoogleScopes), which is a token narrower than the account's own roles, never a
-// wider one.
-const googleCloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
+// GoogleCloudPlatformScope is the scope the broker holds its own credential at
+// (OwnGoogleCredential) and the one a secret that names no scopes mints with: the type exists so a
+// person's own machine acts as a service account of their fleet, and that account's IAM roles, not
+// a narrower scope, are what bound it. A secret whose scopes tag names scopes asks Google for those
+// instead (MintRequest.GoogleScopes), which is a token narrower than the account's own roles,
+// never a wider one.
+const GoogleCloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
 
-// googleServiceAccountLifetime is every generateAccessToken request's lifetime, fixed at Google's
-// own maximum for a default-configured project, one hour: MintRequest carries no lifetime
-// (see GoogleServiceAccount).
-const googleServiceAccountLifetime = "3600s"
+// GoogleAccessTokenLifetime is every generateAccessToken request's lifetime, fixed at Google's
+// own maximum for a default-configured project, one hour: MintRequest carries no lifetime (see
+// GoogleServiceAccount), and the group reader's token is minted again as it ends.
+const GoogleAccessTokenLifetime = "3600s"
 
 // googleServiceAccountEmail is one service account of a project, the only value this type mints
 // from: 6 to 30 of lowercase letters, digits and hyphens, then the project and the fixed
@@ -92,53 +94,108 @@ type GoogleServiceAccount struct {
 	// credential's token (Source) is not this minter's call and is not retried here.
 	Retry *Retry
 
-	// mu guards resolved: two releases can mint at once, and only one of them resolves.
-	mu sync.Mutex
-	// resolved is the application default credentials as the first mint that needed them found
-	// them. It is kept so no later mint re-reads the credentials and takes a token round trip of
-	// its own, and it is written only once a resolution has succeeded, so a transient failure to
-	// find them never becomes permanent.
-	resolved oauth2.TokenSource
+	// own is the application default credentials, found by the first mint that needs them and
+	// kept for the rest (OwnGoogleCredential), when Source is nil.
+	own OwnGoogleCredential
+}
+
+// OwnGoogleCredential is the broker's own Google credential: the application default
+// credentials at the cloud-platform scope, in production the pod's Workload Identity. They are
+// found on the first call that needs them and kept once found, so no later call re-reads them and
+// takes a token round trip of its own, and a transient failure to find them never becomes
+// permanent; nothing is resolved when the holder is built, so a broker that never mints looks for
+// none. The google-service-account minter impersonates with it, and the group reader mints its
+// reader account's token with it (groups.TokenOptions.Default). Its Token makes it an
+// oauth2.TokenSource. A zero value is ready; it is used by pointer, since it keeps what it found.
+type OwnGoogleCredential struct {
+	mu     sync.Mutex
+	source oauth2.TokenSource
+}
+
+// errNoOwnCredential is a broker that found no Google credentials of its own. Their own error
+// names the file or metadata server they tried, so it is dropped.
+var errNoOwnCredential = errors.New("the broker found no Google credentials of its own")
+
+// Source is the credentials' token source, found on the first call. They are found with a
+// context detached from ctx's cancellation (its values are kept): x/oauth2's refresher holds on
+// to the context its source was built with, so a source built from one request's context would
+// fail every refresh once that request ended.
+func (c *OwnGoogleCredential) Source(ctx context.Context) (oauth2.TokenSource, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.source != nil {
+		return c.source, nil
+	}
+	source, err := google.DefaultTokenSource(context.WithoutCancel(ctx), GoogleCloudPlatformScope)
+	if err != nil {
+		return nil, errNoOwnCredential
+	}
+	c.source = source
+	return source, nil
+}
+
+// Token is the credentials' token, for a caller that holds no context. A token source's error
+// can quote the credential it read, so only its class is answered.
+func (c *OwnGoogleCredential) Token() (*oauth2.Token, error) {
+	source, err := c.Source(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	token, err := source.Token()
+	if err != nil {
+		return nil, errors.New("the broker's own Google credentials gave no token")
+	}
+	return token, nil
 }
 
 // ownSource is the broker's own credential for one mint: Source whenever a caller set one, and
-// otherwise the application default credentials, resolved by the first mint that needs them and
-// kept for the rest. Its refusal is ErrMintUpstream, word for word what resolving inline
-// answered.
+// otherwise the application default credentials (OwnGoogleCredential). Its refusal is
+// ErrMintUpstream.
 func (m *GoogleServiceAccount) ownSource(ctx context.Context) (oauth2.TokenSource, error) {
 	if m.Source != nil {
 		return m.Source, nil
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.resolved != nil {
-		return m.resolved, nil
-	}
-	// The default credentials are found with a context detached from the request's cancellation
-	// (its values are kept): x/oauth2's refresher holds on to the context its source was built
-	// with, so a source built from one request's context would fail every refresh once that
-	// request ended. Their error is dropped: it names the file or metadata server it tried.
-	source, err := google.DefaultTokenSource(context.WithoutCancel(ctx), googleCloudPlatformScope)
+	source, err := m.own.Source(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("%w: the broker found no Google credentials of its own", ErrMintUpstream)
+		return nil, fmt.Errorf("%w: %w", ErrMintUpstream, err)
 	}
-	m.resolved = source
 	return source, nil
 }
 
-type googleServiceAccountToken struct {
+// GenerateAccessTokenAnswer is IAM's generateAccessToken answer, which this minter and the group
+// reader both read.
+type GenerateAccessTokenAnswer struct {
 	AccessToken string `json:"accessToken"`
 	// ExpireTime is RFC 3339, as Google's generateAccessToken answers it.
 	ExpireTime string `json:"expireTime"`
 }
 
-// googleServiceAccountRequest is one generateAccessToken body: the scopes the token carries and
-// its lifetime. It is marshalled per mint rather than concatenated into a string, because Scope
-// comes from the secret's scopes tag and a value that held a quote or a backslash would
-// otherwise break the JSON instead of being refused by Google.
-type googleServiceAccountRequest struct {
+// GenerateAccessTokenRequest is one generateAccessToken body: the scopes the token carries and its
+// lifetime. It is marshalled per call rather than concatenated into a string, because Scope can
+// come from a secret's scopes tag, and a value that held a quote or a backslash would otherwise
+// break the JSON instead of being refused by Google.
+type GenerateAccessTokenRequest struct {
 	Scope    []string `json:"scope"`
 	Lifetime string   `json:"lifetime"`
+}
+
+// boundAccount is the one account the deployment binds to the secret name (accounts, the
+// deployment's BROKER_SERVICE_ACCOUNT_SECRETS) when stored, the account the secret's stored value
+// names, is that same account; otherwise it is ErrMintNotBound. It is weighed before the broker's
+// own credential is resolved and before any call is made: whoever may create a secret may store
+// any account in it, and the broker may mint for every account it is bound to, so the binding, not
+// the stored value, chooses the account. The bound account is safe to name in an error, since an
+// operator reads it to fix the setting; the stored value is not. The google-service-account and
+// anthropic-federation minters both hold their secrets to it.
+func boundAccount(accounts map[string]string, name, stored string) (string, error) {
+	bound, ok := accounts[name]
+	if !ok {
+		return "", fmt.Errorf("%w: secret %s: the deployment binds no Google service account to it", ErrMintNotBound, name)
+	}
+	if bound != stored {
+		return "", fmt.Errorf("%w: secret %s: the deployment binds it to %s, which its stored value does not name", ErrMintNotBound, name, bound)
+	}
+	return bound, nil
 }
 
 // Mint returns the bare Google access token for the account the deployment binds to the secret
@@ -162,17 +219,8 @@ func (m *GoogleServiceAccount) Mint(ctx context.Context, req MintRequest) (Minte
 		return Minted{}, err
 	}
 	secret := parsed.GoogleServiceAccount
-	// The binding is checked before the broker's own credential is resolved and before any call
-	// is made: whoever may create a secret may store any account in it, and the broker holds
-	// Token Creator on every account it is bound to, so the deployment's binding, not the stored
-	// value, is what chooses the account. The bound account is safe to name in an error, since
-	// an operator reads it to fix BROKER_SERVICE_ACCOUNT_SECRETS; the stored value is not.
-	bound, ok := m.Accounts[req.Name]
-	if !ok {
-		return Minted{}, fmt.Errorf("%w: secret %s: the deployment binds no Google service account to it", ErrMintNotBound, req.Name)
-	}
-	if bound != secret.ServiceAccount {
-		return Minted{}, fmt.Errorf("%w: secret %s: the deployment binds it to %s, which its stored value does not name", ErrMintNotBound, req.Name, bound)
+	if _, err := boundAccount(m.Accounts, req.Name, secret.ServiceAccount); err != nil {
+		return Minted{}, err
 	}
 	source, err := m.ownSource(ctx)
 	if err != nil {
@@ -188,7 +236,7 @@ func (m *GoogleServiceAccount) Mint(ctx context.Context, req MintRequest) (Minte
 	// %3AgenerateAccessToken as a resource name of its own and answers 404, never a token. The
 	// escaping is what keeps a stored value from reaching a different resource; the pattern above
 	// already admits no slash, so the two agree.
-	endpoint := cmp.Or(m.BaseURL, googleIAMCredentialsURL) +
+	endpoint := cmp.Or(m.BaseURL, GoogleIAMCredentialsURL) +
 		"/v1/projects/-/serviceAccounts/" + url.PathEscape(secret.ServiceAccount) + ":generateAccessToken"
 	// A secret that names no scopes mints at cloud-platform, as every token of this type did
 	// before the scopes tag existed: an empty scope list is not a token with no scope, it is a
@@ -196,9 +244,9 @@ func (m *GoogleServiceAccount) Mint(ctx context.Context, req MintRequest) (Minte
 	// so its error is dropped.
 	scopes := req.GoogleScopes
 	if len(scopes) == 0 {
-		scopes = []string{googleCloudPlatformScope}
+		scopes = []string{GoogleCloudPlatformScope}
 	}
-	body, _ := json.Marshal(googleServiceAccountRequest{Scope: scopes, Lifetime: googleServiceAccountLifetime})
+	body, _ := json.Marshal(GenerateAccessTokenRequest{Scope: scopes, Lifetime: GoogleAccessTokenLifetime})
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return Minted{}, fmt.Errorf("%w: create Google service account token request: %w", ErrMintUpstream, err)
@@ -209,7 +257,7 @@ func (m *GoogleServiceAccount) Mint(ctx context.Context, req MintRequest) (Minte
 	if err != nil {
 		return Minted{}, err
 	}
-	var token googleServiceAccountToken
+	var token GenerateAccessTokenAnswer
 	if json.Unmarshal(payload, &token) != nil {
 		return Minted{}, fmt.Errorf("%w: decode Google service account token response: not a JSON object of its fields", ErrMintUpstream)
 	}
