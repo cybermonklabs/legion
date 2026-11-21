@@ -586,15 +586,17 @@ func UnderJudgeDispatch(ctx context.Context) bool {
 // them with the rune that parts it from the next ("AB-1 "), so a stored reason names at most 80
 // projects. They are asked MaySeeAtOnce at a time, and the first answer that hides the row ends
 // the questions not yet answered, since nothing they answer could show it. Within one list each
-// question is asked once however many rows ask it, and the list as a whole asks Dispatch at most
-// MaySeeAtOnce questions at a time (withAccessMemo). Every project is asked whatever ctx's state,
-// so once ctx has ended a project the list or the client already holds an answer for is still
-// answered, and only a question Dispatch would have to be asked now fails. The answer is
-// deterministic whatever order the questions end in (maySeeAnswer): false when any project hides
-// the row; else ErrProjectAccessUnavailable, with the failure of the first project in sorted order
-// that Dispatch did not answer for, when any did not, a project no read answered being one; else
-// true. So a project Dispatch could not be asked about hides the row it is named by, failing
-// closed, and never shows it.
+// question is asked once however many rows ask it, a question a row asked before a project hid it
+// included, and the list as a whole asks Dispatch at most MaySeeAtOnce questions at a time
+// (withAccessMemo, access). Every project is asked whatever ctx's state, so once ctx has ended a
+// project the list or the client already holds an answer for is still answered, and only a
+// question Dispatch would have to be asked now fails. The answer is deterministic whatever order
+// the questions end in (maySeeAnswer): false when any project hides the row; else
+// ErrProjectAccessUnavailable, with the failure of the first project in sorted order that Dispatch
+// did not answer for, when any did not, a project no read answered being one; else true. So a
+// project Dispatch could not be asked about hides the row it is named by, failing closed, and
+// never shows it. A question that panics is that project's failure (recoverRead), so the row fails
+// closed in the same way.
 func (m *Machine) maySee(ctx context.Context, login string, projects []string, reason string) (bool, time.Time, error) {
 	if m.Projects == nil {
 		return true, time.Time{}, nil
@@ -619,6 +621,7 @@ func (m *Machine) maySee(ctx context.Context, login string, projects []string, r
 		go func() {
 			defer wg.Done()
 			defer func() { <-slots }()
+			defer recoverRead(&seens[i].err)
 			answer, err := m.access(ctx, project, person)
 			var missing *projectaccess.ProjectNotFoundError
 			switch {
@@ -692,9 +695,13 @@ type accessMemoKey struct{}
 // maySee's project reads alone, the questions a stored reason's 80 projects multiply. The client's
 // own cache (projectaccess.CacheTTL) answers a question asked again too, but keeps no answer once
 // it holds 4,096, which about 50 readers of one row naming 80 projects fill; this holds every
-// answer of the list for the list's own life, and no longer. slots holds the list to MaySeeAtOnce
-// questions of Dispatch at a time, whichever of its rows ask them.
+// answer of the list for the list's own life, and no longer. list is the list's clock, which every
+// question the memo asks runs on (start). slots holds the list to MaySeeAtOnce questions of
+// Dispatch at a time, whichever of its rows ask them: a slot is held only while a question is in
+// flight, and a row waiting on another row's question holds none, so a project Dispatch does not
+// answer holds one slot however many rows name it, and costs the list only those rows.
 type accessMemo struct {
+	list    context.Context
 	mu      sync.Mutex
 	entries map[accessMemoQuestion]*accessMemoEntry
 	slots   chan struct{}
@@ -703,8 +710,9 @@ type accessMemo struct {
 type accessMemoQuestion struct{ project, person string }
 
 // accessMemoEntry is one question's answer, written once by the read that asks it and read by
-// every other once done is closed. cut is a read that failed once its own context had ended: its
-// error is that read's, never another row's answer, so the next read asks again.
+// every other once done is closed. cut is a read that failed once its context had ended, the
+// list's clock or, for a read that started on an ended context, its own: its error is that read's,
+// never another row's answer, so the next read asks again.
 type accessMemoEntry struct {
 	done   chan struct{}
 	answer projectaccess.Answer
@@ -712,18 +720,22 @@ type accessMemoEntry struct {
 	cut    bool
 }
 
-// withAccessMemo is ctx carrying a memo of its own for maySee's questions (access): the pending
-// list and the grant list each read their rows under one.
+// withAccessMemo is ctx carrying a memo of its own for maySee's questions (access), whose questions
+// run on ctx, the list's clock: the pending list and the grant list each read their rows under
+// one, made on the clock of the reader's own rows (listOwnRowsBound).
 func withAccessMemo(ctx context.Context) context.Context {
-	return context.WithValue(ctx, accessMemoKey{}, &accessMemo{entries: map[accessMemoQuestion]*accessMemoEntry{}, slots: make(chan struct{}, MaySeeAtOnce)})
+	return context.WithValue(ctx, accessMemoKey{}, &accessMemo{list: ctx, entries: map[accessMemoQuestion]*accessMemoEntry{}, slots: make(chan struct{}, MaySeeAtOnce)})
 }
 
 // access is m.Projects.Access, answered from ctx's memo where it holds the question, and kept
-// there once asked. A question a read is already asking is waited for rather than asked twice. A
-// kept answer older than projectaccess.CacheTTL is asked again, as is one a read's own context cut
-// short, so atDecision's second collection reads afresh exactly what aged; a kept failure stands
-// for the list, so a project Dispatch could not answer for leaves off every row naming it at the
-// cost of one read, and no other row.
+// there once asked. A question a read is already asking is waited for rather than asked twice.
+// The read that asks a question first starts it on the list's clock rather than on ctx (start),
+// and waits for it as every other read does, so a row whose context ends, because a project hid
+// it or its own clock ran out, ends its own wait and no question another row waits on: each
+// question is asked once for the list. A kept answer older than projectaccess.CacheTTL is asked
+// again, as is one cut short (accessMemoEntry.cut), so atDecision's second collection reads afresh
+// exactly what aged; a kept failure stands for the list, so a project Dispatch could not answer
+// for leaves off every row naming it at the cost of one read, and no other row.
 func (m *Machine) access(ctx context.Context, project, person string) (projectaccess.Answer, error) {
 	memo, _ := ctx.Value(accessMemoKey{}).(*accessMemo)
 	if memo == nil {
@@ -737,21 +749,20 @@ func (m *Machine) access(ctx context.Context, project, person string) (projectac
 			entry = &accessMemoEntry{done: make(chan struct{})}
 			memo.entries[question] = entry
 			memo.mu.Unlock()
-			entry.answer, entry.err = memo.ask(ctx, m.Projects, project, person)
-			entry.cut = entry.err != nil && ctx.Err() != nil
-			close(entry.done)
+			if !memo.start(ctx, m.Projects, question, entry) {
+				// ctx ended before the question took a slot: a read on it answers only from the
+				// client's cache, or fails at once, and asks Dispatch nothing.
+				entry.settle(func() (projectaccess.Answer, error) { return m.Projects.Access(ctx, project, person) }, func(err error) bool { return err != nil })
+				return entry.answer, entry.err
+			}
+			if !entry.wait(ctx) {
+				return projectaccess.Answer{}, ctx.Err()
+			}
 			return entry.answer, entry.err
 		}
 		memo.mu.Unlock()
-		// An answer already in is taken whatever ctx's state.
-		select {
-		case <-entry.done:
-		default:
-			select {
-			case <-entry.done:
-			case <-ctx.Done():
-				return projectaccess.Answer{}, ctx.Err()
-			}
+		if !entry.wait(ctx) {
+			return projectaccess.Answer{}, ctx.Err()
 		}
 		if !entry.cut && !projectaccess.Stale(m.Projects, answeredAt(entry.answer, entry.err)) {
 			return entry.answer, entry.err
@@ -764,10 +775,66 @@ func (m *Machine) access(ctx context.Context, project, person string) (projectac
 	}
 }
 
-// ask is a.Access within the list's MaySeeAtOnce (slot).
-func (memo *accessMemo) ask(ctx context.Context, a projectaccess.Access, project, person string) (projectaccess.Answer, error) {
-	defer memo.slot(ctx)()
-	return a.Access(ctx, project, person)
+// start asks question, once it holds one of the list's MaySeeAtOnce slots, in a goroutine of its
+// own that gives the slot back once the answer is in, and answers whether it did. The question
+// carries ctx's values, projectaccess.Fresh's mark among them, and ends with the list's clock
+// (memo.list), at its deadline or when the list's caller goes away, and never with ctx alone. A
+// ctx that has ended takes no slot and starts nothing.
+func (memo *accessMemo) start(ctx context.Context, a projectaccess.Access, question accessMemoQuestion, entry *accessMemoEntry) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	select {
+	case memo.slots <- struct{}{}:
+	case <-ctx.Done():
+		return false
+	}
+	asking, cancel := memo.onList(ctx)
+	go func() {
+		defer func() { <-memo.slots }()
+		defer cancel()
+		entry.settle(func() (projectaccess.Answer, error) { return a.Access(asking, question.project, question.person) }, func(err error) bool { return err != nil && asking.Err() != nil })
+	}()
+	return true
+}
+
+// onList is a context carrying ctx's values that ends when the list's clock does (memo.list): at
+// its deadline, or when the list's caller goes away. ctx's own end, or its cancel, ends it not.
+func (memo *accessMemo) onList(ctx context.Context) (context.Context, context.CancelFunc) {
+	asking, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stop := context.AfterFunc(memo.list, cancel)
+	if end, ok := memo.list.Deadline(); ok {
+		var cancelAt context.CancelFunc
+		asking, cancelAt = context.WithDeadline(asking, end)
+		return asking, func() { stop(); cancelAt(); cancel() }
+	}
+	return asking, func() { stop(); cancel() }
+}
+
+// settle writes entry's answer from ask, cut when cut says its error is, and closes done however
+// ask ends: a panic in ask is the entry's error (recoverRead), so every row waiting on it fails
+// closed at once rather than waiting out its clock.
+func (entry *accessMemoEntry) settle(ask func() (projectaccess.Answer, error), cut func(error) bool) {
+	defer close(entry.done)
+	defer recoverRead(&entry.err)
+	entry.answer, entry.err = ask()
+	entry.cut = cut(entry.err)
+}
+
+// wait reports whether entry's answer is in, waiting for it while ctx lasts. An answer already in
+// is taken whatever ctx's state.
+func (entry *accessMemoEntry) wait(ctx context.Context) bool {
+	select {
+	case <-entry.done:
+		return true
+	default:
+	}
+	select {
+	case <-entry.done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // slot takes one of the list's MaySeeAtOnce questions of Dispatch, waiting while ctx lasts, and

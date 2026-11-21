@@ -727,9 +727,10 @@ broker without `BROKER_PROJECT_ACCESS_URL` reads no reason's projects and takes 
 request made before that rule, or by a broker without the setting, whose reason names more is
 read whole: each project its keys name is asked, at most 80 in a reason of 400 characters, and a
 private one among them hides it as any other does. A request's projects are asked 16 at a time,
-and a list asks each project once for each person however many of its requests name it, so a
-reason of 80 projects costs a list five rounds of questions: half a second while Dispatch takes
-100 ms an answer, inside the 5 seconds Dispatch waits for the list. The broker keeps at most
+and a list asks each project once for each person however many of its requests name it, even
+when the request that asked first is hidden by another of its projects before the answer comes,
+so a reason of 80 projects costs a list five rounds of questions: half a second while Dispatch
+takes 100 ms an answer, inside the 5 seconds Dispatch waits for the list. The broker keeps at most
 4,096 answers at once and keeps no new one past that, so many people reading many such requests
 can leave their answers unkept, and each of their lists then asks again. While Dispatch cannot
 answer, a request it must ask about is left out of the pending list, and a grant it must ask
@@ -737,10 +738,15 @@ about out of the grant list of everyone but that grant's approver and its sessio
 who still list it and may end it whatever project it touches, each with a line in the broker's
 log naming its record; its page answers 503 and shows only its record id, and an approval of it
 decides nothing. A list gives the requests it must ask Dispatch about at most 3 seconds from the
-moment it reads them, inside the 5 seconds Dispatch waits for it, and asks for each request
-waiting on its reader, and each grant, at once: a request whose answers have not come by then is
-left out of that list and logged the same way, so a project Dispatch is slow to answer, or never
-answers, costs a list only the requests that name it. Every other request is listed and decided
+moment it reads them, inside the 5 seconds Dispatch waits for it, and reads up to 64 of the
+requests waiting on its reader, and of its grants, at once, asking Dispatch at most 16 questions
+at once: a request whose answers have not come by then is left out of that list and logged the
+same way. A request waiting on a question another request asked takes none of those 16, so a
+project Dispatch is slow to answer, or never answers, costs a list only the requests that name
+it, unless they are the first 64 it reads: the requests after those start only once the 3 seconds
+have run out, and are listed only where the broker already holds their answers. A read of a
+request that fails in the broker itself leaves that request out in the same way, with an error
+line naming it, and the list goes on. Every other request is listed and decided
 as before. A decision reads the projects of both credentials a request has had:
 the one that asked, which the lists and the page read, and the one it hangs off now, which a
 session that moved to another box makes it; a person either would hide it from does not decide
