@@ -22,7 +22,8 @@ import (
 // two events on every one of them, 20 priorities and 400 `advances` relations, one chain as deep
 // as the parent-depth cap, and the cap of 20 relations on one issue. Written through the routes
 // it would be some 8,000 requests and the minutes they cost, which is time the measurement would
-// then be taken against.
+// then be taken against. One VACUUM (ANALYZE) follows the five (settleSpeedCorpus), so every read
+// is planned from the corpus's own statistics.
 //
 // Twenty priorities rather than the sixteen the work is spread over: one issue carries the most
 // relations a write allows (contracts.MaxIssueAdvances, 20), and an issue cannot hold twenty
@@ -156,12 +157,27 @@ func seedSpeedCorpus(t *testing.T) speedCorpusShape {
 	copySeededRows(t, database, "priority_nodes", seededNodeColumns, priorities)
 	copySeededRows(t, database, "priority_tuples", seededTupleColumns, tuples)
 	assertSpeedCorpus(t, database)
+	settleSpeedCorpus(t, database)
 
 	handler, _, _, srv := newRegisteredTestServer(t, testServerOptions{store: database})
 	return speedCorpusShape{handler: handler, server: srv, heaviest: heaviest, chain: chain}
 }
 
-// assertSpeedCorpus holds the corpus to its own counts before anything is timed: a measurement
+// settleSpeedCorpus leaves the corpus as a deployment's database stands between writes: every
+// table vacuumed and analyzed, which autovacuum does for a deployment some time after its writes.
+// Left to autovacuum here, each read runs the plan Postgres makes from no statistics until
+// autovacuum reaches this database, and when that is depends on how busy the server is: a reading
+// taken before it and one taken after are readings of two different plans. With the corpus's few
+// thousand rows, ANALYZE reads every row rather than a sample, so the statistics, and the plans
+// made from them, are the same on every run.
+func settleSpeedCorpus(t *testing.T, database *store.Store) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), "vacuum (analyze)"); err != nil {
+		t.Fatalf("vacuum and analyze the corpus: %v", err)
+	}
+}
+
+// assertSpeedCorpus holds the corpus to its own counts before anything is measured: a measurement
 // over a corpus that landed short is a measurement of a corpus nobody meant to build.
 func assertSpeedCorpus(t *testing.T, database *store.Store) {
 	t.Helper()

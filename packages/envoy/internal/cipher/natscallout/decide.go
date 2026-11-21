@@ -9,7 +9,8 @@
 // user "service" (natscred.ServiceUser) and its platform identity token as the password: a
 // projected Kubernetes ServiceAccount token or a VM's Google identity token, which the broker
 // already verifies for its own callers; it is answered with its kind's grant, for the account
-// BROKER_NATS_SERVICES lists it under (ParseServices). Every other connection is refused.
+// BROKER_NATS_SERVICES lists it under (config.ParseNATSServices). Every other connection is
+// refused.
 //
 // The service runs inside the secrets broker (cmd/cipherd), whose replicas each subscribe the
 // authorization subject in one queue group, so a stopped replica delays no connection.
@@ -22,6 +23,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
@@ -150,15 +152,15 @@ func credentialKind(req Request) string {
 }
 
 // serviceGrant is entry's kind's grant, before it is held to the entry's projects.
-func serviceGrant(entry ServiceEntry) natsgrant.Permissions {
+func serviceGrant(entry config.NATSService) natsgrant.Permissions {
 	switch entry.Kind {
-	case KindDispatch:
+	case config.NATSDispatch:
 		return natsgrant.Dispatch(entry.MachineID)
-	case KindListener:
+	case config.NATSListener:
 		return natsgrant.Listener(entry.MachineID)
-	case KindDaemon:
+	case config.NATSDaemon:
 		return natsgrant.Daemon()
-	case KindMeasure:
+	case config.NATSMeasure:
 		return natsgrant.Measure()
 	}
 	return natsgrant.Permissions{}
@@ -170,7 +172,7 @@ func serviceGrant(entry ServiceEntry) natsgrant.Permissions {
 // platform token verifies and lives no longer than a token login may (an hour, beside the proof
 // clock skew) and its account is listed in services. The grant it answers is not yet checked:
 // every answer passes the guard in admit (callout.go), whatever decided it.
-func Decide(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+func Decide(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
 	switch credentialKind(req) {
 	case credentialSession:
 		return decideSession(ctx, deps, req)
@@ -250,7 +252,7 @@ func decideSession(ctx context.Context, deps Deps, req Request) (Decision, error
 // broker's API already holds its listed callers to.
 const longestServiceToken = machine.MaxTokenLoginLifetime + ciphertoken.ProofClockSkew
 
-func decideService(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+func decideService(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
 	account, google, issued, expiry, err := deps.ServiceToken(ctx, req.Password)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -267,7 +269,7 @@ func decideService(ctx context.Context, deps Deps, services []ServiceEntry, req 
 	if !expiry.After(deps.now()) {
 		return Decision{}, refuse(labelTokenNotLive, "token not live")
 	}
-	var entry *ServiceEntry
+	var entry *config.NATSService
 	for index := range services {
 		if services[index].Account == account && services[index].Google == google {
 			entry = &services[index]
@@ -281,5 +283,5 @@ func decideService(ctx context.Context, deps Deps, services []ServiceEntry, req 
 	if err != nil {
 		return Decision{}, err
 	}
-	return Decision{Name: entry.name(), Grant: grant, Expires: expiry}, nil
+	return Decision{Name: entry.Name(), Grant: grant, Expires: expiry}, nil
 }

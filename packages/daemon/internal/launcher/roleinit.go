@@ -328,6 +328,21 @@ const roleStatusFD = 3
 // before this wait begins, and only the generation's own teardown spends it.
 const roleNamespaceDrain = 2 * time.Second
 
+// roleDrainBound is the bound runRoleShim's wait takes: roleNamespaceDrain, which nothing of the
+// product changes. It is a variable for role-init's test helper alone (TestRoleInitHelper), whose
+// drain row sets a bound no stall of its own rig reaches: under load the row's descendant can
+// take longer than two seconds to run the trap the row reads.
+var roleDrainBound = roleNamespaceDrain
+
+// roleDrainEmptied and roleDrainBounded begin the line role-init logs when its wait over a role's
+// namespace ends (runRoleShim): the role's processes left on its SIGTERM, or the bound,
+// roleDrainBound, came first and the kill ends what is left. Each line goes on with the span
+// of the wait as role-init's own clock read it.
+const (
+	roleDrainEmptied = "the role's namespace emptied"
+	roleDrainBounded = "the role's processes still ran"
+)
+
 // RoleInitSetupFailedExit is the exit status `legion launcher role-init` uses for one thing alone:
 // it failed before it started the shim, setting up the role's namespaces or starting the shim
 // itself. Every other end of role-init is told apart from it: once the shim started, role-init

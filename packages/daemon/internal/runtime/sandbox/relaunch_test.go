@@ -554,7 +554,7 @@ func TestALaunchReplacesASandboxOfTheOtherDiskShape(t *testing.T) {
 			loc := g.spawn(workerSpec(t))
 			old := g.sandbox(name).UID
 			r2 := restartedOver(t, g, loc, tc.now)
-			if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) == 0 {
+			if drifted := driftOf(t, g, r2, loc); len(drifted) == 0 {
 				t.Fatal("PodDrift of the issue pod is empty, so this case proves nothing: its round is what ends it")
 			}
 			g.clearActions()

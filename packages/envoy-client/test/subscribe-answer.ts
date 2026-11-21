@@ -28,3 +28,23 @@ export function consumerDelivery(
     gap: options.gap ?? false,
   };
 }
+
+/** The reasons an edge listener refuses a registration for topics of no project of the session's
+ *  token, and the words it gives each. */
+const PROJECT_REFUSAL_ERRORS = {
+  topic_not_in_project: "no project",
+  repository_not_in_project:
+    "the edge serves the GitHub events of its projects' repositories alone",
+} as const;
+
+/**
+ * The body of an edge listener's 403 for a registration that names topics of no project of the
+ * session's token: `reason`, and each topic it refused as the registration carried it
+ * (`EnvoyApiError.refused`), which the client drops (`registerWithRelay`).
+ */
+export function projectRefusal(
+  refused: readonly string[],
+  reason: keyof typeof PROJECT_REFUSAL_ERRORS = "repository_not_in_project"
+): { readonly error: string; readonly reason: string; readonly refused: readonly string[] } {
+  return { error: PROJECT_REFUSAL_ERRORS[reason], reason, refused };
+}

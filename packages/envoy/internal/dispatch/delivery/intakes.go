@@ -50,20 +50,12 @@ func ReserveIntakeLeases(callers *store.LeaseCallers) (IntakeLeases, error) {
 	return IntakeLeases{events: events, jobs: jobs}, nil
 }
 
-// reserveDurableLeases reserves one durable's three callers and returns the lease pool they all
-// take their connections from.
+// reserveDurableLeases reserves one durable's three callers (store.LeaseCallers.ForAll) and
+// returns the lease pool they all take their connections from.
 func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLeases, error) {
-	var leases intakeLeases
-	for _, caller := range []string{
-		consumerLease(durable),
-		intakeHoldName(durable),
-		intakeHoldName(durable) + " renewal",
-	} {
-		reserved, err := callers.For(caller)
-		if err != nil {
-			return nil, fmt.Errorf("reserve the lease pool for %s: %w", caller, err)
-		}
-		leases = reserved
+	leases, err := callers.ForAll(consumerLease(durable), intakeHoldName(durable), intakeHoldName(durable)+" renewal")
+	if err != nil {
+		return nil, err
 	}
 	return leases, nil
 }

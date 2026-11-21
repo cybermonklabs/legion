@@ -1,50 +1,37 @@
-import type { RelayHeaders } from "@legion/envoy-client/consumer-delivery"
 import { DedupeIdentitySchema } from "@legion/envoy-client/delivery"
 import { natsFailureReason } from "@legion/envoy-client/errors"
+import type {
+  InboundConnection,
+  InboundMessage,
+  InboundStatus,
+  InboundSubscription,
+} from "@legion/envoy-client/inbound-connection"
 import { expandSubscriptionTopics } from "@legion/envoy-client/transport"
 import { z } from "zod"
 
-/** A message as the broker yields it (a nats.js `Msg` satisfies this). */
-export interface ChannelBrokerMessage {
-  readonly subject: string
-  readonly data: Uint8Array
-  /**
-   * The message's reply subject. Two kinds of message carry one: a relay frame, whose reply is
-   * the relay's own answer token (`RelayMessage`, consumer delivery), and a request on the live
-   * view's control subject, answered there (`./agent-stream-runner`). No Envoy envelope is
-   * answered on a reply: a session publishes no receipt.
-   */
-  readonly reply?: string
-  /** The message's NATS headers; only a relay frame (consumer delivery) carries any read here. */
-  readonly headers?: RelayHeaders
-}
+/**
+ * A message as the connection yields it (a nats.js `Msg`, or a relay socket's). Two kinds carry a
+ * reply: a relay frame, whose reply is the relay's own answer token (`RelayMessage`, consumer
+ * delivery), and a request on the live view's control subject, answered there
+ * (`./agent-stream-runner`). No Envoy envelope is answered on a reply: a session publishes no
+ * receipt. Only a relay frame carries headers read here.
+ */
+export type ChannelBrokerMessage = InboundMessage
 
-export interface ChannelTopicSubscription extends AsyncIterable<ChannelBrokerMessage> {
-  unsubscribe(): void
-}
+/** A subscription of the channel session's connection. */
+export type ChannelTopicSubscription = InboundSubscription
 
-/** A nats.js connection status event; only its `type` is read. */
-export interface ChannelConnectionStatus {
-  readonly type: string
-}
+/** A status event of the channel session's connection; only its `type` is read. */
+export type ChannelConnectionStatus = InboundStatus
 
-/** The NATS connection surface a channel session holds. */
-export interface ChannelConnection {
-  /** Subscribes one subject. A channel session opens two: the session's relay subject, where
-   *  every Envoy message arrives, and the live view's control subject, which a viewer takes
-   *  the session on (`./agent-stream-runner`). */
-  subscribe(subject: string): ChannelTopicSubscription
-  publish(subject: string, data: Uint8Array): void
-  flush(): Promise<void>
-  isClosed(): boolean
-  drain(): Promise<void>
-  close(): Promise<void>
-  /** The connection's status events (nats.js `status()`), which end when it closes. */
-  status(): AsyncIterable<ChannelConnectionStatus>
-  /** Settles once the connection is closed for good, with the error that closed it, if any
-   *  (nats.js `closed()`); already settled for one closed before the call. */
-  closed(): Promise<unknown>
-}
+/**
+ * The inbound connection a channel session holds, NATS or the listener's relay socket
+ * (`@legion/envoy-client/inbound-connection`). Over NATS a channel session opens two
+ * subscriptions on it: the session's relay subject, where every Envoy message arrives, and the
+ * live view's control subject, which a viewer takes the session on (`./agent-stream-runner`). Over
+ * the relay socket it opens the relay subject alone: the socket carries no live view.
+ */
+export type ChannelConnection = InboundConnection
 
 /**
  * The topics this session follows, and the broker connection it holds now. Nothing is subscribed

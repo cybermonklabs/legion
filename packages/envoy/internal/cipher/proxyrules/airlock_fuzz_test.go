@@ -4,8 +4,8 @@ package proxyrules
 // functions (lean/Airlock/Model.lean, built as the airlock-model program AIRLOCK_MODEL
 // names). Every generated case goes to both sides and the two answers must be the same
 // value, so a change on one side that is not made on the other is a test failure here
-// rather than a surprise in production. This file is in package airlock, not package
-// airlock_test: the generator and the wire shapes sit beside the code they mirror, and
+// rather than a surprise in production. This file is in package proxyrules, not package
+// proxyrules_test: the generator and the wire shapes sit beside the code they mirror, and
 // the comparison reaches the three functions with nothing in between.
 
 import (

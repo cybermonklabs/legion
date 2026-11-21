@@ -57,7 +57,7 @@ import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE } from "./reserve";
  */
 export const RESERVE_ASK_CLOSURE: Readonly<Record<string, string>> = {
   "corpus-io.ts": "fa89727871dcf12c849756f84a888e52c6141c81467a353277fbaf98aba03198",
-  "decision-preload.ts": "fbd2007b4294be4645e6b38cb31cd92803371d18b1807b3a8dd911586deb5641",
+  "decision-preload.ts": "50ff3dd835d4345aac95c64df7a3e820a30c625b1e1e63e1c0277ea278dccad3",
   "dispatch-read.ts": "d1732d4c3d8a0d4e86496da5223e125335ea623df93f9249ad07ee30c03883d7",
   "reserve-ask.ts": "604e2f943ed71f6d43761f594d333e083d9d2811f28df779673b32a2fefdde42",
   "reserve.ts": "9debce6d78cc8f6579f5a393540fb97124db53ca25401e9d617a41615320724d",

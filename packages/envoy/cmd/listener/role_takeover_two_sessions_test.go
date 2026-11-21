@@ -166,7 +166,7 @@ func takeBack(t *testing.T, suffix string) (read, unread contracts.Envelope, bef
 			before = frame
 		}
 	}
-	first.conn.Close()
+	first.close()
 	awaitNoRelaySubscriber(t, rig.url, a)
 	rig.gone(b)
 	rig.claim(rig.away, b, role)

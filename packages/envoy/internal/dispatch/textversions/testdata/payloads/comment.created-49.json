@@ -1,0 +1,63 @@
+{
+  "id": 321008,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 345,
+  "type": "comment.created",
+  "actor": {
+    "kind": "session",
+    "id": "2989775f-7f42-4336-9895-7a2e113b93e6",
+    "origin": {
+      "host": "lorem ",
+      "machine": "lorem ipsum dolor sit amet lorem ipsum dolor sit ame",
+      "cwd": "lorem ipsum d",
+      "tmux": "lorem",
+      "pane": "lo",
+      "session_title": "lorem ipsum d"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-11-10T00:12:46.547935Z",
+  "payload": {
+    "id": "6fecb42a-7983-44f6-ab49-5945194fb8db",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit am",
+    "turn": null,
+    "anchor": null,
+    "ask_id": "de1f5b0c-ebc8-4b1e-b7cd-6694ca68e5f4",
+    "author": {
+      "id": "2989775f-7f42-4336-9895-7a2e113b93e6",
+      "kind": "session",
+      "owner": "alice@example.com",
+      "origin": {
+        "cwd": "lorem ipsum d",
+        "host": "lorem ",
+        "pane": "lo",
+        "tmux": "lorem",
+        "machine": "lorem ipsum dolor sit amet lorem ipsum dolor sit ame",
+        "session_title": "lorem ipsum d"
+      }
+    },
+    "answers": null,
+    "mentions": [],
+    "reply_to": null,
+    "resolved": false,
+    "ask_state": "answered",
+    "edited_at": null,
+    "issue_key": "ACME-1",
+    "created_at": "2026-11-10T00:12:46.552892Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": null,
+    "reply_block": null,
+    "resolved_at": null,
+    "resolved_by": null,
+    "ask_question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo",
+    "artifact_name": "",
+    "thread_logins": [
+      "alice@example.com"
+    ],
+    "suppress_route": false
+  }
+}

@@ -78,22 +78,23 @@ function momentText(moment: JudgedMoment | null): string {
  * stage would record from this walk (`judgedMomentOf`): the statement that stood when his own
  * answer came, that statement itself, by its event id, type and time; and no moment where the
  * walk places no answer of his, an answer not his own, or no statement before it. Those are the
- * only lines the inputs stage writes with no moment; every later deviation keeps its moment. Two
- * walks of one log place one answer at one moment, so a line this walk does not give is of
- * another log.
+ * only lines the inputs stage writes with no moment, each a deviation; every later deviation keeps
+ * its moment, and a ready line always has one. Two walks of one log place one answer at one
+ * moment, so a line this walk does not give, or a ready line with no moment, is of another log.
  */
 function heldToItsMoment(line: InventoryLine, judging: Judging | undefined, path: string): void {
   const answer = judging?.answer ?? null;
   const statement = judging?.judged ?? null;
   const moment = answer?.own === true && statement !== null ? judgedMomentOf(statement) : null;
   const recorded = line.judged;
+  const readyWithNone = line.state === "ready" && recorded === null;
   const same =
     moment === null || recorded === null
       ? moment === recorded
       : moment.eventId === recorded.eventId &&
         moment.type === recorded.type &&
         moment.createdAt === recorded.createdAt;
-  if (same) return;
+  if (same && !readyWithNone) return;
   const placed =
     answer === null
       ? "places no answer of his"
@@ -101,8 +102,9 @@ function heldToItsMoment(line: InventoryLine, judging: Judging | undefined, path
         `(${answer.settlement?.type ?? "ask.answered"}${answer.own ? "" : ", not his own"}), ` +
         `after ${statement === null ? "no statement" : momentText(judgedMomentOf(statement))}`;
   throw new S10AnalysisError(
-    `${path} records the judged moment of ${line.askId} as ${momentText(recorded)}, and the log ` +
-      `through the build's pin ${placed}: it is not the log the inputs stage read`
+    `${path} records the judged moment of ${line.askId} as ${momentText(recorded)}` +
+      `${readyWithNone ? " on a ready line" : ""}, and the log through the build's pin ` +
+      `${placed}: it is not the log the inputs stage read`
   );
 }
 

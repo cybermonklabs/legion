@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+    A whole-document upload that replaces a document and names no token for the version it replaces is taken again, unchecked, as it was before a replacement was required to name one: no deployed `dispatch` command can name a token on `dispatch artifact`, so every agent's `dispatch artifact --force` over an existing document was refused `400 PRECONDITION_REQUIRED`. A replacement that names a token is still checked inside the write's own lock, and one naming a token behind the live document is still refused `409 PRECONDITION_FAILED`; that refusal now names the field the token goes in rather than a command flag. Each replacement taken with no token is counted on `/metrics` as `envoy_dispatch_document_replacements_unguarded_total` and logged at INFO with the document it replaced; the access log's line for the same request names the caller. The refusal of a missing token returns in a later release, once every deployed client sends the token (INFRA-4980).
+time: 2026-11-21T09:12:00.000000000Z
+custom:
+    Issue: pr4775
