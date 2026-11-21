@@ -261,6 +261,14 @@ const publishDeniedPrefix = "envoy: the message bus denied the publish under thi
 // room.
 const streamFullPrefix = "envoy: the message bus refused the message because its stream is full"
 
+// earlierAttemptInProcessPrefix opens the body of the 503 a send or publish gets when its request
+// ended while the stream was still storing an earlier publish under the same message id
+// (errEarlierAttemptInProcess): an earlier attempt of the same message, this sender's or another
+// listener's. It is deliberately not busUnansweredPrefix: the bus answered, that the earlier
+// attempt is in process, and the stream may store it yet, so the answer carries
+// listenerwire.CodeMaybeStored and the sender reads it as a send that may have landed.
+const earlierAttemptInProcessPrefix = "envoy: an earlier attempt of this message is still being stored"
+
 // grantGuardPrefix opens the error of the answer POST /v1/roles/set gives a soft claim the grant
 // guard refused (roleGrantGuarded): a role held under the claimant's own session id whose renewal
 // is older than the live window, while the role claim copy's last whole read is past its repair
@@ -306,18 +314,24 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // A publish that may have stored its message (mayHaveStored) is the 503 with
 // listenerwire.CodeMaybeStored, whichever answer ended it - a full stream's, or a refusal of the
 // resend after a send nothing answered - so a sender treats it as a send that may have landed
-// rather than one that stored nothing.
+// rather than one that stored nothing. So is a publish whose request ended while an earlier
+// publish under its message id was still in process (earlierAttemptInProcess), under
+// earlierAttemptInProcessPrefix unless the stream also said it is full: the stream may still store
+// that earlier attempt.
 func writeBusUnavailable(w http.ResponseWriter, err error) int {
 	if errors.Is(err, bus.ErrPublishDenied) {
 		writeJSONError(w, http.StatusForbidden, fmt.Sprintf("%s: %s", publishDeniedPrefix, err))
 		return http.StatusForbidden
 	}
-	stored, full := mayHaveStored(err), errors.Is(err, bus.ErrStreamFull)
+	stored, full, inProcess := mayHaveStored(err), errors.Is(err, bus.ErrStreamFull), earlierAttemptInProcess(err)
 	prefix := busUnansweredPrefix
-	if full {
+	switch {
+	case full:
 		prefix = streamFullPrefix
+	case inProcess:
+		prefix = earlierAttemptInProcessPrefix
 	}
-	if !stored && !full {
+	if !stored && !full && !inProcess {
 		if !errors.Is(err, bus.ErrRefused) {
 			w.Header().Set("Retry-After", "1")
 		}
@@ -325,7 +339,7 @@ func writeBusUnavailable(w http.ResponseWriter, err error) int {
 	}
 	w.Header().Set("Retry-After", "1")
 	answer := listenerwire.APIError{Error: fmt.Sprintf("%s: %s", prefix, err)}
-	if stored {
+	if stored || inProcess {
 		answer.Code = listenerwire.CodeMaybeStored
 	}
 	writeJSON(w, http.StatusServiceUnavailable, answer)

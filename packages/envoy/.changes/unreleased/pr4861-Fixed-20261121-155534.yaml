@@ -5,9 +5,16 @@ body: |-
   topic and `POST /v1/messages/send` answered such a resend `503` with `bus_unavailable`, "the
   message bus did not answer: a publish under the same message id is still in process", so a
   sender that retried during a hub failover was told its message was not taken while its first
-  attempt was being stored. Each route now publishes again every 50 ms within its request budget
-  until the stream answers with the earlier attempt's copy, as the listener's role keep already
-  did. A budget that ends while the earlier attempt is still in process is still answered `503`.
+  attempt was being stored. Every publish the listener makes under a message id now publishes
+  again every 50 ms until the stream answers with the earlier attempt's copy: the two routes, a
+  role send's forward to its holder, a role-lane forward, a kept-lane walk's forward, a keep and a
+  takeover's copy. A role send whose forward the stream answers with a copy an earlier request
+  stored costs its sender nothing under `ENVOY_SENDER_MESSAGES_PER_MINUTE`, as a duplicate send or
+  publish already did. A request whose budget ends while the earlier attempt is still in process is
+  answered `503` with `Retry-After: 1`, the body `envoy: an earlier attempt of this message is still
+  being stored: …` and the code `maybe_stored`, recorded with the outcome
+  `earlier_attempt_in_process`, and costs its sender nothing: the stream may still store the
+  earlier attempt, and Dispatch retries a `maybe_stored` send under the same key.
 time: 2026-11-21T15:55:34Z
 custom:
     Issue: pr4861

@@ -621,7 +621,7 @@ func keepTakenRoleFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 	kept.DedupeKey = takenFrameDedupeKey(key, seq)
 	msgID := takenFrameMsgID(key, role, seq)
 	if _, err := publishPastInProcess(ctx, func() (bus.StoredAck, error) {
-		return cfg.client.PublishStoredAck(ctx, bus.KeptRoleSubject(role), kept, msgID)
+		return cfg.keepPublish(ctx, bus.KeptRoleSubject(role), kept, msgID)
 	}); err != nil {
 		return fmt.Errorf("copy role %s's message %s to its kept lane: %w", role, item.EventID, err)
 	}

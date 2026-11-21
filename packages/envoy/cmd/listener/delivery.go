@@ -52,11 +52,12 @@ type listenerDeliveryHandlerConfig struct {
 	// forwardRole publishes a role-lane envelope to the holder's agent subject under msgID, its
 	// Nats-Msg-Id when not empty, and returns the wait for its outcome; main.go wires
 	// startRoleForward(client). The forward counts as delivered once the stream acknowledges
-	// storing it, which is what its wait returns nil for. The wait's bus.ErrForwardNotStored means
-	// the stream did not acknowledge storing it inside timeout; any other error — a raw
-	// nats.ErrTimeout from the flush included, returned by the publish or the wait — means the
-	// forward is not known to have left this process.
-	forwardRole func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (wait func() error, err error)
+	// storing it, which is what its wait returns the acknowledgement for: the sequence of the copy
+	// the stream holds under msgID, and Duplicate where an earlier forward stored it. The wait's
+	// bus.ErrForwardNotStored means the stream did not acknowledge storing it inside timeout; any
+	// other error — a raw nats.ErrTimeout from the flush included, returned by the publish or the
+	// wait — means the forward is not known to have left this process.
+	forwardRole func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (wait func() (bus.StoredAck, error), err error)
 	// roleForwards runs the role lane's forwards off its handler (roleForwarder); every delivery
 	// path hands its forwards to it, so it is always set: wireRoleForwarder builds it from the
 	// configuration it reports through, once that configuration is otherwise built, and main.go
@@ -97,9 +98,10 @@ type listenerDeliveryHandlerConfig struct {
 	// of this configuration - its routes, relays and sweep - and nil in main.go, which forces no
 	// fault.
 	takeoverFaults *takeoverFaultHooks
-	// keepPublish is the stored publish a keep makes (keepRoleMessage): main.go sets it to
+	// keepPublish is the stored publish a keep (keepRoleMessage) and a takeover's copy
+	// (keepTakenRoleFrame) make onto a role's kept lane: main.go sets it to
 	// client.PublishStoredAck, and so does every test that builds a config, while a test that
-	// answers a keep's publish itself replaces it on its copy.
+	// answers that publish itself replaces it on its copy.
 	keepPublish keptRolePublish
 	// publishDeadLetter stores a dead letter, item, on subject - the agent subject of the session
 	// whose kept copy a walk dropped - under the Nats-Msg-Id msgID, and returns the stream's

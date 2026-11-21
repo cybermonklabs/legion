@@ -99,10 +99,10 @@ func pauseBeforeRetry(ctx context.Context) bool {
 // role lane hands the wait over and reports it later. The outcome is the stream's acknowledgement
 // that it stored the forward, nothing more: the holder answers no receipt and reads the stored
 // copy from its session consumer (startRoleForward).
-func (cfg listenerDeliveryHandlerConfig) forwardAndWait(subject string, item contracts.Envelope, msgID string, window time.Duration) error {
+func (cfg listenerDeliveryHandlerConfig) forwardAndWait(subject string, item contracts.Envelope, msgID string, window time.Duration) (bus.StoredAck, error) {
 	wait, err := cfg.forwardRole(subject, item, msgID, window)
 	if err != nil {
-		return err
+		return bus.StoredAck{}, err
 	}
 	return wait()
 }
@@ -136,11 +136,14 @@ func (d *listenerDeps) confirm(dedupeKey, sessionID string) {
 // Each answer marks the message's take from its sender's count (record.charge) before it is
 // written: a wake reported, a forward the stream stored, a forward that failed with no refusal,
 // which the stream may have stored for the holder it went to, and a window that ended cost one.
-// The mark of a forward that may have been stored stands whatever the send answers next
-// (senderCharge.stored): a forward refused, an echo, a repeat the route's own record or the kept
-// lane answers, and a 403. A repeat the kept lane answers is forgiven, which cancels the wake's
-// mark alone, and every other answer marks nothing, so where no forward may have been stored the
-// route's deferred settle gives the take back.
+// A forward the stream answered as a duplicate of a copy an earlier request stored costs nothing
+// (senderCharge.published), and so does a forward whose window ended while an earlier forward
+// under its Nats-Msg-Id was still in process (earlierAttemptInProcess), though the 504 that
+// follows costs one. The mark of a forward that may have been stored stands whatever the send
+// answers next (senderCharge.stored): a forward refused, an echo, a repeat the route's own record
+// or the kept lane answers, and a 403. A repeat the kept lane answers is forgiven, which cancels
+// the wake's mark alone, and every other answer marks nothing, so where no forward may have been
+// stored the route's deferred settle gives the take back.
 type roleSend struct {
 	w      http.ResponseWriter
 	record *requestRecord
@@ -449,10 +452,14 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 			// The forward carries the same Nats-Msg-Id on every attempt, so the stream, which
 			// captures agent subjects, keeps one copy of it per message and recipient however
 			// many attempts this send makes.
-			err := d.delivery.forwardAndWait(subject, forwarded, bus.ForwardMsgID(forwarded.DedupeKey, subject), window)
+			ack, err := d.delivery.forwardAndWait(subject, forwarded, bus.ForwardMsgID(forwarded.DedupeKey, subject), window)
 			if err == nil {
 				d.confirm(item.DedupeKey, send.holder)
-				send.record.charge.stored()
+				// A forward the stream stored costs one, and a duplicate of a copy an earlier
+				// request stored costs nothing, by the rule the other routes share
+				// (senderCharge.published); an earlier attempt of this send that may have stored
+				// it has marked the charge already.
+				send.record.charge.published(ack, nil)
 				send.delivered(sendDelivered)
 				return
 			}
@@ -461,8 +468,12 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 				return
 			}
 			// A forward that failed with no refusal may have been stored for its holder, so it
-			// costs its sender one whatever this send answers next.
-			send.record.charge.stored()
+			// costs its sender one whatever this send answers next, unless its window ended
+			// while an earlier forward under its Nats-Msg-Id was still in process, whose copy
+			// that earlier forward's is (earlierAttemptInProcess).
+			if !earlierAttemptInProcess(err) || mayHaveStored(err) {
+				send.record.charge.stored()
+			}
 		}
 		// Any resolution not answered above (a holder past the live window, which keeps its
 		// claim, or a read that failed) fails this attempt only.

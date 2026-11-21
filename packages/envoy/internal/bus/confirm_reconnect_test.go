@@ -276,7 +276,7 @@ func TestAnUnconfirmedForwardTheStreamStoredIsDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an unconfirmed forward was refused outright: %v", err)
 	}
-	if err := forward.Wait(); err != nil {
+	if _, err := forward.Wait(); err != nil {
 		t.Fatalf("an unconfirmed forward the stream acknowledged returned %v, want nil", err)
 	}
 }
@@ -291,7 +291,7 @@ func TestAnUnconfirmedForwardWithoutTheStreamsAcknowledgementIsNotStored(t *test
 	if err != nil {
 		t.Fatalf("an unconfirmed forward was refused outright: %v", err)
 	}
-	err = forward.Wait()
+	_, err = forward.Wait()
 	if !errors.Is(err, ErrPublishUnconfirmed) || !errors.Is(err, ErrForwardNotStored) {
 		t.Fatalf("an unconfirmed forward with no acknowledgement returned %v, want the unconfirmed error wrapped by ErrForwardNotStored", err)
 	}

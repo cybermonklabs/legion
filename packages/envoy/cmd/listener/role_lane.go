@@ -146,7 +146,10 @@ func (f *roleForwarder) publish(sessionID string) {
 			f.finish(forward, err)
 			continue
 		}
-		go func() { f.finish(forward, wait()) }()
+		go func() {
+			_, err := wait()
+			f.finish(forward, err)
+		}()
 	}
 }
 
@@ -201,13 +204,35 @@ func (f *roleForwarder) wait(ctx context.Context) bool {
 // consumer, with acknowledgement and redelivery (roleForwardCopyDelivery). msgID is the forward's
 // Nats-Msg-Id when it is not empty, which is what keeps the stream to one copy per message and
 // holder however many attempts a send makes (roleForward.msgID).
-func startRoleForward(client *bus.Client) func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
-	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+//
+// The wait answers a clustered stream's refusal of the forward as still in process under an
+// earlier forward under msgID through publishPastInProcess, inside the forward's own timeout: it
+// sends the forward again until the answer names that earlier forward's copy, Duplicate, so every
+// caller - a role send, a role-lane delivery and a kept-lane walk - takes that refusal one way.
+func startRoleForward(client *bus.Client) func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
+	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
+		deadline := time.Now().Add(timeout)
 		forward, err := client.StartRequestStoredTo(subject, item, msgID, timeout)
 		if err != nil {
 			return nil, err
 		}
-		return forward.Wait, nil
+		return func() (bus.StoredAck, error) {
+			ctx, cancel := context.WithDeadline(context.Background(), deadline)
+			defer cancel()
+			return publishPastInProcess(ctx, func() (bus.StoredAck, error) {
+				if forward == nil {
+					var err error
+					if forward, err = client.StartRequestStoredTo(subject, item, msgID, time.Until(deadline)); err != nil {
+						return bus.StoredAck{}, err
+					}
+				}
+				// Every forward StartRequestStoredTo returned is waited for, which releases its
+				// reply subscription, and the next send is a forward of its own.
+				ack, err := forward.Wait()
+				forward = nil
+				return ack, err
+			})
+		}, nil
 	}
 }
 

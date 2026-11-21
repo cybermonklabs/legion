@@ -377,6 +377,35 @@ func TestAKeepPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing.T) {
 		}
 		assertNothingKept(t, harness.client, role)
 	})
+
+	// A first send that went out unanswered and whose resend the stream refused as in process
+	// (bus.ErrUnacknowledged beside bus.ErrDuplicateInProcess, as sendStored names it) may have
+	// stored the copy itself. Here it did, so the next send is answered a duplicate of it: the
+	// keep's own copy, inside its hour, which is no repeat (publishPastInProcess answers it
+	// Resent), so a role send that kept it is charged as a copy it stored (roleSend.kept).
+	t.Run("its own unanswered send stored the copy", func(t *testing.T) {
+		harness := newListenerDeliveryHarness(t)
+		const ownRole = role + "-own-send"
+		item := listenerTestEnvelope(contracts.RoleTopicPrefix+ownRole, "kept-in-process-own-send")
+		sends := 0
+		publish := func(ctx context.Context, subject string, envelope contracts.Envelope, msgID string) (bus.StoredAck, error) {
+			sends++
+			ack, err := harness.client.PublishStoredAck(ctx, subject, envelope, msgID)
+			if sends == 1 && err == nil {
+				return bus.StoredAck{}, fmt.Errorf("%w: %w", bus.ErrUnacknowledged, inProcess)
+			}
+			return ack, err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), roleKeepPublishWindow)
+		defer cancel()
+		kept, err := storeKeptRoleCopy(ctx, harness.config, ownRole, item, publish)
+		if err != nil {
+			t.Fatalf("a keep whose first send stored the copy unanswered: %v; want the copy", err)
+		}
+		if sends != 2 || kept.item.EventID != item.EventID || kept.repeat {
+			t.Fatalf("after %d sends the keep answered event %s, repeat %t; want two sends, event %s and no repeat: the copy is the keep's own", sends, kept.item.EventID, kept.repeat, item.EventID)
+		}
+	})
 }
 
 // startRawKeptStandIn is a session process that keeps every frame it is sent as the bytes it was

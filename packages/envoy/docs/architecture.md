@@ -181,7 +181,8 @@ attempt:
 | The publish is refused for its subject or key (`bus.ErrRefused`) | `400` naming the refusal, with no `Retry-After` |
 | The stream refuses the publish because it holds its byte limit (`bus.ErrStreamFull`) | `503 {"error":"envoy: the message bus refused the message because its stream is full: <reason>"}` with `Retry-After: 1`, recorded `stream_full` |
 | The server denies the publish under this listener's own grant (`bus.ErrPublishDenied`) | `403 {"error":"envoy: the message bus denied the publish under this listener's own permissions: <reason>"}` with no `Retry-After`, recorded `publish_denied` (below) |
-| Any other publish failure | `503` with the same prefix and `Retry-After: 1`, carrying the bus's own reason |
+| A clustered stream refuses the publish because an earlier publish under the same message id is still in process (`bus.ErrDuplicateInProcess`) | The listener publishes again every 50 ms until the stream names the earlier copy, and answers `200` for it (`publishPastInProcess`); a request whose budget ends first gets `503 {"error":"envoy: an earlier attempt of this message is still being stored: <reason>","code":"maybe_stored"}` with `Retry-After: 1`, recorded `earlier_attempt_in_process`, which costs its sender nothing |
+| Any other publish failure | `503` with the prefix `envoy: the message bus did not answer` and `Retry-After: 1`, carrying the bus's own reason |
 | Before the store read, the sending agent session's count under the operator's sender limit holds no message (below) | `429` with `Retry-After`, recorded `sender_rate_limited`, with nothing read, reported or stored |
 
 A target whose entry the store holds within the gone horizon is resolved whatever its state, so a
@@ -318,7 +319,7 @@ Each inbound send and publish is recorded in one line, INFO when accepted and WA
 `listener send` (`target_session`) and `listener publish` (`topic`), both carrying `event_id`,
 `source`, `source_session`, `payload_summary`, `outcome` and `status`, and `holder` as well when a
 role topic resolved one. `outcome` is one of `accepted`, `invalid_request`, `too_large`,
-`bus_unavailable`, `stream_full` and `sender_rate_limited`, plus `no_live_session` for send,
+`bus_unavailable`, `stream_full`, `earlier_attempt_in_process` and `sender_rate_limited`, plus `no_live_session` for send,
 `session_stopped` for a
 `connected_only` send whose target is stopped, `capability_refused` for send and a role send,
 `publish_denied` for send and publish alike, since a publish on either transport can be denied,

@@ -39,7 +39,7 @@ func TestStartRequestStoredToCountsTheStreamsAcknowledgementAlone(t *testing.T) 
 		if err != nil {
 			t.Fatalf("StartRequestStoredTo: %v", err)
 		}
-		if err := forward.Wait(); err != nil {
+		if _, err := forward.Wait(); err != nil {
 			t.Fatalf("the stored forward's wait = %v, want nil on the stream's acknowledgement", err)
 		}
 		if elapsed := time.Since(started); elapsed >= window {
@@ -59,7 +59,7 @@ func TestStartRequestStoredToCountsTheStreamsAcknowledgementAlone(t *testing.T) 
 	if err != nil {
 		t.Fatalf("StartRequestStoredTo on %s: %v", uncaptured, err)
 	}
-	if err := forward.Wait(); !errors.Is(err, bus.ErrForwardNotStored) {
+	if _, err := forward.Wait(); !errors.Is(err, bus.ErrForwardNotStored) {
 		t.Fatalf("the wait of a forward no stream stores = %v, want ErrForwardNotStored", err)
 	}
 }
@@ -168,7 +168,7 @@ func TestStartRequestStoredToIsBoundedByItsWindowWhenTheFlushTimesOut(t *testing
 	if err != nil {
 		t.Fatalf("StartRequestStoredTo against a healthy server: %v", err)
 	}
-	if err := forward.Wait(); err != nil {
+	if _, err := forward.Wait(); err != nil {
 		t.Fatalf("the stored forward's wait against a healthy server = %v, want nil", err)
 	}
 

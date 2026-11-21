@@ -62,6 +62,11 @@ const (
 	// message. It is not the 429 apiauth.go answers a broker token's check with, whose reason is
 	// rate_limited: this one is about how fast a session sends, not about its credential.
 	outcomeSenderRateLimited requestOutcome = "sender_rate_limited"
+	// outcomeEarlierAttemptInProcess is a send or publish whose request ended while the stream
+	// was still storing an earlier publish under the same message id (errEarlierAttemptInProcess),
+	// answered 503 maybe_stored. It is not outcomeBusUnavailable: the bus answered, that the
+	// earlier attempt is in process, and the stream may store it yet.
+	outcomeEarlierAttemptInProcess requestOutcome = "earlier_attempt_in_process"
 )
 
 // requestRecord is this listener's record of one inbound send or publish, and the only way either
@@ -134,8 +139,10 @@ func (rec *requestRecord) refuseWith(w http.ResponseWriter, status int, outcome 
 // status it wrote implies: 413 is the caller's own oversized message, 400 the subject or key NATS
 // will not take however often it is sent, 403 the publish this listener's own grant denies, and
 // anything else the bus not answering. The status is read back from the write rather than
-// classified a second time here, so the pair cannot drift, with one exception: a full stream
-// (bus.ErrStreamFull) shares its 503 with the bus not answering, so the error tells it apart.
+// classified a second time here, so the pair cannot drift, with two exceptions that share their
+// 503 with the bus not answering, so the error tells them apart: a full stream (bus.ErrStreamFull)
+// and a request that ended while an earlier publish under its message id was still in process
+// (earlierAttemptInProcess).
 func (rec *requestRecord) refuseBusUnavailable(w http.ResponseWriter, err error) {
 	status := writeBusUnavailable(w, err)
 	outcome := outcomeBusUnavailable
@@ -148,6 +155,8 @@ func (rec *requestRecord) refuseBusUnavailable(w http.ResponseWriter, err error)
 		outcome = outcomeInvalidRequest
 	case status == http.StatusForbidden:
 		outcome = outcomePublishDenied
+	case earlierAttemptInProcess(err):
+		outcome = outcomeEarlierAttemptInProcess
 	}
 	rec.write(status, outcome)
 }
