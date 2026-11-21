@@ -118,9 +118,13 @@
 #   ci_tools_source_name <row>
 #                   <primary|second>      the one word that source is named by, for a call site
 #                                         that must write no source word of its own.
-#   ci_tools_rows [<second source>]       every row's name, in the manifest's own order, and
-#                                         only the rows whose second source is that word where
-#                                         the argument is given.
+#   ci_tools_rows                         every row's name, in the manifest's own order.
+#   ci_tools_mirror_rows <machine>        the names of the `ghcr-mirror` rows built for that
+#                                         machine, x86_64 or aarch64, in the manifest's own
+#                                         order. It refuses a ghcr-mirror row built for neither
+#                                         by name, and a machine no such row is built for, so
+#                                         the two machines' calls together read every such row
+#                                         once.
 #   ci_tools_github_url <url>             that URL with the CI_TOOLS_GITHUB_BASE seam in place
 #                                         of its https://github.com prefix.
 #   ci_tools_curl <file> <max_time>
@@ -131,7 +135,18 @@
 #                                         fetches the asset it pushes with it, so the copy is
 #                                         filled with the same ladder an install reads it under.
 #                                         A request that carries a credential follows no
-#                                         redirect (ci_tools__curl_held, ci_tools_registry_head).
+#                                         redirect (ci_tools__curl_held, ci_tools_curl_status,
+#                                         ci_tools_registry_head), under that same ladder.
+#   ci_tools_curl_status <max_time>
+#                 <url> [argument…]       that same ladder, less `-L`, for a request of the
+#                                         package whose answer is the HTTP status and not a
+#                                         file: it prints the status, writes no body anywhere,
+#                                         turns `--fail` off, so the caller reads the status
+#                                         itself, and follows no redirect, so a bearer the
+#                                         caller hands it on standard input (`-H @-`) reaches
+#                                         the package alone. .github/scripts/mirror-ci-tools.sh
+#                                         opens and closes every upload and puts every manifest
+#                                         with it.
 #   ci_tools_extract <archive> <member>
 #                    <destination> <url>  that member of that archive at <destination>, read by
 #                                         the suffix of the address it came from rather than by
@@ -155,13 +170,18 @@
 #                                         owner of that address: ci_tools_blob_url and every
 #                                         URL .github/scripts/mirror-ci-tools.sh pushes to and
 #                                         reads back are built from it.
-#   ci_tools_registry_head <token>
-#                  <headers> <url> [arg…] the HTTP status of one HEAD of the package with <token>
-#                                         as its bearer, the answer's headers in <headers>. The
-#                                         bearer goes with the first request alone, and a
-#                                         redirect to an https store is followed with none.
-#                                         .github/scripts/mirror-ci-tools.sh and the
-#                                         tool-fallback job read the package with it.
+#   ci_tools_registry_head [--follow]
+#                  <token> <headers>
+#                  <url> [arg…]           the HTTP status of one HEAD of the package with
+#                                         <token> as its bearer, the answer's headers in
+#                                         <headers>, at 30 s an attempt under the ladder of
+#                                         ci_tools_curl. The bearer goes with that request
+#                                         alone, which follows no redirect: without `--follow`
+#                                         a redirect is printed as its own status, and with it
+#                                         a redirect to an https store is read in a request of
+#                                         its own, handed none, under that same ladder.
+#                                         .github/scripts/mirror-ci-tools.sh reads the package
+#                                         with it, and the tool-fallback job with `--follow`.
 #   ci_tools_token_of <file>              the `.token` of a registry token response. It is the
 #                                         one reader of such an answer this repository has, and
 #                                         ci_tools_ghcr_token below reads every token with it.
@@ -426,24 +446,22 @@ ci_tools_digest() {
   ci_tools_field "$1" digest
 }
 
-# ci_tools_rows [<second source>]: every row's name, in the manifest's own order, and only the
-# rows whose `second_source` is that word where the argument is given. One reader of the
-# manifest's row list, so a job's step names neither the file nor its shape.
+# ci_tools_rows: every row's name, in the manifest's own order. One reader of the manifest's row
+# list, so a job's step names neither the file nor its shape.
 ci_tools_rows() {
-  if [ "$#" -gt 1 ]; then
-    ci_tools__error "ci_tools_rows takes an optional second source, and this call gave $#"
+  if [ "$#" -ne 0 ]; then
+    ci_tools__error "ci_tools_rows takes no argument, and this call gave $#"
     return 1
   fi
   local manifest names
   manifest=$(ci_tools__manifest) || return 1
-  names=$(CI_TOOLS_SECOND="${1:-}" CI_TOOLS_FILE="$manifest" PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
+  names=$(CI_TOOLS_FILE="$manifest" PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
 import os
 import sys
 
 import yaml
 
 path = os.environ["CI_TOOLS_FILE"]
-want = os.environ["CI_TOOLS_SECOND"]
 try:
     with open(path) as handle:
         document = yaml.safe_load(handle) or {}
@@ -452,14 +470,109 @@ except OSError as error:
     raise SystemExit(1)
 for row in document.get("tools") or []:
     name = row.get("name")
-    if not name:
-        continue
-    if want and row.get("second_source") != want:
-        continue
-    print(name)
+    if name:
+        print(name)
 PY
   ) || return 1
   [ -z "$names" ] || printf '%s\n' "$names"
+}
+
+# ci_tools_mirror_rows <x86_64|aarch64>: the names of the `ghcr-mirror` rows built for that
+# machine, in the manifest's own order.
+# The package's copy is filled and checked one machine at a time, by a step per machine in
+# ci.yaml's ci-images job (.github/scripts/mirror-ci-tools.sh) and in its tool-fallback job (its
+# blob checks), because each of those reads costs a ladder per row and the ten rows of both
+# machines in one step would put the ci-images job past the 360 minutes a GitHub-hosted job may
+# run (.github/ci-budgets.md, "The ci-images job's ceiling and the tool copy"). This is the one
+# reading of which rows a machine's step reads, so the filler and the check cannot split the
+# manifest two ways.
+# A row's machine is read twice, and the two readings must agree. Its name is the first:
+# `<tool>-aarch64` is the arm64 build of the `<tool>` row (.github/scripts/check-ci-tools.sh's
+# rule 2 holds the pair to one version), and every install action reads the one or the other
+# from `uname -m`, so an `-aarch64` row is aarch64's and any other row x86_64's. The file name of
+# its `mirror_from`, the asset its copy is filled from, is the second: it must name that machine
+# the way release assets do — x86_64, amd64 or x64, or aarch64 or arm64, as a word between `-`,
+# `_` or `.` — and not the other one. The name alone cannot see a third machine: a
+# `<tool>-riscv64` row reads as x86_64 by it. The asset can, since such a row's asset names no
+# word of x86_64, so a row the two readings do not agree on is filled and checked by no step of
+# either machine. Every call reads every ghcr-mirror row, and refuses each such row by name
+# whichever machine it asked for, so neither machine's step can pass while a row is read by
+# none; and a machine no row is built for is refused too, since a step that reads nothing proves
+# nothing about the copy.
+ci_tools_mirror_rows() {
+  if [ "$#" -ne 1 ]; then
+    ci_tools__error "ci_tools_mirror_rows takes a machine, x86_64 or aarch64, and this call gave $#"
+    return 1
+  fi
+  local manifest names
+  manifest=$(ci_tools__manifest) || return 1
+  names=$(CI_TOOLS_MACHINE="$1" CI_TOOLS_FILE="$manifest" PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
+import os
+import re
+import sys
+
+import yaml
+
+# The words a release asset names each machine with, and the suffix of a row built for it.
+WORDS = {"x86_64": ("x86_64", "amd64", "x64"), "aarch64": ("aarch64", "arm64")}
+ARM64_SUFFIX = "-aarch64"
+
+path = os.environ["CI_TOOLS_FILE"]
+want = os.environ["CI_TOOLS_MACHINE"]
+if want not in WORDS:
+    sys.stderr.write(
+        f"::error::ci-tools: ci_tools_mirror_rows reads the ghcr-mirror rows of x86_64 or aarch64, "
+        f"and this call asked for '{want}'\n"
+    )
+    raise SystemExit(1)
+try:
+    with open(path) as handle:
+        document = yaml.safe_load(handle) or {}
+except OSError as error:
+    sys.stderr.write(f"::error::ci-tools: this run cannot read {path} ({error})\n")
+    raise SystemExit(1)
+
+
+def named(asset, machine):
+    return any(re.search(rf"(?:^|[-_.]){re.escape(word)}(?:[-_.]|$)", asset)
+               for word in WORDS[machine])
+
+
+picked = []
+refused = False
+for row in document.get("tools") or []:
+    name = row.get("name")
+    if not name or row.get("second_source") != "ghcr-mirror":
+        continue
+    by_name = "aarch64" if str(name).endswith(ARM64_SUFFIX) else "x86_64"
+    asset = str(row.get("mirror_from") or "").rsplit("/", 1)[-1]
+    by_asset = [machine for machine in WORDS if named(asset, machine)]
+    if by_asset != [by_name]:
+        refused = True
+        read = " and ".join(by_asset) or "neither x86_64 nor aarch64"
+        sys.stderr.write(
+            f"::error::ci-tools: {name}: this ghcr-mirror row is filled and checked by no machine's "
+            f"step. Its name reads {by_name} (an `{ARM64_SUFFIX}` row is aarch64's and any other "
+            f"x86_64's, as the install actions read it from `uname -m`), and the asset its copy is "
+            f"filled from, '{asset}', names {read}. Name the row and its asset for one of the two "
+            f"machines, or give this reading and the ci-images and tool-fallback jobs a step for "
+            f"the machine it is built for\n"
+        )
+        continue
+    if by_name == want:
+        picked.append(name)
+if refused:
+    raise SystemExit(1)
+if not picked:
+    sys.stderr.write(
+        f"::error::ci-tools: {path} holds no ghcr-mirror row built for {want}, so the step that "
+        f"reads that machine's rows would read nothing: add the rows, or take the step out\n"
+    )
+    raise SystemExit(1)
+print("\n".join(picked))
+PY
+  ) || return 1
+  printf '%s\n' "$names"
 }
 
 # ci_tools__hold <row> <file> <source> <digest> <what that digest is of>: holds <file> to that
@@ -526,37 +639,94 @@ ci_tools__tempfile() {
 # nowhere: ci_tools__curl_report below reads it as this run's own write error, and the caller
 # refuses where it stands.
 #
-# `--retry-max-time 60` bounds the ladder as a whole, and it is the bound on when a new attempt
-# may start: an attempt already running when the minute is over still finishes under
-# `--max-time`, and curl starts no attempt after it.
+# `--retry-max-time 300` bounds the ladder as a whole, and it is the bound on when a new attempt
+# may start: an attempt already running when the timer reset at the first attempt reaches five
+# minutes still finishes under `--max-time`, and curl starts no attempt after it.
 # What it buys is the hang. Without it a host that accepts and sends nothing costs the whole
-# ladder — eight attempts of `--max-time` 60 s plus a back-off of 1, 2, 4, 8, 16, 32 and 64 s —
-# which is about ten minutes for one row, while many jobs of .github/workflows/ci.yaml carry
-# `timeout-minutes: 10`.
-# Against a source that answers 504 at once, the shape of the 2026-11-08 outage, it buys almost
-# nothing: the back-off alone reaches the minute, so the ladder is one attempt shorter.
-# This issue's tester measured both shapes at the manifest's `max_time` of 60. Against a source
-# that refuses at once, as a 504 does, the bound makes 7 attempts. Their back-off is
-# 1+2+4+8+16+32, so that ladder costs 63 s. Without the bound the same source makes 8 attempts,
-# which is that back-off plus 64 s, or 127 s. The 63 s was measured twice. One such ladder
-# against a port that refuses at once took 1m3.064s and exited 7. And in job 129743677408 of
-# .github/workflows/ci.yaml the two kinds of step are apart by a factor of two: seven of the
-# eight negative controls each drive two ladders, because their primary meets the fault and
-# their second source is a dead port, and measured 126 to 127 s, while seven of the head's own
-# installs and seven of the second-source cases each drive one and measured 63 to 65 s (73 s
-# and 72 s for jj, which carry mise's own 10 s). So 126 s is two ladders and not one.
-# The eighth of each is Bun, whose primary oven-sh/setup-bun fetches as a Node action and not
-# through this function: its negative control drives one ladder, against the dead port, after
-# that action's own failed download, and measured 104 s, while its head install and its
-# second-source case drive none, because npm answers, and measured 23 s and 30 s.
-# The hang is the other shape. It costs 124 s with the bound, where the ladder without the
-# bound costs about ten minutes. So a row's primary costs about one minute before the second
-# source is read against a source that refuses at once, and about two minutes against a host
-# that hangs. Both are inside every ci.yaml budget.
+# ladder — eight attempts of `--max-time` 60 s plus a back-off of 1, 2, 4, 8, 16, 32 and 64 s,
+# 8 x 60 + 127 = 607 s — which is about ten minutes for one row, while many jobs of
+# .github/workflows/ci.yaml carry `timeout-minutes: 10`.
+#
+# WHAT ONE LADDER COSTS UNDER IT, derived once here for any per-attempt bound. The budget
+# comments of the workflows write the sum a `ci_tools_fetch` comes to and cite it through the
+# Budgets note of .github/ci-budgets.md, which points here; none of them derives
+# the per-ladder term again. The worst case is not the host that stalls throughout and not the
+# host that
+# fails fast: it is the mixture of the two. A pure staller spends the whole bound on each
+# attempt, so the timer passes this limit inside the fifth attempt and curl starts none
+# after it — measured against a host that accepts and never
+# answers, at the `max_time: 60` every row carries: at the 120 s this file bounded the ladder
+# with before dispatch://INFRA-1545 raised it, two attempts at 0 s and 61 s, exit 28 at about
+# 121 s, so the last attempt began at 61 s; AT THE 300 s IT WRITES NOW, FIVE ATTEMPTS AT 0 s,
+# 62 s, 124 s, 188 s AND 256 s, EXIT 28 AT ABOUT 315 s. That is what R1's floor asks of a
+# staller - at least five attempts, the last beginning at least 120 s after the first - and the
+# 120 s bound met neither half of it. The gaps widen from 62 s to 64 s and then 68 s because the
+# ladder's own waits ride on top of each stalled attempt once more than two are made. A host that fails at once spends nothing on
+# its attempts, so all eight are made and the ladder is its waits alone,
+# 1 + 2 + 4 + 8 + 16 + 32 + 64 = 127 s. The expensive shape is a host that does both: the quick
+# failures carry the timer to just under five minutes, the last wait of 64 s is taken, and the
+# attempt it then starts stalls for its whole bound.
+#
+#   ONE LADDER'S CEILING IS 300 + 64 + <the per-attempt bound>, rounded up by the seconds a
+#   second's rounding in each of those three terms can add.
+#
+# At the `max_time: 60` every row of .github/ci-tools.yaml carries that is 424 s, written as
+# 427 s; at the 30 s bound a request of the package that carries no asset bytes is given — each
+# request of ci_tools_registry_head, and the uploads .github/scripts/mirror-ci-tools.sh opens
+# and the documents it puts with ci_tools_curl_status — it is 394 s, written as 397 s. Both
+# halves of the 30 s
+# shape were driven on this issue's pod against curl 8.14.1 and a loopback server: answering
+# seven delayed 503s and then accepting a connection it never answers gives eight requests,
+# the seventh failing at 119 s, the eighth starting 64 s later at 183 s and spending its whole
+# bound, exit 28 at 213 s; refusing every connection instead gives the waits alone, eight
+# requests and exit 7 at 127 s. THAT 30 s DRIVE WAS MADE AT THE 120 s BOUND, so its 213 s is the
+# ceiling that bound gave and is kept here as the shape rather than as this file's figure: the
+# retry after the seventh was made because the timer stood at 119 s when that attempt ended and
+# the next retry was decided, which is what "just under the limit" means at whatever the limit
+# is. At the 300 s this file writes, the same shape ends at 394 s, written as 397 s above.
+#
+# Main's #3470 measured this ladder at the `--retry-max-time 60` this file carried before
+# dispatch://INFRA-1545 raised it: 7 attempts and 63 s against a source that refuses at once,
+# where at 120 the eighth attempt is made and the ladder is 127 s. Its figures are of that
+# bound and are kept here as history rather than as the ladder this file now writes.
+#
+# A failing fetch of a ghcr-mirror row runs four of these — the asset, the pull token, the
+# blob request to the package and the read of the store that request's redirect points at,
+# since the blob request carries the pull token and follows no redirect (ci_tools__fetch_ghcr)
+# — which .github/scripts/check-download-retry.sh's DECLARED_LOOPS entry for this file
+# sums into the one figure rule 8 prices, reading this block for the per-ladder term rather
+# than deriving it again. Every budget comment that holds that sum names it as a
+# `ci_tools_fetch` rather than as a ladder, since four ladders are what it buys.
+# Against a source that answers 504 at once, the shape of the 2026-11-08 outage, it costs
+# nothing at all: the timer stands at 63 s when the last retry is decided, which is inside this
+# limit, so the ladder is the eight attempts it would make with no such bound, where at 60 it
+# was seven.
+#
+# THE FIGURE IS 300, AND WHAT DECIDES IT IS THE STALLING HOST RATHER THAN THE REFUSING ONE,
+# because R1's floor is the ladder itself (dispatch://INFRA-1545): at least five attempts, the
+# last starting at least 120 s after the first. curl's rule is that a retry is made only while
+# the timer reset at the first attempt has not reached this limit (curl 8.14.1), and against a
+# host that spends every attempt's whole bound the timer is the attempts themselves.
+# At 60 the ladder ends with one attempt. At 120 it makes two, at 0 s and 61 s, so it meets
+# NEITHER half of the floor. At 180 it makes three, the last at 123 s, which clears the time
+# half and not the count. At 300 it makes five, at 0, 62, 124, 188 and 256 s, which is both
+# halves, and that is why this file writes 300 and .github/scripts/check-download-retry.sh
+# refuses a smaller one with that figure.
+# Against a host that REFUSES at once the ladder is its waits alone and every bound above 63 s
+# gives the same eight attempts in about 127 s — measured against a refused port on curl 8.14.1
+# at 128.1 s — which is why that shape decides nothing here.
+#
+# Two figures above are this issue's tester's, and both were measured at `--retry-max-time 60`:
+# a source that answers 504 at once cost 7 attempts in 126 s with the bound and 8 attempts in
+# 127 s without it, and a host that hangs cost 124 s with the bound where the ladder without it
+# costs about ten minutes. Neither is restated here as a measurement of this value; what 300
+# makes of each shape is the derivation above, and the five attempts at 0, 62, 124, 188 and
+# 256 s are this issue's own measurement of it, made twice on curl 8.14.1 and read again in
+# run 43202546798's job 131129681795, where each `ci_tools_curl` ladder made five.
 ci_tools_curl() {
   local file=$1 max_time=$2 url=$3
   shift 3
-  curl -fsSL --retry 7 --retry-all-errors --retry-max-time 60 --max-time "$max_time" -o "$file" "$@" "$url"
+  curl -fsSL --retry 7 --retry-all-errors --retry-max-time 300 --max-time "$max_time" -o "$file" "$@" "$url"
 }
 
 # ci_tools__curl_held <file> <max_time> <url> [curl argument…]: ci_tools_curl for a request that
@@ -565,24 +735,71 @@ ci_tools_curl() {
 # `Authorization` header and a `-u` password on a redirect to another host, port or scheme, but a
 # fetch that leans on it still hands the other origin a request, takes that origin's answer as
 # the package's, and is only as safe as the curl a runner has.
+# The ladder is ci_tools_curl's to the word, `--retry-max-time 300` included, so a request that
+# carries a credential rides out the flap a request that carries none rides out, and the block
+# above that function is what one of these ladders costs too (dispatch://INFRA-1545, R1 and R2).
 # It writes `<status> <redirect address>` on standard output, the address empty where the answer
 # is no redirect. `--fail` makes a 4xx or 5xx curl exit 22 as before, so exit 0 is a 2xx or a 3xx,
 # and a 3xx is one answer, which no `--retry` repeats. The caller reads that line: the token
-# request refuses a redirect, and the blob request follows it in a request handed no credential.
+# request refuses a redirect; the blob request and ci_tools_registry_head follow it in a request
+# handed no credential; and ci_tools_curl_status below, which turns `--fail` off, prints the
+# status alone.
 # For a `Location` that is a path, curl writes the address against the request's own, and with a
 # `-u` credential it writes that user and password into it (curl 8.5.0, measured 2026-11-17), so
 # the token request's line can hold the push credential. That is no leak: the token request
 # refuses every 3xx and prints the address through ci_tools__redirect_target, which keeps its
-# scheme, host and port and drops the user part, and the line goes nowhere else. The blob request
-# carries its bearer as a header, which no address holds.
+# scheme, host and port and drops the user part, and the line goes nowhere else. Every other
+# caller carries its bearer as a header, which no address holds.
 # `-q` comes first because curl reads ~/.curlrc before its command line and `-q` there is the one
 # way to read none: a .curlrc that names `location` or `location-trusted` would make this call
 # follow the redirect, and location-trusted would send it the credential.
 ci_tools__curl_held() {
   local file=$1 max_time=$2 url=$3
   shift 3
-  curl -q -fsS --retry 7 --retry-all-errors --retry-max-time 60 --max-time "$max_time" -o "$file" \
+  curl -q -fsS --retry 7 --retry-all-errors --retry-max-time 300 --max-time "$max_time" -o "$file" \
     -w '%{http_code} %{redirect_url}' "$@" "$url"
+}
+
+# ci_tools_curl_status <max_time> <url> [curl argument…]: the HTTP status of one request of the
+# package whose answer the caller judges itself, printed, with no body written anywhere and no
+# redirect followed.
+# It is ci_tools__curl_held above with `/dev/null` for its file and `--no-fail` appended, so the
+# attempts, the waits and the per-attempt bound are the one ladder ci_tools_curl writes and this
+# file holds no second copy of them (dispatch://INFRA-1545, R2). `/dev/null` is the file because
+# what a caller of this reads is the status and not the bytes; the status is the first word of
+# the line that function writes, and this prints it alone; and `--no-fail` is curl's own negation
+# of the `--fail` that function writes, which stands because curl reads the last of two
+# conflicting options.
+#
+# `--no-fail` is what makes the status the answer rather than an exit code, and the callers are
+# the ones asking a question whose answer is a status a fetch would call a failure: the 202 that
+# opens an upload, the 201 that closed one, and the 404 ci_tools_registry_head reads as a package
+# that holds no such blob. Under `--fail` curl exits 22 for that 404 and `--retry-all-errors`
+# spends the whole ladder on it first — measured on curl 8.14.1 against a 404: eight attempts in
+# 127.1 s, where the same call with `--no-fail` answered 404 at once and exited 0 — and the
+# caller's errexit would then end the run on a question it had an answer for.
+# What curl still retries is the transient error it retries with no `--fail` at all: a timeout,
+# a connection it could not make or lost, and an HTTP 408, 429, 500, 502, 503 or 504 answer.
+# So the flap this ladder exists for is ridden out, and the statuses these callers read are
+# answered at once.
+#
+# Its callers carry the push token, and each hands it to curl on standard input from printf, a
+# shell builtin (`printf 'Authorization: Bearer %s' "$token" | ci_tools_curl_status … -H @-`), so
+# it is in no process's command line; curl reads that header once, before the first attempt, and
+# sends it with each. Since no redirect is followed the token reaches the package alone, and a
+# 3xx is printed as its own status, which no caller admits, so it is refused like any other.
+# A request the service did not answer at all prints 000 and returns curl's own status, which
+# is no status a caller here admits, so it is refused like any other.
+ci_tools_curl_status() {
+  if [ "$#" -lt 2 ]; then
+    ci_tools__error "ci_tools_curl_status takes a per-attempt bound and a URL, and this call gave $#"
+    return 1
+  fi
+  local max_time=$1 url=$2 answer status=0
+  shift 2
+  answer=$(ci_tools__curl_held /dev/null "$max_time" "$url" --no-fail "$@") || status=$?
+  printf '%s\n' "${answer%% *}"
+  return "$status"
 }
 
 # ci_tools__redirect_target <address>: what a line names of the address a redirect points at, its
@@ -849,43 +1066,60 @@ ci_tools_blob_url() {
   printf '%s/blobs/sha256:%s\n' "$registry_url" "$digest"
 }
 
-# ci_tools_registry_head <token> <headers> <url> [curl argument…]: the HTTP status of one HEAD of
-# the package, with <token> as its bearer and the answer's headers in the file <headers>. It is
-# the HEAD .github/scripts/mirror-ci-tools.sh reads a blob and a tag with, and the one the
-# tool-fallback job (.github/workflows/ci-job-tool-fallback.yaml) reads each copy with. The curl
-# arguments, an `Accept` header for a manifest, carry no credential.
+# ci_tools_registry_head [--follow] <token> <headers> <url> [curl argument…]: the HTTP status of
+# one HEAD of the package, with <token> as its bearer and the answer's headers in the file
+# <headers>. It is the HEAD .github/scripts/mirror-ci-tools.sh reads a blob and a tag with, and
+# the one the tool-fallback job (.github/workflows/ci-job-tool-fallback.yaml) reads each copy
+# with. The curl arguments, an `Accept` header for a manifest, carry no credential.
 # The bearer reaches curl on standard input from printf, a shell builtin, so it is in no
 # process's command line, and it goes with the first request alone, which follows no redirect.
 # ghcr.io answers a HEAD of a blob and of a manifest itself (200, measured 2026-11-17 for every
 # ghcr-mirror row), but a registry may answer a HEAD of a blob with a redirect to the store that
-# holds it, as ghcr.io answers a GET. Such a redirect is followed in a request of its own, handed
-# no bearer, and the status printed is that of its last answer, whose headers are the ones
-# <headers> then holds. That request reads a store at an https address alone
-# (ci_tools__store_address and ci_tools__store_proto above). A redirect that names no address,
-# or an address of another scheme, is printed as its own status, which no caller reads as a
-# copy, beside a refusal that names it. A request the service did not answer at all reads 000.
+# holds it, as ghcr.io answers a GET. Without `--follow` such a redirect is printed as its own
+# status, which the caller refuses as one it does not admit. With `--follow`, the tool-fallback
+# job's choice, it is followed in a request of its own, handed no bearer, and the status printed
+# is that of its last answer, whose headers are the ones <headers> then holds. That request
+# reads a store at an https address alone (ci_tools__store_address and ci_tools__store_proto
+# above). A redirect that names no address, or an address of another scheme, is printed as its
+# own status, which no caller reads as a copy, beside a refusal that names it. A request the
+# service did not answer at all reads 000.
 # The first request puts `-q` first, for the reason ci_tools__curl_held gives.
+# Each request rides the one ladder (dispatch://INFRA-1545, R2): the first is
+# ci_tools__curl_held's, with `--no-fail` for the reason ci_tools_curl_status gives, so the 404
+# of a blob the package lacks is an answer and not a ladder spent on it, and the store's read is
+# ci_tools_curl's, with that same `--no-fail`. The `-D` file holds the headers of every attempt
+# of the request that wrote it last, and a reader that takes a header's last value, as
+# mirror-ci-tools.sh's header_value does, reads the answer this prints.
+# 30 s per attempt: a HEAD carries no body in either direction, so what an attempt waits for is
+# the package's own answer, and 30 s is the bound this repository gives such a request (the
+# ci-ok report's `gh api` reads). So a HEAD costs one ladder at that bound, the 397 s the block
+# above ci_tools_curl derives, and with `--follow` two where the package redirects it,
+# 2 x 397 = 794 s, which is what a caller's budget charges for one.
 ci_tools_registry_head() {
+  local follow=''
+  if [ "${1:-}" = --follow ]; then
+    follow=1
+    shift
+  fi
   if [ "$#" -lt 3 ]; then
-    ci_tools__error "ci_tools_registry_head takes a token, a headers file and a URL, and this call gave $#"
+    ci_tools__error "ci_tools_registry_head takes an optional --follow, then a token, a headers file and a URL, and this call gave $# of those"
     return 1
   fi
   local token=$1 headers=$2 url=$3 answer status location
   shift 3
   answer=$(printf 'Authorization: Bearer %s' "$token" |
-    curl -q -sS -o /dev/null -D "$headers" -w '%{http_code} %{redirect_url}' -I -H @- "$@" "$url") ||
-    answer=000
+    ci_tools__curl_held /dev/null 30 "$url" -D "$headers" -I -H @- --no-fail "$@") || answer=000
   status=${answer%% *}
-  case $status in
-    3*)
+  case $follow$status in
+    13*)
       location=${answer#* }
       if [ -z "$location" ]; then
         ci_tools__error "a HEAD of $url answered $status, a redirect that names no address"
       elif ! ci_tools__store_address "$location"; then
         ci_tools__error "a HEAD of $url answered $status, a redirect to $(ci_tools__redirect_target "$location"), which this run does not follow: it reads a store at an https address alone"
       else
-        status=$(curl -sS --proto "$(ci_tools__store_proto)" -o /dev/null -D "$headers" -w '%{http_code}' \
-          -I -L "$@" "$location") || status=000
+        status=$(ci_tools_curl /dev/null 30 "$location" -D "$headers" -I -w '%{http_code}' --no-fail \
+          --proto "$(ci_tools__store_proto)" "$@") || status=000
       fi
       ;;
   esac

@@ -37,9 +37,12 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 # The stand-in GitHub: the check runs on the head this run's jobs are on, and the annotations of
-# one of them, each answered as `gh api --jq` would print it. A missing check-runs file is the
-# route refusing the read.
+# one of them, each answered as `gh api --jq` would print it. A missing check-runs file is that
+# route refusing the read, and a refuse-annotations file is the annotations route refusing every
+# read.
 mkdir "$work/bin"
+# The real sleep, for the stand-in gh's slow mode below: the `sleep` this PATH gets is a no-op.
+real_sleep=$(command -v sleep)
 cat > "$work/bin/gh" <<GH
 #!/usr/bin/env bash
 set -euo pipefail
@@ -48,6 +51,10 @@ case "\$*" in
     if [ ! -e "$work/check-runs" ]; then echo "HTTP 502" >&2; exit 1; fi
     cat "$work/check-runs" ;;
   *"/check-runs/"*"/annotations"*)
+    if [ -e "$work/refuse-annotations" ]; then echo "HTTP 502" >&2; exit 1; fi
+    # A case that writes \$work/slow makes every annotations read take two seconds, so
+    # runner-shutdown.sh's deadline is reached part way down its list.
+    if [ -e "$work/slow" ]; then "$real_sleep" 2; fi
     id=
     for arg in "\$@"; do
       case \$arg in
@@ -63,6 +70,16 @@ case "\$*" in
 esac
 GH
 chmod +x "$work/bin/gh"
+
+# runner-shutdown.sh reads through retry_fetch (.github/scripts/ci-retry.sh), which sleeps 10,
+# 20, 40 and 80 seconds between its five attempts. Those waits are ci-retry.test.sh's to prove,
+# by measuring them; here they would add 150 s to each case that exhausts a retry, so `sleep` is
+# a no-op on this PATH.
+cat > "$work/bin/sleep" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$work/bin/sleep"
 
 # check_runs <job>[=<run id>]...: the check runs on the head, as the commit's check-runs route
 # lists them, each job's own numbered in the order given and carrying the details_url of run 41
@@ -91,8 +108,9 @@ annotations() {
   printf '%s\n' "$@" | jq -R '{annotation_level: "failure", message: .}' > "$work/annotations.$id"
 }
 
-# Every case but the last four runs over a head whose check runs carry no annotation at all, so
-# nothing of it is read as a runner shutdown and a failure is a failure.
+# Every case before "a selected job whose runner was shut down under it" runs over a head whose
+# check runs carry no annotation at all, so nothing of it is read as a runner shutdown and a
+# failure is a failure; from that case on, a case writes the annotations it reads.
 check_runs changes lint typecheck envoy-client worker-image docs smoke-gate contracts
 
 selected_by='{"typecheck": "typecheck", "envoy-client": "envoy_client", "worker-image": "worker_image", "docs": "docs"}'
@@ -138,11 +156,11 @@ unmatched_selects=$(with_verdicts "$selects" \
 # run_ci_ok <needs> [<event>] [<always run>]: sets out and status. The event defaults to
 # pull_request and the always-run list to ci.yaml's own two jobs. The GitHub half of the
 # environment is the ci-ok job's own, pointed at the stand-in above: the head its check runs are
-# on, the run they must belong to, and gh-read.sh's retry delay turned off.
+# on, the run they must belong to, and the stand-in `sleep` above that turns retry_fetch's waits off.
 run_ci_ok() {
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
-    GH_RETRY_SECONDS=0 HEAD_SHA=abc123 NEEDS=$1 EVENT=${2:-pull_request} SELECTED_BY=$selected_by \
+    HEAD_SHA=abc123 RUNNER_SHUTDOWN_READ_SECONDS=${read_seconds:-} NEEDS=$1 EVENT=${2:-pull_request} SELECTED_BY=$selected_by \
     PULL_REQUEST_ONLY=$pull_request_only ALWAYS_RUN=${3:-$always_run} "$script_dir/ci-ok.sh" 2>&1)
   status=$?
   set -e
@@ -436,8 +454,101 @@ check "fails" "$(is "$status" 1)"
 check "keeps it a failure" \
   "$(contains "$out" '^typecheck: failure (selected: needs.changes.outputs.typecheck is true)$')"
 
+echo "case: two jobs whose runners were shut down, both read inside the deadline"
+# runner-shutdown.sh reads every failed job's annotations while its deadline has not passed, so
+# a list the run reads whole is read as it always was, and no warning says it stopped.
+check_runs changes lint typecheck envoy-client worker-image docs
+annotations typecheck \
+  'The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.' \
+  'Process completed with exit code 143.'
+annotations worker-image \
+  'The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.' \
+  'Process completed with exit code 143.'
+run_ci_ok "$(needs success "$selects" success typecheck=failure envoy-client=skipped worker-image=failure docs=skipped)"
+check "reads the first as cancelled" \
+  "$(contains "$out" '^typecheck: cancelled (selected: needs.changes.outputs.typecheck is true)$')"
+check "and the second" \
+  "$(contains "$out" '^worker-image: cancelled (selected')"
+check "says nothing of a deadline" "$(is "$(contains "$out" 'stopped reading annotations')" false)"
+
+echo "case: the annotations deadline is reached part way down the list"
+# Each read takes two seconds and the deadline is one, so the first job's read starts before it
+# and the second's would start after it: the first is read and found killed, the second is not
+# read and stands as a failure, and the warning names both counts.
+touch "$work/slow"
+read_seconds=1
+run_ci_ok "$(needs success "$selects" success typecheck=failure envoy-client=skipped worker-image=failure docs=skipped)"
+read_seconds=
+rm -f "$work/slow"
+check "fails" "$(is "$status" 1)"
+check "reads the job it reached as cancelled" \
+  "$(contains "$out" '^typecheck: cancelled (selected: needs.changes.outputs.typecheck is true)$')"
+check "keeps the job it did not reach a failure" \
+  "$(contains "$out" '^worker-image: failure (selected')"
+check "says it stopped early, with the count reached and the count asked" \
+  "$(contains "$out" '::warning::runner-shutdown.sh stopped reading annotations at its 1 s deadline: it read 1 of the 2 failed job(s) it was asked about, so the 1 it did not reach stand as failures')"
+
+echo "case: with RUNNER_SHUTDOWN_READ_SECONDS unset, the annotations deadline is 180 s after the check runs are read"
+# The case above reaches the deadline through RUNNER_SHUTDOWN_READ_SECONDS. This one leaves it
+# unset, so the deadline is the figure runner-shutdown.sh writes, and moves bash's own clock
+# rather than waiting that figure out: runner-shutdown.sh is sourced into a bash of its own, with
+# the stand-in gh and sleep first on PATH, and a DEBUG trap, which `set -T` hands down into
+# runner_shutdown_kills, adds seconds to SECONDS just before the read bash is about to run when
+# that is the check-runs read or an annotations read. The deadline is read off SECONDS, so those
+# seconds count as spent. Both jobs carry the runner's two lines, so the function prints every
+# job it reads.
+check_runs changes lint typecheck envoy-client worker-image docs
+annotations typecheck \
+  'The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.' \
+  'Process completed with exit code 143.'
+annotations worker-image \
+  'The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.' \
+  'Process completed with exit code 143.'
+read -r -d '' clock_probe <<'SH' || true
+. "$1"
+advance() {
+  local step what
+  case $BASH_COMMAND in
+    '_runner_shutdown_check_runs=$(retry_fetch'*) step=$CHECK_RUNS_ADVANCE what='the check-runs read' ;;
+    'annotations=$(retry_fetch'*) step=$ANNOTATIONS_ADVANCE what='an annotations read' ;;
+    *) return 0 ;;
+  esac
+  SECONDS=$((SECONDS + step))
+  echo "clock: +$step s before $what" >&2
+}
+trap advance DEBUG
+set -T
+runner_shutdown_kills typecheck worker-image
+SH
+# clock_run <seconds before each annotations read> [<seconds before the check-runs read>]: sets
+# kills, the jobs runner_shutdown_kills printed, and kills_err, its standard error with the
+# probe's own clock lines.
+clock_run() {
+  set +e
+  kills=$(env -u RUNNER_SHUTDOWN_READ_SECONDS PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r \
+    GITHUB_RUN_ID=41 HEAD_SHA=abc123 ANNOTATIONS_ADVANCE="$1" CHECK_RUNS_ADVANCE="${2:-0}" \
+    bash -c "$clock_probe" clock-probe "$script_dir/runner-shutdown.sh" 2> "$work/clock.err")
+  set -e
+  kills_err=$(cat "$work/clock.err")
+}
+clock_run 170
+check "with 170 s before each annotations read, both jobs are read and printed" \
+  "$(is "$kills" $'typecheck\nworker-image')"
+check "and no warning says it stopped" "$(is "$(contains "$kills_err" 'stopped reading annotations')" false)"
+clock_run 180
+check "with 180 s before each, the first read spends the deadline and only that job is printed" \
+  "$(is "$kills" typecheck)"
+check "and the warning names the 180 s deadline and how many of the two it read" \
+  "$(contains "$kills_err" '^::warning::runner-shutdown.sh stopped reading annotations at its 180 s deadline: it read 1 of the 2 failed job(s) it was asked about, so the 1 it did not reach stand as failures$')"
+clock_run 170 1000
+check "the clock moved 1000 s before the check-runs read" \
+  "$(contains "$kills_err" '^clock: +1000 s before the check-runs read$')"
+check "and with 170 s before each annotations read after it, both jobs are still read and printed, so the deadline counts from the check-runs read" \
+  "$(is "$kills" $'typecheck\nworker-image')"
+check "and no warning says it stopped" "$(is "$(contains "$kills_err" 'stopped reading annotations')" false)"
+
 echo "case: GitHub refuses the check runs of this head"
-# The read is tried three times and the verdict is reached without it: a read that did not
+# The read is tried five times and the verdict is reached without it: a read that did not
 # happen is no evidence that the platform killed anything, so the failure stands as a failure
 # and the warning says why the two could not be told apart.
 rm -f "$work/check-runs"
@@ -446,6 +557,22 @@ check "fails" "$(is "$status" 1)"
 check "keeps it a failure" \
   "$(contains "$out" '^typecheck: failure (selected: needs.changes.outputs.typecheck is true)$')"
 check "warns that it could not tell a shutdown from a failure" \
-  "$(contains "$out" '::warning::GitHub refused the check runs on abc123 three times')"
+  "$(contains "$out" '::warning::GitHub refused the check runs on abc123 five times')"
+
+echo "case: GitHub refuses the annotations of a failed job"
+# The check runs are read and typecheck's annotations read is refused, all five attempts of it:
+# its check run carries the runner's two lines, but a read that did not happen is no evidence of
+# them, so the failure stands as a failure and the warning names the job it could not read.
+check_runs changes lint typecheck envoy-client worker-image docs
+annotations typecheck \
+  'The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.' \
+  'Process completed with exit code 143.'
+touch "$work/refuse-annotations"
+run_ci_ok "$(needs success "$selects" success typecheck=failure envoy-client=skipped worker-image=success docs=skipped)"
+rm -f "$work/refuse-annotations"
+check "fails" "$(is "$status" 1)"
+check "keeps it a failure" "$(contains "$out" '^typecheck: failure (selected')"
+check "warns that it could not read the job's annotations, naming the job" \
+  "$(contains "$out" '::warning::GitHub refused the annotations of typecheck five times, so its failure cannot be read as a runner shutdown; it stands as a failure')"
 
 summary "ci-ok.sh fails unless every job changes selected succeeded"

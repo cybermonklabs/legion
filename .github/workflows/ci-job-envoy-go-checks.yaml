@@ -55,7 +55,20 @@ jobs:
     # same listener build (.github/workflows/ci-caches.yaml fills it on a push to main). Without
     # it the pack step would recompile the set per architecture from nothing on every push, which
     # is the runner time this change exists to cut.
-    timeout-minutes: 30
+    #
+    # Budget (ci-budgets.md's Budgets note): 1800 s, the 30 minutes the paragraph above derives and
+    # the budget this job was written with, plus its slowest retried step alone: setup-bun's two
+    # `ci_tools_fetch` calls, 3416 s, above the ci-ok report's 2160 s, the Go module download and
+    # the workspace install at 1050 s each, and the two steps that run scripts outside
+    # .github/scripts/: the cluster test's 1423 s (render-nats.sh's one retried fetch, the helm
+    # install at 5 x 180 + 150 = 1050 s, beside the 373 s that step measured) and the pack's
+    # 1087 s (go-third-party-notices.sh's install of go-licenses at that same 1050 s, beside the
+    # 37 s the pack measured). 1800 + 3416 = 5216 s -> 87 min. The gate reads no script outside
+    # .github/scripts/, so it prices neither of those two steps: their figures are a reader's,
+    # derived in .github/ci-notes/ci-job-envoy-go-checks.md, and dispatch://INFRA-2899 owns the
+    # reach that would make them the check's. The 3416 is the check's own, and rule 8's
+    # job-derivation clause refused this key until it carried it.
+    timeout-minutes: 87
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -72,9 +85,16 @@ jobs:
       # Go toolchain". The checkout removes the problem matcher it adds before it ends, so no
       # matcher of an earlier step reads the check's lines (README.md, "What the runner reads from
       # the check's lines"). A refused note set fails the job before its other checks run.
+      # Its own retry arithmetic, which is the action's: the Go modules at the module bound,
+      # 5 x 180 + 150 = 1050 s, beside the 13 s it measured on a cache miss in run 43553309875,
+      # before its fetch was split out of its build; the split fetch is `go list -deps` of the
+      # command, which fetches only the two modules that build fetched itself, so that 13 s holds
+      # the same work (the fetch alone took 6 s on an empty cache in a pod).
+      # 13 + 1050 = 1063 s -> 18 min.
       - id: architecture-notes
         name: Check this repository's architecture notes with the composite action
         uses: ./.github/actions/architecture-check
+        timeout-minutes: 18
       # A caller reads the count through env, never inside run:, and so does this step. It runs
       # only when the action succeeded, which without allow-empty means a valid set of one note or
       # more, so a count that is missing or not a positive whole number is the action's fault.
@@ -93,9 +113,15 @@ jobs:
       # matcher again and it removes it again. Main holds no spec file yet, so the directory does
       # not exist and allow-empty reads it as the empty tree; a pull request that adds a spec file
       # is judged by every rule. A refused tree fails the job before its other checks run.
+      # Its own retry arithmetic, which is the action's, through the build script both actions
+      # run (.github/scripts/build-envoy-command.sh): the Go modules at the module bound,
+      # 5 x 180 + 150 = 1050 s, beside the 47 s the fetch and the build took on empty caches in a
+      # 2-CPU pod (9 s and 38 s, that script's header), since no CI run has measured this step yet.
+      # 47 + 1050 = 1097 s -> 19 min.
       - id: spec-files
         name: Check this repository's spec files with the composite action
         uses: ./.github/actions/spec-check
+        timeout-minutes: 19
         with:
           allow-empty: 'true'
       # It runs only when the action succeeded: a valid tree, or with allow-empty the empty one, so
@@ -109,8 +135,17 @@ jobs:
             exit 1
           fi
           echo "The spec-check action read $COUNT statements."
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+        timeout-minutes: 57
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -123,6 +158,16 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      # The modules this job's builds compile, downloaded once and retried before the first of
+      # them (ci-budgets.md's Retries note; the retried unit is the download, never the build).
+      # 180 s per attempt, as that note derives. The restore above makes the common run cost
+      # nothing.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       - name: Check Go formatting
         run: |
           unformatted=$(gofmt -l .)
@@ -208,6 +253,9 @@ jobs:
         run: bash loadtest/common.test.sh
         working-directory: packages/envoy
       - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
+        # why: .github/ci-notes/ci-job-envoy-go-checks.md#the-two-steps-whose-scripts-the-gate-does-not-read
+        # 373 + 1050 = 1423 s -> 24 min.
+        timeout-minutes: 24
         run: bash loadtest/cluster/cluster.test.sh
         working-directory: packages/envoy
       - name: Test loadtest/vm/vm.sh, the load-test deployment's driver (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
@@ -275,6 +323,9 @@ jobs:
         working-directory: packages/envoy
       # The release's archives (release-envoy-listener.yaml), THIRD_PARTY_NOTICES included.
       - name: Pack envoy binaries
+        # why: .github/ci-notes/ci-job-envoy-go-checks.md#the-two-steps-whose-scripts-the-gate-does-not-read
+        # 37 + 1050 = 1087 s -> 19 min.
+        timeout-minutes: 19
         run: |
           for arch in $(jq -r '.envoy[]' ../../.github/go-release-targets.json); do
             out="../../out/pr-artifacts/envoy-$arch"
@@ -293,6 +344,8 @@ jobs:
             out/pr-artifacts/legion-envoy-arm64.tar.gz
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-go-checks

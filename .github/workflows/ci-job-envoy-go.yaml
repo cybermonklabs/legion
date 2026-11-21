@@ -48,7 +48,14 @@ jobs:
     # own, and its comment below says why 30); after that step's 30 at most, natslive's default
     # 10, the bus matrix's own 5 and the auth service's own 5 are 106, the integration step's 5 is
     # less, and the callout check's own 6, after the seconds those two steps measure, is less too.
-    timeout-minutes: 110
+    #
+    # Budget (ci-budgets.md's Budgets note): 6600 s, the 110 minutes main's #4456 gives this job,
+    # above the 106 the paragraph above derives and the 1376 s it measured at most before that
+    # change added the skip counter's test, plus its slowest retried step alone — the setup-bun
+    # step's two `ci_tools_fetch` calls, 3416 s, above packages/envoy's `go mod download` and the
+    # workspace install at 5 x 180 + 150 = 1050 s each and the ci-ok report's 2160 s.
+    # 6600 + 3416 = 10016 s -> 167 min.
+    timeout-minutes: 167
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -73,8 +80,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+        timeout-minutes: 57
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -91,6 +107,15 @@ jobs:
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # The module the steps below test and build, downloaded once and retried before the
+      # first of them (ci-budgets.md's Retries note; the retried unit is the download, never the
+      # build and never the test). 180 s per attempt, as that note derives.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       # The server's version and the pgvector version it offers, read from the service itself, so
       # the run shows which Postgres the tests below ran on.
       - name: Postgres service version
@@ -279,6 +304,8 @@ jobs:
         working-directory: packages/envoy
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-go

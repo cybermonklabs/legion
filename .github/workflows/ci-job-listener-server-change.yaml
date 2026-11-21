@@ -32,7 +32,12 @@ env:
 jobs:
   listener-server-change:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    # Budget (ci-budgets.md's Budgets note): 1800 s, the 30 minutes this job carried, above its
+    # 251 s measured maximum and holding the step's own `-timeout 15m`, plus its slowest
+    # retried step alone — the ci-ok report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"), above
+    # packages/envoy's `go mod download` at 5 x 180 + 150 = 1050 s. 1800 + 2160 = 3960 s, a whole number of
+    # minutes, so the budget is the next one strictly above it -> 67 min.
+    timeout-minutes: 67
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -50,6 +55,17 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      # The module the soak builds, downloaded once and retried before it (ci-budgets.md's
+      # Retries note). 180 s per attempt, 1.6 times the 113 s of the slowest cold run measured
+      # (packages/envoy/infra; packages/envoy 77 s, on an empty module cache on 2026-11-07), and
+      # an attempt the bound kills leaves what it fetched for the next one; the restore above
+      # makes the common run cost nothing.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       - name: Server-change soak of the listener
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh serverchange ./cmd/listener)
@@ -57,6 +73,8 @@ jobs:
         working-directory: packages/envoy
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: listener-server-change

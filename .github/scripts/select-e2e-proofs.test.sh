@@ -51,6 +51,7 @@ fixture() {
       "bun": true,
       "evidence_variable": "ALPHA_PROOF_EVIDENCE_DIR",
       "timeout_minutes": 25,
+      "run_timeout_minutes": 12,
       "why_hosted": "it takes a checkout, go and the job's database, and starts no container",
       "jj": true
     },
@@ -61,6 +62,7 @@ fixture() {
       "bun": false,
       "evidence_variable": "",
       "timeout_minutes": 20,
+      "run_timeout_minutes": 8,
       "why_hosted": "it takes a checkout and go, and keeps its work directory",
       "jj": false
     }
@@ -167,7 +169,7 @@ check "exits 0" "$(is "$status" 0)"
 check "says what it selected" "$(contains "$out" '^1 proof(s): alpha-proof.sh$')"
 check "one entry" "$(is "$(proof_count)" 1)"
 check "the entry carries every key the matrix reads" \
-  "$(is "$(proof_keys 0)" "apt,bun,evidence_variable,go_version_file,jj,proof,script,timeout_minutes")"
+  "$(is "$(proof_keys 0)" "apt,bun,evidence_variable,go_version_file,jj,proof,run_timeout_minutes,script,timeout_minutes")"
 check "script is the row's" "$(is "$(proof_field 0 script)" alpha-proof.sh)"
 check "proof is that name without its .sh" "$(is "$(proof_field 0 proof)" alpha-proof)"
 check "go_version_file is the row's" "$(is "$(proof_field 0 go_version_file)" packages/example/go.mod)"
@@ -176,6 +178,7 @@ check "bun is a boolean" "$(is "$(proof_field 0 bun)" true)"
 check "jj is a boolean" "$(is "$(proof_field 0 jj)" true)"
 check "evidence_variable is the row's" "$(is "$(proof_field 0 evidence_variable)" ALPHA_PROOF_EVIDENCE_DIR)"
 check "timeout_minutes is a whole number" "$(is "$(proof_field 0 timeout_minutes)" 25)"
+check "run_timeout_minutes is a whole number" "$(is "$(proof_field 0 run_timeout_minutes)" 12)"
 run_select "$root" workflow_dispatch alpha-proof.sh
 check "a name given with its .sh selects the same row" "$(is "$(proof_field 0 script)" alpha-proof.sh)"
 run_select "$root" workflow_dispatch "  alpha-proof  "
@@ -189,6 +192,7 @@ check "every hosted row, in name order" "$(is "$(proof_scripts)" "alpha-proof.sh
 check "says how many and which" "$(contains "$out" '^2 proof(s): alpha-proof.sh, beta-proof.sh$')"
 check "a row with no package carries an empty apt" "$(is "$(proof_field 1 apt)" "")"
 check "and the row's own limit" "$(is "$(proof_field 1 timeout_minutes)" 20)"
+check "and its proof step's own limit" "$(is "$(proof_field 1 run_timeout_minutes)" 8)"
 run_select "$root" pull_request
 check "the e2e label selects the same rows" "$(is "$(proof_scripts)" "alpha-proof.sh beta-proof.sh")"
 
@@ -200,7 +204,7 @@ check "fails" "$(is "$status" 1)"
 check "names the file and the row" \
   "$(contains "$out" '^::error file=.github/e2e-scripts.json::hosted row alpha-proof.sh lacks jj\.')"
 check "names the remedy and every key the matrix reads" \
-  "$(contains "$out" 'Add each one: the matrix e2e.yaml.s proof job runs reads script, go_version_file, apt, bun, jj, evidence_variable, timeout_minutes\.$')"
+  "$(contains "$out" 'Add each one: the matrix e2e.yaml.s proof job runs reads script, go_version_file, apt, bun, jj, evidence_variable, timeout_minutes, run_timeout_minutes\.$')"
 check "and reaches no traceback" "$(is "$(contains "$out" Traceback)" false)"
 check "and writes no matrix" "$(is "$proofs" "")"
 
@@ -249,6 +253,54 @@ write_row_key "$root" hosted 0 jj 1
 run_select "$root" schedule
 check "a jj that is a number fails" "$(is "$status" 1)"
 check "and is named" "$(contains "$out" 'has jj 1, which is not a boolean. Write jj as a boolean.')"
+
+echo "case: run_timeout_minutes, the limit of the step that runs the script"
+root=$(fixture missing-run-timeout)
+drop_row_key "$root" hosted 0 run_timeout_minutes
+run_select "$root" schedule
+check "a row with no run_timeout_minutes fails" "$(is "$status" 1)"
+check "names the file, the row and the key" \
+  "$(contains "$out" '^::error file=.github/e2e-scripts.json::hosted row alpha-proof.sh lacks run_timeout_minutes\.')"
+check "and reaches no traceback" "$(is "$(contains "$out" Traceback)" false)"
+check "and writes no matrix" "$(is "$proofs" "")"
+
+root=$(fixture quoted-run-timeout)
+write_row_key "$root" hosted 0 run_timeout_minutes '"12"'
+run_select "$root" schedule
+check "a quoted run_timeout_minutes fails" "$(is "$status" 1)"
+check "names the row, the key and what it must hold" \
+  "$(contains "$out" "^::error file=.github/e2e-scripts.json::hosted row alpha-proof.sh has run_timeout_minutes '12', which is not a whole number. Write run_timeout_minutes as a whole number.$")"
+check "and is not compared with the job's limit as well" \
+  "$(is "$(contains "$out" 'not below its timeout_minutes')" false)"
+check "and reaches no traceback" "$(is "$(contains "$out" Traceback)" false)"
+
+root=$(fixture fraction-run-timeout)
+write_row_key "$root" hosted 0 run_timeout_minutes 12.5
+run_select "$root" schedule
+check "a run_timeout_minutes with a fraction fails" "$(is "$status" 1)"
+check "and is named" "$(contains "$out" 'hosted row alpha-proof.sh has run_timeout_minutes 12\.5, which is not a whole number')"
+
+root=$(fixture equal-run-timeout)
+write_row_key "$root" hosted 0 run_timeout_minutes 25
+run_select "$root" schedule
+check "a run_timeout_minutes equal to the row's timeout_minutes fails" "$(is "$status" 1)"
+check "names the file, the row, both limits and the remedy" \
+  "$(contains "$out" "^::error file=.github/e2e-scripts.json::hosted row alpha-proof.sh has run_timeout_minutes 25, which is not below its timeout_minutes 25: the job's limit would cut the step that runs the script before that step's own limit names it. Write run_timeout_minutes below timeout_minutes, each as the file's comment derives it.$")"
+check "and reaches no traceback" "$(is "$(contains "$out" Traceback)" false)"
+check "and writes no matrix" "$(is "$proofs" "")"
+
+root=$(fixture above-run-timeout)
+write_row_key "$root" hosted 1 run_timeout_minutes 30
+run_select "$root" schedule
+check "a run_timeout_minutes above the row's timeout_minutes fails" "$(is "$status" 1)"
+check "and is named" \
+  "$(contains "$out" '^::error file=.github/e2e-scripts.json::hosted row beta-proof.sh has run_timeout_minutes 30, which is not below its timeout_minutes 20:')"
+
+root=$(fixture just-below-run-timeout)
+write_row_key "$root" hosted 0 run_timeout_minutes 24
+run_select "$root" workflow_dispatch alpha-proof
+check "a run_timeout_minutes one minute below timeout_minutes passes" "$(is "$status" 0)"
+check "and is carried as the row gives it" "$(is "$(proof_field 0 run_timeout_minutes)" 24)"
 
 echo "case: a row that is not an object, or that has no script string"
 root=$(fixture row-not-object)
@@ -402,7 +454,7 @@ for name in $hosted_scripts; do
   check "a workflow_dispatch of $name passes" "$(is "$status" 0)"
   check "  and emits that row alone" "$(is "$(proof_scripts)" "$name")"
   check "  with every key the matrix reads" \
-    "$(is "$(proof_keys 0)" "apt,bun,evidence_variable,go_version_file,jj,proof,script,timeout_minutes")"
+    "$(is "$(proof_keys 0)" "apt,bun,evidence_variable,go_version_file,jj,proof,run_timeout_minutes,script,timeout_minutes")"
 done
 
 summary "select-e2e-proofs.sh"

@@ -13,7 +13,8 @@
 #          two directories the action's cache steps restore and save. The build is
 #          .github/scripts/build-envoy-command.sh, the one build of both composite actions of
 #          this repository, which holds the settings that keep the caller's job out of it. It
-#          exits with go build's status.
+#          fetches the modules the command loads first, retried, and exits with the retry's
+#          status when every attempt failed, and with go build's otherwise.
 #   run    Runs `spec-check tree --dir <dir>` with that binary, <dir> being SPEC_CHECK_PATH
 #          resolved against GITHUB_WORKSPACE (an absolute path stays as it is), with --allow-empty
 #          when SPEC_CHECK_ALLOW_EMPTY is `true`. The binary's standard error goes to the log, and

@@ -20,17 +20,19 @@
 # test and worker image".
 set -euo pipefail
 
-# pair_member <version output> <tag prefix>: the version npm carries for the plugin in
-# this run. This step's own dispatch is which that is: the version the plugin releases,
-# or, when it skips, nothing, and release-push.sh pair-version then reads the version of
-# its newest tag, which is what npm carries. A newest tag whose name is not <tag
-# prefix>X.Y.Z, and no such tag at all, print nothing, which the guards below refuse.
-pair_member() {
-  local released=''
+# released_of <version output>: what this step's own dispatch says the plugin releases
+# in this run, which is its version, or, when it skips, nothing. release-push.sh
+# pair-version <tag prefix> turns that into the version npm carries for the plugin:
+# the version it is given, or, given nothing, the version of the plugin's newest tag,
+# which is what npm carries. A newest tag whose name is not <tag prefix>X.Y.Z, and no
+# such tag at all, print nothing, which the guards below refuse. Each pair-version
+# call is written where its version is resolved rather than inside a function, so
+# .github/scripts/check-download-retry.sh reads both as runs this step waits for
+# (dispatch://INFRA-1545, round 37).
+released_of() {
   if [ "$(sed -n 's/^skip=//p' <<<"$1")" != true ]; then
-    released=$(sed -n 's/^version=//p' <<<"$1")
+    sed -n 's/^version=//p' <<<"$1"
   fi
-  .github/scripts/release-push.sh pair-version "$2" "$released"
 }
 # The plugins' own build jobs write their "No release published" summary lines; with
 # GITHUB_STEP_SUMMARY empty these two calls write none into this job's summary.
@@ -38,8 +40,8 @@ pair_member() {
 envoy=$(GITHUB_STEP_SUMMARY='' .github/scripts/release-push.sh version pi-envoy-v $PI_ENVOY_VERSION_ARGS)
 # shellcheck disable=SC2086 # $PI_LEGION_VERSION_ARGS is the argument list, split on purpose
 legion=$(GITHUB_STEP_SUMMARY='' .github/scripts/release-push.sh version pi-legion-v $PI_LEGION_VERSION_ARGS)
-envoy_version=$(pair_member "$envoy" pi-envoy-v)
-legion_version=$(pair_member "$legion" pi-legion-v)
+envoy_version=$(.github/scripts/release-push.sh pair-version pi-envoy-v "$(released_of "$envoy")")
+legion_version=$(.github/scripts/release-push.sh pair-version pi-legion-v "$(released_of "$legion")")
 if [ -z "$legion_version" ]; then
   echo "::error::Could not resolve @sjawhar/pi-legion version"
   exit 1

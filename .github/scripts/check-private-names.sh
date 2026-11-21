@@ -481,8 +481,8 @@ run() {
 # example host, a host under the reserved example tailnet, the NATS client's property in the
 # bundle that vendors it, or one of the two Lean names, which are read in the match's own case.
 allowed() {
-  local match=${2,,}
-  [[ $match =~ ^($allowed_host)$ || $match =~ ^($allowed_tailnet_host)$ ]] && return
+  local match=${2,,} host="^($allowed_host)\$" tailnet_host="^($allowed_tailnet_host)\$"
+  [[ $match =~ $host || $match =~ $tailnet_host ]] && return
   [[ $2 =~ ^$namespace_host || $2 =~ ^$lean_option$ ]] && return
   [[ $1 == "$vendored_nats" && $match =~ ^$vendored_property$ ]]
 }

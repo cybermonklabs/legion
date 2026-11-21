@@ -77,7 +77,18 @@ number=$(jq -er '.number' "$pull")
 base=$(jq -er '.base.sha' "$pull")
 head=$(jq -er '.head.sha' "$pull")
 live="$work/live.json"
-gh api "repos/$repository/pulls/$number" > "$live"
+# Every read of the API below retries: .github/scripts/ci-retry.sh makes five bounded attempts,
+# the last starting 150 s after the first, so a refusal costs this lane a wait rather than the
+# required pr-title check (dispatch://INFRA-1545, R1). Each read's redirection is this shell's
+# own and is applied once: the helper buffers every attempt's output and prints the successful
+# attempt's alone, so no refused attempt's body reaches the file.
+#
+# 30 s per attempt, for each of the three: the bound that file derives there for one page of a
+# REST route — a JSON read of about 3 s, so ten times what the call takes — which none of these
+# three reads is larger than.
+# shellcheck source=.github/scripts/ci-retry.sh
+. "$script_dir/ci-retry.sh"
+retry_fetch "the pull request" 30 -- gh api "repos/$repository/pulls/$number" > "$live"
 if ! jq -e '(.title | type == "string") and (.head.ref | type == "string")' "$live" > /dev/null 2>&1; then
   echo "::error::the pull request route answered no title and head branch for #$number" >&2
   exit 1
@@ -95,7 +106,8 @@ fi
 # that parameter, and asks for the largest page GitHub serves; `--paginate` then reads every page
 # it creates, printing one JSON object per page, each repeating total_commits.
 compare_json="$work/compare.json"
-gh api "repos/$repository/compare/$base...$head?per_page=100" --paginate > "$compare_json"
+retry_fetch "the pull request's commits" 30 -- \
+  gh api "repos/$repository/compare/$base...$head?per_page=100" --paginate > "$compare_json"
 total_commits=$(jq -s '.[0].total_commits // empty' "$compare_json")
 if ! [[ $total_commits =~ ^[0-9]+$ ]]; then
   echo "::error::the compare route's answer for $base...$head names no whole-number" \
@@ -129,7 +141,8 @@ read_list() {
   local kind=$1 route=$2 page=1 id trust association body
   mkdir "$text/$kind"
   while :; do
-    gh api "repos/$repository/$route?per_page=100&page=$page" > "$work/answer"
+    retry_fetch "page $page of the $route route" 30 -- \
+      gh api "repos/$repository/$route?per_page=100&page=$page" > "$work/answer"
     if ! jq -e 'type == "array"' "$work/answer" > /dev/null 2>&1; then
       echo "::error::page $page of the $route route is not a list, so its ${kind}s cannot be" \
         "checked" >&2
@@ -219,7 +232,12 @@ fi
 key_status=0
 cutoff_file=.github/issue-key-cutoff
 base_ref=$(jq -r '.base.ref // "main"' "$live")
-gh api "repos/$repository/commits?path=$cutoff_file&sha=$base_ref&per_page=100" --paginate \
+# The rule's four reads of the API retry as the three above do, each at 30 s an attempt: measured
+# 2026-11-19 from a Legion pod, the commits that touch the marker answered in 1.0 s, one release
+# in 0.9 s, #4348's commit with its 73 files in 1.1 s and the files of a pull request of 119 files
+# and 1,090,069 bytes, two pages, in 1.7 s, so the largest of them takes under a sixth of its bound.
+retry_fetch "the commits that touch $cutoff_file" 30 -- \
+  gh api "repos/$repository/commits?path=$cutoff_file&sha=$base_ref&per_page=100" --paginate \
   > "$work/cutoff-commits"
 skill_commit=$(jq -s -r '[.[][]] | last | .sha // empty' "$work/cutoff-commits")
 cutoff=''
@@ -267,11 +285,18 @@ else
     first_tag='' first_published=''
     while IFS= read -r tag; do
       # A tag can exist before its release does, and a draft is no release: either is skipped.
-      if ! gh api "repos/$repository/releases/tags/$tag" > "$work/release" 2> "$work/gh-error"; then
-        if grep -q -F '(HTTP 404)' "$work/gh-error"; then continue; fi
+      # A 404 is GitHub's answer that the release does not exist, not a refusal to retry, so the
+      # shell retry_fetch runs exits 0 on gh's `(HTTP 404)`: that tag costs one call, and a read
+      # that got no answer (a 5xx, a reset, a timeout) is retried as every read here is. Each
+      # attempt rewrites gh-error, so the last one's message is what UNKNOWN names.
+      # shellcheck disable=SC2016 # the shell retry_fetch runs expands $1, $2 and $status
+      if ! retry_fetch "the release of $tag" 30 -- bash -c \
+        'gh api "$1" 2> "$2" || { status=$?; grep -q -F "(HTTP 404)" "$2" && exit 0; exit "$status"; }' \
+        release-read "repos/$repository/releases/tags/$tag" "$work/gh-error" > "$work/release"; then
         unknown "GitHub did not answer for the release of $tag ($(head -n 1 "$work/gh-error"))"
         break
       fi
+      if grep -q -F '(HTTP 404)' "$work/gh-error"; then continue; fi
       published=$(jq -r 'select(.draft == false) | .published_at // empty' "$work/release")
       [ -n "$published" ] || continue
       if [ -z "$first_tag" ]; then
@@ -610,7 +635,8 @@ AWK
     fi
     stage="$work/stage-$short"
     mkdir "$stage"
-    gh api "repos/$repository/commits/$sha?per_page=100" --paginate > "$work/commit-$short"
+    retry_fetch "the files of commit $short" 30 -- \
+      gh api "repos/$repository/commits/$sha?per_page=100" --paginate > "$work/commit-$short"
     files=$(jq -s '[.[].files[]] | length' "$work/commit-$short")
     listed=$(jq -s '[.[].files[] | .changes] | add // 0' "$work/commit-$short")
     total=$(jq -s '.[0].stats.total // -1' "$work/commit-$short")
@@ -642,7 +668,8 @@ AWK
   if [ "$merges" -gt 0 ]; then
     stage="$work/stage-net"
     mkdir "$stage"
-    gh api "repos/$repository/pulls/$number/files?per_page=100" --paginate > "$work/pr-files-pages"
+    retry_fetch "the files of #$number" 30 -- \
+      gh api "repos/$repository/pulls/$number/files?per_page=100" --paginate > "$work/pr-files-pages"
     jq -s '{files: [.[][]]}' "$work/pr-files-pages" > "$work/pr-files"
     files=$(jq '.files | length' "$work/pr-files")
     listed=$(jq '[.files[] | .changes] | add // 0' "$work/pr-files")

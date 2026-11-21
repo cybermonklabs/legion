@@ -32,7 +32,19 @@ env:
 jobs:
   envoy-smoke:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # Budget (ci-budgets.md's Budgets note): 1200 s, the 20 minutes this job carried, above its
+    # 691 s measured maximum, which holds its two image builds (203 s and 11 s in job
+    # 133743044741), plus its slowest retried step alone. That is the listener image's build
+    # step, priced at the longest single ladder of the Dockerfile it builds, since a build runs
+    # its fetches one after another and pays a fault window once, through the first fetch that
+    # meets it (.github/scripts/check-download-retry.sh, rule 10): the `bun install` and the
+    # `go mod download` of packages/envoy/docker/Dockerfile, at 5 x 600 + 150 = 3150 s each;
+    # the held-port image's `go mod download` is the same 3150 s. Both are above the ci-ok
+    # report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"), the Go module
+    # download, whose two calls for packages/envoy and packages/envoy/infra are
+    # 2 x (5 x 180 + 150) = 2100 s, install-pulumi's 1708 s and the docker provider plugin's
+    # 1708 s. 1200 + 3150 = 4350 s -> 73 min.
+    timeout-minutes: 73
     env:
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
       # clean up, and its image would be one more registry pull a test could fail on.
@@ -50,6 +62,23 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
+      # Both modules this job compiles on the host: packages/envoy for the smoke test, and
+      # packages/envoy/infra, a workspace of its own, for the live tests and the plugin build.
+      # Downloaded once and retried before any of them (ci-budgets.md's Retries note; the retried
+      # unit is the download, never the build and never the test). 180 s per attempt: cold
+      # `go mod download` runs measured 77 s for packages/envoy and 113 s for
+      # packages/envoy/infra on an empty module cache on 2026-11-07, so the bound is 1.6 times
+      # the slower of the two, and an attempt it kills leaves what it fetched in the module
+      # cache for the next one to resume from. This job restores no module cache, so this is
+      # where its modules arrive. The image builds below download inside the image.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: two calls, 2 x (5 x 180 + 150) = 2100 s, a whole number of
+        # minutes, so the budget is the next one strictly above it -> 36 min.
+        timeout-minutes: 36
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+          retry_fetch "packages/envoy/infra's Go modules" 180 -- go -C packages/envoy/infra mod download
       # Every image the build or the test starts (testnats.HubImage and the smoke image's base
       # images) is pulled first, for the reason .github/actions/pull-test-images gives. Every
       # FROM of docker/Dockerfile names a digest and no ARG, so the substitution below expands
@@ -139,6 +168,9 @@ jobs:
       # first consumer pins. Each download is checked against its SHA-256 before it is unpacked or
       # installed.
       - name: Install the Pulumi CLI
+        # install-pulumi's own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's
+        # Budgets note) -> 29 min.
+        timeout-minutes: 29
         uses: ./.github/actions/install-pulumi
       # The `pulumi-docker` row of .github/ci-tools.yaml pins the version and the sha256 of that
       # tarball, and .github/scripts/check-ci-tools.sh holds the row's version to
@@ -150,6 +182,9 @@ jobs:
       # PULUMI_HOME of their own, so the CLI downloads none.
       - name: Download the docker provider plugin the live tests install
         id: docker-plugin
+        # Its own retry arithmetic, which is the action's: one `ci_tools_fetch`, 1708 s
+        # (ci-budgets.md's Budgets note) -> 29 min.
+        timeout-minutes: 29
         uses: ./.github/actions/install-docker-plugin
       # The live tests build container images on this runner's disk, and a job that runs out of
       # space says only that it did. The pair around the step measures it, and measures the two
@@ -193,6 +228,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-smoke

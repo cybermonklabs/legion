@@ -55,7 +55,15 @@
 #      gate: dispatch-browser.yaml's `lane`, which ci.yaml builds from the event and the pull
 #      request's labels, chooses which projects the browser suite runs, never whether it runs,
 #      and where such a value stands in for a gate the table declares, this rule's own first
-#      half refuses that gate. A `with:` value no condition reads gates nothing and is left alone,
+#      half refuses that gate. A `with:` value no condition reads gates nothing and is left alone.
+#      A gate is on a ci.yaml job (its if: tests the filter), on one step of that job's steps
+#      (`step`: that step's if: tests it), or, with `called_job`, on a whole job of the file that
+#      ci.yaml job calls, which is how ci-job-download-retry.yaml's two lanes are gated. A
+#      `called_job` gate is refused when the ci.yaml job it names does not call that file, when
+#      it also names a step, when the called job's own if: does not test the gate's filter
+#      through an input of its caller, and when no filter the caller's if: tests holds every
+#      pattern of the gate's filter, since a called job runs only inside a run of its caller and
+#      a change only the gate's filter matched would start neither,
 #   3. a job or step gated on a filter the table neither lists in GATES nor EXCLUDES, in ci.yaml
 #      or in a workflow it calls, where the filter is the one the resolved condition names,
 #   4. a run: line of a job of ci.yaml, or of a job of a workflow ci.yaml calls - which is where

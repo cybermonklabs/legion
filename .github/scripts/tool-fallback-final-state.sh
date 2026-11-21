@@ -18,11 +18,10 @@ set -euo pipefail
 
 # shellcheck source=.github/scripts/ci-tools.sh
 . .github/scripts/ci-tools.sh
-proof=.github/scripts/ci-tools-proof.sh
 wrong=""
-"$proof" version-answers crane "$(crane version)" || wrong="$wrong crane"
-"$proof" version-answers changie "$(changie --version)" || wrong="$wrong changie"
-"$proof" version-answers jj "$(jj --version)" || wrong="$wrong jj"
+.github/scripts/ci-tools-proof.sh version-answers crane "$(crane version)" || wrong="$wrong crane"
+.github/scripts/ci-tools-proof.sh version-answers changie "$(changie --version)" || wrong="$wrong changie"
+.github/scripts/ci-tools-proof.sh version-answers jj "$(jj --version)" || wrong="$wrong jj"
 ci_tools_verify jj "$HOME/.local/bin/jj" "the tool this job leaves on the runner" || wrong="$wrong jj"
 for taken in "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"; do
   if [ -e "$taken" ]; then

@@ -76,7 +76,13 @@ jobs:
     # About three times the cold measurement in the header, which is what a runner that restores
     # no build cache does on every run - the supervise pins' call, a quarter more cold time on
     # the pod that measured the five against the four, left that nearly as it was.
-    timeout-minutes: 15
+    #
+    # Budget (ci-budgets.md's Budgets note): those 15 minutes, 900 s, plus its slowest retried
+    # step alone — the ci-ok report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"),
+    # above the Go module download, two calls at 2 x (5 x 180 + 150) = 2100 s. 900 + 2160 =
+    # 3060 s, a whole number of minutes, so the budget is the next one strictly above it
+    # -> 52 min.
+    timeout-minutes: 52
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -87,6 +93,22 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
+      # The modules the five calls below compile, downloaded once and retried before the first
+      # of them (ci-budgets.md's Retries note; the retried unit is the download, never the
+      # build and never the test). Two calls: the root go.work binds packages/daemon and
+      # packages/envoy, so a download in packages/envoy reads both modules' requirements, and
+      # packages/envoy/infra is a workspace of its own, which the root go.work does not bind.
+      # 180 s per attempt, as that note derives; this job restores no cache (the header), so
+      # every run makes this download.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: two calls, 2 x (5 x 180 + 150) = 2100 s, a whole number
+        # of minutes, so the budget is the next one strictly above it -> 36 min.
+        timeout-minutes: 36
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+          retry_fetch "packages/envoy/infra's Go modules" 180 -- go -C packages/envoy/infra mod download
       - name: Check the text packages/envoy pins
         run: go test -count=1 ./internal/textcheck/
         working-directory: packages/envoy
@@ -129,6 +151,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: text-checks

@@ -233,8 +233,19 @@ WORKDIR /repo
 # jq: the same version and omp.extensions rewrites release.yaml's pi_envoy_build and pi_legion_build jobs run.
 # python3/make/g++: under Bun, better-sqlite3's install script in the install below ends in
 # node-gyp compiling it from source (oven-sh/bun#4290), and node-gyp needs all three.
+# Both fetches of this RUN retry: five attempts, the fifth starting 150 s after the first, each
+# attempt under a bound of its own. 120 s bounds an apt index read everywhere in this file, a few
+# megabytes from the Debian mirror, and a package set gets 300 s — except runtime-base's set,
+# whose own RUN says why it gets 600 s. `rm -rf` fetches nothing and stays bare.
+# Each `apt-get update` in this file also carries `-o APT::Update::Error-Mode=any`, which makes a
+# failed index read fail the command instead of warning and exiting 0: without it the retry has
+# nothing to retry. .github/scripts/check-download-retry.sh's rule 5 is the whole reason.
 # hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y --no-install-recommends jq python3 make g++ \
+RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
+    && retry 120 "apt-get update" apt-get update -o APT::Update::Error-Mode=any \
+    && retry 300 "apt-get install" apt-get install -y --no-install-recommends jq python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 COPY package.json bun.lock ./
 COPY patches patches
@@ -248,18 +259,38 @@ COPY packages/claude-envoy/package.json packages/claude-envoy/package.json
 COPY packages/proof-editor/package.json packages/proof-editor/package.json
 # proof-sdk-upstream is file:./proof-sdk-<commit>.tgz, a dependency of that manifest rather than a
 # registry fetch: the upstream editor sources, which the install below reads from the context.
+# The glob, not the file name the pinned commit is in, so raising that pin edits nothing here.
 COPY packages/proof-editor/proof-sdk-*.tgz packages/proof-editor/
+# What the glob costs, and the line that pays it. BuildKit builds every COPY source with
+# AllowWildcard and AllowEmptyWildcard (buildkit v0.26.1
+# frontend/dockerfile/dockerfile2llb/convert.go:1669-1670), and a wildcard matching nothing
+# copies nothing and returns no error (solver/llbsolver/file/backend.go:248-252), where a COPY of
+# an exact name the context does not hold fails at the cache key with `not found`. So the context
+# is held to exactly one tarball here: without this the build would reach `bun install` and spend
+# five attempts and 150 s of sleeps on a `file:` dependency no attempt can resolve. The tree's own
+# count is tests/one-upstream-tarball.test.ts; this is the context's, which a .dockerignore can
+# break where the tree is right. An unmatched pattern is left in `$1` by the shell, so it is
+# dropped before the count is taken and a context with no tarball is reported as the none it is.
+RUN set -- packages/proof-editor/proof-sdk-*.tgz; [ -e "$1" ] || set --; \
+    { [ "$#" -eq 1 ] && [ -f "$1" ]; } \
+    || { echo "the build context holds $# entries matching packages/proof-editor/proof-sdk-*.tgz, want one regular file" >&2; exit 1; }
 COPY packages/dispatch/package.json packages/dispatch/package.json
 COPY packages/test-fixtures/package.json packages/test-fixtures/package.json
 COPY packages/envoy/internal/dispatch/pmdoc/gen/package.json packages/envoy/internal/dispatch/pmdoc/gen/package.json
 COPY docs/site/package.json docs/site/package.json
-RUN bun install --frozen-lockfile
+# The workspace install is the largest fetch in this file: every dependency the root lockfile pins,
+# tens of megabytes of tarballs from the npm registry, so an attempt gets 600 s. The two frozen
+# installs below are a handful of packages each and get 300 s.
+RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
+    && retry 600 "bun install" bun install --frozen-lockfile
 # The playwright-core of the Playwright packages/dispatch locks, copied to /out/playwright-core:
 # the webkit-check stage launches this Playwright's WebKit. The install above uses Bun's isolated
 # linker, so playwright-core is not hoisted at /repo/node_modules, and
 # packages/daemon/docker/resolve-playwright-core.mjs finds it from packages/dispatch with Node's
 # module resolution (its header says how), so the check follows the version that package locks.
-# The RUN prints that version and the directory it found.
+# The RUN prints that version and the directory it found, and fetches nothing.
 RUN --mount=type=bind,source=packages/daemon/docker/resolve-playwright-core.mjs,target=/tmp/resolve-playwright-core.mjs \
     set -eu; \
     core="$(bun /tmp/resolve-playwright-core.mjs /repo/packages/dispatch/package.json)"; \
@@ -275,7 +306,11 @@ RUN --mount=type=bind,source=packages/daemon/docker/resolve-playwright-core.mjs,
 # (.github/scripts/check-bun-workspace-manifests.sh).
 WORKDIR /opt/omp-plugins
 COPY packages/daemon/docker/omp-plugins/package.json packages/daemon/docker/omp-plugins/bun.lock ./
-RUN bun install --frozen-lockfile --ignore-scripts
+# The install retries on the 300 s bound of a small frozen install (the workspace install above).
+RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
+    && retry 300 "bun install (omp plugins)" bun install --frozen-lockfile --ignore-scripts
 # CodeGraph CLI (@colbymchenry/codegraph), installed the same way, from the committed lockfile at
 # packages/daemon/docker/codegraph, a project of its own. `bin.codegraph` in the main npm package
 # is a thin `#!/usr/bin/env node` launcher shim that locates and execs the per-platform
@@ -291,8 +326,13 @@ RUN bun install --frozen-lockfile --ignore-scripts
 # LICENSE.
 WORKDIR /opt/codegraph-cli
 COPY packages/daemon/docker/codegraph/package.json packages/daemon/docker/codegraph/bun.lock ./
-RUN mkdir -p /out \
-    && bun install --frozen-lockfile --ignore-scripts \
+# The install retries on the same 300 s bound as the plugins' above; the copy out of node_modules
+# and the two version reads touch no network and stay bare.
+RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
+    && mkdir -p /out \
+    && retry 300 "bun install (codegraph cli)" bun install --frozen-lockfile --ignore-scripts \
     && cp -a node_modules/@colbymchenry/codegraph-linux-x64 /out/codegraph \
     && /out/codegraph/bin/codegraph --version \
     && /out/codegraph/node --version > /out/codegraph-node-version
@@ -365,12 +405,23 @@ ARG MISE_VERSION
 ARG MISE_SHA256
 ARG JJ_TOOL
 ARG GH_TOOL
+# Both fetches retry on this file's apt bounds, 120 s for the index read and 300 s for the set,
+# and the index read carries this file's error-mode option.
 # hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
+    && retry 120 "apt-get update" apt-get update -o APT::Update::Error-Mode=any \
+    && retry 300 "apt-get install" apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
+# The one fetch here is curl's, so it carries curl's own retry rather than the wrapper: 8 attempts
+# whose waits double from a second, the last starting 127 s after the first, each transfer bounded
+# at 120 s for a release archive of a few tens of megabytes, and -f so a persistent 504 fails the
+# build instead of writing the error body into the file the checksum then reads. The checksum, the
+# unpack and the install are local and stay bare.
 RUN set -eu; \
     t=/tmp/mise; mkdir -p "$t"; \
-    curl -fsSLo "$t/mise.tar.gz" \
+    curl -fsSL --retry 7 --retry-all-errors --max-time 120 -o "$t/mise.tar.gz" \
       "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64.tar.gz"; \
     printf '%s  %s\n' "$MISE_SHA256" "$t/mise.tar.gz" > "$t/SHA256SUMS"; \
     sha256sum --check --strict "$t/SHA256SUMS"; \
@@ -382,16 +433,31 @@ COPY .omp-pin /omp-pin
 # github_token (optional BuildKit secret): mise's github backend reads MISE_GITHUB_TOKEN; a shared
 # builder IP without it can hit GitHub's unauthenticated API limit (403). CI passes secrets.GITHUB_TOKEN;
 # a build without the secret still runs, unauthenticated.
+# Each `mise install` downloads its tool, so each retries: 600 s an attempt for the OMP fork
+# build, the largest of the three, and 300 s each for jj's and gh's release assets. What the
+# retry holds is the install, not a `mise x`: `mise x` only warns when it cannot resolve the tool
+# and then runs whatever binary of that name is already on PATH, so a retry around it waits for a
+# failure that never comes, and `mise install` is the half that fails (exit 1,
+# dispatch://INFRA-1545). The two `mise x` lines below read the path of what the install put on
+# disk — a local lookup, not a fetch, which is why they are bare — and they stay lookups rather
+# than `mise where` plus a guess because whether the binary sits at the install's root or under
+# its `bin/` differs by backend. `mise where`, the copy and the three version checks read what is
+# already on disk and stay bare too.
 RUN --mount=type=secret,id=github_token \
+    retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; }; \
     set -eu; \
     if [ -s /run/secrets/github_token ]; then \
       MISE_GITHUB_TOKEN="$(cat /run/secrets/github_token)"; export MISE_GITHUB_TOKEN; \
     fi; \
     pin="$(cat /omp-pin)"; \
-    mise x "$pin" -- omp --version; \
+    retry 600 "omp download" mise install "$pin"; \
     cp -r "$(mise where "$pin")" /opt/omp; \
     mkdir -p /opt/tools; \
+    retry 300 "jj download" mise install "$JJ_TOOL"; \
     install -m 0755 "$(mise x "$JJ_TOOL" -- sh -c 'command -v jj')" /opt/tools/jj; \
+    retry 300 "gh download" mise install "$GH_TOOL"; \
     install -m 0755 "$(mise x "$GH_TOOL" -- sh -c 'command -v gh')" /opt/tools/gh; \
     /opt/omp/bin/omp --version && /opt/tools/jj --version && /opt/tools/gh --version
 
@@ -428,14 +494,25 @@ RUN apk add --no-cache git
 # The notices stage's Go part: go-licenses (pinned in go-third-party-notices.sh) is built in a layer of
 # its own, before the module files, so neither a source change nor a dependency bump rebuilds it.
 COPY scripts/go-third-party-notices.sh /usr/local/bin/
-RUN go-third-party-notices.sh --install
+# go-licenses comes down and is built in one act (`go install …@v2.0.1`, inside the script), with no
+# download to separate out, so the retry wraps the script: 600 s an attempt, one module tree
+# fetched from the proxy and compiled.
+RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
+    && retry 600 "go-licenses install" go-third-party-notices.sh --install
 # gopls, in a layer of its own before the module files for the same reason: `go install pkg@version`
 # builds the module at that tag with its own go.mod, whatever this checkout's go.work says, so the
 # binary changes only with GOPLS_VERSION (or GO_VERSION), never with a commit.
 ARG GOPLS_VERSION
-RUN set -eu; \
+# gopls downloads and builds in one act too, so the retry wraps it on the same 600 s bound; `env`
+# carries the two variables, since the retry runs its argument list as a command. `mkdir` is local.
+RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; }; \
+    set -eu; \
     mkdir -p /out; \
-    CGO_ENABLED=0 GOBIN=/out go install "golang.org/x/tools/gopls@v${GOPLS_VERSION}"
+    retry 600 "gopls install" env CGO_ENABLED=0 GOBIN=/out go install "golang.org/x/tools/gopls@v${GOPLS_VERSION}"
 # The module files and their download, in a layer above every source COPY, so a commit rebuilds
 # neither. GOMODCACHE moves to /gomodcache here, after the gopls and go-licenses layers. That
 # keeps the modules of those two tools out of this cache. The runtime stage ships
@@ -457,7 +534,13 @@ COPY packages/envoy/go.mod packages/envoy/go.sum packages/envoy/
 # a 404 from the file proxy and falls through to the public proxy, while the `.info`, `.mod` and
 # `.zip` of a pinned version still come from the cache. The final stage's toolchain step refuses
 # an image that ships one of these files again.
-RUN go mod download \
+# The download is this image's whole module cache, 380 MiB of zips from the proxy, so an attempt
+# gets 900 s — the longest bound in the file. The `find` that trims the cache is local and bare,
+# and so is every build below, which reads this cache and fetches nothing.
+RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
+    && retry 900 "go mod download" go mod download \
     && find /gomodcache/cache/download \( -path '*/@v/list' -o -name '@latest' \) -delete
 COPY packages/daemon packages/daemon
 COPY packages/envoy packages/envoy
@@ -546,22 +629,43 @@ ARG YQ_VERSION
 ARG YQ_SHA256
 ARG GO_VERSION
 ARG GO_SHA256
+# Both fetches retry on this file's apt bounds, 120 s for the index read and 300 s for the set,
+# and the index read carries this file's error-mode option.
 # hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip xz-utils \
+RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
+    && retry 120 "apt-get update" apt-get update -o APT::Update::Error-Mode=any \
+    && retry 300 "apt-get install" apt-get install -y --no-install-recommends ca-certificates curl unzip xz-utils \
     && rm -rf /var/lib/apt/lists/*
 COPY packages/daemon/docker/language-servers/package.json packages/daemon/docker/language-servers/package-lock.json /opt/language-servers/
-RUN set -eu; \
+# The eight fetches of this RUN all take the wrapper, so one RUN reads one way. Each bound is what
+# that download is: 120 s for a single binary or a small archive (uv, kubectl, yq), 300 s for the
+# large ones (Node, the AWS CLI, Go and Chromium, tens to hundreds of megabytes each) and 300 s for
+# the language servers' `npm ci`, a lockfile's worth of npm tarballs. Everything else here — the
+# checksum check, the unpacking, the links, the go.env edits and the AWS installer — is local and
+# stays bare. Each download's URL is set once and both fetched and named from that one variable, so
+# a fetch that exhausts its attempts names the URL it failed on, and the name cannot drift from
+# what the line fetches (dispatch://INFRA-1865, folded into dispatch://INFRA-1545).
+RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; }; \
+    set -eu; \
     t=/tmp/toolchain; mkdir -p "$t" /out/bin /opt/node; \
-    curl -fsSLo "$t/uv.tar.gz" \
-      "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz"; \
-    curl -fsSLo "$t/node.tar.xz" "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"; \
-    curl -fsSLo "$t/awscli.zip" "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWS_CLI_VERSION}.zip"; \
-    curl -fsSLo "$t/go.tar.gz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"; \
-    curl -fsSLo "$t/kubectl" "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl"; \
-    curl -fsSLo "$t/yq" \
-      "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"; \
-    curl -fsSLo "$t/chromium.zip" \
-      "https://storage.googleapis.com/chrome-for-testing-public/${CHROMIUM_VERSION}/linux64/chrome-linux64.zip"; \
+    u="https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz"; \
+    retry 120 "uv download from $u" curl -fsSLo "$t/uv.tar.gz" "$u"; \
+    u="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"; \
+    retry 300 "node download from $u" curl -fsSLo "$t/node.tar.xz" "$u"; \
+    u="https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWS_CLI_VERSION}.zip"; \
+    retry 300 "aws cli download from $u" curl -fsSLo "$t/awscli.zip" "$u"; \
+    u="https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"; \
+    retry 300 "go download from $u" curl -fsSLo "$t/go.tar.gz" "$u"; \
+    u="https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl"; \
+    retry 120 "kubectl download from $u" curl -fsSLo "$t/kubectl" "$u"; \
+    u="https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"; \
+    retry 120 "yq download from $u" curl -fsSLo "$t/yq" "$u"; \
+    u="https://storage.googleapis.com/chrome-for-testing-public/${CHROMIUM_VERSION}/linux64/chrome-linux64.zip"; \
+    retry 300 "chromium download from $u" curl -fsSLo "$t/chromium.zip" "$u"; \
     printf '%s  %s\n' "$UV_SHA256" "$t/uv.tar.gz" "$NODE_SHA256" "$t/node.tar.xz" \
       "$AWS_CLI_SHA256" "$t/awscli.zip" "$GO_SHA256" "$t/go.tar.gz" \
       "$KUBECTL_SHA256" "$t/kubectl" "$YQ_SHA256" "$t/yq" \
@@ -576,7 +680,7 @@ RUN set -eu; \
     for shim in pnpm pnpx yarn yarnpkg; do \
       ln -s "/opt/node/lib/node_modules/corepack/dist/$shim.js" "/out/bin/$shim"; \
     done; \
-    (cd /opt/language-servers && PATH="/opt/node/bin:$PATH" npm ci --ignore-scripts --omit=dev --no-audit --no-fund); \
+    (cd /opt/language-servers && PATH="/opt/node/bin:$PATH" retry 300 "npm ci (language servers)" npm ci --ignore-scripts --omit=dev --no-audit --no-fund); \
     for tool in typescript-language-server tsc tsserver pyright pyright-langserver; do \
       ln -s "/opt/language-servers/node_modules/.bin/$tool" "/out/bin/$tool"; \
     done; \
@@ -628,16 +732,30 @@ RUN set -eu; \
 # version bump that adds one fails here and is read by a person. The installer's
 # .install/.backup goes too. gcloud and bq are linked from /out/bin and gsutil is not; the SDK's
 # LICENSE and its bundled CPython's LICENSE.txt go to the notices stage.
+# The two fetches of this RUN retry. The archive, 94,824,123 bytes from dl.google.com, takes 300 s
+# an attempt, this file's bound for a large archive (Node, the AWS CLI, Go and Chromium above); it
+# came down cold in 1.0 to 1.4 s in an issue pod (2 vCPU under gVisor, 2026-11-19), and this whole
+# RUN took 38.0 s in the worker-image build of cybermonklabs/legion#4377 (job 135176358267), the
+# compile most of it. install.sh's one read is the channel's component list,
+# https://dl.google.com/dl/cloudsdk/channels/rapid/components-2.json, 227,309 bytes, the SDK's own
+# index, so it takes this file's 120 s for an index read: it ran in 2.7 to 3.6 s in that pod, and
+# through a proxy refusing every host it exited 1, so the retry has a failure to retry. The two
+# `gcloud config set --installation` calls write the installation's properties and read nothing
+# from the network: through that proxy, with a fresh configuration directory, each exited 0 having
+# asked it for nothing. They stay bare, as do the checksum, the unpack and the compile.
 ARG GCLOUD_VERSION
 ARG GCLOUD_SHA256
-RUN set -eu; \
+RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; }; \
+    set -eu; \
     t=/tmp/gcloud; mkdir -p "$t"; export CLOUDSDK_CONFIG="$t/config"; \
-    curl -fsSLo "$t/sdk.tar.gz" \
-      "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${GCLOUD_VERSION}-linux-x86_64.tar.gz"; \
+    u="https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${GCLOUD_VERSION}-linux-x86_64.tar.gz"; \
+    retry 300 "google cloud sdk download from $u" curl -fsSLo "$t/sdk.tar.gz" "$u"; \
     printf '%s  %s\n' "$GCLOUD_SHA256" "$t/sdk.tar.gz" > "$t/SHA256SUMS"; \
     sha256sum --check --strict "$t/SHA256SUMS"; \
     tar -xzf "$t/sdk.tar.gz" -C /opt --no-same-owner; \
-    /opt/google-cloud-sdk/install.sh --quiet --usage-reporting false --path-update false --command-completion false; \
+    retry 120 "google cloud sdk install.sh" /opt/google-cloud-sdk/install.sh --quiet --usage-reporting false --path-update false --command-completion false; \
     /opt/google-cloud-sdk/bin/gcloud config set --installation component_manager/disable_update_check true; \
     /opt/google-cloud-sdk/bin/gcloud config set --installation core/custom_ca_certs_file /etc/ssl/certs/ca-certificates.crt; \
     sdkpython=/opt/google-cloud-sdk/platform/bundledpythonunix/bin/python3; \
@@ -672,14 +790,31 @@ RUN set -eu; \
 # reinstalls none of the 150 wheels. The LICENSE.txt of the wheel and the one of the CPython go to
 # the notices stage, each read from the python3.<minor> directory the RUN derives from ARG
 # AZURE_CLI_PYTHON_VERSION, so a bump of its minor reads the new directory.
+# The two fetches of this RUN retry. `uv venv` downloads the CPython, 35,356,674 bytes from
+# releases.astral.sh, falling back to github.com, so it takes this file's 120 s for a small archive
+# (uv, kubectl and yq above): it came down and made the environment in 3.9 s cold in an issue pod
+# (2 vCPU under gVisor, 2026-11-19), and through a proxy refusing every host it exited 2.
+# `--clear` is what lets it run again: a second `uv venv` over an environment an earlier attempt
+# made exits 2 (`A virtual environment already exists`) where --clear replaces it, and the first
+# attempt meets no directory, so the flag changes nothing there. `uv pip install` reads pypi.org's
+# index and downloads the lock's 150 wheels from files.pythonhosted.org (through that proxy it
+# exited 2), then installs and compiles them in the same act, with no download to separate out, so
+# the retry wraps the whole command, as it does the go stage's `go install`s: 300 s an attempt,
+# about 2.4 times the 126.8 s it took cold in that pod. This whole RUN took 45.8 s in the
+# worker-image build of cybermonklabs/legion#4377 (job 135176358267). The `rm`, the `chmod`, the
+# link and the two copies are local and stay bare.
 ARG AZURE_CLI_PYTHON_VERSION
 RUN --mount=type=bind,source=packages/daemon/docker/azure-cli/requirements.txt,target=/tmp/azure-cli/requirements.txt \
+    retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; }; \
     set -eu; \
     py="python${AZURE_CLI_PYTHON_VERSION%.*}"; \
     scratch="$(mktemp -d)"; export HOME="$scratch" UV_CACHE_DIR="$scratch/uv-cache"; \
-    UV_PYTHON_INSTALL_DIR=/opt/azure-cli/python /out/bin/uv venv --python "cpython-${AZURE_CLI_PYTHON_VERSION}-linux-x86_64-gnu" /opt/azure-cli/env; \
-    /out/bin/uv pip install --python /opt/azure-cli/env/bin/python --require-hashes --only-binary :all: --no-deps \
-      --compile-bytecode --no-cache -r /tmp/azure-cli/requirements.txt; \
+    retry 120 "cpython ${AZURE_CLI_PYTHON_VERSION} download" env UV_PYTHON_INSTALL_DIR=/opt/azure-cli/python \
+      /out/bin/uv venv --clear --python "cpython-${AZURE_CLI_PYTHON_VERSION}-linux-x86_64-gnu" /opt/azure-cli/env; \
+    retry 300 "azure-cli wheels" /out/bin/uv pip install --python /opt/azure-cli/env/bin/python --require-hashes \
+      --only-binary :all: --no-deps --compile-bytecode --no-cache -r /tmp/azure-cli/requirements.txt; \
     rm -rf /opt/azure-cli/python/.lock /opt/azure-cli/python/.temp /opt/azure-cli/python/.gitignore "$scratch"; \
     chmod -R a+rX,go-w /opt/azure-cli; \
     ln -s /opt/azure-cli/bin/az /out/bin/az; \
@@ -846,10 +981,24 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # listens on loopback with ssl off. The `find … -xtype l -delete` clears the hash link the
 # certificate left behind in the trust directory, which would otherwise dangle.
 ARG PGDG_KEY_SHA256
+# The four fetches of this RUN retry. The index reads take this file's 120 s; the first install is
+# ca-certificates and curl, the 300 s package set; the key is 4 KB of armored text and takes 60 s;
+# and the second install is this image's whole Debian set — Chromium, PostgreSQL 18 with pgvector,
+# gcc, WebKit's host libraries and the rest — which is why it alone takes 600 s. With busybox, tmux
+# and the WebKit list it is 442 MB of archives, 1662 MB installed (325 MB and 1249 MB before them),
+# and this whole RUN took 168.5 s where it had taken 98.6 s (worker-image builds of
+# cybermonklabs/legion#4377, job 135176358267, and of #2918, job 135217448205), the second install
+# about 150 s of it, so the bound is four times the attempt measured. Everything else here, the
+# checksum of the key included, is local and stays bare. Both index reads carry this file's
+# error-mode option.
 # hadolint ignore=DL3008
-RUN install -d -m 0755 /etc/apt/keyrings \
-    && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
-    && curl -fsSL -o /etc/apt/keyrings/pgdg.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
+    && install -d -m 0755 /etc/apt/keyrings \
+    && retry 120 "apt-get update" apt-get update -o APT::Update::Error-Mode=any \
+    && retry 300 "apt-get install" apt-get install -y --no-install-recommends ca-certificates curl \
+    && retry 60 "pgdg key" curl -fsSL -o /etc/apt/keyrings/pgdg.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
     && printf '%s  %s\n' "$PGDG_KEY_SHA256" /etc/apt/keyrings/pgdg.asc > /tmp/pgdg-key.sha256 \
     && sha256sum --check --strict /tmp/pgdg-key.sha256 \
     && rm -f /tmp/pgdg-key.sha256 \
@@ -858,8 +1007,8 @@ RUN install -d -m 0755 /etc/apt/keyrings \
     && printf '%s\n' 'Package: *' 'Pin: origin apt.postgresql.org' 'Pin-Priority: 100' '' \
       'Package: postgresql* libpq5' 'Pin: origin apt.postgresql.org' 'Pin-Priority: 600' \
       > /etc/apt/preferences.d/pgdg \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends bind9-dnsutils busybox ca-certificates chromium curl gcc git \
+    && retry 120 "apt-get update" apt-get update -o APT::Update::Error-Mode=any \
+    && retry 600 "apt-get install" apt-get install -y --no-install-recommends bind9-dnsutils busybox ca-certificates chromium curl gcc git \
       gstreamer1.0-libav gstreamer1.0-plugins-bad gstreamer1.0-plugins-base gstreamer1.0-plugins-good jq \
       libatk-bridge2.0-0t64 libatk1.0-0t64 libatomic1 libavif16 libc6-dev libcairo2 libdbus-1-3 libdrm2 \
       libegl1 libenchant-2-2 libepoxy0 libevdev2 libevent-2.1-7t64 libfontconfig1 libfreetype6 libgbm1 \
@@ -945,6 +1094,11 @@ COPY packages/daemon/docker/codegraph/package.json /in/codegraph/package.json
 # the stage comment above describes (a source change, not a pin bump, reuses it, so it rebuilds
 # rarely), and running unauthenticated GitHub raw-content requests in parallel risks tripping its
 # secondary rate limit for a build-time saving that doesn't matter on a layer this cold.
+# Every one of the twenty-two is a curl, so they carry curl's own retry rather than the wrapper and
+# the RUN reads one way: 8 attempts whose waits double from a second, the last starting 127 s after
+# the first, each transfer bounded at 60 s — a LICENSE file is a few kilobytes and a HEAD check is
+# a set of headers — and -f, so a persistent 504 fails the build instead of writing the error body
+# into a notices file.
 RUN set -eu; \
     omp_pin="$(cat /omp-pin)"; omp_repo="${omp_pin#github:}"; omp_repo="${omp_repo%@*}"; \
     omp_tag="v${omp_pin##*@}"; \
@@ -959,7 +1113,8 @@ RUN set -eu; \
       "$omp_repo" "$omp_tag" "$jj_repo" "$jj_tag" "$gh_tag" "$codegraph_node_tag" "$codegraph_version" \
       "$typescript_version" "$tsls_version" "$pyright_version" > /in/tags.env; \
     gh_raw_url() { printf 'https://raw.githubusercontent.com/%s/%s/%s' "$1" "$2" "$3"; }; \
-    fetch() { curl -fsSL "$(gh_raw_url "$1" "$2" "$3")" -o "/in/$4"; }; \
+    fetch() { curl -fsSL --retry 7 --retry-all-errors --max-time 60 "$(gh_raw_url "$1" "$2" "$3")" -o "/in/$4"; }; \
+    head_check() { curl -fsSI --retry 7 --retry-all-errors --max-time 60 -o /dev/null "$(gh_raw_url "$1" "$2" "$3")"; }; \
     fetch oven-sh/bun "bun-v${BUN_VERSION}" LICENSE.md bun-LICENSE.md; \
     fetch "$omp_repo" "$omp_tag" LICENSE omp-LICENSE; \
     fetch "$omp_repo" "$omp_tag" packages/coding-agent/THIRD-PARTY-NOTICES.txt omp-coding-agent-THIRD-PARTY-NOTICES.txt; \
@@ -977,17 +1132,17 @@ RUN set -eu; \
     fetch golang/go "go${GO_VERSION}" LICENSE go-LICENSE; \
     fetch golang/tools "gopls/v${GOPLS_VERSION}" LICENSE gopls-LICENSE; \
     crates() { \
-      curl -fsSIo /dev/null "$(gh_raw_url "$1" "$2" Cargo.lock)"; \
+      head_check "$1" "$2" Cargo.lock; \
       printf '%s links Rust crates whose license texts its release does not ship. They are the packages listed in\nhttps://github.com/%s/blob/%s/Cargo.lock, the lockfile of the release this image installs; the\nlicense of each is published with it on crates.io.\n' "$3" "$1" "$2" > "/in/$4"; \
     }; \
     crates "$jj_repo" "$jj_tag" jj jj-crates; \
     crates astral-sh/uv "$UV_VERSION" uv uv-crates; \
     crates jdx/mise "${MISE_VERSION}" mise mise-crates; \
-    curl -fsSIo /dev/null "$(gh_raw_url golang/tools "gopls/v${GOPLS_VERSION}" gopls/go.mod)"; \
+    head_check golang/tools "gopls/v${GOPLS_VERSION}" gopls/go.mod; \
     printf 'gopls links Go modules whose license texts its binary does not carry. They are the modules listed in\nhttps://github.com/golang/tools/blob/gopls/v%s/gopls/go.mod, the module file of the release this image builds; the\nlicense of each is published with its source and shown on pkg.go.dev.\n' "$GOPLS_VERSION" > /in/gopls-modules; \
-    curl -fsSIo /dev/null "$(gh_raw_url kubernetes/kubernetes "v${KUBECTL_VERSION}" go.mod)"; \
+    head_check kubernetes/kubernetes "v${KUBECTL_VERSION}" go.mod; \
     printf 'kubectl links Go modules whose license texts its binary does not carry. They are the modules listed in\nhttps://github.com/kubernetes/kubernetes/blob/v%s/go.mod, the module file of the release this image installs.\nThe k8s.io modules that file replaces with ./staging/src (kubectl itself, client-go, apimachinery, cli-runtime\nand component-base among them) are source of the Kubernetes release itself, each with its license file under\nhttps://github.com/kubernetes/kubernetes/tree/v%s/staging/src/k8s.io; the license of every other module is in\nhttps://github.com/kubernetes/kubernetes/tree/v%s/LICENSES/vendor.\n' "$KUBECTL_VERSION" "$KUBECTL_VERSION" "$KUBECTL_VERSION" > /in/kubectl-modules; \
-    curl -fsSIo /dev/null "$(gh_raw_url mikefarah/yq "v${YQ_VERSION}" go.mod)"; \
+    head_check mikefarah/yq "v${YQ_VERSION}" go.mod; \
     printf 'yq links Go modules whose license texts its binary does not carry. They are the modules listed in\nhttps://github.com/mikefarah/yq/blob/v%s/go.mod, the module file of the release this image installs; the\nlicense of each is published with its source and shown on pkg.go.dev.\n' "$YQ_VERSION" > /in/yq-modules
 # GCLOUD_VERSION, AZURE_CLI_PYTHON_VERSION and azure-cli's lock come in after the fetches, which
 # read none of them; the assembly RUN below is what reads them. BuildKit puts every ARG declared
@@ -1064,7 +1219,7 @@ RUN set -eu; mkdir -p /out; . /in/tags.env; \
 
 # ------------------------------------------------------------------------------------------------
 # webkit-check (build only): the check R7 of dispatch://INFRA-3257 asks for. It downloads the
-# WebKit build of the Playwright packages/dispatch locks (about 90 MB, from Playwright's CDN) and
+# WebKit build of the Playwright packages/dispatch locks (about 100 MB, from Playwright's CDN) and
 # launches it once, headless, through Playwright's own host validation
 # (packages/daemon/docker/webkit-launch.mjs), so a pull request that moves packages/dispatch to a
 # Playwright whose WebKit needs a library the runtime-base apt line lacks fails this build:
@@ -1086,13 +1241,25 @@ RUN set -eu; mkdir -p /out; . /in/tags.env; \
 FROM runtime-base AS webkit-check
 RUN install -d -m 0755 -o 1000 -g 1000 /out
 USER 1000:1000
+# The download is this stage's one fetch, and it retries: WebKit 2370's build for Debian 13,
+# webkit-debian-13.zip, 101,343,399 bytes from Playwright's two hosts, cdn.playwright.dev and
+# playwright.download.prss.microsoft.com, takes 300 s an attempt, this file's bound for a large
+# archive and the one the download-retry job gives `bunx playwright install chromium`. It came down
+# and unpacked in 20.9 s cold in an issue pod (2 vCPU under gVisor, 2026-11-19), and this whole RUN
+# took 9.8 s in the worker-image build of cybermonklabs/legion#4377 (job 135176358267). Through a
+# proxy refusing every host it exited 1 after Playwright's own five attempts over those two hosts,
+# in 9.8 s, so the retry has a failure to retry. The launch reads the download and nothing else,
+# and stays bare.
 RUN --mount=type=bind,from=plugin,source=/out/playwright-core,target=/tmp/playwright-core \
     --mount=type=bind,from=toolchain,source=/opt/node,target=/opt/node \
     --mount=type=bind,source=packages/daemon/docker/webkit-launch.mjs,target=/tmp/webkit-launch.mjs \
+    retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; }; \
     set -eu; \
     scratch="$(mktemp -d)"; \
     export HOME="$scratch" TMPDIR="$scratch" PLAYWRIGHT_BROWSERS_PATH="$scratch/browsers"; \
-    /opt/node/bin/node /tmp/playwright-core/cli.js install webkit; \
+    retry 300 "webkit download" /opt/node/bin/node /tmp/playwright-core/cli.js install webkit; \
     /opt/node/bin/node /tmp/webkit-launch.mjs /tmp/playwright-core > /out/webkit-check; \
     cat /out/webkit-check; \
     rm -rf "$scratch"
@@ -1356,7 +1523,21 @@ ENV AWS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt COREPACK_DEFAULT_TO_LATEST=
 # every role of an issue pod: a loopback host, no password, and legion_test for both the login and
 # the database — the non-superuser role `ensure` creates, not the cluster's own superuser, and the
 # database `ensure` creates with that role as its owner.
-RUN set -eu; \
+# The corepack shims are the fetches of this step that retry: each of pnpm, yarn, yarnpkg and pnpx
+# pulls the version this corepack ships from the npm registry the first time it runs, a package of
+# a few megabytes, so each retries at 120 s an attempt. `gcloud --version` and `bq version` read
+# the image: through a proxy refusing every host, each exited 0 having asked it for nothing (SDK
+# 594.0.0 in an issue pod, 2026-11-19), and `gcloud config get-value` reads the installation's
+# properties. `az version` does reach the network, azcliprod.blob.core.windows.net, for the newest
+# versions, and stays bare all the same: azure-cli bounds that read at 10 s itself, catches every
+# error of it and exits 0 without it (get_latest_version_from_ame_storage in azure-cli 2.93.0's
+# azure/cli/core/util.py; through that proxy it exited 0 in 2.4 s), so a retry around it would wait
+# for a failure that never comes, which is why .github/scripts/check-download-retry.sh's rule 7
+# refuses one around `mise x`. Every other command here reads the image.
+RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; }; \
+    set -eu; \
     scratch="$(mktemp -d)"; \
     export TMPDIR="$scratch" COREPACK_HOME="$scratch/corepack" XDG_CONFIG_HOME="$scratch/config" \
       CLOUDSDK_CONFIG="$scratch/gcloud" AZURE_CONFIG_DIR="$scratch/azure"; \
@@ -1365,8 +1546,8 @@ RUN set -eu; \
     gcloud --version; bq version; az version; \
     test "$(gcloud config get-value core/custom_ca_certs_file 2>/dev/null)" = /etc/ssl/certs/ca-certificates.crt; \
     test "$(gcloud config get-value component_manager/disable_update_check 2>/dev/null)" = true; \
-    for shim in pnpm yarn yarnpkg; do "$shim" --version; done; \
-    pnpx --help > "$scratch/pnpx-help"; sed -n 1p "$scratch/pnpx-help"; \
+    for shim in pnpm yarn yarnpkg; do retry 120 "corepack $shim" "$shim" --version; done; \
+    retry 120 "corepack pnpx" pnpx --help > "$scratch/pnpx-help"; sed -n 1p "$scratch/pnpx-help"; \
     go version; goroot="$(go env GOROOT)"; echo "GOROOT: $goroot"; test "$goroot" = /opt/go; gcc --version; \
     test "$(env -u CGO_ENABLED go env CGO_ENABLED)" = 0; \
     test "$(env -u GOPROXY go env GOPROXY)" = 'file:///home/legion/go/pkg/mod/cache/download|https://proxy.golang.org|direct'; \

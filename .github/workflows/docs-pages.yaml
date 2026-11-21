@@ -33,6 +33,8 @@ on:
       - '.github/ci-filters.yaml'
       - '.github/workflows/docs-pages.yaml'
       - '.github/workflows/docs-site.yaml'
+      # ci-filters.yaml's *ci_retry:
+      - '.github/scripts/ci-retry.sh'
       # ci-filters.yaml's *bun_install:
       - 'package.json'
       - 'bun.lock'

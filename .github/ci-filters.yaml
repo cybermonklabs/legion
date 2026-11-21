@@ -29,6 +29,9 @@ bun_install: &bun_install
 biome: &biome
   - 'biome.json'
   - '.gitignore'
+# why: .github/ci-notes/ci.md#ci_retry-the-one-retry-every-download-of-this-workflow-goes-through
+ci_retry: &ci_retry
+  - '.github/scripts/ci-retry.sh'
 go_workspace: &go_workspace
   - 'go.work'
   - 'go.work.sum'
@@ -334,6 +337,7 @@ omp_install: &omp_install
 daemon_go_tests:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-daemon-go.yaml'
   - *go_workspace
   - 'packages/daemon/**'
@@ -413,6 +417,7 @@ daemon_go_tests:
 plugin_pack:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-plugin-pack.yaml'
   - *go_workspace
   - *bun_install
@@ -530,6 +535,7 @@ plugin_pack:
 typecheck:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-typecheck.yaml'
   - *go_workspace
   - 'packages/daemon/**'
@@ -558,6 +564,7 @@ claude_envoy_build: &claude_envoy_build
 claude_envoy:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-claude-envoy.yaml'
   - *bun_install
   - *biome
@@ -582,6 +589,7 @@ claude_envoy:
 contracts:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-contracts.yaml'
   - *bun_install
   - 'packages/contracts/**'
@@ -617,6 +625,8 @@ release_push_test: &release_push_test
   - '.github/scripts/release-push.test.sh'
   - '.github/scripts/release-push.sh'
   - '.github/scripts/release-bump.sh'
+  - '.github/scripts/npm-published-version.sh'
+  - '.github/scripts/ci-retry.sh'
   - '.github/workflows/release.yaml'
   - 'packages/pi-legion/.changie.yaml'
 release_bump_test: &release_bump_test
@@ -845,7 +855,7 @@ ci_ok_test: &ci_ok_test
   - '.github/scripts/ci-ok.sh'
   - '.github/scripts/ci-ok.jq'
   - '.github/scripts/runner-shutdown.sh'
-  - '.github/scripts/gh-read.sh'
+  - '.github/scripts/ci-retry.sh'
 ci_ok_report_test: &ci_ok_report_test
   - *ci_router
   - *ci_filters_data
@@ -854,7 +864,7 @@ ci_ok_report_test: &ci_ok_report_test
   - '.github/scripts/ci-ok-report.test.sh'
   - '.github/scripts/ci-ok-report.sh'
   - '.github/scripts/post-check-run.sh'
-  - '.github/scripts/gh-read.sh'
+  - '.github/scripts/ci-retry.sh'
   - '.github/scripts/runner-shutdown.sh'
   - '.github/scripts/ci-ok.sh'
   - '.github/scripts/ci-ok.jq'
@@ -865,7 +875,7 @@ ci_ok_reconcile_test: &ci_ok_reconcile_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/ci-ok-reconcile.test.sh'
   - '.github/scripts/ci-ok-reconcile.sh'
-  - '.github/scripts/gh-read.sh'
+  - '.github/scripts/ci-retry.sh'
 find_pr_payload_test: &find_pr_payload_test
   - *ci_router
   - *ci_filters_data
@@ -909,7 +919,7 @@ dispatch_browser_run_reads_test: &dispatch_browser_run_reads_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/dispatch-browser-run-reads.test.sh'
   - '.github/scripts/dispatch-browser-run-reads.sh'
-  - '.github/scripts/gh-read.sh'
+  - '.github/scripts/ci-retry.sh'
 dispatch_browser_samples_test: &dispatch_browser_samples_test
   - *ci_router
   - *ci_filters_data
@@ -984,6 +994,7 @@ go_test_step_expansion_test: &go_test_step_expansion_test
 test:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-test.yaml'
   - *bun_install
   - *biome
@@ -1088,6 +1099,7 @@ docs:
   - *ci_filters_data
   - '.github/workflows/docs-pages.yaml'
   - '.github/workflows/docs-site.yaml'
+  - *ci_retry
   - *bun_install
   - *go_workspace
   - 'docs/site/**'
@@ -1153,6 +1165,7 @@ docs:
 go_notices:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-lint.yaml'
   - &any_go_change ['**/*.go', '**/go.mod', '**/go.sum', '**/go.work', '**/go.work.sum']
   - '.github/go-release-targets.json'
@@ -1246,12 +1259,14 @@ dispatch_command_tests: &dispatch_command_tests
 test_fixtures:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-test-fixtures.yaml'
   - *bun_install
   - 'packages/test-fixtures/**'
 conflicts_script:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-conflicts-script.yaml'
   - *bun_install
   - *biome
@@ -1269,6 +1284,7 @@ sessions_script:
 broker_client:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-broker-client.yaml'
   - *bun_install
   - 'packages/cipher-client/**'
@@ -1281,6 +1297,7 @@ broker_client:
 pi_shared:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-pi-shared.yaml'
   - *bun_install
   - 'packages/pi-shared/**'
@@ -1306,6 +1323,7 @@ pi_shared:
 pi_envoy:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-pi-envoy.yaml'
   - *bun_install
   - 'packages/pi-envoy/**'
@@ -1333,6 +1351,7 @@ pi_envoy:
 pi_legion:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-pi-legion.yaml'
   - *bun_install
   - 'packages/pi-legion/**'
@@ -1390,6 +1409,7 @@ pi_legion:
 dispatch_ui:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-dispatch-ui.yaml'
   - *bun_install
   - 'packages/dispatch/**'
@@ -1462,6 +1482,7 @@ dispatch_ui:
 dispatch_browser:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - *bun_install
   - 'packages/dispatch/**'
   - 'packages/proof-editor/**'
@@ -1540,7 +1561,7 @@ dispatch_browser:
   - '.github/scripts/dispatch-browser-reading-leg-exits.sh'
   - '.github/scripts/dispatch-browser-reading-row-durations.sh'
   - '.github/scripts/dispatch-browser-verdict.sh'
-  - '.github/scripts/gh-read.sh'
+  - '.github/scripts/ci-retry.sh'
   # why: .github/ci-notes/ci.md#dispatch_browser-the-container-image-the-shard-and-alone-jobs-run-in-and
   - '.github/ci-images.yaml'
   - '.github/docker/browser.Dockerfile'
@@ -1599,6 +1620,7 @@ dispatch_browser:
 envoy_infra_go:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-envoy-infra-go.yaml'
   - *go_workspace
   - 'packages/envoy/infra/**'
@@ -1639,6 +1661,7 @@ envoy_infra_go:
 envoy_go:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-envoy-go.yaml'
   - *bun_install
   - *go_workspace
@@ -1681,6 +1704,7 @@ envoy_go:
 envoy_go_checks:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-envoy-go-checks.yaml'
   - *bun_install
   - *go_workspace
@@ -1716,6 +1740,7 @@ envoy_go_checks:
 text_checks:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-text-checks.yaml'
   - *go_workspace
   - 'packages/envoy/**'
@@ -1759,6 +1784,7 @@ text_checks:
 dispatch_memory:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-dispatch-memory.yaml'
   - *go_workspace
   - *dispatch_command_tests
@@ -1796,6 +1822,7 @@ dispatch_memory:
 dispatch_multiprocess:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-dispatch-multiprocess.yaml'
   - *go_workspace
   - *dispatch_command_tests
@@ -1835,6 +1862,7 @@ dispatch_multiprocess:
 dispatch_two_builds_go:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-dispatch-two-builds.yaml'
   - *go_workspace
   - *dispatch_command_tests
@@ -1992,6 +2020,7 @@ dispatch_two_builds:
   - 'scripts/third-party-notices.ts'
   - 'scripts/e2e/lib/held-port.py'
   - '.github/scripts/pg-connection-ceiling.sh'
+  - *ci_retry
   - *bun_install
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
@@ -2022,6 +2051,7 @@ dispatch_two_builds:
 listener_server_change:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-listener-server-change.yaml'
   - *go_workspace
   - *listener_command
@@ -2116,6 +2146,7 @@ listener_server_change:
 broker_multiprocess:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-broker-multiprocess.yaml'
   - *go_workspace
   - 'packages/envoy/cipheraddr/*'
@@ -2207,6 +2238,7 @@ broker_multiprocess:
 airlock_lean:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-airlock-lean.yaml'
   - *go_workspace
   - 'packages/envoy/internal/cipher/proxyrules/**'
@@ -2226,6 +2258,7 @@ envoy_smoke:
   - *ci_filters_data
   # why: .github/ci-notes/ci.md#envoy_smoke-the-jobs-steps-which-build-the-image-and-smoke-it
   - '.github/workflows/ci-job-envoy-smoke.yaml'
+  - '.github/scripts/ci-retry.sh'
   - '.dockerignore'
   - '.bun-version'
   - 'package.json'
@@ -2336,6 +2369,7 @@ envoy_smoke:
 envoy_e2e_local:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-envoy-e2e-local.yaml'
   - *bun_install
   - *go_workspace
@@ -2360,6 +2394,7 @@ envoy_e2e_local:
 envoy_session_stall:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-envoy-session-stall.yaml'
   - *bun_install
   - *go_workspace
@@ -2481,6 +2516,7 @@ ci_filters:
 tool_fallback:
   - '.github/ci-tools.yaml'
   - '.github/scripts/ci-tools.sh'
+  - '.github/scripts/ci-retry.sh'
   - '.github/scripts/mirror-ci-tools.sh'
   - '.github/scripts/check-ci-tools.sh'
   - '.github/scripts/ci-tools-proof.sh'
@@ -2509,6 +2545,7 @@ tool_fallback:
 ci_images:
   - '.github/ci-images.yaml'
   - '.github/scripts/mirror-ci-images.sh'
+  - '.github/scripts/ci-retry.sh'
   - '.github/scripts/check-ci-images.sh'
   - '.github/scripts/ci_images.py'
   - '.github/docker/**'
@@ -2526,6 +2563,7 @@ ci_images:
 # why: .github/ci-notes/ci.md#proof_sdk_offline-the-proof-sdk-offline-job-a-frozen-install-behind-a
 proof_sdk_offline:
   - *bun_install
+  - *ci_retry
   - '.github/scripts/ci-fault-proxy.py'
   - *ci_router
   - *ci_filters_data
@@ -2535,6 +2573,7 @@ proof_sdk_offline:
 envoy_client:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-envoy-client.yaml'
   - *bun_install
   - 'packages/envoy-client/**'
@@ -2562,6 +2601,7 @@ envoy_client:
 envoy_go_race:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-envoy-go-race.yaml'
   - *go_workspace
   - 'packages/envoy/**'
@@ -2729,6 +2769,7 @@ envoy_go_race:
 envoy_go_race_api:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-envoy-go-race-api.yaml'
   - *go_workspace
   - 'packages/envoy/scripts/database-skips.sh'
@@ -2961,6 +3002,7 @@ envoy_go_race_api:
 envoy_go_claim_model:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-envoy-go-claim-model.yaml'
   - *go_workspace
   - 'packages/envoy/**'
@@ -3081,6 +3123,7 @@ envoy_go_claim_model:
 envoy_go_race_docs:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   # why: .github/ci-notes/ci.md#envoy_go_race_docs-two-jobs-run-this-package-under-the-detector-and-share
   - '.github/workflows/ci-job-envoy-go-race-docs.yaml'
   - '.github/workflows/ci-job-envoy-go-docs-finalizers.yaml'
@@ -3164,6 +3207,7 @@ envoy_go_race_docs:
 private_names_port:
   - *ci_router
   - *ci_filters_data
+  - *ci_retry
   - '.github/workflows/ci-job-private-names-port.yaml'
   - *go_workspace
   - *legion_command
@@ -3175,3 +3219,31 @@ private_names_port:
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!**/*_test.go'
   # END generated
+# why: .github/ci-notes/ci.md#download_retry_sites-the-retry-loop-the-fault-the-rig-and-the-composite-actions-whose-downloads-it-proves
+download_retry_sites: &download_retry_sites
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-download-retry.yaml'
+  - *ci_retry
+  - '.github/scripts/ci-fault-proxy.py'
+  - '.github/scripts/download-retry-proof.sh'
+  - '.github/actions/setup-bun/**'
+  - '.github/actions/install-jj/**'
+  - '.github/actions/install-changie/**'
+  - '.github/actions/install-claude-code/**'
+  - '.github/actions/install-omp/**'
+# why: .github/ci-notes/ci.md#download_retry_images-the-four-dockerfiles-whose-network-run-lines-carry-the-inline-retry
+download_retry_images: &download_retry_images
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-download-retry.yaml'
+  - 'packages/daemon/docker/worker.Dockerfile'
+  - 'packages/envoy/docker/Dockerfile'
+  - 'packages/envoy/infra/host/heldportwrapper/Dockerfile'
+  - '.github/docker/browser.Dockerfile'
+  - '.github/scripts/ci-fault-proxy.py'
+  - '.github/scripts/download-retry-proof.sh'
+# why: .github/ci-notes/ci.md#download_retry-both-lanes-filters-which-select-ciyamls-one-download-retry-job
+download_retry:
+  - *download_retry_sites
+  - *download_retry_images

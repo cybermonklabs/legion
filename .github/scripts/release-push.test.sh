@@ -35,7 +35,11 @@
 # the lockfile alone, and read them from several checkouts; only a tag on the
 # checkout itself is its release. The `version` cases run the version step
 # from each checkout, with a stub `npm` first on PATH for the first-release
-# fallback, and read what `tag` leaves for a re-run and for the next commit.
+# read, and read what `tag` leaves for a re-run and for the next commit. That
+# read goes through retry_fetch: npm's E404 starts from 0.0.0 with one call,
+# and a 504 is retried, once or on every attempt; the second waits out the
+# helper's 150 s of sleeps for real, which ci-job-test.yaml's `test` job key
+# carries.
 # The `tag` cases run it with $GITHUB_SHA naming the clone's HEAD and check
 # that the tag names that commit and nothing else moves: no commit is added,
 # the manifests and the lockfile keep their blobs, the work tree stays clean
@@ -384,13 +388,21 @@ check "forged refs with a space and a newline: git ignores both" "$(is "$(printf
 echo
 echo "Case 10b: version releases the tag an earlier attempt pushed, else the bump since the newest tag"
 # The stub npm, first on PATH. It logs each call to $NPM_TEST_DIR/npm-calls as
-# one line, each argument in brackets, answers with $NPM_TEST_VERSION, and fails
-# as npm does for a package it does not have when $NPM_TEST_FAIL is set.
+# one line, each argument in brackets, and answers with $NPM_TEST_VERSION. When
+# $NPM_TEST_FAIL names an npm error code, it fails the way npm 11.19.1 fails
+# (measured: `npm error code E404` for a package the registry does not have,
+# `npm error code E504` when the registry's host answers 504), on every call, or
+# on the first $NPM_TEST_FAIL_CALLS calls only when that is set.
 mkdir -p "$work/bin"
 cat > "$work/bin/npm" <<'NPM'
 #!/usr/bin/env bash
 { printf '[%s]' "$@"; printf '\n'; } >> "$NPM_TEST_DIR/npm-calls"
-[ -z "${NPM_TEST_FAIL:-}" ] || { echo "npm ERR! 404 Not Found" >&2; exit 1; }
+calls=$(wc -l < "$NPM_TEST_DIR/npm-calls")
+if [ -n "${NPM_TEST_FAIL:-}" ] && { [ -z "${NPM_TEST_FAIL_CALLS:-}" ] || [ "$calls" -le "$NPM_TEST_FAIL_CALLS" ]; }; then
+  echo "npm error code $NPM_TEST_FAIL" >&2
+  echo "npm error ${NPM_TEST_FAIL#E} - GET https://registry.npmjs.org/@example%2fpkg" >&2
+  exit 1
+fi
 echo "$NPM_TEST_VERSION"
 NPM
 chmod +x "$work/bin/npm"
@@ -480,13 +492,38 @@ check "no tag, --first-npm: exits 0" "$(is "$rc" 0)"
 check "no tag, --first-npm: bumps npm's version over the whole history" "$(is "$out" "$(outputs 2.3.5 pkg-v2.3.5 false)")"
 check "no tag, --first-npm: asked npm for the package's version" "$(is "$npm_calls" '[view][@example/pkg][version]')"
 check "no tag, --first-npm: logs the bump from npm's version" "$(contains "$err" '^Bumping v2\.3\.4 -> pkg-v2\.3\.5$')"
-NPM_TEST_FAIL=1 version_run "$work/v/c" pkg-v --first-npm @example/pkg -- packages/pkg/
+NPM_TEST_FAIL=E404 version_run "$work/v/c" pkg-v --first-npm @example/pkg -- packages/pkg/
 check "no tag, npm has no such package: starts from 0.0.0" "$(is "$rc $out" "0 $(outputs 0.0.1 pkg-v0.0.1 false)")"
-# @sjawhar/claude-envoy's own case, which release.yaml's claude_envoy_build runs: npm carries a
-# 0.0.0 placeholder of the package, so npm answers and the fallback above is never reached, and
-# no claude-envoy-v tag exists yet. The first release comes from the whole history of the paths,
-# not from the newest commit alone: the fix: above and the feat: below are both in the range, so
-# it bumps the minor rather than failing for the missing tag or skipping for an empty range.
+# An E404 is the registry's answer, a first release, and no fault: it is read
+# once, never retried, and reported in one line of its own rather than as an
+# ::error:: or npm's own error text.
+check "no tag, npm has no such package: asked npm once, with no retry" "$(is "$npm_calls" '[view][@example/pkg][version]')"
+check "no tag, npm has no such package: no ::error::" "$(is "$(contains "$err" '::error::')" false)"
+check "no tag, npm has no such package: one line says so, and npm's own error text is not printed" \
+  "$(is "$(contains "$err" '^npm-published-version\.sh: npm has no package @example/pkg (E404), so its published version is 0\.0\.0$')|$(contains "$err" '^npm error')" 'true|false')"
+# A registry that fails for a moment is no answer that the package is missing: a
+# 504 taken as 0.0.0 would stamp a first release 0.0.1 over a package npm carries
+# at a later version (dispatch://INFRA-1545, round 49). The call is retried, and
+# a failure other than E404 that outlasts the retries fails the job by name.
+NPM_TEST_FAIL=E504 NPM_TEST_FAIL_CALLS=1 NPM_TEST_VERSION=2.3.4 version_run "$work/v/c" pkg-v --first-npm @example/pkg -- packages/pkg/
+check "no tag, npm 504 once: retries and bumps npm's version" "$(is "$rc $out" "0 $(outputs 2.3.5 pkg-v2.3.5 false)")"
+check "no tag, npm 504 once: asked npm twice" "$(is "$npm_calls" "$(printf '%s\n%s' '[view][@example/pkg][version]' '[view][@example/pkg][version]')")"
+NPM_TEST_FAIL=E504 NPM_TEST_VERSION=2.3.4 version_run "$work/v/c" pkg-v --first-npm @example/pkg -- packages/pkg/
+check "no tag, npm 504 on every attempt: exits non-zero printing nothing" "$(is "$([ "$rc" -ne 0 ] && echo nonzero)|$out" "nonzero|")"
+check "no tag, npm 504 on every attempt: the error names the npm read" "$(contains "$err" '^::error::.*npm.*@example/pkg')"
+check "no tag, npm 504 on every attempt: starts from no 0.0.0" "$(is "$(contains "$err" 'v0\.0\.0')" false)"
+check "no tag, npm 504 on every attempt: exits 1" "$(is "$rc" 1)"
+check "no tag, npm 504 on every attempt: asked npm five times, retry_fetch's attempts" \
+  "$(is "$npm_calls" "$(for _ in 1 2 3 4 5; do echo '[view][@example/pkg][version]'; done)")"
+check "no tag, npm 504 on every attempt: release-push.sh's error names the package" \
+  "$(contains "$err" '^::error::release-push\.sh version: npm did not give the published version of @example/pkg, ')"
+check "no tag, npm 504 on every attempt: npm's own error reaches the log" "$(contains "$err" '^npm error code E504$')"
+# @sjawhar/claude-envoy's case as it stood before its first release, which release.yaml's
+# claude_envoy_build ran: npm carried a 0.0.0 placeholder of the package, so npm answered and the
+# fallback above was never reached, and no claude-envoy-v tag existed yet. The first release comes
+# from the whole history of the paths, not from the newest commit alone: the fix: above and the
+# feat: below are both in the range, so it bumps the minor rather than failing for the missing tag
+# or skipping for an empty range.
 change "$work/v/c" packages/pkg/index.js "feat: an export before the first release"
 NPM_TEST_VERSION=0.0.0 version_run "$work/v/c" pkg-v --first-npm @example/pkg -- packages/pkg/
 check "no tag, npm's 0.0.0 placeholder: exits 0" "$(is "$rc" 0)"

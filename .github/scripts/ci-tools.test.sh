@@ -43,8 +43,9 @@
 # has, because the file under test is sourced into such a shell and carries no `set` of its own.
 #
 # THE CURL ON THESE CASES' PATH: the helper pins `--retry 7 --retry-all-errors` with
-# `--retry-max-time 60`, so each case where a source refuses would sleep up to a minute before
-# curl gave up. The cases put a curl of their own first on PATH, a two-line script that runs the
+# `--retry-max-time 300`, so each case where a source refuses would sleep the whole of curl's
+# ladder - 127 s of waits, which is what reaching this repository's 120 s floor costs
+# (dispatch://INFRA-1545, R1) - before curl gave up. The cases put a curl of their own first on PATH, a two-line script that runs the
 # real curl with `--retry-max-time 1` appended after the helper's own arguments, which curl reads
 # as the last word on that option. It bounds the sleep and changes nothing else. A .curlrc cannot
 # do it, because curl reads its configuration file before the command line and the helper's own
@@ -677,7 +678,16 @@ recorded_ladder() {
 # pinned_ladder <max_time>: the nine words ci_tools_curl pins before the file it writes, with
 # that row's own bound in place.
 pinned_ladder() {
-  printf -- '%s\n' -fsSL --retry 7 --retry-all-errors --retry-max-time 60 --max-time "$1" -o
+  # `--retry-max-time 300`, and the figure is measured rather than chosen: R1's floor of
+  # dispatch://INFRA-1545 is the ladder itself - at least five attempts with the last starting at
+  # least 120 s after the first - and against a host that ACCEPTS AND NEVER ANSWERS the bound is
+  # what decides how many attempts are made at all. Driven on this issue's pod against curl
+  # 8.14.1 and a loopback server, at the `max_time: 60` every row carries: at 120 s two attempts,
+  # at 0 s and 61 s, exit 28 at about 121 s, so NEITHER half of the floor was met; at 180 s three,
+  # the last at 123 s, which meets the time half alone; at 300 s FIVE, at 0 s, 62 s, 124 s, 188 s
+  # and 256 s, exit 28 at about 315 s, which meets both. A source that refuses at once is
+  # unaffected either way, since its ladder is the back-off alone (127 s).
+  printf -- '%s\n' -fsSL --retry 7 --retry-all-errors --retry-max-time 300 --max-time "$1" -o
 }
 
 # whole_record <max_time> <url>: the eleven words ci_tools_curl hands curl for a row whose fetch
@@ -866,10 +876,12 @@ check "the other origin was asked nothing" "$(is "$(cat "$elsewhere_log")" "")"
 
 echo "case: ci_tools_registry_head — a HEAD the package answers, and one it redirects to the store"
 # The HEAD .github/scripts/mirror-ci-tools.sh and the tool-fallback job read the package with. A
-# registry may answer a HEAD of a blob with a redirect to the store that holds it, so the HEAD
+# registry may answer a HEAD of a blob with a redirect to the store that holds it. Without
+# `--follow` the HEAD prints that redirect's status and asks nothing more; with it, the HEAD
 # follows it, and the bearer goes with the first request alone: the store is read in a call of its
 # own, handed no header, which the forwarding curl the redirect runs under would otherwise pass
-# on. A redirect that names no address is refused, naming its status.
+# on. A redirect that names no address is refused, naming its status. Each of the two requests
+# rides the one ladder at 30 s an attempt, which the two records below hold whole.
 origin head-store
 store_base=$base
 store_log=$log
@@ -881,34 +893,51 @@ check "to a HEAD that carried the token as its bearer" \
   "$(is "$(cat "$log.auth")" "$blob_path Bearer fixture-token")"
 check "and the answer's headers are in the file it was given" \
   "$(is "$(grep -ci '^content-length:' "$work/head-headers" || true)" 1)"
+# The ladder of a request that carries a credential is ci_tools_curl's less `-L`, with `-q` first
+# and `--no-fail`, so a 404 is an answer; the bearer is read on standard input, so `-H @-` is the
+# one header word, and the per-attempt bound is the 30 s ci-tools.sh gives a HEAD.
+check "by a call handed the held ladder at 30 s an attempt, the bearer on standard input and no -L" \
+  "$(is "$(cat "$curl_arguments")" "$(printf '%s\n' -q -fsS --retry 7 --retry-all-errors --retry-max-time 300 --max-time 30 -o /dev/null -w '%{http_code} %{redirect_url}' -D "$work/head-headers" -I -H @- --no-fail "$head_url")")"
 printf '302 %s\n' "$store_base$blob_path" > "$root$blob_path.redirect"
 : > "$forwarding_curl"
-run ci_tools_registry_head fixture-token "$work/head-headers" "$head_url"
+run ci_tools_registry_head --follow fixture-token "$work/head-headers" "$head_url"
 rm -f -- "$forwarding_curl"
 check "a redirect to the store that holds the blob reads the store's 200" "$(is "$out" 200)"
 check "the package was asked again with the token" \
   "$(is "$(tail -n 1 "$log.auth")" "$blob_path Bearer fixture-token")"
 check "the store was asked once, with no Authorization header" \
   "$(is "$(cat "$store_log.auth")" "$blob_path none")"
-check "by a call handed the protocols it may use and the store's address, and no header" \
-  "$(is "$(cat "$curl_arguments")" "$(printf '%s\n' -sS --proto =http,https -o /dev/null -D "$work/head-headers" -w '%{http_code}' -I -L "$store_base$blob_path")")"
+check "by a call handed the pinned ladder at 30 s, the protocols it may use and the store's address, and no header" \
+  "$(is "$(cat "$curl_arguments")" "$({ pinned_ladder 30; printf '%s\n' /dev/null -D "$work/head-headers" -I -w '%{http_code}' --no-fail --proto =http,https "$store_base$blob_path"; })")"
 check "and the headers file holds the store's answer, the blob's own length" \
   "$(is "$(awk 'tolower($1) == "content-length:" { value = $2 } END { gsub(/\r/, "", value); print value }' "$work/head-headers")" "$(wc -c < "$work/payloads/tarred")")"
-printf '302\n' > "$root$blob_path.redirect"
+# The same redirect without `--follow`, under the forwarding curl and a .curlrc that names
+# location-trusted: the status is the answer, and nothing but the package is asked.
+: > "$forwarding_curl"
+curl_home="$work/curlrc-home"
 run ci_tools_registry_head fixture-token "$work/head-headers" "$head_url"
+curl_home=""
+rm -f -- "$forwarding_curl"
+check "without --follow, the redirect prints its own status alone and exits 0, so the caller refuses it" \
+  "$(is "$status $out" "0 302")"
+check "the package was asked with the token" \
+  "$(is "$(tail -n 1 "$log.auth")" "$blob_path Bearer fixture-token")"
+check "and the store was asked nothing more" "$(is "$(cat "$store_log.auth")" "$blob_path none")"
+printf '302\n' > "$root$blob_path.redirect"
+run ci_tools_registry_head --follow fixture-token "$work/head-headers" "$head_url"
 check "a redirect that names no address exits 0, so the caller reads its status" "$(is "$status" 0)"
 check "and prints that status beside a refusal that names it" \
   "$(is "$out" "::error::ci-tools: a HEAD of $head_url answered 302, a redirect that names no address"$'\n'"302")"
 check "and the store was asked nothing more" "$(is "$(cat "$store_log.auth")" "$blob_path none")"
 check "and nothing is left under the runner's temporary directory" "$(is "$(temporary_files)" "")"
 printf '302 %s\n' "file:///etc/hostname" > "$root$blob_path.redirect"
-run ci_tools_registry_head fixture-token "$work/head-headers" "$head_url"
+run ci_tools_registry_head --follow fixture-token "$work/head-headers" "$head_url"
 check "a redirect to a file:// address prints its status beside a refusal that names it" \
   "$(is "$out" "::error::ci-tools: a HEAD of $head_url answered 302, a redirect to file://, which this run does not follow: it reads a store at an https address alone"$'\n'"302")"
 check "and the store was asked nothing more" "$(is "$(cat "$store_log.auth")" "$blob_path none")"
 printf '302 %s\n' "$store_base$blob_path" > "$root$blob_path.redirect"
 curl_home="$work/curlrc-home"
-run ci_tools_registry_head fixture-token "$work/head-headers" "$head_url"
+run ci_tools_registry_head --follow fixture-token "$work/head-headers" "$head_url"
 curl_home=""
 check "under a .curlrc that names location-trusted, the redirect to the store reads its 200" "$(is "$out" 200)"
 check "and the store was asked once more, again with no Authorization header" \

@@ -45,7 +45,14 @@ jobs:
     # included, is at most 60 % of it, and this limit is six minutes above that. Measure again
     # before changing either, and from the slowest run rather than the newest: a package that
     # has grown past 60 % of its deadline is a deadline to raise, not a flake to re-run.
-    timeout-minutes: 40
+    #
+    # Budget (ci-budgets.md's Budgets note): 2400 s, the 40 minutes the paragraph above derives —
+    # six minutes above the step's 34-minute deadline, and above the 1136.829 s in the package
+    # and the 71 s before it that the slowest green run measured — plus its slowest retried
+    # step alone: the ci-ok report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"), above packages/envoy's
+    # `go mod download` at 5 x 180 + 150 = 1050 s. 2400 + 2160 = 4560 s, a whole number of
+    # minutes, so the budget is the next one strictly above it -> 77 min.
+    timeout-minutes: 77
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -88,6 +95,17 @@ jobs:
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # The module the step below builds, downloaded once and retried before it (ci-budgets.md's
+      # Retries note). 180 s per attempt, 1.6 times the 113 s of the slowest cold run measured
+      # (packages/envoy/infra; packages/envoy 77 s, on an empty module cache on 2026-11-07), and
+      # an attempt the bound kills leaves what it fetched for the next one; the restore above
+      # makes the common run cost nothing.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       # -v, because the package's leak check prints its line from TestMain after the tests have
       # run: go test in package-list mode buffers the test binary's own output and drops it when
       # the package passes, so without -v a green run would carry the `ok` line and nothing else,
@@ -99,6 +117,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-go-docs-finalizers

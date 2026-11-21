@@ -23,13 +23,26 @@ on:
 jobs:
   envoy-client:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, above its 83 s
+    # measured maximum, plus its slowest retried step alone — the setup-bun step's two
+    # `ci_tools_fetch` calls, 3416 s, above the workspace install's 5 x 180 + 150 = 1050 s and
+    # the ci-ok report's 2160 s. 600 + 3416 = 4016 s -> 67 min.
+    timeout-minutes: 67
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+        timeout-minutes: 57
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       - name: Build contracts for Envoy client
         run: bun run build
         working-directory: packages/contracts
@@ -72,6 +85,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-client

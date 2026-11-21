@@ -150,6 +150,21 @@ jobs:
     steps:
       - run: docker run --rm "\$ENVOY_SMOKE_IMAGE" ls
 YAML
+  # The fourth shape: the download-retry-images job pulls every base image of the three
+  # Dockerfiles by reading the file it wrote from their FROM lines, which is the `image` entry of
+  # IMAGE_FROM for that job's own file, .github/workflows/ci-job-download-retry.yaml
+  # (dispatch://INFRA-1545; main's #2945 moved every job's steps into a file of its own, and the
+  # merge of main's #3675 put this job beside download-retry in that job's file).
+  cat > "$root/.github/workflows/ci-job-download-retry.yaml" <<YAML
+name: CI job download-retry
+on: [workflow_call]
+jobs:
+  download-retry-images:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          while read -r image; do docker pull "\$image"; done < "\$RUNNER_TEMP/base-images"
+YAML
   cat > "$root/.github/actions/pull-test-images/action.yml" <<'YAML'
 name: Pull the images tests start
 description: Pull the images the tests start.

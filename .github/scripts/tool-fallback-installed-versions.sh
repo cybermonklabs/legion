@@ -23,15 +23,14 @@ set -euo pipefail
 
 # shellcheck source=.github/scripts/ci-tools.sh
 . .github/scripts/ci-tools.sh
-proof=.github/scripts/ci-tools-proof.sh
 wrong=""
-"$proof" version-answers crane "$(crane version)" || wrong="$wrong crane"
-"$proof" version-answers changie "$(changie --version)" || wrong="$wrong changie"
-"$proof" version-answers jj "$(jj --version)" || wrong="$wrong jj"
-"$proof" version-answers bun-linux-x64 "$(bun --version)" || wrong="$wrong bun-linux-x64"
-"$proof" version-answers elan "$(elan --version)" || wrong="$wrong elan"
-"$proof" version-answers uv "$("$LEGION_TEST_UV" --version)" || wrong="$wrong uv"
-"$proof" version-answers pulumi-cli "$(pulumi version)" || wrong="$wrong pulumi-cli"
+.github/scripts/ci-tools-proof.sh version-answers crane "$(crane version)" || wrong="$wrong crane"
+.github/scripts/ci-tools-proof.sh version-answers changie "$(changie --version)" || wrong="$wrong changie"
+.github/scripts/ci-tools-proof.sh version-answers jj "$(jj --version)" || wrong="$wrong jj"
+.github/scripts/ci-tools-proof.sh version-answers bun-linux-x64 "$(bun --version)" || wrong="$wrong bun-linux-x64"
+.github/scripts/ci-tools-proof.sh version-answers elan "$(elan --version)" || wrong="$wrong elan"
+.github/scripts/ci-tools-proof.sh version-answers uv "$("$LEGION_TEST_UV" --version)" || wrong="$wrong uv"
+.github/scripts/ci-tools-proof.sh version-answers pulumi-cli "$(pulumi version)" || wrong="$wrong pulumi-cli"
 # The docker provider plugin prints no version of its own: nothing is installed, and
 # what the action hands back is the tarball the live tests are given. Its reading is
 # therefore the row's own digest, read by the one digest reader of this repository.
@@ -54,13 +53,13 @@ ci_tools_verify pulumi-docker "$tarball" "the docker provider plugin tarball thi
 # — the name, the version, the bytes — was wrong, so this keeps its own word and does
 # not join the list below, whose sentence is about versions.
 bunx='read'
-"$proof" installed-bunx || bunx=refused
+.github/scripts/ci-tools-proof.sh installed-bunx || bunx=refused
 # The other half of every reading above: how many requests to github.com the fault
 # proxy refused since the probe, and which. A version says which tool is here and a
 # digest says it is the pinned one; neither can say that the first source did not
 # serve it, because a row's two sources are one binary by design. The 504s say it.
 refusals='read'
-"$proof" refusals github.com || refusals=refused
+.github/scripts/ci-tools-proof.sh refusals github.com || refusals=refused
 if [ -n "$wrong" ]; then
   echo "::error::$wrong answered a version its row does not pin, so the source that served it served something else" >&2
 fi

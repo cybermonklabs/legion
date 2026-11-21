@@ -32,7 +32,12 @@ env:
 jobs:
   typecheck:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, above its 83 s
+    # measured maximum, plus its slowest retried step alone — packages/daemon's
+    # `go mod download` at 5 x 180 + 150 = 1050 s, below the ci-ok report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"), which is this job's slowest
+    # retried step now. 600 + 2160 = 2760 s, a whole number of minutes, so the budget is the
+    # next one strictly above it -> 47 min.
+    timeout-minutes: 47
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,6 +58,17 @@ jobs:
             ~/.cache/go-build
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
+
+      # The module the vet below compiles, downloaded once and retried before it (ci-budgets.md's
+      # Retries note; the retried unit is the download, never the vet). 180 s per attempt, as that
+      # note derives. The restore above makes the common run cost nothing.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/daemon's Go modules" 180 -- go -C packages/daemon mod download
 
       # With the e2e tag, vet also compiles the live proofs behind it (the Stage 4a harness,
       # sandbox/live*_test.go), which run on the devbox against a real cluster.
@@ -78,6 +94,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: typecheck

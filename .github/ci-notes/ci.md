@@ -190,6 +190,16 @@ an output written as a disjunction instead would select exactly what this patter
 selects. The anchor is on the glob rather than on the list, since envoy_smoke and
 worker_image name it too and the image check, .github/scripts/check-image-trigger-paths.sh, reads those two as flat lists.
 
+## ci_retry: The one retry every download of this workflow goes through
+
+A job that installs dependencies, downloads a browser or downloads its Go modules sources
+.github/scripts/ci-retry.sh and calls the retry_fetch it defines (the Retries note of
+.github/ci-budgets.md), so a change to it must re-run those jobs (dispatch://INFRA-1545). Every
+filter of such a job names the group. The two filters that gate an image build, envoy_smoke and
+ci_images, and tool_fallback, which install-jj's `mise install` retry reaches, name the file
+itself rather than the anchor, so their lists stay flat for
+.github/scripts/check-image-trigger-paths.sh.
+
 ## daemon_envoy_deps: The airlock's rules, its decision and its header swap
 
 The airlock's rules, its decision and its header swap. Not the whole tree: lean/
@@ -699,7 +709,9 @@ side runs the job. Both sides live under internal/cipher/proxyrules, which one g
 names, and the Go side also compiles internal/fold, the case fold it compares names
 in; the axiom check is a script of its own, which check k15 runs too; the Lean
 toolchain comes from the elan the job's action installs, and that action reads the
-`elan` row of the tool manifest through the fetch helper every install goes through.
+`elan` row of the tool manifest through the fetch helper every install goes through;
+and the toolchain itself is installed in a step of its own through the one retry,
+.github/scripts/ci-retry.sh (*ci_retry), before `lake build` reads it.
 
 ## envoy_smoke: Every file packages/envoy/docker/Dockerfile builds from
 
@@ -1056,11 +1068,14 @@ every job of the file but the exempt ones, and the re-run term to every job but 
 passing required check, so each refuses such an attempt in a step of its own instead.
 docs/solutions/github/join-a-job-to-the-ci-router.md walks through it.
 
-Caches: one step of the jobs this workflow calls saves an Actions cache entry itself,
-dispatch-two-builds' `Cache the previous build` (ci-job-dispatch-two-builds.yaml), which keeps
-the build of the previous commit that job compares against; three actions its jobs call can
-save one too, and only in a dispatched run (setup-bun, and architecture-check and spec-check at
-this paragraph's end).
+Caches: no step of the jobs this workflow calls saves an Actions cache entry. dispatch-two-builds
+restores the two builds it compares the tree against (ci-job-dispatch-two-builds.yaml's `Restore
+the previous build` and `Restore the first-rollout build`), which ci-caches.yaml's dispatch-builds
+job builds and saves on a push to main, since an entry a pull request or a merge group saves lands
+in a scope no other run reads (dispatch://INFRA-1545, R4). Two actions its jobs call can save one,
+and only in a dispatched run (architecture-check and spec-check, at this paragraph's end); a third,
+setup-bun, saves only where its caller passes `save: 'true'` on a push to main, which no job of
+this workflow does and no run of it is.
 setup-go caches nothing here (`cache: false` on every step, the two check actions'
 included). The jobs that cache Go restore, in steps of their own, one of six families with
 actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same
@@ -1100,13 +1115,24 @@ families any more: dispatch-browser.yaml's shard and alone jobs run in the image
 repository builds, which carries Chromium, WebKit and Firefox at /ms-playwright, so a
 ~/.cache/ms-playwright restore would carry nothing they do not already have, and
 ci-caches.yaml's browsers job, the only writer of that entry, is gone with the restores
-(dispatch://INFRA-1443). setup-bun reads and writes its cache only on main
-(.github/actions/setup-bun), which of this workflow's events is the dispatched run alone, and
-not in the tool-fallback and tool-fallback-arm jobs at all: that action reads the id of the
-job that called it and passes no-cache for those two on every ref, so a restored Bun cannot
-stand in for the install each of their cases is a reading of. A seventh family,
+(dispatch://INFRA-1443). A seventh family, bun, holds ~/.bun/bin: .github/actions/setup-bun
+restores it on every ref, keyed on the runner's architecture, the build variant and the version
+.bun-version pins and with no restore-keys (a Bun binary of another version is one setup-bun
+rejects after paying for the restore, where a near-miss Go entry is still most of a module
+cache), and passes no-cache: true on every ref, so setup-bun takes the restored binary as an
+existing installation and downloads the 51,794,595-byte release asset on a miss alone
+(dispatch://INFRA-1545). The action saves that family only where its caller passes `save:
+'true'` and the run is a push to main, and one job passes it: ci-caches.yaml's bun job, which
+runs on every push to main, as each Go family has one saving job there. The key names the
+runner's architecture, so each architecture needs an entry and a saving job of its own, and the
+bun job runs one leg on ubuntu-24.04 and one on ubuntu-24.04-arm. No job here passes the input,
+and no run of this workflow is a push, so no job here writes a bun entry at all. The restore is
+made in every job but tool-fallback and
+tool-fallback-arm: that action reads the id of the job that called it and holds its restore
+back for those two on every ref, so a restored Bun cannot stand in for the install each of their
+cases is a reading of. An eighth family,
 `architecture-check-<os>-<arch>-go<version>-<hash>`, is the composite action
-.github/actions/architecture-check's own, and an eighth,
+.github/actions/architecture-check's own, and a ninth,
 `spec-check-<os>-<arch>-go<version>-<hash>`, is .github/actions/spec-check's; envoy-go-checks runs
 both. Each action restores its family and saves it itself, from $RUNNER_TEMP/architecture-check
 or $RUNNER_TEMP/spec-check and not from the Go caches above, keyed on the Go version its own
@@ -1400,10 +1426,11 @@ other half reads the whole tree, and is a step of lint, which runs on every chan
 that names a third-party registry again can be any file, and this filter names few of them.
 This job is the one copy path: it runs on a pull request and on a merge group, which is every
 event that can bring a new row in, and a failed copy is re-run with `gh run rerun`.
-The copy of every tool asset is filled here too, in the step after the image half
-(.github/scripts/mirror-ci-tools.sh): it is the same package, under the same login, and the
-tool-fallback and tool-fallback-arm jobs read what this step filled, so that copy must
-land before them.
+The copy of every tool asset is filled here too, in the two steps after the image half, one
+per machine's ghcr-mirror rows (.github/scripts/mirror-ci-tools.sh): it is the same package,
+under the same login, and the tool-fallback and tool-fallback-arm jobs read what those steps
+filled, so that copy must land before them. Why it is two steps, and what each waits for:
+.github/ci-budgets.md, "The ci-images job's ceiling and the tool copy".
 
 ## Why the ci-images job holds packages write
 
@@ -1505,7 +1532,7 @@ so this job needs no packages scope at all.
 ## The arm64 half of the tool fallback proof
 
 The same two halves of the Bun install, proved again on an arm64 runner.
-.github/actions/setup-bun's third step selects a row from `uname -m` — `bun-linux-aarch64`
+.github/actions/setup-bun's bun-second-source step selects a row from `uname -m` — `bun-linux-aarch64`
 here — and reads .github/ci-tools.yaml through .github/scripts/ci-tools.sh, which needs
 python3 with PyYAML. Every job of this file that runs on ubuntu-24.04-arm and installs Bun
 makes that same read, so a runner image without PyYAML fails all of them; what this job adds is
@@ -1513,7 +1540,7 @@ the second half, the install from npm when the release asset serves nothing, whi
 arm64 job drives and which the arm64 leg of .github/workflows/release-envoy-listener.yaml would
 otherwise meet first, on a push to main and so only after a merge.
 It proves both halves: the healthy path, where the release asset serves Bun and the action's
-fourth step holds it to the aarch64 row, and the npm path, under the fault the tool-fallback
+setup-bun step holds it to the aarch64 row, and the npm path, under the fault the tool-fallback
 job uses, where the release hosts answer nothing and the second source serves the same
 binary. Each half ends in a reading of what this runner holds, printed for a person reading
 the run: the machine, the version, the path, the row's own pins, and what ci_tools_verify
@@ -2103,6 +2130,16 @@ reads and requires on a merge group (that script's header). Both scripts run by 
 checkout's own path, the form every job that holds the list runs the check by;
 check-pr-text.sh runs check-private-names.sh from its own directory.
 
+The step's own budget is its retry arithmetic (dispatch://INFRA-1545), so an exhausted read fails
+the step by name rather than being cut part way by the job, each `gh api` read at
+5 x 30 + 150 = 300 s: find-pr-payload.sh's one, and check-pr-text.sh's - the pull request, the
+compare, the page read of read_list, which the `for ((i = 0; i < ${#lists[@]}; i += 2))` under it
+runs once for each of the three lists, 900 s, and the issue-key rule's (main's #4256): the
+marker's commits and the pull request's files, one each, the releases' loop at 600 s and the new
+commits' files loop at 7200 s, the figures .github/scripts/check-download-retry.sh's
+DECLARED_LOOPS derives for those two. 300 + 300 + 300 + 900 + 300 + 300 + 600 + 7200 = 10200 s,
+a whole number of minutes, so the budget is the next one strictly above it, 171 minutes.
+
 ## The merge queue's cancel act. Main's queue builds each group on top
 
 The merge queue's cancel act. Main's queue builds each group on top of the group below it,
@@ -2212,7 +2249,7 @@ public, and GitHub serves a public repository's git data to any valid token.
 ## The job reads nothing of the tree but ci-ok.sh, ci-ok.jq, ci-ok-reconcile.sh and
 
 The job reads nothing of the tree but ci-ok.sh, ci-ok.jq, ci-ok-reconcile.sh and the
-gh-read.sh and runner-shutdown.sh they source, so the .github cone is the whole checkout
+ci-retry.sh and runner-shutdown.sh they source, so the .github cone is the whole checkout
 it needs.
 
 ## Why a draft pull request is refused in a step
@@ -2256,6 +2293,11 @@ runner's shutdown annotation tells a job the platform killed from one the change
 `checks: read` it needs; the reconcile step, "Set every other ci-ok on this head to this job's conclusion", reads the same route with the same
 token. GITHUB_REPOSITORY and GITHUB_RUN_ID, the rest of what it reads, are Actions' own.
 
+The step's own budget is its retry arithmetic (dispatch://INFRA-1545), so an exhausted read fails
+the step by name rather than being cut part way by the job: runner-shutdown.sh's check-run read,
+5 x 30 + 150 = 300 s, and its annotations loop, its 180 s deadline plus one read's ladder, 480 s
+(check-download-retry.sh's DECLARED_LOOPS), 780 s together -> 14 min.
+
 ## Why every other ci-ok on this head is set to this job's conclusion
 
 A ci-ok the ci-ok-report step posted stays on the head as it was: no re-run updates a
@@ -2265,3 +2307,101 @@ check run on the head but this job's own to what this job concluded, so one verd
 at the end of every attempt (ci-ok-reconcile.sh says what it passes over and why a refusal
 only warns). `job.status` is this job's conclusion, and `always()` is what runs the step
 after the verdict, the "Judge every job of this run" step, failed.
+
+The step's own budget is its retry arithmetic (dispatch://INFRA-1545): ci-ok-reconcile.sh's
+check-run read, 5 x 30 + 150 = 300 s, and its PATCH, which the loop there runs once for every
+other ci-ok on the head that needs setting. The budget is written for three of them,
+3 x 300 = 900 s, because a merge-group run posts one ci-ok per job whose own result decides the
+group, so a run that fails in three jobs leaves three posts on this head
+(.github/scripts/check-download-retry.sh's DECLARED_LOOPS carries that 900 s and the sum it comes
+from). 300 + 900 = 1200 s, a whole number of minutes, so the budget is the next one strictly
+above it, 21 minutes. This budget matters more than most: ci-ok-reconcile.sh's own header says a
+refused PATCH only warns, because failing that step would turn a passing verdict red, and a step
+the runner cuts does exactly that, since a cut step fails this job and ci-ok is the check main's
+ruleset requires. So that step's figure is written for the head it can meet rather than for the
+one it usually meets.
+
+## download_retry_sites: The retry loop, the fault, the rig and the composite actions whose downloads it proves
+
+The filter of the download-retry lane, the download-retry job of
+.github/workflows/ci-job-download-retry.yaml, which runs when this filter matched: the retry loop,
+the fault it is proved against, the rig that puts the two together - .github/scripts/ci-fault-proxy.py
+and .github/scripts/download-retry-proof.sh, which starts a proxy for one site, probes it and
+reads its log back - the lane's own file, whose steps carry its sites, bounds, faulted hosts and
+the budget each report holds its site to, and the composite actions whose own downloads the lane
+proves, named one by one: three are faulted sites (install-changie, install-omp and
+install-claude-code), and setup-bun and install-jj run unfaulted beneath them. Nothing those
+downloads read: the Retries note of .github/ci-budgets.md says why.
+
+## download_retry_images: The four Dockerfiles whose network RUN lines carry the inline retry
+
+The filter of the download-retry-images lane, the download-retry-images job of
+.github/workflows/ci-job-download-retry.yaml: the four Dockerfiles whose network RUN lines carry
+the inline retry, the fault and the rig, and the lane's own file. Not what the builds compile:
+worker-image, envoy-smoke and browser-image prove the builds. Not ci-retry.sh either: each
+Dockerfile carries its own inline copy of the loop.
+
+## download_retry: Both lanes' filters, which select ci.yaml's one download-retry job
+
+The two lanes' filters together, through their anchors, as the test filter names its harness
+steps' filters: ci.yaml's download-retry job runs both lanes, each behind an input its own filter's
+output fills, so the job runs whenever either lane's filter matched and each lane runs only when its
+own did. The two lanes are one ci.yaml job, and so one call of a reusable workflow, because
+ci.yaml calls as many reusable workflows as .github/scripts/check-workflow-files.sh allows it
+already.
+
+## The two jobs that prove the retries, and why neither runs in a merge group
+
+The `changes` job's three outputs for the download-retry job and its two lanes, download_retry,
+download_retry_sites and download_retry_images, are the only outputs here that read the event
+before the filter: each is 'false' in a merge group, so neither lane runs there, and 'true' on a
+dispatched run. Why, and why in the outputs rather than in the job's `if:`: the Retries note of
+.github/ci-budgets.md.
+
+## The download-retry job: the retries against the two faults they answer
+
+ci.yaml's download-retry job calls .github/workflows/ci-job-download-retry.yaml, whose two jobs
+are the two lanes. The download-retry lane proves the retries against the two faults they answer,
+a host that refuses and then serves and one that stalls; its rig is .github/ci-budgets.md, "The
+download-retry job's rig". The download-retry-images lane puts the same recovering fault inside
+the four Dockerfiles whose network RUN lines carry the inline retry; its rig is
+.github/ci-budgets.md, "The download-retry-images job's rig". Each lane's steps, and the budget
+they add up to, are in the called file, and each lane is gated there on an input this job fills
+from its own filter's output (the download_retry section of these notes says why one job).
+
+## The pr-title job's budget
+
+600 s, the 10 minutes this job carried, plus its slowest retried step alone (the Budgets note of
+.github/ci-budgets.md): the text check's `gh api` ladders, 10200 s (that step's section sums them),
+a whole number of minutes, so that step's own budget takes one more, 10260 s, and this job takes
+it too. 600 + 10260 = 10860 s -> 182 min, the whole minute above a sum that is itself a whole
+number of minutes.
+
+## The cancel-started job's budget
+
+600 s, the 10 minutes this job was written with, plus its slowest retried step alone (the Budgets
+note of .github/ci-budgets.md): the one step, which runs .github/scripts/cancel-started-act.sh,
+whose run list and force-cancel are 5 x 30 + 150 = 300 s each, 600 s together, and whose own
+budget is 720 s. 600 + 720 = 1320 s -> 23 min, the whole minute above a sum that is itself a whole
+number of minutes.
+
+The step's own budget is its retry arithmetic, so an exhausted read fails the step by name rather
+than being cut part way by the job: the run list's 300 s and the force-cancel's 300 s, 600 s
+together. 720 s and not rule 8's minimum of 660 s: no pull-request run exercises this budget, so
+its first exercise is a merge-queue run, where a cut ejects the pull request rather than reporting
+a failure. What that extra minute holds is the step's own measured work beside the two ladders -
+about 3 s a `gh` call (the Retries note) over the run list and one force-cancel per removed group,
+at most 21 calls at the 20 groups the queue builds at once, about 63 s, which 660 s does not cover
+and 720 s does. One term per call and not one per run cancelled: the script's loop calls the
+force-cancel once per removed group, and a run of them all exhausting their retries is the outage
+the Budgets note leaves to the job's own ceiling. The run list retries at the same 30 s an attempt
+as the force-cancel: a refused list names no group at all, and every removed group's run then
+keeps its runners.
+
+## The ci-ok job's budget
+
+600 s, the 10 minutes this job carried, plus its slowest retried step alone (the Budgets note of
+.github/ci-budgets.md): the reconcile's check-run read and the three PATCHes its budget is written
+for, 300 + 3 x 300 = 1200 s, a whole number of minutes, so that step's own budget takes one more,
+1260 s, and this job takes it too. 600 + 1260 = 1860 s -> 32 min, the whole minute above a sum
+that is itself a whole number of minutes.

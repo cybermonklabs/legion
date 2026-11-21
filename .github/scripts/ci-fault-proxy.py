@@ -25,7 +25,7 @@ moment it appears, which is the first moment a caller can use the proxy.
 --bind is the address it listens on, 127.0.0.1 by default. A `RUN` of a docker build runs in a
 network namespace of its own, where 127.0.0.1 is the build container and not the runner, so a
 build reaches this proxy only on an address the container can route to: the docker bridge
-gateway, which .github/workflows/ci.yaml's download-retry-images job binds to and passes into
+gateway, which the download-retry-images job of .github/workflows/ci-job-download-retry.yaml binds to and passes into
 the build as http_proxy. Nothing else changes: a caller that names no --bind listens where it
 always did.
 

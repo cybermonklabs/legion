@@ -8,10 +8,10 @@
 # and refuses that archive, naming it, before helm reads it when its sha256 is not b209c627…58cc1,
 # the digest the chart index at https://nats-io.github.io/k8s/helm/charts/ and the GitHub release
 # both publish (the value INFRA-549 records). It renders it with `helm template --skip-tests` (helm
-# v3.20.2 through go run) and nats-values.yaml, with each image pinned to the digest a registry
-# manifest read gives its tag, and refuses a render that holds a kind the load-test Role cannot
-# write or an image not pinned by digest. The output keeps the placeholders __NAMESPACE__,
-# __STORAGE_CLASS__ and __RUN_ID__, which cluster.sh fills.
+# v3.20.2, installed with `go install`) and nats-values.yaml, with each image pinned to the digest
+# a registry manifest read gives its tag, and refuses a render that holds a kind the load-test
+# Role cannot write or an image not pinned by digest. The output keeps the placeholders
+# __NAMESPACE__, __STORAGE_CLASS__ and __RUN_ID__, which cluster.sh fills.
 #
 # --out FILE writes FILE instead of manifests/nats.yaml. --pin-from FILE takes each image's digest
 # from FILE (an earlier render) instead of the registry: cluster.test.sh re-renders that way and
@@ -21,6 +21,11 @@ set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=packages/envoy/loadtest/cluster/cluster.sh
 source "$here/cluster.sh"
+# The one fetch below, the install of helm, retries at this repository's floor through the one
+# helper (dispatch://INFRA-1545): it builds from helm's own go.mod and reads no go.work, so no
+# workspace download covers it. The chart is the vendored archive, so nothing downloads it.
+# shellcheck source=.github/scripts/ci-retry.sh
+source "$here/../../../../.github/scripts/ci-retry.sh"
 
 # The vendored archive, nats-$CHART_VERSION.tgz, is the release asset
 #   https://github.com/nats-io/k8s/releases/download/nats-$CHART_VERSION/nats-$CHART_VERSION.tgz
@@ -92,7 +97,11 @@ for entry in "${IMAGES[@]}"; do
   pins+=("$ref -> $pinned")
 done
 
-(cd -- "$tmp" && go run "$HELM" template nats nats.tgz --skip-tests -f "$here/nats-values.yaml" "${sets[@]}") >"$tmp/rendered.yaml" ||
+# What retries is the download and never the work after it (.github/ci-budgets.md): helm comes
+# down in its own retried install, and the template that follows runs once.
+GOBIN="$tmp/bin" retry_fetch "helm ${HELM##*@}" 180 -- go install "$HELM" ||
+  die "could not install helm $HELM"
+(cd -- "$tmp" && "$tmp/bin/helm" template nats nats.tgz --skip-tests -f "$here/nats-values.yaml" "${sets[@]}") >"$tmp/rendered.yaml" ||
   die "helm template failed"
 
 while read -r kind; do

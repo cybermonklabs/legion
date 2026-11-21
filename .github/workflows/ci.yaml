@@ -2,6 +2,10 @@ name: CI
 
 # why: .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs
 
+# Retries and budgets: how every download of this workflow retries, and how every step budget
+# and job ceiling below was derived, are the Retries note and the Budgets note of
+# .github/ci-budgets.md.
+
 # why: .github/ci-notes/ci.md#why-the-router-runs-on-these-events-and-no-others
 on:
   pull_request:
@@ -71,6 +75,7 @@ env:
       "envoy-session-stall": "envoy_session_stall",
       "ci-filters": "ci_filters",
       "ci-images": "ci_images",
+      "download-retry": "download_retry",
       "tool-fallback": "tool_fallback",
       "tool-fallback-arm": "tool_fallback",
       "proof-sdk-offline": "proof_sdk_offline",
@@ -211,6 +216,10 @@ jobs:
       go_notices: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_notices }}
       ci_filters: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_filters }}
       ci_images: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_images }}
+      # why: .github/ci-notes/ci.md#the-two-jobs-that-prove-the-retries-and-why-neither-runs-in-a-merge-group
+      download_retry: ${{ github.event_name == 'merge_group' && 'false' || github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.download_retry }}
+      download_retry_sites: ${{ github.event_name == 'merge_group' && 'false' || github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.download_retry_sites }}
+      download_retry_images: ${{ github.event_name == 'merge_group' && 'false' || github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.download_retry_images }}
       # why: .github/ci-notes/ci.md#why-the-tool-fallback-proof-carries-no-full-ci-term
       tool_fallback: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.tool_fallback }}
       proof_sdk_offline: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.proof_sdk_offline }}
@@ -792,6 +801,20 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
+  # why: .github/ci-notes/ci.md#the-download-retry-job-the-retries-against-the-two-faults-they-answer
+  download-retry:
+    needs: changes
+    if: needs.changes.outputs.download_retry == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-download-retry.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+      download_retry_sites: ${{ needs.changes.outputs.download_retry_sites }}
+      download_retry_images: ${{ needs.changes.outputs.download_retry_images }}
+
   # why: .github/ci-notes/ci.md#what-the-proof-editors-offline-proof-shows
   proof-sdk-offline:
     needs: changes
@@ -842,7 +865,9 @@ jobs:
     if: ${{ !github.event.pull_request.draft && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
     # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # why: .github/ci-notes/ci.md#the-pr-title-jobs-budget
+    # 600 + 10260 = 10860 s -> 182 min.
+    timeout-minutes: 182
     # why: .github/ci-notes/ci.md#what-the-pr-title-jobs-scopes-are-for
     permissions:
       contents: read
@@ -865,8 +890,10 @@ jobs:
           sparse-checkout: .github
           persist-credentials: false
 
-      # why: .github/ci-notes/ci.md#what-the-pr-title-check-step-maps-and-how-it-runs-its-scripts
       - name: Check the pull request's title, body, branch name, commits, comments and reviews
+        # why: .github/ci-notes/ci.md#what-the-pr-title-check-step-maps-and-how-it-runs-its-scripts
+        # 300 + 300 + 300 + 900 + 300 + 300 + 600 + 7200 = 10200 s -> 171 min.
+        timeout-minutes: 171
         env:
           GH_TOKEN: ${{ github.token }}
           PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
@@ -879,7 +906,9 @@ jobs:
     if: ${{ github.event_name == 'merge_group' && github.run_attempt == '1' }}
     # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # why: .github/ci-notes/ci.md#the-cancel-started-jobs-budget
+    # 600 + 720 = 1320 s -> 23 min.
+    timeout-minutes: 23
     permissions:
       actions: write
     steps:
@@ -889,10 +918,14 @@ jobs:
         with:
           sparse-checkout: .github
           persist-credentials: false
-      - env:
+      - name: Force-cancel the runs of the groups the queue removed
+        env:
           GH_TOKEN: ${{ github.token }}
           HEAD_BRANCH: ${{ github.ref_name }}
           RUN_ID: ${{ github.run_id }}
+        # why: .github/ci-notes/ci.md#the-cancel-started-jobs-budget
+        # 300 + 300 = 600 s of ladders, 720 s with the step's own calls -> 12 min.
+        timeout-minutes: 12
         run: .github/scripts/cancel-started-act.sh
 
   # why: .github/ci-notes/ci.md#the-verdict-and-one-of-the-two-checks-mains-ruleset-requires-of
@@ -940,13 +973,16 @@ jobs:
       - envoy-e2e-local
       - envoy-session-stall
       - ci-filters
+      - download-retry
       - proof-sdk-offline
       - worker-image
       - browser-image
     if: ${{ always() }}
     # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # why: .github/ci-notes/ci.md#the-ci-ok-jobs-budget
+    # 600 + 1260 = 1860 s -> 32 min.
+    timeout-minutes: 32
     permissions:
       checks: write
     steps:
@@ -972,8 +1008,10 @@ jobs:
           echo "::error::ci-ok is failure on attempt $RUN_ATTEMPT of this merge-group run, whatever the jobs of it did: a merge group is tested once, the queue builds a new group rather than re-running one, and this attempt judges a tree the queue is no longer waiting on."
           exit 1
 
-      # why: .github/ci-notes/ci.md#needs-is-tojsonneeds-changes-result-and-outputs-with-every-other-jobs-result
       - name: Judge every job of this run
+        # why: .github/ci-notes/ci.md#needs-is-tojsonneeds-changes-result-and-outputs-with-every-other-jobs-result
+        # 300 + 480 = 780 s -> 14 min.
+        timeout-minutes: 14
         env:
           NEEDS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
@@ -984,9 +1022,11 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: .github/scripts/ci-ok.sh
 
-      # why: .github/ci-notes/ci.md#why-every-other-ci-ok-on-this-head-is-set-to-this-jobs-conclusion
       - name: Set every other ci-ok on this head to this job's conclusion
         if: always()
+        # why: .github/ci-notes/ci.md#why-every-other-ci-ok-on-this-head-is-set-to-this-jobs-conclusion
+        # 300 + 3 x 300 = 1200 s -> 21 min.
+        timeout-minutes: 21
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}

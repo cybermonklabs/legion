@@ -94,7 +94,12 @@ permissions: {}
 jobs:
   pr-title:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the 10 minutes
+    # this job carried, plus its slowest retried step alone — check-pr-text.sh's `gh api`
+    # ladders, 9900 s (that step's comment sums them), a whole number of minutes, so that step's
+    # own budget takes one more and this job takes it too. 600 + 9960 = 10560 s -> 177 min, the
+    # whole minute above a sum that is itself a whole number of minutes.
+    timeout-minutes: 177
     permissions:
       contents: read
       issues: read
@@ -121,6 +126,16 @@ jobs:
       # check-pr-text.sh runs by the checkout's own path, the form every job that holds the list
       # runs the check by, and runs check-private-names.sh from its own directory.
       - name: Check the title, body, branch name, commits, comments and reviews
+        # Its own retry arithmetic: check-pr-text.sh's `gh api` reads, each 5 x 30 + 150 = 300 s.
+        # The pull request and the compare are one each; the third sits in read_list's page
+        # loop, which the `for ((i = 0; i < ${#lists[@]}; i += 2))` below it runs once for each
+        # of the three lists, so that one ladder is three, 900 s. The issue-key rule's (main's
+        # #4256) are the marker's commits and the pull request's files, one each, the releases'
+        # loop at 600 s and the new commits' files loop at 7200 s, the figures
+        # .github/scripts/check-download-retry.sh's DECLARED_LOOPS derives for those two.
+        # 300 + 300 + 900 + 300 + 300 + 600 + 7200 = 9900 s, a whole number of minutes, so the
+        # budget is the next one strictly above it -> 166 min.
+        timeout-minutes: 166
         env:
           GH_TOKEN: ${{ github.token }}
           PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}

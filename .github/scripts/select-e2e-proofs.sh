@@ -17,7 +17,10 @@
 #   2. a row that is not an object, or that has no `script` string;
 #   3. a hosted row that lacks a key the matrix carries, or that holds the wrong kind of value
 #      for one. MATRIX below is the one list of those keys and of the kind each one holds, so a
-#      key added there is a key the validation then demands of every hosted row;
+#      key added there is a key the validation then demands of every hosted row; and a hosted
+#      row whose `run_timeout_minutes`, the limit of the step that runs the script, is not below
+#      its `timeout_minutes`, the job's, which would cut that step before its own limit names it
+#      (.github/ci-notes/e2e.md, "The proof step's own limit");
 #   4. an `elsewhere` row with no `needs` text, which is the text a refusal of that script prints;
 #   5. a script under scripts/e2e/ that neither list names, or a row naming a script the tree
 #      does not hold;
@@ -74,6 +77,7 @@ MATRIX = (
     Key("jj", "a boolean", a_boolean, as_given),
     Key("evidence_variable", "a string", a_string, as_given),
     Key("timeout_minutes", "a whole number", a_whole_number, as_given),
+    Key("run_timeout_minutes", "a whole number", a_whole_number, as_given),
 )
 
 # What each list holds, and the order the rows are read in.
@@ -159,6 +163,15 @@ for script, row in rows["hosted"].items():
         if key.name in row and not key.holds(row[key.name]):
             problems.append(f"hosted row {script} has {key.name} {row[key.name]!r}, which is not "
                             f"{key.kind}. Write {key.name} as {key.kind}.")
+    # The step that runs the script is held below the job, or the job's limit cuts the step before
+    # the step's own limit can name it. A key missing or of the wrong kind is refused above.
+    step, job = row.get("run_timeout_minutes"), row.get("timeout_minutes")
+    if a_whole_number(step) and a_whole_number(job) and step >= job:
+        problems.append(f"hosted row {script} has run_timeout_minutes {step}, which is not below "
+                        f"its timeout_minutes {job}: the job's limit would cut the step that runs "
+                        f"the script before that step's own limit names it. Write "
+                        f"run_timeout_minutes below timeout_minutes, each as the file's comment "
+                        f"derives it.")
 
 for script, row in rows["elsewhere"].items():
     if not isinstance(row.get("needs"), str) or not row["needs"].strip():

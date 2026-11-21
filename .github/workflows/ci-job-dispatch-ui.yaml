@@ -23,13 +23,26 @@ on:
 jobs:
   dispatch-ui:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 15
+    # Budget (ci-budgets.md's Budgets note): 900 s, the 15 minutes this job was written with, plus
+    # its slowest retried step alone — the setup-bun step's two `ci_tools_fetch` calls,
+    # 3416 s, above the workspace install's 5 x 180 + 150 = 1050 s, the zsh install's two apt
+    # phases at 625 + 775 = 1400 s and the ci-ok report's 2160 s. 900 + 3416 = 4316 s -> 72 min.
+    timeout-minutes: 72
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+        timeout-minutes: 57
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       # The suites below read some of contracts' values through plain Node resolution rather than
       # through the workspace's "bun" export condition: e2e/__tests__/row-configurations.test.ts
       # spawns Playwright, whose own resolution reads contracts' built dist/. Without this step
@@ -63,8 +76,21 @@ jobs:
       # e2e/__tests__/outside-path-reach-input.test.ts runs the path-reach driver under zsh, which
       # must refuse to run and name bash, and skips that row where zsh is missing; the runner image
       # has no zsh (dash, the other shell it runs under, is Ubuntu's /bin/sh).
+      # Both apt phases retry through .github/scripts/ci-retry.sh, in e2e.yaml's spelling; their
+      # bounds, and why the index read carries `-o APT::Update::Error-Mode=any`: ci-budgets.md's
+      # Retries note.
       - name: Install zsh
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
+        # Its own retry arithmetic, so an exhausted phase fails this step by name rather than
+        # being cut part way by the job: the index read's 5 x 95 + 150 = 625 s and the package
+        # download's 5 x 125 + 150 = 775 s, 1400 s -> 24 min.
+        timeout-minutes: 24
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "apt's package lists" 95 -- \
+            sudo timeout 90 apt-get update -o APT::Update::Error-Mode=any
+          retry_fetch "zsh" 125 -- \
+            sudo timeout 120 apt-get install -y --no-install-recommends -d zsh
+          sudo apt-get install -y --no-install-recommends zsh
       # The database cases of e2e/__tests__/psql-session.test.ts and harness-stacks.test.ts skip
       # themselves where LEGION_TEST_PG_DSN names no server, so in this job they do not run: it
       # has no `postgres:` service, as this job's head says. A container of the pinned image for
@@ -100,6 +126,8 @@ jobs:
         working-directory: packages/dispatch
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: dispatch-ui

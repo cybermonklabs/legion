@@ -94,7 +94,7 @@ downloaded=$1
 # appears there with job id 128737742824, `run_attempt: 6` and `started_at
 # 2026-11-08T09:41:30Z`, which is attempt 1's time.
 #
-# The script retries the read through .github/scripts/gh-read.sh's ladder and, when
+# The script retries the read through .github/scripts/ci-retry.sh's ladder and, when
 # that is spent, names the endpoint, the status and the attempt and says it is a
 # failed read rather than a failed row, which is why this step no longer carries a
 # `|| { echo …; exit 1; }` block of its own. It still reads with `--paginate --slurp`

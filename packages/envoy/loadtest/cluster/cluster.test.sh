@@ -2292,12 +2292,16 @@ pass "two starts of one runner job name get directories of their own, a start ne
 (
   version=$(sed -n 's/^CHART_VERSION=//p' "$here/render-nats.sh")
   want=$(sed -n 's/^CHART_SHA256=//p' "$here/render-nats.sh")
+  # The tree mirrors the repository's own layout, because render-nats.sh sources the one retry
+  # helper by its path from the repository root (.github/scripts/ci-retry.sh, dispatch://INFRA-1545).
   tree=$tmp/render-tree
-  mkdir -p "$tree/loadtest/cluster"
+  mkdir -p "$tree/packages/envoy/loadtest/cluster" "$tree/.github/scripts"
   tree=$(cd -- "$tree" && pwd -P) # Match the directory spelling in render-nats.sh's refusal.
-  chart=$tree/loadtest/cluster/nats-$version.tgz
-  cp -- "$here/../common.sh" "$tree/loadtest/"
-  cp -- "$here/cluster.sh" "$here/render-nats.sh" "$here/nats-values.yaml" "$here/nats-$version.tgz" "$tree/loadtest/cluster/"
+  tree_cluster=$tree/packages/envoy/loadtest/cluster
+  chart=$tree_cluster/nats-$version.tgz
+  cp -- "$here/../common.sh" "$tree/packages/envoy/loadtest/"
+  cp -- "$here/cluster.sh" "$here/render-nats.sh" "$here/nats-values.yaml" "$here/nats-$version.tgz" "$tree_cluster/"
+  cp -- "$here/../../../../.github/scripts/ci-retry.sh" "$tree/.github/scripts/"
   vendored=$(sha256sum -- "$chart" | cut -d' ' -f1)
   [ "$vendored" = "$want" ] || fail "nats-$version.tgz has sha256 $vendored, not render-nats.sh's CHART_SHA256 '$want'"
   size=$(wc -c <"$chart")
@@ -2308,7 +2312,7 @@ pass "two starts of one runner job name get directories of their own, a start ne
   [ "$got" != "$want" ] || fail "the chart with its last byte changed still has sha256 $want"
   [ -f "$fake/go.log" ] || : >"$fake/go.log"
   go_calls=$(wc -l <"$fake/go.log")
-  ! bash "$tree/loadtest/cluster/render-nats.sh" --pin-from "$here/manifests/nats.yaml" --out "$tmp/refused.yaml" 2>"$tmp/out" ||
+  ! bash "$tree_cluster/render-nats.sh" --pin-from "$here/manifests/nats.yaml" --out "$tmp/refused.yaml" 2>"$tmp/out" ||
     fail "render-nats.sh rendered a chart whose sha256 is $got"
   grep -qxF "render-nats.sh: $chart has sha256 $got, not $want; refusing it" "$tmp/out" ||
     fail "render-nats.sh's refusal of the changed chart does not name it and both sums"

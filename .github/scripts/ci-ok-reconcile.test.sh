@@ -52,6 +52,15 @@ esac
 GH
 chmod +x "$work/bin/gh"
 
+# The script reads and PATCHes through retry_fetch (.github/scripts/ci-retry.sh), which sleeps
+# 10, 20, 40 and 80 seconds between its five attempts. Those waits are ci-retry.test.sh's to
+# prove, by measuring them; here they would add 150 s to each case that exhausts a retry, so
+# `sleep` is a no-op on this PATH, as the retry delay this test used to set to zero was.
+cat > "$work/bin/sleep" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$work/bin/sleep"
 # check_runs <id>=<status>[/<conclusion>][@<external id>]...: the head's ci-ok check runs, one
 # per line, as `gh api --jq '.check_runs[] | "\(.id) \(.status) \(.conclusion) \(…)"'` prints
 # them. A check run named with no `@` carries ci-ok-post:9, the marker post-check-run.sh sends
@@ -74,7 +83,7 @@ check_runs() {
 run_reconcile() {
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r HEAD_SHA=abc123 \
-    GITHUB_SERVER_URL=https://github.com GITHUB_RUN_ID=41 GH_RETRY_SECONDS=0 \
+    GITHUB_SERVER_URL=https://github.com GITHUB_RUN_ID=41 \
     CHECK_RUN_ID=${2:-900} CONCLUSION=$1 "$script_dir/ci-ok-reconcile.sh" 2>&1)
   status=$?
   set -e
@@ -196,16 +205,16 @@ run_reconcile success
 check "exits 0 rather than failing the job" "$(is "$status" 0)"
 check "writes nothing" "$(is "$(calls)" 0)"
 check "warns, naming this job's verdict" \
-  "$(contains "$out" "::warning::GitHub refused this head's ci-ok check runs three times")"
+  "$(contains "$out" "::warning::GitHub refused this head's ci-ok check runs five times")"
 
 echo "case: GitHub refuses a PATCH"
 check_runs "900=in_progress/null" "100=completed/failure"
 touch "$work/patch-fails"
 run_reconcile success
 check "exits 0 rather than failing the job" "$(is "$status" 0)"
-check "tried three times" "$(is "$(calls)" 3)"
+check "tried five times" "$(is "$(calls)" 5)"
 check "warns, naming the check run and both verdicts" \
-  "$(contains "$out" '::warning::GitHub refused the PATCH of ci-ok check run 100 three times, so it stands at failure while this attempt.s verdict is success')"
+  "$(contains "$out" '::warning::GitHub refused the PATCH of ci-ok check run 100 five times, so it stands at failure while this attempt.s verdict is success')"
 
 echo "case: a conclusion that is no job.status"
 check_runs "900=in_progress/null" "100=completed/failure"

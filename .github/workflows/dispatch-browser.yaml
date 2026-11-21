@@ -31,7 +31,8 @@ jobs:
   binaries:
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/dispatch-browser.md#the-binaries-jobs-budget
-    timeout-minutes: 10
+    # 600 + 1050 = 1650 s -> 28 min.
+    timeout-minutes: 28
     outputs:
       connections: ${{ steps.connections.outputs.connections }}
     steps:
@@ -52,6 +53,13 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # why: .github/ci-notes/dispatch-browser.md#why-each-job-that-builds-go-downloads-its-modules-in-a-step-of-its-own
+      - name: Download the Go modules this job builds
+        # 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       # why: .github/ci-notes/dispatch-browser.md#what-the-binaries-build-writes-and-why-it-is-static
       - name: Build the binaries the browser suite runs
         run: |
@@ -80,11 +88,11 @@ jobs:
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/dispatch-browser.md#the-shard-job-its-stacks-and-its-container
     container:
-      image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
+      image: ghcr.io/cybermonklabs/legion/ci@sha256:2bd51e755d4b1c14e35ad27dab0b4a1aaf4238dcf543950115b24eb802793bb2
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
-    # 540 + 120 + 120 + 524 = 1,304 s, 21 min 44 s, rounded up to the 22 minutes below.
-    timeout-minutes: 22
+    # 1320 + 3416 = 4736 s -> 79 min.
+    timeout-minutes: 79
     strategy:
       fail-fast: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-leg-count-stands-in-two-places
@@ -122,7 +130,16 @@ jobs:
       - name: Make the downloaded binaries executable
         run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+        # why: .github/ci-notes/dispatch-browser.md#the-setup-bun-and-workspace-install-steps-budgets
+        # 2 x 1708 = 3416 s -> 57 min.
+        timeout-minutes: 57
+      - name: bun install --frozen-lockfile
+        # why: .github/ci-notes/dispatch-browser.md#the-setup-bun-and-workspace-install-steps-budgets
+        # 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       # why: .github/ci-notes/dispatch-browser.md#why-every-job-that-runs-the-suite-builds-contracts-first
       - name: Build contracts for dispatch e2e
         run: bun run build:dispatch
@@ -188,11 +205,11 @@ jobs:
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/dispatch-browser.md#the-alone-job-and-what-it-keeps-the-same-as-the-shard-job
     container:
-      image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
+      image: ghcr.io/cybermonklabs/legion/ci@sha256:2bd51e755d4b1c14e35ad27dab0b4a1aaf4238dcf543950115b24eb802793bb2
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-alone-jobs-measured-steps-and-its-budget
-    # 180 + 120 + 120 + 442 = 862 s, 14 min 22 s, rounded up to the 15 minutes below.
-    timeout-minutes: 15
+    # 900 + 3416 = 4316 s -> 72 min.
+    timeout-minutes: 72
     strategy:
       fail-fast: false
       matrix:
@@ -228,7 +245,16 @@ jobs:
       - name: Make the downloaded binaries executable
         run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+        # why: .github/ci-notes/dispatch-browser.md#the-setup-bun-and-workspace-install-steps-budgets
+        # 2 x 1708 = 3416 s -> 57 min.
+        timeout-minutes: 57
+      - name: bun install --frozen-lockfile
+        # why: .github/ci-notes/dispatch-browser.md#the-setup-bun-and-workspace-install-steps-budgets
+        # 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       # why: .github/ci-notes/dispatch-browser.md#why-the-alone-job-builds-contracts
       - name: Build contracts for dispatch e2e
         run: bun run build:dispatch
@@ -279,8 +305,8 @@ jobs:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/dispatch-browser.md#the-two-process-jobs-measured-steps-and-its-budgets
-    # 4 + 4 + 2 + 2 min plus 135 s and 120 s = 16 min 15 s -> 17 min.
-    timeout-minutes: 17
+    # 1080 + 3416 = 4496 s -> 75 min.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -299,8 +325,24 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) || '' }}
+      # why: .github/ci-notes/dispatch-browser.md#why-each-job-that-builds-go-downloads-its-modules-in-a-step-of-its-own
+      - name: Download the Go modules this job builds
+        # 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+        # why: .github/ci-notes/dispatch-browser.md#the-setup-bun-and-workspace-install-steps-budgets
+        # 2 x 1708 = 3416 s -> 57 min.
+        timeout-minutes: 57
+      - name: bun install --frozen-lockfile
+        # why: .github/ci-notes/dispatch-browser.md#the-setup-bun-and-workspace-install-steps-budgets
+        # 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-builds-contracts
       - name: Build contracts for dispatch e2e
         run: bun run build:dispatch
@@ -311,11 +353,16 @@ jobs:
         working-directory: packages/envoy
       - name: Install Playwright Chromium
         # why: .github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is
-        timeout-minutes: 4
-        run: bunx playwright install chromium
+        # 5 x 300 + 150 = 1650 s -> 28 min.
+        timeout-minutes: 28
+        run: |
+          . "$GITHUB_WORKSPACE/.github/scripts/ci-retry.sh"
+          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium
         working-directory: packages/dispatch
       - name: Pull the multiprocess stack's Postgres image
         # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-pulls-its-stacks-postgres-image
+        # 120 x 1.15 = 138 s -> 3 min.
+        timeout-minutes: 3
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
       - name: Read the connections the multiprocess stack's Postgres must allow
         # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-reads-its-stacks-connection-limit-in-a-step-of-its-own
@@ -353,10 +400,10 @@ jobs:
           path: packages/dispatch/e2e/test-results
 
   # why: .github/ci-notes/dispatch-browser.md#the-embedder-job-the-lanes-it-runs-on-and-its-budgets
-  # 4 + 4 + 2 min plus 135 s and 120 s = 14 min 15 s -> 15 min.
+  # 960 + 3416 = 4376 s -> 73 min.
   embedder:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 73
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -377,23 +424,45 @@ jobs:
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+        # why: .github/ci-notes/dispatch-browser.md#the-setup-bun-and-workspace-install-steps-budgets
+        # 2 x 1708 = 3416 s -> 57 min.
+        timeout-minutes: 57
+      - name: bun install --frozen-lockfile
+        # why: .github/ci-notes/dispatch-browser.md#the-setup-bun-and-workspace-install-steps-budgets
+        # 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
         # why: .github/ci-notes/dispatch-browser.md#why-the-embedder-job-builds-contracts
         run: bun run build:dispatch
         working-directory: packages/contracts
+      # why: .github/ci-notes/dispatch-browser.md#why-each-job-that-builds-go-downloads-its-modules-in-a-step-of-its-own
+      - name: Download the Go modules this job builds
+        # 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       - name: Build the Dispatch server for the embedder lane
         # why: .github/ci-notes/dispatch-browser.md#why-the-embedder-jobs-server-build-carries-the-lane-in-its-name
         run: go build -o ./dispatch-e2e ./cmd/dispatch
         working-directory: packages/envoy
       - name: Install Playwright Chromium
-        # Browsers only, no apt: .github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is
-        # says why that list is not needed and what the 4 minutes are.
-        timeout-minutes: 4
-        run: bunx playwright install chromium
+        # Browsers only, no apt: the multiprocess job's step of this name says why that list is
+        # not needed.
+        # why: .github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is
+        # 5 x 300 + 150 = 1650 s -> 28 min.
+        timeout-minutes: 28
+        run: |
+          . "$GITHUB_WORKSPACE/.github/scripts/ci-retry.sh"
+          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium
         working-directory: packages/dispatch
       - name: Pull the embedder stack's Postgres image
         # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-pulls-its-stacks-postgres-image
+        # 120 x 1.15 = 138 s -> 3 min.
+        timeout-minutes: 3
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
       - name: Read the connections the embedder stack's Postgres must allow
         # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-reads-its-stacks-connection-limit-in-a-step-of-its-own
@@ -420,11 +489,11 @@ jobs:
           path: packages/dispatch/e2e/test-results
 
   # why: .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets
-  # 240 + 333 + 120 = 693 s -> 12 min; 12 + 4 = 16 min with the reverse-order step.
+  # 1380 + 3416 = 4796 s -> 80 min.
   visual:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    timeout-minutes: 16
+    timeout-minutes: 80
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -443,8 +512,24 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) || '' }}
+      # why: .github/ci-notes/dispatch-browser.md#why-each-job-that-builds-go-downloads-its-modules-in-a-step-of-its-own
+      - name: Download the Go modules this job builds
+        # 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+        # why: .github/ci-notes/dispatch-browser.md#the-setup-bun-and-workspace-install-steps-budgets
+        # 2 x 1708 = 3416 s -> 57 min.
+        timeout-minutes: 57
+      - name: bun install --frozen-lockfile
+        # why: .github/ci-notes/dispatch-browser.md#the-setup-bun-and-workspace-install-steps-budgets
+        # 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
         # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-builds-contracts
         run: bun run build:dispatch
@@ -458,8 +543,10 @@ jobs:
       - name: Pull the pinned Playwright copy
         # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-pulls-the-pinned-playwright-copy-first
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
-      - name: Pull the stack's Postgres image
+      - name: Pull the visual stack's Postgres copy
         # why: .github/ci-notes/dispatch-browser.md#the-stacks-postgres-image-pulled-here-for-the-same-reason
+        # 120 x 1.15 = 138 s -> 3 min.
+        timeout-minutes: 3
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
       # The stack's connection limit, read outside the browser step's budget, where
       # e2e/harness-postgres.ts would otherwise compile it (DISPATCH_E2E_PG_CONNECTIONS).
@@ -470,17 +557,28 @@ jobs:
           [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
           echo "connections=$connections" >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy
+      # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-builds-its-stacks-four-commands-before-its-browser-step
+      - name: Build the visual stack's Dispatch server and broker
+        # 600 s, the binaries job's cold build of these four commands -> 10 min.
+        timeout-minutes: 10
+        run: |
+          mkdir -p out/dispatch-e2e-broker
+          go build -o ./dispatch-e2e ./cmd/dispatch
+          go build -o out/dispatch-e2e-broker/ ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
+          go build -o out/dispatch-e2e-broker/broker ./cmd/cipherd
+        working-directory: packages/envoy
       - name: Browser-test dispatch dashboard against its baselines
         id: visual-normal
-        # 183 x 1.15 = 211 s -> 4 min.
-        timeout-minutes: 4
+        # why: .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets
+        # 57.4 x 1.15 = 66 s -> 2 min, the rule's own floor.
+        timeout-minutes: 2
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-visual-suite.sh" "${{ steps.connections.outputs.connections }}"
         working-directory: packages/dispatch
       - name: Browser-test dispatch dashboard against its baselines, rows in reverse order
         # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-runs-its-rows-again-in-reverse-order
         if: ${{ !cancelled() && steps.visual-normal.outcome != 'skipped' }}
-        timeout-minutes: 4
+        timeout-minutes: 2
         run: |
           # Exported on the command line, as the first step's script exports them, for the reason
           # .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets gives.
@@ -511,14 +609,23 @@ jobs:
     # why: .github/ci-notes/dispatch-browser.md#why-the-merge-job-runs-on-arm64
     runs-on: ubuntu-24.04-arm
     # why: .github/ci-notes/dispatch-browser.md#the-merge-jobs-measured-steps-and-its-budget
-    # 180 + 37 = 217 s, which is 3 min 37 s, so 4 min.
-    timeout-minutes: 4
+    # 240 + 3416 = 3656 s -> 61 min.
+    timeout-minutes: 61
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+        # why: .github/ci-notes/dispatch-browser.md#the-setup-bun-and-workspace-install-steps-budgets
+        # 2 x 1708 = 3416 s -> 57 min.
+        timeout-minutes: 57
+      - name: bun install --frozen-lockfile
+        # why: .github/ci-notes/dispatch-browser.md#the-setup-bun-and-workspace-install-steps-budgets
+        # 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       # why: .github/ci-notes/dispatch-browser.md#why-every-legs-blob-report-is-downloaded-into-a-directory-of-its-own
       - name: Download every leg's blob report
         id: download-blobs
@@ -529,6 +636,9 @@ jobs:
       # why: .github/ci-notes/dispatch-browser.md#why-a-refused-blob-download-is-reported-as-a-refused-read
       - name: Report a refused blob download as a refused read
         if: failure() && steps.download-blobs.conclusion == 'failure'
+        # why: .github/ci-notes/dispatch-browser.md#the-merge-jobs-measured-steps-and-its-budget
+        # 5 x 40 + 150 = 350 s -> 6 min.
+        timeout-minutes: 6
         run: .github/scripts/dispatch-browser-run-reads.sh blobs-refused
       # why: .github/ci-notes/dispatch-browser.md#why-only-the-newest-attempt-of-each-leg-is-merged
       - name: Take the newest attempt of each leg's blob report
@@ -550,8 +660,9 @@ jobs:
       # why: .github/ci-notes/dispatch-browser.md#why-each-reading-goes-to-the-step-summary-and-to-the-log
       - name: Reading one, the rows
         if: always()
-        # 120 + 4 x 1.15 = 124.6 s -> 3 min.
-        timeout-minutes: 3
+        # why: .github/ci-notes/dispatch-browser.md#the-merge-jobs-measured-steps-and-its-budget
+        # 5 x 40 + 150 = 350 s -> 6 min.
+        timeout-minutes: 6
         env:
           GH_TOKEN: ${{ github.token }}
         run: .github/scripts/dispatch-browser-reading-rows.sh "${{ steps.download-blobs.conclusion }}"
@@ -578,6 +689,9 @@ jobs:
       # why: .github/ci-notes/dispatch-browser.md#when-the-merge-job-posts-ci-ok
       - name: Report ci-ok when this job decides a merge-group run
         if: always() && inputs.ci-ok-changes != ''
+        # why: .github/ci-budgets.md#the-budgets-note
+        # 600 + 2 x (300 + 480) = 2160 s, the ci-ok report's -> 38 min.
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: dispatch-browser

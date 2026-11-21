@@ -23,15 +23,29 @@ on:
 jobs:
   ci-images:
     runs-on: ubuntu-24.04-arm
-    # Raised from 15 to 25 when the tool copy joined the image copy: this job now fetches and
-    # pushes up to four release archives of its own beside the images.
-    timeout-minutes: 25
+    # Budget (ci-budgets.md's Budgets note): 1500 s, the 25 minutes this job carried once the tool
+    # copy joined the image copy, above its 25 s measured maximum of the image half alone, plus
+    # its slowest retried step alone — either of the two tool copy steps, one per machine, whose
+    # cold fill of that machine's five ghcr-mirror rows with the one token request is
+    # 427 + 5 x 3633 = 18592 s, as .github/ci-budgets.md's "The ci-images job's ceiling and the
+    # tool copy" derives it and says why the copy is split. That is above the package
+    # read, whose check-ci-images.sh asks ghcr.io for a pull token, for one manifest HEAD per
+    # row and for the recipe label of the one `built` row, 300 + 4200 + 750 = 5250 s, as that
+    # step's own comment derives it; above the image copy step, whose mirror-ci-images.sh makes
+    # two `crane config` ladders at 5 x 60 + 150 = 450 s each, a `crane copy` at
+    # 5 x 300 + 150 = 1650 s and a `crane digest` at 450 s, 3000 s together; above
+    # install-crane's one `ci_tools_fetch` of 1708 s; and above the ci-ok report's 2160 s.
+    # 1500 + 18592 = 20092 s -> 335 min.
+    timeout-minutes: 335
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's
+      # Budgets note) -> 29 min.
       - uses: ./.github/actions/install-crane
+        timeout-minutes: 29
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -40,18 +54,62 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Copy every image the package does not hold
+        # Its own retry arithmetic: mirror-ci-images.sh's `crane config` at 5 x 60 + 150 =
+        # 450 s, written once in image_go() and reached by the two check_go() calls the row
+        # loop holds, 900 s; its `crane copy` at 5 x 300 + 150 = 1650 s; and its `crane digest`
+        # at 450 s. 3000 s, a whole number of minutes, so the budget is the next one strictly
+        # above it -> 51 min.
+        timeout-minutes: 51
         run: .github/scripts/mirror-ci-images.sh
 
+      # Its own retry arithmetic, which is the script's: the package mode of
+      # .github/scripts/check-ci-images.sh retries each read of ghcr.io five times, with the
+      # 10, 20, 40 and 80 s waits its own RETRY_WAITS holds, so the fifth attempt starts 150 s
+      # after the first. It makes three kinds of read. The anonymous pull token, bounded at
+      # 30 s an attempt - `urlopen(timeout=30)`, which bounds each blocking socket operation
+      # rather than the attempt as a whole, so a resolution that hangs is outside it - is
+      # 5 x 30 + 150 = 300 s. One manifest HEAD per row of
+      # .github/ci-images.yaml carries the same bound, 300 s each, and that file holds 14
+      # rows: 4200 s. The `crane config` that reads a `built` row's recipe label is bounded at
+      # 120 s an attempt, 5 x 120 + 150 = 750 s, and runs for each `built` row the package
+      # holds, of which that file has one. 300 + 4200 + 750 = 5250 s -> 88 min, and the row
+      # count is what moves it.
+      # Why no check prices this step, so this budget and the job's ceiling are held by hand:
+      # .github/ci-budgets.md, "The ci-images job's ceiling and the tool copy".
       - name: Check the package holds every row of .github/ci-images.yaml
+        timeout-minutes: 88
         run: .github/scripts/check-ci-images.sh package
 
-      - name: Fill the copy of every tool asset the package does not hold
+      # The copy is filled one machine's ghcr-mirror rows at a time, in this step and the next,
+      # because a step that filled the ten rows of both would cost 427 + 10 x 3633 = 36757 s cold
+      # and put this job past the 360 minutes a GitHub-hosted job may run (.github/ci-budgets.md,
+      # "The ci-images job's ceiling and the tool copy"). The script reads its machine's rows
+      # with ci_tools_mirror_rows, which refuses a ghcr-mirror row built for neither machine by
+      # name, so each row is filled by exactly one of the two steps or both fail.
+      # Its own retry arithmetic, a cold fill: the five x86_64 ghcr-mirror rows (crane, changie,
+      # mise, jj and elan) of nine requests each and the one token request,
+      # 427 + 5 x 3633 = 18592 s (.github/ci-budgets.md, "The ci-images job's ceiling and the
+      # tool copy"), which rule 8 charges through its DECLARED_LIBRARIES entry for
+      # .github/scripts/mirror-ci-tools.sh -> 310 min.
+      - name: Fill the copy of every x86_64 tool asset the package does not hold
+        timeout-minutes: 310
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: .github/scripts/mirror-ci-tools.sh
+        run: .github/scripts/mirror-ci-tools.sh x86_64
+
+      # Its own retry arithmetic, the step above's over the five aarch64 ghcr-mirror rows
+      # (crane-aarch64, changie-aarch64, mise-aarch64, jj-aarch64 and elan-aarch64):
+      # 427 + 5 x 3633 = 18592 s, the same DECLARED_LIBRARIES entry -> 310 min.
+      - name: Fill the copy of every aarch64 tool asset the package does not hold
+        timeout-minutes: 310
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .github/scripts/mirror-ci-tools.sh aarch64
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: ci-images

@@ -90,9 +90,10 @@ skills/ (scripts/pi-plugin-prepack.sh stages pi-legion's share into legion/skill
 package's skills/ links into skills/), the notices generator, the prepack and patches/ (the
 bundles inline nats.js with patches/nats@2.29.3.patch applied). Everything after
 packages/claude-envoy/ is content the plugin ships rather than documentation, so a docs:
-commit there still releases: each is a --patch-path. Nothing has been published under this
-name, so --first-npm seeds the line at npm's 0.0.0 and the first release bumps from the whole
-history.
+commit there still releases: each is a --patch-path. Before the first claude-envoy-v* tag,
+nothing but npm's 0.0.0 placeholder had been published under this name, so --first-npm seeded
+the line at 0.0.0 and the first release bumped from the whole history. Since that tag, the
+newest claude-envoy-v* tag is the previous release and --first-npm is not read.
 
 ## The Go legion's version arguments and the command that prints its envoy packages
 
@@ -526,3 +527,86 @@ the job unless the tag names exactly the digest the release note and the attesta
 The release's body gets one "## Worker image" section, naming the digest the version tag
 points at now. release-section replaces a section that heading already holds, which is what
 a whole-run rerun of this image needs, and says there why the write is a replace.
+
+## The release jobs' budgets
+
+Each job carries the budget it carried before dispatch://INFRA-1545 as its first term, the
+measured minutes its `timeout-minutes` held, plus the arithmetic of its single slowest retried
+step alone, the rule of the Budgets note of .github/ci-budgets.md.
+
+- legion_build: 900 s, the measured 15 minutes this job carried, plus its slowest retried step
+  alone, "Resolve plugin versions for the smoke test and worker image", whose
+  .github/scripts/release-plugin-versions.sh runs .github/scripts/release-push.sh four times -
+  two `version` calls and two `pair-version` calls, each written where its version is resolved
+  rather than inside a function, so rule 8 reads all four as runs that step waits for - and each
+  run holds that script's leak-guard fetch at every one of its call sites, 6 x 450 = 2700 s, so
+  4 x 2700 = 10800 s, above every other retried step here. 900 + 10800 = 11700 s -> 196 min,
+  which carries the whole minute the Budgets note gives a step whose own arithmetic is a whole
+  number of minutes (that step's 181).
+- pi_envoy_build and pi_legion_build: 600 s, the measured 10 minutes each carried, plus its
+  slowest retried step alone, the setup-bun step's two `ci_tools_fetch` calls, 2 x 1708 =
+  3416 s, above the leak-guard fetch of the release-push.sh steps, 2700 s, and every other
+  retried step there. 600 + 3416 = 4016 s -> 67 min.
+- claude_envoy_build: 900 s, the measured 15 minutes it carried, plus the same setup-bun step,
+  3416 s. 900 + 3416 = 4316 s -> 72 min.
+- publish: 600 s, the measured 10 minutes it carried, plus its slowest retried step alone,
+  "Check the plugin pair npm carries" or "legion: Tag release", each running release-push.sh
+  twice, 2 x 2700 = 5400 s, above every other retried step there. 600 + 5400 = 6000 s -> 101
+  min, which carries the whole minute that note gives a step whose own arithmetic is a whole
+  number of minutes (those two steps' 91).
+- worker_image_release: 600 s, the measured 10 minutes it carried, plus its slowest retried step
+  alone, "Name the worker image on the legion release", which runs release-push.sh once,
+  2700 s. 600 + 2700 = 3300 s -> 56 min.
+
+A step that runs release-push.sh once carries 46 minutes, the whole minute above 2700 s, which
+is itself a whole number of minutes; one that runs it twice carries 91, above 5400 s; the
+plugin-version step 181, above 10800 s. install-changie carries its one `ci_tools_fetch`,
+1708 s -> 29 min, setup-bun its two, 3416 s -> 57 min, and the workspace install the 180 s bound
+every Bun install of this repository's CI carries (20.70 s cold on a pod, against at most 11 s
+over 180 observations in the 20 most recent successful ci.yaml push runs on main),
+5 x 180 + 150 = 1050 s -> 18 min. The "Check the plugin pair npm carries" step of the
+credentialed publish job writes its `pair-version` calls where each version is resolved, outside
+the `pair_released` function, so rule 8 reads both as runs the step waits for
+(dispatch://INFRA-1545, round 37); the body stays inline there, as
+.github/scripts/check-release-credentials.sh requires of a job holding a credential.
+
+publish and worker_image_release hold a credential, and the credentialed publish jobs of the
+three release workflows are an exception of R2 of dispatch://INFRA-1545, so no step of either
+retries anything. They carry these keys because their steps run release-push.sh, which the build
+jobs run too and which therefore keeps its one retried fetch, the leak engine's in `leak_guard`:
+.github/scripts/check-download-retry.sh's rule 8 charges each step that runs the script that
+fetch at each of `leak_guard`'s six call sites, 2700 s a run, and refuses a step holding it that
+carries no `timeout-minutes`, a job whose key no comment prices, and a run of the script inside a
+shell function, which it cannot count. With the 10 minutes and the bare steps these two jobs
+carry on main, that check refuses every one of their release-push.sh steps and both keys, and
+`pair_member`'s call as well.
+
+## The legion build step and its notices script
+
+`Build legion`, in legion_build, runs .github/scripts/release-build-legion.sh, which runs
+scripts/go-third-party-notices.sh once for each target of .github/go-release-targets.json. That
+script installs go-licenses through .github/scripts/ci-retry.sh at the 180 s module bound,
+5 x 180 + 150 = 1050 s, and only where its `$tool` is not already executable; the tool's
+directory is named by the go-licenses version and the host's Go version, not by the GOOS or
+GOARCH the packages target, so every call after the first finds that build and fetches nothing,
+and the step waits for one ladder. .github/scripts/check-download-retry.sh reads
+release-build-legion.sh but no script outside .github/scripts/, so it prices none of that, and
+the budget is derived by hand (dispatch://INFRA-2899 owns the reach that would make it the
+check's): the ladder beside the step's measured duration, which holds the cross-builds and the
+notices, 427 s at most over the 11 runs of the step in the 30 successful runs of this workflow
+created from 2026-11-20T12:23Z to 2026-11-21T08:25Z (job 136642681904 of run 44839077231; the
+other runs released no legion and skipped it). 427 + 1050 = 1477 s -> 25 min, under
+legion_build's 196, whose slowest retried step is still the plugin-version step's 10800 s.
+
+## Why legion_build downloads its Go modules before the build
+
+The modules this job's build compiles, downloaded once and retried, so the build itself reads the
+module cache and never the proxy (dispatch://INFRA-1545, R1 and its D1: the retried unit is the
+download, never the build). Five bounded attempts through .github/scripts/ci-retry.sh, the last
+starting 150 s after the first. 180 s per attempt: a cold `go mod download` of packages/daemon -
+an empty module cache, this repository at this commit - measured 81 s on 2026-11-07, and the
+slowest cold run measured anywhere in this repository is packages/envoy/infra's 113 s, so the
+bound is 1.6 times that slowest measurement. It can be that tight where a tarball fetch's could
+not: an attempt the bound kills leaves what it fetched in the module cache, and the next attempt
+resumes from there. The go-daemon cache the step before it restores makes the common run far
+shorter. 5 x 180 + 150 = 1050 s -> 18 min.

@@ -12,6 +12,12 @@ paths:
       # `queue` is a GitHub Actions concurrency key (docs.github.com, "Control the concurrency of
       # workflows and jobs"). actionlint does not know it yet: rhysd/actionlint#654 adds it.
       - 'unexpected key "queue" for "concurrency" section'
+  .github/workflows/dequeued.yaml:
+    ignore:
+      # `dequeued` is a pull_request_target activity type GitHub sends when the merge queue
+      # removes a pull request (docs.github.com, "Events that trigger workflows",
+      # pull_request_target). actionlint 1.7.12 does not know it yet.
+      - 'invalid activity type "dequeued" for "pull_request_target" Webhook event'
   .github/workflows/tests-closed.yaml:
     ignore:
       # The one job is skipped on purpose: the run joins ci.yaml's concurrency group and takes no

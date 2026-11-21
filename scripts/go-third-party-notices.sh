@@ -37,8 +37,33 @@ go_version="$("$go_cmd" env GOVERSION)"
 tool_dir="${XDG_CACHE_HOME:-$HOME/.cache}/legion/go-licenses-$GO_LICENSES_VERSION-$go_version"
 tool="$tool_dir/go-licenses"
 if [ ! -x "$tool" ]; then
-  (cd / && GOOS='' GOARCH='' GOFLAGS='' GOBIN="$tool_dir" \
-    "$go_cmd" install "github.com/google/go-licenses/v2@$GO_LICENSES_VERSION")
+  # `go install module@version` builds from that module's own go.mod and reads no go.work, so no
+  # workspace `go mod download` of the calling job covers this fetch: it is its own download site
+  # and retries like one (dispatch://INFRA-1545, review round 18).
+  #
+  # Two callers, and only one of them has the helper beside it. From a checkout it is at
+  # .github/scripts/ci-retry.sh and this install goes through it. In the images this script is
+  # copied into (packages/envoy/docker/Dockerfile, packages/daemon/docker/worker.Dockerfile) it
+  # sits alone in /usr/local/bin with no checkout at all, and each of those RUN lines already
+  # wraps this call in the Dockerfile's own inline retry, which is the one place a copy of that
+  # loop is allowed. So the helper is sourced where it exists and the call is bare where the
+  # caller retries it. This file is `#!/bin/sh`: no bashism here, since the image's shell is not
+  # bash and a `${BASH_SOURCE[0]}` here died as `bad substitution` inside the image build.
+  # `env` and not a shell function: ci-retry.sh runs what it is given under `timeout`, which
+  # executes a program directly and cannot see a function of this shell - a call that gives it
+  # one exits 127 five times over, which is what the first shape of this fix did in
+  # envoy-go-checks (run 42949700792).
+  retry_helper=$(dirname -- "$0")/../.github/scripts/ci-retry.sh
+  go_licenses_module="github.com/google/go-licenses/v2@$GO_LICENSES_VERSION"
+  if [ -r "$retry_helper" ]; then
+    # shellcheck source=.github/scripts/ci-retry.sh
+    . "$retry_helper"
+    (cd / && retry_fetch "go-licenses $GO_LICENSES_VERSION" 180 -- \
+      env GOOS= GOARCH= GOFLAGS= GOBIN="$tool_dir" "$go_cmd" install "$go_licenses_module")
+  else
+    (cd / && GOOS='' GOARCH='' GOFLAGS='' GOBIN="$tool_dir" \
+      "$go_cmd" install "$go_licenses_module")
+  fi
 fi
 if [ "$1" = --install ]; then
   exit 0

@@ -71,8 +71,12 @@ one added step whose cost a reader can see, and the item above allows for it. Th
 itself is a sampler beside the job rather than a step of it, so those two steps are its
 whole cost to this budget (dispatch://INFRA-2605).
 
-EVERY INSTALL STEP OF THIS JOB AND OF tool-fallback-arm DECLARES `timeout-minutes: 11`,
-and the twenty-four installs whose control accepts a failure are timed as well, against
+EVERY INSTALL STEP OF THIS JOB AND OF tool-fallback-arm DECLARES A `timeout-minutes` OF ITS
+OWN: in this job the merge base's seven `base-*` installs 11 and its other twenty-five
+installs their retry arithmetic, 29, 57 or 65 minutes (the key section below), and in
+tool-fallback-arm each half's five installs theirs, setup-bun 57, install-crane 29,
+install-changie 29, install-jj 65 and install-elan 29. The twenty-four installs whose
+control accepts a failure are timed as well, against
 the seconds .github/scripts/ci-tools-proof.sh holds every timed install to: a step the
 runner ends at its own bound leaves `outcome=failure` behind it, which those controls
 accept, so the wall time is the only reading that tells a hang from the refusal the case
@@ -99,6 +103,24 @@ that step (job 129786363688, step 3) gives the wall time, 10:57:03Z to 10:58:16Z
 out.`; and the `outcome=failure` the caller's later steps read was measured in job
 129872208213, where a later step printed `steps.<id>.outcome`. The runner is about
 twelve seconds late, so a bound is a ceiling and not a stopwatch.
+
+THE KEY THE MERGE OF dispatch://INFRA-1545 WRITES. Since that issue every retried step of this job
+carries its own retry arithmetic rather than the eleven minutes above, which only the merge base's
+seven `base-*` installs keep: the rig's steps one `ci_tools_fetch`, 1708 s -> 29 min, install-jj
+3416 + 450 = 3866 s -> 65 min, setup-bun 2 x 1708 = 3416 s -> 57 min, every other head install
+1708 s -> 29 min, each blob check 4397 s -> 74 min (the section on what each costs), the control
+step 9 x 427 = 3843 s -> 65 min (its section), and the staging step `stage`'s loop over its own
+STAGED_ROWS - crane, changie and mise at 1708 s each, the jj row, whose `primary` is empty, at
+1281 s, and bun-linux-x64's one npm tarball at 427 s - 3 x 1708 + 1281 + 427 = 6832 s, sixteen
+ladders of at most 427 s -> 114 min, which rule 8 charges through its DECLARED_LIBRARIES entry
+for that step. The job's key is built from the part-by-part construction
+.github/ci-budgets.md's "The tool-fallback job's budget, part by part" writes: 114 + 18 = 132,
+with the ten minutes it always had 142, and the one minute review round 29 of
+dispatch://INFRA-1545 added when it read the key 6 s under the Budgets note's sum. It clears that
+sum too, this job's 28.7-minute run of job 129478173535 plus the staging step's ladder:
+1722 + 6832 = 8554 s -> 143 min. What the eleven minutes were derived from, and why a bound
+would have changed nothing in the incident that asked for it, is the paragraphs above and
+.github/ci-budgets.md's "What the tool-fallback job's eleven-minute installs are derived from".
 
 ## Why the merge base is checked out
 
@@ -326,6 +348,11 @@ clock as well. Without it an install that hung would satisfy its own control and
 the job green, where before those bounds the same hang held the job to its own ceiling,
 which cancels it and fails ci-ok, so somebody looked.
 
+Since dispatch://INFRA-1545 this step waits for every attempt the eight installs make, since it
+reads their own clocks: nine ladders of retries at the per-ladder ceiling
+.github/scripts/ci-tools.sh derives at the 60 s bound, 9 x 427 = 3843 s, where before that issue
+the same nine were 9 x 247 = 2223 s, and its key stands strictly above that, 65 minutes.
+
 ## The head's own installs under the fault
 
 The head's own installs, under the same fault and with no continue-on-error: each must
@@ -391,9 +418,10 @@ jj never reaches that path.
 ## Case 7 of 16, and the branch setup-bun takes for it
 
 Case 7 of 16: the installed Bun is one byte changed and still answers the pinned revision,
-so setup-bun's third step takes the branch that installs nothing — a Bun of the pinned
-version is already at ~/.bun/bin/bun, and the first step found it there, so the word this
-one writes for it is `existing-install` — and the fourth step refuses those bytes.
+so setup-bun's bun-second-source step takes the branch that installs nothing — a Bun of the
+pinned version is already at ~/.bun/bin/bun, and the bun-already-here step found it there with no
+cache hit to subtract, so the word this one writes for it is `existing-install` — and the last
+step refuses those bytes.
 Measured on 2026-11-08: the 107308936-byte binary of the bun-linux-x64 row answers
 `--revision 1.4.4+38afee6c8` with its final byte changed, as it does whole, so the
 branch this case needs is the branch it takes. The `Change the last byte of the installed Bun` step reads that answer again
@@ -402,11 +430,11 @@ last byte.
 
 ## Case 8 of 16, and why it takes the Bun pair away itself
 
-Case 8 of 16: with no Bun of the pinned version on this runner, setup-bun's third step
+Case 8 of 16: with no Bun of the pinned version on this runner, setup-bun's bun-second-source step
 must read the second source, and the npm package serves one byte changed.
 This case takes the pair away itself rather than leaning on the case before it. That
 case's refusal does remove the bun and the bunx it refused from ~/.bun/bin — setup-bun's
-fourth step says so — but a case that must read the second source is held to its own
+last step says so — but a case that must read the second source is held to its own
 state and not to the one the case before it happened to leave.
 
 ## Case 11 of 16, and the digest the changed byte trips
@@ -499,3 +527,24 @@ The proxy stops with this job, and the steps after this one must not be routed t
 it: the ci-ok-report step, `Report ci-ok when this job decides a merge-group run`, runs ./.github/actions/ci-ok-report, whose ci-ok-report.sh can read the run's jobs and post a check run with gh, which would otherwise
 go through a proxy that is about to go. The rig writes the emptied variables, as it
 wrote the proxy ones.
+
+## What each blob check costs
+
+One blob check per machine, as the filler runs one per machine in the ci-images job: each step
+runs .github/scripts/tool-fallback-package-blobs.sh with its machine, which reads the ghcr-mirror
+rows built for that machine with ci_tools_mirror_rows, the one reading of that split both sides
+make, so every ghcr-mirror row is checked by exactly one of the two steps or both fail
+(.github/ci-budgets.md, "The ci-images job's ceiling and the tool copy", says why the reads are
+split). Each step's own retry arithmetic is read off the script's loop rather than taken as one
+ladder: the anonymous pull token, at the 60 s an attempt .github/scripts/ci-tools.sh's token
+helper defaults to, 427 s; and one HEAD per ghcr-mirror row of its machine, through
+ci_tools_registry_head with `--follow`, whose two requests - the package's answer and the read
+of the store a redirect points at - each take 30 s an attempt, 2 x 397 = 794 s each over the five
+rows of that machine (crane, changie, mise, jj and elan, or their `-aarch64` rows), 3970 s. Both
+per-ladder figures come from one place, .github/scripts/ci-tools.sh's own `--retry-max-time`
+block, which writes them as 427 s at 60 and 397 s at 30. 427 + 3970 = 4397 s -> 74 min. Rule 8
+charges each step that sum: a loop of calls of a function the sourced file defines is a reading it
+refuses unless declared, and its DECLARED_LIBRARIES entry for each step writes these 4397 s in
+place of the one `ci_tools_fetch`, 1708 s, it would charge otherwise. Each request rides the
+ladder an install's read of the same blob rides, so the script holds no attempts of its own
+(dispatch://INFRA-1545, R2).

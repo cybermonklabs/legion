@@ -16,19 +16,27 @@
 # server".
 set -euo pipefail
 
+# Every address here is written out at its call rather than held in a variable. This is a
+# readiness poll of a process the step before this one started and no download, which is what
+# .github/scripts/check-download-retry.sh's first scoping says; that check tells the two apart by
+# the loopback address in the word it reads, so a `"$store/readiness"` hides the host and the poll
+# reads as an unretried fetch and as a loop around one.
 for attempt in $(seq 1 60); do
   curl -sf -o /dev/null http://127.0.0.1:18333/ && break
   [ "$attempt" -lt 60 ] || { cat "$RUNNER_TEMP/weed.log"; exit 1; }
   sleep 1
 done
-store=http://127.0.0.1:18333/dispatch-e2e-files
-curl -sf -X PUT -o /dev/null "$store" || { cat "$RUNNER_TEMP/weed.log"; exit 1; }
+curl -sf -X PUT -o /dev/null http://127.0.0.1:18333/dispatch-e2e-files \
+  || { cat "$RUNNER_TEMP/weed.log"; exit 1; }
 # The write is retried: the bucket exists as soon as the filer answers, while the
 # volume server the object lands in can still be coming up behind it.
 for attempt in $(seq 1 60); do
-  printf 'ready' | curl -sf -X PUT --data-binary @- -o /dev/null "$store/readiness" && break
+  printf 'ready' \
+    | curl -sf -X PUT --data-binary @- -o /dev/null http://127.0.0.1:18333/dispatch-e2e-files/readiness \
+    && break
   [ "$attempt" -lt 60 ] || { echo "::error::the file store took no object"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
   sleep 1
 done
-[ "$(curl -sf "$store/readiness")" = ready ] || { echo "::error::the file store did not serve back what it stored"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
-curl -sf -X DELETE -o /dev/null "$store/readiness"
+[ "$(curl -sf http://127.0.0.1:18333/dispatch-e2e-files/readiness)" = ready ] \
+  || { echo "::error::the file store did not serve back what it stored"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
+curl -sf -X DELETE -o /dev/null http://127.0.0.1:18333/dispatch-e2e-files/readiness

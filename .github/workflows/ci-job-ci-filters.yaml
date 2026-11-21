@@ -32,7 +32,14 @@ env:
 jobs:
   ci-filters:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, above its 63 s
+    # measured maximum, plus its slowest retried step alone — the ci-ok report, which is this
+    # job's only download: its `gh api` read and the POST of the check run, 2 x (5 x 30 + 150) =
+    # 600 s, and two calls of runner-shutdown.sh's check-run read and annotations loop,
+    # 2 x (300 + 480) = 1560 s, 2160 s together (ci-budgets.md's Budgets note, "The ci-ok
+    # report"). 600 + 2160 = 2760 s, a whole number of minutes, so the budget is the next one
+    # strictly above it -> 47 min.
+    timeout-minutes: 47
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -59,6 +66,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: ci-filters

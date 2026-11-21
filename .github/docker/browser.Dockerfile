@@ -75,7 +75,18 @@ ARG RUNNER_UID=1001
 
 # One layer for everything that is installed. The apt lists are removed in the same layer, so
 # they never reach the pushed image.
-RUN set -eux; \
+# Its three fetches retry in the one inline loop every network RUN of this repository's
+# Dockerfiles opens with (.github/scripts/check-download-retry.sh's CANONICAL), on the bounds
+# packages/daemon/docker/worker.Dockerfile writes: 120 s for the signing key, one small file,
+# and for the index read, 300 s for the package set, and the index read carries apt's
+# error-mode option, so a failed index fails the attempt rather than warning past it. The
+# key's URL and the repository's are each set once and both fetched and named from that one
+# variable, so a fetch that exhausts its attempts names what it failed on
+# (dispatch://INFRA-1545, round 37).
+RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; }; \
+    set -eux; \
     # postgresql-common's postinst runs `pg_createcluster` and so a whole `initdb` for a cluster
     # at /var/lib/postgresql/18/main that nothing here ever starts: the harness makes its own
     # under the run's temporary directory. Turning it off keeps both the build and the image
@@ -83,18 +94,22 @@ RUN set -eux; \
     install -d /etc/postgresql-common; \
     echo 'create_main_cluster = false' > /etc/postgresql-common/createcluster.conf; \
     install -d /usr/share/postgresql-common/pgdg; \
-    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
-      -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc; \
+    u=https://www.postgresql.org/media/keys/ACCC4CF8.asc; \
+    retry 120 "pgdg signing key download from $u" \
+      curl -fsSLo /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc "$u"; \
     # The key is checked before the source that trusts it is written, so no index signed by an
     # unexpected key is ever read. The ARG above says what the value is and where it came from.
     printf '%s  %s\n' "$PGDG_KEY_SHA256" \
       /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc > /tmp/pgdg-key.sha256; \
     sha256sum --check --strict /tmp/pgdg-key.sha256; \
     rm -f /tmp/pgdg-key.sha256; \
-    echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt noble-pgdg main" \
+    repo=https://apt.postgresql.org/pub/repos/apt; \
+    echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] $repo noble-pgdg main" \
       > /etc/apt/sources.list.d/pgdg.list; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
+    retry 120 "apt-get update from the base's Ubuntu sources and $repo noble-pgdg" \
+      apt-get update -o APT::Update::Error-Mode=any; \
+    retry 300 "apt-get install from the base's Ubuntu sources and $repo noble-pgdg" \
+      apt-get install -y --no-install-recommends \
       "postgresql-${PG_MAJOR}" \
       "postgresql-client-${PG_MAJOR}" \
       "postgresql-${PG_MAJOR}-pgvector" \

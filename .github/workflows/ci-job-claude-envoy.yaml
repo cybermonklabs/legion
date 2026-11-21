@@ -30,17 +30,33 @@ on:
 jobs:
   claude-envoy:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the 10 minutes this job carried, above its 99 s measured maximum,
+    # plus its slowest retried step alone - the setup-bun step's two `ci_tools_fetch` calls,
+    # 2 x 1708 = 3416 s, above the leak-guard fetch of the release-push.sh steps, 6 call sites
+    # of one 450 s fetch = 2700 s, and every other retried step here.
+    # 600 + 3416 = 4016 s -> 67 min.
+    timeout-minutes: 67
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
+        timeout-minutes: 57
       # tests/answers-claude.test.ts runs the pinned Claude Code against a stand-in Messages
       # endpoint and Dispatch, and refuses on GitHub Actions without one. The pin is read from
       # .claude-code-pin, the repository's one copy of it (.github/actions/install-claude-code).
       - uses: ./.github/actions/install-claude-code
-      - run: bun install --frozen-lockfile
+        # install-claude-code's own retry arithmetic: its `bun add`, 5 x 180 + 150 = 1050 s.
+        timeout-minutes: 18
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       - name: Lint Claude Envoy plugin
         run: bun run lint
         working-directory: packages/claude-envoy
@@ -55,12 +71,26 @@ jobs:
         working-directory: packages/claude-envoy
       # The pack step packs the package's own dist/ and legion/ (release-push.sh extract-built).
       - name: Put the checked build into CI's checkout for the pack
+        timeout-minutes: 46
         run: .github/scripts/release-push.sh extract-built "$RUNNER_TEMP/claude-envoy-built.tar"
       # tests/send-arguments.test.ts runs envoy-send's printed resend command under bash and under
       # zsh, whose EQUALS option reads a bare `=word` as a path, and fails the zsh row on CI where
       # zsh is missing; the runner image has no zsh.
+      # Both apt phases retry through .github/scripts/ci-retry.sh, in e2e.yaml's spelling; their
+      # bounds, and why the index read carries `-o APT::Update::Error-Mode=any`: ci-budgets.md's
+      # Retries note.
       - name: Install zsh
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
+        # Its own retry arithmetic, so an exhausted phase fails this step by name rather than
+        # being cut part way by the job: the index read's 5 x 95 + 150 = 625 s and the package
+        # download's 5 x 125 + 150 = 775 s, 1400 s -> 24 min.
+        timeout-minutes: 24
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "apt's package lists" 95 -- \
+            sudo timeout 90 apt-get update -o APT::Update::Error-Mode=any
+          retry_fetch "zsh" 125 -- \
+            sudo timeout 120 apt-get install -y --no-install-recommends -d zsh
+          sudo apt-get install -y --no-install-recommends zsh
       - name: Test Claude Envoy plugin
         run: bun run test
         working-directory: packages/claude-envoy
@@ -86,6 +116,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: claude-envoy
@@ -103,7 +135,12 @@ jobs:
   private-names:
     needs: claude-envoy
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes main's #4256 gives this job,
+    # which checks out the .github cone and runs the packed-plugin action alone, plus its slowest
+    # retried step alone — the ci-ok report, which is this job's only download: 2160 s
+    # (ci-budgets.md's Budgets note, "The ci-ok report"). 600 + 2160 = 2760 s, a whole number of
+    # minutes, so the budget is the next one strictly above it -> 47 min.
+    timeout-minutes: 47
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -115,6 +152,8 @@ jobs:
           private-name-terms: ${{ secrets.PRIVATE_NAME_TERMS }}
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: claude-envoy

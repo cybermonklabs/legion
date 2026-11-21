@@ -223,6 +223,16 @@ case "$1 $2" in
 esac
 GH
 chmod +x "$work/bin/gh"
+# check-pr-text.sh reads the API through retry_fetch (.github/scripts/ci-retry.sh), which sleeps
+# 10, 20, 40 and 80 seconds between its five attempts. Those waits are ci-retry.test.sh's to
+# prove, by measuring them; here they would add 150 s to each case whose stand-in refuses a read
+# (a release's 404 or 500, a commit or a files route it has no answer for), so `sleep` is a no-op
+# on this PATH.
+cat > "$work/bin/sleep" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$work/bin/sleep"
 # pr_commit <message> [author email] [committer email]: one commit as both routes list it.
 pr_commit() {
   jq -nc --arg msg "$1" --arg author_email "${2:-dev@example.com}" \

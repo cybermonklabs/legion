@@ -72,6 +72,12 @@ if ! command -v crane >/dev/null 2>&1; then
   exit 1
 fi
 
+# Every registry read below that has to succeed goes through .github/scripts/ci-retry.sh: five
+# attempts, the last starting 150 s after the first, each under `timeout`. A 5xx from a registry
+# reddens the ci-images job and says nothing about the rows (dispatch://INFRA-1545, R1).
+# shellcheck source=.github/scripts/ci-retry.sh
+. .github/scripts/ci-retry.sh
+
 # The reference grammar is .github/scripts/ci_images.py's, beside this script in the repository
 # it copies for, which PYTHONPATH names: the gate reads a row's upstream with the same two
 # functions, so a row it counts as the library/golang row is a row this script checks.
@@ -129,8 +135,13 @@ fi
 
 # image_go <reference>: the GOLANG_VERSION of that image's config, which library/golang's own
 # build writes there. Prints nothing where the config carries no such entry.
+#
+# 60 s per attempt, which is this script's bound for a read of metadata: a config blob is a few
+# kilobytes, and the smallest download this repository measures, install-changie's tarball, took
+# at most 1 s across the 20 most recent successful ci.yaml push runs on main.
 image_go() {
-  crane config --platform linux/amd64 "$1" | PYTHONDONTWRITEBYTECODE=1 python3 -c '
+  retry_fetch "the config of $1" 60 -- crane config --platform linux/amd64 "$1" \
+    | PYTHONDONTWRITEBYTECODE=1 python3 -c '
 import json
 import sys
 
@@ -170,6 +181,11 @@ while IFS=$'\t' read -r registry tag digest source kind claimed_go; do
     built=$((built + 1))
     continue
   fi
+  # The one registry read here that is not retried, and the only one whose failure is an answer:
+  # a tag the package does not hold is what `crane digest` refuses, and that refusal is the
+  # signal to copy. Five attempts here would sleep 150 s for every row the package lacks, which
+  # is the path that then copies. A 5xx costs a copy of bytes the package already held instead,
+  # and that copy is retried and its digest checked.
   have=$(crane digest "$registry:$tag" 2>/dev/null || true)
   if [ "$have" = "$digest" ]; then
     # The Go check on the package's own copy: `crane copy` kept the manifest digest, so those
@@ -188,8 +204,13 @@ while IFS=$'\t' read -r registry tag digest source kind claimed_go; do
     check_go "$source" "$claimed_go" "${source%@*}"
   fi
   echo "copy   $source -> $registry:$tag"
-  crane copy "$source" "$registry:$tag"
-  have=$(crane digest "$registry:$tag")
+  # 300 s per attempt: the ci-images job's 15-minute budget has to carry a copy of every row
+  # this loop copies — 13 of .github/ci-images.yaml's 14 rows, the fourteenth being the browser
+  # image this repository builds, which the `built` arm above skips — onto a package that holds
+  # none, so one row's copy is under 70 s in the shape that budget was written for, and the
+  # bound is over four times that.
+  retry_fetch "the copy of $source" 300 -- crane copy "$source" "$registry:$tag"
+  have=$(retry_fetch "the digest of $registry:$tag" 60 -- crane digest "$registry:$tag")
   if [ "$have" != "$digest" ]; then
     echo "::error file=.github/ci-images.yaml::$registry:$tag landed at $have, and the row says $digest. This copy read $source, so the bytes it copied are the row's: another writer moved this tag after the copy. Read the package for what else writes this tag, then re-run the ci-images job." >&2
     exit 1

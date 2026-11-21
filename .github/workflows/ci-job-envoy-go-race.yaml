@@ -41,7 +41,13 @@ jobs:
     # where cmd/listener took 785 s here (run 43875539224), so the sum stands. The sign-in code
     # flow (internal/oidc) adds one test binary and one package, whose run under -race took 11 s
     # on a dev box, all of it in-process against oidctest's issuer.
-    timeout-minutes: 45
+    #
+    # Budget (ci-budgets.md's Budgets note): 2700 s, the 45 minutes this job carried, above both
+    # the 36 the sentence above derives and its 726 s measured maximum, plus its slowest
+    # retried step alone — the ci-ok report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"), above
+    # packages/envoy's `go mod download` at 5 x 180 + 150 = 1050 s. 2700 + 2160 = 4860 s, a whole number of
+    # minutes, so the budget is the next one strictly above it -> 82 min.
+    timeout-minutes: 82
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -66,12 +72,24 @@ jobs:
           cache: false
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # The module the race step builds, downloaded once and retried before it (ci-budgets.md's
+      # Retries note; the retried unit is the download, never the build and never the test).
+      # 180 s per attempt, as that note derives. This job restores no module cache, so this is
+      # where every one of its modules arrives.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       - name: Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow
         run: go test -count=1 -race -timeout 30m ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... ./natscred/ ./internal/cipher/natscallout/ ./internal/oidc/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-go-race

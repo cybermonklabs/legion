@@ -126,16 +126,24 @@ jobs:
   repeat:
     name: ${{ matrix.lane }} lane, round ${{ matrix.round }}
     runs-on: ubuntu-24.04
-    # The budget, by the rule .github/workflows/dispatch-browser.yaml's head states: a job's
-    # budget is the sum of its step budgets plus the measured maximum of the steps without one.
-    # The test step's budget is the matrix's step_minutes. The steps without one, measured together
-    # over every completed leg of the runs the test step's comment names, took at most 37 s in a
+    # The budget, by the rule .github/workflows/dispatch-browser.yaml's head states: a first term,
+    # the budget that file's measured rule gives the job, plus the retry arithmetic of the job's
+    # single slowest retried step alone. The first term is the sum of the budgets of the steps
+    # that hold no retried download plus the measured maximum of the steps without one. The
+    # test step's budget is the matrix's step_minutes. The steps without one, measured together
+    # over every completed leg of the runs the test step's comment names (the three retried steps
+    # below among them, before they carried budgets of their own), took at most 37 s in a
     # web leg (run 44097039165, round 2), 29 s in a web-cold leg (run 44449111716, round 2) and
     # 151 s in a harness leg (run 44473658176, round 3, whose zsh install took 125 s), so 1, 1 and
     # 3 minutes: 16 + 1 = 17 minutes for a web leg, 2 + 1 = 3 for a web-cold leg and 30 + 3 = 33
-    # for a harness leg, the matrix's job_minutes. The slowest whole jobs took 845 s for a web leg
-    # (run 44465013263, round 3), 125 s for a web-cold leg (run 44360597415, round 1) and 1,575 s
-    # for a harness leg (run 44389203951, round 1).
+    # for a harness leg. The slowest retried step of every leg is the setup-bun step, its two
+    # `ci_tools_fetch` calls at 3416 s (ci-budgets.md's Budgets note), above the workspace
+    # install's 1050 s and the harness leg's zsh install's 625 + 775 = 1400 s. So each lane's
+    # job_minutes is its first term plus 3416 s, rounded up to the whole minute, which the
+    # matrix's rows write out; each stands above the setup-bun step's own 57 minutes. The
+    # slowest whole jobs took 845 s for a web leg (run 44465013263, round 3), 125 s for a
+    # web-cold leg (run 44360597415, round 1) and 1,575 s for a harness leg (run 44389203951,
+    # round 1).
     timeout-minutes: ${{ matrix.job_minutes }}
     strategy:
       # One leg's failure leaves the other legs running, so each one reports its own rows.
@@ -146,33 +154,59 @@ jobs:
         round: [1, 2, 3]
         # Each lane's reruns, and the budgets of its test step and its job, which the comments on
         # those two derive. The head says why a web or harness leg runs 20 times and a web-cold
-        # leg once.
+        # leg once. job_minutes is an expression's value to .github/scripts/check-download-retry.sh,
+        # whose rule 8 reads no number out of it (its paragraph A CEILING WRITTEN AS AN EXPRESSION
+        # names this job), so each is derived here by hand, and moves when the setup-bun step is
+        # re-priced: web 1020 + 3416 = 4436 s, 74 minutes; web-cold 180 + 3416 = 3596 s, 60 minutes;
+        # harness 1980 + 3416 = 5396 s, 90 minutes.
         include:
           - lane: web
             reruns: 20
             step_minutes: 16
-            job_minutes: 17
+            job_minutes: 74
           - lane: web-cold
             reruns: 1
             step_minutes: 2
-            job_minutes: 3
+            job_minutes: 60
           - lane: harness
             reruns: 20
             step_minutes: 30
-            job_minutes: 33
+            job_minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+        timeout-minutes: 57
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       # As ci-job-dispatch-ui.yaml's step of this name, for its reason:
       # e2e/__tests__/outside-path-reach-input.test.ts runs the path-reach driver under zsh, which
       # must refuse to run and name bash, and skips that row where zsh is missing. The runner
       # image has no zsh (dash, the other shell it runs under, is Ubuntu's /bin/sh).
+      # Both apt phases retry through .github/scripts/ci-retry.sh, in e2e.yaml's spelling; their
+      # bounds, and why the index read carries `-o APT::Update::Error-Mode=any`: ci-budgets.md's
+      # Retries note.
       - name: Install zsh
         if: matrix.lane == 'harness'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
+        # Its own retry arithmetic, so an exhausted phase fails this step by name rather than
+        # being cut part way by the job: the index read's 5 x 95 + 150 = 625 s and the package
+        # download's 5 x 125 + 150 = 775 s, 1400 s -> 24 min.
+        timeout-minutes: 24
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "apt's package lists" 95 -- \
+            sudo timeout 90 apt-get update -o APT::Update::Error-Mode=any
+          retry_fetch "zsh" 125 -- \
+            sudo timeout 120 apt-get install -y --no-install-recommends -d zsh
+          sudo apt-get install -y --no-install-recommends zsh
       # The harness rows that ci-job-dispatch-ui.yaml skips for want of a database repeat here,
       # as they run in a pod: e2e/__tests__/psql-session.test.ts, harness-stacks.test.ts's "psql
       # reads its own stack's database", and the rows of replace-blocks-guard.test.ts that need a

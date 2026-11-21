@@ -72,24 +72,32 @@ name: CI caches
 # .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs is the
 # record of their restores and saves.
 #
-# One entry here is no Go family: the elan home the airlock-lean job restores, whose key is the
-# content of the Lean toolchain the model names rather than a Go version. Two others that were
-# no Go family went with the jobs that read them - the Playwright browsers and the .deb files of
-# the apt list the browser suite installed - because dispatch-browser.yaml's shard and alone
-# jobs run in the image this repository builds, which carries the browsers and their host
-# packages, so neither entry has a restore left to serve (dispatch://INFRA-1443). A save whose
-# restore is gone is what check-ci-filters.sh refuses, so the two jobs that wrote them are gone
-# with them.
+# Four families here are no Go family. The elan home the airlock-lean job restores, whose key is
+# the content of the Lean toolchain the model names rather than a Go version. The bun family,
+# ~/.bun/bin, which .github/actions/setup-bun restores in every job that calls it and saves only
+# where its caller passes `save: 'true'` on a push to main: the bun job below is the one caller
+# that does, the family's one saving job as each Go family has one. The key names the runner's
+# architecture, so each architecture needs an entry and a saving job of its own, and the bun job
+# runs a leg on each runner the action's callers run on, ubuntu-24.04 and ubuntu-24.04-arm. And
+# the two builds dispatch-two-builds runs the tree against, the previous release's and the
+# first-rollout release's, which that job restores and this workflow's dispatch-builds job builds
+# and saves. Two others that were no Go family went with the jobs that read them - the
+# Playwright browsers and the .deb files of the apt list the browser suite installed - because
+# dispatch-browser.yaml's shard and alone jobs run in the image this repository builds, which
+# carries the browsers and their host packages, so neither entry has a restore left to serve
+# (dispatch://INFRA-1443). A save whose restore is gone is what check-ci-filters.sh refuses, so
+# the two jobs that wrote them are gone with them.
 #
 # go-docs is not here: docs-pages.yaml saves it on this same push, from the build job it shares
-# with ci.yaml's docs job. The Bun cache is not here either: .github/actions/setup-bun reads and
-# writes it on main, and five workflows that run there call it.
+# with ci.yaml's docs job.
 
 # A push to main is what writes the default branch's cache scope; workflow_dispatch fills a family
 # by hand, after a Go bump, a move of the Lean toolchain or an eviction. No `paths:`: a key holds
-# a Go version, that toolchain file's hash, the hash of packages/envoy/go.sum or, for
+# a Go version, that toolchain file's hash, the hash of packages/envoy/go.sum, the Bun version
+# .bun-version pins, a release's commit beside the hash of the script that builds it or, for
 # go-envoy-infra, the hash of the infra workspace's module files, not a file list, so what the
-# push touched decides nothing, and a run whose keys are all there is seconds.
+# push touched decides nothing, and a run whose keys are all there is seconds, but for the
+# dispatch-builds job's checkout of the whole history, which its key needs.
 on:
   push:
     branches: [main]
@@ -129,9 +137,15 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
-    # The limit this job carried while it filled go-notices too, whose build is the long one; no
-    # leg of the daemon build alone has been measured near it.
-    timeout-minutes: 90
+    # Budget (the Budgets note of .github/ci-budgets.md): 5400 s, the 90 minutes this job
+    # carried while it filled go-notices too, whose build is the long one; no leg of the daemon
+    # build alone has been measured near it. Plus its slowest retried step alone, which is now its
+    # one: the daemon download, 5 x 180 + 150 = 1050 s. The notices download's two calls,
+    # 2 x (5 x 180 + 150) = 2100 s, went to the notices job below with the build they feed
+    # (main's #4308), and each leg of the matrix runs the same one download, so no leg adds a term.
+    # 5400 + 1050 = 6450 s -> 108 min, which stands above that step's own 18 minutes. It was
+    # 5400 + 2160 = 7560 s, 127 minutes, while this job held the notices download too.
+    timeout-minutes: 108
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -151,6 +165,28 @@ jobs:
             ~/.cache/go-build
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
+
+      # The modules the build below compiles, downloaded once and retried before it (the Retries
+      # note of .github/ci-budgets.md; the retried unit is the download, never the
+      # build and never the test). On that build's own condition, so a run that finds the key
+      # downloads nothing. One call: the root go.work binds packages/daemon and packages/envoy,
+      # and a download in either reads both modules' requirements.
+      #
+      # 180 s per attempt: the slowest cold `go mod download` measured is 113 s, for
+      # packages/envoy/infra, against 81 s for packages/daemon and 77 s for packages/envoy, each
+      # on an empty module cache on 2026-11-07, so the bound is 1.6 times the slowest of the
+      # three. It can be that tight where a tarball fetch's could not: an attempt the bound kills
+      # leaves what it fetched in the module cache for the next one to resume from. Every lookup
+      # of this job is `lookup-only`, so no module cache is ever restored here and that cold
+      # figure is what a miss pays.
+      - name: Download the Go modules this job builds
+        if: steps.go-daemon.outputs.cache-hit != 'true'
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/daemon's Go modules" 180 -- go -C packages/daemon mod download
 
       # What typecheck builds: the vet behind the e2e tag. It is the one build of this family an
       # arm64 job makes (.github/workflows/ci-job-typecheck.yaml), so both legs run it.
@@ -195,9 +231,15 @@ jobs:
   # than the architecture in the key, which then restores this arm64 program on x86_64.
   notices:
     runs-on: ubuntu-24.04-arm
-    # The notices build is the long one: it writes the notices of, and cross-compiles, every
-    # release target of three modules on a cold module cache.
-    timeout-minutes: 90
+    # Budget (the Budgets note of .github/ci-budgets.md): 5400 s, the 90 minutes the daemon job
+    # carried for this build while it filled this family, and this job carries since main's
+    # #4308 gave the family a job of its own — the notices build is the long one: it writes the
+    # notices of, and cross-compiles, every release target of three modules on a cold module
+    # cache — plus its slowest retried step alone: the notices download's two calls,
+    # 2 x (5 x 180 + 150) = 2100 s. That arithmetic is a whole number of minutes, so the step's own
+    # budget takes one more and this job takes it too: 5400 + 2160 = 7560 s -> 127 min, the
+    # whole minute above a sum that is itself a whole number of minutes.
+    timeout-minutes: 127
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -219,6 +261,33 @@ jobs:
           key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
 
+      # The modules the notices script loads and cross-builds for every release target,
+      # downloaded once and retried before it (the Retries note of .github/ci-budgets.md;
+      # the retried unit is the download, never the build). On the notices step's own
+      # condition, so a run that finds that key downloads nothing. Two calls for the three module
+      # directories the script builds in: in workspace mode `go mod download` with no arguments
+      # downloads the pattern `all` of the whole workspace, so the first call, made in the root
+      # go.work that binds packages/daemon and packages/envoy, brings down both modules'
+      # requirements. packages/envoy/infra the root go.work does not bind — its own go.work binds
+      # it and packages/envoy — so it takes the second call. packages/daemon is downloaded here
+      # though the daemon job above downloads it too: the two jobs answer different keys on
+      # runners of their own, so neither can lean on the other's module cache.
+      #
+      # 180 s per attempt, as above: 1.6 times the 113 s of the slowest cold run measured
+      # (packages/envoy/infra; packages/daemon 81 s, packages/envoy 77 s, each on an empty module
+      # cache on 2026-11-07), and an attempt the bound kills leaves what it fetched for the next
+      # one.
+      - name: Download the Go modules the notices script builds
+        if: steps.go-notices.outputs.cache-hit != 'true'
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: two calls, 2 x (5 x 180 + 150) = 2100 s. That is a whole
+        # number of minutes, so the budget is the next one strictly above it -> 36 min.
+        timeout-minutes: 36
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/daemon's Go modules" 180 -- go -C packages/daemon mod download
+          retry_fetch "packages/envoy/infra's Go modules" 180 -- go -C packages/envoy/infra mod download
+
       # The very script lint's notices step runs, .github/scripts/go-release-notices.sh: the
       # same loops over .github/go-release-targets.json, .github/agent-secrets-client-targets.json
       # and .github/envoy-infra-targets.json, with the same GOOS, GOARCH and CGO_ENABLED per
@@ -228,6 +297,9 @@ jobs:
       # lint just builds those objects cold on every run.
       - name: Write every Go release archive's third-party notices and cross-build the commands
         if: steps.go-notices.outputs.cache-hit != 'true'
+        # why: .github/ci-notes/ci-caches.md#the-notices-step-whose-script-the-gate-does-not-read
+        # 674 + 1050 = 1724 s -> 29 min.
+        timeout-minutes: 29
         run: .github/scripts/go-release-notices.sh "$RUNNER_TEMP/notices"
 
       - if: steps.go-notices.outputs.cache-hit != 'true'
@@ -250,9 +322,12 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
-    # Compiling the test binary of every package of the envoy module on a cold module cache is
-    # the long step; the listener and natsd are minutes.
-    timeout-minutes: 60
+    # Budget (the Budgets note of .github/ci-budgets.md): 3600 s, the 60 minutes
+    # this job carried — compiling the test binary of every package of the envoy module on a
+    # cold module cache is the long step, and the listener and natsd are minutes — plus its
+    # slowest retried step alone: either Go module download below, 5 x 180 + 150 = 1050 s each.
+    # 3600 + 1050 = 4650 s -> 78 min.
+    timeout-minutes: 78
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -272,6 +347,26 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
+
+      # The module the build below compiles — both builds of this job compile it, and each has a
+      # download of its own — retried before it (the Retries note of
+      # .github/ci-budgets.md; the retried unit is the download, never the build).
+      # On that build's own condition, so a run that finds the key downloads nothing.
+      #
+      # 180 s per attempt: 1.6 times the 113 s of the slowest cold `go mod download` measured
+      # (packages/envoy/infra; packages/envoy 77 s, each on an empty module cache on 2026-11-07),
+      # and an attempt the bound kills leaves what it fetched in the module cache for the next
+      # one to resume from, which a tarball fetch cannot do. Every lookup of this job is
+      # `lookup-only`, so no module cache is ever restored here and that cold figure is what a
+      # miss pays.
+      - name: Download the Go modules this job builds
+        if: steps.go-envoy.outputs.cache-hit != 'true'
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
 
       # The two binaries envoy-e2e-local's scripts/e2e-local.sh and envoy-session-stall's
       # test/envoy-stack.ts build, and whose packages listener-server-change compiles too: the
@@ -301,6 +396,23 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
+
+      # The same module again, and a step of its own because the two builds answer two keys: a
+      # run whose go-envoy key was already there skips the download above and still compiles
+      # here, so this build needs a retried download in front of it too (the Retries note of
+      # .github/ci-budgets.md). Where both keys missed, the download above has
+      # already filled the module cache and this call takes a second.
+      #
+      # 180 s per attempt, as above: 1.6 times the 113 s of the slowest cold run measured
+      # (packages/envoy/infra; packages/envoy 77 s, each on an empty module cache on 2026-11-07).
+      - name: Download the Go modules the test build compiles
+        if: steps.go-envoy-test.outputs.cache-hit != 'true'
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
 
       # envoy-go's set: the test binary of every package of the envoy module, the integration
       # package's and the natslive build of internal/testnats among them. `go test -c` links each
@@ -337,15 +449,26 @@ jobs:
   architecture-check:
     runs-on: ubuntu-24.04
     # The action takes seconds: 13 s with its own Go download and a cache miss, in ci.yaml's
-    # envoy-go-checks of run 43553309875.
-    timeout-minutes: 15
+    # envoy-go-checks of run 43553309875, and this job 27 s and 26 s whole (runs 43586962074 and
+    # 43592826052). Each was measured before the action's fetch was split out of its build; the
+    # split fetch is `go list -deps` of the command, which fetches only the two modules that build
+    # fetched itself, so each figure holds the same work. Budget (ci-budgets.md's Budgets note):
+    # those 27 s measured, plus the action's one retried call, its Go modules at the module bound,
+    # 5 x 180 + 150 = 1050 s, so
+    # 27 + 1050 = 1077 s; the step's own budget below is 18 min, and this key strictly exceeds it
+    # -> 19 min.
+    timeout-minutes: 19
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # Its own retry arithmetic, which is the action's: the Go modules at the module bound,
+      # 5 x 180 + 150 = 1050 s, beside the 13 s the action measured on a cache miss (the job's
+      # comment above says what that figure holds), 13 + 1050 = 1063 s -> 18 min.
       - name: Fill the architecture-check action's cache and check main's notes
         uses: ./.github/actions/architecture-check
+        timeout-minutes: 18
 
   # spec-check-<os>-<arch>-go<version>-<hash>, the family of the composite action
   # .github/actions/spec-check, run as ci.yaml's envoy-go-checks runs it, with allow-empty while
@@ -354,14 +477,21 @@ jobs:
   # tree on main cannot stop the note check.
   spec-check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Budget (ci-budgets.md's Budgets note): 900 s, the 15 minutes this job was written with
+    # (main's #4172; no run has measured it yet), plus the action's one retried call, its Go
+    # modules at the module bound, 5 x 180 + 150 = 1050 s. 900 + 1050 = 1950 s -> 33 min.
+    timeout-minutes: 33
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # Its own retry arithmetic, which is the action's: the Go modules at the module bound,
+      # 5 x 180 + 150 = 1050 s, beside the 47 s the fetch and the build took on empty caches in a
+      # 2-CPU pod (.github/scripts/build-envoy-command.sh's header), 47 + 1050 = 1097 s -> 19 min.
       - name: Fill the spec-check action's cache and check main's spec files
         uses: ./.github/actions/spec-check
+        timeout-minutes: 19
         with:
           allow-empty: 'true'
 
@@ -386,7 +516,10 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    # Budget (the Budgets note of .github/ci-budgets.md): 2700 s, the 45 minutes
+    # this job carried, plus its slowest retried step alone — packages/envoy/infra's
+    # `go mod download`, 5 x 180 + 150 = 1050 s. 2700 + 1050 = 3750 s -> 63 min.
+    timeout-minutes: 63
     outputs:
       # The key each leg looked up, and whether it filled it, under names of that leg's
       # architecture: a matrix job's outputs are combined from its legs, and an output both legs
@@ -428,6 +561,26 @@ jobs:
           arch=${RUNNER_ARCH,,}
           echo "key-$arch=$KEY" >>"$GITHUB_OUTPUT"
           echo "filled-$arch=$FILLED" >>"$GITHUB_OUTPUT"
+
+      # The infra module's own workspace, downloaded once and retried before the vet and the
+      # builds below (the Retries note of .github/ci-budgets.md; the retried unit is
+      # the download, never the build). On that build's own condition, so a run that finds the
+      # key downloads nothing. One call: packages/envoy/infra's go.work binds it and
+      # packages/envoy, and a download in it reads both modules' requirements.
+      #
+      # 180 s per attempt: a cold `go mod download` of packages/envoy/infra measured 113 s on an
+      # empty module cache on 2026-11-07, the slowest of the three modules measured there, so the
+      # bound is 1.6 times it, and an attempt it kills leaves what it fetched in the module cache
+      # for the next one to resume from. The lookup above is `lookup-only`, so no module cache is
+      # ever restored here and that cold figure is what a miss pays.
+      - name: Download the Go modules this job builds
+        if: steps.go-envoy-infra.outputs.cache-hit != 'true'
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy/infra's Go modules" 180 -- go -C packages/envoy/infra mod download
 
       # What envoy-infra-go and the release build build: the vet with both live-test tags, for
       # linux and for darwin, the natslive binaries of the three packages envoy-infra-go's live step
@@ -480,6 +633,16 @@ jobs:
   # that architecture's leg saved, under the output names the envoy-infra job gives it; a leg whose
   # architecture filled nothing skips its step. Both legs run on ubuntu-24.04-arm: gh and jq need
   # nothing of an x64 machine.
+  # Each read and each delete retries through .github/scripts/ci-retry.sh at 30 s an attempt, the
+  # bound this repository gives a `gh` read of the API (dispatch://INFRA-1545, R1): the list is one
+  # ladder, 5 x 30 + 150 = 300 s, and each delete one more. A fill supersedes the one entry the
+  # fill before it saved, so a common run deletes one, and the step's DECLARED_LOOPS entry in
+  # .github/scripts/check-download-retry.sh says so: 300 + 300 = 600 s for the step. A delete
+  # whose first attempt landed and whose answer was lost is refused on its retry as an entry that
+  # is gone, and fails the step by name; the next fill deletes nothing more.
+  # Budget (the Budgets note of .github/ci-budgets.md): 300 s, the 5 minutes this job carried,
+  # plus its one retried step, 600 s. 300 + 600 = 900 s -> 16 min, the whole minute above a sum
+  # that is itself a whole number of minutes.
   envoy-infra-superseded:
     needs: envoy-infra
     if: needs.envoy-infra.outputs.filled-x64 == 'true' || needs.envoy-infra.outputs.filled-arm64 == 'true'
@@ -488,12 +651,22 @@ jobs:
       matrix:
         arch: [x64, arm64]
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 5
+    timeout-minutes: 16
     permissions:
       actions: write
+      contents: read
     steps:
+      # The helper the step sources is a file of this repository, so the job checks it out, with
+      # no credential left behind, as every other job of this workflow does.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Delete this ref's go-envoy-infra entries the new one supersedes
         if: needs.envoy-infra.outputs[format('filled-{0}', matrix.arch)] == 'true'
+        # Its own retry arithmetic: the list and the one delete a common run makes,
+        # 300 + 300 = 600 s -> 11 min, the whole minute above a sum that is itself a whole number
+        # of minutes.
+        timeout-minutes: 11
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -501,7 +674,9 @@ jobs:
           REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          entries=$(gh cache list --ref "$REF" --key go-envoy-infra- --limit 100 --json id,key,ref)
+          . .github/scripts/ci-retry.sh
+          entries=$(retry_fetch "this ref's go-envoy-infra entries" 30 -- \
+            gh cache list --ref "$REF" --key go-envoy-infra- --limit 100 --json id,key,ref)
           if ! jq -e --arg keep "$KEEP" --arg ref "$REF" 'any(.[]; .key == $keep and .ref == $ref)' <<<"$entries" >/dev/null; then
             echo "::warning::the new go-envoy-infra entry is not among this ref's entries, so none is deleted"
             exit 0
@@ -516,7 +691,7 @@ jobs:
                 exit 1
               fi
               echo "Deleting go-envoy-infra entry $id, which the new entry supersedes"
-              gh cache delete "$id"
+              retry_fetch "the deletion of go-envoy-infra entry $id" 30 -- gh cache delete "$id"
             done
 
   # The elan home ci.yaml's airlock-lean job restores, the Lean toolchain that job's `lake build`
@@ -524,13 +699,14 @@ jobs:
   # toolchain are binaries of it, and the content of the lean-toolchain the model names, since
   # that file is what decides which toolchain elan installs, so the entry is refreshed when the
   # model moves to another Lean and at no other time. install-elan puts elan under
-  # $RUNNER_TEMP/elan and `lake build` downloads the named toolchain into it on a miss, which is
-  # the whole of what is saved. It runs on ubuntu-24.04-arm, the runner airlock-lean runs on.
+  # $RUNNER_TEMP/elan and the toolchain step below downloads the named toolchain into it on a
+  # miss, which is the whole of what is saved. It runs on ubuntu-24.04-arm, the runner
+  # airlock-lean runs on.
   elan:
     runs-on: ubuntu-24.04-arm
-    # One toolchain download and one build of the model on a miss; a run that finds the key
-    # costs the checkout alone.
-    timeout-minutes: 30
+    # why: .github/ci-notes/ci-caches.md#the-elan-jobs-budget
+    # 1800 + 1708 = 3508 s -> 59 min.
+    timeout-minutes: 59
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -543,11 +719,27 @@ jobs:
           key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/internal/cipher/proxyrules/lean/lean-toolchain') }}
           lookup-only: true
 
+      # install-elan's own retry arithmetic: one `ci_tools_fetch` of the release tarball,
+      # 1708 s (the Budgets note of .github/ci-budgets.md) -> 29 min.
       - if: steps.elan-cache.outputs.cache-hit != 'true'
         uses: ./.github/actions/install-elan
+        timeout-minutes: 29
 
-      # The build is what downloads the toolchain lean-toolchain names, so the entry holds what
-      # airlock-lean will find rather than elan alone.
+      # The toolchain lean-toolchain names, retried as airlock-lean's step of the same name is and
+      # at its bound (.github/ci-notes/ci-job-airlock-lean.md#the-lean-toolchain-step-and-its-bound).
+      - name: Install the Lean toolchain lean-toolchain names
+        if: steps.elan-cache.outputs.cache-hit != 'true'
+        # why: .github/ci-notes/ci-caches.md#the-elan-jobs-budget
+        # 5 x 120 + 150 = 750 s -> 13 min.
+        timeout-minutes: 13
+        run: |
+          . .github/scripts/ci-retry.sh
+          toolchain=$(cat packages/envoy/internal/cipher/proxyrules/lean/lean-toolchain)
+          retry_fetch "the Lean toolchain $toolchain" 120 -- elan toolchain install "$toolchain"
+
+      # What airlock-lean builds, after the toolchain step, as airlock-lean builds it: the build
+      # reads the toolchain from $RUNNER_TEMP/elan and downloads nothing, so the entry holds the
+      # toolchain airlock-lean's build will find there.
       - name: Build what airlock-lean builds
         if: steps.elan-cache.outputs.cache-hit != 'true'
         run: lake build
@@ -558,3 +750,134 @@ jobs:
         with:
           path: ${{ runner.temp }}/elan
           key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/internal/cipher/proxyrules/lean/lean-toolchain') }}
+
+  # The bun family, ~/.bun/bin, which .github/actions/setup-bun restores in every job that calls
+  # it, keyed on the runner's OS and architecture, the build variant and the version .bun-version
+  # pins. This is the family's one saving job: the action saves only where its caller passes
+  # `save: 'true'` and the run is a push to main, and no other caller passes it, as each Go family
+  # above has one saving job. THE KEY NAMES THE RUNNER'S ARCHITECTURE, SO EACH ARCHITECTURE NEEDS
+  # AN ENTRY AND A SAVING JOB OF ITS OWN: a Bun binary runs on one architecture, and an entry an
+  # x64 leg saved is one no arm64 job restores. So one leg per runner the action's callers run on,
+  # ubuntu-24.04 (x64) and ubuntu-24.04-arm (arm64). The action's own restore is the lookup: a
+  # leg whose key is there restores the entry, finds the pinned Bun in it and saves nothing, so a
+  # run that finds both keys costs a checkout and a restore on each leg.
+  bun:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    # why: .github/ci-notes/ci-caches.md#the-bun-jobs-budget
+    # 600 + 3416 = 4016 s -> 67 min.
+    timeout-minutes: 67
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Fill the bun family for this runner's architecture
+        uses: ./.github/actions/setup-bun
+        # why: .github/ci-notes/ci-caches.md#the-bun-jobs-budget
+        # 2 x 1708 = 3416 s -> 57 min.
+        timeout-minutes: 57
+        with:
+          save: 'true'
+
+  # The two builds ci.yaml's dispatch-two-builds job runs the tree against, each made by
+  # packages/envoy/scripts/build-dispatch-build.sh from a commit of this repository: the previous
+  # release's, keyed on that release's commit, and the pinned first-rollout release's. That job
+  # restores both and saves neither, since an entry a pull request or a merge group saves lands
+  # in a scope no other run reads (dispatch://INFRA-1545, R4), so this job fills them on a push
+  # to main, as the families above are filled. Each key is the text of that job's restore, which
+  # check-ci-filters.sh holds this job's save to. On ubuntu-24.04, the runner dispatch-two-builds
+  # runs on: the key names the runner's architecture, and each build's server is a binary of it.
+  # The whole history and the tags, as that job checks them out: the script resolves the previous
+  # release from the tags in the history of origin/main, and refuses a commit older than its floor
+  # release, which it reads by its tag.
+  dispatch-builds:
+    runs-on: ubuntu-24.04
+    # why: .github/ci-notes/ci-caches.md#the-dispatch-builds-jobs-budget
+    # 900 + 3416 = 4316 s -> 72 min.
+    timeout-minutes: 72
+    env:
+      # The first-rollout build's commit, the pin ci-job-dispatch-two-builds.yaml's env holds
+      # under this name and firstRolloutRelease in
+      # packages/envoy/cmd/dispatch/twobuild_harness_test.go holds too: the key below is that
+      # job's restore key, so the two pins move together.
+      FIRST_ROLLOUT_COMMIT: edb69e0d7588ec037847182e74a04a343a0664c9
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Resolve the previous build's commit
+        id: previous
+        run: |
+          commit=$(packages/envoy/scripts/build-dispatch-build.sh --previous-release --resolve)
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - id: previous-build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/dispatch-previous
+            !${{ runner.temp }}/dispatch-previous/src
+          key: dispatch-previous-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.previous.outputs.commit }}
+          lookup-only: true
+
+      - id: first-rollout-build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/dispatch-first-rollout
+            !${{ runner.temp }}/dispatch-first-rollout/src
+          key: dispatch-first-rollout-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ env.FIRST_ROLLOUT_COMMIT }}
+          lookup-only: true
+
+      - if: steps.previous-build.outputs.cache-hit != 'true' || steps.first-rollout-build.outputs.cache-hit != 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+
+      - if: steps.previous-build.outputs.cache-hit != 'true' || steps.first-rollout-build.outputs.cache-hit != 'true'
+        uses: ./.github/actions/setup-bun
+        # why: .github/ci-notes/ci-caches.md#the-dispatch-builds-jobs-budget
+        # 2 x 1708 = 3416 s -> 57 min.
+        timeout-minutes: 57
+
+      - name: Build the previous build
+        if: steps.previous-build.outputs.cache-hit != 'true'
+        # why: .github/ci-notes/ci-caches.md#the-dispatch-builds-jobs-budget
+        # 1050 + 1050 + 116 = 2216 s -> 37 min.
+        timeout-minutes: 37
+        env:
+          PREVIOUS_COMMIT: ${{ steps.previous.outputs.commit }}
+          DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
+        run: packages/envoy/scripts/build-dispatch-build.sh --commit "$PREVIOUS_COMMIT" --out "$DISPATCH_PREVIOUS_BUILD"
+
+      - if: steps.previous-build.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/dispatch-previous
+            !${{ runner.temp }}/dispatch-previous/src
+          key: dispatch-previous-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.previous.outputs.commit }}
+
+      - name: Build the first-rollout build
+        if: steps.first-rollout-build.outputs.cache-hit != 'true'
+        # why: .github/ci-notes/ci-caches.md#the-dispatch-builds-jobs-budget
+        # 1050 + 1050 + 116 = 2216 s -> 37 min.
+        timeout-minutes: 37
+        env:
+          DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
+        run: packages/envoy/scripts/build-dispatch-build.sh --commit "$FIRST_ROLLOUT_COMMIT" --out "$DISPATCH_FIRST_ROLLOUT_BUILD"
+
+      - if: steps.first-rollout-build.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/dispatch-first-rollout
+            !${{ runner.temp }}/dispatch-first-rollout/src
+          key: dispatch-first-rollout-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ env.FIRST_ROLLOUT_COMMIT }}

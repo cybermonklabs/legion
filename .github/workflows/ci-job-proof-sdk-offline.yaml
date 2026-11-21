@@ -48,7 +48,11 @@ on:
 jobs:
   proof-sdk-offline:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 15
+    # Budget (ci-budgets.md's Budgets note): 900 s, the 15 minutes this job came in with — it is
+    # new here, so no run on main has measured it — plus its slowest retried step alone — the
+    # setup-bun step's two `ci_tools_fetch` calls, 3416 s, above either frozen install's
+    # 5 x 180 + 150 = 1050 s and the ci-ok report's 2160 s. 900 + 3416 = 4316 s -> 72 min.
+    timeout-minutes: 72
     # The hosts of the old route, named once: the proxy is started with them, and the verdict
     # below quotes them. The proxy faults each of them and every subdomain of one, and refuses
     # nothing else, so the verdict counts its refusals rather than matching this list again.
@@ -58,7 +62,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
+        timeout-minutes: 57
 
       # .github/scripts/ci-fault-proxy.py is Python 3 from the runner image and installs nothing.
       # `--port 0` takes a free port from the kernel and `--port-file` is written, whole and by
@@ -103,6 +110,16 @@ jobs:
       # mean nothing. Both probes run through the same proxy variables the installs use, and each
       # prints the proxy's own log line for it. The log is emptied at the end, so the counts the
       # report step reads are the installs' alone.
+      #
+      # Neither request is a download: each reads whether the proxy is in the path, and brings
+      # no tool, no toolchain and no dependency into the job. So neither retries, and each is
+      # written the way .github/scripts/download-retry-proof.sh's through_proxy writes a probe —
+      # its error silenced and its status consumed into the reading — which is the shape
+      # check-download-retry.sh reads as a probe rather than as a fetch. A retry here would
+      # prove less, not more: the first request must be refused, so five attempts would spend
+      # 150 s of sleeps re-reading the refusal the first one already gave, and the second is a
+      # control the two installs below put to the registry again a moment later, where the
+      # answer is a download and is retried as one.
       - name: Probe the proxy before the installs
         id: probe
         # GitHub Actions folds an env key's case, so `http_proxy` and `HTTP_PROXY` in one block
@@ -114,12 +131,17 @@ jobs:
           https_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
         run: |
           log="$RUNNER_TEMP/ci-fault-proxy.log"
-          if curl -sS -o /dev/null --max-time 30 https://api.github.com/meta; then
-            echo "::error::the proxy answered https://api.github.com/meta, so the installs below are not behind it and this job would prove nothing"
+          # `%{http_code}` is 000 when nothing answered at all, which is what a refused tunnel
+          # reads as. Measured on curl 8.14.1 against this proxy in --mode fail: the faulted
+          # host read 000 (exit 56, `%{http_connect}` 504) and the passed host 200.
+          faulted=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 https://api.github.com/meta 2>/dev/null || true)
+          if [ "${faulted:-000}" != 000 ]; then
+            echo "::error::the proxy answered https://api.github.com/meta with HTTP $faulted, so the installs below are not behind it and this job would prove nothing"
             exit 1
           fi
           grep -F 'ci-fault-proxy: 504 CONNECT api.github.com:443' "$log"
-          if ! curl -sS -o /dev/null --max-time 60 https://registry.npmjs.org/; then
+          passed=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 https://registry.npmjs.org/ 2>/dev/null || true)
+          if [ "${passed:-000}" = 000 ]; then
             echo "::error::the proxy refused https://registry.npmjs.org/, the registry the frozen install reads, so it faults more than the hosts of the old route"
             exit 1
           fi
@@ -128,22 +150,39 @@ jobs:
 
       # A runner is cold by nature: it has no Bun install cache and no node_modules, and
       # setup-bun restores the Bun binary alone (and off main not even that), so this install is
-      # the cold one without any cache being deleted to make it so.
-      - name: Frozen install behind the proxy, cold
+      # the cold one without any cache being deleted to make it so. It carries the bare command
+      # as its name, the handle .github/scripts/ci_job_reads.py's bun_job cites a frozen install
+      # by (ci-budgets.md's Retries note). It retries like every other install of this workflow:
+      # the hosts this job faults are the old route's, and registry.npmjs.org, which every
+      # package still comes from, is passed through and can fault on its own. 180 s per attempt,
+      # the bound every Bun install of this repository's CI carries: 20.70 s cold on a pod,
+      # against at most 11 s over 180 observations in CI. Its attempts cannot hide a request for
+      # a faulted host: each one asks the proxy again, and the verdict below counts the proxy's
+      # refusals rather than the installs.
+      - name: bun install --frozen-lockfile
         id: cold_install
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
         env:
           http_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
           https_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
-        run: bun install --frozen-lockfile
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
 
       # The same install again, over the cache and the node_modules the step above left: the
-      # requirement is that no install reaches those hosts, warm or cold.
-      - name: Frozen install behind the proxy, warm
+      # requirement is that no install reaches those hosts, warm or cold. Retried at the same
+      # bound, for the same reason.
+      - name: bun install --frozen-lockfile, warm
         id: warm_install
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
         env:
           http_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
           https_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
-        run: bun install --frozen-lockfile
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
 
       # The verdict, read off the proxy's log: every refusal it wrote while the two installs
       # ran. In `--mode fail` the proxy refuses a faulted host and every subdomain of one and
@@ -210,6 +249,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: proof-sdk-offline

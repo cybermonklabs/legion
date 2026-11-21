@@ -52,7 +52,13 @@ env:
 jobs:
   lint:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    # Budget (ci-budgets.md's Budgets note): 1800 s, the 30 minutes this job carried, above its
+    # 1050 s measured maximum, plus its slowest retried step alone — setup-bun's two
+    # `ci_tools_fetch` calls, 3416 s, above the Go module download, whose three calls are
+    # 3 x (5 x 180 + 150) = 3150 s, the workspace install's and the lockfile install's
+    # 1050 s each and the ci-ok report's 2160 s. 1800 + 3416 = 5216 s -> 87 min. The pull request's text is checked in the `pr-title` job now, so that job carries
+    # check-pr-text.sh's and post-check-run.sh's arithmetic.
+    timeout-minutes: 87
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -92,6 +98,9 @@ jobs:
       - name: Check every remote action is pinned to a commit SHA
         run: .github/scripts/check-action-pins.sh
 
+      - name: Check every download retries at the floor, through the one rule that holds it
+        run: .github/scripts/check-download-retry.sh
+
       - name: Check no current file names the pre-split Oh My Pi plugin
         run: .github/scripts/check-plugin-names.sh
 
@@ -121,6 +130,7 @@ jobs:
       # which this check reads: a fragment of any other package is rendered nowhere and nothing
       # would report it, so it is refused here, on every pull request.
       - name: Check every changelog fragment belongs to a listed package
+        timeout-minutes: 46
         run: |
           # shellcheck disable=SC2046 # the file is the package list, split on purpose
           .github/scripts/release-push.sh fold-orphans $(<.github/changelog-packages)
@@ -144,18 +154,34 @@ jobs:
             exit 1
           fi
 
-      - name: Setup Bun
-        uses: ./.github/actions/setup-bun
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
+      - uses: ./.github/actions/setup-bun
+        timeout-minutes: 57
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+      # Retried like every install in this workflow (ci-budgets.md's Retries note); 180 s per
+      # attempt, the bound every Bun install of this repository's CI carries
+      # (dispatch://INFRA-1545): this install measured 20.70 s cold on a pod, against at most
+      # 11 s over 180 observations in the 20 most recent successful ci.yaml push runs on main.
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
 
       # The frozen install above does not refuse a workspace `version` the lockfile does not hold.
       # --lockfile-only writes the lockfile the manifests imply and installs nothing, so a
       # difference here is what a reader's own `bun install` would write.
       - name: Check bun.lock agrees with the workspace manifests
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
         run: |
-          bun install --lockfile-only
+          . .github/scripts/ci-retry.sh
+          # Retried as the frozen install above is, and bounded by the same measurement: this
+          # resolve-only run reads the same manifests and installs nothing, so it cannot cost
+          # more than that install's 20.70 s cold reading.
+          retry_fetch "the lockfile the manifests imply" 180 -- bun install --lockfile-only
           if ! git diff --exit-code bun.lock; then
             echo "::error file=bun.lock::bun.lock disagrees with the workspace manifests; run bun install and commit bun.lock, and after a forward merge of main take one side's bun.lock whole before installing"
             exit 1
@@ -217,6 +243,25 @@ jobs:
           key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-notices-{0}-{1}-', runner.arch, runner.os) }}
 
+      # The modules the notices step loads for every release target, downloaded once and retried
+      # before it (ci-budgets.md's Retries note; the retried unit is the download, never the build).
+      # It runs on the step's own condition, so a run that skips the notices step downloads
+      # nothing. Three calls, because the step builds in three module directories and
+      # packages/envoy/infra is a workspace of its own, which the root go.work does not bind.
+      #
+      # 180 s per attempt, as ci-budgets.md's Retries note derives. The cache restored above
+      # makes the common run cost nothing.
+      - name: Download the Go modules this job builds
+        if: inputs.changes-result != 'success' || inputs.go_notices == 'true'
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: three calls, 3 x (5 x 180 + 150) = 3150 s -> 53 min.
+        timeout-minutes: 53
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/daemon's Go modules" 180 -- go -C packages/daemon mod download
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+          retry_fetch "packages/envoy/infra's Go modules" 180 -- go -C packages/envoy/infra mod download
+
       # Every Go archive a release ships carries THIRD_PARTY_NOTICES, written at build time with
       # the build's own GOOS, GOARCH and CGO_ENABLED (release.yaml's legion_build job and
       # release-envoy-listener.yaml, whose targets .github/go-release-targets.json lists for all of
@@ -235,10 +280,15 @@ jobs:
       # step restores: one script, so the fill cannot warm anything but what this step builds.
       - name: Check every Go release archive's third-party notices can be written and the cross-built commands compile
         if: inputs.changes-result != 'success' || inputs.go_notices == 'true'
+        # why: .github/ci-notes/ci-job-lint.md#the-notices-step-whose-script-the-gate-does-not-read
+        # 132 + 1050 = 1182 s -> 20 min.
+        timeout-minutes: 20
         run: .github/scripts/go-release-notices.sh "$RUNNER_TEMP/notices"
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: lint
@@ -251,7 +301,12 @@ jobs:
   # script alone.
   private-names:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes main's #4256 gives this job,
+    # which checks the repository out and runs check-private-names.sh alone, plus its slowest
+    # retried step alone — the ci-ok report, which is this job's only download: 2160 s
+    # (ci-budgets.md's Budgets note, "The ci-ok report"). 600 + 2160 = 2760 s, a whole number of
+    # minutes, so the budget is the next one strictly above it -> 47 min.
+    timeout-minutes: 47
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -266,6 +321,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: lint

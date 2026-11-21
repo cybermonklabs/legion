@@ -48,9 +48,13 @@
 # what this endpoint answers today, not a promise: a bigger matrix pages again, and `--paginate`
 # is what keeps that a longer array rather than a short list nothing reports.
 #
-# The read goes through gh-read.sh's ladder, which the inline read had none of, and each attempt
-# is bounded by `timeout 30`, which the ladder does not bound: a host that accepts the
-# connection and then sends nothing would otherwise hang the step for as long as the job has.
+# The read goes through the one retry ladder this repository's CI has, the `retry_fetch` of
+# .github/scripts/ci-retry.sh, which the inline read had none of: five attempts, with waits of
+# 10, 20, 40 and 80 s between them, each attempt run under a 40 s bound. Inside that bound the
+# attempt bounds gh itself with `timeout 30`, because a host that accepts the connection and
+# then sends nothing would otherwise hang the step for as long as the job has; the comment at
+# the call says why the attempt carries both bounds and why the inner one is the one that
+# decides.
 # A read refused after the ladder names the endpoint, which attempt decided the failure - the
 # last one the ladder made - and what that attempt did, what each earlier attempt did where it
 # did something else, how many attempts that was and the run attempt, and says in those words
@@ -75,8 +79,8 @@ set -euo pipefail
 shopt -s inherit_errexit
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# shellcheck source=.github/scripts/gh-read.sh
-source "$script_dir/gh-read.sh"
+# shellcheck source=.github/scripts/ci-retry.sh
+source "$script_dir/ci-retry.sh"
 
 usage() {
   echo "::error::dispatch-browser-run-reads.sh takes a mode and its arguments:" \
@@ -112,12 +116,13 @@ need() {
 # nothing, and the words state only what the two files do not hold: no exit status on record,
 # which is `status.<n>` unwritten, and no HTTP status printed, which is `stderr.<n>` holding
 # none. They name neither file, and they do not say the attempt did not exit: an attempt that
-# reaches this branch may well have exited. Measured 2026-11-08, with the wrapper of the third
-# of three attempts killed, that wrapper exited 137 and 137 is the status the ladder's attempt
-# saw, while nothing had written `status.3`.
+# reaches this branch may well have exited. Measured 2026-11-08, with the wrapper of the fifth
+# of five attempts killed, that wrapper exited 137 and 137 is the status the ladder's attempt
+# saw - the ladder's own line for it reads `attempt 5 of 5 failed (exit 137)`, which the test
+# file's first killed-wrapper case holds - while nothing had written `status.5`.
 #
 # What keeps a missing `status.<n>` from ending this read is the `|| true` on the `cat`, not
-# the `2>/dev/null` beside it, which only keeps `cat: <dir>/status.3: No such file or
+# the `2>/dev/null` beside it, which only keeps `cat: <dir>/status.5: No such file or
 # directory` out of the job log. The `|| true` on the `grep` covers something else: under
 # `pipefail` a `grep` that matches nothing exits 1, which is any attempt whose stderr holds no
 # `HTTP` status. Measured 2026-11-08 against the test file beside this one: the `cat`'s
@@ -133,16 +138,16 @@ need() {
 # rather than by these words. The test file's case "a killed wrapper whose gh had printed a
 # status before it died" is what holds that order: a copy asking whether the status file is
 # missing before it greps the stderr fails 2 checks, both in that case, measured 2026-11-08. The
-# other shape is a wrapper that never ran at all - driven 2026-11-08 with gh_read given a
+# other shape is a wrapper that never ran at all - driven 2026-11-08 with retry_fetch given a
 # command that does not exist, the line read `attempt 0, which decided the failure, left no
 # exit status on record, printing no HTTP status; the ladder made 0 attempts`, `attempts`
 # still holding the 0 it was initialised to.
 #
 # A wrapper killed before it counts its attempt is described by no branch of its own, and it
 # misnumbers the attempts that follow it as well as shortening the count: driven 2026-11-08
-# with the second of three wrappers killed before its count, the attempt that decided the
-# failure - the ladder's third - was described from its own files under the number 2, in a
-# line reading `the ladder made 2 attempts`.
+# with the second of five wrappers killed before its count, the attempt that decided the
+# failure - the ladder's fifth - was described from its own files under the number 4, in a
+# line reading `the ladder made 4 attempts`.
 describe_attempt() {
   local dir=$1 attempt=$2 attempt_status http
   attempt_status=$(cat "$dir/status.$attempt" 2>/dev/null || true)
@@ -175,21 +180,43 @@ case "$mode" in
 
     pages=$(mktemp)
     # One stderr file and one exit status per attempt, and a count of the attempts the ladder
-    # made. gh_read runs its three attempts itself and sends every attempt's stderr straight
+    # made. retry_fetch runs its five attempts itself and sends every attempt's stderr straight
     # to this script's, with nothing between them, so one capture file cannot be taken apart
     # again afterwards: this wrapper is what keeps the attempts apart. It counts the attempt,
     # gives gh that attempt's own stderr file, writes that attempt's exit status beside it and
     # then puts the stderr file back on stderr, so the job log still holds every attempt's
-    # words in order, as the inline read's did, and each attempt is still bounded by
-    # `timeout 30`, which the ladder itself does not bound. The status is kept because the
-    # bound firing leaves no word of its own in gh's stderr - the attempt exits 124 - and the
-    # refusal line below has no other way to tell that case from a refusal gh printed no
-    # status for.
+    # words in order, as the inline read's did. The status is kept because the bound firing
+    # leaves no word of its own in gh's stderr - the attempt exits 124 - and the refusal line
+    # below has no other way to tell that case from a refusal gh printed no status for.
+    #
+    # Why the attempt carries two bounds, this wrapper's own `timeout 30` inside the ladder's
+    # 40. The inner one is what puts a 124 on that attempt's status file, and that file is the
+    # whole of how describe_attempt tells the bound firing from a refusal gh printed no status
+    # for. A bound left to the ladder alone fires on the wrapper, which is then killed before
+    # it writes anything: the attempt would reach the fourth branch and read as one that left
+    # no exit status on record - the words for a wrapper that died, put on a read that was
+    # merely slow, and a diagnosis gone. So the inner bound is the one that decides, and the
+    # ladder's is the backstop above it, ten seconds clear, for the wrapper hanging somewhere
+    # gh is not. That is the shape ci-caches.yaml's apt steps use, where
+    # `retry_fetch ... 95 -- sudo timeout 90` keeps the helper's bound five seconds above the
+    # inner one for the same reason. One bound cannot do both jobs: a kill the ladder makes is
+    # reported to the ladder and never to these files, and the ladder in turn reads any 124 as
+    # its own bound, so the line it prints for an attempt the inner bound ended reads `this
+    # run's attempt's jobs: attempt 5 of 5 reached its 40s bound (exit 124)` whichever bound
+    # fired. That line names neither the route nor the run attempt and cannot say which bound
+    # it was; the refusal line below reads the attempt's own status file, says the 30 s bound,
+    # and is the one the merge job's readers are sent to. The test file holds both lines.
     work=$(mktemp -d)
     trap 'rm -rf "$pages" "$work"' EXIT
     printf '0' > "$work/attempts"
-    set +e
-    gh_read bash -c '
+    # The redirection is this shell's own and is applied once: retry_fetch buffers every
+    # attempt's output and prints the successful attempt's alone, so no refused attempt's body
+    # sits in front of the array in $pages. Every line the ladder writes of its own goes to
+    # standard error, where the step log holds it beside gh's: one line for each failed
+    # attempt, and an `::error::` line of its own once the fifth is refused. A refused read
+    # therefore annotates the step twice, and the line below is the one that names the route,
+    # the attempt that decided the failure and the run attempt.
+    if ! retry_fetch "this run's attempt's jobs" 40 -- bash -c '
       attempt=$(( $(cat "$1/attempts") + 1 ))
       printf "%s" "$attempt" > "$1/attempts"
       timeout 30 gh api --paginate --slurp "$2" 2> "$1/stderr.$attempt"
@@ -197,12 +224,8 @@ case "$mode" in
       printf "%s" "$status" > "$1/status.$attempt"
       cat "$1/stderr.$attempt" >&2
       exit "$status"
-    ' bash "$work" "$route" > "$pages"
-    read_status=$?
-    set -e
-    attempts=$(cat "$work/attempts")
-
-    if [ "$read_status" -ne 0 ]; then
+    ' bash "$work" "$route" > "$pages"; then
+      attempts=$(cat "$work/attempts")
       # Every attempt is described from its own two files, and the line attributes each
       # description to the attempt it was read from. Two rounds of this lane's own fault are
       # why. Until 2026-11-08 one file held every attempt's stderr and the last match in it
@@ -219,7 +242,7 @@ case "$mode" in
       # - and what that attempt did, and names an earlier attempt only where that attempt did
       # something else, each with its own number. Where every attempt ended the same way the
       # earlier ones are left unsaid: the deciding attempt's words already cover them, and a
-      # list of three identical clauses tells a reader nothing the count does not.
+      # list of four identical clauses tells a reader nothing the count does not.
       #
       # Within one attempt the exit status is read before the stderr, and the one shape that
       # tells this order from the other is an attempt that printed a status and then hung:

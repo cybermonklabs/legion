@@ -19,15 +19,25 @@
 # CI runs it in ci.yaml's cancel-started job, at its second step, after the checkout.
 set -euo pipefail
 
+# shellcheck source=.github/scripts/ci-retry.sh
+. .github/scripts/ci-retry.sh
+
 # The `--limit` is 100 because the queue builds up to 20 groups at once and this pull
 # request's own groups are among them: gh's default of 20 runs could leave an older
-# group of it out of the list, and so out of the act.
-RUNS=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml --event merge_group \
+# group of it out of the list, and so out of the act. It retries at the same 30 s an
+# attempt as the force-cancel below: a refused list names no group at all, and every
+# removed group's run then keeps its runners.
+RUNS=$(retry_fetch "the merge-group runs of this repository" 30 -- \
+  gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml --event merge_group \
   --limit 100 --json databaseId,headBranch,status,createdAt)
 export RUNS
 acts=$(.github/scripts/merge-group-cancels.sh)
+# 30 s an attempt, the bound every `gh api` read of this repository's CI carries, which
+# is ten times the about 3 s one takes (.github/ci-budgets.md's Retries note). The loop is
+# over the groups to cancel, not over the attempts: the attempts are the helper's.
 while read -r act id; do
   [ "$act" = cancel ] || continue
-  gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/force-cancel" ||
+  retry_fetch "the force-cancel of run $id" 30 -- \
+    gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/force-cancel" ||
     echo "::warning::force-cancel of run $id failed; it may have completed already"
 done <<<"$acts"

@@ -46,7 +46,14 @@ env:
 jobs:
   dispatch-two-builds:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Budget (ci-budgets.md's Budgets note): 2700 s, the 45 minutes this job carried when main's
+    # #2461 added it, above its 878 s measured maximum (jobs 132706600704 and 132701468085, 878 s
+    # and 781 s) and holding the two-build step's own `-timeout 30m`, plus its slowest retried
+    # step alone — the setup-bun step's two `ci_tools_fetch` calls, 3416 s, above the previous
+    # build's and the first-rollout build's 2216 s each, Playwright's 1650 s, the workspace
+    # install's and the module download's 1050 s each and the ci-ok report's 2160 s.
+    # 2700 + 3416 = 6116 s -> 102 min.
+    timeout-minutes: 102
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -67,7 +74,8 @@ jobs:
       # The first-rollout build's commit, the release tagged legion-envoy-v30.20.2. That tag is
       # lightweight and no ruleset protects it, so it can move: the commit is the pin.
       # firstRolloutRelease in packages/envoy/cmd/dispatch/twobuild_harness_test.go holds the same
-      # commit.
+      # commit, and so does the dispatch-builds job of .github/workflows/ci-caches.yaml, whose save
+      # is keyed on it as the restore below is.
       FIRST_ROLLOUT_COMMIT: edb69e0d7588ec037847182e74a04a343a0664c9
     steps:
       # A BOUND OF ITS OWN AND A SECOND ATTEMPT, here and in dispatch-two-builds-same below. Of
@@ -113,17 +121,38 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
+      # As dispatch-multiprocess's download step: 180 s per attempt, 1.6 times the 113 s of the
+      # slowest cold run measured (packages/envoy/infra; packages/envoy 77 s), and this job
+      # restores no module cache either.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
+        timeout-minutes: 57
       # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).
-      - run: bun install --frozen-lockfile
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       - name: Resolve the previous build's commit
         id: previous
         run: |
           commit=$(packages/envoy/scripts/build-dispatch-build.sh --previous-release --resolve)
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
-      # The cache saves the build when the job ends in success and found none under this key.
-      - name: Cache the previous build
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restored and never saved here: a save made in a pull request or a merge group lands in a
+      # scope no other run reads (dispatch://INFRA-1545, R4), so the dispatch-builds job of
+      # .github/workflows/ci-caches.yaml builds the previous build and saves it on a push to main,
+      # under this key. A miss builds it below and keeps nothing.
+      - name: Restore the previous build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ${{ runner.temp }}/dispatch-previous
@@ -132,7 +161,14 @@ jobs:
       # A restored directory holds the complete build of that commit, which the script leaves as it
       # is. The runner context is not available in a job's env, so each step that reads the build's
       # directory names it in its own.
+      # The script's two downloads, the previous build's workspace install and the Go modules and
+      # toolchain its server loads, retry through .github/scripts/ci-retry.sh at 180 s each
+      # (packages/envoy/scripts/build-dispatch-build.sh says where). check-download-retry.sh reads
+      # no script outside .github/scripts, so this budget is derived by hand: 5 x 180 + 150 =
+      # 1050 s for each download, beside the 116 s this step measured whole in job 132706600704,
+      # 1050 + 1050 + 116 = 2216 s, the whole minute above which is 37.
       - name: Build the previous build
+        timeout-minutes: 37
         env:
           PREVIOUS_COMMIT: ${{ steps.previous.outputs.commit }}
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
@@ -143,22 +179,29 @@ jobs:
       # transition row that drives the fleet's first rollout runs it as its earlier build, since
       # every previous release from legion-envoy-v30.21.0 on registers its numbers. This step fails
       # when the release's tag names another commit than the pin. The release is pinned, so its
-      # cache entry is written once and restored after that.
+      # cache entry is written once, by ci-caches.yaml's dispatch-builds job on a push to main, and
+      # restored after that.
       - name: Resolve the first-rollout build's commit
         run: |
           resolved=$(packages/envoy/scripts/build-dispatch-build.sh --commit legion-envoy-v30.20.2 --resolve)
           if [[ "$resolved" != "$FIRST_ROLLOUT_COMMIT" ]]; then
-            echo "::error::The tag legion-envoy-v30.20.2 names commit $resolved. FIRST_ROLLOUT_COMMIT pins the first-rollout build to commit $FIRST_ROLLOUT_COMMIT, and firstRolloutRelease in packages/envoy/cmd/dispatch/twobuild_harness_test.go holds the same commit. Move the tag back to $FIRST_ROLLOUT_COMMIT, or change the pin in both places."
+            echo "::error::The tag legion-envoy-v30.20.2 names commit $resolved. FIRST_ROLLOUT_COMMIT pins the first-rollout build to commit $FIRST_ROLLOUT_COMMIT, and firstRolloutRelease in packages/envoy/cmd/dispatch/twobuild_harness_test.go and the dispatch-builds job of .github/workflows/ci-caches.yaml hold the same commit. Move the tag back to $FIRST_ROLLOUT_COMMIT, or change the pin in all three places."
             exit 1
           fi
-      - name: Cache the first-rollout build
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore the first-rollout build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ${{ runner.temp }}/dispatch-first-rollout
             !${{ runner.temp }}/dispatch-first-rollout/src
           key: dispatch-first-rollout-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ env.FIRST_ROLLOUT_COMMIT }}
+      # The script's two downloads, at 180 s each, as the previous build's step above holds them;
+      # check-download-retry.sh reads no script outside .github/scripts, so this budget is
+      # priced by hand.
       - name: Build the first-rollout build
+        # why: .github/ci-notes/ci-job-dispatch-two-builds.md#the-build-steps-budgets
+        # 1050 + 1050 + 116 = 2216 s -> 37 min.
+        timeout-minutes: 37
         env:
           DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
         run: packages/envoy/scripts/build-dispatch-build.sh --commit "$FIRST_ROLLOUT_COMMIT" --out "$DISPATCH_FIRST_ROLLOUT_BUILD"
@@ -201,9 +244,13 @@ jobs:
         # screenshot, so the font packages `--with-deps` brought are not needed either. The
         # dispatch-browser-multiprocess job's step of the same name measured both and says so, and
         # with the apt work gone this step's removal of the runner image's chrome-stable apt
-        # source goes with it. The 4-minute budget is that step's, for the same download.
-        timeout-minutes: 4
-        run: bunx playwright install chromium
+        # source goes with it. The download retries as that step's does, at 300 s per attempt,
+        # for the reasons its own comment gives.
+        # Its own retry arithmetic: 5 x 300 + 150 = 1650 s -> 28 min.
+        timeout-minutes: 28
+        run: |
+          . "$GITHUB_WORKSPACE/.github/scripts/ci-retry.sh"
+          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium
         working-directory: packages/dispatch
       # The stack's connection limit, read outside the browser steps, where
       # e2e/harness-postgres.ts would otherwise compile it (DISPATCH_E2E_PG_CONNECTIONS), as
@@ -258,6 +305,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: dispatch-two-builds
@@ -290,7 +339,12 @@ jobs:
   dispatch-two-builds-same:
     if: github.event_name == 'merge_group' && inputs.dispatch_two_builds_go == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Budget (ci-budgets.md's Budgets note): 2700 s, the 45 minutes main's #4329 gave this job, as
+    # the job above carried when it was added, holding the two-build step's own `-timeout 30m`,
+    # plus its slowest retried step alone — the setup-bun step's two `ci_tools_fetch` calls,
+    # 3416 s, above this tree's build's 2216 s, the ci-ok report's 2160 s and the workspace
+    # install's and the module download's 1050 s each. 2700 + 3416 = 6116 s -> 102 min.
+    timeout-minutes: 102
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -337,11 +391,30 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
+      # As the job above's download step: 180 s per attempt, and this job restores no module cache.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
+        timeout-minutes: 57
       # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).
-      - run: bun install --frozen-lockfile
-      # No cache: the head is a new commit in every run.
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+      # No cache: the head is a new commit in every run. The script's two downloads retry at 180 s
+      # each, so the budget is the job above's previous-build step's, derived the same way by hand:
+      # 1050 + 1050 + 116 = 2216 s, the whole minute above which is 37.
       - name: Build this tree as the previous build
+        timeout-minutes: 37
         env:
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-same
         run: packages/envoy/scripts/build-dispatch-build.sh --commit HEAD --out "$DISPATCH_PREVIOUS_BUILD"
@@ -358,6 +431,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: dispatch-two-builds

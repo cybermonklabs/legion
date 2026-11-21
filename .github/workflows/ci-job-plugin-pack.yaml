@@ -67,7 +67,13 @@ jobs:
     # the Bun install, the two tool installs and the Go build of internal/daemon's test binary,
     # which the cache restore above makes incremental; 30 minutes leaves that setup room on a
     # slow runner and still fails inside the hour.
-    timeout-minutes: 30
+    #
+    # Budget (ci-budgets.md's Budgets note): those 30 minutes, 1800 s, plus its slowest retried
+    # step alone — install-jj, whose two `ci_tools_fetch` calls and whose `mise install` of the
+    # jj release are 3416 + 450 = 3866 s, above setup-bun's two calls at 3416 s, the workspace
+    # install's and the Go module download's 1050 s each, the ci-ok report's 2160 s and
+    # install-omp's `mise install` of 450 s. 1800 + 3866 = 5666 s -> 95 min.
+    timeout-minutes: 95
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -76,11 +82,19 @@ jobs:
 
       # The pack: `bun pm pack` runs each plugin's prepack, which builds its bundle from the
       # installed workspace and t.Fatal rather than skips when the pack fails.
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - name: Setup Bun
+        timeout-minutes: 57
         uses: ./.github/actions/setup-bun
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
 
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -98,14 +112,32 @@ jobs:
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
 
+      # The modules the test binary compiles, downloaded once and retried before it
+      # (ci-budgets.md's Retries note; the retried unit is the download, never the build and
+      # never the test). One call: the root go.work binds packages/daemon and packages/envoy,
+      # and a download in either reads both modules' requirements. 180 s per attempt, as that
+      # note derives; the restore above makes the common run cost nothing.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the Go workspace's modules" 180 -- go -C packages/daemon mod download
+
       # Only for the mise it leaves at ~/.local/bin/mise, which install-omp installs the pin
       # through: no test of this job runs jj.
+      # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
+      # of the jj release, 3416 + 450 = 3866 s (ci-budgets.md's Budgets note) -> 65 min.
       - uses: ./.github/actions/install-jj
+        timeout-minutes: 65
 
       # The tests run the Oh My Pi the worker image ships and refuse on GitHub Actions without
       # one (internal/testbin's OMP). The pin is read from .omp-pin, the repository's one copy of
       # it, installed through the mise above (.github/actions/install-omp).
+      # install-omp's own retry arithmetic: its `mise install`, 5 x 60 + 150 = 450 s -> 8 min.
       - uses: ./.github/actions/install-omp
+        timeout-minutes: 8
 
       # The three tests, by name. .github/scripts/ci_job_reads.py builds this text and the
       # daemon-go race step's `-skip` from PLUGIN_PACK_TESTS and holds both steps to what it
@@ -116,6 +148,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: plugin-pack

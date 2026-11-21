@@ -135,10 +135,20 @@ mkdir -- "$out/src"
 git -C "$root" archive "$sha" | tar -x -C "$out/src" || fail "the archive of $sha did not extract into $out/src."
 readonly src=$out/src
 
+# The two downloads the build makes retry through this tree's one helper (.github/scripts/ci-retry.sh,
+# the Retries note of .github/ci-budgets.md): the install, and the Go modules and toolchain the
+# server's build loads, each at its kind's bound. The commit's own tree may predate the helper, so
+# it is sourced from this tree, which runs the script. The build after them fetches nothing.
+# check-download-retry.sh reads no script outside .github/scripts, so these two are priced by
+# hand on the step that runs this script (ci.yaml's dispatch-two-builds, dispatch://INFRA-1545).
+# shellcheck source=../../../.github/scripts/ci-retry.sh
+. "$root/.github/scripts/ci-retry.sh"
+
 # The JavaScript parts: the install, the Go contracts the server compiles (regenerated, never the
 # copy in the tree) and the contracts bundle, then the web app and the command. The install, the
 # codegen and the web app are in the order the commit's image build makes them.
-(cd -- "$src" && bun install --frozen-lockfile) || fail "bun install --frozen-lockfile failed in the archive of $sha."
+(cd -- "$src" && retry_fetch "the workspace's dependencies of $sha" 180 -- bun install --frozen-lockfile) ||
+  fail "bun install --frozen-lockfile failed in the archive of $sha."
 (cd -- "$src/packages/contracts" && bun run gen:go && bun run build) ||
   fail "the contracts build (gen:go, build) of $sha failed."
 (cd -- "$src/packages/dispatch" && bun run build:web) || fail "the web build (bun run build:web) of $sha failed."
@@ -149,6 +159,10 @@ cli_script=$src/packages/envoy-client/scripts/build-dispatch-cli.sh
   fail "$sha has no packages/envoy-client/scripts/build-dispatch-cli.sh. This script builds the dispatch command only with that script."
 bash "$cli_script" "$out" || fail "the dispatch command bundle of $sha failed to build."
 
+(cd -- "$src/packages/envoy" &&
+  GOTOOLCHAIN=auto retry_fetch "the Go modules and toolchain of $sha's server" 180 -- \
+    go list -deps ./cmd/dispatch >/dev/null) ||
+  fail "the Go modules of $sha's server failed to download."
 (cd -- "$src/packages/envoy" &&
   GOTOOLCHAIN=auto go build -ldflags "-X main.buildCommit=$sha" -o "$out/envoy-dispatch" ./cmd/dispatch) ||
   fail "go build ./cmd/dispatch of $sha failed."

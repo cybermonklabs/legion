@@ -32,7 +32,9 @@ env:
 jobs:
   airlock-lean:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
+    # why: .github/ci-notes/ci-job-airlock-lean.md#the-jobs-budget
+    # 1200 + 2160 = 3360 s -> 57 min.
+    timeout-minutes: 57
     env:
       # The built model the two runs below compare the Go code against. Naming no file makes
       # FuzzAirlock, TestModelAgreesOnHostShapes and TestTheModelReadsAHostlessEntryWithGuidance skip
@@ -55,15 +57,29 @@ jobs:
       # .github/actions/install-elan sets ($RUNNER_TEMP/elan, under the runner's work directory),
       # keyed on the runner's architecture, since elan and the toolchain are binaries of it, and on
       # the content of the lean-toolchain the model is built with. No restore-keys: an
-      # entry of another toolchain is exactly what this key keeps out, and `lake` would download
-      # the named one anyway. .github/workflows/ci-caches.yaml fills it on a push to main, as it
-      # fills every family this file restores.
+      # entry of another toolchain is exactly what this key keeps out, and the toolchain step
+      # below would download the named one anyway. .github/workflows/ci-caches.yaml fills it on a
+      # push to main, as it fills every family this file restores.
       - id: elan-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/elan
           key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/internal/cipher/proxyrules/lean/lean-toolchain') }}
+      # install-elan's own retry arithmetic: one `ci_tools_fetch` of the release tarball, 1708 s
+      # (ci-budgets.md's Budgets note) -> 29 min.
       - uses: ./.github/actions/install-elan
+        timeout-minutes: 29
+      # The toolchain lean-toolchain names, in a retried step of its own before `lake build`, so
+      # the build downloads nothing: on a hit of the restore above it is already installed and
+      # elan says so and fetches nothing, and on a miss this step downloads it.
+      - name: Install the Lean toolchain lean-toolchain names
+        # why: .github/ci-notes/ci-job-airlock-lean.md#the-lean-toolchain-step-and-its-bound
+        # 5 x 120 + 150 = 750 s -> 13 min.
+        timeout-minutes: 13
+        run: |
+          . .github/scripts/ci-retry.sh
+          toolchain=$(cat packages/envoy/internal/cipher/proxyrules/lean/lean-toolchain)
+          retry_fetch "the Lean toolchain $toolchain" 120 -- elan toolchain install "$toolchain"
       - name: Build the Lean model
         run: |
           lake build
@@ -86,6 +102,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: airlock-lean

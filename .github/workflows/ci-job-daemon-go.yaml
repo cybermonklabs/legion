@@ -76,7 +76,13 @@ jobs:
     # 4,000 s; 70 minutes leaves the same headroom the `test` job's 80 left when it carried these
     # steps (dispatch://INFRA-1052 measured them over the 30 newest counted test jobs of main
     # push runs).
-    timeout-minutes: 70
+    #
+    # Budget (ci-budgets.md's Budgets note): those 70 minutes, 4200 s, plus its slowest retried
+    # step alone — install-jj, whose two `ci_tools_fetch` calls and whose `mise install` of the
+    # jj release are 3416 + 450 = 3866 s, above the tmux step's 625 + 775 = 1400 s, install-uv's
+    # one call of 1708 s, the Go module download's 1050 s, the ci-ok report's 2160 s and
+    # install-omp's `mise install` of 450 s. 4200 + 3866 = 8066 s -> 135 min.
+    timeout-minutes: 135
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -131,28 +137,64 @@ jobs:
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
 
+      # The modules this job's Go steps build, downloaded once and retried before the first of
+      # them (ci-budgets.md's Retries note; the retried unit is the download, never the build and
+      # never the test). One call: the root go.work binds packages/daemon and packages/envoy,
+      # and a download in either reads both modules' requirements.
+      #
+      # 180 s per attempt, as ci-budgets.md's Retries note derives. The restore above makes the
+      # common run cost nothing.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the Go workspace's modules" 180 -- go -C packages/daemon mod download
+
       # The tmux runtime's tests drive a real tmux server and skip without one, and the daemon
       # supervises under tmux and refuses to start without it, which is also what the Stage 1
       # proof's boot needs (scripts/e2e/stage1-skeleton.sh:173-176).
+      # Both apt phases retry through .github/scripts/ci-retry.sh, in e2e.yaml's spelling; their
+      # bounds, and why the index read carries `-o APT::Update::Error-Mode=any`: ci-budgets.md's
+      # Retries note.
       - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
+        # Its own retry arithmetic, so an exhausted phase fails this step by name rather than
+        # being cut part way by the job: the index read's 5 x 95 + 150 = 625 s and the package
+        # download's 5 x 125 + 150 = 775 s, 1400 s -> 24 min.
+        timeout-minutes: 24
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "apt's package lists" 95 -- \
+            sudo timeout 90 apt-get update -o APT::Update::Error-Mode=any
+          retry_fetch "tmux" 125 -- \
+            sudo timeout 120 apt-get install -y --no-install-recommends -d tmux
+          sudo apt-get install -y --no-install-recommends tmux
 
       # The workspace and boundary tests drive a real jj, the one the worker image ships (its
       # working-copy filters are among what they plant), and the daemon resolves jj at boot and
       # refuses to start without it.
+      # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
+      # of the jj release, 3416 + 450 = 3866 s (ci-budgets.md's Budgets note) -> 65 min.
       - uses: ./.github/actions/install-jj
+        timeout-minutes: 65
 
       # internal/podsafety's baseline test and the pod agent's argv test run the Oh My Pi the worker
       # image ships, and refuse on GitHub Actions without one. The pin is read from
       # .omp-pin, the repository's one copy of it, installed through the mise above
       # (.github/actions/install-omp).
+      # install-omp's own retry arithmetic: its `mise install`, 5 x 60 + 150 = 450 s -> 8 min.
       - uses: ./.github/actions/install-omp
+        timeout-minutes: 8
 
       # internal/runtime/sandbox's uv link-mode test installs a wheel with the uv the worker image
       # ships, and refuses on GitHub Actions without one (.github/actions/install-uv). The action
       # takes that uv from the `uv` row of .github/ci-tools.yaml, which check-ci-tools.sh holds to
       # the image's own ARG UV_VERSION; main's #3280 moved the address and the checksum there.
+      # install-uv's own retry arithmetic: one `ci_tools_fetch` of the release tarball, 1708 s
+      # (ci-budgets.md's Budgets note) -> 29 min.
       - uses: ./.github/actions/install-uv
+        timeout-minutes: 29
 
       # The daemon's NATS tests start testnats.Image (the hub's 2.15.1) and SkippingImage (nats:2.10,
       # for the one test of its refusal), and, for its grant test, Envoy's HubImage
@@ -262,6 +304,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: daemon-go

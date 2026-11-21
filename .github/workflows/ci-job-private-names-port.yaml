@@ -64,7 +64,12 @@ jobs:
     # included (measured here, dispatch://INFRA-1413). This job restores no cache, so every run
     # compiles that command's 1,217 packages from nothing; 20 minutes is many times the cold
     # build and the 148 cases after it, and still fails a hung case well inside the hour.
-    timeout-minutes: 20
+    #
+    # Budget (ci-budgets.md's Budgets note): those 20 minutes, 1200 s, plus its slowest retried
+    # step alone — the ci-ok report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"), above the Go
+    # module download's 5 x 180 + 150 = 1050 s. 1200 + 2160 = 3360 s, a whole number of
+    # minutes, so the budget is the next one strictly above it -> 57 min.
+    timeout-minutes: 57
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -78,11 +83,26 @@ jobs:
           go-version-file: packages/daemon/go.mod
           cache: false
 
+      # The modules the harness's build of ./cmd/legion compiles, downloaded once and retried
+      # before it (ci-budgets.md's Retries note; the retried unit is the download, never the
+      # build). One call: the root go.work binds packages/daemon and packages/envoy, and a
+      # download in either reads both modules' requirements. 180 s per attempt, as that note
+      # derives; this job restores no cache, so every run makes this download.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the Go workspace's modules" 180 -- go -C packages/daemon mod download
+
       - name: Test the private-name rules' port against the frozen script
         run: .github/scripts/check-private-names-port.test.sh
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: private-names-port

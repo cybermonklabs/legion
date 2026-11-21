@@ -23,19 +23,37 @@ on:
 jobs:
   pi-shared:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, above its 36 s
+    # measured maximum, plus its slowest retried step alone — install-jj, whose two
+    # `ci_tools_fetch` calls and `mise install` of the jj release are 3416 + 450 = 3866 s, above
+    # the setup-bun step's 3416 s, the workspace install's 5 x 180 + 150 = 1050 s and the ci-ok
+    # report's 2160 s. 600 + 3866 = 4466 s -> 75 min. Main's #4012 added that install-jj step,
+    # and this job carried 53 until the forward merge of round 35 priced it.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+        timeout-minutes: 57
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       - name: Typecheck pi-shared
         run: bun run typecheck
         working-directory: packages/pi-shared
       # src/jj-attribution.test.ts runs the real jj in a scratch repository for one case, and
       # refuses on GitHub Actions without one.
+      # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
+      # of the jj release, 3416 + 450 = 3866 s (ci-budgets.md's Budgets note) -> 65 min.
       - uses: ./.github/actions/install-jj
+        timeout-minutes: 65
       # test/skills-partition.test.ts stages each plugin's skills with scripts/pi-plugin-prepack.sh
       # --stage-skills and holds the two lists to a partition of skills/.
       - name: Test pi-shared
@@ -44,6 +62,8 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: pi-shared

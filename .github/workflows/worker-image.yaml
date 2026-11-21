@@ -103,7 +103,18 @@ jobs:
     # .github/scripts/check-image-trigger-paths.sh admits this call-mode term.
     if: ${{ inputs.attest_digest == '' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # Budget (the Budgets note of .github/ci-budgets.md): 1800 s, the 30 minutes
+    # this job carried, which holds its build, plus its slowest retried step alone — the build
+    # step, priced at the longest single ladder of the Dockerfile it builds, since a build runs
+    # its fetches one after another and pays a fault window once, through the first fetch that
+    # meets it (.github/scripts/check-download-retry.sh, rule 10): the `go` stage's
+    # `go mod download` of packages/daemon/docker/worker.Dockerfile, 5 x 900 + 150 = 4650 s,
+    # above its 600 s ladders, 5 x 600 + 150 = 3150 s each, and above the ci-ok report's
+    # `gh api` read and the POST of the check run, 2 x (5 x 30 + 150) = 600 s, with two calls
+    # of runner-shutdown.sh's check-run read and annotations loop, 2 x (300 + 480) = 1560 s,
+    # 2160 s together (ci-budgets.md's Budgets note, "The ci-ok report"). 1800 + 4650 = 6450 s
+    # -> 108 min.
+    timeout-minutes: 108
     # Job-level (not workflow-level): this file is a called workflow, and job-level concurrency
     # behaves identically for its two triggers, `workflow_call` and `workflow_dispatch`.
     # A pull request's runs share one group per PR number. A new head's run cancels the build of the
@@ -310,6 +321,9 @@ jobs:
           persist-credentials: false
       - name: Report ci-ok when this job decides a merge-group run
         if: always() && github.event_name == 'pull_request'
+        # Its 2280 s: ci-budgets.md's Budgets note, "The ci-ok report", which derives the
+        # report's 2160 s once for every step that runs it.
+        timeout-minutes: 38
         uses: ./.github/actions/ci-ok-report
         with:
           job: worker-image
