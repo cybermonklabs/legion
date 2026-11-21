@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -516,8 +517,8 @@ func TestGatePublicationExecutorSendsTheSetAndRetriesARefusal(t *testing.T) {
 		fmt.Errorf("publish the design gates of %s: %w", issue, errors.New("Dispatch is down")),
 		noRouteError("no route for PUT /api/v1/issues/" + issue + "/design-gates"),
 		&dispatch.Error{Status: http.StatusNotFound, Message: "<html>404 Not Found</html>"},
-		&dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_ISSUE", Message: `"spec" names no document: artifact_id is the document that step's gate recorded`},
-		&dispatch.Error{Status: http.StatusNotFound, Code: dispatch.IssueNotFound, Message: "issue not found"},
+		&dispatch.Error{Status: http.StatusBadRequest, Code: oauth2calltest.Said("INVALID_ISSUE"), Message: `"spec" names no document: artifact_id is the document that step's gate recorded`},
+		&dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said(dispatch.IssueNotFound), Message: "issue not found"},
 	}
 	r.inTx(func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.EnqueueDesignGates(ctx, tx, record.DesignGatesPublish{Issue: issue, Gates: set}, r.clock())

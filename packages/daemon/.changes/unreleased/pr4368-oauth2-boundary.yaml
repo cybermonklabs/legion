@@ -21,7 +21,10 @@ body: |-
   prints a whole body whose one URL sits beside a JSON quote, as GitHub's documentation URL does,
   as not readable: the rate-limit classifier, `ghbranch`, the cipher and Dispatch clients, the
   listener calls and `legion controller start` each read the answer through `Answer.Decode` or
-  `oauth2call.Holds`, and Dispatch's `Error` holds its sentence as it came (`Said`).
+  `oauth2call.Holds`, Dispatch's `Error` holds its code and its sentence as they came (`Code`,
+  `Said`) and the broker's refusal its code, so a write that quotes a code - a message naming
+  `ISSUE_NOT_FOUND`, a pod token holding a run of `POD_TOKEN_EXPIRED` - leaves the refusal the one
+  its sender made.
 time: 2026-11-18T10:48:14Z
 custom:
     Issue: pr4368

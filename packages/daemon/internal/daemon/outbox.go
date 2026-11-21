@@ -807,17 +807,17 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 		// NOT_FOUND, a coded refusal that is not this one. It, a 5xx and a transport failure all
 		// end on their own, and the set is sent again when they do.
 		var refusal *dispatch.Error
-		return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == dispatch.IssueNotFound
+		return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code.Equal(dispatch.IssueNotFound)
 	case record.OutboxKindRoleHoldersPublish:
 		// The design-gates rule, and a 400 that carries Dispatch's code besides: the route refuses
 		// a set it will never store (INVALID_ROLE_HOLDER), and the set is read from the same claims
 		// on the retry, so a retry would send it for as long as the issue lives. A 400 with no code
 		// is from whatever stands in front of Dispatch, and it is retried as an outage.
 		var refusal *dispatch.Error
-		if !errors.As(err, &refusal) || refusal.Code == "" {
+		if !errors.As(err, &refusal) || refusal.Code.IsEmpty() {
 			return false
 		}
-		return refusal.Status == http.StatusBadRequest || (refusal.Status == http.StatusNotFound && refusal.Code == dispatch.IssueNotFound)
+		return refusal.Status == http.StatusBadRequest || (refusal.Status == http.StatusNotFound && refusal.Code.Equal(dispatch.IssueNotFound))
 	case record.OutboxKindStepRecord, record.OutboxKindPlanRecord:
 		return recordRefused(err)
 	default:
@@ -1070,7 +1070,7 @@ func (r *outbox) writeStatus(ctx context.Context, row record.OutboxRow, payload 
 			return nil
 		}
 		var refusal *dispatch.Error
-		if !errors.As(err, &refusal) || refusal.Code != "ISSUE_CHANGED" {
+		if !errors.As(err, &refusal) || !refusal.Code.Equal("ISSUE_CHANGED") {
 			return fmt.Errorf("set Dispatch issue %s to %s: %w", row.Issue, payload.Status, err)
 		}
 		if read, err = r.dispatch.GetIssue(ctx, row.Issue); err != nil {
@@ -1528,14 +1528,14 @@ func recordRefused(err error) bool {
 	}
 	switch refusal.Status {
 	case http.StatusNotFound:
-		return refusal.Code == dispatch.IssueNotFound
+		return refusal.Code.Equal(dispatch.IssueNotFound)
 	case http.StatusBadRequest:
 		_, permanent := dispatch.PermanentRefusal(err)
 		return permanent
 	case http.StatusForbidden:
-		return refusal.Code == steprecord.CodeWriter
+		return refusal.Code.Equal(steprecord.CodeWriter)
 	case http.StatusConflict:
-		return refusal.Code == steprecord.CodeOtherIssue || refusal.Code == steprecord.CodePlanOtherIssue
+		return refusal.Code.Equal(steprecord.CodeOtherIssue) || refusal.Code.Equal(steprecord.CodePlanOtherIssue)
 	}
 	return false
 }

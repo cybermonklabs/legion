@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -139,7 +140,7 @@ func TestTheRoutersNotFoundIsAWaitOnlyForAKindThatWaitsForItsRoute(t *testing.T)
 			case !tc.waits && (errors.Is(err, wait.ErrWaiting) || !errors.As(err, &refusal) || permanentRefusal(tc.row, err)):
 				t.Fatalf("execute against a Dispatch with no route = %v, want the failure Dispatch answered, which the row retries", err)
 			}
-			notFound := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "not found"}
+			notFound := &dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said("NOT_FOUND"), Message: "not found"}
 			err = (&outbox{dispatch: &outboxDispatch{gatedStepsErr: notFound, recordErr: notFound}}).execute(context.Background(), tc.row)
 			if errors.Is(err, wait.ErrWaiting) || !errors.As(err, &refusal) {
 				t.Fatalf("execute against a handler's 404 = %v, want the failure Dispatch answered", err)

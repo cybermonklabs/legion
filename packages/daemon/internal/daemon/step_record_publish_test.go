@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/steprecord"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -185,7 +186,8 @@ func (r *stepRecordRig) left() int { return outboxRowsOf(r.t, r.pool, stepIssue)
 
 // endedWithOneWarning holds that the rig's row ended with one Warn line, line, naming its issue,
 // its record under idKey (step for a step record, plan for a plan) and the status and code
-// Dispatch refused it with, and that its failure is not logged as a failed attempt besides.
+// Dispatch refused it with, the code as the rule reads it, and that its failure is not logged as a
+// failed attempt besides.
 func (r *stepRecordRig) endedWithOneWarning(line, idKey, id string, refusal *dispatch.Error) {
 	t := r.t
 	t.Helper()
@@ -194,7 +196,7 @@ func (r *stepRecordRig) endedWithOneWarning(line, idKey, id string, refusal *dis
 	if len(warned) != 1 || warned[0]["msg"] != line {
 		t.Fatalf("warnings = %v, want the one %q: %s", warned, line, logs)
 	}
-	for key, want := range map[string]any{"issue": stepIssue, idKey: id, "code": refusal.Code, "status": float64(refusal.Status)} {
+	for key, want := range map[string]any{"issue": stepIssue, idKey: id, "code": refusal.Code.String(), "status": float64(refusal.Status)} {
 		if warned[0][key] != want {
 			t.Errorf("%q names %s %v, want %v", line, key, warned[0][key], want)
 		}
@@ -484,11 +486,11 @@ func TestAStepRecordRetriesAnOutageAndACredential(t *testing.T) {
 	}{
 		{name: "503", err: &dispatch.Error{Status: http.StatusServiceUnavailable, Message: "maintenance"}},
 		{name: "a transport failure", err: &dispatch.TransientError{Err: errors.New("dial tcp: connection refused")}},
-		{name: "401", err: &dispatch.Error{Status: http.StatusUnauthorized, Code: "UNAUTHORIZED", Message: "token expired"}},
-		{name: "403 ACTOR_SESSION_MISMATCH", err: &dispatch.Error{Status: http.StatusForbidden, Code: "ACTOR_SESSION_MISMATCH", Message: "the bearer names another session"}},
-		{name: "a handler's 404 NOT_FOUND", err: &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "not found"}},
-		{name: "408", err: &dispatch.Error{Status: http.StatusRequestTimeout, Code: "TIMEOUT", Message: "slow"}},
-		{name: "429", err: &dispatch.Error{Status: http.StatusTooManyRequests, Code: "RATE_LIMITED", Message: "later"}},
+		{name: "401", err: &dispatch.Error{Status: http.StatusUnauthorized, Code: oauth2calltest.Said("UNAUTHORIZED"), Message: "token expired"}},
+		{name: "403 ACTOR_SESSION_MISMATCH", err: &dispatch.Error{Status: http.StatusForbidden, Code: oauth2calltest.Said("ACTOR_SESSION_MISMATCH"), Message: "the bearer names another session"}},
+		{name: "a handler's 404 NOT_FOUND", err: &dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said("NOT_FOUND"), Message: "not found"}},
+		{name: "408", err: &dispatch.Error{Status: http.StatusRequestTimeout, Code: oauth2calltest.Said("TIMEOUT"), Message: "slow"}},
+		{name: "429", err: &dispatch.Error{Status: http.StatusTooManyRequests, Code: oauth2calltest.Said("RATE_LIMITED"), Message: "later"}},
 		{name: "a codeless 400", err: &dispatch.Error{Status: http.StatusBadRequest, Message: "Bad Request"}},
 		{name: "an older Dispatch's refusal of a newer field", err: dispatchRefusal(http.StatusBadRequest, "INVALID_JSON",
 			`invalid JSON body: json: unknown field "labels_add"`)},
@@ -508,11 +510,11 @@ func TestAStepRecordThatDispatchRefusesEndsWithAWarning(t *testing.T) {
 		name string
 		err  *dispatch.Error
 	}{
-		{name: "404 ISSUE_NOT_FOUND", err: &dispatch.Error{Status: http.StatusNotFound, Code: dispatch.IssueNotFound, Message: "no issue LEGION-1"}},
-		{name: "400 " + steprecord.CodeInput, err: &dispatch.Error{Status: http.StatusBadRequest, Code: steprecord.CodeInput, Message: "result must be one of passed failed stopped"}},
-		{name: "400 INVALID_JSON", err: &dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_JSON", Message: "invalid JSON body: unexpected EOF"}},
-		{name: "403 " + steprecord.CodeWriter, err: &dispatch.Error{Status: http.StatusForbidden, Code: steprecord.CodeWriter, Message: "only the session legion-daemon:LEGION writes a step record of LEGION-1"}},
-		{name: "409 " + steprecord.CodeOtherIssue, err: &dispatch.Error{Status: http.StatusConflict, Code: steprecord.CodeOtherIssue, Message: "the step belongs to LEGION-9"}},
+		{name: "404 ISSUE_NOT_FOUND", err: &dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said(dispatch.IssueNotFound), Message: "no issue LEGION-1"}},
+		{name: "400 " + steprecord.CodeInput, err: &dispatch.Error{Status: http.StatusBadRequest, Code: oauth2calltest.Said(steprecord.CodeInput), Message: "result must be one of passed failed stopped"}},
+		{name: "400 INVALID_JSON", err: &dispatch.Error{Status: http.StatusBadRequest, Code: oauth2calltest.Said("INVALID_JSON"), Message: "invalid JSON body: unexpected EOF"}},
+		{name: "403 " + steprecord.CodeWriter, err: &dispatch.Error{Status: http.StatusForbidden, Code: oauth2calltest.Said(steprecord.CodeWriter), Message: "only the session legion-daemon:LEGION writes a step record of LEGION-1"}},
+		{name: "409 " + steprecord.CodeOtherIssue, err: &dispatch.Error{Status: http.StatusConflict, Code: oauth2calltest.Said(steprecord.CodeOtherIssue), Message: "the step belongs to LEGION-9"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newStepRecordRig(t, answersInTurn(tc.err))

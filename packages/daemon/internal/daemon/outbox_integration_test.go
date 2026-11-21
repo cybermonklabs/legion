@@ -18,6 +18,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -347,7 +348,7 @@ func TestAPermanentlyRefusedStatusWriteDoesNotHoldBackTheIssuesLaterWrites(t *te
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("testing", "in_progress", ""), now))
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("needs_review", "testing", ""), now))
 	board := &refusingDispatch{status: "in_progress", refuse: map[string]*dispatch.Error{
-		"testing": {Status: 422, Code: "INVALID_STATUS", Message: "testing is not a status of this issue"},
+		"testing": {Status: 422, Code: oauth2calltest.Said("INVALID_STATUS"), Message: "testing is not a status of this issue"},
 	}}
 	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: board, now: func() time.Time { return now }, log: quietLogger()}
 
@@ -395,10 +396,10 @@ func TestACredentialOrUncodedRefusalIsRiddenOutRatherThanDroppingTheWrite(t *tes
 		name    string
 		refusal *dispatch.Error
 	}{
-		{"a revoked token", &dispatch.Error{Status: 401, Code: "UNAUTHORIZED", Message: "token revoked"}},
-		{"a token without the scope", &dispatch.Error{Status: 403, Code: "FORBIDDEN", Message: "forbidden"}},
+		{"a revoked token", &dispatch.Error{Status: 401, Code: oauth2calltest.Said("UNAUTHORIZED"), Message: "token revoked"}},
+		{"a token without the scope", &dispatch.Error{Status: 403, Code: oauth2calltest.Said("FORBIDDEN"), Message: "forbidden"}},
 		{"a refusal Dispatch did not make", &dispatch.Error{Status: 422, Message: "<html>gateway</html>"}},
-		{"a parent a concurrent reparent moved at every attempt", &dispatch.Error{Status: 409, Code: dispatch.ParentContended, Message: "LEGION-208's parent changed at each of 2 attempts while this request waited to lock it, so nothing was applied: read the issue and retry"}},
+		{"a parent a concurrent reparent moved at every attempt", &dispatch.Error{Status: 409, Code: oauth2calltest.Said(dispatch.ParentContended), Message: "LEGION-208's parent changed at each of 2 attempts while this request waited to lock it, so nothing was applied: read the issue and retry"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
@@ -819,7 +820,7 @@ func TestAStatusRowKindWithNoRuleFailsBothPathsWithoutWriting(t *testing.T) {
 			// finishRefused asks the kind what it leaves behind, so a kind with no rule fails
 			// there before the finishing transaction opens: the runner holds no pool, and the
 			// failure arriving all the same is what says the question is asked first.
-			return runner.finishRefused(ctx, row, &dispatch.Error{Status: http.StatusConflict, Code: "ISSUE_CLOSED"})
+			return runner.finishRefused(ctx, row, &dispatch.Error{Status: http.StatusConflict, Code: oauth2calltest.Said("ISSUE_CLOSED")})
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1013,7 +1014,7 @@ type refusedOnceDispatch struct {
 func (d *refusedOnceDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	if d.refusals == 0 {
 		d.refusals, d.issue = 1, d.reread
-		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusConflict, Code: "ISSUE_CHANGED", Message: "issue changed"}
+		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusConflict, Code: oauth2calltest.Said("ISSUE_CHANGED"), Message: "issue changed"}
 	}
 	d.at = issue.LastSeq
 	return d.outboxDispatch.SetStatusAt(ctx, issue, status)

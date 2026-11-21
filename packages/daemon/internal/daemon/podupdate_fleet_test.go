@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -434,7 +435,7 @@ func (d *fleetHandoffs) Handoff(_ context.Context, id string) (dispatch.Handoff,
 	defer d.mu.Unlock()
 	handoff, ok := d.handoffs[id]
 	if !ok {
-		return dispatch.Handoff{}, &dispatch.Error{Status: http.StatusNotFound, Code: "HANDOFF_NOT_FOUND"}
+		return dispatch.Handoff{}, &dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said("HANDOFF_NOT_FOUND")}
 	}
 	return handoff, nil
 }

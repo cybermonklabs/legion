@@ -247,6 +247,10 @@
       {
         "holder": "github.com/sjawhar/legion/daemon/internal/dispatch.Error",
         "test": "print-dispatch.Error"
+      },
+      {
+        "holder": "github.com/sjawhar/legion/daemon/internal/cipher.APIError",
+        "test": "print-cipher.APIError"
       }
     ],
     "reflection": [
@@ -5089,7 +5093,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/cipher",
       "test": "TestABrokerRefusalIsReadFromItsCodeAsItCame",
-      "production": "daemon cipher refusal: the broker's code decided as it came (oauth2call.CodedRefusal, SendBack)"
+      "production": "daemon cipher refusal: the broker's code decided as it came (oauth2call.CodedRefusal, APIError's said)"
     },
     {
       "id": "cipher-unknown-field-as-it-came",
@@ -5103,7 +5107,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
       "test": "TestADispatchRefusalIsReadFromItsCodeAsItCame",
-      "production": "daemon dispatchError: Dispatch's code decided as it came (oauth2call.CodedRefusal, SendBack)"
+      "production": "daemon dispatchError: Dispatch's code decided as it came (oauth2call.CodedRefusal, Error.Code)"
     },
     {
       "id": "dispatch-sentence-as-it-came",
@@ -5111,6 +5115,27 @@
       "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
       "test": "TestADispatchRefusalsSentenceIsReadAsItCame",
       "production": "daemon dispatch PermanentRefusal and NoRoute: Dispatch's sentence decided as it came (Error.Said), beside a URL the rule cannot read and beside a run of the request's token"
+    },
+    {
+      "id": "dispatch-code-as-it-came-beside-a-quoting-request",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestADispatchRefusalsCodeIsReadAsItCameBesideARequestThatQuotesIt",
+      "production": "daemon dispatch PermanentRefusal, Claimed, Contended and NoRoute: Dispatch's code decided as it came (Error.Code) beside a message that quotes it, and printed as the rule reads it"
+    },
+    {
+      "id": "outbox-code-as-it-came-beside-a-quoting-write",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestTheOutboxDecidesDispatchsCodeAsItCameBesideAWriteThatQuotesIt",
+      "production": "daemon outbox permanentRefusal, recordRefused and writeStatus: Dispatch's code decided as it came (Error.Code) beside a write that quotes it"
+    },
+    {
+      "id": "cipher-code-as-it-came-beside-a-quoting-pod-token",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/cipher",
+      "test": "TestABrokersCodeIsReadAsItCameBesideAPodTokenThatQuotesIt",
+      "production": "daemon cipher APIError RegistrarNotListed and TokenExpired: the broker's code decided as it came beside a pod token that holds a run of it, and printed as the rule reads it"
     },
     {
       "id": "notify-decided-as-it-came",
@@ -5153,6 +5178,13 @@
       "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/dispatch.Error",
       "production": "github.com/sjawhar/legion/daemon/internal/dispatch.Error: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-cipher.APIError",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/cipher",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/cipher.APIError",
+      "production": "github.com/sjawhar/legion/daemon/internal/cipher.APIError: every printer at every placement (oauth2calltest.PrintTest)"
     },
     {
       "id": "daemon-boot-limit-names-github",
@@ -6571,6 +6603,21 @@
       "site": "GitHub's rate-limit headers, logged raw by the daemon's limit lines",
       "source": "the class search of the retried-trade finding",
       "guard": "daemon-answer-words-rate-limit"
+    },
+    {
+      "site": "daemon dispatchError: Dispatch's code taken through SendBack, so a message that quotes ISSUE_NOT_FOUND made a permanent refusal codeless and retried for ever",
+      "source": "the review of #4368 at c82c3a0d9f, finding 2",
+      "guard": "dispatch-code-as-it-came-beside-a-quoting-request"
+    },
+    {
+      "site": "daemon outbox: permanentRefusal's, recordRefused's and writeStatus's checks of Dispatch's code, read from the rule's reading",
+      "source": "the review of #4368 at c82c3a0d9f, finding 2",
+      "guard": "outbox-code-as-it-came-beside-a-quoting-write"
+    },
+    {
+      "site": "daemon cipher refusal: the broker's code taken through SendBack, which TokenExpired and RegistrarNotListed read",
+      "source": "the review of #4368 at c82c3a0d9f, finding 2",
+      "guard": "cipher-code-as-it-came-beside-a-quoting-pod-token"
     }
   ]
 }

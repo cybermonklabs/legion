@@ -61,12 +61,13 @@ type GitHubRefusal struct {
 
 // CodedRefusal is the {"code","error"} JSON a service of this repository refuses a request with -
 // Dispatch's, the secrets broker's, the Legion daemon's - as a module outside this one decodes it
-// (Answer.Decode): a caller decides on the code as it came, where the rule prints it unchanged
-// (RemoteText.SendBack), and prints the error as the rule reads it, each word another party's, or
-// a stand-in's, with the credentials the request carried redacted. Decoded field by field, a
-// refusal whose error names a URL beside the JSON quote that ends it keeps its code, where the
-// rule's reading of the whole body is not readable. It is declared here, beside the box, so its
-// print test is this module's (holders_print_test.go).
+// (Answer.Decode): a caller decides on the code as it came (RemoteText.Equal, IsEmpty), never on
+// the rule's reading of it, which a value the request carried can cut, and prints the code and the
+// error as the rule reads them, each word another party's, or a stand-in's, with the credentials
+// the request carried redacted. Decoded field by field, a refusal whose error names a URL beside
+// the JSON quote that ends it keeps its code, where the rule's reading of the whole body is not
+// readable. It is declared here, beside the box, so its print test is this module's
+// (holders_print_test.go).
 type CodedRefusal struct {
 	Code  RemoteText `json:"code"`
 	Error RemoteText `json:"error"`

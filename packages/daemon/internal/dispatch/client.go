@@ -591,18 +591,18 @@ func daemonActor(key string) actor {
 	return actor{Kind: "session", ID: DaemonSession(key)}
 }
 
-// dispatchError is Dispatch's refusal with status, read as answer, as an *Error: Dispatch's code as
-// it came where the rule prints it unchanged (oauth2call.CodedRefusal, RemoteText.SendBack), and
-// its sentence as it came (Said), so what the refusal is (PermanentRefusal, Claimed, NoRoute) is
-// decided on Dispatch's own words, and its sentence as the rule reads it (Message), decoded field
-// by field, so a sentence naming a URL beside the JSON quote that ends it costs the refusal
-// nothing of its code. A body that is not Dispatch's refusal is codeless, its words as the rule
-// reads them its message, or statusText where it says nothing.
+// dispatchError is Dispatch's refusal with status, read as answer, as an *Error: Dispatch's code
+// and its sentence as they came (Code, Said; oauth2call.CodedRefusal), so what the refusal is
+// (PermanentRefusal, Claimed, NoRoute) is decided on Dispatch's own words, even where a value the
+// request carried - a message that quotes the code - shares a run with them; and its sentence as
+// the rule reads it (Message), decoded field by field, so a sentence naming a URL beside the JSON
+// quote that ends it costs the refusal nothing of its code. A body that is not Dispatch's refusal
+// is codeless, its words as the rule reads them its message, or statusText where it says nothing.
 func dispatchError(status int, statusText string, answer oauth2call.Answer) *Error {
 	refusal := &Error{Status: status}
 	var coded oauth2call.CodedRefusal
 	if answer.Decode(&coded) == nil {
-		refusal.Code, _ = coded.Code.SendBack()
+		refusal.Code = coded.Code
 		refusal.Said = coded.Error
 		refusal.Message = coded.Error.String()
 	} else {

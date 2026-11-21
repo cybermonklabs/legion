@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -489,11 +490,11 @@ func TestRoleHoldersExecutorRetriesARefusal(t *testing.T) {
 	r.client.answers = []error{
 		fmt.Errorf("publish the role holders of %s: %w", issue, errors.New("Dispatch is down")),
 		noRouteError("no route for PUT /api/v1/issues/" + issue + "/role-holders"),
-		&dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "not found"},
-		&dispatch.Error{Status: http.StatusInternalServerError, Code: "INTERNAL", Message: "internal server error"},
+		&dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said("NOT_FOUND"), Message: "not found"},
+		&dispatch.Error{Status: http.StatusInternalServerError, Code: oauth2calltest.Said("INTERNAL"), Message: "internal server error"},
 		&dispatch.Error{Status: http.StatusBadRequest, Message: "<html>400 Bad Request</html>"},
-		&dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_ROLE_HOLDER", Message: "the session of tester is not a session id."},
-		&dispatch.Error{Status: http.StatusNotFound, Code: dispatch.IssueNotFound, Message: "no issue " + issue},
+		&dispatch.Error{Status: http.StatusBadRequest, Code: oauth2calltest.Said("INVALID_ROLE_HOLDER"), Message: "the session of tester is not a session id."},
+		&dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said(dispatch.IssueNotFound), Message: "no issue " + issue},
 	}
 	r.enqueue(issue)
 

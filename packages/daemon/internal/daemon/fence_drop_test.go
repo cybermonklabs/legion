@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -30,7 +31,7 @@ func TestADroppedHandOverFenceEndsTheMergeItHeldOpen(t *testing.T) {
 		drop func(t *testing.T, runner *outbox, row record.OutboxRow, payload record.StatusWrite)
 	}{
 		{name: "Dispatch refuses the hand-over", drop: func(t *testing.T, runner *outbox, row record.OutboxRow, _ record.StatusWrite) {
-			refusal := &dispatch.Error{Status: http.StatusNotFound, Code: dispatch.IssueNotFound, Message: "no such issue"}
+			refusal := &dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said(dispatch.IssueNotFound), Message: "no such issue"}
 			if err := runner.finishRefused(context.Background(), row, refusal); err != nil {
 				t.Fatalf("finish the refused hand-over: %v", err)
 			}

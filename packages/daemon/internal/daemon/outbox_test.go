@@ -22,6 +22,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -528,7 +529,7 @@ func TestAPersonMoveBetweenTheHandOverReadAndPatchStands(t *testing.T) {
 			client := &outboxDispatch{issue: dispatch.Issue{Key: child, Status: "testing", Labels: tc.labels, HandedOver: tc.labels != nil, LastSeq: 7}}
 			client.handOverHook = func() error {
 				client.issue.Status, client.issue.LastSeq = "backlog", 8
-				return &dispatch.Error{Status: http.StatusConflict, Code: "ISSUE_CHANGED", Message: "issue changed"}
+				return &dispatch.Error{Status: http.StatusConflict, Code: oauth2calltest.Said("ISSUE_CHANGED"), Message: "issue changed"}
 			}
 			runner := &outbox{pool: pool, records: records, dispatchProject: "LEGION", dispatch: client, now: func() time.Time { return now }, log: quietLogger()}
 			if err := runner.RunOnce(context.Background()); err != nil {
@@ -656,7 +657,7 @@ func TestAPermanentlyRefusedHandOverDropsItsFence(t *testing.T) {
 	}
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, child, record.HandOverStatusWrite("todo", "in_progress", root, 3), time.Now()))
 	client := &outboxDispatch{issue: dispatch.Issue{Key: child, Status: "in_progress"}, handOverHook: func() error {
-		return &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "issue not found"}
+		return &dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said("NOT_FOUND"), Message: "issue not found"}
 	}}
 	runner := &outbox{pool: pool, records: records, dispatchProject: "LEGION", dispatch: client, now: time.Now, log: quietLogger()}
 	if err := runner.RunOnce(ctx); err != nil {
@@ -804,7 +805,7 @@ func TestAMessagePutsItsDocumentOnTheIssueOnceBeforeItPosts(t *testing.T) {
 	row, document := rescueListRow(t)
 	posted := "The full list is in this document: dispatch://LEGION-208/artifact/rescue-pod-9d3f0c7a\n\n<!-- legion-outbox:61 -->"
 
-	client := &artifactDispatch{outboxDispatch: &outboxDispatch{postErr: &dispatch.Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE", Message: "Dispatch is down"}}}
+	client := &artifactDispatch{outboxDispatch: &outboxDispatch{postErr: &dispatch.Error{Status: http.StatusServiceUnavailable, Code: oauth2calltest.Said("UNAVAILABLE"), Message: "Dispatch is down"}}}
 	runner := &outbox{dispatch: client, log: quietLogger()}
 	if err := runner.execute(context.Background(), row); err == nil || permanentRefusal(row, err) {
 		t.Fatalf("a post Dispatch failed = %v, want a failure the row runs again on", err)
@@ -845,9 +846,9 @@ func TestAMessageWhoseDocumentDispatchRefusesStillPostsAndSaysSo(t *testing.T) {
 		uploaded int
 	}{
 		{name: "the upload refused", uploaded: 1, client: &artifactDispatch{outboxDispatch: &outboxDispatch{},
-			uploadErr: &dispatch.Error{Status: http.StatusRequestEntityTooLarge, Code: "CAP_EXCEEDED", Message: "a markdown document is at most 1 MiB"}}},
+			uploadErr: &dispatch.Error{Status: http.StatusRequestEntityTooLarge, Code: oauth2calltest.Said("CAP_EXCEEDED"), Message: "a markdown document is at most 1 MiB"}}},
 		{name: "the read of the issue's documents refused", client: &artifactDispatch{outboxDispatch: &outboxDispatch{},
-			slugsErr: &dispatch.Error{Status: http.StatusRequestEntityTooLarge, Code: "CAP_EXCEEDED", Message: "a markdown document is at most 1 MiB"}}},
+			slugsErr: &dispatch.Error{Status: http.StatusRequestEntityTooLarge, Code: oauth2calltest.Said("CAP_EXCEEDED"), Message: "a markdown document is at most 1 MiB"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logs bytes.Buffer
@@ -879,11 +880,11 @@ func TestAMessageWhoseDocumentIsNotOnTheIssueIsLeftToRunAgain(t *testing.T) {
 		want   string
 	}{
 		{name: "Dispatch down", want: "Dispatch is down", client: &artifactDispatch{outboxDispatch: &outboxDispatch{},
-			uploadErr: &dispatch.Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE", Message: "Dispatch is down"}}},
+			uploadErr: &dispatch.Error{Status: http.StatusServiceUnavailable, Code: oauth2calltest.Said("UNAVAILABLE"), Message: "Dispatch is down"}}},
 		{name: "no answer", want: "connection refused", client: &artifactDispatch{outboxDispatch: &outboxDispatch{},
 			uploadErr: &dispatch.TransientError{Err: errors.New("dial tcp: connection refused")}}},
 		{name: "a credential Dispatch did not take", want: "token expired", client: &artifactDispatch{outboxDispatch: &outboxDispatch{},
-			slugsErr: &dispatch.Error{Status: http.StatusUnauthorized, Code: "UNAUTHORIZED", Message: "token expired"}}},
+			slugsErr: &dispatch.Error{Status: http.StatusUnauthorized, Code: oauth2calltest.Said("UNAUTHORIZED"), Message: "token expired"}}},
 		{name: "filed under another slug", want: "filed it under rescue-pod-9d3f0c7a-2", client: &artifactDispatch{outboxDispatch: &outboxDispatch{},
 			filedAs: "rescue-pod-9d3f0c7a-2"}},
 	} {
@@ -908,12 +909,12 @@ func TestAMessageWhoseDocumentIsNotOnTheIssueIsLeftToRunAgain(t *testing.T) {
 // refusal and still retries.
 func TestAMessagePostDispatchRefusesIsFinishedAndItsArchitectTold(t *testing.T) {
 	row := mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "READY #42 at head\n\nthe rest of the packet"}, time.Now())
-	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: "CAP_EXCEEDED",
+	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: oauth2calltest.Said("CAP_EXCEEDED"),
 		Message: "body block 2 (paragraph) is 1 characters over the 32000-character block limit (32001/32000)"}
 	if !permanentRefusal(row, fmt.Errorf("post Dispatch message for LEGION-208: %w", refusal)) {
 		t.Fatal("a CAP_EXCEEDED post is retried, want it finished refused")
 	}
-	outage := &dispatch.Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE", Message: "Dispatch is down"}
+	outage := &dispatch.Error{Status: http.StatusServiceUnavailable, Code: oauth2calltest.Said("UNAVAILABLE"), Message: "Dispatch is down"}
 	if permanentRefusal(row, fmt.Errorf("post Dispatch message for LEGION-208: %w", outage)) {
 		t.Fatal("a 503 post is finished refused, want it retried")
 	}
@@ -937,7 +938,7 @@ func TestAStatusWriteWhoseReasonDispatchRefusesStillSetsTheStatusAndTellsTheArch
 	const reason = "Closed by its architect before its first phase: the human decided no change.\nThe rest of the reason."
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208",
 		record.OrdinaryStatusWrite("done", "in_progress", reason), now))
-	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: "CAP_EXCEEDED",
+	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: oauth2calltest.Said("CAP_EXCEEDED"),
 		Message: "body block 1 (paragraph) is 1 characters over the 32000-character block limit (32001/32000)"}
 	client := &outboxDispatch{issue: dispatch.Issue{Key: "LEGION-208", Status: "in_progress"}, postErr: refusal}
 	runner := &outbox{
@@ -978,7 +979,7 @@ func TestAStatusWriteWhoseReasonDispatchRefusesStillSetsTheStatusAndTellsTheArch
 // the daemon's record reads the one the row wrote, and the architect is told that the two
 // disagree from here on.
 func TestAStatusWriteDispatchRefusesTellsTheArchitectTheStatusDidNotLand(t *testing.T) {
-	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_STATUS", Message: "no such status"}
+	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: oauth2calltest.Said("INVALID_STATUS"), Message: "no such status"}
 	notice := statusWriteRefused("LEGION-208", record.OrdinaryStatusWrite("done", "", ""),
 		fmt.Errorf("set Dispatch issue LEGION-208 to done: %w", refusal), statusWrites{})
 	if notice.Kind != "message-refused" || notice.Role != claim.RoleArchitect ||
@@ -998,7 +999,7 @@ func TestAStatusWriteDispatchRefusesTellsTheArchitectTheStatusDidNotLand(t *test
 // retry of the daemon's will settle.
 func TestAStatusRefusedAfterItsReasonPostedTellsTheArchitectTheReasonStands(t *testing.T) {
 	const reason = "Closed by its architect before its first phase: the human decided no change."
-	refusal := &dispatch.Error{Status: http.StatusNotFound, Code: "ISSUE_NOT_FOUND", Message: "no such issue"}
+	refusal := &dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said("ISSUE_NOT_FOUND"), Message: "no such issue"}
 	notice := statusWriteRefused("LEGION-208", record.OrdinaryStatusWrite("done", "", reason),
 		fmt.Errorf("set Dispatch issue LEGION-208 to done: %w", refusal), statusWrites{reason: true})
 	if notice.Kind != "message-refused" || notice.Role != claim.RoleArchitect ||
@@ -1024,9 +1025,9 @@ func TestAStatusWriteRetriesUntilTheStatusLandsAfterItsReasonIsRefused(t *testin
 	const reason = "Closed by its architect before its first phase: the human decided no change."
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208",
 		record.OrdinaryStatusWrite("done", "in_progress", reason), now))
-	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: "CAP_EXCEEDED",
+	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: oauth2calltest.Said("CAP_EXCEEDED"),
 		Message: "body block 1 (paragraph) is 1 characters over the 32000-character block limit (32001/32000)"}
-	outage := &dispatch.Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE", Message: "Dispatch is down"}
+	outage := &dispatch.Error{Status: http.StatusServiceUnavailable, Code: oauth2calltest.Said("UNAVAILABLE"), Message: "Dispatch is down"}
 	client := &outboxDispatch{issue: dispatch.Issue{Key: "LEGION-208", Status: "in_progress"}, postErr: refusal, statusErr: outage}
 	runner := &outbox{
 		dispatchProject: "LEGION", log: quietLogger(),
@@ -1089,9 +1090,9 @@ func TestAStatusWriteWhoseAnswerWasLostStillTellsTheArchitectItsRefusedReason(t 
 	const reason = "Closed by its architect before its first phase: the human decided no change."
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208",
 		record.OrdinaryStatusWrite("done", "in_progress", reason), now))
-	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: "CAP_EXCEEDED",
+	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: oauth2calltest.Said("CAP_EXCEEDED"),
 		Message: "body block 1 (paragraph) is 1 characters over the 32000-character block limit (32001/32000)"}
-	lost := &dispatch.Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE", Message: "Dispatch is down"}
+	lost := &dispatch.Error{Status: http.StatusServiceUnavailable, Code: oauth2calltest.Said("UNAVAILABLE"), Message: "Dispatch is down"}
 	// Dispatch takes the first run's status write (statusApplied) and answers the outage all the
 	// same, so the row retries against an issue that already reads done.
 	client := &outboxDispatch{issue: dispatch.Issue{Key: "LEGION-208", Status: "in_progress"},
@@ -3211,7 +3212,7 @@ func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *test
 	// is built by that kind's own constructor rather than as a bare struct.
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2",
 		record.OrdinaryStatusWrite("done", "in_progress", ""), now))
-	refusal := &dispatch.Error{Status: http.StatusConflict, Code: "ISSUE_CLOSED", Message: "issue is closed"}
+	refusal := &dispatch.Error{Status: http.StatusConflict, Code: oauth2calltest.Said("ISSUE_CLOSED"), Message: "issue is closed"}
 	client := &outboxDispatch{issue: dispatch.Issue{Key: "LEGION-2", Status: "in_progress"}, postErr: refusal, statusErr: refusal}
 	publisher := &holderPublisher{}
 	logs := &syncBuffer{}

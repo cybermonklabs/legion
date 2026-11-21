@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/envoy/steprecord"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -148,7 +149,7 @@ func TestAPlanAndARatingWaitForADispatchThatHasNoRouteForThem(t *testing.T) {
 // record lane behind it (record.LaneRecord). The one Warn line names the issue, the record's id and
 // Dispatch's code, and the row's failure is not logged as a failed attempt besides.
 func TestARatingOnARecordOfAnotherKindEndsWithAWarning(t *testing.T) {
-	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: steprecord.CodeInput,
+	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: oauth2calltest.Said(steprecord.CodeInput),
 		Message: "rating is the rating a retro gives its plan, and step " + retroRecordID + " is a run of kind step"}
 	rig := newStepRecordRigOf(t, ratingRecordOf(), answersInTurn(refusal))
 	rig.run()
@@ -170,11 +171,11 @@ func TestAPlanRecordThatDispatchRefusesEndsWithAWarning(t *testing.T) {
 		name string
 		err  *dispatch.Error
 	}{
-		{name: "404 ISSUE_NOT_FOUND", err: &dispatch.Error{Status: http.StatusNotFound, Code: dispatch.IssueNotFound, Message: "no issue LEGION-1"}},
-		{name: "400 " + steprecord.CodePlanInput, err: &dispatch.Error{Status: http.StatusBadRequest, Code: steprecord.CodePlanInput, Message: "source must be one of default owner"}},
-		{name: "400 INVALID_JSON", err: &dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_JSON", Message: "invalid JSON body: unexpected EOF"}},
-		{name: "403 " + steprecord.CodeWriter, err: &dispatch.Error{Status: http.StatusForbidden, Code: steprecord.CodeWriter, Message: "only the session legion-daemon:LEGION writes a plan of LEGION-1"}},
-		{name: "409 " + steprecord.CodePlanOtherIssue, err: &dispatch.Error{Status: http.StatusConflict, Code: steprecord.CodePlanOtherIssue, Message: "the plan belongs to LEGION-9"}},
+		{name: "404 ISSUE_NOT_FOUND", err: &dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said(dispatch.IssueNotFound), Message: "no issue LEGION-1"}},
+		{name: "400 " + steprecord.CodePlanInput, err: &dispatch.Error{Status: http.StatusBadRequest, Code: oauth2calltest.Said(steprecord.CodePlanInput), Message: "source must be one of default owner"}},
+		{name: "400 INVALID_JSON", err: &dispatch.Error{Status: http.StatusBadRequest, Code: oauth2calltest.Said("INVALID_JSON"), Message: "invalid JSON body: unexpected EOF"}},
+		{name: "403 " + steprecord.CodeWriter, err: &dispatch.Error{Status: http.StatusForbidden, Code: oauth2calltest.Said(steprecord.CodeWriter), Message: "only the session legion-daemon:LEGION writes a plan of LEGION-1"}},
+		{name: "409 " + steprecord.CodePlanOtherIssue, err: &dispatch.Error{Status: http.StatusConflict, Code: oauth2calltest.Said(steprecord.CodePlanOtherIssue), Message: "the plan belongs to LEGION-9"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newStepRecordRigOf(t, planRecordOf(), answersInTurn(tc.err))

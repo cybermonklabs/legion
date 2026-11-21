@@ -335,7 +335,7 @@ func TestReleaseClaimDeletesTheClaimUnderTheDaemonSession(t *testing.T) {
 	if !errors.As(err, &dispatchErr) {
 		t.Fatalf("release claim error = %T %v, want *dispatch.Error", err, err)
 	}
-	if dispatchErr.Status != http.StatusConflict || dispatchErr.Code != "ISSUE_CLAIMED" {
+	if dispatchErr.Status != http.StatusConflict || !dispatchErr.Code.Equal("ISSUE_CLAIMED") {
 		t.Fatalf("Dispatch error = %#v, want 409 ISSUE_CLAIMED", dispatchErr)
 	}
 }
@@ -521,7 +521,7 @@ func TestUploadArtifactSendsTheDocumentUnderTheDaemonSessionAndReadsItsSlug(t *t
 		t.Fatalf("an answer with no artifact gave slug %q, want an error", slug)
 	}
 	_, err = client.UploadArtifact(context.Background(), "LEGION-5", "rescue-pod-9d3f0c7a", content)
-	if refusal, permanent := PermanentRefusal(err); !permanent || refusal.Code != "CAP_EXCEEDED" {
+	if refusal, permanent := PermanentRefusal(err); !permanent || !refusal.Code.Equal("CAP_EXCEEDED") {
 		t.Fatalf("a refused upload = %v, want Dispatch's permanent CAP_EXCEEDED refusal", err)
 	}
 }
@@ -728,7 +728,7 @@ func TestClientReturnsDispatchErrorForCoded4xx(t *testing.T) {
 	if !errors.As(err, &dispatchErr) {
 		t.Fatalf("get issue error = %T %v, want *dispatch.Error", err, err)
 	}
-	if dispatchErr.Status != http.StatusConflict || dispatchErr.Code != "ISSUE_CLOSED" || dispatchErr.Message != "issue is closed" {
+	if dispatchErr.Status != http.StatusConflict || !dispatchErr.Code.Equal("ISSUE_CLOSED") || dispatchErr.Message != "issue is closed" {
 		t.Fatalf("Dispatch error = %#v, want 409 ISSUE_CLOSED", dispatchErr)
 	}
 }
@@ -744,7 +744,7 @@ func TestClientReturnsDispatchErrorFor5xx(t *testing.T) {
 	if !errors.As(err, &dispatchErr) {
 		t.Fatalf("set status error = %T %v, want *dispatch.Error", err, err)
 	}
-	if dispatchErr.Status != http.StatusServiceUnavailable || dispatchErr.Code != "" || dispatchErr.Message != "maintenance" {
+	if dispatchErr.Status != http.StatusServiceUnavailable || !dispatchErr.Code.IsEmpty() || dispatchErr.Message != "maintenance" {
 		t.Fatalf("Dispatch error = %#v, want 503 with no code", dispatchErr)
 	}
 }
@@ -914,13 +914,13 @@ func TestCarriesLegionLabelMatchesTheLabelInAnyCaseAndNothingElse(t *testing.T) 
 func TestAnUnknownFieldRefusalIsRiddenOutUntilDispatchKnowsTheField(t *testing.T) {
 	for _, field := range []string{"labels_add", "expected_sequence"} {
 		said := `invalid JSON body: json: unknown field "` + field + `"`
-		unknown := &Error{Status: http.StatusBadRequest, Code: "INVALID_JSON", Message: said, Said: oauth2calltest.Said(said)}
+		unknown := &Error{Status: http.StatusBadRequest, Code: oauth2calltest.Said("INVALID_JSON"), Message: said, Said: oauth2calltest.Said(said)}
 		if refusal, permanent := PermanentRefusal(unknown); permanent {
 			t.Fatalf("PermanentRefusal(unknown %s) = %v, permanent; want it ridden out", field, refusal)
 		}
 	}
 	for _, message := range []string{`invalid JSON body: json: unknown field "bogus"`, "invalid JSON body: unexpected EOF"} {
-		refused := &Error{Status: http.StatusBadRequest, Code: "INVALID_JSON", Message: message, Said: oauth2calltest.Said(message)}
+		refused := &Error{Status: http.StatusBadRequest, Code: oauth2calltest.Said("INVALID_JSON"), Message: message, Said: oauth2calltest.Said(message)}
 		if _, permanent := PermanentRefusal(refused); !permanent {
 			t.Fatalf("PermanentRefusal(%q) = not permanent; want it permanent", message)
 		}

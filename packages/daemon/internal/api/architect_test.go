@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/dispatchbody"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -128,7 +129,7 @@ func (r *statusRecorder) GetIssue(_ context.Context, key string) (dispatch.Issue
 	}
 	issue, ok := r.issues[key]
 	if !ok {
-		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "issue not found"}
+		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said("NOT_FOUND"), Message: "issue not found"}
 	}
 	return issue, nil
 }
@@ -184,7 +185,7 @@ func (r *statusRecorder) Approval(_ context.Context, artifactID string) (dispatc
 	r.reads = append(r.reads, "approval:"+artifactID)
 	issue, ok := r.documents[artifactID]
 	if !ok {
-		return dispatch.Approval{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "artifact not found"}
+		return dispatch.Approval{}, &dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said("NOT_FOUND"), Message: "artifact not found"}
 	}
 	primary := func(approval dispatch.Approval) dispatch.Approval {
 		approval.IssueKey = issue
@@ -206,7 +207,7 @@ func (r *statusRecorder) Handoff(_ context.Context, id string) (dispatch.Handoff
 	}
 	handoff, ok := r.handoffs[id]
 	if !ok {
-		return dispatch.Handoff{}, &dispatch.Error{Status: http.StatusNotFound, Code: "HANDOFF_NOT_FOUND", Message: "handoff not found"}
+		return dispatch.Handoff{}, &dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said("HANDOFF_NOT_FOUND"), Message: "handoff not found"}
 	}
 	return handoff, nil
 }
@@ -872,7 +873,7 @@ func TestParkAndRerunMoveAChildOfTheTreeByItsDispatchStatus(t *testing.T) {
 	refused(t, child("rerun", "LEGION-210"), http.StatusConflict, "TREE_LINGERING")
 	setIssue(t, h, "LEGION-208", func(issue *record.Issue) { issue.Phase, issue.LingerUntil = phase.Implementing, nil })
 
-	statuses.err = &dispatch.Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE", Message: "Dispatch is down"}
+	statuses.err = &dispatch.Error{Status: http.StatusServiceUnavailable, Code: oauth2calltest.Said("UNAVAILABLE"), Message: "Dispatch is down"}
 	refused(t, child("rerun", "LEGION-210"), http.StatusBadGateway, "UNAVAILABLE")
 	statuses.err = errors.New("connection refused")
 	refused(t, child("park", "LEGION-209"), http.StatusBadGateway, "DISPATCH_FAILED")

@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -229,7 +230,7 @@ func (d *tickDispatch) GetIssue(_ context.Context, key string) (dispatch.Issue, 
 	}
 	issue, served := d.issues[key]
 	if !served {
-		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no such issue"}
+		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said("NOT_FOUND"), Message: "no such issue"}
 	}
 	return issue, nil
 }

@@ -11,7 +11,7 @@ import (
 // status, code and sentence, the sentence both as it came (Said), which a decision on it reads,
 // and as it prints (Message).
 func dispatchRefusal(status int, code, said string) *dispatch.Error {
-	return &dispatch.Error{Status: status, Code: code, Message: said, Said: oauth2calltest.Said(said)}
+	return &dispatch.Error{Status: status, Code: oauth2calltest.Said(code), Message: said, Said: oauth2calltest.Said(said)}
 }
 
 // noRouteError is a Dispatch router's answer that it has no route for the request

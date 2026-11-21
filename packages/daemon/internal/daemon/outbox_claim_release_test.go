@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -120,7 +121,7 @@ func answersInTurn(answers ...error) func(int) error {
 
 // claimConflict is one of Dispatch's two 409s on a claim release, neither of them final.
 func claimConflict(code string) error {
-	return &dispatch.Error{Status: http.StatusConflict, Code: code, Message: "the issue is claimed"}
+	return &dispatch.Error{Status: http.StatusConflict, Code: oauth2calltest.Said(code), Message: "the issue is claimed"}
 }
 
 // sessionClaim is a Dispatch claim held by an agent session, the only holder the daemon releases.
@@ -419,20 +420,20 @@ func testReleaseClaimAnswers(t *testing.T) {
 		{name: "a row already older than an hour at its first attempt", age: 2 * time.Hour,
 			answers: []error{claimConflict(dispatch.IssueClaimed)}, attempts: 1, deletes: 1,
 			logged: claimGaveUpLine, holder: "session:" + claimTreeSession},
-		{name: "a 404", answers: []error{&dispatch.Error{Status: http.StatusNotFound, Code: "ISSUE_NOT_FOUND"}},
+		{name: "a 404", answers: []error{&dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said("ISSUE_NOT_FOUND")}},
 			attempts: 1, deletes: 1, logged: claimRefusedLine,
 			refusal: map[string]any{"status": float64(http.StatusNotFound), "code": "ISSUE_NOT_FOUND"}},
-		{name: "a 503", answers: []error{&dispatch.Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE"}},
+		{name: "a 503", answers: []error{&dispatch.Error{Status: http.StatusServiceUnavailable, Code: oauth2calltest.Said("UNAVAILABLE")}},
 			attempts: 2, between: capped, deletes: 2, settled: "outbox row failed"},
 		{name: "a closed connection", answers: []error{errors.New("read tcp 10.0.0.1:443: connection reset by peer")},
 			attempts: 2, between: capped, deletes: 2, settled: "outbox row failed"},
-		{name: "a 401", answers: []error{&dispatch.Error{Status: http.StatusUnauthorized, Code: "UNAUTHORIZED"}},
+		{name: "a 401", answers: []error{&dispatch.Error{Status: http.StatusUnauthorized, Code: oauth2calltest.Said("UNAUTHORIZED")}},
 			attempts: 2, between: capped, deletes: 2, settled: "outbox row failed"},
-		{name: "a 403", answers: []error{&dispatch.Error{Status: http.StatusForbidden, Code: "FORBIDDEN"}},
+		{name: "a 403", answers: []error{&dispatch.Error{Status: http.StatusForbidden, Code: oauth2calltest.Said("FORBIDDEN")}},
 			attempts: 2, between: capped, deletes: 2, settled: "outbox row failed"},
-		{name: "a 408", answers: []error{&dispatch.Error{Status: http.StatusRequestTimeout, Code: "TIMEOUT"}},
+		{name: "a 408", answers: []error{&dispatch.Error{Status: http.StatusRequestTimeout, Code: oauth2calltest.Said("TIMEOUT")}},
 			attempts: 2, between: capped, deletes: 2, settled: "outbox row failed"},
-		{name: "a 429", answers: []error{&dispatch.Error{Status: http.StatusTooManyRequests, Code: "RATE_LIMITED"}},
+		{name: "a 429", answers: []error{&dispatch.Error{Status: http.StatusTooManyRequests, Code: oauth2calltest.Said("RATE_LIMITED")}},
 			attempts: 2, between: capped, deletes: 2, settled: "outbox row failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

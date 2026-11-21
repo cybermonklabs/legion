@@ -19,9 +19,9 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 		{
 			Name:     "dispatch.Error",
 			Kind:     "fields",
-			Boxed:    Error{Said: oauth2calltest.Said(oauth2calltest.Words)},
-			Same:     errorTwin{Said: oauth2calltest.Words},
-			Exported: errorTwin{Said: oauth2calltest.Words},
+			Boxed:    Error{Code: oauth2calltest.Said(oauth2calltest.Words), Said: oauth2calltest.Said(oauth2calltest.Words)},
+			Same:     errorTwin{Code: oauth2calltest.Words, Said: oauth2calltest.Words},
+			Exported: errorTwin{Code: oauth2calltest.Words, Said: oauth2calltest.Words},
 		},
 	} {
 		t.Run(h.Name, func(t *testing.T) { oauth2calltest.PrintTest(t, h) })

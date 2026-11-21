@@ -378,16 +378,18 @@ type HandoffAuthor struct {
 // IsSession says whether the record's author is the session id.
 func (a HandoffAuthor) IsSession(id string) bool { return a.Kind == "session" && a.ID == id }
 
-// Error is a non-success response from Dispatch. Code is empty only when the response did not
-// carry Dispatch's normal error body. Message is what the error prints: Dispatch's sentence as
-// the rule reads it, with the credentials the request carried redacted. Said is that sentence as
-// it came, held as Dispatch's words (oauth2call.RemoteText): what a decision on the sentence reads
-// (NoRoute, PermanentRefusal), compared as it came, since the rule's reading of a sentence whose
-// URL it cannot read is WordsNotReadable and a word that holds a run of the request's token is cut
-// from it. It prints only as the rule reads it.
+// Error is a non-success response from Dispatch. Code is Dispatch's code and Said its sentence,
+// each as it came, held as Dispatch's words (oauth2call.RemoteText): what a decision on the
+// refusal reads (Claimed, Contended, NoRoute, PermanentRefusal), compared as it came (Equal,
+// HasPrefix, Contains, IsEmpty), since the rule's reading of a field whose URL it cannot read is
+// WordsNotReadable and a run of a value the request carried - a message that quotes the code, the
+// token - is cut from it. Each prints only as the rule reads it. Code is empty only when the
+// response did not carry Dispatch's normal error body. Message is the sentence the error prints:
+// Said as the rule reads it, the rule's reading of a body that is not Dispatch's refusal, or the
+// status's text where neither says anything.
 type Error struct {
 	Status  int
-	Code    string
+	Code    oauth2call.RemoteText
 	Message string
 	Said    oauth2call.RemoteText
 }
@@ -403,14 +405,14 @@ func Missing(err error) bool {
 // caller may not release (409 IssueClaimed).
 func Claimed(err error) bool {
 	var refusal *Error
-	return errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code == IssueClaimed
+	return errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code.Equal(IssueClaimed)
 }
 
 // Contended is whether err is Dispatch's answer that the claim changed twice while the request
 // ran, so nothing was applied and nobody's liveness was checked (409 ClaimContended).
 func Contended(err error) bool {
 	var refusal *Error
-	return errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code == ClaimContended
+	return errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code.Equal(ClaimContended)
 }
 
 // ParentContended is the code Dispatch answers an issue PATCH with when a concurrent reparent
@@ -451,7 +453,7 @@ const IssueNotFound = "ISSUE_NOT_FOUND"
 // this module and Dispatch's, so the spellings change together.
 func NoRoute(err error) bool {
 	var refusal *Error
-	return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == noRouteCode &&
+	return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code.Equal(noRouteCode) &&
 		refusal.Said.HasPrefix(noRouteMessagePrefix)
 }
 
@@ -478,15 +480,15 @@ func PermanentRefusal(err error) (*Error, bool) {
 		return nil, false
 	}
 	switch {
-	case refusal.Code == "ISSUE_CHANGED",
-		refusal.Code == "",
+	case refusal.Code.Equal("ISSUE_CHANGED"),
+		refusal.Code.IsEmpty(),
 		refusal.Status < 400 || refusal.Status >= 500,
 		refusal.Status == http.StatusRequestTimeout,
 		refusal.Status == http.StatusTooManyRequests,
 		refusal.Status == http.StatusUnauthorized,
 		refusal.Status == http.StatusForbidden,
-		refusal.Status == http.StatusConflict && refusal.Code == ParentContended,
-		refusal.Status == http.StatusBadRequest && refusal.Code == "INVALID_JSON" && unknownNewerField(refusal.Said):
+		refusal.Status == http.StatusConflict && refusal.Code.Equal(ParentContended),
+		refusal.Status == http.StatusBadRequest && refusal.Code.Equal("INVALID_JSON") && unknownNewerField(refusal.Said):
 		return nil, false
 	}
 	return refusal, true
@@ -552,9 +554,11 @@ func Unreachable(err error) bool {
 	return !permanent
 }
 
+// Error is Dispatch's code and its sentence, each as the rule reads it, or the sentence alone where
+// Dispatch sent no code.
 func (e *Error) Error() string {
-	if e.Code == "" {
+	if e.Code.IsEmpty() {
 		return e.Message
 	}
-	return e.Code + ": " + e.Message
+	return e.Code.String() + ": " + e.Message
 }

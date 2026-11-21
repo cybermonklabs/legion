@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -31,7 +32,7 @@ func TestOnlyARefusedRowThatDropsAFenceWaitsOnTheFactLock(t *testing.T) {
 	records := record.NewStore()
 	runner := lockProbeOutbox(pool, records)
 	lingeringTree(t, pool, records, "LEGION-208", "LEGION-209", false)
-	refusal := &dispatch.Error{Status: http.StatusNotFound, Code: dispatch.IssueNotFound, Message: "no such issue"}
+	refusal := &dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said(dispatch.IssueNotFound), Message: "no such issue"}
 	handOver := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-209",
 		record.HandOverStatusWrite("todo", "in_progress", "LEGION-208", 1), time.Now().UTC()))
 	ordinary := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-210",

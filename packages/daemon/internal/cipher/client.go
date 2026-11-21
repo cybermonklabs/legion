@@ -163,13 +163,19 @@ type Enrollment struct {
 	LeaseExpires time.Time
 }
 
-// APIError is the broker's refusal: its status and the contract's `code`, which callers branch
-// on. Status 0 (never a broker status) marks a refusal manufactured client-side: this client has
-// no live launcher credential to authenticate with.
+// APIError is the broker's refusal: its status and the contract's `code`. Code and Message are what
+// the error prints: the broker's code and error as the rule reads them, or this client's own code
+// (UNKNOWN for a body that is not the contract's shape, NO_MACHINE_CREDENTIAL). said is the
+// broker's code as it came, held as its words (oauth2call.RemoteText), which TokenExpired and
+// RegistrarNotListed decide on: the rule's reading of a code that shares a run of eight with a
+// value the request carried - a pod token - is cut, and a refusal decided on it would be one the
+// broker did not make. Status 0 (never a broker status) marks a refusal manufactured client-side:
+// this client has no live launcher credential to authenticate with.
 type APIError struct {
 	Status  int
 	Code    string
 	Message string
+	said    oauth2call.RemoteText
 }
 
 func (e *APIError) Error() string {
@@ -186,16 +192,17 @@ func (e *APIError) Permanent() bool {
 }
 
 // TokenExpired is the broker refusing the pod token presented because it has expired
-// (POD_TOKEN_EXPIRED): the key stands, and the pod's current token enrolls it.
-func (e *APIError) TokenExpired() bool { return e.Code == "POD_TOKEN_EXPIRED" }
+// (POD_TOKEN_EXPIRED, as the broker's code came): the key stands, and the pod's current token
+// enrolls it.
+func (e *APIError) TokenExpired() bool { return e.said.Equal("POD_TOKEN_EXPIRED") }
 
 // RegistrarNotListed is the broker refusing a pod-session registration with 403
-// POD_REGISTRAR_NOT_LISTED: its BROKER_POD_REGISTRARS does not pair the daemon's account with the
-// pod's. The broker answers it until the deployment's registrar rows are applied, so a later write
-// of the same registration can succeed with nothing about the daemon changed. Every other 403
-// stays permanent.
+// POD_REGISTRAR_NOT_LISTED, as its code came: its BROKER_POD_REGISTRARS does not pair the daemon's
+// account with the pod's. The broker answers it until the deployment's registrar rows are applied,
+// so a later write of the same registration can succeed with nothing about the daemon changed.
+// Every other 403 stays permanent.
 func (e *APIError) RegistrarNotListed() bool {
-	return e.Status == http.StatusForbidden && e.Code == "POD_REGISTRAR_NOT_LISTED"
+	return e.Status == http.StatusForbidden && e.said.Equal("POD_REGISTRAR_NOT_LISTED")
 }
 
 // IsPermanent reports whether err is a refusal a retry cannot change: a permanent broker refusal
@@ -930,20 +937,17 @@ func (c *Client) do(ctx context.Context, method, path string, body any, limit in
 }
 
 // refusal is the broker's error body, read as answered, as an *APIError: the broker's code as it
-// came where the rule prints it unchanged (oauth2call.CodedRefusal, RemoteText.SendBack), so what
-// the refusal is, is decided on the broker's own code, and its error as the rule reads it, decoded
-// field by field, so an error naming a URL beside the JSON quote that ends it costs the refusal
-// nothing of its code. A body that is not the contract's shape still yields one, code UNKNOWN,
-// with the body's words as its message; cut is whether do's bound cut the body, which can stop
-// inside a URL before its "@": the message is then what redact.Read keeps of the words.
+// came (oauth2call.CodedRefusal), so what the refusal is, is decided on the broker's own code even
+// where a value the request carried shares a run with it, and its code and error as the rule reads
+// them, decoded field by field, so an error naming a URL beside the JSON quote that ends it costs
+// the refusal nothing of its code. A body that is not the contract's shape, or that names no code,
+// still yields one, code UNKNOWN, with the body's words as its message; cut is whether do's bound
+// cut the body, which can stop inside a URL before its "@": the message is then what redact.Read
+// keeps of the words.
 func refusal(status int, answered oauth2call.Answer, cut bool) error {
 	var body oauth2call.CodedRefusal
-	code, sent := "", false
-	if answered.Decode(&body) == nil {
-		code, sent = body.Code.SendBack()
-	}
-	if !sent {
+	if answered.Decode(&body) != nil || body.Code.IsEmpty() {
 		return &APIError{Status: status, Code: "UNKNOWN", Message: redact.Read(answered.Words().String(), cut)}
 	}
-	return &APIError{Status: status, Code: code, Message: body.Error.String()}
+	return &APIError{Status: status, Code: body.Code.String(), Message: body.Error.String(), said: body.Code}
 }

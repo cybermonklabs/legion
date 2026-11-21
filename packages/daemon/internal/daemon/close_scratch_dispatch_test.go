@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -113,7 +114,7 @@ type failingStatus struct {
 
 func (d *failingStatus) SetStatusAt(context.Context, dispatch.Issue, string) (dispatch.Issue, error) {
 	d.failed = true
-	return dispatch.Issue{}, &dispatch.Error{Status: http.StatusBadGateway, Code: "BAD_GATEWAY"}
+	return dispatch.Issue{}, &dispatch.Error{Status: http.StatusBadGateway, Code: oauth2calltest.Said("BAD_GATEWAY")}
 }
 
 // A row's first attempt is not its first chance to be stale. An attempt that ended in a backoff —
