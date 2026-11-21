@@ -273,7 +273,7 @@ func TestTheMembershipAnswerReadsTheRule(t *testing.T) {
 		if err != nil || person.MemberKind != test.answer || person.Person != model.CanonicalLogin(test.person) {
 			t.Errorf("PersonAnswer(%s) = %+v, %v, want member_kind %s", test.person, person, err, test.answer)
 		}
-		answer, err := Answer(ctx, database.Pool, "PRIV", test.person)
+		answer, err := Answer(ctx, database.Pool, "PRIV", test.person, nil)
 		if err != nil {
 			t.Fatalf("Answer(PRIV, %s): %v", test.person, err)
 		}
@@ -288,10 +288,10 @@ func TestTheMembershipAnswerReadsTheRule(t *testing.T) {
 	}
 	// A person with no people row reads as the broker reads them, a full member, so a public
 	// project is visible to them.
-	if answer, err := Answer(ctx, database.Pool, "PUB", newbie); err != nil || !answer.Visible || answer.MemberKind != model.MemberAnswerNone {
+	if answer, err := Answer(ctx, database.Pool, "PUB", newbie, nil); err != nil || !answer.Visible || answer.MemberKind != model.MemberAnswerNone {
 		t.Errorf("Answer(PUB, %s) = %+v, %v, want visible with member_kind none", newbie, answer, err)
 	}
-	if _, err := Answer(ctx, database.Pool, "NOPE", alice); !errors.Is(err, ErrProjectNotFound) {
+	if _, err := Answer(ctx, database.Pool, "NOPE", alice, nil); !errors.Is(err, ErrProjectNotFound) {
 		t.Errorf("Answer(NOPE) = %v, want ErrProjectNotFound", err)
 	}
 }

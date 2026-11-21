@@ -24,12 +24,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -159,6 +161,93 @@ func (c *Client) do(ctx context.Context, method, path string, body json.RawMessa
 func (c *Client) Pending(ctx context.Context, approver string) (json.RawMessage, error) {
 	query := url.Values{"approver": {approver}, "state": {"pending", "expired"}}
 	return c.do(ctx, http.MethodGet, "/v1/pending?"+query.Encode(), nil)
+}
+
+// DeveloperBoxTokens is the broker's count of the live tokens a developer box holds that list one
+// project: the tokens of a machine login's trades and of a person's sign-ins on a machine, and
+// when the last of them expires, nil when none is live. Record is the number the broker gave the
+// record of the project it stored before it counted (its private-project store's one sequence),
+// nil from a broker that keeps no such store.
+type DeveloperBoxTokens struct {
+	Project       string     `json:"project"`
+	Live          int        `json:"live_tokens"`
+	LastExpiresAt *time.Time `json:"last_expires_at"`
+	Record        *int64     `json:"record"`
+}
+
+// DeveloperBoxTokens asks the broker how many live developer-box tokens list project (GET
+// /v1/admin/machine-tokens), which a switch to private waits to read as 0. It sends the Slack
+// channel ids the project will hold when the switch commits (slack_channels, joined by commas and
+// empty for none) and the switch's deadline (deadline_seconds), so the broker first records the
+// project and its channels in its store of private projects and answers the record's number. The
+// broker answers it to Dispatch's caller name alone. An answer that is not the broker's count of
+// that project is an error, never a count.
+func (c *Client) DeveloperBoxTokens(ctx context.Context, project string, channels []string, deadline time.Duration) (DeveloperBoxTokens, error) {
+	query := url.Values{
+		"project":          {project},
+		"slack_channels":   {strings.Join(channels, ",")},
+		"deadline_seconds": {strconv.Itoa(int(deadline / time.Second))},
+	}
+	raw, err := c.do(ctx, http.MethodGet, "/v1/admin/machine-tokens?"+query.Encode(), nil)
+	if err != nil {
+		return DeveloperBoxTokens{}, err
+	}
+	var answer struct {
+		DeveloperBoxTokens
+		Live *int `json:"live_tokens"`
+	}
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		return DeveloperBoxTokens{}, fmt.Errorf("agent-secrets: decode the developer-box token count of %s: %w", project, err)
+	}
+	if answer.Project != project || answer.Live == nil || *answer.Live < 0 || (answer.Record != nil && *answer.Record <= 0) {
+		return DeveloperBoxTokens{}, fmt.Errorf("agent-secrets: the broker answered no developer-box token count of %s", project)
+	}
+	count := answer.DeveloperBoxTokens
+	count.Live = *answer.Live
+	return count, nil
+}
+
+// ErrForgetUnanswered is a forget the broker did not take: it answered neither forgotten nor
+// superseded, nor asked for a later try. The caller tries again later.
+var ErrForgetUnanswered = errors.New("agent-secrets: the broker did not take the forget")
+
+// ForgetPrivateProject asks the broker to forget its record of project (POST
+// /v1/admin/private-projects/forget): the record numbered record, which a switch to private left
+// and did not commit, or, with record nil, the project's record whatever its number, once the
+// project is public. The broker decides on its numbers and its own clock, and answers 200
+// {"outcome": "forgotten"} or {"outcome": "superseded"}, which both mean the forget is delivered
+// (nil, 0); 409 RECORD_IN_FLIGHT with retry_after_seconds, a switch that can still commit holding
+// the record, which answers that wait and an error; anything else is an error, a 404 from a broker
+// without the route included, and the caller tries again later.
+func (c *Client) ForgetPrivateProject(ctx context.Context, project string, record *int64) (time.Duration, error) {
+	body, err := json.Marshal(struct {
+		Project string `json:"project"`
+		Record  *int64 `json:"record"`
+	}{project, record})
+	if err != nil {
+		return 0, fmt.Errorf("agent-secrets: encode the forget of %s: %w", project, err)
+	}
+	raw, err := c.do(ctx, http.MethodPost, "/v1/admin/private-projects/forget", body)
+	var refused *Error
+	if errors.As(err, &refused) && refused.Status == http.StatusConflict && refused.Code == "RECORD_IN_FLIGHT" {
+		var wait struct {
+			RetryAfterSeconds *int64 `json:"retry_after_seconds"`
+		}
+		if json.Unmarshal(refused.Body, &wait) != nil || wait.RetryAfterSeconds == nil || *wait.RetryAfterSeconds < 0 {
+			return 0, fmt.Errorf("%w: 409 RECORD_IN_FLIGHT with no retry_after_seconds", ErrForgetUnanswered)
+		}
+		return time.Duration(*wait.RetryAfterSeconds) * time.Second, fmt.Errorf("%w: the record of %s is in flight", ErrForgetUnanswered, project)
+	}
+	if err != nil {
+		return 0, err
+	}
+	var answer struct {
+		Outcome string `json:"outcome"`
+	}
+	if err := json.Unmarshal(raw, &answer); err != nil || (answer.Outcome != "forgotten" && answer.Outcome != "superseded") {
+		return 0, fmt.Errorf("%w: it answered %.200q", ErrForgetUnanswered, raw)
+	}
+	return 0, nil
 }
 
 // Decision is every approve, deny, dismiss and revoke body Dispatch sends: Approver is the

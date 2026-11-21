@@ -102,7 +102,7 @@ func TestNoAccessErrorNamesAPerson(t *testing.T) {
 			return err
 		}},
 		{"PersonAnswer", func(tx pgx.Tx) error { _, err := PersonAnswer(ctx, tx, hiddenEmail); return err }},
-		{"Answer", func(tx pgx.Tx) error { _, err := Answer(ctx, tx, "PRIV", hiddenEmail); return err }},
+		{"Answer", func(tx pgx.Tx) error { _, err := Answer(ctx, tx, "PRIV", hiddenEmail, nil); return err }},
 		{"Listed", func(tx pgx.Tx) error { _, err := Listed(ctx, tx, hiddenEmail); return err }},
 		{"Resolve", func(tx pgx.Tx) error { _, err := Resolve(ctx, tx, cookie(hiddenEmail)); return err }},
 		{"ReadProject", func(tx pgx.Tx) error {

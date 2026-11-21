@@ -55,7 +55,7 @@ func (s *server) getAccessProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	answer, err := access.Answer(r.Context(), pool, r.PathValue("key"), r.URL.Query().Get("person"))
+	answer, err := access.Answer(r.Context(), pool, r.PathValue("key"), r.URL.Query().Get("person"), s.deps.PrivateProjects)
 	if err != nil {
 		s.writeAccessError(w, err)
 		return

@@ -1117,7 +1117,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			// The list's own reading is TestThePrivateProjectsSettingIsAListOfKeys. Its reader: the
 			// owner's switch of PRIV to private, refused with no list before anything is read, with
 			// a list that names another project for want of PRIV on it, and with PRIV on it only for
-			// want of a hub-admission proof, which this router is given none of.
+			// want of a secrets broker, which this router is given none of.
 			t.Run("router", func(t *testing.T) {
 				database := storetest.Open(t)
 				if _, err := database.Pool.Exec(context.Background(), `
@@ -1127,7 +1127,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				`); err != nil {
 					t.Fatalf("seed alice's project PRIV: %v", err)
 				}
-				for value, want := range map[string]string{"": "PRIVATE_PROJECTS_OFF", "OTHER": "PRIVATE_PROJECT_NOT_PROVISIONED", "PRIV": "PRIVATE_PROJECTS_UNAVAILABLE"} {
+				for value, want := range map[string]string{"": "PRIVATE_PROJECTS_OFF", "OTHER": "PRIVATE_PROJECT_NOT_PROVISIONED", "PRIV": "PRIVATE_PROJECTS_NEED_BROKER"} {
 					request := signedIn(t, httptest.NewRequest(http.MethodPatch, "/api/v1/projects/PRIV/access", strings.NewReader(`{"visibility":"private"}`)), "alice@example.com")
 					request.Header.Set("Content-Type", "application/json")
 					request.Header.Set("Sec-Fetch-Site", "same-origin")

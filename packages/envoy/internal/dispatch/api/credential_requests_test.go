@@ -30,7 +30,7 @@ const credentialTestAccountToken = "dispatch-account-token"
 
 // accountTokenFile writes token to a file of the test's own directory, as a pod's projected
 // token volume holds it, and answers the path the client reads its bearer from.
-func accountTokenFile(t *testing.T, token string) string {
+func accountTokenFile(t testing.TB, token string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(path, []byte(token), 0o600); err != nil {

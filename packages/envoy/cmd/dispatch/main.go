@@ -30,6 +30,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
@@ -483,6 +485,17 @@ func main() {
 	// through the API with it. Each condition fails closed for its own projects
 	// (reportPrivateProjects). The store's check is the maintenance loop's, as it starts.
 	reportPrivateProjects(privateState)
+	// A project private before its key joined DISPATCH_PRIVATE_PROJECTS (its first day) is closed
+	// to developer boxes from the first boot that reads the key there, its owner's switch or not:
+	// every live personal token that lists it is revoked now, before the first request. A failure
+	// ends the boot, as the read above does: a boot that went on would serve those tokens.
+	if keys, revoked, err := access.RevokeClosedProjectTokens(store.WithTransactionTracking(ctx), database.Pool, boot.PrivateProjects); err != nil {
+		slog.Error("dispatch: revoke the personal tokens of the projects closed to developer boxes", "error", err)
+		os.Exit(1)
+	} else if revoked > 0 {
+		slog.Warn("dispatch: revoked the personal tokens that list projects closed to developer boxes: no developer box holds a credential that lists one",
+			"projects", keys, "personal_tokens_revoked", revoked)
+	}
 
 	webDistDir, err := defaultWebDistDir(boot.WebDist)
 	if err != nil {
@@ -1173,6 +1186,12 @@ func main() {
 		maintenanceInterval = boot.MaintenanceSweepInterval
 	}
 	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries, boot.PrivateProjects)
+	// The forgets owed the secrets broker (broker_forgets): the records a switch to private that did
+	// not commit left in the broker's store of private projects, and those of projects made public.
+	// Every process sends them, each row claimed `for update skip locked` (api.RunBrokerForgets).
+	if boot.AgentSecretsURL != "" {
+		go api.RunBrokerForgets(ctx, database.Pool, agentsecrets.New(boot.AgentSecretsURL, boot.AgentSecretsTokenFile))
+	}
 	// /healthz names each GitHub read this process runs, from the copy of the record kept above. A
 	// loop this process did not start, for want of NATS or of the App's private key, is a read it
 	// does not run.

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -209,11 +210,15 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 	if input.Visibility != nil || input.SlackChannels != nil {
 		lockTimeout = patchLockTimeout
 	}
+	var sw *privateSwitch
+	if visibility == model.ProjectPrivate {
+		sw = &privateSwitch{}
+	}
 	// A shared channel's refusal names the other private project only to a caller who sees it: the
 	// viewer ownerWrite resolved from the request's own credential (readerOf), not the person
 	// actingPerson answers, by. Read as that person, a token listing no project would see the
 	// person's private projects, which the token does not.
-	s.ownerWrite(w, r, "", lockTimeout, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, []model.Event, error) {
+	s.ownerWrite(w, r, "", lockTimeout, sw, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, []model.Event, error) {
 		var appended []model.Event
 		var answer model.ProjectAccess
 		// switching is a full switch to private: every switch to private but one of a project the
@@ -240,6 +245,24 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 				if err := privateProjectIncomplete(ctx, tx, key); err != nil {
 					return model.ProjectAccess{}, nil, err
 				}
+				// The broker records the channels the project will hold once the switch commits:
+				// the body's when it names them, checked as their write checks them, else the
+				// stored ones.
+				var channels *[]string
+				if input.SlackChannels != nil {
+					named, err := access.NormalizeSlackChannels(*input.SlackChannels)
+					if err != nil {
+						return model.ProjectAccess{}, nil, err
+					}
+					channels = &named
+				}
+				// The closing state comes after every gate that writes nothing and before any write
+				// of the body, so a switch it refuses keeps the closing state and nothing else.
+				closing, err := s.closeForDeveloperBoxes(ctx, tx, key, by, channels, sw)
+				if err != nil {
+					return model.ProjectAccess{}, closing, err
+				}
+				appended = append(appended, closing...)
 			}
 		}
 		if input.SlackChannels != nil {
@@ -362,7 +385,7 @@ func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, pr
 	if kind == access.PrincipalGroup {
 		group = strings.TrimSpace(principal)
 	}
-	s.ownerWrite(w, r, group, 0, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
+	s.ownerWrite(w, r, group, 0, nil, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
 		answer, event, err := write(ctx, tx, s.deps.Events, key, kind, principal, by)
 		if err != nil {
 			return model.ProjectAccess{}, nil, err
@@ -389,7 +412,15 @@ func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, pr
 // sees the project, and so may read its access list, is then told it is not the owner, by the 403
 // PROJECT_OWNER_REQUIRED that names the owner; the other order would name a hidden project's owner
 // to anyone who guessed its key.
-func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string, lockTimeout time.Duration,
+//
+// sw is a full switch to private's own state, nil for every other write. With it, the transaction
+// runs on a context that ends at privateSwitchDeadline, made before it begins and used for every
+// statement and the commit, and the database ends the transaction at the same deadline
+// (transaction_timeout); a switch that meets it answers 503 PRIVATE_SWITCH_TIMED_OUT. A switch
+// whose transaction ends with no commit sent, after the broker's count left a record, owes the
+// broker the forget of that record, and one whose commit's outcome is unknown owes the forget of
+// the project's record whatever its number (oweForgetAfter).
+func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string, lockTimeout time.Duration, sw *privateSwitch,
 	write func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, []model.Event, error)) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -404,21 +435,51 @@ func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string
 		s.writeAccessError(w, fmt.Errorf("%w: %s", access.ErrProjectNotFound, key))
 		return
 	}
-	tx, err := s.begin(r.Context())
+	ctx := r.Context()
+	if sw != nil && privateSwitchContextDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, privateSwitchDeadline)
+		defer cancel()
+	}
+	// refuse answers a refusal of the write once its transaction has ended with no commit sent. The
+	// forget is written after the rollback: the request holds the switch's connection until then,
+	// and the pool refuses it a second one (store.ErrNestedAcquire).
+	var tx pgx.Tx
+	refuse := func(err error) {
+		if tx != nil {
+			_ = tx.Rollback(context.WithoutCancel(ctx))
+		}
+		if sw != nil && sw.record != nil {
+			s.oweForgetAfter(r.Context(), key, sw.record)
+		}
+		if sw != nil && switchTimedOut(ctx, err) {
+			writeError(w, "PRIVATE_SWITCH_TIMED_OUT", http.StatusServiceUnavailable, privateSwitchTimedOut("nothing was changed; try again"))
+			return
+		}
+		s.writeAccessError(w, err)
+	}
+	begun, err := s.begin(ctx)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		refuse(err)
 		return
 	}
-	defer tx.Rollback(r.Context())
+	tx = begun
+	defer tx.Rollback(context.WithoutCancel(ctx))
 	if lockTimeout > 0 {
-		if _, err := tx.Exec(r.Context(), fmt.Sprintf(`set local lock_timeout = '%dms'`, lockTimeout.Milliseconds())); err != nil {
-			s.writeHandlerError(w, err)
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`set local lock_timeout = '%dms'`, lockTimeout.Milliseconds())); err != nil {
+			refuse(err)
 			return
 		}
 	}
-	owner, err := access.LockForAccessWrite(r.Context(), tx, key, group)
+	if sw != nil {
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`set local transaction_timeout = '%dms'`, privateSwitchDeadline.Milliseconds())); err != nil {
+			refuse(err)
+			return
+		}
+	}
+	owner, err := access.LockForAccessWrite(ctx, tx, key, group)
 	if err != nil {
-		s.writeAccessError(w, err)
+		refuse(err)
 		return
 	}
 	if owner == nil || *owner != actor.ID {
@@ -426,17 +487,42 @@ func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string
 			"only the project's owner changes who may see it: ask its owner, "+ownerName(owner))
 		return
 	}
-	answer, appended, err := write(r.Context(), tx, key, actor, who.Viewer)
-	if err != nil {
-		s.writeAccessError(w, err)
+	answer, appended, err := write(ctx, tx, key, actor, who.Viewer)
+	var kept refusalKept
+	if err != nil && !errors.As(err, &kept) {
+		refuse(err)
 		return
 	}
-	if err := tx.Commit(r.Context()); err != nil {
+	if err := tx.Commit(ctx); err != nil {
+		if sw != nil {
+			_ = tx.Rollback(context.WithoutCancel(ctx))
+			s.oweForgetAfter(r.Context(), key, nil)
+			if switchTimedOut(ctx, err) {
+				writeError(w, "PRIVATE_SWITCH_TIMED_OUT", http.StatusServiceUnavailable,
+					privateSwitchTimedOut("its commit did not answer in time, so whether the project turned private is unknown: read its access, and try again"))
+				return
+			}
+		}
 		s.writeHandlerError(w, err)
 		return
 	}
 	s.publish(r.Context(), appended...)
+	if kept.err != nil {
+		s.writeAccessError(w, kept.err)
+		return
+	}
 	WriteJSON(w, http.StatusOK, answer)
+}
+
+// switchTimedOut reports whether err ended a switch to private at its deadline: ctx, the switch's
+// own context, past privateSwitchDeadline, or the database ending the transaction at the same
+// deadline (SQLSTATE 25P04, transaction_timeout).
+func switchTimedOut(ctx context.Context, err error) bool {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "25P04"
 }
 
 // viewerSees reports whether viewer sees project; no viewer is the server's own read.
@@ -476,6 +562,9 @@ func (s *server) writeAccessError(w http.ResponseWriter, err error) {
 		{access.ErrPrincipalInput, "PROJECT_ACCESS_INPUT", http.StatusBadRequest},
 		{access.ErrVisibilityInput, "PROJECT_ACCESS_INPUT", http.StatusBadRequest},
 		{errPrivateProjectsUnavailable, "PRIVATE_PROJECTS_UNAVAILABLE", http.StatusConflict},
+		{errDeveloperBoxTokensLive, "DEVELOPER_BOX_TOKENS_LIVE", http.StatusConflict},
+		{errDeveloperBoxTokensUnknown, "DEVELOPER_BOX_TOKENS_UNAVAILABLE", http.StatusServiceUnavailable},
+		{errPrivateProjectsNeedBroker, "PRIVATE_PROJECTS_NEED_BROKER", http.StatusConflict},
 		{errPrivateProjectNotProvisioned, "PRIVATE_PROJECT_NOT_PROVISIONED", http.StatusConflict},
 		{errPrivateProjectsIncomplete, "PRIVATE_PROJECTS_INCOMPLETE", http.StatusConflict},
 		{access.ErrListFull, "ACCESS_LIST_FULL", http.StatusConflict},
