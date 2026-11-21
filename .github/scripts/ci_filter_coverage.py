@@ -2631,10 +2631,11 @@ def check_vet_tags(session: Session, data, problems: list) -> list:
     `./...` walks), never go list's own package list, which leaves out a package whose every file
     a missing tag excludes. go list then says, under each Run's platform and tags, which of them
     it compiles. For each file none compiles that names a tag (go_build_tags.is_tag: no platform
-    or architecture feature name, none the toolchain sets), every choice of its own tags is
-    tried, and go list says again whether the file is compiled under it: one that is, is a miss,
-    named with the tags that build it. go decides each answer; this rule's own reading of a
-    constraint only chooses which tags to try, and it reads a name in any script Go accepts."""
+    or architecture feature name, none of its NOT_TAGS, which the toolchain or only a patched
+    build sets), every choice of its own tags is tried, and go list says again whether the file
+    is compiled under it: one that is, is a miss, named with the tags that build it. go decides
+    each answer; this rule's own reading of a constraint only chooses which tags to try, and it
+    reads a name in any script Go accepts."""
     groups: dict = defaultdict(list)
     for g in data.GATES:
         for r, step in [(r, r.step) for r in g.runs] + [(r, e.step) for e in g.exact for r in e.runs]:

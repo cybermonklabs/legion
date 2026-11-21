@@ -484,6 +484,108 @@ func TestForcedOrderTwoRunsOnOneStoreKeepTheirOwnShutdowns(t *testing.T) {
 	}
 }
 
+// A hold released before anything reached it parks nothing, and takes no event away from a live
+// hold armed after it: the first matching event parks on the live hold. The test sends the hook
+// the publishes itself. Its control is the same publish with one live hold and no released one.
+// Before a released hold stepped aside, it took the first event, which passed through it, and
+// the live hold parked only the second.
+func TestForcedOrderAReleasedHoldTakesNoEventFromTheNextHold(t *testing.T) {
+	const subject = "released.hold"
+	for _, released := range []bool{false, true} {
+		name := "one live hold parks the first event"
+		if released {
+			name = "a released hold, then a live one: the first event parks on the live one"
+		}
+		t.Run(name, func(t *testing.T) {
+			hooks := testnats.Hook(t)
+			report := *natsserver.MeasureHook.Load()
+			if released {
+				hooks.Hold(testnats.ClientPublish, testnats.Subject(subject)).Release()
+			}
+			live := hooks.Hold(testnats.ClientPublish, testnats.Subject(subject))
+			publish := func() <-chan struct{} {
+				returned := make(chan struct{})
+				go func() {
+					report(&natsserver.MeasureEvent{Point: string(testnats.ClientPublish), Subject: subject})
+					close(returned)
+				}()
+				return returned
+			}
+			returned := publish()
+			escaped := false
+			select {
+			case <-returned:
+				// Send a second publish, so the live hold is reached and the test fails on the
+				// escape rather than on a hold armed and never reached.
+				escaped, returned = true, publish()
+			case <-time.After(held):
+			}
+			t.Logf("held %s", live.Reached(t))
+			live.Release()
+			select {
+			case <-returned:
+			case <-time.After(reachWithin):
+				t.Fatal("the released publish did not return")
+			}
+			if escaped {
+				t.Fatal("the first publish passed the live hold: the released hold took it")
+			}
+		})
+	}
+}
+
+// Two live holds A and B on one point: the first matching event parks on A, and a test that
+// releases A as soon as A's Reached returns lets that event go on, not over to B, which stays for
+// the next event. The release has to land after the hook closes A's reached channel and before
+// it decides whether A was released, which no sleep can promise, so the test makes the hook wait
+// at that instant (testnats.SetOnReached on A) until A's Reached has returned and A is released.
+// While the hook read A's release after it had published A as reached, it took A for one
+// released before it was reached and parked the same event on B.
+func TestForcedOrderAHoldReleasedAsItIsReachedKeepsItsEvent(t *testing.T) {
+	const subject = "released.on.reach"
+	hooks := testnats.Hook(t)
+	report := *natsserver.MeasureHook.Load()
+	a := hooks.Hold(testnats.ClientPublish, testnats.Subject(subject))
+	b := hooks.Hold(testnats.ClientPublish, testnats.Subject(subject))
+	releasedA := make(chan struct{})
+	testnats.SetOnReached(a, func() {
+		select {
+		case <-releasedA:
+		case <-time.After(reachWithin):
+		}
+	})
+	publish := func() <-chan struct{} {
+		returned := make(chan struct{})
+		go func() {
+			report(&natsserver.MeasureEvent{Point: string(testnats.ClientPublish), Subject: subject})
+			close(returned)
+		}()
+		return returned
+	}
+
+	first := publish()
+	took := a.Reached(t)
+	a.Release()
+	close(releasedA)
+	select {
+	case <-first:
+	case <-time.After(reachWithin):
+		t.Fatalf("the first publish, %s, did not return once A was released: it parked on B", took)
+	}
+
+	second := publish()
+	next := b.Reached(t)
+	if next.N <= took.N {
+		t.Fatalf("B took %s, the event A took (%s), want the next publish", next, took)
+	}
+	b.Release()
+	select {
+	case <-second:
+	case <-time.After(reachWithin):
+		t.Fatal("the second publish did not return once B was released")
+	}
+}
+
 func TestForcedOrderHoldsAPublishBeforeItIsMatched(t *testing.T) {
 	srv, uri := testnats.Start(t)
 	hooks := testnats.Hook(t)
@@ -617,5 +719,54 @@ func TestForcedOrderHoldsACommittedEntryBeforeItsLeaderStoresIt(t *testing.T) {
 		t.Fatalf("the released publish failed: %v", err)
 	case <-time.After(reachWithin):
 		t.Fatalf("the released publish was not acknowledged within %s", reachWithin)
+	}
+}
+
+// A point no row above holds at is held to the same contract: msgget.timeSelected, the sequence a
+// message get by start_time chose (v2.15.1 alone: 2.10.29's message get takes no start_time).
+// Its event names its server, its store and its stream, so OnServer and Stream take it and the
+// server's Stop releases the goroutine it parks. Before it carried its server and store, the
+// hold was never reached on the server, and without OnServer it parked an API worker that the
+// Stop then waited for; before it named its stream as Stream rather than as a consumer, a hold
+// by Stream was never reached.
+func TestForcedOrderAStopReleasesAHoldAtATimeSelectedMessageGet(t *testing.T) {
+	point := testnats.Point("msgget.timeSelected")
+	if ok, why := point.Exists(); !ok {
+		t.Skipf("nats-server %s has no %s: %s", natsserver.VERSION, point, why)
+	}
+	srv, hooks, conn, js := heldStream(t)
+	if _, err := js.Publish("hold.1", nil); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	const subject = "$JS.API.STREAM.MSG.GET.HOLD"
+	body := []byte(fmt.Sprintf(`{"start_time":%q}`, time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)))
+	get := func() <-chan error {
+		return answer(func() error {
+			_, err := conn.Request(subject, body, reachWithin)
+			return err
+		})
+	}
+	answered(t, get(), "the unheld message get by start time")
+
+	hold := hooks.Hold(point, testnats.OnServer(srv), testnats.Stream("HOLD"))
+	done := get()
+	reached := hold.Reached(t)
+	t.Logf("held %s", reached)
+	if reached.Stream != "HOLD" || reached.Consumer != "" {
+		t.Fatalf("held %s, want the stream HOLD and no consumer", reached)
+	}
+	unanswered(t, done, "the message get by start time")
+	stopped := make(chan struct{})
+	go func() {
+		srv.Stop(t)
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(stopWithin):
+		t.Fatalf("the server's Stop did not return within %s while a hold at %s parked one of its goroutines", stopWithin, point)
+	}
+	if !hold.Released() {
+		t.Fatal("the Stop returned and the hold is not released")
 	}
 }

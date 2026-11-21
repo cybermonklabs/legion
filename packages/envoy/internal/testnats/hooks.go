@@ -70,22 +70,24 @@ const (
 	// point.
 	StreamApply Point = "stream.apply"
 
-	// ServerShutdown and ServerDown are no hold points: they are where a server's Shutdown begins,
-	// before it stops anything, and where it has waited for every goroutine of its own. Between
-	// the two the hook releases the server's held goroutines and parks none of them again. Each
-	// carries the ID of the server's run (Event.ServerID), and a ServerShutdown of a run whose
-	// ServerDown the hook has seen changes nothing: v2.10.29 can report one late, from a second
-	// concurrent Shutdown call, after a restart on the same store.
+	// ServerShutdown and ServerDown are no hold points: they are where a server's Shutdown or
+	// lame duck begins, before it stops anything, and where its Shutdown has waited for every
+	// goroutine of its own. Between the two the hook releases the server's held goroutines and
+	// parks none of them again. A lame duck reports ServerShutdown before it shuts JetStream
+	// down, which waits for each clustered stream's goroutines, and its Shutdown reports it a
+	// second time. Each carries the ID of the server's run (Event.ServerID), and a
+	// ServerShutdown of a run whose ServerDown the hook has seen changes nothing: v2.10.29 can
+	// report one late, from a second concurrent Shutdown call, after a restart on the same store.
 	ServerShutdown Point = "server.shutdown"
 	ServerDown     Point = "server.down"
 )
 
-// HoldPoints are the hold points, in the order above.
-var HoldPoints = []Point{WritePreIO, WritePreRename, FlushEncoded, StoreCreate, APIWorker, ClientPublish, MetaApply, StreamApply}
-
-// missing are the hold points a hooked server version does not have, each with the reason.
+// missing are the points a hooked server version does not have, each with the reason.
 var missing = map[string]map[Point]string{
-	"2.10.29": {WritePreRename: "it writes a consumer's o.dat in place, with no temporary file and no rename"},
+	"2.10.29": {
+		WritePreRename:               "it writes a consumer's o.dat in place, with no temporary file and no rename",
+		Point("msgget.timeSelected"): "its message get takes no start_time, so no sequence is selected by time",
+	},
 }
 
 // Exists reports whether the linked nats-server has the point, and why not when it has not.
@@ -122,8 +124,9 @@ type Event struct {
 	// Server, Account, Subject, Stream, Client and Kind describe a server point's request or
 	// message: Account is the account that sent the request at APIWorker, the publishing
 	// connection's at ClientPublish, and the stream's at StreamApply and at MetaApply; Stream is
-	// the stream's name at StreamApply and at MetaApply; Client is the publishing connection's
-	// name, Kind its kind. ServerID is the ID of the server's run at ServerShutdown and ServerDown.
+	// the stream's name at StreamApply, at MetaApply and at msgget.timeSelected; Client is the
+	// publishing connection's name, Kind its kind. ServerID is the ID of the server's run at
+	// ServerShutdown and ServerDown.
 	Server, ServerID, Account, Subject, Stream, Client, Kind string
 	// Recovering is set at StreamApply and at MetaApply while the server replays its log at start.
 	Recovering bool
@@ -202,7 +205,8 @@ func Consumer(name string) Match {
 }
 
 // Stream takes the events of the stream named name: a StreamApply of it, a MetaApply of one of its
-// consumers, or a file store point of one of its consumers.
+// consumers, a message get from it (msgget.timeSelected), or a file store point of one of its
+// consumers.
 func Stream(name string) Match {
 	return Match{"stream " + name, func(e Event) bool {
 		if e.Stream != "" {
@@ -304,9 +308,11 @@ func Hook(t testing.TB) *Hooks {
 }
 
 // report is the hook itself: it records the event, and parks the calling goroutine when the
-// event is the first to meet a hold's matches. A server's ServerShutdown releases the holds that
-// park its goroutines, and none of its goroutines is parked until its ServerDown. A ServerShutdown
-// of a run already down, reported late, changes nothing.
+// event is the first to meet a live hold's matches. A hold released before it was reached parks
+// nothing and takes no event from a live hold: the first event to meet its matches marks it
+// reached and goes on to the next hold. A server's ServerShutdown releases the holds that park
+// its goroutines, and none of its goroutines is parked until its ServerDown. A ServerShutdown of
+// a run already down, reported late, changes nothing.
 func (h *Hooks) report(me *natsserver.MeasureEvent) {
 	e := eventOf(me)
 	var released []*Hold
@@ -328,10 +334,23 @@ func (h *Hooks) report(me *natsserver.MeasureEvent) {
 	var parked *Hold
 	if !h.stoppingLocked(e.Store) {
 		for _, hold := range h.holds {
-			if !hold.fired && accepts(e, hold.point, hold.match) {
-				hold.fired, hold.event, parked = true, e, hold
-				break
+			if hold.fired || !accepts(e, hold.point, hold.match) {
+				continue
 			}
+			// Whether the hold was released before it was reached is read before reached is
+			// closed: once it is, the test can wake and release the hold, which is a release of
+			// a reached hold and must not move the event on to the next one.
+			hold.fired, hold.event = true, e
+			wasReleased := hold.Released()
+			close(hold.reached)
+			if f := hold.onReached.Load(); f != nil {
+				(*f)()
+			}
+			if wasReleased {
+				continue
+			}
+			parked = hold
+			break
 		}
 	}
 	close(h.changed)
@@ -341,7 +360,6 @@ func (h *Hooks) report(me *natsserver.MeasureEvent) {
 		hold.Release()
 	}
 	if parked != nil {
-		close(parked.reached)
 		<-parked.release
 	}
 }
@@ -428,12 +446,22 @@ type Hold struct {
 	// after reached is closed.
 	fired bool
 	event Event
+	// onReached is the test seam SetOnReached sets on this hold.
+	onReached atomic.Pointer[func()]
 }
+
+// SetOnReached makes f run in the hook right after it closes hold's reached channel, before the
+// hook decides whether the event parks on hold, with the Hooks' lock held: the harness's own tests
+// use it to act at that instant, as a test released from Reached does, without a sleep. Set it
+// before the event can come. f must not call into the Hooks.
+func SetOnReached(hold *Hold, f func()) { hold.onReached.Store(&f) }
 
 func (hold *Hold) String() string { return describe(hold.point, hold.match) }
 
 // Reached waits up to 30 seconds for the hold to be reached, and returns the event that reached
-// it, its goroutine parked there. It fails t, naming the point and the matches, when none did.
+// it. That event's goroutine is parked at the hold until Release, unless the hold had been
+// released before it was reached, when the event went on. It fails t, naming the point and the
+// matches, when none did.
 func (hold *Hold) Reached(t testing.TB) Event {
 	t.Helper()
 	select {
@@ -454,9 +482,9 @@ func (hold *Hold) wasReached() bool {
 	}
 }
 
-// Release lets the parked goroutine go on, or, for a hold not yet reached, disarms it: whatever
-// reaches it later passes. It may be called more than once. A shutdown of the held server calls
-// it too.
+// Release lets the parked goroutine go on, or, for a hold not yet reached, disarms it: the first
+// event to meet its matches marks it reached and goes on, to park on a live hold armed after it
+// if one matches. It may be called more than once. A shutdown of the held server calls it too.
 func (hold *Hold) Release() { hold.once.Do(func() { close(hold.release) }) }
 
 // Released reports whether the hold has been released: by Release, by the test's end, or by a

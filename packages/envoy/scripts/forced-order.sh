@@ -13,8 +13,10 @@
 # replace added, so every other module version is the one CI's own build of it links, on either
 # nats-server (2.10.29 adds go.uber.org/automaxprocs, which it requires, and changes no other
 # version). A workspace that does not use the module, or that holds a replace, is refused, since
-# the build would then link other module versions than CI's. A module with no workspace builds on
-# a copy of its go.mod with the replace added (go test -modfile, which go refuses in a workspace).
+# the build would then link other module versions than CI's, and so is a module whose go.mod
+# replaces nats-server, whose hooked copy would take the replacement's place. A module with no
+# workspace builds on a copy of its go.mod with the replace added (go test -modfile, which go
+# refuses in a workspace).
 # The script reads go's JSON (go work edit -json, go mod download -json) with jq. Nothing else of
 # nats-server changes, and no
 # build without this script sees a hook.
@@ -24,17 +26,21 @@
 #   -server <v>      the nats-server the tests link; by default the version the build links
 #                    (2.15.1 today, the hub's), and 2.10.29 is the other hooked version. A version
 #                    testdata/hooked has no directory for is refused, so a module that moves to a
-#                    new nats-server fails here until its hooks are ported.
-#   -drop <point>    removes every hook line naming that hold point from the patched copy before
-#                    the build, so the point is never reached: the control that a test holding
-#                    there fails without it. Repeatable.
+#                    new nats-server fails here until its hooks are ported, and so is an empty one,
+#                    so a step written `-server "$V"` with V unset does not test the default.
+#   -drop <point>    removes the hook calls naming that point, exactly, from the patched copy
+#                    before the build, so the point is never reached: the control that a test
+#                    holding there fails without it. A name no hook call of that version's hooks
+#                    passes is refused before the build, so a mistyped point cannot "fail" a test
+#                    on a compile error instead. Repeatable.
 #
-# It fails, naming the package, when a package it is given declares no TestForcedOrder test, so
-# a step that names a package whose tests were renamed or moved goes red rather than green with
-# nothing run. GO_TEST_TIMEOUT replaces go test's 10-minute -timeout, which the CI jobs that run
-# this script count in their time budgets. The copies of go.mod and go.sum, or of go.work and
-# go.work.sum, may gain the checksums the build needs; the repository's own files are never
-# written.
+# It fails, naming the package, when a package it is given declares no TestForcedOrder test, or
+# runs none (every one it declares skipped), so a step that names a package whose tests were
+# renamed, moved or skipped goes red rather than green with nothing held; such a package's `ok`
+# line is printed as a FAIL line. GO_TEST_TIMEOUT replaces go test's 10-minute -timeout, which the
+# CI jobs that run this script count in their time budgets. The copies of go.mod and go.sum, or of
+# go.work and go.work.sum, may gain the checksums the build needs; the repository's own files are
+# never written. scripts/forced-order.test.sh holds it to these refusals.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -59,11 +65,13 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -C)
       [ $# -ge 2 ] || usage
+      [ -n "$2" ] || die "-C '' names no module directory"
       module="$(cd "$2" && pwd)" || die "no module directory $2"
       shift 2
       ;;
     -server)
       [ $# -ge 2 ] || usage
+      [ -n "$2" ] || die "-server '' names no version: give 2.15.1 or 2.10.29, or leave -server out for the version the build links"
       server="$2"
       shift 2
       ;;
@@ -132,12 +140,32 @@ else
   build="a copy of $module/go.mod, with no workspace"
 fi
 flags=(${modflags[@]+"${modflags[@]}"} -tags odatrace -race)
-linked="$("${go_cmd[@]}" list ${modflags[@]+"${modflags[@]}"} -m -f '{{.Version}}' "$nats_server")" ||
+# The version the build requires, and the module that replaces it, if any: for a replaced module
+# go list's .Version is the requirement, not what the build links, and the hooked copy's replace
+# below would take the replacement's place, so a module that replaces nats-server is refused.
+listed="$("${go_cmd[@]}" list ${modflags[@]+"${modflags[@]}"} -m \
+  -f '{{.Version}}{{with .Replace}} {{.Path}}{{with .Version}}@{{.}}{{end}}{{end}}' "$nats_server")" ||
   die "go list could not read the nats-server version $build links"
+linked="${listed%% *}"
+[ "$listed" = "$linked" ] ||
+  die "$module's build replaces $nats_server with ${listed#* }: the hooks patch an upstream release, and the hooked copy would replace the replacement, so a replaced nats-server is refused"
 [ -n "$server" ] || server="${linked#v}"
 patch_dir="$hooked/v$server"
 [ -f "$patch_dir/server.patch" ] && [ -f "$patch_dir/zz_measure_write.go" ] ||
   die "no hooks for nats-server $server: $patch_dir holds no server.patch and zz_measure_write.go"
+
+# The points this version's hooks report: the "<area>.<event>" string each hook call passes, in
+# the lines the patch adds and in the version's own state writer. -drop takes these names alone,
+# and a name that is none is refused here, before anything is fetched, cut or built.
+points="$({
+  sed -n 's/^+\([^+].*\)$/\1/p' "$patch_dir/server.patch"
+  cat "$patch_dir/zz_measure_write.go"
+} | grep -E 'measure[A-Za-z]*\(' | grep -oE '"[a-z]+\.[A-Za-z]+"' | tr -d '"' | sort -u)" ||
+  die "$patch_dir names no hook point"
+for point in ${drops[@]+"${drops[@]}"}; do
+  grep -qxF -- "$point" <<<"$points" ||
+    die "-drop $point: no hook of nats-server $server reports \"$point\"; its points are $(paste -sd ' ' <<<"$points")"
+done
 
 # Downloaded from the work directory, where no go.mod is, so the module's own go.sum is not
 # touched.
@@ -156,7 +184,8 @@ patch --batch --forward --fuzz=0 --no-backup-if-mismatch --quiet -p1 -d "$copy" 
 cp "$hooked/zz_measure.go" "$copy/server/zz_measure.go"
 cp "$patch_dir/zz_measure_write.go" "$copy/server/zz_measure_write.go"
 
-# -drop: every line of the hooked files that names the point, as the string its hook passes.
+# -drop: the hook calls of the patched files that pass the point, exactly. nats-server's own lines
+# call no measure function, so no line of its own is ever cut.
 hooked_files=()
 while IFS= read -r file; do
   hooked_files+=("$copy/server/$file")
@@ -165,9 +194,9 @@ hooked_files+=("$copy/server/zz_measure.go" "$copy/server/zz_measure_write.go")
 for point in ${drops[@]+"${drops[@]}"}; do
   removed=0
   for path in "${hooked_files[@]}"; do
-    lines="$(grep -cF -- "\"$point\"" "$path" || true)"
+    lines="$(awk -v q="\"$point\"" 'index($0, q) && /measure[A-Za-z]*\(/ { n++ } END { print n + 0 }' "$path")"
     [ "$lines" -gt 0 ] || continue
-    grep -vF -- "\"$point\"" "$path" >"$path.kept" || true
+    awk -v q="\"$point\"" '!(index($0, q) && /measure[A-Za-z]*\(/)' "$path" >"$path.kept"
     mv "$path.kept" "$path"
     removed=$((removed + lines))
   done
@@ -194,4 +223,26 @@ empty="$(awk '
 ' "$work/list")"
 [ -z "$empty" ] || die "no TestForcedOrder test in: $empty"
 
-"${go_cmd[@]}" test "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder' "$@"
+# Every package named must also run one. go test -v prints `--- PASS:` or `--- FAIL:` at the start
+# of a line for each top-level test that ran (`--- SKIP:` for one that skipped), and ends each
+# package's output, which it prints as one block, with that package's own `ok` or `FAIL` line. A
+# package whose every forced-order test skipped would end in `ok`: its line is printed as a FAIL
+# line instead, and the run fails. The go command stays a line of its own, the text
+# .github/scripts/ci_job_reads.py pins.
+run_forced_order_tests() {
+  "${go_cmd[@]}" test "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder' "$@"
+}
+run_forced_order_tests "$@" 2>&1 | awk '
+  /^--- (PASS|FAIL): TestForcedOrder/ { ran++ }
+  /^(ok|FAIL)[ \t]+[^ \t]/ {
+    if ($1 == "ok" && ran == 0) {
+      print "FAIL\t" $2 "\t(forced-order.sh: every TestForcedOrder test of the package skipped, so none ran)"
+      fflush()
+      skipped = skipped " " $2
+      next
+    }
+    ran = 0
+  }
+  { print; fflush() }
+  END { if (skipped != "") { print "forced-order.sh: no TestForcedOrder test ran in:" skipped; exit 1 } }
+'

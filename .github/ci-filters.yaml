@@ -961,6 +961,7 @@ check_ci_filters_test: &check_ci_filters_test
   - '.github/scripts/go_build_tags.py'
   - '.github/scripts/ci_job_reads.py'
   - '.github/workflows/ci-job-typecheck.yaml'
+  - 'packages/envoy/scripts/forced-order.sh'
 check_ts_filters_test: &check_ts_filters_test
   - *ci_router
   - *ci_filters_data
@@ -2757,6 +2758,7 @@ envoy_go_race:
   - '!packages/envoy/internal/testnats/proxy_test.go'
   - '!packages/envoy/internal/testnats/relay_test.go'
   - '!packages/envoy/internal/testnats/responsetimer_test.go'
+  - '!packages/envoy/internal/testnats/stream_create_test.go'
   - '!packages/envoy/internal/testnats/cmd/**/*_test.go'
   - '!packages/envoy/internal/testport/**/*_test.go'
   - '!packages/envoy/internal/testtmp/**/*_test.go'

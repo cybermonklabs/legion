@@ -42,7 +42,7 @@ type MeasureEvent struct {
 	// Subject is the request's subject at api.worker, the message's at client.publish and
 	// stream.apply.
 	Subject string
-	// Stream is the stream's name at stream.apply and meta.apply.
+	// Stream is the stream's name at stream.apply, meta.apply and msgget.timeSelected.
 	Stream string
 	// Client is the publishing connection's name at client.publish, and Kind its kind (CLIENT,
 	// JETSTREAM, SYSTEM, ACCOUNT).

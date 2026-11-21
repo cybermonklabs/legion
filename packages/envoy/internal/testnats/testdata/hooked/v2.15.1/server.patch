@@ -36,7 +36,7 @@ index 5fe536b..97639a3 100644
  	if err = o.loadState(); err != nil {
  		return nil, err
  	}
-+	measure(&MeasureEvent{Point: "store.loaded", Gen: o.mgen, Name: name, Store: fs.fcfg.StoreDir, Path: o.ifn, State: encodeConsumerState(&o.state)})
++	measure(o.mev("store.loaded", encodeConsumerState(&o.state), 0, nil))
  
  	// Assign to filestore.
  	if err = fs.AddConsumer(o); err != nil {
@@ -144,7 +144,7 @@ index 6b6f3ce..3e031d2 100644
  	var seq uint64
  	if req.StartTime != nil {
  		seq = mset.store.GetSeqFromTime(*req.StartTime)
-+		measure(&MeasureEvent{Point: "msgget.timeSelected", Name: stream, Seq: seq, Path: req.NextFor})
++		measure(&MeasureEvent{Point: "msgget.timeSelected", Server: s.Name(), Store: s.getOpts().StoreDir, Stream: stream, Seq: seq, Path: req.NextFor})
  	} else {
  		seq = req.Seq
  	}
@@ -196,3 +196,11 @@ index 8c0a22d..67f64a5 100644
  
  	if opts.PortsFileDir != _EMPTY_ {
  		s.deletePortsFile(opts.PortsFileDir)
+@@ -4501,6 +4503,7 @@ func (s *Server) lameDuckMode() {
+ 		gp *= -1
+ 	}
+ 	s.mu.Unlock()
++	measureServer(s, "server.shutdown")
+ 
+ 	// If we are running any raftNodes transfer leaders.
+ 	if hadTransfers := s.transferRaftLeaders(); hadTransfers {

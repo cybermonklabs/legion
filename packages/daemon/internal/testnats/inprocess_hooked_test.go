@@ -58,3 +58,17 @@ func TestForcedOrderTheInProcessServerIsHooked(t *testing.T) {
 	hold.Release()
 	answered(done, "the released stream info")
 }
+
+// The daemon's forced-order tests read a stop of the in-process server through the shutdown
+// points, as Envoy's do: a Stop reports server.shutdown, then server.down, both on that server.
+func TestForcedOrderTheInProcessServerReportsItsStop(t *testing.T) {
+	server, _ := StartInProcess(t)
+	hooks := testnatsinprocess.Hook(t)
+	mark := hooks.Mark()
+	server.Stop(t)
+	shutdown := hooks.Await(t, testnatsinprocess.ServerShutdown, testnatsinprocess.OnServer(server), testnatsinprocess.After(mark))
+	down := hooks.Await(t, testnatsinprocess.ServerDown, testnatsinprocess.OnServer(server), testnatsinprocess.After(mark))
+	if down.N < shutdown.N {
+		t.Fatalf("the Stop reported %s before %s", down, shutdown)
+	}
+}

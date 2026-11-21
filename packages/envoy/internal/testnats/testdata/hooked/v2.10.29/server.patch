@@ -36,7 +36,7 @@ index da5acb1..e049a8a 100644
  
  	// Make sure to load in our state from disk if needed.
  	o.loadState()
-+	measure(&MeasureEvent{Point: "store.loaded", Gen: o.mgen, Name: name, Store: fs.fcfg.StoreDir, Path: o.ifn, State: encodeConsumerState(&o.state)})
++	measure(o.mev("store.loaded", encodeConsumerState(&o.state), 0, nil))
  
  	// Assign to filestore.
  	fs.AddConsumer(o)
@@ -179,3 +179,11 @@ index 77cd75c..9efacb9 100644
  
  	if opts.PortsFileDir != _EMPTY_ {
  		s.deletePortsFile(opts.PortsFileDir)
+@@ -4171,6 +4175,7 @@ func (s *Server) lameDuckMode() {
+ 		gp *= -1
+ 	}
+ 	s.mu.Unlock()
++	measureServer(s, "server.shutdown")
+ 
+ 	// If we are running any raftNodes transfer leaders.
+ 	if hadTransfers := s.transferRaftLeaders(); hadTransfers {
