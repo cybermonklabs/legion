@@ -157,7 +157,7 @@ func (d *spyDialer) requests() [][2]string {
 }
 
 // The reply subject: a spy on the operator's own connection sees every request `hold set` sends
-// carry a reply under _INBOX_envoy_operator., and the spy is seen to see them (more than a
+// carry a reply under natsgrant.OperatorInbox, and the spy is seen to see them (more than a
 // handful of requests). A raw client holding the operator's grant can still aim a JetStream answer
 // at $KV.envoy_sessions.x, which the server stores: the stated residual, recorded here so a change to
 // it is seen. It fails when an operator request asks for its answer anywhere else.
