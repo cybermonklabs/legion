@@ -4,13 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -228,36 +226,6 @@ const (
 	controlPutBacks     = 5
 )
 
-// metTheReaper is start with the race between PID 1's reaper and a put-back's own wait run to its
-// end before that wait reads the command's exit: once start has started the command, the answer
-// waits for the command to exit and then for a whole pass of the reaper that began after it
-// (passed). By then a command the guard holds is still its own wait's, and any other's exit is
-// the reaper's, so its own wait answers ECHILD. The row once left the race to the machine: its
-// control needed a pass to land between an unguarded command's exit and its wait within five
-// put-backs, and failed whenever none did (CI's daemon-go, 2026-11-21: "none of 5 put-backs with
-// no guard lost an exit to the reaper"). A command that never exits, or a reaper that never
-// finishes a pass, fails t by name.
-func metTheReaper(t *testing.T, start procgroup.Starter, passed func() bool) procgroup.Starter {
-	return func(cmd *exec.Cmd) (func(), error) {
-		done, err := start(cmd)
-		if err != nil {
-			return done, err
-		}
-		pid := cmd.Process.Pid
-		ended := func() bool {
-			_, err := os.Stat(filepath.Join("/proc", strconv.Itoa(pid)))
-			return errors.Is(err, os.ErrNotExist) || zombie(pid)
-		}
-		switch {
-		case !testwait.Holds(testwait.Bounded(t, time.Minute, 30*time.Second), time.Millisecond, ended):
-			t.Errorf("the put-back's command %d (%s) never exited", pid, strings.Join(cmd.Args, " "))
-		case !passed():
-			t.Errorf("the reaper finished no pass after the put-back's command %d exited", pid)
-		}
-		return done, nil
-	}
-}
-
 // TestPutBacksPIDOneHelper is TestPutBacksUnderThePodsReaperKeepTheirExitStatus's body, run as PID
 // 1 under relentlessReaper, which starts a new pass as soon as it ends one. Every command of every
 // put-back meets the reaper before its own wait reads its exit (metTheReaper). Each put-back
@@ -295,13 +263,30 @@ func TestPutBacksPIDOneHelper(t *testing.T) {
 		restored bool
 		notice   string
 	}
+	// Each put-back runs in a goroutine of its own and is waited for until 15 s before the test
+	// binary's deadline, after reaperBound's 30 s: a pass that never ends while it holds the
+	// guard's lock holds every guarded start with it, and the row then fails here, by name.
+	putBack := func(start procgroup.Starter, dir string) answer {
+		got := make(chan answer, 1)
+		go func() {
+			restored, notice := restoreWorkspace(context.Background(), metTheReaper(t, start, passed), dir, f.env, bundleRelease, saved)
+			got <- answer{restored, notice}
+		}()
+		select {
+		case a := <-got:
+			return a
+		case <-time.After(testwait.Bounded(t, 3*365*24*time.Hour, 15*time.Second)):
+			t.Fatalf("the put-back into %s never returned, to 15 s before the test binary's deadline: a pass of the reaper that never ends holds its start", dir)
+			return answer{}
+		}
+	}
 	answers := make([]answer, len(guarded))
 	for index, dir := range guarded {
-		answers[index].restored, answers[index].notice = restoreWorkspace(context.Background(), metTheReaper(t, managers[0].restore.start, passed), dir, f.env, bundleRelease, saved)
+		answers[index] = putBack(managers[0].restore.start, dir)
 	}
 	controls := make([]answer, len(control))
 	for index, dir := range control {
-		controls[index].restored, controls[index].notice = restoreWorkspace(context.Background(), metTheReaper(t, procgroup.NoReaper, passed), dir, f.env, bundleRelease, saved)
+		controls[index] = putBack(procgroup.NoReaper, dir)
 	}
 	stop()
 
