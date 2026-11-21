@@ -467,6 +467,19 @@ func TestASettlementAfterARefusedDrainVersionsAWholeRenderOfTheRoom(t *testing.T
 			if live.StateVector().Clock(gapNewlinesClient) != 0 {
 				t.Fatal("the room drained the newlines, so the check refused no drain and nothing here is tested")
 			}
+			// The keystroke's apply ends by closing the socket that sent the newlines whose drain the
+			// check refused (closeDiscardedSenders), and closes it only after the room's update
+			// observer has armed the settlement the keystroke owes, which moves the room's generation
+			// (observeRoomUpdates). The room's state vector holds the keystroke before that: ygo runs
+			// the observer after the commit has released the document's lock. A settlement started at
+			// the generation before the arming writes no version (applyStamp), and the armed one, which
+			// the socket's departure runs (settleLastPeer), may not have committed when the version is
+			// read. So the settlement below starts once the socket has ended.
+			select {
+			case <-sender.Ended:
+			case <-time.After(roomWait(t)):
+				t.Fatal("the socket that sent the newlines is still connected, though the check refused their drain")
+			}
 			if row.serverWrite {
 				if err := service.srv.Apply(ctx, artifactID, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
 					text := allTexts(doc.GetXmlFragment(fragmentName))[1]
