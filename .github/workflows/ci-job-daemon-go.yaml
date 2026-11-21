@@ -7,7 +7,8 @@ name: CI job daemon-go
 # What runs here is the Go daemon's own tests — the plain step over every package of
 # packages/daemon but the three concurrent ones and the text checks, less the two pure table
 # pins of internal/supervise, which the text-check job runs by name and this step skips by name,
-# the race step over those three packages, and the Stage 1 live proof, which builds ./cmd/legion
+# the race step over those three packages, the forced-order step over the daemon's TestForcedOrder
+# tests on a hooked nats-server, and the Stage 1 live proof, which builds ./cmd/legion
 # and boots it against this job's Postgres. They left ci.yaml's `test` job, which runs
 # thirty-two shell-script harnesses and a handful of Bun suites behind one filter: that filter
 # had to cover everything the daemon's Go closure reads, so a change to a shell script or to
@@ -18,7 +19,7 @@ name: CI job daemon-go
 # Go closure (`daemon_go_tests`, which already stood for exactly this set and gated nothing),
 # and the `test` job's is what its remaining steps read.
 #
-# Everything here is what those three steps need and nothing else:
+# Everything here is what those steps need and nothing else:
 #   * the Postgres service and LEGION_TEST_PG_DSN, BROKER_TEST_DATABASE_URL and
 #     LEGION_E2E_PG_DSN — the daemon's unit tests' store, the broker rig its cipher
 #     contract tests drive, and Stage 1's;
@@ -75,8 +76,9 @@ jobs:
     # minutes, then the race step's 694 s and its 30, then Stage 1 and the report. That is under
     # 4,000 s; 70 minutes leaves the same headroom the `test` job's 80 left when it carried these
     # steps (dispatch://INFRA-1052 measured them over the 30 newest counted test jobs of main
-    # push runs).
-    timeout-minutes: 70
+    # push runs). The forced-order step adds its compile of a hooked nats-server under the
+    # detector, up to 5 minutes, and forced-order.sh's 10-minute -timeout, so 85.
+    timeout-minutes: 85
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -240,6 +242,19 @@ jobs:
         run: |
           go test -count=1 -timeout 10m -run '^(TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt)$' ./internal/launcher
         working-directory: packages/daemon
+
+      # The daemon's forced-order tests (packages/envoy/scripts/forced-order.sh -C packages/daemon):
+      # every TestForcedOrder test of the packages named, built with -tags odatrace and -race
+      # against the nats-server the workspace links, with the hold points
+      # packages/envoy/internal/testnats/hooks.go drives, on the server testnats.StartInProcess
+      # runs in the test process. The step names no version, so when go.mod moves to a version
+      # packages/envoy/internal/testnats/testdata/hooked has no hooks for, the script refuses it
+      # and the step fails until the hooks are ported; it also fails a package that declares no
+      # such test. The daemon refuses nats:2.10's server (envoy's natsversion.Refusal), so it has
+      # no v2.10.29 run here. The step sets no environment variable: check-ci-filters.sh reduces no
+      # go command of a job one of whose steps sets a GO* name.
+      - name: Forced-order tests of the daemon on the hooked nats-server the module links
+        run: packages/envoy/scripts/forced-order.sh -C packages/daemon ./internal/testnats/
 
       # The proof builds the daemon's ./cmd/legion and boots it against the Postgres above, so it
       # belongs with the Go steps rather than with the script harnesses: it is the daemon's own
