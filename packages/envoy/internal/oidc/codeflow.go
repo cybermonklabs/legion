@@ -248,6 +248,13 @@ func (f *CodeFlow) AuthURL(ctx context.Context, redirectURL, state, nonce string
 	return issuer.config.AuthCodeURL(state, options...), nil
 }
 
+// MaxCallbackCode is the longest authorization code, in bytes, a sign-in callback sends a token
+// endpoint through Exchange or OnlineExchange. The code is the callback's query, which whoever
+// holds the browser writes, so each callback refuses a longer one before it calls either:
+// Dispatch's (internal/dispatch/auth, ParseCallback) and the broker's approval page
+// (internal/cipher/approval, ServeCallback).
+const MaxCallbackCode = 2048
+
 // Exchange trades the code the issuer redirected to redirectURL for the signed-in person's ID
 // token and refresh token. The ID token must carry nonce, the value the sign-in that sent the
 // browser to AuthURL bound it to; one carrying another, and a caller naming no nonce, fail with

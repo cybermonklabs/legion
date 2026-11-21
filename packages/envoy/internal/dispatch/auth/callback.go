@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 // CallbackError describes the human-readable form of an authorization callback failure, the
@@ -22,14 +24,10 @@ func (e *CallbackError) Error() string {
 	return "sign-in callback: " + e.Code
 }
 
-// MaxCallbackCode is the longest code, in bytes, a callback may carry: the code is the callback's
-// query, which whoever holds the browser writes, so its size is bounded before Dispatch sends it
-// to the issuer's token endpoint.
-const MaxCallbackCode = 2048
-
 // ParseCallback extracts the code and state (or the error and its description) from an
 // `/auth/callback?...` query string. It returns a CallbackError for an issuer-side error and a
-// plain error for a malformed callback, one whose code is longer than MaxCallbackCode included.
+// plain error for a malformed callback, one whose code is longer than oidc.MaxCallbackCode
+// included.
 func ParseCallback(req *http.Request) (code, state string, err error) {
 	q := req.URL.Query()
 	if errCode := q.Get("error"); errCode != "" {
@@ -40,8 +38,8 @@ func ParseCallback(req *http.Request) (code, state string, err error) {
 	if code == "" || state == "" {
 		return "", "", errors.New("missing code or state in callback")
 	}
-	if len(code) > MaxCallbackCode {
-		return "", "", fmt.Errorf("the callback's code is longer than %d bytes", MaxCallbackCode)
+	if len(code) > oidc.MaxCallbackCode {
+		return "", "", fmt.Errorf("the callback's code is longer than %d bytes", oidc.MaxCallbackCode)
 	}
 	return code, state, nil
 }

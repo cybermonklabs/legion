@@ -83,20 +83,15 @@ func readPending(r *http.Request) (pendingSignIn, bool) {
 	return pending, true
 }
 
-// maxCallbackCode is the longest code, in bytes, the callback sends the provider's token endpoint.
-// The code is the callback's query, which whoever holds the browser writes, so its size is bounded
-// before the broker sends it anywhere.
-const maxCallbackCode = 2048
-
 // ServeCallback is GET /signin/callback, where the provider returns the browser with a code. The
 // sign-in in progress is used once: its cookie is cleared whatever happens next. The callback
 // refuses, creating no session, a browser with no sign-in in progress, a state that is not the
 // one the sign-in sent (compared in constant time), a sign-in returning anywhere but a record's
-// page, a code longer than maxCallbackCode, which it sends the provider no request for, a code the
-// provider will not exchange with the sign-in's PKCE verifier, an ID token that does not verify
-// (issuer, audience, signature, expiry, nonce), and a person outside the Workspace domain or with
-// an unverified email (oidc.WorkspaceLogin). Otherwise it mints a fresh random session secret into
-// the session cookie, stores only its SHA-256 with the session's expiry, ends the session the
+// page, a code longer than oidc.MaxCallbackCode, which it sends the provider no request for, a
+// code the provider will not exchange with the sign-in's PKCE verifier, an ID token that does not
+// verify (issuer, audience, signature, expiry, nonce), and a person outside the Workspace domain or
+// with an unverified email (oidc.WorkspaceLogin). Otherwise it mints a fresh random session secret
+// into the session cookie, stores only its SHA-256 with the session's expiry, ends the session the
 // browser held before (no fixation, no lingering session), and answers 303 to the sign-in's page.
 //
 // From the exchange onward it also writes the sign-in's outcome into the broker's sign-in
@@ -134,7 +129,7 @@ func (p *Page) ServeCallback(w http.ResponseWriter, r *http.Request, _ Session) 
 		return
 	}
 	code := query.Get("code")
-	if len(code) > maxCallbackCode {
+	if len(code) > oidc.MaxCallbackCode {
 		slog.Warn("approval sign-in refused: the code is longer than the broker sends a provider", "bytes", len(code))
 		writeMessage(w, http.StatusBadRequest, codeSignInCodeInvalid, say("Sign-in refused",
 			"This sign-in's code is not one the sign-in provider issues, so it was refused. Open the request again to sign in."))
