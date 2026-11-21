@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	internal "github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
 
 // Rig is internal/cipher/ciphertest.Rig under a name a foreign module may import.
@@ -30,7 +31,13 @@ const DaemonAccount = internal.DaemonAccount
 const ExchangeRolesAccount = internal.ExchangeRolesAccount
 
 // NewRig forwards to internal/cipher/ciphertest.NewRig, including its own skip when
-// BROKER_TEST_DATABASE_URL is unset.
+// BROKER_TEST_DATABASE_URL is unset, and its failure when the calling package's tests do not run
+// through Main.
 func NewRig(t *testing.T) *Rig {
 	return internal.NewRig(t)
 }
+
+// Main runs the calling package's tests and then drops the test binary's own database that every
+// Rig makes its schema in (internal/cipher/store/storetest's Main). A package whose tests call
+// NewRig uses it as its TestMain: func TestMain(m *testing.M) { os.Exit(ciphertest.Main(m)) }.
+func Main(m *testing.M) int { return storetest.Main(m) }
