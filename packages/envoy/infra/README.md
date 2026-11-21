@@ -1015,9 +1015,8 @@ group, `signInWorkspaceDomains`, `signInOutside`, `outsideOrigin` and `signInPas
 them beside the front door; with the sign-in group its host must be one Google takes in a
 redirect URI, as `outsideOrigin`'s must, and the Google client lists
 `<publicOrigin>/auth/callback`. `allowedNamespaces` is optional there: the entrance forwards to
-the app's Service `<hostname>` on
-port 8766, or straight to the app's pods, labelled `app=<hostname>`, through a network endpoint
-group of that Service.
+the app's Service `<hostname>` on port 8766, or straight to the app's pods, labelled
+`app=<hostname>`, through a network endpoint group of that Service.
 
 `loadBalancerSourceRanges` and `networkEndpointGroupName`, unset by default, describe that
 entrance, and each needs `publicOrigin`; beside the tailnet group or in the sandbox each is refused,
@@ -1086,12 +1085,14 @@ after `DISPATCH_SERVER_URL`, and nothing else. Whatever serves that origin and f
 app's Service on port 8766 is the deployment's to build, whatever way the people it serves come
 in by; if it runs in this cluster, name its namespace in `allowedNamespaces`, which admits that
 namespace's pods to port 8766 and nothing else. With `outsideOrigin` and the sign-in inputs set,
-the Google client `signInClientId` names must list the rendered `DISPATCH_OUTSIDE_ORIGIN`
-followed by `/auth/callback` as an authorized redirect URI, beside
-`https://<hostname>.<tailnetDnsName>/auth/callback`, so with them the component also refuses a
-host Google refuses there: a raw IP address, and one whose top-level domain is not on the public
-suffix list, a single label among them ([Redirect URI validation
-rules](https://developers.google.com/identity/protocols/oauth2/web-server)).
+and `signInPasskey` unset, the Google client `signInClientId` names must list the rendered
+`DISPATCH_OUTSIDE_ORIGIN` followed by `/auth/callback` as an authorized redirect URI, beside
+`https://<hostname>.<tailnetDnsName>/auth/callback`. So with the sign-in inputs the component
+also refuses a host Google refuses there: a raw IP address, and one whose top-level domain is not
+on the public suffix list, a single label among them ([Redirect URI validation
+rules](https://developers.google.com/identity/protocols/oauth2/web-server)). With `signInPasskey`
+the client lists no callback at that origin, and the check stays for the reason the
+`signInPasskey` paragraph below gives.
 `signInOutside: true` renders `DISPATCH_SIGNIN_OUTSIDE=1` right after `DISPATCH_SIGNIN_DOMAIN`,
 which lets a verified Google account outside `signInDomain` sign in as a restricted member while
 some project's owner or access list names its email directly, never through a group; with it,
@@ -1110,8 +1111,18 @@ party ID is that origin's host. It needs `outsideOrigin` and is refused without 
 needs the sign-in group too, though it is not in that group: a person from outside enrolls a
 passkey with an invitation a project owner makes while signed in through Google, so without that
 group nobody could invite anyone, and it is refused with the clause naming each sign-in input
-still unset. So the second origin's host is then one Google takes in a redirect URI, never an IP
-address, which no browser makes a passkey for. It replaces the Google sign-in of people from
+still unset. With it, Google signs in the Workspace's own people alone, and Dispatch answers
+`/auth/start` and `/auth/callback` at `outsideOrigin` with 404, so the Google client lists no
+`<outsideOrigin>/auth/callback`. Leave it out: Google refuses a redirect URI the client does not
+list, so an `envoyImage` that predates the setting cannot sign anyone in through Google at that
+origin either. The second origin's host is still held to the rule the `outsideOrigin` paragraph
+states for a redirect URI's host, since the sign-in inputs are set, and that rule keeps it a
+domain name, never an IP address: a passkey's relying party ID must be a domain name. List every
+other domain the Workspace owns in `signInWorkspaceDomains` (below). Dispatch refuses an
+invitation to an address on `signInDomain`, on a listed domain or on a subdomain of either, and
+takes an address on a domain left out for an outside person's, so a Workspace account on that
+domain could hold a passkey, which Workspace offboarding does not end: suspending or deleting the
+account in the Workspace touches no passkey. It replaces the Google sign-in of people from
 outside that `signInOutside` turns on, so the two are refused together. The sandbox refuses it by
 name, as it refuses `outsideOrigin`, and so does `iapAudience`, since IAP signs a person in. With
 it unset the component renders exactly what it rendered before it existed. An `envoyImage` whose
@@ -1544,7 +1555,10 @@ paragraph above states for each label of that origin's host, since the front doo
 `<hostname>.<tailnetDnsName>` on a certificate. It refuses a hostname that breaks that rule in
 every mode, so a stack in the cluster-only mode or the sandbox keeps a hostname a front door can
 later serve, and before any resource registers. The component also refuses invalid tailnet DNS
-names, tags, image references, sign-in domains,
+names, tags, image references, a `signInDomain` Dispatch would refuse at its boot (any but a
+lowercase DNS name in ASCII of two labels or more, each of at most 63 characters, at most 253 in
+all, the rule `signInWorkspaceDomains` entries are held to once IDNA lookup has made them ASCII), a
+`signInClientId` of whitespace alone, which Dispatch trims to nothing and refuses to boot without,
 namespaces, allowed namespaces, an `appCpu`, `appMemory`, `proxyCpu`, `proxyMemory`,
 `appEphemeralStorage` or `proxyEphemeralStorage` outside
 Autopilot's bounds for the app pod (above), a `pprofPort` outside 1-65535 or on a port the app pod
@@ -1561,11 +1575,11 @@ refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is
 `oidcIssuer` with no `oidcAudience`, an `outsideOrigin` that breaks the rule the paragraph on it
 above states, a `publicOrigin` that breaks the rule its own paragraph states or is set beside the
 tailnet inputs, an `iapAudience` without `publicOrigin` or `signInDomain` or beside
-`signInClientId`, `signInClientSecret`, `signInOutside`, `signInPasskey` or `outsideOrigin`, and,
-once it resolves, an `iapAudience` of another form than a backend service's, a `signInOutside`
-without the sign-in inputs, a `signInPasskey` without `outsideOrigin` or the sign-in inputs or
-beside `signInOutside`, a `signInWorkspaceDomains` without the sign-in inputs or with an entry
-Dispatch would refuse, an
+`signInClientId`, `signInClientSecret`, `signInWorkspaceDomains`, `signInOutside`, `signInPasskey`
+or `outsideOrigin`, and, once it resolves, an `iapAudience` of another form than a backend
+service's, a `signInOutside` without the sign-in inputs, a `signInPasskey` without `outsideOrigin`
+or the sign-in inputs or beside `signInOutside`, a `signInWorkspaceDomains` without the sign-in
+inputs or with an entry Dispatch would refuse, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` outside

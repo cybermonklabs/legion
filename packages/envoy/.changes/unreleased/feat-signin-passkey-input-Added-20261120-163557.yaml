@@ -7,8 +7,11 @@ body: |-
   sign-in inputs: a project owner, signed in through Google, makes the invitation a person enrolls
   a passkey with. It is refused without either (the refusal names each sign-in input still unset),
   beside `signInOutside`, beside `iapAudience` (IAP signs a person in), in the sandbox and under
-  `clusterOnly`; each refusal of `signInPasskey` names it. With it unset the component renders
-  exactly what it rendered before. An `envoy-dispatch` that predates the setting ignores it.
+  `clusterOnly`; each refusal of `signInPasskey` names it. With it the Google client lists no
+  `<outsideOrigin>/auth/callback`, which Dispatch answers 404, and a deployment lists every other
+  domain its Workspace owns in `signInWorkspaceDomains`, so that no Workspace account holds a
+  passkey. With it unset the component renders exactly what it rendered before. An
+  `envoy-dispatch` that predates the setting ignores it.
 time: 2026-11-20T16:35:57Z
 custom:
     Issue: feat-signin-passkey-input

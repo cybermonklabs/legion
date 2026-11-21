@@ -129,7 +129,6 @@ var (
 
 var (
 	tailnetDNSNameRule = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.ts\.net$`)
-	signInDomainRule   = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`)
 	namespaceRule      = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 	secretKeyRule      = regexp.MustCompile(`^[-._a-zA-Z0-9]+$`)
 	// quantityRule is a Kubernetes resource quantity (k8s.io/apimachinery's resource.Quantity):
@@ -203,8 +202,9 @@ type DispatchArgs struct {
 	// app's NetworkPolicy admits an in-cluster one only through allowedNamespaces. It needs the
 	// tailnet inputs or publicOrigin: without either the component builds the sandbox, whose own
 	// origin is an in-cluster http:// address where browser sign-in is refused. With the sign-in
-	// inputs set its host must also be one weborigin.GoogleRedirectHost takes, since the Google
-	// client then lists its callback. Unset renders nothing.
+	// inputs set its host must also be one weborigin.GoogleRedirectHost takes: the Google client
+	// then lists its callback, or, with signInPasskey, the host is the passkey's relying party ID,
+	// a domain name. Unset renders nothing.
 	OutsideOrigin string `pulumi:"outsideOrigin,optional"`
 	// SignInOutside renders DISPATCH_SIGNIN_OUTSIDE=1, which lets a verified Google account outside
 	// signInDomain sign in as a restricted member while some project's owner or access list names
@@ -219,7 +219,13 @@ type DispatchArgs struct {
 	// signed in through Google, so without them nobody could invite anyone. It replaces the Google
 	// sign-in of people from outside that signInOutside turns on, so it is refused beside
 	// signInOutside. It is refused beside iapAudience, since IAP signs a person in, and in the
-	// sandbox, which serves no https origin. Unset renders nothing.
+	// sandbox, which serves no https origin. With it the Google client lists no
+	// <outsideOrigin>/auth/callback, which Dispatch then answers 404; outsideOrigin's host is still
+	// held to weborigin.GoogleRedirectHost, which keeps it a domain name, never an IP address, as a
+	// relying party ID must be. A deployment that sets it lists every other domain its Workspace
+	// owns in signInWorkspaceDomains: Dispatch takes an address on a domain left out for an outside
+	// person's, so a Workspace account there could hold a passkey, which Workspace offboarding does
+	// not end. Unset renders nothing.
 	SignInPasskey bool `pulumi:"signInPasskey,optional"`
 	// PublicOrigin is the https origin Dispatch is served at when it has no front door: the
 	// address a reader is sent back to, DISPATCH_SERVER_URL and the url output, served by an
@@ -1308,7 +1314,7 @@ func refuseDispatchIAP(args *DispatchArgs) error {
 	if args.OutsideOrigin != "" {
 		return core.InputErrorf("outsideOrigin", "outsideOrigin is refused beside iapAudience: a browser reaches Dispatch through IAP alone, at publicOrigin, and a second origin is for outside sign-in, which the IAP door does not run; unset outsideOrigin, or unset iapAudience")
 	}
-	if !signInDomainRule.MatchString(args.SignInDomain) {
+	if !dispatchDomainName(args.SignInDomain) {
 		return core.InputErrorf("signInDomain", "signInDomain %q must be a lowercase DNS name with iapAudience: the Workspace domain whose accounts may use Dispatch, which Dispatch holds IAP's signed header's hd claim to and refuses to boot without", args.SignInDomain)
 	}
 	return nil
@@ -1318,12 +1324,18 @@ func refuseDispatchIAP(args *DispatchArgs) error {
 // browser to, the domain whose accounts it admits and that client's secret. It runs only while
 // that group is set, so a deployment that runs no browser sign-in reaches none of these checks,
 // and every refusal trails clause, which names every sign-in input still unset, as the tailnet
-// group's refusals do. Each is a core.InputError naming the input to correct.
+// group's refusals do. Each is a core.InputError naming the input to correct. A client ID of
+// whitespace alone is no client: Dispatch trims DISPATCH_SIGNIN_CLIENT_ID and refuses to boot
+// without one. The domain is held to the rule Dispatch holds DISPATCH_SIGNIN_DOMAIN to
+// (dispatchDomainName).
 func refuseDispatchSignInGroup(args *DispatchArgs, clause string) error {
 	if args.SignInClientId == "" {
 		return core.InputErrorf("signInClientId", "signInClientId is required%s", clause)
 	}
-	if !signInDomainRule.MatchString(args.SignInDomain) {
+	if strings.TrimSpace(args.SignInClientId) == "" {
+		return core.InputErrorf("signInClientId", "signInClientId is blank, which no Google client ID is: Dispatch trims it and refuses to boot without one%s", clause)
+	}
+	if !dispatchDomainName(args.SignInDomain) {
 		return core.InputErrorf("signInDomain", "signInDomain %q must be a lowercase DNS name%s", args.SignInDomain, clause)
 	}
 	if args.SignInClientSecret == nil {
@@ -1332,23 +1344,32 @@ func refuseDispatchSignInGroup(args *DispatchArgs, clause string) error {
 	return nil
 }
 
-// workspaceDomainShape is a DNS name of two labels or more, each a lowercase letter or digit, then
+// dispatchDomainShape is a DNS name of two labels or more, each a lowercase letter or digit, then
 // up to 61 letters, digits or hyphens, then a letter or digit (63 characters at most): the shape
-// Dispatch holds a DISPATCH_SIGNIN_WORKSPACE_DOMAINS entry's A-labels to, with
-// maxWorkspaceDomainLength, the longest DNS name in its dotted text form.
-var workspaceDomainShape = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+// Dispatch holds DISPATCH_SIGNIN_DOMAIN and each DISPATCH_SIGNIN_WORKSPACE_DOMAINS entry's A-labels
+// to, with maxDispatchDomainLength, the longest DNS name in its dotted text form. The domains
+// Dispatch takes and refuses are packages/envoy/cmd/dispatch/testdata/signin-domain-vectors.json,
+// which this package's tests and Dispatch's read alike.
+var dispatchDomainShape = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
-const maxWorkspaceDomainLength = 253
+const maxDispatchDomainLength = 253
+
+// dispatchDomainName reports whether domain is one Dispatch takes as DISPATCH_SIGNIN_DOMAIN, under
+// Google sign-in and under IAP alike: in ASCII, of dispatchDomainShape and at most
+// maxDispatchDomainLength characters.
+func dispatchDomainName(domain string) bool {
+	return len(domain) <= maxDispatchDomainLength && dispatchDomainShape.MatchString(domain)
+}
 
 // workspaceDomainRule reports whether entry is one Dispatch takes in DISPATCH_SIGNIN_WORKSPACE_DOMAINS:
-// lowercase, taken by IDNA lookup (idna.Lookup.ToASCII), and then, as its A-labels, of
-// workspaceDomainShape and at most maxWorkspaceDomainLength characters. An internationalized domain
-// may be written in Unicode (bücher.example) or as its A-labels (xn--bcher-kva.example); a label
-// such as xn--a, which decodes to nothing, is refused. workspaceDomainShape admits no comma, so no
-// entry splits into two when the list is comma-joined.
+// lowercase, taken by IDNA lookup (idna.Lookup.ToASCII), and then, as its A-labels, a
+// dispatchDomainName. An internationalized domain may be written in Unicode (bücher.example) or as
+// its A-labels (xn--bcher-kva.example); a label such as xn--a, which decodes to nothing, is
+// refused. dispatchDomainShape admits no comma, so no entry splits into two when the list is
+// comma-joined.
 func workspaceDomainRule(entry string) bool {
 	ascii, err := idna.Lookup.ToASCII(entry)
-	return err == nil && entry == strings.ToLower(entry) && len(ascii) <= maxWorkspaceDomainLength && workspaceDomainShape.MatchString(ascii)
+	return err == nil && entry == strings.ToLower(entry) && dispatchDomainName(ascii)
 }
 
 // refuseDispatchWorkspaceDomains judges signInWorkspaceDomains where the sign-in inputs are set,
@@ -1377,8 +1398,10 @@ func refuseDispatchWorkspaceDomains(domains []string) error {
 // weborigin.Parse takes, whose refusals it prefixes with the input's name; the component adds that
 // the origin is https, as Dispatch's own is, that its host is not ownHost, whose origin Dispatch
 // already is, and, with the sign-in inputs set, that its host is one weborigin.GoogleRedirectHost
-// takes, since the Google client must then list <outsideOrigin>/auth/callback; that function's
-// refusals it prefixes with "outsideOrigin's ".
+// takes: without signInPasskey the Google client must then list <outsideOrigin>/auth/callback,
+// and with it, where Dispatch answers that path 404 and the client lists no callback there, the
+// host is the passkey's relying party ID, which must be a domain name, never an IP address. That
+// function's refusals it prefixes with "outsideOrigin's ".
 func refuseDispatchOutsideOrigin(args *DispatchArgs, ownHost, owner string, signInOn bool) (string, error) {
 	if args.OutsideOrigin == "" {
 		return "", nil

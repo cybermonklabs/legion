@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  `envoy-infra:gcp:Dispatch` refuses a `signInDomain` that Dispatch refuses at boot: one with a
+  label of more than 63 characters or of more than 253 characters in all, under Google sign-in and
+  beside `iapAudience` alike. It also refuses a `signInClientId` of whitespace alone, which
+  Dispatch trims to nothing and refuses to boot without. Before, each passed the preview and the
+  app's pods failed at boot. Each refusal is a `core.InputError` naming the input.
+time: 2026-11-20T23:57:43Z
+custom:
+    Issue: feat-signin-passkey-input

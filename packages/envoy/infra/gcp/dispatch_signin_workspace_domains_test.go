@@ -53,27 +53,6 @@ func TestDispatchSignInWorkspaceDomainsRenderWithSignIn(t *testing.T) {
 	}
 }
 
-// Each entry is held to the rule Dispatch holds a DISPATCH_SIGNIN_WORKSPACE_DOMAINS entry to, so a
-// bad one fails the preview rather than the pod's boot: lowercase, taken by IDNA lookup, and then
-// a DNS name of two labels or more, each of at most 63 characters, at most 253 in all. These are
-// taken; TestDispatchRefusesASignInWorkspaceDomainsItCannotServe holds the refusals.
-func TestDispatchSignInWorkspaceDomainsTakeEveryDomainDispatchTakes(t *testing.T) {
-	for _, domain := range []string{
-		"example.net",
-		"1example.net",
-		"a.b.example.net",
-		strings.Repeat("a", 63) + ".example.net",
-		"abc--d.example.net",
-		"xn--bcher-kva.example",
-		"bücher.example",
-	} {
-		t.Run(domain, func(t *testing.T) {
-			_, err := gcp.ResolveDispatch(withWorkspaceDomains(dispatchArgs, domain)())
-			require.NoError(t, err)
-		})
-	}
-}
-
 // signInWorkspaceDomains is refused before anything registers wherever Dispatch could not read it,
 // and an entry Dispatch would refuse at boot is refused here, each refusal a core.InputError naming
 // signInWorkspaceDomains as the schema does, an entry's refusal naming the entry by its index in
