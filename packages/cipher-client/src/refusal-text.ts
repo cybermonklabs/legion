@@ -256,6 +256,8 @@ const KNOWN_BROKER_REFUSAL_PATTERNS: readonly RegExp[] = [
   `The subject token was refused: its entry names the project ${PROJECT_SLOT}, which its person ${PERSON_SLOT} cannot see\\.`,
   `The subject token was refused: its entry names no project, and its person ${PERSON_SLOT} is a restricted member, who sees only the projects that name them\\.`,
   "Dispatch could not be asked whether the token's person sees the projects it names; try again\\.",
+  `The token names the project ${PROJECT_SLOT}, which is private or turning private, and a developer box gets no token of such a project: work on it in a session of the project's own namespace\\.`,
+  "Dispatch's answer about the token's projects aged out before the token was stored; try again\\.",
   `The session name '${SESSION_SLOT}' belongs to another identity: one the broker's configuration fixes it for, or one that has written under it within the last [0-9]{1,4} days\\. Ask under a name of your own\\.`,
   `No registration says this pod may write under the session name '${SESSION_SLOT}'\\. A pod writes under a session name its deployment registered for it\\.`,
   `Refused: this pod's registration for session '${SESSION_SLOT}' is bound to another key; a role trades only for its own session\\.`,
@@ -278,6 +280,7 @@ const LIBRARY_DESCRIPTIONS: readonly string[] = [
   "The request is missing a required parameter, includes an invalid parameter value, includes a parameter more than once, or is otherwise malformed.",
   "The authorization server is currently unable to handle the request due to a temporary overloading or maintenance of the server.",
   "The authorization server encountered an unexpected condition that prevented it from fulfilling the request.",
+  "The requested resource is invalid, missing, unknown, or malformed.",
 ];
 const REFUSAL_CODE_PREFIX = /^[A-Z][A-Z_]{1,63}: /;
 /** The prefixes the broker writes in place of the library's sentence: a code and a colon. */

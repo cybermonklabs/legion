@@ -63,6 +63,9 @@ type Row struct {
 	// private, as Dispatch answers it in slack_channels_changed_at; zero answers null, a list
 	// never changed.
 	SlackChannelsChangedAt time.Time
+	// ClosedToDeveloperBoxes is Dispatch's word that no developer-box credential may list the
+	// project. The stand-in writes the key only while it is true, as Dispatch does.
+	ClosedToDeveloperBoxes bool
 }
 
 // Server is the stand-in: URL is its base, Token the one bearer it takes, and Account that bearer
@@ -307,6 +310,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			answer["slack_channels"] = channelsOf(row)
 		}
 		answer["slack_channels_changed_at"] = changedAtOf(row)
+		if row.ClosedToDeveloperBoxes {
+			answer["closed_to_developer_boxes"] = true
+		}
 		writeJSON(w, http.StatusOK, answer)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]any{"code": "NOT_FOUND", "error": r.URL.Path})

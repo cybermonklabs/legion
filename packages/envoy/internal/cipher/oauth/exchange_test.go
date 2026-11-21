@@ -1369,13 +1369,22 @@ func TestAnExchangeWithNoListedIdentityIsRefusedByName(t *testing.T) {
 // fakeAccess is Dispatch's project-access answers for the exchange's tests: which person sees
 // which project, which projects Dispatch holds, and each person's member kind. It records every
 // question, can be made unreachable, and caches nothing, so a test changes an answer and the next
-// trade reads it.
+// trade reads it. A project is public unless private names it, and closed to developer boxes
+// only where closed does, whatever its visibility.
 type fakeAccess struct {
 	mu    sync.Mutex
 	sees  map[string][]string // person → the projects they see
 	held  []string            // the projects Dispatch holds
 	kinds map[string]string   // person → member kind; absent is none
-	down  bool
+	// private and closed are the projects Dispatch answers private, and closed to developer
+	// boxes (projectaccess.Answer.ClosedToDeveloperBoxes).
+	private map[string]bool
+	closed  map[string]bool
+	// askedAt, when set, is the AskedAt each answer carries, and lastAsked the last it carried;
+	// unset, an answer carries none, as a source that keeps no clock answers.
+	askedAt   func() time.Time
+	lastAsked time.Time
+	down      bool
 	// refused is Dispatch answering 403 to the broker's own account token.
 	refused bool
 	asked   []string
@@ -1383,9 +1392,11 @@ type fakeAccess struct {
 
 func newFakeAccess() *fakeAccess {
 	return &fakeAccess{
-		sees:  map[string][]string{person: {"PRIV", project}, otherPerson: {otherProject}},
-		held:  []string{"PRIV", "SECRET", project, otherProject},
-		kinds: map[string]string{},
+		sees:    map[string][]string{person: {"PRIV", project}, otherPerson: {otherProject}},
+		held:    []string{"PRIV", "SECRET", project, otherProject},
+		kinds:   map[string]string{},
+		private: map[string]bool{},
+		closed:  map[string]bool{},
 	}
 }
 
@@ -1402,7 +1413,16 @@ func (a *fakeAccess) Access(_ context.Context, key, who string) (projectaccess.A
 	if !slices.Contains(a.held, key) {
 		return projectaccess.Answer{}, projectaccess.ErrProjectNotFound
 	}
-	return projectaccess.Answer{Project: key, Visibility: "private", Person: who, Visible: slices.Contains(a.sees[who], key)}, nil
+	visibility := projectaccess.VisibilityPublic
+	if a.private[key] {
+		visibility = projectaccess.VisibilityPrivate
+	}
+	answer := projectaccess.Answer{Project: key, Visibility: visibility, ClosedToDeveloperBoxes: a.closed[key], Person: who, Visible: slices.Contains(a.sees[who], key)}
+	if a.askedAt != nil {
+		answer.AskedAt = a.askedAt()
+		a.lastAsked = answer.AskedAt
+	}
+	return answer, nil
 }
 
 func (a *fakeAccess) MemberKind(_ context.Context, who string) (string, error) {

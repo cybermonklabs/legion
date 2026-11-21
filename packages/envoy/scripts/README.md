@@ -474,6 +474,36 @@ it presents `--service-token-file`, and `--no-credential` presents nothing.
 `CALLOUT_CHECK_GRANT_ALL=1`, a service granting every session's channel, fails line 2, and
 a hub that never drops the killed broker's connection fails line 6.
 
+## devbox-tokens-at-switch.sh
+
+The reading at a project's switch to private: whether a developer box can still get, or still
+holds, a token that lists the project. Run it on a developer box before the owner switches the
+project to private, and again after Dispatch completes the switch. It reads the broker's count of
+the live developer-box tokens that list the project (`GET /v1/admin/machine-tokens`), tries one
+trade from this box naming the project (`packages/cipher-client/scripts/print-trade.ts` with
+`AGENT_SECRETS_PROJECTS` set to it), and reads the count again, printing each reading with its UTC
+time. The verdict is the last line:
+
+| Verdict | What it read | Exit |
+| --- | --- | --- |
+| `CLOSED` | the trade refused `invalid_target`, and no token live: the reading after the switch | 0 |
+| `CLOSING` | the trade refused, and tokens minted before still live | 1 |
+| `OPEN` | the trade answered, and the count sees it: the reading before the switch | 3 |
+| `UNKNOWN` | a reading not made, or the trade answered while the count read 0 | 2 |
+
+The `OPEN` reading is the control: a count that does not see the token this box just got sees
+nothing, so the script answers `UNKNOWN` for it rather than `CLOSED`.
+
+```bash
+AGENT_SECRETS_ACCOUNT_TOKEN_FILE=<file> bash packages/envoy/scripts/devbox-tokens-at-switch.sh <KEY>
+```
+
+Its environment names what a box's trade reads (`AGENT_SECRETS_URL`, the machine identity or a
+person's sign-in on the box, `AGENT_SECRETS_SESSION`), and a token of the broker's caller
+`dispatch` (`BROKER_API_ACCOUNTS`) in `AGENT_SECRETS_ACCOUNT_TOKEN_FILE`, the only caller the
+count and the trade's introspection answer. `devbox-tokens-at-switch.test.sh` holds each verdict
+to a stand-in count route and fake trades, the blind count among them.
+
 ## backend-count.sh
 
 Counts, for each test it names, the runs that passed on each store backend: the test's

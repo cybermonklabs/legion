@@ -1,0 +1,27 @@
+kind: Added
+body: |-
+  The secrets broker mints no developer-box token of a project Dispatch closes to developer boxes:
+  one in its closing state, the start of an owner's switch to private, or one private by its full
+  switch or with its key in `DISPATCH_PRIVATE_PROJECTS` (the membership answer's new
+  `closed_to_developer_boxes`; an answer without it, a project private on its first day's
+  included, keeps its tokens). A trade that acts as its person and names such a project is refused
+  `invalid_target` naming the project: a machine login's trade, its renewal and a person's sign-in
+  on a machine alike. Such a token is stored only while the answer it rests on is younger than
+  30 s, else the trade is refused `temporarily_unavailable` and stores nothing.
+  `GET /v1/admin/machine-tokens?project=<KEY>` answers Dispatch's caller alone (the new power of
+  the caller name `dispatch`) how many live developer-box tokens list the project and when the last
+  expires, `{project, live_tokens, last_expires_at}`; any other caller is
+  `403 ACCOUNT_LACKS_POWER`, and a query naming no one project key `400 PROJECT_INPUT`. With
+  `slack_channels` (ids joined by commas, empty for none) and `deadline_seconds`, a switch's own
+  call, it first records the project and those channels in the store of private projects and
+  answers `record`, the record's number; bad channels or a deadline missing or over 90 s are
+  `400 RECORD_INPUT`, and a record not written is `503 DATABASE_UNAVAILABLE` with no count.
+  `POST /v1/admin/private-projects/forget` `{"project", "record"}`, for the same caller, forgets
+  such a record: `{"outcome": "forgotten"}` or `{"outcome": "superseded"}`, or
+  `409 RECORD_IN_FLIGHT` with `retry_after_seconds` while a forget naming no record meets a record
+  whose switch may still commit. `packages/envoy/scripts/devbox-tokens-at-switch.sh <KEY>` reads
+  the count, recording nothing, and one trade from a developer box at a project's switch to
+  private.
+time: 2026-11-20T23:32:18Z
+custom:
+    Issue: pr4678

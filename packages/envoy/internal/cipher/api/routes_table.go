@@ -73,6 +73,11 @@ const (
 	// grants nothing: it decides no request, releases no secret value and writes no row, so a
 	// caller holding it alone can read the broker's history and change none of it.
 	readsGrantLog
+	// countsDeveloperBoxTokens is reading how many live tokens a developer box holds that list
+	// one project, which Dispatch reads before it completes a project's switch to private. It
+	// names no token, person or session, and changes nothing, but it is Dispatch's question
+	// alone, so Dispatch's server alone holds it.
+	countsDeveloperBoxTokens
 )
 
 // Account is a caller of the accountAuth routes: the name BROKER_API_ACCOUNTS gives its
@@ -90,17 +95,18 @@ func (a Account) may(p power) bool { return p != noPower && a.powers&p == p }
 
 // accountPowers is the broker's whole table of caller names: every name BROKER_API_ACCOUNTS may
 // give a ServiceAccount, and what that name may do. dispatch is Dispatch's server, which relays a
-// person's decisions and reads tokens back; listener is the Envoy listener, which reads a token
-// back and relays no decision; access-review is the identity a quarterly access review calls as,
-// which reads the grant log and nothing else. The review is a third name rather than another of
-// Dispatch's powers because Dispatch's server already holds approval authority over every
-// person's secrets: giving the whole audit trail to that same name would widen what one stolen
-// token reads, while the review identity decides nothing and so is safe to hand to whoever runs
-// the review. A new caller is a deliberate row here, since a name is an authority and not a
-// label: a name this table does not know refuses the broker's boot.
+// person's decisions, reads tokens back and counts a project's developer-box tokens before a
+// switch to private; listener is the Envoy listener, which reads a token back and relays no
+// decision; access-review is the identity a quarterly access review calls as, which reads the
+// grant log and nothing else. The review is a third name rather than another of Dispatch's
+// powers because Dispatch's server already holds approval authority over every person's
+// secrets: giving the whole audit trail to that same name would widen what one stolen token
+// reads, while the review identity decides nothing and so is safe to hand to whoever runs the
+// review. A new caller is a deliberate row here, since a name is an authority and not a label: a
+// name this table does not know refuses the broker's boot.
 var accountPowers = map[string]power{
 	"access-review": readsGrantLog,
-	"dispatch":      readsTokensBack | relaysDecisions,
+	"dispatch":      readsTokensBack | relaysDecisions | countsDeveloperBoxTokens,
 	"listener":      readsTokensBack,
 }
 
@@ -471,6 +477,29 @@ func routes() []apiRoute {
 		// Dispatch's load, not a security bound. The edge-listener entries are read whether or not
 		// the broker runs the NATS auth service.
 		{http.MethodGet, "/v1/project-repositories", edgeListenerAuth((*server).projectRepositories)},
+		// Count the live tokens a developer box holds that list the project ?project= names:
+		// those that act as their person, a machine login's trades and a person's sign-ins on a
+		// machine, unrevoked and unexpired, with when the last expires. Dispatch reads it before
+		// it completes a project's switch to private, which it completes only at 0: the exchange
+		// mints and renews no such token while Dispatch answers the project closed to developer
+		// boxes (closing, or private by its full switch or its provisioning). It names no token,
+		// person or session. ?project= must be one project key (400 PROJECT_INPUT); a key no
+		// token lists answers 0. With slack_channels (ids joined by commas, empty for none) and
+		// deadline_seconds, the switch's own call, it first records the project and those
+		// channels in the store of private projects and answers "record", the record's number:
+		// 400 RECORD_INPUT for a channel that is no conversation id, more than 16, or a deadline
+		// missing, no whole number or over 90 s, and 503 DATABASE_UNAVAILABLE, with no count,
+		// for a record not written. Only Dispatch's caller name holds the power it needs.
+		{http.MethodGet, "/v1/admin/machine-tokens", accountAuth(countsDeveloperBoxTokens, (*server).countMachineTokens)},
+		// Forget the record of a private project a switch left {"project", "record"}: record N
+		// for a switch that did not commit, null for a project made public or a switch whose
+		// outcome is unknown. The store decides on its numbers and the database's time: 200
+		// {"outcome": "forgotten"} or {"outcome": "superseded"}; 409 RECORD_IN_FLIGHT with
+		// retry_after_seconds while a forget naming no record meets a record whose switch can
+		// still commit; 400 PROJECT_INPUT; 503 DATABASE_UNAVAILABLE. It reads nothing of
+		// Dispatch, so it is answered while Dispatch's list is down. Only Dispatch's caller name
+		// holds the power it needs.
+		{http.MethodPost, "/v1/admin/private-projects/forget", accountAuth(countsDeveloperBoxTokens, (*server).forgetPrivateProject)},
 		// List the calling credential's operator's own logins, their machines' logins and the token
 		// logins of the accounts BROKER_POD_OPERATORS maps to them, as Dispatch's machine-logins
 		// page lists them, without the service logins that page also lists. This route, the machine
