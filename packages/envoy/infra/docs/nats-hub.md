@@ -1197,7 +1197,9 @@ kubeconfig there); or, in a pod with no kubeconfig and no `--context`
 given, the context `in-cluster`, the server
 `https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT` and the SHA-256 of the pod's
 ServiceAccount CA, `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt`. A client that holds no
-CA records none. `routes check` requires all three of its own, exit 2 otherwise, in either path,
+CA records none. The record and the commands' messages keep the server's path and query as the
+kubeconfig holds them, so do not use a kubeconfig whose server URL carries a secret in its path or
+query, as a proxy that takes a token there would. `routes check` requires all three of its own, exit 2 otherwise, in either path,
 since a hub of the same names on another cluster has other pods, which the check would read as a
 new container on every pod; the CA is what tells apart two clusters at one address, as two GKE
 Autopilot clusters' `kubernetes` Services can be. A rotation of the cluster's CA between the record
