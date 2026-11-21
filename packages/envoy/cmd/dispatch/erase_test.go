@@ -407,7 +407,10 @@ func TestTheCommentEraseTakesItsKeywordVersionsAndTheFillWritesNoneOfItsTextAgai
 // with no secret, so its comment.created event holds the head of a first block no erased text
 // holds whole. The test reads that event cut inside the block with the secret in it, and the
 // comment's body after the edit holding none (the control). The comment's erase takes every byte
-// of the cut body out of its events, and no column of the database holds the secret afterwards.
+// of the cut body out of its events, and no column of the database holds the secret afterwards,
+// text_trees among them: the create stored the display tree of the first body, keyed by the
+// digest of a text no row holds after the edit, so the erase takes it by its text nodes
+// (grapherase.treeNeedles).
 // The keyword table is then emptied, as the fill empties it for a log that was reset, and the fill
 // runs again over the whole log (textversions.FillToHorizon): the comment has no row and no blocks
 // left, so the fill reads its first body from the event (body_from 'cut'), and no version it
