@@ -602,8 +602,10 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 					return lost()
 				}
 				if flushed != nil {
-					// The flush is bounded by this very deadline, so it is returning now, and
-					// what it says belongs in the timeout's answer.
+					// The flush is bounded by this very deadline, so in production, where the
+					// timeout fires at the deadline, it is returning now; under a test's expiry
+					// (requestExpiry) the flush can run on until the deadline. Either way, what it
+					// says belongs in the timeout's answer.
 					if settled := settleFlush(<-flushed); settled != nil {
 						return settled
 					}

@@ -115,33 +115,42 @@ func TestARequestNobodyAnswersIsNotAcknowledgedWithinItsTimeout(t *testing.T) {
 //
 // The confirmed Request's flush runs on a goroutine of its own, bounded by the request's deadline,
 // and a timeout that came before that goroutine ran would end the flush unconfirmed, the verdict
-// the scheduler's rather than the flush's. So that Request runs out of time at once
+// the scheduler's rather than the flush's. So the first confirmed Request runs out of time at once
 // (WithRequestExpiry) with an hour to its deadline: its timeout waits for its flush, which the hour
-// bounds, so the answer carries the flush's verdict however late the flush runs. The frozen
+// bounds, so the answer carries the flush's verdict however late the flush runs. The second runs
+// out of time 300 ms after it is sent, with the same hour, so its flush, which takes a round trip,
+// nearly always returns first and is settled where a flush that beats the timeout is; a flush
+// slower than that is waited for as the first's is, so its verdict stays the flush's. The frozen
 // Request below keeps its timer.
 func TestAnUnansweredRequestSaysWhetherItsPublishWasConfirmed(t *testing.T) {
-	var expiredOnce atomic.Bool
+	var requests atomic.Int32
 	server, _, client := requestClient(t, bus.WithRequestExpiry(func(time.Time) <-chan time.Time {
-		if !expiredOnce.CompareAndSwap(false, true) {
-			return nil
+		switch requests.Add(1) {
+		case 1:
+			expired := make(chan time.Time, 1)
+			expired <- time.Now()
+			return expired
+		case 2:
+			return time.After(300 * time.Millisecond)
 		}
-		expired := make(chan time.Time, 1)
-		expired <- time.Now()
-		return expired
+		return nil
 	}))
 	window := client.WindowUntil(nil)
 
-	err := answerOf(t, window.Request("notifications.role.request-confirmed", forwardEnvelope("confirmed"),
-		bus.RequestOptions{MsgID: bus.ForwardMsgID("confirmed", "notifications.role.request-confirmed"), Timeout: time.Hour}))
-	if !errors.Is(err, bus.ErrNotAcknowledged) || errors.Is(err, bus.ErrPublishUnconfirmed) {
-		t.Fatalf("an unanswered Request whose publish was confirmed returned %v, want ErrNotAcknowledged and not ErrPublishUnconfirmed", err)
+	for _, name := range []string{"confirmed", "confirmed-flushed-first"} {
+		subject := "notifications.role.request-" + name
+		err := answerOf(t, window.Request(subject, forwardEnvelope(name),
+			bus.RequestOptions{MsgID: bus.ForwardMsgID(name, subject), Timeout: time.Hour}))
+		if !errors.Is(err, bus.ErrNotAcknowledged) || errors.Is(err, bus.ErrPublishUnconfirmed) {
+			t.Fatalf("an unanswered Request (%s) whose publish was confirmed returned %v, want ErrNotAcknowledged and not ErrPublishUnconfirmed", name, err)
+		}
 	}
 
 	// A frozen server answers the flush's PING with nothing, so the flush runs out of the
 	// request's own window while the connection stays connected: the publish is not known to have
 	// been accepted.
 	thaw := server.Freeze(t)
-	err = answerOf(t, window.Request("notifications.role.request-unconfirmed", forwardEnvelope("unconfirmed"),
+	err := answerOf(t, window.Request("notifications.role.request-unconfirmed", forwardEnvelope("unconfirmed"),
 		bus.RequestOptions{MsgID: bus.ForwardMsgID("unconfirmed", "notifications.role.request-unconfirmed"), Timeout: 500 * time.Millisecond}))
 	connected := client.Connected()
 	thaw()
