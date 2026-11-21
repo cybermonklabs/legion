@@ -1,6 +1,7 @@
 package sessionproxy
 
 import (
+	"bufio"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -13,6 +14,7 @@ import (
 	"errors"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -273,6 +275,78 @@ func TestTheWriterTokenFileIsReadAgainAtEachExchange(t *testing.T) {
 	checkAdminCalls(t, admin, impersonatedAPIToken, impersonatedLoginToken, " after the writer token was rewritten")
 }
 
+// A fake's handler reads each request it is sent and fails the test on a body it cannot read,
+// so stopping a fake at the end of its test must never run a handler on a connection the stop
+// closed (stopServing says how it does not). The connector does leave such a request: when a
+// login token expires within four minutes, as the tokens of the rows above do, it starts a
+// refresh as soon as one completes, and a dial that then fails drops the instance from its cache
+// and abandons that refresh's requests without waiting for the fake. The row holds a request whose
+// headers the server has read and whose handler has not started (headersHeldListener), on a new
+// connection and on an idle one that has served a request before: forced reproductions of the
+// connector rows' failure held it on both kinds, most often on an idle one. stopServing must close
+// the connection and run no handler on it.
+func TestStopServingRunsNoHandlerOnAConnectionItCloses(t *testing.T) {
+	const served = "GET /served HTTP/1.1\r\nHost: fake.example\r\n\r\n"
+	const held = "POST /held HTTP/1.1\r\nHost: fake.example\r\nContent-Length: 5\r\n\r\n"
+	for _, tc := range []struct {
+		name string
+		// before is what the connection serves before the held request.
+		before string
+	}{
+		{name: "on a new connection"},
+		{name: "on an idle connection", before: served},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ran := make(chan error, 1)
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/held" {
+					return
+				}
+				_, err := io.ReadAll(r.Body)
+				ran <- err
+			}))
+			listener := &headersHeldListener{Listener: server.Listener, conns: make(chan *headersHeldConn, 1), before: len(tc.before), headers: len(held)}
+			server.Listener = listener
+			server.Start()
+			t.Cleanup(func() { stopServing(server) })
+			client, err := net.Dial("tcp", listener.Addr().String())
+			if err != nil {
+				t.Fatalf("dial the server: %v", err)
+			}
+			defer func() { _ = client.Close() }()
+			if tc.before != "" {
+				if _, err := io.WriteString(client, tc.before); err != nil {
+					t.Fatalf("send the request served first: %v", err)
+				}
+				answer, err := http.ReadResponse(bufio.NewReader(client), nil)
+				if err != nil {
+					t.Fatalf("read the answer to the request served first: %v", err)
+				}
+				_ = answer.Body.Close()
+			}
+			if _, err := io.WriteString(client, held); err != nil {
+				t.Fatalf("send the held request's headers: %v", err)
+			}
+			conn := <-listener.conns
+			if err := <-conn.arrived; err != nil {
+				t.Fatalf("read the held request's complete headers: %v", err)
+			}
+
+			stopServing(server)
+			select {
+			case <-conn.closed:
+			default:
+				t.Errorf("stopServing left the held request's connection open")
+			}
+			select {
+			case err := <-ran:
+				t.Errorf("the handler ran on the connection stopServing closed, and read the body as %v", err)
+			default:
+			}
+		})
+	}
+}
+
 // checkEachSourceMintedOnce fails the test unless asked, the generateAccessToken requests that
 // the IAM Credentials fake saw, are one for each impersonated source: as account, with the
 // source's scopes.
@@ -482,7 +556,7 @@ func newSTSFake(t *testing.T, expiresIn int) *stsFake {
 	t.Helper()
 	f := &stsFake{t: t, expiresIn: expiresIn}
 	server := httptest.NewServer(f)
-	t.Cleanup(server.Close)
+	t.Cleanup(func() { stopServing(server) })
 	f.url = server.URL + "/v1/token"
 	return f
 }
@@ -553,6 +627,99 @@ func (h handlerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return w.Result(), nil
 }
 
+// stopServing stops the loopback server of a fake whose handler reads each request and fails the
+// test on what it cannot read, as a cleanup at the end of its test (docs/testing.md, "A fake HTTP
+// server whose client gives up on requests").
+//
+// httptest.Server.Close alone closes each connection that is new or idle: the idle ones through
+// net/http's closeIdleConns, the new ones in a loop of its own. net/http marks a connection active
+// only after it has read a request's headers, so a connection on which it has read them but not
+// yet started the request's handler can still be new or idle. The handler then runs on the
+// closed connection and reads its body as "use of closed network connection", which fails the
+// test for no defect of the code under test (TestStopServingRunsNoHandlerOnAConnectionItCloses).
+// Shutdown first marks the server as shutting down, and net/http checks that mark after it marks
+// a connection active and before it starts the handler, so no handler starts on a connection the
+// stop closes. Its context has already ended, so Shutdown closes the idle connections and
+// returns. Close then closes the new and idle connections left and waits for the active handlers,
+// whose connections it leaves open: their clients must finish or cancel those requests for the
+// cleanup to return. A server whose handler fails the test on every request (refuseEveryRequest)
+// keeps Close alone, so a request whose headers the server has read by then still fails the test.
+func stopServing(server *httptest.Server) {
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = server.Config.Shutdown(ended)
+	server.Close()
+}
+
+// headersHeldListener serves TestStopServingRunsNoHandlerOnAConnectionItCloses's connection and
+// sends it on conns. The connection passes its first before bytes through: the requests it serves
+// first, whose answers the client reads before it sends more. Then it returns the held request's
+// headers bytes one at a time, and holds the last one until the connection is closed, so the
+// server has the whole headers only once the stop has closed the connection. A hold of a whole
+// socket read instead could hold part of the headers alone, and Close alone would then end the
+// connection on the unparsed request and pass the row.
+type headersHeldListener struct {
+	net.Listener
+	conns           chan *headersHeldConn
+	before, headers int
+}
+
+func (l *headersHeldListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	conn := &headersHeldConn{Conn: c, arrived: make(chan error, 1), closed: make(chan struct{}), beforeLeft: l.before, headersLeft: l.headers}
+	select {
+	case l.conns <- conn:
+	default:
+	}
+	return conn, nil
+}
+
+// headersHeldConn is one connection headersHeldListener accepted. arrived receives nil once the
+// held request's headers have all arrived, or the error that ended them first. closed is closed
+// with the connection.
+type headersHeldConn struct {
+	net.Conn
+	arrived                 chan error
+	closed                  chan struct{}
+	beforeLeft, headersLeft int
+	closeOnce               sync.Once
+}
+
+// Read holds only the read that takes the held request's last header byte. A read that times
+// out passes through: while a handler runs, net/http reads one byte in the background and ends
+// that read with a deadline once the handler has returned.
+func (c *headersHeldConn) Read(p []byte) (int, error) {
+	switch {
+	case c.beforeLeft > 0:
+		n, err := c.Conn.Read(p[:min(len(p), c.beforeLeft)])
+		c.beforeLeft -= n
+		return n, err
+	case c.headersLeft > 0:
+		n, err := c.Conn.Read(p[:1])
+		c.headersLeft -= n
+		var timeout net.Error
+		if c.headersLeft == 0 || err != nil && !(errors.As(err, &timeout) && timeout.Timeout()) {
+			select {
+			case c.arrived <- err:
+			default:
+			}
+		}
+		if c.headersLeft == 0 {
+			<-c.closed
+		}
+		return n, err
+	}
+	return c.Conn.Read(p)
+}
+
+func (c *headersHeldConn) Close() error {
+	c.closeOnce.Do(func() { close(c.closed) })
+	return c.Conn.Close()
+}
+
 // adminCall is one Admin API request: its path, its Authorization header and, for
 // generateEphemeralCert, the access_token of its body. complete says that the fake read the whole
 // request. A generateEphemeralCert call is incomplete when its body ended early, because the
@@ -605,7 +772,7 @@ func newAdminAPIFake(t *testing.T) *adminAPIFake {
 	}
 	f := &adminAPIFake{t: t, ca: ca, caKey: key, caPEM: certificatePEM(der)}
 	server := httptest.NewServer(f)
-	t.Cleanup(server.Close)
+	t.Cleanup(func() { stopServing(server) })
 	f.url = server.URL
 	return f
 }

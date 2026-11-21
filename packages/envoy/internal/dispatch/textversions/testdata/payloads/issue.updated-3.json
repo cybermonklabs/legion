@@ -1,0 +1,61 @@
+{
+  "id": 106746,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 69,
+  "type": "issue.updated",
+  "actor": {
+    "kind": "session",
+    "id": "lorem ipsum dolor s"
+  },
+  "notify": false,
+  "created_at": "2026-10-29T08:27:29.441831Z",
+  "payload": {
+    "key": "ACME-1",
+    "rank": "lorem ipsum dolor ",
+    "repo": null,
+    "claim": null,
+    "route": null,
+    "title": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem",
+    "labels": [],
+    "number": 568,
+    "parent": "ACME-2",
+    "status": "testing",
+    "changed": [
+      "status"
+    ],
+    "project": "ACME",
+    "assignee": "alice@example.com",
+    "last_seq": 69,
+    "priority": 1,
+    "ancestors": [
+      "ACME-2"
+    ],
+    "closed_at": null,
+    "blocked_by": [],
+    "components": {
+      "ids": [],
+      "mode": "inherit",
+      "reason": null,
+      "unknown": [],
+      "inherited_from": null
+    },
+    "created_at": "2026-10-27T02:20:30.828074Z",
+    "created_by": {
+      "id": "01a17a98-c907-7264-a41e-6c775f723fdd",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet l",
+        "host": "lor",
+        "machine": "lorem ipsum dolor sit ",
+        "session_title": "lorem ipsum dolor sit amet l"
+      }
+    },
+    "updated_at": "2026-10-29T08:27:29.467594Z",
+    "resolved_repo": "lorem ipsum do",
+    "thread_logins": [],
+    "external_links": [],
+    "primary_artifact_id": "3a9cccb4-2eb8-43dd-b618-45f7114d7750"
+  }
+}

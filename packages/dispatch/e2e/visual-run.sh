@@ -183,7 +183,12 @@ docker run --rm --network host --ipc=host --user "$(id -u):$(id -g)" \
   node node_modules/@playwright/test/cli.js test --config e2e/playwright.config.ts \
   --project=visual --project=visual-phone "$@" || status=$?
 
-# A failed run says where its shots are, and what a failure in reverse order alone means.
+# A failed run says where a failed row's shots go, and what a failure in reverse order alone
+# means, each as what holds if a row ran and failed: the script cannot tell that a row ran.
+# Playwright refuses an argument it cannot read (`-uG`, or an option it does not know) before it
+# runs a row, and exits 1 as a failed row does, and a run that clears its results directory may
+# still run no row (a `--grep` that matches none), so neither the status nor the directory says
+# so; Playwright's own output above the lines does.
 # Playwright writes a failed row's `-actual.png`, `-expected.png` and `-diff.png` under the run's
 # output directory: `e2e/test-results` (e2e/playwright.config.ts's `outputDir`) unless `--output`
 # names another, as CI's reverse step names `e2e/test-results-reverse`. Both are relative to this
@@ -256,9 +261,9 @@ if [ "$status" -ne 0 ]; then
     /*) ;;
     *) output=packages/dispatch/${output#./} ;;
   esac
-  printf '%s\n' "e2e/visual-run.sh: the run failed; a failed row's shots (-actual.png, -expected.png, -diff.png) are under ${output%/}/." >&2 || :
+  printf '%s\n' "e2e/visual-run.sh: the run failed. If a row ran and failed, its shots (-actual.png, -expected.png, -diff.png) are under ${output%/}/. Playwright's own output above says whether any row ran." >&2 || :
   if [ "${DISPATCH_E2E_VISUAL_ORDER:-}" = reverse ]; then
-    printf '%s\n' "e2e/visual-run.sh: these rows ran in reverse order. A row that fails here and passes in the normal order most likely reads a mark another row writes: run it again, and if it still fails, write that mark in the seed (markWhatTheShotPagesRead, e2e/review-seed.ts), and take no new baseline from this run." >&2 || :
+    printf '%s\n' "e2e/visual-run.sh: this run put the rows in reverse order. If a row ran and failed here and passes in the normal order, it most likely reads a mark another row writes: run it again, and if it still fails, write that mark in the seed (markWhatTheShotPagesRead, e2e/review-seed.ts), and take no new baseline from this run." >&2 || :
   fi
 fi
 

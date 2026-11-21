@@ -251,10 +251,10 @@ func (r *Registry) releaseReadRoleClaim(ctx context.Context, sessionID, role str
 // (bus.IsCASConflict) is read the way the release's delete reads one, through the same loop
 // (writeRoleClaim): the claim is read again and the mark written at the revision that record
 // stands at, up to roleClaimReleaseAttempts writes in all, while the record is still the claim
-// this hand-back read - the same session and the same moment it was granted at, still unmarked,
-// and naming the same process, or, where the claim read named none, the process whose first
-// heartbeat has adopted it since. Two writers leave it so: the holder's own renewal, which moves
-// RenewedAt (and, by a registration that states no process, notes that renewal,
+// this hand-back read - the same session and the same grant (RoleClaim.sameGrant), still
+// unmarked, and naming the same process, or, where the claim read named none, the process whose
+// first heartbeat has adopted it since. Two writers leave it so: the holder's own renewal, which
+// moves RenewedAt (and, by a registration that states no process, notes that renewal,
 // RoleClaim.RenewedWithoutProcess) and nothing weighed here, and the adoption, which writes the
 // process in and carries the rest over (Registry.renewRoleClaim). The mark follows either, so a
 // hand-back whose write lost to one still has its effect. A claim that moved to another session,
@@ -262,9 +262,12 @@ func (r *Registry) releaseReadRoleClaim(ctx context.Context, sessionID, role str
 // a claim granted again between this release's read and its write: a grant writes a fresh
 // record, which no hand-back has released, and marking it would take back a role the holder has
 // just been given, through a mark the holder's own registration can no longer clear. A grant is
-// told from a renewal and an adoption by the claim's own ClaimedAt, which a grant moves and the
-// other two carry over untouched. A record gone (nats.ErrKeyNotFound, or a re-read at a zero
-// revision) is a role already free; none of these is an error.
+// told from a renewal and an adoption by the grant id it draws (RoleClaim.GrantID), which the
+// other two carry over untouched, and not by its ClaimedAt: a grant stamped in the millisecond
+// of the claim this hand-back read carries that claim's moment, its session and, where the claim
+// named none, any process at all. Only a record an earlier build wrote, which carries no grant
+// id, is told by ClaimedAt, as that build tells it. A record gone (nats.ErrKeyNotFound, or a
+// re-read at a zero revision) is a role already free; none of these is an error.
 //
 // A mark that could not be written under any attempt, and a read or write that did not answer,
 // fail the release naming the role, exactly as an exhausted delete does: the caller asked for a
@@ -275,7 +278,7 @@ func (r *Registry) markRoleClaimHandedBack(ctx context.Context, sessionID, role 
 		attempts: roleClaimReleaseAttempts,
 		// The claim this hand-back read, through a renewal or an adoption, and no fresh grant.
 		writes: func(claim RoleClaim) bool {
-			return claim.HolderSessionID == sessionID && !claim.HandedBack && claim.ClaimedAt == read.ClaimedAt &&
+			return claim.HolderSessionID == sessionID && !claim.HandedBack && claim.sameGrant(read) &&
 				(read.ClientInstanceID == "" || claim.ClientInstanceID == read.ClientInstanceID)
 		},
 		send: func(claim RoleClaim) (uint64, error) {

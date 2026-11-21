@@ -91,6 +91,40 @@ type Config struct {
 	// — is served either way. Unset is the deployment where machines hold a cloud identity and
 	// no person ever types a code.
 	MachineLoginURL string
+	// BROKER_EDGE_LISTEN_ADDR: the host:port the broker's edge binds, a fourth port of the same
+	// process, bound and drained with the API's. Its port is a decimal number, and it is refused
+	// when that number is the port of BROKER_LISTEN_ADDR, BROKER_METRICS_LISTEN_ADDR or
+	// BROKER_AIRLOCK_LISTEN_ADDR, each read as the bind reads it, so 013382 is 13382. The edge is
+	// what a caller outside the deployment's private network reaches through a public load
+	// balancer, and it serves three routes and no other: POST /v1/oauth/device_authorization,
+	// POST /v1/oauth/token and GET /healthz; any other method on the two login paths is 405. On
+	// the two login routes a caller's address is the second-to-last X-Forwarded-For entry, the
+	// one the load balancer appends for the client it accepted (a login request with fewer than
+	// two is 400 REQUEST_INVALID); the edge's buckets are its own, so a flood there spends
+	// nothing a caller of BROKER_LISTEN_ADDR is held to; a machine login naming an address on
+	// BROKER_SIGNIN_DOMAIN or a BROKER_SIGNIN_WORKSPACE_DOMAINS domain is 400
+	// EDGE_WORKSPACE_LOGIN before any of them is spent; and the token route takes the device
+	// code, the refresh token and the trade of the broker's own access token, and answers every
+	// other grant 400 unsupported_grant_type. Set together with BROKER_EDGE_URL and
+	// BROKER_EDGE_MACHINE_LOGIN_URL, or none of the three: unset, the broker has no edge and binds
+	// nothing for one. Needs BROKER_MACHINE_LOGIN_URL, since the device grant is what the edge
+	// serves, and BROKER_SIGNIN_DOMAIN, the Workspace it refuses.
+	EdgeListenAddr string
+	// BROKER_EDGE_URL: the broker's own address as a caller of its edge reaches it, an absolute
+	// http or https URL with no path, whose origin is not BROKER_PUBLIC_URL's: the two are
+	// compared as a DPoP proof's htu is, the scheme and the host without regard to case and the
+	// scheme's default port the same as none, so https://secrets.example:443 is refused beside
+	// https://secrets.example. A machine login's request object made at the edge names it as its
+	// audience and every DPoP proof sent there names it and the route's path, as one made on
+	// BROKER_PUBLIC_URL names that, so neither is spendable at the other. Set with
+	// BROKER_EDGE_LISTEN_ADDR. cmd/cipherd refuses an http one unless BROKER_FAKE_SECRETS_FILE is
+	// set.
+	EdgeURL string
+	// BROKER_EDGE_MACHINE_LOGIN_URL: the absolute http(s) URL of the page a person decides a
+	// machine login made at the edge on, which that login's verification_uri names in place of
+	// BROKER_MACHINE_LOGIN_URL. Set with BROKER_EDGE_LISTEN_ADDR. cmd/cipherd refuses an http one
+	// unless BROKER_FAKE_SECRETS_FILE is set, as it does BROKER_EDGE_URL.
+	EdgeMachineLoginURL string
 	// BROKER_API_ACCOUNTS: the accounts that call the broker's named-caller routes — the
 	// approval routes Dispatch's server calls on a person's behalf, the introspection route
 	// a resource server reads one of the broker's access tokens back through, and the grant-log
@@ -164,6 +198,17 @@ type Config struct {
 	// BROKER_SIGNIN_* setting, naming the ones set, and beside the model judge, which decides
 	// only a request that waits for a person; any other value refuses naming it.
 	SignInOff bool
+	// BROKER_SIGNIN_WORKSPACE_DOMAINS: the other domains the Google Workspace owns beside
+	// BROKER_SIGNIN_DOMAIN, separated by commas, each a lowercase domain name; an
+	// internationalized one is written in Unicode or as its A-labels, and is held as its A-labels.
+	// The broker's edge (BROKER_EDGE_LISTEN_ADDR) refuses a machine login naming an address on any
+	// of them or on a subdomain of one, as it refuses one on BROKER_SIGNIN_DOMAIN, and serves no
+	// token of a machine login whose person is on one, so nobody on the internet can name or use a
+	// person of the Workspace there; nothing else reads it. Unset, the Workspace is
+	// BROKER_SIGNIN_DOMAIN alone. An empty entry, or one that is no lowercase domain name, refuses
+	// the start naming its position, and BROKER_SIGNIN=off refuses it, since that broker names no
+	// Workspace.
+	SignInWorkspaceDomains []string
 	// BROKER_SIGNIN_DEVICE_AUDIENCE: the audience a person's own Google identity token must
 	// carry to be traded at the RFC 8693 token exchange, where such a token is a subject token
 	// (urn:envoy:params:oauth:token-type:person-google-identity) and the machine the person
@@ -417,8 +462,10 @@ type Config struct {
 	// the named secret retagged to agent tier, or an automatic grant releases no token.
 	AzureLoginSecret string
 	// BROKER_SERVICE_ACCOUNT_SECRETS: the one Google service account each google-service-account
-	// agent secret mints a token for, whitespace-separated <SECRET NAME>=<account email>
-	// entries, such as GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com. The name is
+	// agent secret mints an access token for, and each anthropic-federation agent secret mints
+	// the identity token of for Anthropic's token exchange, whitespace-separated
+	// <SECRET NAME>=<account email> entries, such as
+	// GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com. The name is
 	// the uppercase agent-secret name a session asks for (DEV_PERSON, GCP_ADMIN), not that
 	// secret's store id or its slug, and each secret is named at most once; the account is a
 	// user-managed Google service account, <account id>@<project id>.iam.gserviceaccount.com in
@@ -429,7 +476,8 @@ type Config struct {
 	// secrets, since only the secret's name is the key.
 	//
 	// This setting, and not a secret's stored value, is what chooses the account a
-	// google-service-account secret mints for (secrets.GoogleServiceAccount.Accounts, which the
+	// google-service-account or anthropic-federation secret mints for
+	// (secrets.GoogleServiceAccount.Accounts and secrets.AnthropicFederation.Accounts, which the
 	// broker fills from it): the broker holds roles/iam.serviceAccountTokenCreator on every
 	// account bound here, so a stored value alone choosing the account would let whoever may
 	// create an agent secret store another person's service account in a secret of their own,
@@ -437,8 +485,8 @@ type Config struct {
 	// where this binding and the stored value name the same account; either missing or the two
 	// disagreeing is refused before any call reaches Google.
 	//
-	// Unset, no secret is bound and every google-service-account mint is refused with
-	// secrets.ErrMintNotBound, logged class=binding. That is the window a deployment is in
+	// Unset, no secret is bound and every google-service-account and anthropic-federation mint is
+	// refused with secrets.ErrMintNotBound, logged class=binding. That is the window a deployment is in
 	// between this build and the apply that writes its bindings, and it is deliberately the
 	// safe side of the change: a broker that went on minting on the stored value alone until
 	// the setting arrived is the very thing the setting exists to stop. Nothing else needs it:
@@ -447,6 +495,26 @@ type Config struct {
 	// dev-<name> account is one person's own, so it may list no registered service among its
 	// requesters.
 	ServiceAccountSecrets map[string]string
+	// BROKER_DIRECTORY_URL: the base URL of the Directory API the broker reads each group's
+	// members at (internal/cipher/groups), an absolute https URL, or http to a loopback host for a
+	// run on one machine, since the reader account's token goes to it; read without the slashes it
+	// ends in. Unset, it is Google's own, https://admin.googleapis.com; a test sets it to its
+	// stand-in. The broker calls it only when a served secret names a group, as its owner or in
+	// its requesters, and only its members.list, with the token of the reader account
+	// BROKER_DIRECTORY_ACCOUNT names.
+	DirectoryURL string
+	// BROKER_DIRECTORY_ACCOUNT: the reader account, the one Google service account whose token the
+	// broker reads group members with (internal/cipher/groups): a user-managed account, by its
+	// email, that holds Workspace's Groups Reader role and no other, and on which the broker's own
+	// credential holds roles/iam.serviceAccountTokenCreator. The broker mints its access token at
+	// IAM Service Account Credentials' generateAccessToken with the one scope
+	// admin.directory.group.member.readonly, spending its own credential, and sends that token to
+	// the Directory API alone: the Admin SDK refuses a pod's own metadata-server token. Unset, the
+	// broker reads no group, and every group a secret names admits nobody. Load refuses an address
+	// that is no user-managed service account's, a Google-managed service agent, and an account
+	// BROKER_SERVICE_ACCOUNT_SECRETS binds to a secret, since a grant of that secret would release
+	// the token the group read uses.
+	DirectoryAccount string
 	// BROKER_SERVICES: the registered services, whitespace-separated name=<service account>
 	// entries, such as legion-daemon=system:serviceaccount:legion:legion-worker. A name (lowercase
 	// letters, digits and hyphens, at most 64, not shared) is what a secret's owner tag may name; the
@@ -842,11 +910,19 @@ type Config struct {
 	// Dispatch deployment sizes its preStop wait at, for the same reason. 0 is for a local run or
 	// a dev stack, where nothing propagates and the wait is pure delay.
 	DrainSeconds int
-	// BROKER_TRUSTED_PROXY_HEADER: the request header (e.g. X-Forwarded-For) whose last entry the
-	// machine-login and secret-reread rate limiters take as the caller's address. Unset, they use
-	// the connection's own address, which is right only when nothing proxies the broker. Set it
-	// only when every request passes through your own reverse proxy, which appends that entry;
-	// otherwise a caller can forge the header and pick its own rate-limit bucket.
+	// BROKER_TRUSTED_PROXY_HEADER: the request header (e.g. X-Forwarded-For) whose last entry, on
+	// its last line, the machine-login and secret-reread rate limiters take as the caller's
+	// address. Unset, they use the connection's own address, which is right only when nothing
+	// proxies the broker. Set it only when every request passes through your own reverse proxy,
+	// which appends that entry; otherwise a caller can forge the header and pick its own rate-limit
+	// bucket. The last line is read because a proxy that folds the lines into one, appends to the
+	// last line, or adds a line of its own leaves its entry at the end of the last line, after any
+	// line the client sent. A proxy that appends to the first line and passes a later line the
+	// client sent would leave the client's text last, so the setting assumes the proxy is not of
+	// that kind; one that sends a single line never is. The broker's edge (BROKER_EDGE_LISTEN_ADDR)
+	// does not read it: its
+	// buckets key on the second-to-last entry of its one X-Forwarded-For line, the one its load
+	// balancer appends for the client.
 	TrustedProxyHeader string
 }
 
@@ -871,10 +947,10 @@ const (
 )
 
 // signInOffRefuses are the settings BROKER_SIGNIN=off refuses beside it, in the order every
-// message naming them uses: the four of the sign-in client, how long a sign-in lasts, and the
+// message naming them uses: the four of the sign-in client, how long a sign-in lasts, the
 // audience a person's own device sign-in is traded at, which holds the person to the sign-in's
-// domain.
-var signInOffRefuses = append(slices.Clone(SignInSettings), "BROKER_SIGNIN_SESSION_SECONDS", "BROKER_SIGNIN_DEVICE_AUDIENCE")
+// domain, and the Workspace's other domains, which are listed beside that domain.
+var signInOffRefuses = append(slices.Clone(SignInSettings), "BROKER_SIGNIN_SESSION_SECONDS", "BROKER_SIGNIN_DEVICE_AUDIENCE", workspaceDomainsSetting)
 
 // airlockProxySettings are the settings the airlock's proxy port cannot run without, every one of
 // them required with BROKER_AIRLOCK_RULES_FILE. Every message that names them names them in this
@@ -2001,6 +2077,9 @@ func Load(getenv func(string) string) (Config, error) {
 		DatabaseURL:               getenv("BROKER_DATABASE_URL"),
 		PublicURL:                 getenv("BROKER_PUBLIC_URL"),
 		MachineLoginURL:           strings.TrimSpace(getenv("BROKER_MACHINE_LOGIN_URL")),
+		EdgeListenAddr:            strings.TrimSpace(getenv("BROKER_EDGE_LISTEN_ADDR")),
+		EdgeURL:                   strings.TrimSpace(getenv("BROKER_EDGE_URL")),
+		EdgeMachineLoginURL:       strings.TrimSpace(getenv("BROKER_EDGE_MACHINE_LOGIN_URL")),
 		SecretsStore:              orDefault(getenv("BROKER_SECRETS_STORE"), secrets.StoreAWS),
 		SecretsPrefix:             getenv("BROKER_SECRETS_PREFIX"),
 		AirlockRulesFile:          getenv("BROKER_AIRLOCK_RULES_FILE"),
@@ -2095,6 +2174,14 @@ func Load(getenv func(string) string) (Config, error) {
 		if err := httpURLSetting("BROKER_MACHINE_LOGIN_URL", cfg.MachineLoginURL); err != nil {
 			return Config{}, err
 		}
+	}
+	// The edge's settings, held here beside BROKER_MACHINE_LOGIN_URL, whose device grant the edge
+	// serves (loadEdge), and the Workspace's other domains, which only the edge reads.
+	if err := loadEdge(&cfg); err != nil {
+		return Config{}, err
+	}
+	if cfg.SignInWorkspaceDomains, err = parseWorkspaceDomains(getenv(workspaceDomainsSetting)); err != nil {
+		return Config{}, err
 	}
 	// The broker cluster's own ranges, read whatever the rules file says: a list the broker could
 	// not act on is a mistake in the deployment whether or not its airlock is on today.
@@ -2258,6 +2345,31 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if cfg.ServiceAccountSecrets, err = parseServiceAccountSecrets("BROKER_SERVICE_ACCOUNT_SECRETS", getenv("BROKER_SERVICE_ACCOUNT_SECRETS")); err != nil {
 		return Config{}, err
+	}
+	// Optional, and held to its form when given: a value no call could be made to would boot and
+	// then leave every group unread, and a group read sends the reader account's token to it, so it
+	// is held to the sign-in issuer's rule (signInIssuerOK): https, or http to a loopback host for
+	// a run on one machine. The value is not printed.
+	if cfg.DirectoryURL = strings.TrimRight(strings.TrimSpace(getenv("BROKER_DIRECTORY_URL")), "/"); cfg.DirectoryURL != "" {
+		if !signInIssuerOK(cfg.DirectoryURL) {
+			return Config{}, errors.New("BROKER_DIRECTORY_URL must be an absolute https URL, or http to a loopback host")
+		}
+	}
+	// The reader account is held to the rule BROKER_SERVICE_ACCOUNT_SECRETS' accounts are held to
+	// (parseServiceAccountSecrets), for the same reasons, and kept apart from them: a grant of a
+	// secret bound to it would release the token every group's members are read with.
+	if cfg.DirectoryAccount = strings.TrimSpace(getenv("BROKER_DIRECTORY_ACCOUNT")); cfg.DirectoryAccount != "" {
+		if !secrets.ValidServiceAccountEmail(cfg.DirectoryAccount) {
+			return Config{}, fmt.Errorf("BROKER_DIRECTORY_ACCOUNT must name one user-managed Google service account, <account id>@<project id>.iam.gserviceaccount.com in lowercase, got %q", cfg.DirectoryAccount)
+		}
+		if googleServiceAgentPattern.MatchString(cfg.DirectoryAccount) {
+			return Config{}, fmt.Errorf("BROKER_DIRECTORY_ACCOUNT names a Google-managed service agent, got %q: Google's own services run as it and the broker must not be able to mint its token; name a user-managed reader account of your own", cfg.DirectoryAccount)
+		}
+		for _, name := range slices.Sorted(maps.Keys(cfg.ServiceAccountSecrets)) {
+			if cfg.ServiceAccountSecrets[name] == cfg.DirectoryAccount {
+				return Config{}, fmt.Errorf("BROKER_DIRECTORY_ACCOUNT names %s, which BROKER_SERVICE_ACCOUNT_SECRETS binds to the secret %s: the directory account is bound to a secret, and a grant of that secret would release the token the group read uses; name a reader account no secret binds", cfg.DirectoryAccount, name)
+			}
+		}
 	}
 	cfg.SignInDeviceAudience = strings.TrimSpace(getenv("BROKER_SIGNIN_DEVICE_AUDIENCE"))
 	if cfg.GoogleOIDCAudience == "" {

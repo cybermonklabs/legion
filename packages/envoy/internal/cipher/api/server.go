@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,6 +29,10 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
+
+// DeviceLoginFunc opens a device login's record from the device authorization request's form and
+// the user code the provider minted, in the provider's transaction (Deps.DeviceLogin).
+type DeviceLoginFunc func(ctx context.Context, form url.Values, userCode string) error
 
 type Deps struct {
 	PublicURL string
@@ -145,7 +150,7 @@ type Deps struct {
 	// DeviceLogin opens a device login's record from the device authorization request's form and
 	// the user code the provider minted, in the provider's transaction (oauthstore.TxFrom on ctx);
 	// an error refuses the request (deviceLoginRefusal maps it to the broker's code).
-	DeviceLogin func(ctx context.Context, form url.Values, userCode string) error
+	DeviceLogin DeviceLoginFunc
 	// TokenHooks are the broker's steps around each token the provider issues.
 	TokenHooks oauth.TokenHooks
 	// Approval is the broker's own approval page and its sign-in (internal/cipher/approval),
@@ -165,6 +170,9 @@ type Deps struct {
 	// never stops in the first place - ciphertest and the in-process rigs - for which the broker
 	// is never draining.
 	Draining func() bool
+	// DatabasePing is the Postgres ping GET /healthz answers from; nil means Enroll.Store.Pool.Ping.
+	// RegisterEdge sets the edge's to a one-second cache over it (cachedPing).
+	DatabasePing func(context.Context) error
 	// EdgeListeners is each edge listener's entry of BROKER_NATS_SERVICES
 	// (config.NATSCallout.EdgeListeners): GET /v1/project-repositories answers the account an entry
 	// names, presenting its own identity token as a listed caller does, about the projects that
@@ -178,20 +186,48 @@ type Deps struct {
 	ProjectRepositories ProjectRepositoriesReader
 }
 
+// pingDatabase pings Postgres: DatabasePing when set, and the store's pool otherwise.
+func (d Deps) pingDatabase(ctx context.Context) error {
+	if d.DatabasePing != nil {
+		return d.DatabasePing(ctx)
+	}
+	return d.Enroll.Store.Pool.Ping(ctx)
+}
+
 type server struct {
 	deps            Deps
 	launcherLimiter *launcherLimiter
 	// rereadLimiter is the per-address bucket on POST /v1/secrets/{name}/reread
-	// (clientAddress) and rereadOverall the one every caller shares; refuseReread takes from
+	// (address) and rereadOverall the one every caller shares; refuseReread takes from
 	// both or neither. For a Deps that carries a RereadRate these are that rate's own pair, so
 	// a change of the replica count moves the rates this route really runs at.
 	rereadLimiter *ratelimit.Keyed
 	rereadOverall *ratelimit.Bucket
-	// tokenLimiter is TokenLimit applied per source address (clientAddress), over its route's own
+	// tokenLimiter is TokenLimit applied per source address (address), over its route's own
 	// bucket, and accountLimiter AccountLimit, over the bucket every accountAuth route and every
 	// route of the approval page share.
 	tokenLimiter   *ratelimit.Keyed
 	accountLimiter *ratelimit.Keyed
+	// address is the source address every per-address bucket of this listener keys on:
+	// clientAddress under BROKER_TRUSTED_PROXY_HEADER on the broker's own address, and
+	// edgeClientAddress at its edge, where a request it reads no address from is refused before
+	// any handler runs (edgeFormGate).
+	address func(*http.Request) string
+	// loginKeyPrefix opens every per-login bucket's key: "" on the broker's own address, and
+	// edgeLoginKeyPrefix at its edge.
+	loginKeyPrefix string
+	// loginKeyByAddress is whether a person's per-login bucket is also keyed on the caller's
+	// address (spendDeviceLoginBucket): at the edge, where anyone on the internet can name a
+	// person, so a flood from one address cannot empty the bucket that person uses from another.
+	loginKeyByAddress bool
+	// verificationURI is the page a device authorization on this listener sends a person to:
+	// BROKER_MACHINE_LOGIN_URL on the broker's own address (oauth.Provider.VerificationURL), and
+	// BROKER_EDGE_MACHINE_LOGIN_URL at its edge.
+	verificationURI string
+	// pingLogsItself is whether deps.DatabasePing writes its own line for a failed ping, so GET
+	// /healthz writes none: at the edge, whose DatabasePing is a cachedPing, so a caller on the
+	// internet writes no line of its own (RegisterEdge sets the two together).
+	pingLogsItself bool
 	// repositoryCalls counts each edge listener's calls of GET /v1/project-repositories still
 	// waiting on Dispatch, at most maxRepositoryCallsInFlight each.
 	repositoryCalls *callsInFlight
@@ -235,14 +271,19 @@ func Register(mux *http.ServeMux, deps Deps) {
 	if deps.AccountLimit != nil {
 		account = *deps.AccountLimit
 	}
+	address := func(r *http.Request) string { return clientAddress(r, deps.TrustedProxyHeader) }
 	s := &server{
 		deps:            deps,
-		launcherLimiter: newLauncherLimiter(limits, deps.TrustedProxyHeader),
+		launcherLimiter: newLauncherLimiter(limits, address),
 		rereadLimiter:   rereadLimiter,
 		rereadOverall:   rereadBucket,
 		tokenLimiter:    ratelimit.NewKeyed(token),
 		accountLimiter:  ratelimit.NewKeyed(account),
+		address:         address,
 		repositoryCalls: newCallsInFlight(maxRepositoryCallsInFlight),
+	}
+	if deps.OAuth != nil {
+		s.verificationURI = deps.OAuth.VerificationURL()
 	}
 	for _, route := range routes() {
 		// A broker with no provider serves neither the OAuth routes nor the document that names
@@ -259,17 +300,25 @@ func Register(mux *http.ServeMux, deps Deps) {
 		if deps.Approval == nil && (strings.HasPrefix(route.Pattern, approvalRoutes) || strings.HasPrefix(route.Pattern, signInRoutes)) {
 			continue
 		}
-		mux.HandleFunc(route.Method+" "+route.Pattern, func(w http.ResponseWriter, r *http.Request) {
-			recorder := answer.FromContext(r.Context())
-			who, ok := s.authenticate(w, r, route)
-			if !ok {
-				// A refusal raised in authentication, before any caller was established.
-				recorder.NoteCaller(answer.CallerUnauthenticated, "")
-				return
-			}
-			recorder.NoteCaller(who.answerCaller(route.Handler))
-			route.Handler.serve(s, w, r, who)
-		})
+		mux.HandleFunc(route.Method+" "+route.Pattern, s.handle(route))
+	}
+}
+
+// handle is route as a handler of s's listener: the caller authenticated as the row's class
+// requires, the answer's record told who it is, and the row's handler run. Register mounts every
+// row through it, and RegisterEdge the edge's three behind its gates, so a row runs one way on
+// either listener.
+func (s *server) handle(route apiRoute) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		recorder := answer.FromContext(r.Context())
+		who, ok := s.authenticate(w, r, route)
+		if !ok {
+			// A refusal raised in authentication, before any caller was established.
+			recorder.NoteCaller(answer.CallerUnauthenticated, "")
+			return
+		}
+		recorder.NoteCaller(who.answerCaller(route.Handler))
+		route.Handler.serve(s, w, r, who)
 	}
 }
 
@@ -681,10 +730,18 @@ func pathRecordID(w http.ResponseWriter, r *http.Request, name, code string) (st
 
 // requireApprover refuses an approver login that canonicalizes to nothing with 400
 // APPROVER_REQUIRED: every UI route names the human it acts for, whether a decision's or a
-// revoke's approver field or a list's ?approver= query.
+// revoke's approver field or a list's ?approver= query. A login spelled as a group
+// (record.GroupOf) is no human either, and is refused 400 APPROVER_IS_GROUP: a group's records and
+// grants are listed and revoked by naming a member, whom the group reader admits, never by naming
+// the group.
 func requireApprover(w http.ResponseWriter, login string) bool {
-	if record.CanonicalLogin(login) == "" {
+	canonical := record.CanonicalLogin(login)
+	if canonical == "" {
 		writeError(w, http.StatusBadRequest, "APPROVER_REQUIRED", "approver is required")
+		return false
+	}
+	if _, group := record.GroupOf(canonical); group {
+		writeError(w, http.StatusBadRequest, "APPROVER_IS_GROUP", "approver names a person, not a group")
 		return false
 	}
 	return true
@@ -747,9 +804,22 @@ func writeInternal(w http.ResponseWriter, op string, err error) {
 	writeError(w, http.StatusInternalServerError, "INTERNAL", op+" failed")
 }
 
-// writeUnavailable logs a dependency that could not answer and answers 503 with code naming it.
+// writeUnavailable logs a dependency that could not answer (logUnavailable) and answers 503 with
+// code naming it (answerUnavailable).
 func writeUnavailable(w http.ResponseWriter, code, op string, err error) {
-	slog.Error("broker: "+op+" failed", "error", err)
+	logUnavailable(op, err)
+	answerUnavailable(w, code, op)
+}
+
+// logUnavailable writes the ERROR line of a dependency op could not reach: "broker: <op> failed",
+// with err and any attrs after it.
+func logUnavailable(op string, err error, attrs ...any) {
+	slog.Error("broker: "+op+" failed", append([]any{"error", err}, attrs...)...)
+}
+
+// answerUnavailable answers 503 with code naming the dependency op could not reach, and writes no
+// line.
+func answerUnavailable(w http.ResponseWriter, code, op string) {
 	writeError(w, http.StatusServiceUnavailable, code, op+" failed: a dependency the broker needs is unavailable")
 }
 
@@ -787,11 +857,102 @@ func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "SHUTTING_DOWN", "the broker is shutting down and is no longer taking new traffic")
 		return
 	}
-	if err := s.deps.Enroll.Store.Pool.Ping(r.Context()); err != nil {
+	if err := s.deps.pingDatabase(r.Context()); err != nil {
+		if s.pingLogsItself {
+			answerUnavailable(w, "DATABASE_UNAVAILABLE", "ping Postgres")
+			return
+		}
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "ping Postgres", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, healthResponse{Status: "ok"})
+}
+
+// healthCacheFor is how long the edge's GET /healthz answers from one Postgres ping: the load
+// balancer's health check asks every few seconds, so a second is fresh enough for it, and a caller
+// on the internet who asks at any rate costs the database at most one ping a second per pod.
+const healthCacheFor = time.Second
+
+// healthPingTimeout bounds one ping of the edge's health cache (cachedPing): a database that
+// answers no ping in two seconds is one the load balancer should take the pod out for, and the
+// caller that runs the ping waits no longer than that after its own request ends.
+const healthPingTimeout = 2 * time.Second
+
+// cachedPing is a Postgres ping whose result is kept for healthCacheFor: the edge's
+// Deps.DatabasePing (RegisterEdge). At most one ping runs at a time, on a context of its own
+// (context.WithoutCancel of the caller's, with timeout), so a caller that leaves mid-ping neither
+// cancels it, which in pgx closes the pool's connection, nor keeps its result from the next
+// caller. Its result is kept and, when it failed, logged with one ERROR line naming port
+// (answer.PortEdge), whoever waited for it: a failing or hung database writes one line a ping, at
+// most one per healthCacheFor plus timeout per pod, whatever the number of callers. A caller that
+// asks while a ping runs waits for it, and leaves as soon as its own request ends.
+type cachedPing struct {
+	ping func(context.Context) error
+	now  func() time.Time
+	// port is the value of the port field the line of a failed ping names (answer.PortEdge).
+	port string
+	// timeout bounds one ping; zero means healthPingTimeout.
+	timeout time.Duration
+
+	mu  sync.Mutex
+	at  time.Time
+	err error
+	// running is closed when the ping that runs now ends; nil while none runs.
+	running chan struct{}
+}
+
+// result is the last ping's result while it is under healthCacheFor old, and otherwise the result
+// of a ping it runs (run) or waits for. A waiter whose request ends first answers its own
+// context's error; the ping goes on, and its result is kept for the next caller.
+func (c *cachedPing) result(ctx context.Context) error {
+	for {
+		c.mu.Lock()
+		if now := c.now(); !c.at.IsZero() && now.Sub(c.at) < healthCacheFor {
+			err := c.err
+			c.mu.Unlock()
+			return err
+		}
+		if wait := c.running; wait != nil {
+			c.mu.Unlock()
+			select {
+			case <-wait:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		done := make(chan struct{})
+		c.running = done
+		c.mu.Unlock()
+		return c.run(ctx, done)
+	}
+}
+
+// run is the one ping running now, which result started: on context.WithoutCancel(ctx) with the
+// ping's own timeout, its result kept and, when it failed, logged. It clears running and closes
+// done in a defer, so a ping that panics leaves the next caller to ping again rather than wait on
+// a ping that will never end.
+func (c *cachedPing) run(ctx context.Context, done chan struct{}) error {
+	defer func() {
+		c.mu.Lock()
+		c.running = nil
+		c.mu.Unlock()
+		close(done)
+	}()
+	timeout := c.timeout
+	if timeout == 0 {
+		timeout = healthPingTimeout
+	}
+	pingCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	defer cancel()
+	err := c.ping(pingCtx)
+	c.mu.Lock()
+	c.at, c.err = c.now(), err
+	c.mu.Unlock()
+	if err != nil {
+		logUnavailable("ping Postgres", err, "port", c.port)
+	}
+	return err
 }
 
 // signInStatusResponse is GET /signin/status's answer, the broker's one signin_status row as it

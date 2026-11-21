@@ -17,13 +17,16 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // Read takes a regular file within its bound and refuses everything else a role can leave at a
-// path, at once and in words naming the path: a symlink (to /dev/zero, to a regular file, or to
-// nothing), a fifo, a socket, a directory, a device and a file past the bound. A missing file is
-// open's own error, which fs.ErrNotExist matches. A read that followed /dev/zero would hold it
-// whole in memory, and one that opened the fifo plainly would wait for a writer for ever.
+// path, without waiting and in words naming the path: a symlink (to /dev/zero, to a regular file,
+// or to nothing), a fifo, a socket, a directory, a device and a file past the bound. A missing file
+// is open's own error, which fs.ErrNotExist matches. A read that followed /dev/zero would hold it
+// whole in memory, and one that opened the fifo plainly would wait for a writer for ever. Each
+// answer is waited for with no span of its own (testwait.Receive), so a read that waits fails by
+// name before the test binary's deadline, and a read that is merely slow passes.
 func TestReadRefusesAnythingButARegularFileWithinItsBound(t *testing.T) {
 	const limit = 16
 	dir := t.TempDir()
@@ -86,12 +89,7 @@ func TestReadRefusesAnythingButARegularFileWithinItsBound(t *testing.T) {
 				body, err := Read(path, limit)
 				done <- answer{body, err}
 			}()
-			var got answer
-			select {
-			case got = <-done:
-			case <-time.After(5 * time.Second):
-				t.Fatalf("Read(%s) was still reading after 5s", path)
-			}
+			got := testwait.Receive(t, "Read("+path+")", done)
 			switch {
 			case tc.refusal == "" && got.err != nil:
 				t.Fatalf("Read(%s) = %v, want %q", path, got.err, tc.want)
@@ -109,11 +107,12 @@ func TestReadRefusesAnythingButARegularFileWithinItsBound(t *testing.T) {
 	})
 }
 
-// OpenRegular refuses a fifo it would write as a fifo, at once: a write-only open of a fifo no
-// reader holds answers ENXIO under O_NONBLOCK, as an open of a socket does, and the refusal names
-// what is at the path rather than call every ENXIO a socket. The launcher writes a fresh
-// transcript's saved marker with such an open, creating the file when it is missing; a plain one
-// would wait for a reader for as long as none comes.
+// OpenRegular refuses a fifo it would write as a fifo, without waiting: a write-only open of a
+// fifo no reader holds answers ENXIO under O_NONBLOCK, as an open of a socket does, and the
+// refusal names what is at the path rather than call every ENXIO a socket. The launcher writes a
+// fresh transcript's saved marker with such an open, creating the file when it is missing; a
+// plain one would wait for a reader for as long as none comes, and fails here by name before the
+// test binary's deadline (testwait.Receive), the only bound on the wait.
 func TestOpenRegularRefusesAFifoItWouldWriteAsAFifo(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "fifo")
 	if err := syscall.Mkfifo(path, 0o644); err != nil {
@@ -135,18 +134,8 @@ func TestOpenRegularRefusesAFifoItWouldWriteAsAFifo(t *testing.T) {
 				}
 				done <- err
 			}()
-			select {
-			case err := <-done:
-				if want := path + " is a fifo"; err == nil || err.Error() != want {
-					t.Fatalf("OpenRegular(%s) = %v, want the refusal %q", path, err, want)
-				}
-			case <-time.After(5 * time.Second):
-				// Open the fifo for reading so the blocked open returns and the goroutine ends.
-				if reader, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0); err == nil {
-					<-done
-					_ = reader.Close()
-				}
-				t.Fatalf("OpenRegular(%s) was still opening after 5s: it waits for a reader", path)
+			if err := testwait.Receive(t, "OpenRegular("+path+")", done); err == nil || err.Error() != path+" is a fifo" {
+				t.Fatalf("OpenRegular(%s) = %v, want the refusal %q", path, err, path+" is a fifo")
 			}
 			if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeNamedPipe == 0 {
 				t.Fatalf("the fifo %s is no longer there as it was (%v, %v)", path, info, err)
@@ -158,7 +147,8 @@ func TestOpenRegularRefusesAFifoItWouldWriteAsAFifo(t *testing.T) {
 // RemoveTree answers a path whose parent is a fifo rather than waiting on it: os.RemoveAll opens
 // the parent of a path it cannot unlink outright with a plain open, which a fifo nobody writes
 // holds for ever, and the workspace's and the leak-check install's calls of RemoveTree remove
-// something under a directory a role can swap for a fifo.
+// something under a directory a role can swap for a fifo. A removal that waits fails by name
+// before the test binary's deadline (testwait.Receive), the only bound on the wait.
 func TestRemoveTreeAnswersAParentThatIsAFifo(t *testing.T) {
 	parent := filepath.Join(t.TempDir(), "worktrees")
 	if err := syscall.Mkfifo(parent, 0o644); err != nil {
@@ -166,18 +156,8 @@ func TestRemoveTreeAnswersAParentThatIsAFifo(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() { done <- RemoveTree(filepath.Join(parent, "infra-1")) }()
-	select {
-	case err := <-done:
-		if !errors.Is(err, syscall.ENOTDIR) {
-			t.Fatalf("RemoveTree under a fifo answered %v, want ENOTDIR", err)
-		}
-	case <-time.After(5 * time.Second):
-		// Open the fifo for writing so the blocked open returns and the test's goroutine ends.
-		if writer, openErr := os.OpenFile(parent, os.O_WRONLY, 0); openErr == nil {
-			_ = writer.Close()
-		}
-		<-done
-		t.Fatalf("RemoveTree was still opening %s after 5s: a parent that is a fifo blocks the removal", parent)
+	if err := testwait.Receive(t, "RemoveTree under the fifo "+parent, done); !errors.Is(err, syscall.ENOTDIR) {
+		t.Fatalf("RemoveTree under a fifo answered %v, want ENOTDIR", err)
 	}
 	if info, err := os.Lstat(parent); err != nil || info.Mode()&os.ModeNamedPipe == 0 {
 		t.Fatalf("the fifo %s is no longer there as it was (%v, %v)", parent, info, err)

@@ -111,12 +111,13 @@ export function renderS10Analysis(analysis: S10Analysis): string[] {
     "A fact-check hold and a valid never_decide verdict are never-decides, not deviations. Of the " +
       `deviations, the analysis found ${countsText(tally.deviations.foundByAnalysis)}: ` +
       "transcript, answers and sandbox, a file of the request's kept evidence (a transcript, the " +
-      "answers, the bundles, calls, sandbox record or started.json) lost or changed; answer, his " +
-      "own first qualifying answer of which the build holds no case (an answer not his own, or " +
-      "none, is on a line the inputs stage made a deviation, and keeps its inputs deviation); " +
-      "verdict, a recorded verdict unlike point 2's rule recomputed from the five answers the " +
-      "stage kept; documents, his answer's (document, version) pairs unlike the judged ones. " +
-      "started is a request a run started and never finished; unjudged one no run reached.",
+      "answers, the bundles, calls, sandbox record, started.json or a pending outcome) lost or " +
+      "changed; answer, his own first qualifying answer of which the build holds no case (an " +
+      "answer not his own, or none, is on a line the inputs stage made a deviation, and keeps " +
+      "its inputs deviation, or unjudged where no run reached it); verdict, a recorded verdict " +
+      "unlike point 2's rule recomputed from the five answers the stage kept; documents, his " +
+      "answer's (document, version) pairs unlike the judged ones. started is a request a run " +
+      "started and never finished; unjudged one no run reached.",
     "",
     "## Item 8's measure, penalized (points 10 and 12)",
     "",

@@ -1,0 +1,62 @@
+{
+  "id": 3971,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 4,
+  "type": "issue.updated",
+  "actor": {
+    "kind": "session",
+    "id": "01a14ba8-03c4-76bd-920a-6988be912f62",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum d",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum d",
+      "tmux": "lorem ipsum dolor ",
+      "pane": "lor",
+      "session_title": "lorem ipsum dolor sit amet lorem ip"
+    }
+  },
+  "notify": false,
+  "created_at": "2026-10-18T16:38:41.894365Z",
+  "payload": {
+    "key": "ACME-1",
+    "rank": "lor",
+    "repo": null,
+    "claim": null,
+    "route": null,
+    "title": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ",
+    "labels": [],
+    "number": 88,
+    "parent": "ACME-2",
+    "status": "needs_review",
+    "project": "ACME",
+    "assignee": "alice@example.com",
+    "last_seq": 4,
+    "priority": 0,
+    "closed_at": null,
+    "blocked_by": [],
+    "components": {
+      "ids": [],
+      "mode": "none",
+      "reason": "lorem ipsum dolor sit amet lorem ipsum dolor sit",
+      "unknown": [],
+      "inherited_from": "ACME-3"
+    },
+    "created_at": "2026-10-18T00:51:18.690267Z",
+    "created_by": {
+      "id": "01a14ba8-03c4-76bd-920a-6988be912f62",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum do",
+        "host": "lor",
+        "machine": "lorem ipsum d",
+        "session_title": "lorem ipsum dolor sit amet lorem ip"
+      }
+    },
+    "updated_at": "2026-10-18T16:38:41.894365Z",
+    "resolved_repo": null,
+    "external_links": [],
+    "primary_artifact_id": "8a847425-07f9-44e0-aa40-a0670009b3b1"
+  }
+}

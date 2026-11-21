@@ -204,9 +204,11 @@ func roleOfTopic(topic string) (string, bool) {
 // revision (RoleClaim).
 //
 // Only RenewedAt, on adoption ClientInstanceID, and on a renewal that states no process
-// RenewedWithoutProcess, are written: HolderSessionID, ClaimedAt and PreviousSessionID are the
-// claim's own provenance and are carried over untouched, so a renewal never re-dates a claim or
-// rewrites who took it from whom.
+// RenewedWithoutProcess, are written: HolderSessionID, ClaimedAt, PreviousSessionID and GrantID
+// are the claim's own provenance and are carried over untouched, so a renewal never re-dates a
+// claim, rewrites who took it from whom, or reads as a grant of its own to a hand-back that read
+// the claim before it (Registry.markRoleClaimHandedBack). A claim with no grant id, which an
+// earlier build wrote, keeps none.
 //
 // A lost compare-and-swap (bus.IsCASConflict for the wrong last sequence, nats.ErrKeyNotFound for
 // a claim deleted in between) means another claim landed after this call read the record. The
