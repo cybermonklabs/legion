@@ -599,11 +599,11 @@ const (
 //     own answer about that grant, so they are 407 in the broker's own words, which is what
 //     tells a command to ask for a new grant.
 //   - A mint the secret's own minter could not even ask for - the upstream did not answer, or
-//     answered a 5xx or a rate limit (secrets.ErrMintUpstream) - is a read that did not happen,
-//     and it falls to the last answer below. It reaches here wrapped in ErrMintFailed, which is
-//     a refusal of the package the line below asks, so it has to be read first: a re-mint of a
-//     github-app, google-login or azure-login name behind the airlock fails this way whenever
-//     its upstream has a bad minute, and answering that 403 would tell a command no retry
+//     answered a 5xx, a 408 or a rate limit (secrets.ErrMintUpstream) - is a read that did not
+//     happen, and it falls to the last answer below. It reaches here wrapped in ErrMintFailed,
+//     which is a refusal of the package the line below asks, so it has to be read first: a
+//     re-mint of a github-app, google-login or azure-login name behind the airlock fails this way
+//     whenever its upstream has a bad minute, and answering that 403 would tell a command no retry
 //     clears it and would close a WebSocket the grant still carries.
 //   - Every other refusal the broker made about this grant - a chain that no longer verifies, a
 //     secret the store no longer holds, a mint the secret's own minter refused, a value whose

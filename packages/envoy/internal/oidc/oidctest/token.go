@@ -3,8 +3,10 @@ package oidctest
 import (
 	"encoding/json"
 	"maps"
+	"net"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -55,6 +57,15 @@ func (i *Issuer) handleToken(w http.ResponseWriter, r *http.Request) {
 					_ = conn.Close()
 				}
 			}
+		case failure.cut != cutNone:
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Length", "200")
+			w.WriteHeader(failure.status)
+			_, _ = w.Write([]byte(`{"access_t`))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			breakOff(w, r, failure.cut, &i.mu)
 		case failure.code == "":
 			http.Error(w, http.StatusText(failure.status), failure.status)
 		default:
@@ -249,4 +260,30 @@ func (i *Issuer) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	i.mu.Unlock()
 	w.WriteHeader(http.StatusOK)
+}
+
+// breakOff ends an answer whose body the token endpoint promised and did not send, as how says:
+// cutClose aborts the response, so the server closes the connection; cutReset takes the
+// connection and resets it (a TCP RST: SO_LINGER of zero, then close); cutStall sends nothing
+// more until the client hangs up, so the client's own timeout ends its read. The caller holds mu,
+// which a stall gives up while it waits.
+func breakOff(w http.ResponseWriter, r *http.Request, how cutAnswer, mu *sync.Mutex) {
+	switch how {
+	case cutReset:
+		if hijacker, ok := w.(http.Hijacker); ok {
+			if conn, _, err := hijacker.Hijack(); err == nil {
+				if tcp, ok := conn.(*net.TCPConn); ok {
+					_ = tcp.SetLinger(0)
+				}
+				_ = conn.Close()
+				return
+			}
+		}
+	case cutStall:
+		mu.Unlock()
+		<-r.Context().Done()
+		mu.Lock()
+		return
+	}
+	panic(http.ErrAbortHandler)
 }

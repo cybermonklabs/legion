@@ -589,7 +589,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 
   The issuer's discovery document is read in the background from boot, on the service-account issuer's schedule (above), and an issuer that cannot be reached refuses nothing:
   until the document has been read, `/auth/start` and the callback answer `503 SIGNIN_UNAVAILABLE`, and the rest of Dispatch serves.
-  A callback whose code exchange the issuer's token endpoint answers `5xx`, `408` or `429`, whatever OAuth error its body names, or does not answer, is `503 SIGNIN_UNAVAILABLE` too: that closed set is the issuer down.
+  A callback whose code exchange the issuer's token endpoint answers `5xx`, `408` or `429`, whatever OAuth error its body names, answers with a body cut off before it arrives whole, or does not answer, is `503 SIGNIN_UNAVAILABLE` too: that closed set is the issuer down.
   Every other answer is the endpoint answering, and the sign-in fails `502`: a `4xx` with or without an OAuth error, a `2xx` that names an error or holds no token, and a `3xx`.
   A sign-in in flight (its state, its nonce, the page it returns to and when it lapses, ten minutes after it started) travels in the browser's `dispatch_oauth_state` cookie, signed under a key derived from the current signing key for that purpose alone, and no process keeps it:
   a sign-in one process started completes on whichever process the issuer's redirect reaches, given one `DISPATCH_SERVER_URL` on every process:
@@ -3948,7 +3948,7 @@ Each item below names a path with its method and identity, then its purpose.
   Any process holding a key of the set completes a sign-in another process started.
   `400` "invalid or expired state" when the state cookie is missing, does not verify, has lapsed or names another state;
   `400` "missing code or state in callback", or "the callback's code is longer than 2048 bytes", before any request to the issuer, when the callback carries no code or state or a code longer than 2048 bytes;
-  `503 SIGNIN_UNAVAILABLE` while this process has not read the issuer's discovery document, or when the issuer's token endpoint answers the exchange `5xx`, `408` or `429`, or not at all;
+  `503 SIGNIN_UNAVAILABLE` while this process has not read the issuer's discovery document, or when the issuer's token endpoint answers the exchange `5xx`, `408` or `429`, answers with a body cut off before it arrives whole, or does not answer;
   `502` for every other answer of the token endpoint (a `4xx` with or without an OAuth error, a `2xx` that names an error or holds no token, or a `3xx`) and every other failure of the sign-in;
   `409 SIGNIN_SUPERSEDED` and no cookie when, under a domain, another account signed in to the address between this sign-in's record and its cookie.
 
@@ -4085,6 +4085,7 @@ Each item below names a path with its method and identity, then its purpose.
   A hold is a wait for that session to answer and no failure of the bus, so it is counted there and never under the publish failures an alert watches.
   It also carries four gauges of the copies of comment mentions that wait behind an earlier event of their owner, with no label, since an owner's key is neither bounded nor public and whoever reaches the port reads this endpoint: `envoy_dispatch_mention_sends_held` and `envoy_dispatch_mention_send_held_oldest_seconds`, the API's mention sends that wait and how long the oldest has (`api.registerHeldGauges`), and `envoy_dispatch_outbox_fallback_copies_held` and `envoy_dispatch_outbox_fallback_copy_held_oldest_seconds`, the same of the outbox's fallback copies (`heldCopies`).
   A held mention copy's wait has no bound, so beside the gauges a copy held `model.MentionCopyHeldWarnAfter` (one minute) logs one WARN naming its owner, the earlier event and that event's `publish_error`; the event's own failed publish logs `dispatch outbox: publish event` at ERROR at each attempt.
+  `envoy_dispatch_document_replacements_unguarded_total`, with no label, counts the whole-document uploads that replaced a document naming no token for the version they replace, which Dispatch takes unchecked until every deployed `dispatch` client sends one (INFRA-4980); each also logs one INFO line naming the artifact and the document (`api.noteUnguardedReplacement`), and no caller: the access log's line for the same upload names the caller and its User-Agent, so the two are joined on the upload's path and time.
   It is answered above the router, so it is never the dashboard's shell, and whoever reaches the HTTP port can read it.
   Nothing scrapes it yet.
 

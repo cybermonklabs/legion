@@ -21,7 +21,7 @@ const (
 	// token request invalid_grant at a refusal's status (oauthrefusal.Refusal), which is a refusal
 	// of the code alone (RFC 6749 section 5.2).
 	ClientCheckReady ClientCheck = "ready"
-	// ClientCheckRejected: the issuer refused at a refusal's status (oauthrefusal.Refused) for
+	// ClientCheckRejected: the issuer refused at a refusal's status (oauthrefusal.Refuses) for
 	// any reason but the code itself - invalid_client, another OAuth error or none: the client was
 	// deleted, its id is not this issuer's, or its secret has been rotated out from under the
 	// caller. No person can sign in until it is fixed.
@@ -74,7 +74,7 @@ func CheckClient(ctx context.Context, issuer, clientID, clientSecret string) (Cl
 		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: check the client at %s: %w", issuer, err)
 	case oauthrefusal.Refusal(err) == "invalid_grant":
 		return ClientCheckReady, nil
-	case oauthrefusal.Refused(err):
+	case oauthrefusal.Refuses(retrieve.Response.StatusCode):
 		return ClientCheckRejected, fmt.Errorf("oidc: issuer %s refused the client %s: HTTP %d with the OAuth error %q",
 			issuer, clientID, retrieve.Response.StatusCode, retrieve.ErrorCode)
 	case oauthrefusal.Outage(retrieve.Response.StatusCode):

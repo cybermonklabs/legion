@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
@@ -248,6 +247,13 @@ func (f *CodeFlow) AuthURL(ctx context.Context, redirectURL, state, nonce string
 	return issuer.config.AuthCodeURL(state, options...), nil
 }
 
+// MaxCallbackCode is the longest authorization code, in bytes, a sign-in callback sends a token
+// endpoint through Exchange or OnlineExchange. The code is the callback's query, which whoever
+// holds the browser writes, so each callback refuses a longer one before it calls either:
+// Dispatch's (internal/dispatch/auth, ParseCallback) and the broker's approval page
+// (internal/cipher/approval, ServeCallback).
+const MaxCallbackCode = 2048
+
 // Exchange trades the code the issuer redirected to redirectURL for the signed-in person's ID
 // token and refresh token. The ID token must carry nonce, the value the sign-in that sent the
 // browser to AuthURL bound it to; one carrying another, and a caller naming no nonce, fail with
@@ -269,28 +275,36 @@ func (f *CodeFlow) Exchange(ctx context.Context, redirectURL, code, nonce string
 // there with options (the online exchange's PKCE verifier, and none for the other), verify the
 // ID token, and refuse one whose nonce is not the sign-in's with ErrNonce. An empty nonce is
 // refused as well, since it binds the token to no sign-in. The token endpoint's answer decides by
-// its status alone (oauthrefusal.Outage): a 5xx, a 408 or a 429, whatever error its body names,
-// and no answer at all are an issuer that could not answer, and match ErrIssuerUnavailable, as
-// Refresh reads them. Every other answer is the endpoint answering and fails the exchange as that
-// answer, never as the issuer unavailable: a refusal, a 4xx with or without an OAuth error (whose
-// code, when it names one, is the caller's reason), and a 2xx or 3xx that names an error or holds
-// no token. An exchange that got no answer because its own ctx ended (the browser left the
-// callback) fails with ctx's error, since the issuer was not shown unable to answer: the failure's
-// cause is that ctx's end, errors.Is the error ctx.Err names. A cause read from the error alone
-// would not do, since the token request's own timeout fails with an error that also matches
-// context.DeadlineExceeded (net/http's timeoutError) while the caller is still there.
+// its status alone (oauthrefusal.Outage), once it arrived whole: a 5xx, a 408 or a 429, whatever
+// error its body names, an answer whose body was cut off before it read whole (the connection
+// closed or reset, or the token request's own timeout ended the read), and no answer at all are an
+// issuer that could not answer, and match ErrIssuerUnavailable, as Refresh reads them, as the
+// client check reads a cut-off answer and as the broker's minters do (a body read that failed is
+// upstream there). Every other answer is the endpoint answering and fails the exchange
+// as that answer, never as the issuer unavailable: a refusal, a 4xx with or without an OAuth error
+// (whose code, when it names one, is the caller's reason), and a 2xx or 3xx that names an error or
+// holds no token. An exchange that got no whole answer because its own ctx ended (the browser left
+// the callback) fails with ctx's error, since the issuer was not shown unable to answer: the
+// failure's cause is that ctx's end, errors.Is the error ctx.Err names. A cause read from the
+// error alone would not do, since the token request's own timeout fails with an error that also
+// matches context.DeadlineExceeded (net/http's timeoutError) while the caller is still there.
 func (f *CodeFlow) exchange(ctx context.Context, redirectURL, code, nonce string, options ...oauth2.AuthCodeOption) (Session, error) {
 	issuer, err := f.discovery.discover(ctx)
 	if err != nil {
 		return Session{}, err
 	}
-	answered, last := f.answeredContext(ctx)
-	token, err := issuer.config.Exchange(answered, code, append(redirectTo(redirectURL), options...)...)
+	answered := &oauthrefusal.Recorder{}
+	token, err := issuer.config.Exchange(oauthrefusal.Record(f.tokenContext(ctx), answered), code, append(redirectTo(redirectURL), options...)...)
 	if err != nil {
-		switch status := last.status(); {
-		case status != 0 && !oauthrefusal.Outage(status):
+		// The recorder reads the status of the answer an error came from, an answer x/oauth2
+		// reports in no *oauth2.RetrieveError among them (a 2xx with no token), and whether its
+		// body read whole, which x/oauth2's error for a cut-off body does not wrap.
+		readErr := answered.ReadErr()
+		whole := answered.Status != 0 && readErr == nil
+		switch {
+		case whole && !oauthrefusal.Outage(answered.Status):
 			return Session{}, fmt.Errorf("oidc: exchange code: %w", err)
-		case status == 0 && callerGone(ctx, err):
+		case !whole && callerGone(ctx, errors.Join(err, readErr)):
 			return Session{}, fmt.Errorf("oidc: exchange code: %w: %w", ctx.Err(), err)
 		}
 		return Session{}, fmt.Errorf("oidc: exchange code: %w: %w", ErrIssuerUnavailable, err)
@@ -305,8 +319,8 @@ func (f *CodeFlow) exchange(ctx context.Context, redirectURL, code, nonce string
 	return session, nil
 }
 
-// callerGone reports whether err, a request's failure with no answer, came of ctx ending: ctx has
-// ended, and err matches the error that names how.
+// callerGone reports whether err, a request's failure with no whole answer, came of ctx ending:
+// ctx has ended, and err matches the error that names how.
 func callerGone(ctx context.Context, err error) bool {
 	cause := ctx.Err()
 	return cause != nil && errors.Is(err, cause)
@@ -507,37 +521,3 @@ func jsonString(value json.RawMessage) string {
 func (f *CodeFlow) tokenContext(ctx context.Context) context.Context {
 	return context.WithValue(ctx, oauth2.HTTPClient, f.http)
 }
-
-// answeredContext hands oauth2 a copy of the bounded client tokenContext does, whose transport keeps
-// the status of the last answer it carried (lastAnswer), so a caller reads the status of the
-// answer an error came from, an answer x/oauth2 reports in no *oauth2.RetrieveError among them (a
-// 2xx with no token, or one whose body did not read).
-func (f *CodeFlow) answeredContext(ctx context.Context) (context.Context, *lastAnswer) {
-	client := *f.http
-	last := &lastAnswer{base: client.Transport}
-	if last.base == nil {
-		last.base = http.DefaultTransport
-	}
-	client.Transport = last
-	return context.WithValue(ctx, oauth2.HTTPClient, &client), last
-}
-
-// lastAnswer is a transport that keeps the status of the last answer its base carried, and zero
-// while a request has no answer: each request starts it at zero, so after a request that failed
-// unanswered it reads no earlier answer's status.
-type lastAnswer struct {
-	base http.RoundTripper
-	code atomic.Int64
-}
-
-func (l *lastAnswer) RoundTrip(request *http.Request) (*http.Response, error) {
-	l.code.Store(0)
-	response, err := l.base.RoundTrip(request)
-	if response != nil {
-		l.code.Store(int64(response.StatusCode))
-	}
-	return response, err
-}
-
-// status is the last answer's status, zero for none.
-func (l *lastAnswer) status() int { return int(l.code.Load()) }

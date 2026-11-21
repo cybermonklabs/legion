@@ -314,7 +314,8 @@ func classify(ctx context.Context, err error) (outcome string, retry bool) {
 		switch {
 		case status.rateLimited:
 			return attemptRateLimited, true
-		case status.code >= 500 || status.code == http.StatusRequestTimeout:
+		case oauthrefusal.Outage(status.code):
+			// Every 429 is rateLimited (rateLimited), so this is a 5xx or a 408.
 			return attemptUpstream, true
 		case status.refused():
 			return attemptRefused, false
