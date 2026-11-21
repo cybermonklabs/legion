@@ -285,23 +285,34 @@ func TestASecondReplayAnswersAlreadyAppliedAndWritesTheDuplicateLine(t *testing.
 }
 
 // A message the live handling acknowledges with no transaction closes, replayed, as no fact: a
-// review of a pull request the daemon does not record, and a message that decodes to no fact at
-// all. No handler runs, nothing is marked processed, and the record closes by its caller.
+// review of a pull request the daemon does not record, a GitHub event of a repository the daemon
+// no longer hears (the replay decodes against the repositories GitHub intake hears now, as a live
+// delivery would), and a message that decodes to no fact at all. No handler runs, nothing is
+// marked processed, and the record closes by its caller.
 func TestAReplayOfAMessageHandledWithNoTransactionAnswersNoFact(t *testing.T) {
 	for _, row := range []struct {
 		name     string
 		consumer string
 		subject  string
 		data     func(t *testing.T) []byte
+		// heard is the repositories GitHub intake hears at the replay, the spec's when nil; the
+		// message was given up while sjawhar/legion was heard (storedGiveUp).
+		heard []ghrepo.Repository
 	}{
 		{name: "a review of a pull request the daemon does not record", consumer: githubConsumerName("CAPTURE"),
 			subject: "notifications.github.sjawhar.legion.pr.42.review", data: func(t *testing.T) []byte { return capturedGitHubEnvelope(t, "review.json") }},
+		{name: "a GitHub event of a repository the daemon no longer hears", consumer: githubConsumerName("CAPTURE"),
+			subject: "notifications.github.sjawhar.legion.pr.42", data: func(t *testing.T) []byte { return capturedGitHubEnvelope(t, "pr-opened.json") },
+			heard: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")}},
 		{name: "another project's issue event, which decodes to no fact", consumer: dispatchConsumerName("CAPTURE"),
 			subject: replayIssueSubject("OTHER-3"), data: func(t *testing.T) []byte { return replayIssueEnvelope(t, "OTHER-3") }},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			spec := replaySpec(&lockedBuffer{})
+			if row.heard != nil {
+				spec.Repositories = row.heard
+			}
 			handler := &keysHandler{}
 			given := storedGiveUp(t, pool, row.consumer, row.subject, row.data(t), 7, 21)
 			answer, err := giveUpsOf(t, pool, spec, handler).Replay(context.Background(), record.IntakeSelector{ID: given.ID}, "operator")
