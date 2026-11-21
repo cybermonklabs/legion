@@ -247,7 +247,9 @@ func TestAClearedRowIsAnsweredByWhatTheStoreSays(t *testing.T) {
 // bucket, so the bucketless process serves it. A live process with a bucket, or a bucketless one
 // whose row has lapsed, leaves the bytes in the bucket alone. Each row but the earlier build's is
 // this build's process, so it names this build's owner lock protocol ($1), as processes.Register
-// writes it.
+// writes it. The other process registers before the issue is filed: the earlier build's insert
+// takes the owner lock gate and waits, at most 5 s, for every transaction holding it, and before
+// the issue there is no document whose settlement could hold it.
 func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
 	thisBuild := []any{store.OwnerLockProtocol}
 	for _, tc := range []struct {
@@ -263,10 +265,10 @@ func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			memory := filestest.NewMemory()
 			handler, database, _ := newTestServer(t, testServerOptions{files: memory})
-			issue := fileIssue(t, handler)
 			if _, err := database.Pool.Exec(context.Background(), tc.insert, tc.args...); err != nil {
 				t.Fatalf("add the other server process: %v", err)
 			}
+			issue := fileIssue(t, handler)
 			image := pngBytes("both places")
 			response := multipartRequest(t, handler, "/api/v1/issues/"+issue+"/artifacts", map[string]string{"name": "shot.png"}, "shot.png", "image/png", image, "alice")
 			if response.Code != http.StatusCreated {

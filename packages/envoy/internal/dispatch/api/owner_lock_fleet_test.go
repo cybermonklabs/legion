@@ -39,6 +39,20 @@ func registerEarlierBuildProcess(t *testing.T, database *store.Store) {
 	}
 }
 
+// newFleetRaceFixture is newItemRowFixture's server and issue, with fleet's process of an earlier
+// build, when it has one, registered before the issue is filed. That registration's insert takes
+// the owner lock gate and waits, at most 5 s, for every transaction of this build holding it, and
+// before the issue there is no document whose settlement could hold it.
+func newFleetRaceFixture(t *testing.T, fleet fleetRaceCase, title string) itemRowFixture {
+	t.Helper()
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	if fleet.earlier {
+		registerEarlierBuildProcess(t, database)
+	}
+	issue := createInteractionIssue(t, handler, "LOCK", title, "A spec.\n")
+	return itemRowFixture{handler: handler, database: database, deps: deps, issueKey: issue.Key, artifactID: issue.PrimaryArtifactID}
+}
+
 // readPhaseRowLock matches the statement store.LockOwner takes an issue's row with beside its
 // advisory lock (store.ownerLockExclusive's row lock), and no statement of the write phase;
 // readPhaseLock matches it or the advisory lock's own statement (owner_lock), which a request
@@ -136,11 +150,8 @@ var fleetRaceCases = []fleetRaceCase{
 func TestACommentResolveIsRefusedOnAnIssueAnEarlierBuildClosesWhileItIsUnderWay(t *testing.T) {
 	for _, fleet := range fleetRaceCases {
 		t.Run(fleet.name, func(t *testing.T) {
-			fixture := newItemRowFixture(t, testServerOptions{}, "Closed meanwhile", "A spec.\n")
+			fixture := newFleetRaceFixture(t, fleet, "Closed meanwhile")
 			comment := createThreadComment(t, fixture.handler, fixture.issueKey, map[string]any{"body": "Resolve this."}, "alice")
-			if fleet.earlier {
-				registerEarlierBuildProcess(t, fixture.database)
-			}
 			outcome := runEarlierBuildRace(t, fixture, earlierBuildRace{
 				send: func(handler http.Handler) *httptest.ResponseRecorder {
 					return dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/resolve", nil, "alice")
@@ -183,10 +194,7 @@ func TestACommentResolveIsRefusedOnAnIssueAnEarlierBuildClosesWhileItIsUnderWay(
 func TestALabelAddedBesideAnEarlierBuildsLabelKeepsBoth(t *testing.T) {
 	for _, fleet := range fleetRaceCases {
 		t.Run(fleet.name, func(t *testing.T) {
-			fixture := newItemRowFixture(t, testServerOptions{}, "Labelled meanwhile", "A spec.\n")
-			if fleet.earlier {
-				registerEarlierBuildProcess(t, fixture.database)
-			}
+			fixture := newFleetRaceFixture(t, fleet, "Labelled meanwhile")
 			outcome := runEarlierBuildRace(t, fixture, earlierBuildRace{
 				send: func(handler http.Handler) *httptest.ResponseRecorder {
 					return dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+fixture.issueKey,
