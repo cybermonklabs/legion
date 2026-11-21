@@ -8,7 +8,7 @@ tags:
   - envoy
   - daemon
 date: 2026-10-31
-status: superseded in part by cybermonklabs/legion#4752 and cybermonklabs/legion#2945 — `--write` now leaves a file its check accepts byte for byte, so a sentence over 160 characters that the check accepts stays whole, and ci-job-test.yaml's step "Check the guides' semantic line breaks" runs the guides test; reading the checker's own file lists before calling a document gated stands
+status: active
 module: scripts
 related_issues:
   - "INFRA-841"

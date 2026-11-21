@@ -9,7 +9,7 @@ tags:
   - micromark
   - refusal
 date: 2026-10-28
-status: superseded in part by cybermonklabs/legion#4752 — the third guard of `scripts/semantic-line-breaks.ts` is now its own check run on the result (`writeRefusals`), and `secondRelayoutDifference` is gone, since `--write` leaves a file its check accepts as it is; the rule, refusing what the rewrite does not model and checking with a model the rewriter does not share, stands
+status: active
 module: scripts
 related_issues:
   - "sjawhar/legion#2422"
