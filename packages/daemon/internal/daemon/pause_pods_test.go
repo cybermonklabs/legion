@@ -74,7 +74,7 @@ func endLegionPause(t *testing.T, pool *store.Pool, id int64, at time.Time) {
 func holdLegionPod(t *testing.T, st *store.Store, pause int64, issue string, at time.Time) {
 	t.Helper()
 	ctx := context.Background()
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := store.LockIssueForPause(ctx, tx, issue); err != nil {
 			return err
 		}

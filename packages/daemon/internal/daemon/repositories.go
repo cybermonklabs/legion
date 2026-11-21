@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -837,9 +838,9 @@ func (w *workflowRuntime) recordedRepositories(ctx context.Context) ([]ghrepo.Re
 	read, cancel := context.WithTimeout(ctx, appMintAttempt)
 	defer cancel()
 	var issues []record.Issue
-	if err := pgx.BeginTxFunc(read, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(read, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		issues, err = w.records.Issues(read, tx)
+		issues, err = w.records.Issues(ctx, tx)
 		return err
 	}); err != nil {
 		return nil, fmt.Errorf("read the repositories the project's records name: %w", err)
@@ -1057,9 +1058,9 @@ func (w *workflowRuntime) republishHeard(ctx context.Context) error {
 	publish, cancel := context.WithTimeout(ctx, appMintAttempt)
 	defer cancel()
 	var recorded []ghrepo.Repository
-	err := pgx.BeginTxFunc(publish, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	err := store.TransactWith(publish, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		recorded, err = w.heardRepositories(publish, tx)
+		recorded, err = w.heardRepositories(ctx, tx)
 		return err
 	})
 	var heard []ghrepo.Repository
@@ -1140,8 +1141,8 @@ func (w *workflowRuntime) rereadHeldBranches(ctx context.Context, now time.Time)
 func (w *workflowRuntime) refreshLive(ctx context.Context) error {
 	before := w.repositories.liveNames()
 	read, cancel := context.WithTimeout(ctx, appMintAttempt)
-	err := serializedTx(read, w.pool, "serialize the read of the live records with admission", func(tx pgx.Tx) error {
-		return w.refreshCacheRepositories(read, tx)
+	err := serializedTx(read, w.pool, "serialize the read of the live records with admission", func(ctx context.Context, tx pgx.Tx) error {
+		return w.refreshCacheRepositories(ctx, tx)
 	})
 	cancel()
 	if err != nil {
@@ -1879,14 +1880,13 @@ func (w *workflowRuntime) tellWaitingArchitects(ctx context.Context, tellings []
 		return nil
 	}
 	now := time.Now().UTC()
-	scoped, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, told := range notices {
 			row, err := record.NewOutboxRow(told.issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: told.reason}, now)
 			if err != nil {
 				return err
 			}
-			if err := w.records.Enqueue(scoped, tx, row); err != nil {
+			if err := w.records.Enqueue(ctx, tx, row); err != nil {
 				return err
 			}
 		}
@@ -1894,7 +1894,6 @@ func (w *workflowRuntime) tellWaitingArchitects(ctx context.Context, tellings []
 	}); err != nil {
 		return fmt.Errorf("tell the architects of the children the recovery left unrecorded: %w", err)
 	}
-	committed()
 	return nil
 }
 
@@ -1962,7 +1961,7 @@ func admissionBound(issue intake.DispatchIssue) bool {
 // it widens both without reading the records again (hearRecorded).
 func (w *workflowRuntime) heardAtBoot(ctx context.Context) ([]ghrepo.Repository, error) {
 	var heard []ghrepo.Repository
-	err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if heard, err = w.heardRepositories(ctx, tx); err != nil {
 			return err
@@ -1982,7 +1981,7 @@ func (w *workflowRuntime) heardAtBoot(ctx context.Context) ([]ghrepo.Repository,
 // runtime keep a repository cache of it, and legion state report it, from the moment a record
 // first names it, with no restart. The workflow calls it inside the transaction that writes the
 // record (workflow.Config.HearRepository), and the consumer's filters change once that
-// transaction has committed and never before (intake.OnCommit), so an admission rolled back
+// transaction has committed and never before (store.OnCommit), so an admission rolled back
 // subscribes to nothing. That is what keeps the stream call out of the transaction and out of the
 // fact serializer as well (INFRA-3169): a commit hook runs after the commit returned the
 // connection to the pool and released the advisory lock the serializer holds for the
@@ -1995,7 +1994,7 @@ func (w *workflowRuntime) heardAtBoot(ctx context.Context) ([]ghrepo.Repository,
 // (republishHeard): nothing inside the transaction can fail on it, so no JetStream trouble rolls
 // an admission back.
 func (w *workflowRuntime) hearRecorded(ctx context.Context, recorded string) {
-	if recorded == "" || !intake.CommitScoped(ctx) {
+	if recorded == "" || !store.CommitScoped(ctx) {
 		return
 	}
 	repo, err := ghrepo.Parse("GitHub's spelling of the repository an issue was recorded on", recorded)
@@ -2003,7 +2002,7 @@ func (w *workflowRuntime) hearRecorded(ctx context.Context, recorded string) {
 		w.log.Warn("workflow: a record names a repository GitHub intake cannot hear", "repo", recorded, "error", err)
 		return
 	}
-	intake.OnCommit(ctx, func() {
+	store.OnCommit(ctx, func() {
 		w.repositories.addLive(repo)
 		w.cacheRepository(repo)
 		w.hearOrPend(ctx, repo)
@@ -2387,7 +2386,7 @@ func (w *workflowRuntime) workLaunched(ctx context.Context, repo ghrepo.Reposito
 // recordOf is key's issue record, nil when the workflow does not record it.
 func (w *workflowRuntime) recordOf(ctx context.Context, key string) (*record.Issue, error) {
 	var issue *record.Issue
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issue, err = w.records.Issue(ctx, tx, key)
 		return err
@@ -2579,7 +2578,7 @@ func (w *workflowRuntime) prepareRecorded(issue intake.DispatchIssue, recorded *
 // from Dispatch.
 func (w *workflowRuntime) listingAncestry(ctx context.Context, listed []dispatch.IssueSummary) (map[string]*record.Issue, ancestry, error) {
 	var issues []record.Issue
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issues, err = w.records.Issues(ctx, tx)
 		return err
@@ -2634,7 +2633,7 @@ func (w *workflowRuntime) withAncestry(ctx context.Context, issue intake.Dispatc
 		return issue, nil
 	}
 	var roots []record.Issue
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		roots, err = w.records.QueuedRootsUnder(ctx, tx, issue.Key)
 		return err

@@ -83,30 +83,38 @@ const (
 // release to do with it.
 func (s *Store) IdlePods(ctx context.Context, project string) ([]string, error) {
 	what := "list the pods of " + project
-	rows, err := s.pool.Query(ctx, `select distinct issue from claims
-		where project = $1 and state not in ('failed', 'retired', 'suspended') and issue <> '' order by issue`, project)
+	var issues []string
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select distinct issue from claims
+			where project = $1 and state not in ('failed', 'retired', 'suspended') and issue <> '' order by issue`, project)
+		if err != nil {
+			return err
+		}
+		issues, err = issueKeys(rows)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", what, err)
 	}
-	return issueKeys(rows, what)
+	return issues, nil
 }
 
-// issueKeys reads a one-column answer of issue keys into a slice, under the sentence its caller
-// names whatever goes wrong by: the candidate lists of the two release rules are two statements
-// and one loop (IdlePods, UnownedPods). An answer of no rows is a nil slice, which is what a
-// caller reads as no candidate, and the rows are closed whichever way the read ends.
-func issueKeys(rows pgx.Rows, what string) ([]string, error) {
+// issueKeys reads a one-column answer of issue keys into a slice: the candidate lists of the two
+// release rules are two statements and one loop (IdlePods, UnownedPods), and each caller names
+// whatever goes wrong once. An answer of no rows is a nil slice, which is what a caller reads as
+// no candidate, and the rows are closed whichever way the read ends.
+func issueKeys(rows pgx.Rows) ([]string, error) {
 	defer rows.Close()
 	var issues []string
 	for rows.Next() {
 		var issue string
 		if err := rows.Scan(&issue); err != nil {
-			return nil, fmt.Errorf("%s: %w", what, err)
+			return nil, err
 		}
 		issues = append(issues, issue)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%s: %w", what, err)
+		return nil, err
 	}
 	return issues, nil
 }
@@ -151,18 +159,26 @@ func issueKeys(rows pgx.Rows, what string) ([]string, error) {
 // its own answer.
 func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, outOfWorkflow []string) ([]string, error) {
 	what := "list the pods of " + project + " no claim owns"
-	rows, err := s.pool.Query(ctx, `select i.key from issues i join issues root on root.key = i.tree
-		where i.project = $1
-		and i.status <> all($2) and i.phase <> 'done' and i.linger_until is null
-		and root.status <> all($2) and root.phase <> 'done' and root.linger_until is null
-		and exists (select 1 from claims c where c.issue = i.key and c.project = $3)
-		and not exists (select 1 from claims c where c.issue = i.key and c.project = $3
-			and c.state not in ('failed', 'retired', 'suspended'))
-		order by i.key`, project, outOfWorkflow, claimProject)
+	var issues []string
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select i.key from issues i join issues root on root.key = i.tree
+			where i.project = $1
+			and i.status <> all($2) and i.phase <> 'done' and i.linger_until is null
+			and root.status <> all($2) and root.phase <> 'done' and root.linger_until is null
+			and exists (select 1 from claims c where c.issue = i.key and c.project = $3)
+			and not exists (select 1 from claims c where c.issue = i.key and c.project = $3
+				and c.state not in ('failed', 'retired', 'suspended'))
+			order by i.key`, project, outOfWorkflow, claimProject)
+		if err != nil {
+			return err
+		}
+		issues, err = issueKeys(rows)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", what, err)
 	}
-	return issueKeys(rows, what)
+	return issues, nil
 }
 
 // ReleaseIdleIssue is the release's one transaction: it reads issue's idle view and hands it to
@@ -194,7 +210,7 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 		return false, errors.New("an idle release needs its project and its issue")
 	}
 	var marked bool
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
 		}
@@ -382,7 +398,7 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 		return ReleaseCancelled{}, errors.New("cancelling a release needs the moment a pause's stops would carry (ReleaseCancelPause.At), from the caller's clock")
 	}
 	var cancelled ReleaseCancelled
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
 		}
@@ -589,22 +605,22 @@ func stillReleasedRoles(ctx context.Context, tx pgx.Tx, project, issue string, s
 	return roles, rows.Err()
 }
 
-// ClearIssueRelease forgets the mark of issue's release once the release finished, on the pool:
-// the teardown's own call, outside any transaction. A cancel forgets its mark itself, in the
-// transaction that queues its resumes (CancelIssueRelease). A mark already gone is success, so a
-// retried finish finishes.
+// ClearIssueRelease forgets the mark of issue's release once the release finished. A cancel
+// forgets its mark in the transaction that queues its resumes (CancelIssueRelease). A mark
+// already gone is success, so a retried finish finishes.
 func (s *Store) ClearIssueRelease(ctx context.Context, project, issue string) error {
-	if err := deleteIssueRelease(ctx, s.pool, project, issue); err != nil {
+	if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return deleteIssueRelease(ctx, tx, project, issue)
+	}); err != nil {
 		return fmt.Errorf("clear the release mark of %s: %w", issue, err)
 	}
 	return nil
 }
 
-// deleteIssueRelease forgets the mark of issue's release through db, which is the pool for the
-// teardown's own call and the caller's transaction for the cancel that queues the resumes of
-// the claims the release suspended (CancelIssueRelease). One mark, one delete, whichever runs it.
-func deleteIssueRelease(ctx context.Context, db execer, project, issue string) error {
-	_, err := db.Exec(ctx, `delete from issue_releases where project = $1 and issue = $2`, project, issue)
+// deleteIssueRelease forgets the mark of issue's release in the caller's transaction. One mark,
+// one delete, whichever runs it.
+func deleteIssueRelease(ctx context.Context, tx pgx.Tx, project, issue string) error {
+	_, err := tx.Exec(ctx, `delete from issue_releases where project = $1 and issue = $2`, project, issue)
 	return err
 }
 

@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -752,7 +753,7 @@ func TestThePerIssueReadLooksUpARepositoryOnlyARecordNames(t *testing.T) {
 	}})
 	w, _, _, _ := preparationRig(t, &installations{})
 	w.tokens, w.githubAPI = roleTokens{}, github
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return w.records.PutIssue(ctx, tx, record.Issue{Key: "LEGION-951", Tree: "LEGION-951", Project: "LEGION", Title: "on a repository no other record names",
 			Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "A", Repo: strangerNamed, DefaultBranch: "trunk", GitHubRepo: strangerNamed})
 	}); err != nil {

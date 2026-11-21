@@ -566,7 +566,7 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 		Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: key,
 		Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, issue); err != nil {
 			return err
 		}

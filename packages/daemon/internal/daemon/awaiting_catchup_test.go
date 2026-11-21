@@ -145,10 +145,16 @@ func catchUpRig(t *testing.T, client dispatch.Client, cap int) (*store.Pool, *wo
 func catchUpRigLogging(t *testing.T, client dispatch.Client, cap int, log *slog.Logger) (*store.Pool, *workflowRuntime) {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
+	return pool, catchUpRigOn(t, pool, client, cap, log)
+}
+
+// catchUpRigOn is catchUpRigLogging's runtime on pool, a store the test opened itself.
+func catchUpRigOn(t *testing.T, pool *store.Pool, client dispatch.Client, cap int, log *slog.Logger) *workflowRuntime {
+	t.Helper()
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Clock: catchUpClock}, log)
 	admission := admit.New(records, engine, cap, "CAPTURE", log)
-	return pool, &workflowRuntime{pool: pool, records: records, dispatch: client, dispatchProject: "CAPTURE", engine: engine, admission: admission,
+	return &workflowRuntime{pool: pool, records: records, dispatch: client, dispatchProject: "CAPTURE", engine: engine, admission: admission,
 		gatedSteps: config.DesignGateRootIssues.Steps(),
 		handlers:   []intake.Handler{engine, admission}, log: log, bootID: "boot-1", catchUpRetryDelay: time.Millisecond}
 }
@@ -157,7 +163,7 @@ func catchUpRigLogging(t *testing.T, client dispatch.Client, cap int, log *slog.
 // reconcile's transaction (holdForCatchUp), then caught up (catchUpAwaiting).
 func bootCatchUp(t *testing.T, w *workflowRuntime) error {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), w.pool, func(tx pgx.Tx) error { return w.holdForCatchUp(context.Background(), tx) }); err != nil {
+	if err := store.Transact(context.Background(), w.pool, func(ctx context.Context, tx pgx.Tx) error { return w.holdForCatchUp(context.Background(), tx) }); err != nil {
 		t.Fatalf("hold the roots to catch up: %v", err)
 	}
 	return w.catchUpAwaiting(context.Background())
@@ -167,7 +173,7 @@ func bootCatchUp(t *testing.T, w *workflowRuntime) error {
 func seedCatchUp(t *testing.T, pool *store.Pool, put func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return put(ctx, tx, record.NewStore()) }); err != nil {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error { return put(ctx, tx, record.NewStore()) }); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 }

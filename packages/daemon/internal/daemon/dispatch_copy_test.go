@@ -217,7 +217,7 @@ func TestAnEventsParentIsInTheCopyBeforeItsDecisions(t *testing.T) {
 	openTree(t, pool, "CAPTURE", root)
 	seedTickMirror(t, pool, root, "in_progress", 1)
 	putOutboxGate(t, pool, record.NewStore(), record.DesignGate{Issue: root, ArtifactID: "artifact-1", LatestVersion: 1})
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutDispatchIssue(ctx, tx, record.DispatchReading{Key: child, Project: "CAPTURE", Seq: 5,
 			Status: record.Carry("backlog"), Parent: record.Carry(root), Blockers: record.Carry[[]string](nil)})
 	}); err != nil {

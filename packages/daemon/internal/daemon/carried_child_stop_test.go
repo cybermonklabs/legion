@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -98,7 +99,7 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 	start := time.Now().UTC().Truncate(time.Second)
 	until := start.Add(linger)
 	parent := rootKey
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, put := range []error{
 			records.PutIssue(ctx, tx, record.Issue{Key: rootKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: rootKey, Project: "LEGION", Title: "root", Phase: phase.Done,
 				Generation: 1, Status: "done", Rank: "A", LingerUntil: &until, LastDispatchSeq: 1}),
@@ -168,7 +169,7 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 		}
 	})
 	var carried *record.Issue
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		carried, err = records.Issue(ctx, tx, childKey)
 		return err

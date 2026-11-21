@@ -72,6 +72,14 @@ func newLauncherCommand(stdout, stderr io.Writer) *cobra.Command {
 				fmt.Fprintln(stderr, "launcher: --roles-dir holds every role's own launcher token and private directory: no --token-file or --private-dir")
 				return 2
 			}
+			// An issue pod's container starts in the issue's workspace (the pod spec's working
+			// directory), which is the one the pod's bundle restore works and records in use.
+			dir, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(stderr, "launcher: read the working directory, the pod's workspace: %v\n", err)
+				return 1
+			}
+			cfg.Workspace = dir
 		} else if *testPostgres {
 			// The controller's pod runs no tests, and its container is not where the server belongs.
 			fmt.Fprintln(stderr, "launcher: --test-postgres is an issue pod's container: it needs --roles-dir")

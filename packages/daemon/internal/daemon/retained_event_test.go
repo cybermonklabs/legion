@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -99,7 +100,7 @@ func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
 			records := record.NewStore()
 			root := record.Issue{Key: "LEGION-300", Tree: "LEGION-300", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 1, Status: "in_progress",
 				DispatchStatus: "in_progress", Rank: "A", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", HandedOver: true, LastDispatchSeq: 1}
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				if err := records.PutIssue(ctx, tx, root); err != nil {
 					return err
 				}
@@ -164,7 +165,7 @@ func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
 				t.Fatal(err)
 			}
 			var got *record.Issue
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				var err error
 				got, err = records.Issue(ctx, tx, root.Key)
 				return err
@@ -224,7 +225,7 @@ func TestARetainedEventOfAnUnrecordedIssueReadsItsRepositoryFromDispatch(t *test
 	})
 	var got *record.Issue
 	testwait.Eventually(t, "the retained event records its issue", func() bool {
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			got, err = records.Issue(ctx, tx, "LEGION-301")
 			return err
@@ -315,7 +316,7 @@ func TestAnAdmissionWhoseApplyFailedIsAppliedAsDispatchNowShowsIt(t *testing.T) 
 		t.Fatalf("the redelivery applied %s handed over %t at seq %d, want backlog, the label off, at seq 6, as Dispatch now shows it", again.Status, again.HandedOver, again.Seq)
 	}
 	var got *record.Issue
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		got, err = records.Issue(ctx, tx, "LEGION-310")
 		return err

@@ -63,6 +63,11 @@ type Config struct {
 	Connect, Token, Sandbox, Role, PodUID, PrivateDir string
 	RolesDir                                          string
 	Roles                                             []string
+	// Workspace is the pod's workspace, the one directory the pod's bundle restore works and
+	// records in use before any role starts on it (bundleRestore). `legion launcher` sets it to
+	// its own working directory in an issue pod's container (RolesDir set), which the pod spec
+	// makes the issue's workspace; the controller's launcher leaves it empty and restores nothing.
+	Workspace string
 	// TestPostgres has this launcher serve the pod's own PostgreSQL for tests (testpg.go), which
 	// only an issue pod's container does (RolesDir set). The deployment asks for it with
 	// `runtime.kubernetes.test_postgres`.
@@ -299,7 +304,7 @@ func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 	// this process's children, and the reaper would otherwise take an exit before the restore's
 	// own wait read it, which then fails with `waitid: no child processes` (under gVisor at times
 	// `wait: no child processes` or `waitid: no such process`) and puts nothing back.
-	restore := newBundleRestore(guard.starter())
+	restore := newBundleRestore(guard.starter(), cfg.Workspace)
 	// One install of the shared public leak check per launcher process, for the pin of its own
 	// environment: the daemon pushes it to whichever role's connection it starts first, and
 	// every other role's connection finds it installed. Its one run of the check starts through
@@ -963,8 +968,13 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	// The pod's one workspace-bundle restore, if a release saved one: after writeFiles, which
 	// clears the role's private directory, and before any role of the pod runs, so no role works
 	// a workspace that is half restored. Every other role's start waits here for this one. A
-	// restore that fails still starts the role, with a notice of what was lost in the log.
-	outcome := m.restore.apply(ctx, env)
+	// restore that fails still starts the role, with a notice of what was lost in the log. A start
+	// whose workspace cannot be recorded in use is refused, so no role works a workspace that a
+	// later launcher, finding no record, could restore a bundle over.
+	outcome, err := m.restore.apply(ctx, env)
+	if err != nil {
+		return abandon(err)
+	}
 	if outcome.Notice != "" {
 		m.logf("launcher: %s", outcome.Notice)
 	}

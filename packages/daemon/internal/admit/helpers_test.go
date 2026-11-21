@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -453,15 +454,13 @@ func reconcileWithPosition(t *testing.T, pool *pgxpool.Pool, admission *Admissio
 	for i, summary := range summaries {
 		listed[i] = intake.ListedIssue(summary)
 	}
-	scoped, committed := intake.WithCommitHooks(context.Background())
-	scoped, settle := intake.OpenSettlers(scoped, admission)
-	inTx(t, pool, func(tx pgx.Tx) {
-		if err := admission.Reconcile(scoped, tx, listed, target, position); err != nil {
-			t.Fatalf("Reconcile: %v", err)
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		ctx, settle := intake.OpenSettlers(ctx, admission)
+		if err := admission.Reconcile(ctx, tx, listed, target, position); err != nil {
+			return err
 		}
-		if err := settle(scoped, tx); err != nil {
-			t.Fatalf("settle the reconcile: %v", err)
-		}
-	})
-	committed()
+		return settle(ctx, tx)
+	}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
 }

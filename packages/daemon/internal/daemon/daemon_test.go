@@ -909,7 +909,7 @@ func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, held); err != nil {
 			return err
 		}
@@ -1080,7 +1080,7 @@ func TestTheStateNamesThePacedCatchUpWaitingOnItsOutboxRow(t *testing.T) {
 	// written rather than that moment less a few hundred nanoseconds.
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	due := now.Add(30 * time.Second)
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		root := runningRoot(issue, phase.Implementing)
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err

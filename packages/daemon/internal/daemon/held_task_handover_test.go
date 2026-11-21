@@ -155,7 +155,7 @@ func TestTheHeldTaskOfARootAHandOverCarriedInKeepsItsPhaseWhenADecisionLeaves(t 
 	putOutboxIssue(t, pool, records, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main",
 		GitHubRepo: "acme/widgets", Project: heldTaskProject, Tree: key, Title: "Carried", Phase: phase.Implementing,
 		Generation: 2, Status: "in_progress", Rank: "A", LastDispatchSeq: 1})
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutHandedOverRoot(ctx, tx, record.HandedOverRoot{Issue: key, Generation: 2})
 	}); err != nil {
 		t.Fatalf("record %s as a root a hand-over created at generation 2: %v", key, err)
@@ -338,7 +338,7 @@ func (r *heldTaskRig) decide(issue string) string {
 	ref := fmt.Sprintf("dispatch://%s/ask/ask-%04d", issue, r.decided)
 	r.at = r.at.Add(time.Minute)
 	outcome := record.RelayNone
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		stored, err := r.records.Issue(r.ctx, tx, heldTaskRoot)
 		if err != nil || stored == nil {
 			return err
@@ -389,7 +389,7 @@ func (r *heldTaskRig) readmit() {
 // the row's id.
 func (r *heldTaskRig) enqueueStart() int64 {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		task, named, err := r.engine.ParkedDecisionTask(r.ctx, tx, r.root)
 		if err != nil {
 			return err
@@ -419,7 +419,7 @@ func (r *heldTaskRig) runRow(id int64) {
 	if err := r.runner.execute(r.ctx, row); err != nil {
 		r.t.Fatalf("run outbox row %d: %v", row.ID, err)
 	}
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.FinishOutbox(r.ctx, tx, row.ID, row.LeaseToken)
 	}); err != nil {
 		r.t.Fatalf("finish outbox row %d: %v", row.ID, err)
@@ -434,7 +434,7 @@ func (r *heldTaskRig) runRow(id int64) {
 // run and promotes into a tree of its own.
 func (r *heldTaskRig) handOver() {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutHandover(r.ctx, tx, record.Handover{Issue: heldTaskChild, Tree: r.root.Tree,
 			Generation: r.root.Generation})
 	}); err != nil {

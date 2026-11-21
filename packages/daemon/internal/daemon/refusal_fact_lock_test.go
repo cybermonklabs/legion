@@ -172,7 +172,7 @@ func lingeringTree(t *testing.T, pool *store.Pool, records record.Store, root, m
 	putOutboxIssue(t, pool, records, record.Issue{Key: member, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: root, Parent: &root, Project: "LEGION", Title: "member", Phase: phase.Testing, Generation: 1,
 		Status: "testing", Rank: "V", LastDispatchSeq: 1})
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutHandover(context.Background(), tx, record.Handover{Issue: member, Tree: root, Generation: 1}); err != nil {
 			return err
 		}
@@ -189,7 +189,7 @@ func lingeringTree(t *testing.T, pool *store.Pool, records record.Store, root, m
 // long fact holds it, and rolls that transaction back when the test ends.
 func holdFactLock(t *testing.T, pool *store.Pool) pgx.Tx {
 	t.Helper()
-	fact, err := pool.Begin(context.Background())
+	fact, err := pool.BeginTx(context.Background(), pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the fact's transaction: %v", err)
 	}
@@ -217,7 +217,7 @@ func factLockWaited(pool *store.Pool) bool {
 func fenceOf(t *testing.T, pool *store.Pool, records record.Store, issue string) *record.Handover {
 	t.Helper()
 	var fence *record.Handover
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		fence, err = records.Handover(context.Background(), tx, issue)
 		return err

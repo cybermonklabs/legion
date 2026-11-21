@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -282,7 +283,7 @@ func newArchitectHarnessGating(t *testing.T, steps []record.DesignStep, grants *
 func seedTree(t *testing.T, h *harness, root string, children ...string) {
 	t.Helper()
 	records := record.NewStore()
-	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(context.Background(), tx, record.Issue{
 			Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: root, Phase: phase.Planning, Status: "in_progress",
 		}); err != nil {
@@ -393,7 +394,7 @@ func (c liveClaim) grant(t *testing.T) string {
 func assertProcessedEvent(t *testing.T, h *harness, eventID string) {
 	t.Helper()
 	var count int
-	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(context.Background(),
 			"select count(*) from processed_events where source = 'api' and event_id = $1", eventID,
 		).Scan(&count)
@@ -616,7 +617,7 @@ func TestABrokenParentChainIsTheTreeRootArchitects(t *testing.T) {
 	seedTree(t, h, "LEGION-208", "LEGION-209")
 	unrecorded := "LEGION-999"
 	records := record.NewStore()
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, child := range []record.Issue{
 			{Key: "LEGION-211", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: testProject, Title: "no parent", Phase: phase.Accepting, Status: "needs_review"},
 			{Key: "LEGION-212", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: testProject, Title: "unrecorded parent", Parent: &unrecorded, Phase: phase.Accepting, Status: "needs_review"},
@@ -888,7 +889,7 @@ func TestParkAndRerunMoveAChildOfTheTreeByItsDispatchStatus(t *testing.T) {
 // setIssue rewrites one recorded issue in place.
 func setIssue(t *testing.T, h *harness, key string, change func(*record.Issue)) {
 	t.Helper()
-	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		issue, err := records.Issue(context.Background(), tx, key)
 		if err != nil {
@@ -962,7 +963,7 @@ func TestGateRegistrationIsItsOwnFactInEachGeneration(t *testing.T) {
 		}
 	}
 	register()
-	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		root, err := records.Issue(context.Background(), tx, "LEGION-208")
 		if err != nil {

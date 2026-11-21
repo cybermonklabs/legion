@@ -146,7 +146,7 @@ func TestAHandoffCompletionReadsThatIssuesPullRequestAlone(t *testing.T) {
 		t.Fatalf("the completion read pull request 87 %d times, want none: the handoff was CAPTURE-1's", got)
 	}
 	var other *record.PullRequest
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		other, err = record.NewStore().PullRequest(context.Background(), tx, "CAPTURE-2")
 		return err
@@ -163,8 +163,7 @@ func TestAHandoffCompletionReadsThatIssuesPullRequestAlone(t *testing.T) {
 func seedSecondIssue(t *testing.T, pool *store.Pool) {
 	t.Helper()
 	records := record.NewStore()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		ctx := context.Background()
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, record.Issue{Key: "CAPTURE-2", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "CAPTURE-2", Project: "CAPTURE", Title: "another root",
 			Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "V"}); err != nil {
 			return err

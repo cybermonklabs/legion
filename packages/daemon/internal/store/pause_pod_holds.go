@@ -114,7 +114,7 @@ func OpenPausePodHoldTx(ctx context.Context, tx pgx.Tx, held Pause, issue string
 // EndPausePodHoldTx.
 func (s *Store) EndPausePodHold(ctx context.Context, project, issue string, end PausePodHoldEnd, at time.Time) (bool, error) {
 	var ended bool
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		ended, err = EndPausePodHoldTx(ctx, tx, project, issue, end, at)
 		return err
@@ -151,8 +151,13 @@ func validPausePodHoldEnd(issue string, end PausePodHoldEnd) error {
 // PausePodHoldOf is the hold that stands on issue's pod under project's pauses, and whether one
 // does. project is the Dispatch key.
 func (s *Store) PausePodHoldOf(ctx context.Context, project, issue string) (PausePodHold, bool, error) {
-	h, err := scanPausePodHold(s.pool.QueryRow(ctx, `select `+pausePodHoldColumns+` from project_pause_pod_holds
-		where project = $1 and issue = $2 and ended_at is null`, project, issue))
+	var h PausePodHold
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		h, err = scanPausePodHold(tx.QueryRow(ctx, `select `+pausePodHoldColumns+` from project_pause_pod_holds
+			where project = $1 and issue = $2 and ended_at is null`, project, issue))
+		return err
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PausePodHold{}, false, nil
 	}
@@ -166,12 +171,16 @@ func (s *Store) PausePodHoldOf(ctx context.Context, project, issue string) (Paus
 // ends the holds of where a role is live (decision 22), and the pods a project release names when
 // it refuses (departure 1). project is the Dispatch key.
 func (s *Store) OpenPausePodHolds(ctx context.Context, project string) ([]PausePodHold, error) {
-	rows, err := s.pool.Query(ctx, `select `+pausePodHoldColumns+` from project_pause_pod_holds
-		where project = $1 and ended_at is null order by issue`, project)
-	if err != nil {
-		return nil, fmt.Errorf("read the pod holds of %s: %w", project, err)
-	}
-	holds, err := scanPausePodHolds(rows)
+	var holds []PausePodHold
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select `+pausePodHoldColumns+` from project_pause_pod_holds
+			where project = $1 and ended_at is null order by issue`, project)
+		if err != nil {
+			return err
+		}
+		holds, err = scanPausePodHolds(rows)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("read the pod holds of %s: %w", project, err)
 	}
@@ -186,27 +195,30 @@ func (s *Store) OpenPausePodHolds(ctx context.Context, project string) ([]PauseP
 // let-out of the last launch its pause held for a role of the pod, so since is the opening of the
 // oldest round the sweep reads. project is the Dispatch key.
 func (s *Store) PausePodHoldsSince(ctx context.Context, project string, since time.Time) ([]PausePodHold, error) {
-	rows, err := s.pool.Query(ctx, `select h.id, h.pause_id, h.project, h.issue, h.held_at, h.ended_at, coalesce(h.ended_why, ''), l.let_out
-		from project_pause_pod_holds h
-		left join lateral (select max(r.clock_at) as let_out from pod_resumes r
-			where r.project = lower(h.project) and r.issue = h.issue and r.pause_id = h.pause_id) l on true
-		where h.project = $1 and (h.ended_at is null or h.ended_at > $2 or l.let_out > $2) order by h.issue, h.held_at`, project, since)
-	if err != nil {
-		return nil, fmt.Errorf("read the pod holds of %s since %s: %w", project, since.Format(time.RFC3339), err)
-	}
-	defer rows.Close()
 	var holds []PausePodHold
-	for rows.Next() {
-		var h PausePodHold
-		var end string
-		var ended, letOut *time.Time
-		if err := rows.Scan(&h.ID, &h.Pause, &h.Project, &h.Issue, &h.HeldAt, &ended, &end, &letOut); err != nil {
-			return nil, fmt.Errorf("read the pod holds of %s since %s: %w", project, since.Format(time.RFC3339), err)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select h.id, h.pause_id, h.project, h.issue, h.held_at, h.ended_at, coalesce(h.ended_why, ''), l.let_out
+			from project_pause_pod_holds h
+			left join lateral (select max(r.clock_at) as let_out from pod_resumes r
+				where r.project = lower(h.project) and r.issue = h.issue and r.pause_id = h.pause_id) l on true
+			where h.project = $1 and (h.ended_at is null or h.ended_at > $2 or l.let_out > $2) order by h.issue, h.held_at`, project, since)
+		if err != nil {
+			return err
 		}
-		h.End, h.EndedAt, h.LetOut = PausePodHoldEnd(end), orZero(ended), orZero(letOut)
-		holds = append(holds, h)
-	}
-	if err := rows.Err(); err != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var h PausePodHold
+			var end string
+			var ended, letOut *time.Time
+			if err := rows.Scan(&h.ID, &h.Pause, &h.Project, &h.Issue, &h.HeldAt, &ended, &end, &letOut); err != nil {
+				return err
+			}
+			h.End, h.EndedAt, h.LetOut = PausePodHoldEnd(end), orZero(ended), orZero(letOut)
+			holds = append(holds, h)
+		}
+		return rows.Err()
+	})
+	if err != nil {
 		return nil, fmt.Errorf("read the pod holds of %s since %s: %w", project, since.Format(time.RFC3339), err)
 	}
 	return holds, nil
@@ -245,7 +257,7 @@ func (s *Store) EndLivePausePodHold(ctx context.Context, project, issue string, 
 		return false, err
 	}
 	var ended bool
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := LockIssueForPause(ctx, tx, issue); err != nil {
 			return err
 		}

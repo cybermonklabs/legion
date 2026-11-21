@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -280,11 +281,9 @@ func TestADefaultBranchReadGitHubNeverAnswersHoldsUpNoJobOfTheRefresher(t *testi
 	ctx := context.Background()
 	closed := anchorOn(anchorTools, "zeta/tools")
 	closed.Phase, closed.Status, closed.DispatchStatus = phase.Done, "done", "done"
-	scoped, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error { return w.records.PutIssue(scoped, tx, closed) }); err != nil {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error { return w.records.PutIssue(ctx, tx, closed) }); err != nil {
 		t.Fatal(err)
 	}
-	committed()
 	testwait.Eventually(t, "the refresher's sixth job taking zeta/tools out of the cache set at its tree's close", func() bool {
 		return slices.Equal(repositoryNames(w.cacheRepositories()), []string{"acme/widgets"})
 	})
@@ -336,7 +335,7 @@ func TestTheBootsPreparationRecordsOnTheRepositoriesWhoseInstallationReadsAnswer
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "acme/gadgets": "acme/gadgets@main"})
 	pool := isolatedOutboxPool(t)
 	records := projectRecords{Store: record.NewStore(), project: "LEGION"}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, issue := range []record.Issue{doneOn("LEGION-1", "LEGION", "acme/widgets", "main"), doneOn("LEGION-2", "LEGION", "acme/gadgets", "main")} {
 			if err := records.PutIssue(ctx, tx, issue); err != nil {
 				return err
@@ -624,7 +623,7 @@ func TestARepositoryALiveRecordNamesIsNamedWithoutTheWebhookAppAfterARestart(t *
 	ctx := context.Background()
 	w, _, installs, _ := preparationRig(t, &installations{}, withoutWebhookAppFor, func(w *workflowRuntime) {
 		// The tree an earlier process recorded, which this one boots over.
-		if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 			return w.records.PutIssue(ctx, tx, record.Issue{Key: "LEGION-952", Tree: "LEGION-952", Project: "LEGION", Title: "a tree on a repository no other record names",
 				Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "A", Repo: strangerNamed, DefaultBranch: "trunk", GitHubRepo: strangerNamed})
 		}); err != nil {
@@ -675,7 +674,7 @@ func TestTheCheckOfTheRepositoriesTheLiveRecordsAddIsBoundedPerCheck(t *testing.
 		recorded = append(recorded, record.Issue{Key: fmt.Sprintf("LEGION-%d", 10+i), Repo: repo})
 		want = append(want, repo)
 	}
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, issue := range recorded {
 			issue.Tree, issue.Project, issue.Title, issue.Phase, issue.Generation, issue.Status, issue.Rank = issue.Key, "LEGION", issue.Key, phase.Planning, 1, "in_progress", "A"
 			issue.DefaultBranch, issue.GitHubRepo = "main", issue.Repo
@@ -1148,7 +1147,7 @@ func TestAnAdoptedPanesRepositoryIsTheOneItsIssueWorks(t *testing.T) {
 	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: record.NewStore(), dispatch: client, dispatchProject: "LEGION", installs: &installations{},
 		repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger(), setRepositories: hearsNothing,
 		defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)}
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return w.records.PutIssue(ctx, tx, record.Issue{Key: "LEGION-2", Tree: "LEGION-2", Project: "LEGION", Title: "root", Phase: phase.Implementing,
 			Generation: 1, Status: "in_progress", Rank: "A", Repo: "zeta/tools", DefaultBranch: "main", GitHubRepo: "zeta/tools"})
 	}); err != nil {

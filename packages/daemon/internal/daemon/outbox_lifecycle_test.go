@@ -40,7 +40,7 @@ func TestAnEarlierGenerationsSuperviseRowNeverActsOnTheNextGeneration(t *testing
 	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing},
 		Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 5}
 	putOutboxIssue(t, pool, records, root)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now()})
 	}); err != nil {
 		t.Fatalf("put slot: %v", err)
@@ -417,7 +417,7 @@ func TestABackwardMoveStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *test
 	// The issue is at work in testing and at work in implementing after the move back, so it holds
 	// its admission slot throughout: the implementer's task is delivered rather than held for one.
 	holdSlot(t, pool, issue.Key)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: issue.Key, Repo: "acme/widgets", Number: 86, Branch: "legion/LEGION-208", HeadSHA: "sha-1",
 			HeadUpdatedAt: time.Now(), Failing: []string{}, CheckRuns: []record.AttemptRun{}})
 	}); err != nil {
@@ -533,7 +533,7 @@ func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing
 	ctx := context.Background()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"}
 	putOutboxIssue(t, pool, records, issue)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue.Key, Role: claim.RolePlanner, Claim: "planner", HandoffRecord: "plan-1", HandoffVersion: 1, LastHandoff: "plan-1"})
 	}); err != nil {
 		t.Fatal(err)
@@ -679,7 +679,7 @@ func TestAReadmittedTreeKeepsItsOpenPullRequest(t *testing.T) {
 	approved := 1
 	root := record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: key, Title: "Workflow", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U", LastDispatchSeq: 5}
 	putOutboxIssue(t, pool, records, root)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutSlot(ctx, tx, record.Slot{Issue: key, Index: 0, AdmittedAt: time.Now()}); err != nil {
 			return err
 		}
@@ -741,7 +741,7 @@ func TestAChildAHumanMovesOutOfTheWorkflowStopsAndKeepsTheHumansStatus(t *testin
 	// that no slot can reach and take the whole tree out of it, which is not what this test moves.
 	openTree(t, pool, "LEGION", "LEGION-208")
 	holdSlot(t, pool, "LEGION-208", "LEGION-209")
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "acme/widgets", Number: 90, Branch: "legion/LEGION-209", HeadSHA: "sha",
 			HeadUpdatedAt: time.Now(), Failing: []string{}, CheckRuns: []record.AttemptRun{}})
 	}); err != nil {
@@ -817,7 +817,7 @@ func TestASameRoleBackwardMoveNeverStopsTheWorkerInItsNewPhase(t *testing.T) {
 	// is the handoff between two phases of one worker, so the implementing task is given its row
 	// up front and waits for nothing.
 	holdSlot(t, pool, issue.Key)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "claim"})
 	}); err != nil {
 		t.Fatal(err)
@@ -1018,7 +1018,7 @@ func TestARootLeavingTheWorkflowSuspendsEveryWorkerOfItsTree(t *testing.T) {
 	child := record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Parent: &parent, Title: "Child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 5}
 	putOutboxIssue(t, pool, records, root)
 	putOutboxIssue(t, pool, records, child)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now()})
 	}); err != nil {
 		t.Fatal(err)

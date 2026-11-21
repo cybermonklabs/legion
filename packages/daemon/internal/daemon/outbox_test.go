@@ -276,7 +276,7 @@ func TestAHandOverWritesTheStatusAndTheLabelTogether(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
-			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+			if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 				if err := records.PutIssue(context.Background(), tx, tc.root); err != nil {
 					return err
 				}
@@ -308,7 +308,7 @@ func TestAReopenBetweenTheHandOverCheckAndItsPatchKeepsTheChild(t *testing.T) {
 	records := record.NewStore()
 	until := time.Now().Add(time.Hour)
 	parent := root
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, put := range []error{
 			records.PutIssue(context.Background(), tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}),
 			records.PutIssue(context.Background(), tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: child, Parent: &parent, Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "B", LastDispatchSeq: 1}),
@@ -341,7 +341,7 @@ func TestAReopenBetweenTheHandOverCheckAndItsPatchKeepsTheChild(t *testing.T) {
 		t.Fatalf("consume the late hand-over: %v", err)
 	}
 	var got *record.Issue
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		got, err = records.Issue(context.Background(), tx, child)
 		return err
@@ -362,7 +362,7 @@ func TestAnAlreadyTodoAndLabelledChildConsumesItsHandover(t *testing.T) {
 	records := record.NewStore()
 	until := time.Now().Add(time.Hour)
 	parent := root
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, put := range []error{
 			records.PutIssue(context.Background(), tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}),
 			records.PutIssue(context.Background(), tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: child, Parent: &parent, Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "B"}),
@@ -384,7 +384,7 @@ func TestAnAlreadyTodoAndLabelledChildConsumesItsHandover(t *testing.T) {
 		t.Fatalf("consume already-todo hand-over: %v", err)
 	}
 	var got *record.Issue
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		got, err = records.Issue(context.Background(), tx, child)
 		return err
@@ -418,7 +418,7 @@ func TestAHandOverWriteIsConsumedWithoutWaitingForItsEvent(t *testing.T) {
 			records := record.NewStore()
 			until := time.Now().Add(time.Hour)
 			parent := root
-			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+			if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 				for _, put := range []error{
 					records.PutIssue(context.Background(), tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}),
 					records.PutIssue(context.Background(), tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: child, Parent: &parent, Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "B"}),
@@ -445,7 +445,7 @@ func TestAHandOverWriteIsConsumedWithoutWaitingForItsEvent(t *testing.T) {
 			read := func() *record.Issue {
 				t.Helper()
 				var got *record.Issue
-				if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+				if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 					var err error
 					got, err = records.Issue(context.Background(), tx, child)
 					return err
@@ -489,7 +489,7 @@ func TestAPersonMoveBetweenTheHandOverReadAndPatchStands(t *testing.T) {
 			now := time.Now()
 			until := now.Add(time.Hour)
 			parent := root
-			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+			if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 				for _, put := range []error{
 					records.PutIssue(context.Background(), tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}),
 					records.PutIssue(context.Background(), tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: child, Parent: &parent, Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "B"}),
@@ -530,7 +530,7 @@ func TestAPersonMoveBetweenTheHandOverReadAndPatchStands(t *testing.T) {
 			if len(client.handOvers) != 1 || len(client.statuses) != 0 {
 				t.Fatalf("hand-over writes %v and unconditional status writes %v, want the one conditional attempt alone", client.handOvers, client.statuses)
 			}
-			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+			if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 				handover, err := records.Handover(context.Background(), tx, child)
 				if err != nil || handover != nil {
 					t.Fatalf("hand-over fence after the person move = %#v, %v, want none", handover, err)
@@ -562,7 +562,7 @@ func TestAStaleHandOverRowLeavesANewerLingersFence(t *testing.T) {
 			records := record.NewStore()
 			until := time.Now().Add(time.Hour)
 			parent := root
-			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+			if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 				for _, put := range []error{
 					records.PutIssue(context.Background(), tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 2, Status: "done", LingerUntil: &until}),
 					records.PutIssue(context.Background(), tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: child, Parent: &parent, Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "B"}),
@@ -590,7 +590,7 @@ func TestAStaleHandOverRowLeavesANewerLingersFence(t *testing.T) {
 			if len(client.handOvers) != 0 || len(client.statuses) != 0 {
 				t.Fatalf("stale row wrote hand-overs %v and statuses %v, want none", client.handOvers, client.statuses)
 			}
-			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+			if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 				fence, err := records.Handover(context.Background(), tx, child)
 				if err != nil || fence == nil || fence.Generation != 2 || fence.Cancelled != tc.cancelled {
 					t.Fatalf("newer linger's fence after the stale row = %#v, %v; want it left at generation 2 (cancelled %t)", fence, err, tc.cancelled)
@@ -619,7 +619,7 @@ func TestAPermanentlyRefusedHandOverDropsItsFence(t *testing.T) {
 	t.Cleanup(st.Close)
 	until := time.Now().Add(time.Hour)
 	parent := root
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, put := range []error{
 			records.PutIssue(ctx, tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 3, Status: "done", LingerUntil: &until}),
 			records.PutIssue(ctx, tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: child, Parent: &parent, Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "B"}),
@@ -647,7 +647,7 @@ func TestAPermanentlyRefusedHandOverDropsItsFence(t *testing.T) {
 	if len(client.handOvers) != 1 || outboxRows(t, pool) != 0 {
 		t.Fatalf("hand-over writes %v, %d rows left; want the one refused write and its row finished", client.handOvers, outboxRows(t, pool))
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		fence, err := records.Handover(ctx, tx, child)
 		if err != nil || fence != nil {
 			t.Fatalf("the fence after its refused hand-over = %#v, %v; want none", fence, err)
@@ -1400,7 +1400,7 @@ func TestTheGateSeedResetsAGateAboveTheVersionDispatchHolds(t *testing.T) {
 			ctx := context.Background()
 			putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 1,
 				Status: "in_progress", Rank: "U", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				return records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 7})
 			}); err != nil {
 				t.Fatalf("seed the gate above Dispatch's version: %v", err)
@@ -1412,7 +1412,7 @@ func TestTheGateSeedResetsAGateAboveTheVersionDispatchHolds(t *testing.T) {
 				t.Fatalf("execute gate seed: %v", err)
 			}
 			var gate *record.DesignGate
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				gates, err := records.GatesOf(ctx, tx, "LEGION-208")
 				gate = record.SpecGate(gates)
 				return err
@@ -2050,7 +2050,7 @@ func TestOutboxRetryStartForAPhaseTheIssueLeftRelaunchesNothing(t *testing.T) {
 	ctx := context.Background()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing}, Generation: 1, Status: "in_progress"}
 	putOutboxIssue(t, pool, records, issue)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{Issue: issue.Key, Repo: "acme/widgets", Number: 114, Branch: "legion/LEGION-208", HeadSHA: "f8f30933", Failing: []string{}, State: record.PullRequestOpen})
 	}); err != nil {
 		t.Fatalf("put the pull request: %v", err)
@@ -2197,7 +2197,7 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			// decides a round only when its Legion footer names the pull request's head
 			// (workflow's refusesRound).
 			const head = "16973163c4b8a90d2e5f1736a8b0c4d9e2f51637"
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				// The settlement is the head's own, which the approval reads nothing of; GitHub's
 				// merge state for it is clean, which an approval of it advances on.
 				return records.PutPullRequest(ctx, tx, record.PullRequest{Issue: issue.Key, Repo: "acme/widgets", Number: 118, Branch: "legion/LEGION-208", HeadSHA: head, CheckedHead: head, Failing: []string{}, State: record.PullRequestOpen,
@@ -2400,7 +2400,7 @@ func TestTerminalReplayAfterPersistedFailureHoldsOnceAndEmitsOneWorkerDiedNotice
 	}
 
 	var held string
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		stored, err := records.Issue(context.Background(), tx, issue.Key)
 		if err != nil {
 			return err
@@ -2572,7 +2572,7 @@ func TestPhaseHoldsAnswersFromTheIssuesCurrentPhase(t *testing.T) {
 
 func putOutboxIssue(t *testing.T, pool *store.Pool, records record.Store, issue record.Issue) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutIssue(context.Background(), tx, issue)
 	}); err != nil {
 		t.Fatalf("put workflow issue: %v", err)
@@ -2588,7 +2588,7 @@ func putOutboxIssue(t *testing.T, pool *store.Pool, records record.Store, issue 
 func holdSlot(t *testing.T, pool *store.Pool, issues ...string) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		slots, err := records.Slots(ctx, tx)
 		if err != nil {
@@ -2613,7 +2613,7 @@ func holdSlot(t *testing.T, pool *store.Pool, issues ...string) {
 // the claim token of it, as every claim and runtime key is.
 func openTree(t *testing.T, pool *store.Pool, project, tree string) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return openTreeTx(context.Background(), tx, project, tree)
 	}); err != nil {
 		t.Fatalf("open the tree lifecycle of %s: %v", tree, err)
@@ -2999,7 +2999,7 @@ func TestAnEarlierGenerationsWorkspaceRemovalLeavesTheReadmittedTreesWorkspace(t
 	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "todo-again", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.updated", Status: "todo", Title: root.Title, Rank: root.Rank, HandedOver: true}, engine, admission); err != nil {
 		t.Fatalf("apply the todo: %v", err)
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		readmitted, err := records.Issue(ctx, tx, root.Key)
 		if err != nil || readmitted == nil {
 			return err

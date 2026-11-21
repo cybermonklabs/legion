@@ -64,7 +64,7 @@ func TestTheBackfillKeepsTheSpellingOfAnExistingClone(t *testing.T) {
 			github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@release/v7.1"})
 			w := &workflowRuntime{pool: pool, records: records, defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)}
 			client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-301", ResolvedRepo: "acme/widgets"}}}
-			if _, _, err := backfillRepositories(ctx, pool, records, client, "LEGION", state, w.defaultBranches, ghrepo.Renames{}, quietLogger()); err != nil {
+			if _, err := backfillRepositories(ctx, pool, records, client, "LEGION", state, w.defaultBranches, ghrepo.Renames{}, quietLogger()); err != nil {
 				t.Fatal(err)
 			}
 			repo, branch, err := w.issueRepository(ctx, "LEGION-301")
@@ -100,7 +100,7 @@ func leftAs(key, repo, cause string) string {
 func backfillLogged(t *testing.T, pool *store.Pool, records record.Store, client dispatch.Client, state string, named *defaultBranches, renames ghrepo.Renames) (bool, string) {
 	t.Helper()
 	var logs bytes.Buffer
-	_, left, err := backfillRepositories(context.Background(), pool, records, client, "LEGION", state, named, renames, slog.New(slog.NewTextHandler(&logs, nil)))
+	left, err := backfillRepositories(context.Background(), pool, records, client, "LEGION", state, named, renames, slog.New(slog.NewTextHandler(&logs, nil)))
 	if err != nil {
 		t.Fatalf("backfill = %v, want no error: one record's repository never stops the boot", err)
 	}
@@ -164,7 +164,7 @@ func TestTheBackfillLeavesARecordWhosePullRequestIsOnAnotherRepository(t *testin
 				t.Fatal(err)
 			}
 			records := record.NewStore()
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				return records.PutPullRequest(ctx, tx, record.PullRequest{Issue: "LEGION-1", Repo: tc.prRepo, Number: 7, Branch: "legion/LEGION-1",
 					HeadSHA: "head", State: record.PullRequestOpen})
 			}); err != nil {
@@ -361,7 +361,7 @@ func TestTheBackfillOfAConfiguredRenameFillsTheRecordsOwnName(t *testing.T) {
 			defaultBranches: newDefaultBranches(servedOwnerTokens{owner: "cybermonklabs"}, repos, github.url, defaultBranchTTL, time.Now)}, t.TempDir()
 	}
 	backfill := func(w *workflowRuntime, state string) error {
-		_, _, err := backfillRepositories(ctx, w.pool, w.records, client, "LEGION", state, w.defaultBranches, transferredLegion, quietLogger())
+		_, err := backfillRepositories(ctx, w.pool, w.records, client, "LEGION", state, w.defaultBranches, transferredLegion, quietLogger())
 		return err
 	}
 

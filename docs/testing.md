@@ -502,11 +502,12 @@ schema.
 `testdb.Database` is still there for a test that wants an empty database: `internal/record`'s own tests
 apply part of the migration set by hand and assert what `Migrate` then returns, which a migrated
 clone would not let them do.
-`internal/store`'s own tests take that same `Database`, from the leaf package
+`internal/store`'s own tests take that same `Database`, from the package
 `packages/daemon/internal/testpg/testdb` that holds it: `internal/testpg` imports `internal/store`
 to migrate the template its `Clone` copies, so a test binary of `internal/store` cannot import
 `internal/testpg` back, and the half of the fixture that needs no schema sits in `testdb`, which
-imports nothing of the module and so is open to every package of it.
+imports no package of the module except `internal/testwait`, which imports none, and so is open to
+every package of it.
 A package whose tests migrate into the database their DSN names, rather than taking one each,
 takes one database for its whole run instead: `testdb.RunDatabaseMain` from its `TestMain`, and
 `testdb.RunDatabaseFor` wherever it reads the DSN (`internal/daemon`, whose daemons migrate the

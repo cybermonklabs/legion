@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -382,7 +383,7 @@ func TestARestoredClaimTakesNoSessionBeforeTheBootHoldsIt(t *testing.T) {
 	if _, err := st.Pool().Exec(ctx, `update claims set tree_epoch = 1 where token = $1`, string(registered)); err != nil {
 		t.Fatalf("bind the registered claim to its tree's epoch: %v", err)
 	}
-	row, err := st.Pool().Begin(ctx)
+	row, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

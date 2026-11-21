@@ -244,7 +244,7 @@ func (r *adoptionRig) run() {
 		if err := r.runner.execute(r.ctx, row); err != nil {
 			r.t.Fatalf("run the start row %d of %s: %v", row.ID, row.Issue, err)
 		}
-		if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+		if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 			return r.records.FinishOutbox(r.ctx, tx, row.ID, row.LeaseToken)
 		}); err != nil {
 			r.t.Fatalf("finish the start row %d: %v", row.ID, err)
@@ -532,7 +532,7 @@ func aPhaseStartWaitsOutATurn(r *adoptionRig) {
 		Status: "in_progress", Rank: "U", HandedOver: true}
 	planner := r.token(issue.Key, claim.RolePlanner)
 	seedWorkflowTree(r.t, r.dsn(), "legion", issue, r.live(issue.Key, issue.Key, claim.RolePlanner))
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutPhase(r.ctx, tx, record.PhaseRow{Issue: issue.Key, Role: claim.RolePlanner, Claim: planner})
 	}); err != nil {
 		r.t.Fatalf("record the planner's phases row: %v", err)

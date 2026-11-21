@@ -161,7 +161,7 @@ func TestABootStatusWriteDoesNotLandOverAPersonsMoveWithinTheWorkflow(t *testing
 // holds one.
 func seedPlanningRoot(t *testing.T, pool *store.Pool, records record.Store, key string) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(context.Background(), tx, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main",
 			GitHubRepo: "acme/widgets", Tree: key, Project: "LEGION", Title: key, Phase: phase.Planning, Generation: 1,
 			Status: "todo", DispatchStatus: "todo", HandedOver: true, Rank: "U"}); err != nil {
@@ -211,7 +211,7 @@ func dispatchStatusOf(t *testing.T, baseURL, token, key string) string {
 func recordOf(t *testing.T, pool *store.Pool, records record.Store, key string) record.Issue {
 	t.Helper()
 	var issue *record.Issue
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issue, err = records.Issue(context.Background(), tx, key)
 		return err

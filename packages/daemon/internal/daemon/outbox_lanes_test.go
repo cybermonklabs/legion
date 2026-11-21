@@ -569,7 +569,7 @@ func TestAWorkerStartRunsOnItsLaneWithoutASweep(t *testing.T) {
 	// A phase worker's start waits while its issue holds no admission slot (StartOrOwe's
 	// NeedsSlot), so the slot is granted first, and through the bare store: projectRecords.PutSlot
 	// wakes the issue's lifecycle lane itself, and that wake would stand in for the one under test.
-	if err := pgx.BeginFunc(ctx, tree.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, tree.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutSlot(ctx, tx, record.Slot{Issue: tree.root.Key, Index: 0, AdmittedAt: tree.clock.Now()})
 	}); err != nil {
 		t.Fatalf("grant the admission slot of %s: %v", tree.root.Key, err)
@@ -667,7 +667,7 @@ func TestProjectRecordsExpediteWakesOnlyWhenItMovedARow(t *testing.T) {
 	base := record.NewStore()
 	now := time.Date(2026, 11, 20, 2, 0, 0, 0, time.UTC)
 	row := mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "wake once"}, now.Add(time.Hour))
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		id, err := base.EnqueueID(ctx, tx, row)
 		if err != nil {
 			return err
@@ -683,9 +683,8 @@ func TestProjectRecordsExpediteWakesOnlyWhenItMovedARow(t *testing.T) {
 	}, log: quietLogger()}
 	expedite := func(want bool) {
 		t.Helper()
-		scoped, committed := intake.WithCommitHooks(ctx)
-		if err := pgx.BeginFunc(scoped, pool, func(tx pgx.Tx) error {
-			moved, err := records.ExpediteOutbox(scoped, tx, row, now)
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+			moved, err := records.ExpediteOutbox(ctx, tx, row, now)
 			if err != nil {
 				return err
 			}
@@ -699,7 +698,6 @@ func TestProjectRecordsExpediteWakesOnlyWhenItMovedARow(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("expedite the row: %v", err)
 		}
-		committed()
 	}
 	expedite(true)
 	if fmt.Sprint(wakes) != "[LEGION-208:dispatch_message]" {

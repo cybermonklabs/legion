@@ -78,7 +78,7 @@ func TestTheStatusRepairTakesAChildWhoseRecordNeverLeftTodo(t *testing.T) {
 // it a slot: a running root can hold none, as while it waits on another issue.
 func openStatusRepairLifecycle(t *testing.T, pool *store.Pool, records record.Store, tree string) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		project, err := claim.ProjectToken("LEGION")
 		if err != nil {
 			return err
@@ -211,7 +211,7 @@ func staleStatusIssue(at phase.Phase, status, shown string) record.Issue {
 // granted a slot and nothing else would describe a tree the daemon reads as never opened.
 func putStatusRepairSlot(t *testing.T, pool *store.Pool, records record.Store, issue string) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: issue, Index: 0, AdmittedAt: time.Now().UTC()}); err != nil {
 			return err
 		}

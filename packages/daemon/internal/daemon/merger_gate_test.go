@@ -68,7 +68,7 @@ func TestTheMergersStartWaitsWhileItsTreesDesignGateIsClosed(t *testing.T) {
 // putOutboxGate records a tree's design gate.
 func putOutboxGate(t *testing.T, pool *store.Pool, records record.Store, gate record.DesignGate) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutGate(context.Background(), tx, gate)
 	}); err != nil {
 		t.Fatalf("put the design gate of %s: %v", gate.Issue, err)

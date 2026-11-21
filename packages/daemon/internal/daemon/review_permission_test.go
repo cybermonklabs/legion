@@ -409,7 +409,7 @@ func reviewPermissionPool(t *testing.T) *store.Pool {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Reviewing, Generation: 1, Status: "needs_review"})
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(context.Background(), tx, record.PullRequest{Issue: "LEGION-208", Repo: "acme/widgets", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", State: record.PullRequestOpen})
 	}); err != nil {
 		t.Fatalf("put the pull request: %v", err)
@@ -481,7 +481,7 @@ func reviewPermissionTransferredPool(t *testing.T) *store.Pool {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Project: "LEGION", Tree: "LEGION-209", Title: "Workflow", Phase: phase.Reviewing, Generation: 1, Status: "needs_review"})
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(context.Background(), tx, record.PullRequest{Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "head", State: record.PullRequestOpen})
 	}); err != nil {
 		t.Fatalf("put the pull request: %v", err)

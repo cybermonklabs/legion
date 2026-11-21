@@ -458,8 +458,7 @@ func (r *dequeueRig) seed(t *testing.T, stands phase.Phase, merger supervise.Cla
 		claims = append(claims, r.claim(t, key, claim.RoleImplementer, supervise.StateSuspended))
 	}
 	seedWorkflowTree(t, r.cfg.PostgresDSN, r.project, startedAgainIssue(r.cfg, key, key, stands), claims...)
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
-		ctx := context.Background()
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutPullRequest(ctx, tx, openPullRequest(issue)); err != nil {
 			return err
 		}
@@ -497,7 +496,7 @@ func (r *dequeueRig) seedUnderSecondRoot(t *testing.T, lingering bool) dequeueIs
 	}
 	seedWorkflowTree(t, r.cfg.PostgresDSN, r.project, root, merger)
 	putOutboxIssue(t, r.pool, r.records, startedAgainIssue(r.cfg, key, rootKey, phase.Merging))
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutPullRequest(context.Background(), tx, openPullRequest(issue))
 	}); err != nil {
 		t.Fatalf("record the pull request of %s: %v", key, err)
@@ -558,7 +557,7 @@ func (r *dequeueRig) closePullRequest(t *testing.T, issue dequeueIssue) {
 func (r *dequeueRig) recordPullRequest(t *testing.T, issue dequeueIssue, change func(*record.PullRequest)) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		pr, err := r.records.PullRequest(ctx, tx, issue.key)
 		if err != nil {
 			return err

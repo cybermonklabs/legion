@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -63,7 +65,7 @@ func TestADecisionToldInATurnWhoseConfirmationFailedIsToldAgain(t *testing.T) {
 	// The root's next generation: its start task names what the root still keeps.
 	r.readmit()
 	var task string
-	err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		task, _, err = r.engine.ParkedDecisionTask(r.ctx, tx, r.root)
 		return err

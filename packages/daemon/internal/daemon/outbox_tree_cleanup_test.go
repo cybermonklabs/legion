@@ -672,7 +672,7 @@ func movedCarriedRole(t *testing.T, afterMove bool) {
 		Title: "child", Parent: &parent, Phase: phase.Done, Generation: 1, Status: "done", Rank: "B", LastDispatchSeq: 1}
 	fixture := newCarryFixture(t, start, root, child, rootKey)
 	ctx, pool, records, trees, sup, rt, engine, admission := fixture.ctx, fixture.pool, fixture.records, fixture.trees, fixture.sup, fixture.rt, fixture.engine, fixture.admission
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, put := range []error{
 			records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: childKey, Project: "LEGION", Seq: 1,
 				Status: record.Carry("done"), Parent: record.Carry(""), Blockers: record.Carry([]string{blockerKey})}),
@@ -716,7 +716,7 @@ func movedCarriedRole(t *testing.T, afterMove bool) {
 		t.Fatalf("apply the child's todo: %v", err)
 	}
 	var carried *record.Issue
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		carried, err = records.Issue(ctx, tx, childKey)
 		return err

@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // checks applies a CI settlement to the pull request and tells the roles that work the issue what
@@ -135,7 +136,7 @@ func (e *Engine) logUnappliedSettlement(ctx context.Context, fact intake.PullReq
 func (e *Engine) logDroppedSettlement(ctx context.Context, fact intake.PullRequestChecks, msg string, args ...any) {
 	identity := fact.Identity()
 	args = append(identity.Attributes(), args...)
-	intake.OnCommit(ctx, func() {
+	store.OnCommit(ctx, func() {
 		if e.droppedSettlements.Add(identity) {
 			e.log.Info(msg, args...)
 		}
@@ -1410,7 +1411,7 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 		return nil
 	}
 	key := issue.Key
-	intake.OnCommit(ctx, func() { e.cfg.ReadMergeState(key) })
+	store.OnCommit(ctx, func() { e.cfg.ReadMergeState(key) })
 	return nil
 }
 

@@ -243,7 +243,7 @@ func TestOnlyADeliveredStartHoldsTheDecisionsItNamed(t *testing.T) {
 		{Issue: "LEGION-1", Ref: spec, Decision: record.DecisionDesignApproved, Actor: "user:alice", At: at},
 		{Issue: "LEGION-1", Ref: ask, Decision: record.DecisionAskAnswered, Actor: "user:alice", At: at},
 	} {
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return records.AddParkedDecision(ctx, tx, kept) }); err != nil {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error { return records.AddParkedDecision(ctx, tx, kept) }); err != nil {
 			t.Fatalf("keep the decision: %v", err)
 		}
 	}
@@ -269,7 +269,7 @@ func TestOnlyADeliveredStartHoldsTheDecisionsItNamed(t *testing.T) {
 	}
 	// A person decides again on the reference the start named, before that start is delivered.
 	newer := record.ParkedDecision{Issue: "LEGION-1", Ref: spec, Decision: record.DecisionDesignChangesRequested, Actor: "user:bob", At: at.Add(time.Hour)}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return records.AddParkedDecision(ctx, tx, newer) }); err != nil {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error { return records.AddParkedDecision(ctx, tx, newer) }); err != nil {
 		t.Fatalf("keep the newer decision: %v", err)
 	}
 	if err := runner.execute(ctx, start(2, 58)); err != nil {
@@ -316,7 +316,7 @@ func TestACatchUpLeavesOutWhatAQueuedStartClaims(t *testing.T) {
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	answer := record.ParkedDecision{Issue: root.Key, Ref: "dispatch://LEGION-1/ask/ask-1", Decision: record.DecisionAskAnswered, Actor: "user:alice",
 		At: time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.AddParkedDecision(ctx, tx, answer); err != nil {
 			return err
 		}
@@ -377,7 +377,7 @@ func TestADecisionAStaleStartReleasesReachesTheRunningArchitect(t *testing.T) {
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	answer := record.ParkedDecision{Issue: root.Key, Ref: "dispatch://LEGION-1/ask/ask-1", Decision: record.DecisionAskAnswered, Actor: "user:alice",
 		At: time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.AddParkedDecision(ctx, tx, answer); err != nil {
 			return err
 		}
@@ -439,7 +439,7 @@ func TestARetriedStartDeliversItsTaskOnce(t *testing.T) {
 		Tree: "LEGION-1", Title: "Root", Phase: phase.Admitted, Generation: 1, Status: "in_progress"}
 	putOutboxIssue(t, pool, records, issue)
 	ref, at := "dispatch://LEGION-1/ask/ask-1", time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: issue.Key, Ref: ref, Decision: record.DecisionAskAnswered, Actor: "user:alice", At: at})
 	}); err != nil {
 		t.Fatalf("keep the decision: %v", err)
@@ -512,14 +512,13 @@ func TestARetriedStartDeliversItsTaskOnce(t *testing.T) {
 func TestAStartWhoseForgetFailedIsNotDeliveredAgainAfterItsTurn(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
-	store := record.NewStore()
-	records := store
+	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
 		Tree: "LEGION-1", Title: "Root", Phase: phase.Admitted, Generation: 1, Status: "in_progress"}
-	putOutboxIssue(t, pool, store, issue)
+	putOutboxIssue(t, pool, records, issue)
 	ref, at := "dispatch://LEGION-1/ask/ask-1", time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		return store.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: issue.Key, Ref: ref, Decision: record.DecisionAskAnswered, Actor: "user:alice", At: at})
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		return records.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: issue.Key, Ref: ref, Decision: record.DecisionAskAnswered, Actor: "user:alice", At: at})
 	}); err != nil {
 		t.Fatalf("keep the decision: %v", err)
 	}
@@ -581,7 +580,7 @@ func TestAStartWhoseForgetFailedIsNotDeliveredAgainAfterItsTurn(t *testing.T) {
 	if got := len(conn.Prompts()) - prompts; got != 0 {
 		t.Fatalf("the retried start prompted the architect %d more times, want none", got)
 	}
-	if left := keptDecisions(t, pool, store, issue.Key); len(left) != 0 {
+	if left := keptDecisions(t, pool, records, issue.Key); len(left) != 0 {
 		t.Fatalf("kept after the retried start = %#v, want the told decision forgotten", left)
 	}
 }
@@ -604,7 +603,7 @@ func TestOnlyADeliveredCatchUpForgetsTheDecisionsItNamed(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				return records.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: "LEGION-1", Ref: spec,
 					Decision: record.DecisionDesignApproved, Actor: "user:alice", At: at})
 			}); err != nil {
@@ -688,7 +687,7 @@ func TestAStartThatFindsTheRootArchitectRunningNamesEachKeptDecisionOnce(t *test
 	putOutboxIssue(t, pool, records, root)
 	var task string
 	var kept *record.KeptDecisions
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.AddParkedDecision(ctx, tx, answer); err != nil {
 			return err
 		}
@@ -756,7 +755,7 @@ func keptDecisions(t *testing.T, pool *store.Pool, records record.Store, root st
 	t.Helper()
 	ctx := context.Background()
 	var kept []record.ParkedDecision
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		kept, err = records.ParkedDecisions(ctx, tx, root)
 		return err
@@ -797,7 +796,7 @@ func TestAClosingTreeNamesEveryDecisionStillOwedToItsArchitect(t *testing.T) {
 		{Ref: unclaimed, Issue: root.Key, Decision: record.DecisionAskAnswered, Actor: "user:alice", At: at},
 		{Ref: claimed, Issue: child.Key, Decision: record.DecisionAskResolved, Actor: "user:bob", At: at},
 	} {
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return records.AddParkedDecision(ctx, tx, kept) }); err != nil {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error { return records.AddParkedDecision(ctx, tx, kept) }); err != nil {
 			t.Fatalf("keep the decision %s: %v", kept.Ref, err)
 		}
 	}
@@ -805,7 +804,7 @@ func TestAClosingTreeNamesEveryDecisionStillOwedToItsArchitect(t *testing.T) {
 	// nothing here, and the close leaves it where it stands.
 	naming := record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: claimed, At: at, Issue: child.Key,
 		Decision: record.DecisionAskResolved, Actor: "user:bob"}}}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		row := mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleArchitect,
 			Generation: root.Generation, Phase: phase.Admitted, Task: "a person decided on the tree", Kept: &naming}, time.Now())
 		if err := records.Enqueue(ctx, tx, row); err != nil {
@@ -895,7 +894,7 @@ func TestAClosingTreeDoesNotWarnAboutTheDecisionsItHandsToAChild(t *testing.T) {
 		{Ref: onTheGrandchild, Issue: grandchild.Key, Decision: record.DecisionAskAnswered, Actor: "user:bob", At: at},
 		{Ref: onTheParked, Issue: parked.Key, Decision: record.DecisionAskResolved, Actor: "user:alice", At: at},
 	} {
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return records.AddParkedDecision(ctx, tx, kept) }); err != nil {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error { return records.AddParkedDecision(ctx, tx, kept) }); err != nil {
 			t.Fatalf("keep the decision %s: %v", kept.Ref, err)
 		}
 	}

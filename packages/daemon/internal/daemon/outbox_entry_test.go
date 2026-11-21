@@ -91,7 +91,7 @@ func rolePhaseRow(t *testing.T, pool *store.Pool, issue string, role claim.Role)
 	t.Helper()
 	ctx := context.Background()
 	var found record.PhaseRow
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := record.NewStore().Phases(ctx, tx, issue)
 		if err != nil {
 			return err
@@ -120,11 +120,9 @@ func entryEngine(t *testing.T) *workflow.Engine {
 // startPromoted raises role's entry on issue as the promotion of a re-admitted tree does
 // (workflow.Engine.StartPromotedWorker), in a transaction of its own that settles the runs its
 // start ends, as a fact's does (workflow.Engine.OpenFact).
-func startPromoted(ctx context.Context, db interface {
-	Begin(context.Context) (pgx.Tx, error)
-}, engine *workflow.Engine, issue record.Issue, role claim.Role) error {
+func startPromoted(ctx context.Context, db store.TxPool, engine *workflow.Engine, issue record.Issue, role claim.Role) error {
 	ctx = engine.OpenFact(ctx)
-	return pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+	return store.Transact(ctx, db, func(ctx context.Context, tx pgx.Tx) error {
 		if err := engine.StartPromotedWorker(ctx, tx, issue, role); err != nil {
 			return err
 		}
@@ -231,7 +229,7 @@ func TestAppendOnlyStartRowsLoseNoWorkWhenOneIsDeletedBeforeTheLaneRunsIt(t *tes
 	}
 
 	issue := readIssue(t, rig.pool, rig.issue.Key)
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return entryEngine(t).SendOwedEntry(ctx, tx, *issue, claim.RoleImplementer, row)
 	}); err != nil {
 		t.Fatalf("send the implementer the work its entry names: %v", err)
@@ -396,7 +394,7 @@ func TestAReadmissionLeavesTheEntryColumnsAndThePromotionWritesTheWorkAgain(t *t
 			before.Entry, before.EntryRaisedAt, before.EntryTask, rows[0].request.Task)
 	}
 
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().ClearGeneration(ctx, tx, rig.issue.Key, time.Now().UTC())
 	}); err != nil {
 		t.Fatalf("clear the generation the re-admission ends: %v", err)
@@ -548,7 +546,7 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	// The implementer's completion is held to an open pull request on the issue's branch
 	// (workflow's TriggerImplementationReady), which the record holds here as the opened webhook
 	// records one.
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: rig.issue.Key,
 			Repo: "acme/widgets", Number: 42, Branch: "legion/" + rig.issue.Key, HeadSHA: "head", CheckedHead: "head",
 			Failing: []string{}})

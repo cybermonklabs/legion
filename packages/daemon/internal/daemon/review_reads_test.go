@@ -255,7 +255,7 @@ func TestAReviewWhoseWebhookNeverArrivedDecidesItsRoundOnTheRead(t *testing.T) {
 func holdFromReviewing(t *testing.T, pool *store.Pool) {
 	t.Helper()
 	records := record.NewStore()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := records.Issue(context.Background(), tx, "CAPTURE-1")
 		if err != nil {
 			return err
@@ -853,7 +853,7 @@ func TestAReviewRefusedForItsHeadDecidesOnceThatHeadArrives(t *testing.T) {
 func TestARateLimitOnTheReviewsReadEndsTheRead(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		if err := records.PutIssue(context.Background(), tx, record.Issue{Key: "CAPTURE-2", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "CAPTURE-2", Project: "CAPTURE", Title: "second",
 			Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "V"}); err != nil {

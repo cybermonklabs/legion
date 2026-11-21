@@ -212,7 +212,7 @@ func seedSilentPhaseWorker(t *testing.T, pool *store.Pool, key string, lastStep 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		if _, err := records.OpenTreeLifecycle(ctx, tx, project, key, treelifecycle.AuthorityWorkflow); err != nil {
 			return err

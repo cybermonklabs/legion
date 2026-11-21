@@ -118,7 +118,7 @@ func (r *roleHoldersRig) moveClaim(token claim.Token, state supervise.ClaimState
 
 func (r *roleHoldersRig) enqueue(issue string) {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		queued, err := store.EnqueueRoleHolders(r.ctx, tx, gatePublishProject, issue, r.clock())
 		if err == nil && !queued {
 			r.t.Errorf("the role-holder publication of %s was refused as another project's than %s", issue, gatePublishProject)

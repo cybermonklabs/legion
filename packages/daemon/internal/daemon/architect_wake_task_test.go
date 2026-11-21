@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -95,7 +97,7 @@ func (r *mainPathRig) architectStartPending() (string, bool) {
 	entry := rolePhaseRow(r.t, r.pool, r.key, claim.RoleArchitect).Entry
 	var reason string
 	var pending bool
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		run, err := r.records.RoleRun(r.ctx, tx, r.token, r.key, claim.RoleArchitect, root.Generation)
 		reason, pending = workflow.ArchitectStartPending(root, entry, run)
 		return err
