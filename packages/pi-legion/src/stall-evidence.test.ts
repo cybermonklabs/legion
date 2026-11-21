@@ -381,7 +381,8 @@ test("a phase worker's session tells the issue's own live architect, with the ev
   // And into the message: the same record, as the payload the listener takes.
   expect(rig.published).toHaveLength(1);
   const notice = rig.published[0] as PublishInput;
-  expect(notice.topic).toBe("notifications.role.legion-legion-infra-1274-architect");
+  // The architect's lane under the project its role token gives, as its claim is keyed.
+  expect(notice.topic).toBe("notifications.role.LEGION.legion-legion-infra-1274-architect");
   expect(notice.message).toContain("The implementer of INFRA-1274 has a `bash` call");
   expect(notice.message).toContain('command="sleep 100000" pty=true');
   expect(JSON.parse(notice.payload as string)).toEqual(written);
@@ -395,13 +396,17 @@ test("a phase worker falls back to the tree's architect, as the reminder does", 
     const rig = tellerRig();
     rig.state = daemonState(architect);
     await rig.teller.tellOverdue(evidenceOf());
-    expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-infra-1000-architect");
+    expect(rig.published[0]?.topic).toBe(
+      "notifications.role.LEGION.legion-legion-infra-1000-architect"
+    );
   }
   // A daemon that does not answer inside the bound is the same: the tree's architect is told.
   const silent = tellerRig();
   silent.state = "the daemon is unreachable";
   await silent.teller.tellOverdue(evidenceOf());
-  expect(silent.published[0]?.topic).toBe("notifications.role.legion-legion-infra-1000-architect");
+  expect(silent.published[0]?.topic).toBe(
+    "notifications.role.LEGION.legion-legion-infra-1000-architect"
+  );
 });
 
 test("a root architect's own session tells the controller role", async () => {
@@ -411,7 +416,7 @@ test("a root architect's own session tells the controller role", async () => {
   });
   await rig.teller.tellOverdue(evidenceOf());
   expect(rig.published).toHaveLength(1);
-  expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-controller");
+  expect(rig.published[0]?.topic).toBe("notifications.role.LEGION.legion-legion-controller");
   expect(rig.published[0]?.message).toContain("The architect of INFRA-1000");
 });
 
@@ -426,8 +431,8 @@ test("the owner notice is kept", async () => {
     claim: claimOf({ issue: "INFRA-1000", role: "architect", sessionID: "ses_root" }),
   });
   for (const [rig, topic] of [
-    [architect, "notifications.role.legion-legion-infra-1274-architect"],
-    [controller, "notifications.role.legion-legion-controller"],
+    [architect, "notifications.role.LEGION.legion-legion-infra-1274-architect"],
+    [controller, "notifications.role.LEGION.legion-legion-controller"],
   ] as const) {
     rig.publishAnswer = { kept: true, keptUntil: START + 60 * MINUTE };
     expect(await rig.teller.tellOverdue(evidenceOf())).toEqual({
@@ -471,7 +476,9 @@ test("a session never publishes to the role its own session holds", async () => 
     },
   } as unknown as LegionState;
   await rig.teller.tellOverdue(evidenceOf());
-  expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-infra-1000-architect");
+  expect(rig.published[0]?.topic).toBe(
+    "notifications.role.LEGION.legion-legion-infra-1000-architect"
+  );
 
   // And the controller's own session, which holds the only role its notice could reach.
   expect(

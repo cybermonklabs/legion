@@ -1911,7 +1911,7 @@ describe("renderInbound non-dispatch envelopes", () => {
         "  reply_role:",
         "    tool: envoy_publish",
         "    args:",
-        "      topic: notifications.role.legion-reviewer",
+        "      topic: notifications.role._.legion-reviewer",
         "      message: ...",
         "  summary: First paragraph.",
       ].join("\n")
@@ -1984,7 +1984,7 @@ describe("renderInbound non-dispatch envelopes", () => {
       "  reply_role:",
       "    tool: envoy_publish",
       "    args:",
-      "      topic: notifications.role.legion-reviewer",
+      "      topic: notifications.role._.legion-reviewer",
       "      message: ...",
     ];
     const summary = "  summary: Status only.";
@@ -2011,6 +2011,34 @@ describe("renderInbound non-dispatch envelopes", () => {
     // hints with it.
     test("prints neither hint for the retired spelling of no reply", () => {
       expect(card("none")).toBe(noHints);
+    });
+
+    // The sender's role is named as its claim is keyed: a bare free-form role is the claim of no
+    // project, a project before it is that project's claim, and a Legion role's bare key is the
+    // claim of the project its own name gives. The hint names that claim's lane.
+    test("names the lane of the very claim the sender's role is keyed by", () => {
+      const laneFor = (role: string): string | undefined => {
+        const rendered = renderInbound(
+          JSON.stringify({
+            event_id: "agent-role-lane",
+            source: "agent",
+            source_session: sender,
+            source_event_id: "agent.role-lane",
+            topic: `notifications.agent.${reader}`,
+            dedupe_key: "agent-role-lane",
+            issued_at: 1,
+            payload_summary: "Status.",
+            sender: { session_id: sender, roles: [role] },
+          }),
+          reader
+        ).content;
+        return /topic: (notifications\.role\.\S+)/.exec(rendered)?.[1];
+      };
+      expect(laneFor("reviewer")).toBe("notifications.role._.reviewer");
+      expect(laneFor("PRIV.reviewer")).toBe("notifications.role.PRIV.reviewer");
+      expect(laneFor("legion-infra-infra-12-architect")).toBe(
+        "notifications.role.INFRA.legion-infra-infra-12-architect"
+      );
     });
   });
 

@@ -10,6 +10,7 @@ import { SessionIdentity, sessionHandoffFile, writeSessionHandoff } from "../src
 import {
   directSubject,
   FakeNats,
+  followedSubject,
   noInterest,
   recordingClient,
   sessionOptions,
@@ -71,7 +72,7 @@ test("drops local topics named by a human Dispatch subscription removal", async 
     // Both the base and the wildcard leave the session, and the removal's own registry write
     // names the topic it named; the heartbeat's reconciliation takes the rest of the entry back
     // in line with what the session follows.
-    expect(session.topics()).toEqual([directSubject])
+    expect(session.topics()).toEqual([followedSubject])
     expect(calls.filter((call) => call.startsWith("unsubscribe"))).toEqual([
       "unsubscribe ses_claude notifications.dispatch.issue.DSP-3.>",
     ])
@@ -108,7 +109,11 @@ test("a resumed server rebuilds the interests its session id already registered 
   )
 
   try {
-    expect(subscribes).toEqual([[directSubject, "notifications.dispatch.issue.DSP-3", issueTopic]])
+    // The row's old form of the session's own subject is the session's own, read back as it: the
+    // registration carries the session's subject once, in the form the session follows it in.
+    expect(subscribes).toEqual([
+      [followedSubject, "notifications.dispatch.issue.DSP-3", issueTopic],
+    ])
     // The relay subject (consumer delivery) is the whole subscription set: a registered topic is
     // what the session's consumer is filtered on, never a subscription of its own.
     expect([...nats.subscriptions.keys()]).toEqual(["notifications.envoy.deliver.ses_claude"])
@@ -158,7 +163,7 @@ test("a registration in flight when a topic is unsubscribed cannot write it back
     release.resolve()
     expect(await unfollowing).toEqual([dropped])
     await following
-    expect([...entry].sort()).toEqual([directSubject, kept])
+    expect([...entry].sort()).toEqual([followedSubject, kept])
   } finally {
     await session.shutdown()
   }
@@ -207,7 +212,7 @@ test("a registration in flight when Dispatch removes a subscription cannot write
     release.resolve()
     await following
     await waitFor(async () => !entry.has(removed), `${removed} to stay out of the entry`)
-    expect([...entry].sort()).toEqual([directSubject, kept])
+    expect([...entry].sort()).toEqual([followedSubject, kept])
   } finally {
     await session.shutdown()
   }
@@ -259,7 +264,9 @@ test("a registry removal that fails is reconciled by the next heartbeat, without
       async () => !entry.has(staysRemoved),
       "the heartbeat to reconcile the stale entry",
     )
-    expect([...entry].sort()).toEqual([directSubject, reFollowed])
+    // The listener's row keeps the old form of the session's own subject beside the one the
+    // session registers, and the heartbeat strips neither.
+    expect([...entry].sort()).toEqual([followedSubject, directSubject, reFollowed])
   } finally {
     await session.shutdown()
   }
@@ -440,7 +447,7 @@ test("a registry read that fails at startup does not let the heartbeat delete th
     // A read the session never completed is not evidence that the entry drifted.
     // Nothing restores a topic deleted from it: `unregisterSession` leaves the
     // interests entry behind, so the stripped one is what the next resume reads.
-    expect([...entry].sort()).toEqual([directSubject, alreadyRegistered])
+    expect([...entry].sort()).toEqual([followedSubject, directSubject, alreadyRegistered])
     // Adopting it is also what stops the session being deaf to it until a restart.
     expect(session.topics()).toContain(alreadyRegistered)
   } finally {
@@ -499,7 +506,7 @@ test("a listener error that is not a 404 is not an absence, so the heartbeat sti
     // And the gate staying shut is what keeps the entry whole: a session that
     // adopted nothing would read every topic in it as drift on the next tick.
     await waitFor(async () => reads >= 4, "several heartbeats after the failed startup read")
-    expect([...entry].sort()).toEqual([directSubject, alreadyRegistered])
+    expect([...entry].sort()).toEqual([followedSubject, directSubject, alreadyRegistered])
   } finally {
     await session.shutdown()
   }
@@ -552,7 +559,7 @@ test("a shutdown landing before the heartbeat's registry read leaves the registr
     await waitFor(async () => session.topics().length === 0, "the forwarder to close")
     release.resolve()
     await shuttingDown
-    expect([...entry].sort()).toEqual([directSubject, alreadyRegistered])
+    expect([...entry].sort()).toEqual([followedSubject, directSubject, alreadyRegistered])
   } finally {
     release.resolve()
     await session.shutdown()
@@ -617,7 +624,7 @@ test("a shutdown landing inside the heartbeat's registry read leaves the registr
     // deregistration behind it removes only the sessions row, so a `--resume`
     // before `Registry.Reap` reads nothing back.)
     expect(removals).toEqual([])
-    expect([...entry].sort()).toEqual([directSubject, alreadyRegistered])
+    expect([...entry].sort()).toEqual([followedSubject, directSubject, alreadyRegistered])
   } finally {
     release.resolve()
     await session.shutdown()
@@ -645,7 +652,7 @@ test("a Dispatch subscription removal that names no topics removes nothing", asy
       "the removal frame's done",
     )
     expect(calls.filter((call) => call.includes("unsubscribe"))).toEqual([])
-    expect(session.topics()).toEqual([directSubject, topic])
+    expect(session.topics()).toEqual([followedSubject, topic])
   } finally {
     await session.shutdown()
   }
@@ -683,11 +690,11 @@ test("never registers a topic no stream subject captures, however it was followe
   try {
     // The bare base came back with the row and is followed; no registration carried it.
     expect(session.topics()).toEqual([
-      directSubject,
+      followedSubject,
       "notifications.team",
       "notifications.team.deploys",
     ])
-    expect(subscribes).toEqual([[directSubject, "notifications.team.deploys"]])
+    expect(subscribes).toEqual([[followedSubject, "notifications.team.deploys"]])
 
     // The caller named the uncaptured topic itself, so the call is refused by name, in the one
     // sentence the listener's own warning is generated from, and follows nothing of that call.
@@ -698,7 +705,7 @@ test("never registers a topic no stream subject captures, however it was followe
 
     expect(await session.follow(["notifications.team.>"])).toEqual(["notifications.team.>"])
     expect(subscribes.at(-1)).toEqual([
-      directSubject,
+      followedSubject,
       "notifications.team.deploys",
       "notifications.team.>",
     ])

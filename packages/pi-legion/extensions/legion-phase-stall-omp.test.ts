@@ -593,7 +593,7 @@ test.skipIf(skip)(
     // one whose answer was lost does not deliver it twice.
     expect(notices[1]?.idempotency_key).toBe(String(notices[0]?.idempotency_key));
     // The issue has no architect claim of its own, so the tree's architect holds this worker.
-    expect(notices[1]?.topic).toBe("notifications.role.legion-stall-stall-1-architect");
+    expect(notices[1]?.topic).toBe("notifications.role.STALL.legion-stall-stall-1-architect");
     expect(String(notices[1]?.message)).toContain("STALL-2");
     expect(String(notices[1]?.message)).toContain("implementing");
     expect(String(notices[1]?.message)).toContain(

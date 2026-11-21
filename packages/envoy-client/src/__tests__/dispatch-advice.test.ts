@@ -25,7 +25,7 @@ const config = {
   error: null,
 };
 const issueSuffix =
-  "(not subscribed to DSP-42; envoy_subscribe notifications.dispatch.issue.DSP-42.> for every event on it)";
+  "(not subscribed to DSP-42; envoy_subscribe notifications.dispatch.issue.DSP.DSP-42.> for every event on it)";
 
 function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -538,7 +538,7 @@ describe("Dispatch write advice", () => {
     expect(result.text).toBe(
       `Replied on ask ${ownAsk} (comment comment-1; ask now waiting on human). ` +
         "You follow this ask: its answer and replies reach you directly. " +
-        "For every event on DSP-42: envoy_subscribe notifications.dispatch.issue.DSP-42.>"
+        "For every event on DSP-42: envoy_subscribe notifications.dispatch.issue.DSP.DSP-42.>"
     );
     expect(result.details.advice).toEqual(rawAdvice);
   });
@@ -604,7 +604,7 @@ describe("Dispatch write advice", () => {
       "Asked ask-new on DSP-42 (urgency med): What should we do?\n" +
         "No related-item check was made: the server sent no check result. Search before you rely on this being new: dispatch search --project DSP --query 'What should'\n" +
         "You follow this ask: its answer and replies reach you directly. " +
-        "For every event on DSP-42: envoy_subscribe notifications.dispatch.issue.DSP-42.>",
+        "For every event on DSP-42: envoy_subscribe notifications.dispatch.issue.DSP.DSP-42.>",
       { issue: "DSP-42", ask: "ask-new", follows: { ask: "ask-new" } },
     ],
     [
@@ -636,7 +636,7 @@ const createdLine = `Created DSP-42: Created issue → http://dispatch.test/issu
 const askedLine = "Asked ask-new on DSP-42 (urgency med): Should the billing service retry?";
 const followsLine =
   "You follow this ask: its answer and replies reach you directly. " +
-  "For every event on DSP-42: envoy_subscribe notifications.dispatch.issue.DSP-42.>";
+  "For every event on DSP-42: envoy_subscribe notifications.dispatch.issue.DSP.DSP-42.>";
 
 function issueItem(key: string, title: string, status = "backlog"): WriteSuggestion {
   return {

@@ -1,3 +1,4 @@
+import { placedRoleName, placeRole } from "@legion/envoy-client/stream-topics"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
@@ -36,6 +37,9 @@ export function inboundOffChannelSession(options: {
         role,
       })
     },
+    // Nothing is registered, so no listener answered the token's projects: a free-form role is
+    // placed under no project, a Legion role under its own.
+    roleClaimName: (role) => placedRoleName(placeRole(role, undefined)),
     shutdown: async () => undefined,
   }
 }

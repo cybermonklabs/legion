@@ -52,9 +52,10 @@ const BOOT_TOKEN = fixtureSecret("boot");
  * carries it, which is what tells a turn from a side request. */
 const ASSIGNMENT = `Implement ${ISSUE}. WATCH-ROLE-ASSIGNMENT.`;
 
-/** Who a phase worker's stuck call is told about: the tree's architect, on the role topic
- * `roleToken` builds (`packages/contracts/src/legion-roles.ts`). */
-export const ARCHITECT_TOPIC = `notifications.role.legion-${PROJECT}-${TREE.toLowerCase()}-architect`;
+/** Who a phase worker's stuck call is told about: the tree's architect, on its role's lane under
+ * the project its role token gives (`roleToken` in `packages/contracts/src/legion-roles.ts`,
+ * `roleProject`), as that role's claim is keyed. */
+export const ARCHITECT_TOPIC = `notifications.role.${PROJECT.toUpperCase()}.legion-${PROJECT}-${TREE.toLowerCase()}-architect`;
 
 /** The bound for a call no deadline judges (`LEGION_STALL_CALL_BOUND_MS`): six seconds, so a
  * wedged cell is overdue one sweep after it starts rather than four hours later. */

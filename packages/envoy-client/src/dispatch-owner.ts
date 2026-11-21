@@ -1,6 +1,8 @@
 import {
   dispatchDocumentSubject,
-  legacyDispatchIssueSubject,
+  dispatchIssueSubject,
+  issueProject,
+  NO_PROJECT,
   type OpenAskOwner,
   parseBlockFragment,
 } from "@legion/contracts";
@@ -31,8 +33,11 @@ export function ownerTitle(owner: OpenAskOwner): string {
   return "";
 }
 
+/** Every event on issue `key`, under the key's own project:
+ *  `notifications.dispatch.issue.DSP.DSP-12.>`. A label that is no issue key, which no
+ *  Dispatch answer names, is put under `NO_PROJECT`, where no event is ever named. */
 export function issueTopic(key: string): OwnerTopic {
-  return { label: key, topic: legacyDispatchIssueSubject(key, ">") };
+  return { label: key, topic: dispatchIssueSubject(issueProject(key) ?? NO_PROJECT, key, ">") };
 }
 
 export function documentTopicOf(project: string, slug: string): OwnerTopic {

@@ -2193,7 +2193,7 @@ describe("the dispatch CLI's envoy.json", () => {
 
 describe("the dispatch CLI's subscription note", () => {
   const note =
-    "(not subscribed to DSP-1; envoy_subscribe notifications.dispatch.issue.DSP-1.> for every event on it)";
+    "(not subscribed to DSP-1; envoy_subscribe notifications.dispatch.issue.DSP.DSP-1.> for every event on it)";
   const withListener = { ...omp, ENVOY_URL: `http://127.0.0.1:${server.port}` };
   const post = () => run(["message", "--issue", "DSP-1", "--body", "hello"], withListener);
   const listed = (topics: readonly string[]) => () =>
@@ -2235,7 +2235,8 @@ describe("the dispatch CLI's subscription note", () => {
 
   test("an ask names the subscribe line, in its result and its follow notice, only when no subscription covers the issue, reading the listener once", async () => {
     const ask = ["ask", "--issue", "DSP-1", "--question", "Which way?", "--option", "A"];
-    const line = "For every event on DSP-1: envoy_subscribe notifications.dispatch.issue.DSP-1.>";
+    const line =
+      "For every event on DSP-1: envoy_subscribe notifications.dispatch.issue.DSP.DSP-1.>";
     for (const [label, answer, named] of [
       ["its own topic alone", listed(["notifications.agent.ses-1"]), true],
       ["the issue", listed(["notifications.dispatch.issue.DSP-1.>"]), false],

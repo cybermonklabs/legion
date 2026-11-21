@@ -1,0 +1,12 @@
+kind: Changed
+custom:
+  Issue: pr4710
+body: |-
+  Every topic the client builds names its project. `issueTopic(key)` is
+  `notifications.dispatch.issue.<PROJECT>.<KEY>.>`, and a subscription in the old form still
+  covers the issue. `ownAgentSubject(session)` is the session's own subject under every project,
+  `notifications.agent.*.<session>`, and `agentSubjectSession` and `isOwnAgentSubject` read an
+  agent subject back in either form. `placeRole` places a role under the project it is claimed,
+  read and addressed under (a Legion role's own, else the one project the session's access token
+  lists, else `_`); `placedRoleName`, `placedRoleLane` and `roleOfLane` name and read it. A
+  registration's answer carries the token's `projects` when the listener names them.

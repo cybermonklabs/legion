@@ -4,16 +4,24 @@ import { resolve } from "node:path";
 import {
   controllerToken,
   legionControllerNoticeSubject,
+  NO_PROJECT,
   uncapturedTopicRefusal,
 } from "@legion/contracts";
 import { deliverSubject } from "../consumer-delivery";
 import {
+  agentSubjectSession,
   controllerNoticeRole,
+  isOwnAgentSubject,
+  ownAgentSubject,
+  placedRoleLane,
+  placedRoleName,
+  placeRole,
   reachesPrivateStreamSubject,
   refuseUncapturedTopics,
   registrationTopics,
   rememberedTopics,
   replayFollowedSubjects,
+  roleOfLane,
   streamDeliversNothing,
   streamStores,
 } from "../stream-topics";
@@ -133,12 +141,103 @@ test("a topic reaching a private stream subject is the listener's rule, case for
   // none, passes while covering nothing.
   expect(cases.length).toBeGreaterThanOrEqual(37);
   for (const { sessionID, topic, roles = [], want } of cases) {
-    expect({
-      topic,
-      roles,
-      reaches: reachesPrivateStreamSubject(`notifications.agent.${sessionID}`, topic, roles),
-    }).toEqual({ topic, roles, reaches: want });
+    // The session's own subject as the old form names it and as a host now registers it, the
+    // new form over every project: the rule reads the two alike.
+    for (const own of [`notifications.agent.${sessionID}`, ownAgentSubject(sessionID)]) {
+      expect({
+        own,
+        topic,
+        roles,
+        reaches: reachesPrivateStreamSubject(own, topic, roles),
+      }).toEqual({ own, topic, roles, reaches: want });
+    }
   }
+});
+
+describe("a session's own agent subject", () => {
+  test("is its messages under every project, and reads back in either form", () => {
+    expect(ownAgentSubject("ses_a")).toBe("notifications.agent.*.ses_a");
+    for (const subject of [
+      "notifications.agent.ses_a",
+      "notifications.agent.*.ses_a",
+      `notifications.agent.${NO_PROJECT}.ses_a`,
+      "notifications.agent.PRIV.ses_a",
+    ]) {
+      expect([subject, agentSubjectSession(subject), isOwnAgentSubject(subject, "ses_a")]).toEqual([
+        subject,
+        "ses_a",
+        true,
+      ]);
+    }
+    for (const subject of [
+      "notifications.agent.ses_b",
+      "notifications.agent.PRIV.ses_b",
+      // A token in the project's place that is no project names no one session.
+      "notifications.agent.priv.ses_a",
+      "notifications.agent.x.y.ses_a",
+      "notifications.role.ses_a",
+      "notifications.agent.",
+    ]) {
+      expect([subject, isOwnAgentSubject(subject, "ses_a")]).toEqual([subject, false]);
+    }
+    // A wildcard where the session would be is no session's alone.
+    expect(agentSubjectSession("notifications.agent.*")).toBe("*");
+    expect(isOwnAgentSubject("notifications.agent.*", "ses_a")).toBe(false);
+  });
+});
+
+describe("the project a role is claimed under", () => {
+  test("a Legion role works for its own project, whatever the token lists", () => {
+    for (const projects of [undefined, [], ["PRIV"], ["PRIV", "PUB"]]) {
+      expect(placeRole("legion-infra-infra-12-architect", projects)).toEqual({
+        project: "INFRA",
+        role: "legion-infra-infra-12-architect",
+      });
+    }
+  });
+
+  test("a free-form role works for the one project the token lists, else for none", () => {
+    expect(placeRole("reviewer", ["PRIV"])).toEqual({ project: "PRIV", role: "reviewer" });
+    for (const projects of [undefined, [], ["PRIV", "PUB"]]) {
+      expect([projects, placeRole("reviewer", projects)]).toEqual([
+        projects,
+        { project: NO_PROJECT, role: "reviewer" },
+      ]);
+    }
+    // Only a project key is a project: the Legion project token is never one.
+    expect(placeRole("reviewer", ["infra"])).toEqual({ project: NO_PROJECT, role: "reviewer" });
+  });
+
+  test("a role named in the new form keeps the project it names", () => {
+    expect(placeRole("PUB.reviewer", ["PRIV"])).toEqual({ project: "PUB", role: "reviewer" });
+    expect(placeRole("_.reviewer", ["PRIV"])).toEqual({ project: NO_PROJECT, role: "reviewer" });
+  });
+
+  test("a placed role's claim name and lane name its project first", () => {
+    const placed = placeRole("reviewer", ["PRIV"]);
+    expect(placedRoleName(placed)).toBe("PRIV.reviewer");
+    expect(placedRoleLane(placed)).toBe("notifications.role.PRIV.reviewer");
+    expect(placedRoleLane(placeRole("legion-infra-infra-12-architect", undefined))).toBe(
+      "notifications.role.INFRA.legion-infra-infra-12-architect"
+    );
+  });
+
+  test("a lane reads back to its role in either form, a claim's bare key included", () => {
+    expect(roleOfLane("notifications.role.PRIV.reviewer")).toEqual({
+      project: "PRIV",
+      role: "reviewer",
+    });
+    expect(roleOfLane("notifications.role.reviewer")).toEqual({
+      project: NO_PROJECT,
+      role: "reviewer",
+    });
+    expect(roleOfLane("notifications.role.legion-infra-infra-12-architect")).toEqual({
+      project: "INFRA",
+      role: "legion-infra-infra-12-architect",
+    });
+    expect(roleOfLane("notifications.role.")).toBeUndefined();
+    expect(roleOfLane("notifications.agent.ses_a")).toBeUndefined();
+  });
 });
 
 describe("the subjects a restore follows again", () => {
@@ -165,6 +264,20 @@ describe("the subjects a restore follows again", () => {
     ]);
   });
 
+  test("carry the session's own subject once, in the form the host registers", () => {
+    // A state an earlier build persisted names the old form; the session follows its own subject
+    // under every project now, and the two are one interest.
+    const own = ownAgentSubject("ses-1");
+    expect(
+      replayFollowedSubjects(own, [
+        "notifications.agent.ses-1",
+        own,
+        ISSUE,
+        "notifications.agent.ses-2",
+      ])
+    ).toEqual([own, ISSUE]);
+  });
+
   test("leave out a controller lane even for its holder: the role's claim follows it again", () => {
     const lane = legionControllerNoticeSubject("acme");
     expect(replayFollowedSubjects("notifications.agent.ses-1", [lane])).toEqual([
@@ -188,7 +301,19 @@ describe("the subjects a restore follows again", () => {
 });
 
 describe("the topics a registration carries", () => {
-  const OWN = "notifications.agent.ses-1";
+  const OWN = ownAgentSubject("ses-1");
+
+  test("are the session's own subject, in one form, and every topic the listener would store", () => {
+    // A stored row read back holds the old form of the session's own subject beside the one the
+    // host registered: the registration carries it once.
+    expect(
+      registrationTopics(OWN, [
+        "notifications.agent.ses-1",
+        "notifications.agent.PRIV.ses-1",
+        "notifications.dispatch.issue.DSP.DSP-1.>",
+      ])
+    ).toEqual([OWN, "notifications.dispatch.issue.DSP.DSP-1.>"]);
+  });
 
   test("are the session's own subject and every topic the listener would store for it", () => {
     expect(

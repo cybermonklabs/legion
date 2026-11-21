@@ -134,10 +134,19 @@ holds a newline stays inside its own field. Work started for one session stops, 
 `sessionID()` names another.
 
 The host policy both plugins share sits in `@legion/envoy-client/stream-topics`, so each host keeps
-only how it shows a card, how it warns, and how it persists. `replayFollowedSubjects(
-ownAgentSubject, topics, heldForRole?)` is what a host's `followedSubjects()` answers, which is
-what a restart follows again: its own agent subject and every topic it follows but a role lane, a
-subject it holds for a role, and a topic reaching a private stream subject.
+only how it shows a card, how it warns, and how it persists. `ownAgentSubject(sessionID)` is the
+session's own agent subject as a host registers and follows it, `notifications.agent.*.<session>`:
+its messages under every project, which a sender names (`agentSubject`). `agentSubjectSession` and
+`isOwnAgentSubject` read an agent subject back in either form, the old `notifications.agent.<session>`
+or the new one under a project, `_` or `*`. `placeRole(role, projects)` places a role under the
+project it is claimed, read and addressed under: a Legion role token's own (`roleProject`), else
+the one project the session's access token lists (`projects`, which the listener answers each
+registration with), else `_`; `placedRoleName` is the `<project>.<role>` a claim and a role read
+send, `placedRoleLane` the lane `notifications.role.<project>.<role>`, and `roleOfLane` reads a
+lane or a stored record's role topic back. `replayFollowedSubjects(ownAgentSubject, topics,
+heldForRole?)` is what a host's `followedSubjects()` answers, which is what a restart follows
+again: its own agent subject, once, and every topic it follows but a role lane, a subject it holds
+for a role, and a topic reaching a private stream subject.
 `reachesPrivateStreamSubject(ownAgentSubject, topic, roles?)` is the listener's own rule,
 `privateStreamSubjects` and `ReachesPrivateStreamSubject` in
 `packages/envoy/internal/bus/stream.go`, which a host's registration applies too: another session's
@@ -624,9 +633,11 @@ the caller's session origin and Legion issue reference, executes the operation,
 and returns its text and typed details. No result carries a subscription topic:
 `dispatch ask` and an ask reply through `dispatch comment` return
 `details.follows = { ask }` (the session follows that ask server-side). A write's text names the
-`envoy_subscribe notifications.dispatch.issue.<KEY>.>` line an agent passes to subscribe to the
-whole issue itself only when none of the session's subscriptions, as the Envoy listener records
-them, covers the issue; with Envoy off or no answer from the listener it names none.
+`envoy_subscribe notifications.dispatch.issue.<PROJECT>.<KEY>.>` line an agent passes to subscribe
+to the whole issue itself only when none of the session's subscriptions, as the Envoy listener
+records them, covers the issue, in either form (a subscription naming the key alone,
+`notifications.dispatch.issue.<KEY>.>`, still covers it); with Envoy off or no answer from the
+listener it names none.
 `dispatch-subscribe.ts` turns `details.follows` into the one-time host notice.
 `dispatch-first.ts` reads the `dispatch-first` skill from a plugin's staged `skills/` and wraps it in
 `DISPATCH_FIRST_MARKER`, the text pi-envoy and claude-envoy inject into a session with Dispatch.

@@ -328,6 +328,31 @@ describe("EnvoyClient", () => {
     ).toThrow(/answered delivery mode consumer/);
   });
 
+  test("parseSubscribeAnswer reads the registering token's projects, absent from an older listener", () => {
+    const interest = {
+      session_id: "ses_sender",
+      machine_id: "host-a",
+      dir: "/work",
+      topics: ["notifications.agent.*.ses_sender"],
+    };
+    expect(parseSubscribeAnswer({ ...interest, delivery: CONSUMER, projects: ["PRIV"] })).toEqual({
+      ...interest,
+      updated_at: undefined,
+      delivery: CONSUMER,
+      projects: ["PRIV"],
+    });
+    expect(
+      parseSubscribeAnswer({ ...interest, delivery: CONSUMER, projects: [] }).projects
+    ).toEqual([]);
+    // A listener that predates the field names none: the answer carries no `projects` key, which
+    // a host reads as a token it knows no project of.
+    expect("projects" in parseSubscribeAnswer({ ...interest, delivery: CONSUMER })).toBe(false);
+    // A list that holds anything but strings fails the registration, as any other field does.
+    expect(() =>
+      parseSubscribeAnswer({ ...interest, delivery: CONSUMER, projects: [1] })
+    ).toThrow();
+  });
+
   test("expands a concrete trailing wildcard for subscribe and unsubscribe", async () => {
     const wildcard = "notifications.github.example-org.example-repo.pr.42.>";
     const base = "notifications.github.example-org.example-repo.pr.42";

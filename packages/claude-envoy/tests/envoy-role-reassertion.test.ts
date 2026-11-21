@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { mkdir, stat, utimes, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
+import { canonicalRole } from "@legion/contracts"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { EnvoyApiError, type Interest, type SubscribeResult } from "@legion/envoy-client/transport"
 import type {
@@ -130,12 +131,12 @@ test("reasserts a restored role after a successful registration heartbeat loses 
     expect(setRoles).toEqual([
       {
         sessionID: "ses_current",
-        role: "reviewer",
+        role: "_.reviewer",
         soft: true,
         previousSessionID: "ses_current",
         clientInstanceID: INSTANCE,
       },
-      { sessionID: "ses_current", role: "reviewer", soft: true, clientInstanceID: INSTANCE },
+      { sessionID: "ses_current", role: "_.reviewer", soft: true, clientInstanceID: INSTANCE },
     ])
   } finally {
     await session.shutdown()
@@ -451,7 +452,7 @@ test("a lookup marked handed back makes the heartbeat claim the role again and k
     expect(regains).toEqual(["legion-claim reclaimed"])
     // One claim: the mark it cleared leaves the later heartbeats confirming the hold.
     expect(claims).toEqual([
-      { sessionID: "ses_current", role: "legion-claim", soft: true, clientInstanceID: INSTANCE },
+      { sessionID: "ses_current", role: "_.legion-claim", soft: true, clientInstanceID: INSTANCE },
     ])
     expect(await readPersistedRole(roleFile)).toEqual({
       session_id: "ses_current",
@@ -547,15 +548,17 @@ test("a role taken while a heartbeat's refused claim of the old role is still ou
     },
     unsubscribe: async () => undefined,
     unregisterSession: async () => undefined,
+    // The claim and the lookup name the role under its project, as the listener reads it
+    // (`canonicalRole`).
     setRole: async (input) => {
-      if (input.role !== OLD) return { claimed: true, interest: interest() }
+      if (canonicalRole(input.role).name !== OLD) return { claimed: true, interest: interest() }
       oldClaimAsked.resolve()
       return oldClaim.promise
     },
     // Another live session holds the old role, so the heartbeat claims it again; the new role is
     // this process's own.
     getRole: async (role) =>
-      role === OLD
+      canonicalRole(role).name === OLD
         ? { role, holder: "ses_newer", last_seen: 1, state: "live" as const }
         : {
             role,

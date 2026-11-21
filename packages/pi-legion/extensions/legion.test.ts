@@ -20,6 +20,7 @@ import {
   LEGION_ROLES,
   type LegionRole,
   LISTENER_CALL_ATTEMPTS,
+  roleProject,
   roleToken,
 } from "@legion/contracts";
 import {
@@ -63,7 +64,7 @@ import {
   type StallWatchdogProcesses,
 } from "@legion/pi-shared/stall-watchdog";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
-import { deliveryFor } from "@legion/pi-shared/test/omp-harness";
+import { deliveryFor, listenerRoleKey, readsRole } from "@legion/pi-shared/test/omp-harness";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
@@ -108,6 +109,9 @@ import type {
 
 // The consumer answer every registration here is given is the harness's (`deliveryFor`), shared
 // with the tests that run the real binary.
+
+/** A Legion role token as a claim names it on the wire: under the project its own name gives. */
+const claimedAs = (token: string): string => `${roleProject(token)}.${token}`;
 
 const natsConnections: {
   readonly name: string;
@@ -1020,7 +1024,7 @@ async function claimPane(options: {
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: "no route" }, { status: 404 });
     }
-    if (url.pathname === `/v1/roles/${claimToken}`) {
+    if (readsRole(url, claimToken)) {
       const holder = options.roleHolder?.() ?? sessionId;
       if (holder === "") {
         return Response.json({ error: `no holder for role ${claimToken}` }, { status: 404 });
@@ -1155,7 +1159,7 @@ async function firstTurn(pane: ClaimPane): Promise<void> {
         typeof request.body === "object" &&
         request.body !== null &&
         "role" in request.body &&
-        request.body.role === pane.claimToken
+        request.body.role === claimedAs(pane.claimToken)
     );
   const deadline = Date.now() + 2_000;
   while (!claimed()) {
@@ -1518,7 +1522,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     // session id would not match.
     const roleClaimBody = {
       session_id: "ses_worker",
-      role: pane.claimToken,
+      role: claimedAs(pane.claimToken),
       client_instance_id: registeredClientInstance(pane.requests, "ses_worker"),
     };
     const paths = pane.requests.map((request) => request.path);
@@ -4128,7 +4132,8 @@ async function launchedController(options: {
     // session but the live holder or the holder's declared successor is refused with that holder,
     // unless the listener lost the claim.
     if (url.pathname === "/v1/roles/set") {
-      const refused = body?.role === token ? await options.roleClaim?.() : undefined;
+      const refused =
+        listenerRoleKey(body?.role ?? "") === token ? await options.roleClaim?.() : undefined;
       if (refused !== undefined) return refused;
       if (
         body?.soft === true &&
@@ -4148,7 +4153,7 @@ async function launchedController(options: {
         softClaim = Promise.withResolvers<void>();
       }
     }
-    if (url.pathname === `/v1/roles/${token}`) {
+    if (readsRole(url, token)) {
       if (listener.lost) {
         return Response.json({ error: `no holder for role ${token}` }, { status: 404 });
       }
@@ -4426,7 +4431,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     // match.
     const roleClaimBody = {
       session_id: "ses_controller",
-      role: controller.token,
+      role: claimedAs(controller.token),
       client_instance_id: registeredClientInstance(controller.requests, "ses_controller"),
     };
     const roleClaim = controller.requests.findIndex(
@@ -6042,7 +6047,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
         path: "/v1/roles/set",
         body: {
           session_id: "ses_pane_second",
-          role: controller.token,
+          role: claimedAs(controller.token),
           soft: true,
           client_instance_id: registeredClientInstance(controller.requests, "ses_pane_second"),
         },
@@ -6223,7 +6228,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
           JSON.stringify(request.body) ===
             JSON.stringify({
               session_id: "ses_controller_first",
-              role: first.token,
+              role: claimedAs(first.token),
               soft: true,
               client_instance_id: registeredClientInstance(first.requests, "ses_controller_first"),
             })
@@ -6238,7 +6243,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       first.requests.slice(requestsBeforeResume),
       "ses_controller_first"
     );
-    expect(resumedRegistration).toContain("notifications.agent.ses_controller_first");
+    expect(resumedRegistration).toContain("notifications.agent.*.ses_controller_first");
     expect(resumedRegistration).not.toContain(topic);
   });
 
@@ -6358,7 +6363,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
         controller.requests.slice(requestsBeforeEnd),
         "ses_controller_slack"
       );
-      expect(afterEnd).toContain("notifications.agent.ses_controller_slack");
+      expect(afterEnd).toContain("notifications.agent.*.ses_controller_slack");
       expect(afterEnd).not.toContain(lane);
       expect(slackAmong(afterEnd)).toEqual([]);
     });
@@ -6378,7 +6383,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
           first.requests.slice(before),
           "ses_controller_slack_resume"
         );
-        expect(registered).toContain("notifications.agent.ses_controller_slack_resume");
+        expect(registered).toContain("notifications.agent.*.ses_controller_slack_resume");
         expect(slackAmong(registered)).toEqual([...want]);
       }
     });
@@ -6605,7 +6610,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     for (const tick of ticks) tick();
     await new Promise<void>((resolve) => setImmediate(resolve));
     const next = registeredTopics(first.requests.slice(requestsBefore), "ses_controller_first");
-    expect(next).toContain("notifications.agent.ses_controller_first");
+    expect(next).toContain("notifications.agent.*.ses_controller_first");
     expect(next).not.toContain(topic);
   });
 
@@ -6664,7 +6669,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       expect(openSubjects).toContain(relaySubject);
       expect(await followedTopics(first, firstContext)).not.toContain(topic);
       const next = registeredTopics(first.requests.slice(requestsAfterEnd), "ses_controller_first");
-      expect(next).toContain("notifications.agent.ses_controller_first");
+      expect(next).toContain("notifications.agent.*.ses_controller_first");
       expect(next).not.toContain(topic);
     } finally {
       delete process.env.ENVOY_RESUBSCRIBE_DELAY_MS;
@@ -6763,7 +6768,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
         first.requests.slice(requestsAfterEnd),
         "ses_controller_first"
       );
-      expect(afterRetries).toContain("notifications.agent.ses_controller_first");
+      expect(afterRetries).toContain("notifications.agent.*.ses_controller_first");
       expect(afterRetries).not.toContain(topic);
 
       // The replaced session is resumed in a new process: nothing in the registry brings the
@@ -6790,7 +6795,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
         first.requests.slice(requestsBeforeResume),
         "ses_controller_first"
       );
-      expect(resumedRegistration).toContain("notifications.agent.ses_controller_first");
+      expect(resumedRegistration).toContain("notifications.agent.*.ses_controller_first");
       expect(resumedRegistration).not.toContain(topic);
     } finally {
       jest.useRealTimers();
@@ -6836,7 +6841,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       const openFor = async (sessionId: string, context: SessionContext) => {
         expect(await followedTopics(controller, context)).toContain(topic);
         const registered = registeredTopics(controller.requests, sessionId);
-        expect(registered).toContain(`notifications.agent.${sessionId}`);
+        expect(registered).toContain(`notifications.agent.*.${sessionId}`);
         expect(registered).toContain(topic);
       };
       await openFor("ses_controller_before", before);
@@ -6966,7 +6971,7 @@ function registrationBeforeClaim(
       typeof body === "object" &&
       body !== null &&
       "role" in body &&
-      body.role === role
+      body.role === claimedAs(role)
   );
   if (claim === -1) throw new Error(`no role claim for ${role}`);
   const registration = requests

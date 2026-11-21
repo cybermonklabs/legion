@@ -12884,7 +12884,7 @@ describe("executeDispatchTool", () => {
     expect(result.text).toBe(
       `Replied on ask ${askID} (comment comment-1; ask now waiting on human). ` +
         "You follow this ask: its answer and replies reach you directly. " +
-        "For every event on DSP-42: envoy_subscribe notifications.dispatch.issue.DSP-42.>"
+        "For every event on DSP-42: envoy_subscribe notifications.dispatch.issue.DSP.DSP-42.>"
     );
     expect(result.details).toEqual({
       issue: "DSP-42",
@@ -13464,7 +13464,7 @@ describe("executeDispatchTool", () => {
         ...(subscriptions === undefined ? {} : { subscriptions }),
       });
     const note =
-      " (not subscribed to DSP-42; envoy_subscribe notifications.dispatch.issue.DSP-42.> for every event on it)";
+      " (not subscribed to DSP-42; envoy_subscribe notifications.dispatch.issue.DSP.DSP-42.> for every event on it)";
 
     for (const [topics, text] of [
       [[], `Posted comment comment-2${note}`],

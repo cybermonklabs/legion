@@ -85,6 +85,11 @@ const DeliveryAnswerWireSchema = z.object({
   consumer_start: z.number().int().nonnegative().optional(),
 });
 
+/** The registering token's projects on a registration's answer (`SubscribeResult.projects`): a
+ *  list of project keys, or absent from a listener that predates the field. A list holding
+ *  anything but strings fails the registration, as every other field of the answer does. */
+const SubscribeProjectsWireSchema = z.object({ projects: z.array(z.string()).optional() });
+
 // A list the listener may write as null (a session with no interest record, dispatch://INFRA-742),
 // as an absent key (a listener that predates the field), or as a real array. The reader answers []
 // for the first two and still refuses a wrong element type, so listSessions refuses such a row
@@ -287,8 +292,16 @@ export type DeliveryAnswer = z.infer<typeof DeliveryAnswerWireSchema>;
  * receives only what its own consumer holds. A serving-port registration, which the listener
  * answers without one when it could give none and pushes to the port instead, is made by no
  * caller of this client any more — the OpenCode plugin that made them is gone (sjawhar/legion#2607).
+ *
+ * `projects` is the projects the access token that made the registration lists, sorted, `[]` for
+ * none, as the listener recorded them on the session's entry: the one list a host reads its own
+ * token's projects from, which places a free-form role it claims (`placeRole`). Absent from a
+ * listener that predates the field, which a host reads as a token it knows no project of.
  */
-export type SubscribeResult = Interest & { readonly delivery: DeliveryAnswer };
+export type SubscribeResult = Interest & {
+  readonly delivery: DeliveryAnswer;
+  readonly projects?: readonly string[];
+};
 
 /** Where a session's stream sequence was up to: what a new consumer may be seeded from. */
 export interface ResumePoint {
@@ -323,6 +336,7 @@ const DELIVERY_UNREADABLE = "answered a delivery field this build cannot read";
  */
 export function parseSubscribeAnswer(body: unknown): SubscribeResult {
   const interest = InterestWireSchema.parse(body);
+  const { projects } = SubscribeProjectsWireSchema.parse(body);
   const raw =
     typeof body === "object" && body !== null && "delivery" in body ? body.delivery : undefined;
   if (raw === undefined || raw === null) {
@@ -340,7 +354,7 @@ export function parseSubscribeAnswer(body: unknown): SubscribeResult {
       `the listener gave ${interest.session_id} no consumer: it ${said}, and a session receives only what its own consumer holds`
     );
   }
-  return { ...interest, delivery: delivery.data };
+  return { ...interest, delivery: delivery.data, ...(projects === undefined ? {} : { projects }) };
 }
 
 /**

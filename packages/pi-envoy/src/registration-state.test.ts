@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ROLE_TOPIC_PREFIX } from "@legion/contracts";
+import { NO_PROJECT, roleSubject } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import {
@@ -35,8 +35,10 @@ const expectAbandoned = async (running: Promise<unknown>): Promise<void> => {
   );
 };
 
-const ALPHA = `${ROLE_TOPIC_PREFIX}alpha`;
-const BETA = `${ROLE_TOPIC_PREFIX}beta`;
+// The lanes of two free-form roles of a session whose token's projects no registration has
+// named, which places each under no project (`placeRole`).
+const ALPHA = roleSubject(NO_PROJECT, "alpha");
+const BETA = roleSubject(NO_PROJECT, "beta");
 const CONTROLLER_NOTICE = "notifications.legion.ACME.controller";
 
 const interestFor = (sessionID: string): Interest => ({
@@ -954,7 +956,7 @@ describe("adoptClaimAfterSessionMoved", () => {
     await harness.hold("alpha", "ses_a");
     await state.adoptClaimAfterSessionMoved(BETA, "ses_b", ALPHA, "ses_a");
     expect(state.heldRole()).toBe("beta");
-    expect(state.holdsRoleTopic(BETA)).toBe(true);
+    expect(state.holdsRole("beta")).toBe(true);
     expect(state.holdSessionID()).toBe("ses_b");
     expect(state.roleEndCount()).toBe(1);
     expect(handBacks).toEqual([`${ALPHA}@ses_a`]);
@@ -1045,19 +1047,106 @@ describe("adoptClaimAfterSessionMoved", () => {
   });
 });
 
+describe("the project a role is claimed under", () => {
+  /** A harness whose listener answers every registration with the token's `projects`, and whose
+   *  session `ses_a` has registered once. */
+  const registeredWith = async (projects: readonly string[] | undefined): Promise<Harness> => {
+    const harness = createHarness();
+    harness.control.subscribe = async (input) => ({
+      ...subscribeResultFor(input.sessionID),
+      ...(projects === undefined ? {} : { projects }),
+    });
+    await harness.state.refreshRegistration(registrationFor("ses_a"));
+    return harness;
+  };
+
+  test("a free-form role works for the one project the session's token lists", async () => {
+    const harness = await registeredWith(["PRIV"]);
+    const { state, claims, roleEntries } = harness;
+    await harness.hold("reviewer", "ses_a");
+    // The claim names the project; the session's own name for the role, its record and its
+    // hold read it as the role alone.
+    expect(claims.map((claim) => claim.role)).toEqual(["PRIV.reviewer"]);
+    expect(roleEntries.map((entry) => entry.role)).toEqual(["reviewer"]);
+    expect(state.heldRole()).toBe("reviewer");
+    expect(state.holdsRole("reviewer")).toBe(true);
+    expect(state.holdsRole("PRIV.reviewer")).toBe(true);
+    expect(state.holdsRole("_.reviewer")).toBe(false);
+    expect(state.roleClaimName("reviewer", "ses_a")).toBe("PRIV.reviewer");
+
+    // The heartbeat's read and claim name the same project.
+    const read: string[] = [];
+    harness.control.getRole = async (role) => {
+      read.push(role);
+      return { role, holder: "", last_seen: 1, state: "gone" };
+    };
+    await state.roleMoves.run(async (handle) => {
+      handle.actFor("ses_a");
+      return handle.reassertRole("reviewer", false);
+    });
+    expect(read).toEqual(["PRIV.reviewer"]);
+    expect(claims.map((claim) => claim.role)).toEqual(["PRIV.reviewer", "PRIV.reviewer"]);
+
+    // The hand-back gives back that very claim's lane.
+    state.endUnwantedRole("ses_b", null, ["ses_b"]);
+    harness.control.open = "ses_a";
+    await state.roleMoves.run(async (handle) => {
+      handle.actFor("ses_a");
+      return handle.settleEndedHolds(undefined);
+    });
+    expect(harness.handBacks).toEqual(["notifications.role.PRIV.reviewer@ses_a"]);
+  });
+
+  test("a free-form role works for no project when the token lists none, several, or is not named", async () => {
+    for (const projects of [[], ["PRIV", "PUB"], undefined]) {
+      const harness = await registeredWith(projects);
+      await harness.hold("reviewer", "ses_a");
+      expect({ projects, claimed: harness.claims.map((claim) => claim.role) }).toEqual({
+        projects,
+        claimed: ["_.reviewer"],
+      });
+      expect(harness.state.heldRole()).toBe("reviewer");
+    }
+  });
+
+  test("a Legion role works for the project its own name gives, whatever the token lists", async () => {
+    const harness = await registeredWith(["PRIV"]);
+    await harness.hold("legion-infra-infra-12-architect", "ses_a");
+    expect(harness.claims.map((claim) => claim.role)).toEqual([
+      "INFRA.legion-infra-infra-12-architect",
+    ]);
+    expect(harness.state.heldRole()).toBe("legion-infra-infra-12-architect");
+  });
+
+  test("a role named in either form has one name, and a stored record's lane reads back to it", async () => {
+    const { state } = await registeredWith(["PRIV"]);
+    expect(state.roleName("reviewer", "ses_a")).toBe("reviewer");
+    expect(state.roleName("PRIV.reviewer", "ses_a")).toBe("reviewer");
+    // A claim under no project is another claim of that name, so it keeps its project.
+    expect(state.roleName("_.reviewer", "ses_a")).toBe("_.reviewer");
+    expect(state.roleNameOfLane("notifications.role.PRIV.reviewer", "ses_a")).toBe("reviewer");
+    // The listener keys the `_` claim of a free-form role by its bare name.
+    expect(state.roleNameOfLane("notifications.role.reviewer", "ses_a")).toBe("_.reviewer");
+    expect(
+      state.roleNameOfLane("notifications.role.legion-infra-infra-12-architect", "ses_a")
+    ).toBe("legion-infra-infra-12-architect");
+    expect(state.roleNameOfLane("notifications.agent.ses_a", "ses_a")).toBeUndefined();
+  });
+});
+
 describe("the readers", () => {
   test("name the hold a claim landed, and forget it when the role ends", async () => {
     const harness = createHarness();
     const { state, roleEntries } = harness;
     expect(state.heldRole()).toBeUndefined();
     expect(state.holdSessionID()).toBeUndefined();
-    expect(state.holdsRoleTopic(ALPHA)).toBe(false);
+    expect(state.holdsRole("alpha")).toBe(false);
     expect(state.holdIsUnconfirmed()).toBe(false);
 
     await harness.hold("alpha", "ses_a");
     expect(state.heldRole()).toBe("alpha");
-    expect(state.holdsRoleTopic(ALPHA)).toBe(true);
-    expect(state.holdsRoleTopic(BETA)).toBe(false);
+    expect(state.holdsRole("alpha")).toBe(true);
+    expect(state.holdsRole("beta")).toBe(false);
     expect(state.holdSessionID()).toBe("ses_a");
     expect(state.holdIsUnconfirmed()).toBe(false);
     expect(roleEntries).toEqual([
@@ -1066,7 +1155,7 @@ describe("the readers", () => {
 
     state.endUnwantedRole("ses_b", null, ["ses_b"]);
     expect(state.heldRole()).toBeUndefined();
-    expect(state.holdsRoleTopic(ALPHA)).toBe(false);
+    expect(state.holdsRole("alpha")).toBe(false);
     expect(state.holdSessionID()).toBeUndefined();
   });
 
@@ -1137,7 +1226,7 @@ describe("claimRole", () => {
     ]);
     expect(handBacks).toEqual([`${ALPHA}@ses_a`]);
     expect(state.roleEndCount()).toBe(1);
-    expect(claims.map((claim) => claim.role)).toEqual(["alpha", "beta"]);
+    expect(claims.map((claim) => claim.role)).toEqual(["_.alpha", "_.beta"]);
   });
 
   test("a hand-back of the role a landed claim superseded is abandoned, and the next registration's pass sends it again", async () => {
@@ -1207,7 +1296,7 @@ describe("claimRole", () => {
     expect(claims).toEqual([
       {
         sessionID: "ses_b",
-        role: "alpha",
+        role: "_.alpha",
         soft: true,
         previousSessionID: "ses_a",
         clientInstanceID: state.clientInstanceID,
@@ -1383,7 +1472,7 @@ describe("reassertRole", () => {
     expect(harness.claims).toEqual([
       {
         sessionID: "ses_a",
-        role: "alpha",
+        role: "_.alpha",
         soft: true,
         clientInstanceID: harness.state.clientInstanceID,
       },
@@ -1449,7 +1538,7 @@ describe("reassertRole", () => {
     expect(harness.claims).toEqual([
       {
         sessionID: "ses_a",
-        role: "alpha",
+        role: "_.alpha",
         soft: true,
         clientInstanceID: harness.state.clientInstanceID,
       },
@@ -1498,7 +1587,7 @@ describe("reassertRole", () => {
     expect(harness.claims).toEqual([
       {
         sessionID: "ses_a",
-        role: "alpha",
+        role: "_.alpha",
         soft: true,
         clientInstanceID: harness.state.clientInstanceID,
       },
@@ -1558,7 +1647,7 @@ describe("reassertRole", () => {
     state.endUnwantedRole("ses_a", null, ["ses_a"]);
     release.resolve();
     expect(await running).toEqual({ decided: false });
-    expect(harness.claims.map((claim) => claim.role)).toEqual(["alpha"]);
+    expect(harness.claims.map((claim) => claim.role)).toEqual(["_.alpha"]);
   });
 });
 

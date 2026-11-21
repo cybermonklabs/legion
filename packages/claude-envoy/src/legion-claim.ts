@@ -4,6 +4,7 @@ import { setTimeout as delay } from "node:timers/promises"
 import { SESSION_LIVE_WINDOW_MS } from "@legion/contracts"
 import { messageFor } from "@legion/envoy-client/errors"
 import { readSecretFile } from "@legion/envoy-client/secret-file"
+import { placedRoleName, placeRole } from "@legion/envoy-client/stream-topics"
 import type { EnvoyClient } from "@legion/envoy-client/transport"
 import { claimFirstTurnBoundMs } from "@legion/pi-shared/claim-first-turn-bound"
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
@@ -294,10 +295,13 @@ export function startLegionClaim(deps: {
         // no amount of asking changes it.
         const deadline = Date.now() + roleWaitMs
         let waited = false
+        // The claim names the role under the project its own name gives (`placeRole`): a Legion
+        // role token's project is never the session's token's to choose.
+        const named = placedRoleName(placeRole(role, undefined))
         for (;;) {
           const claimed = await deps.client.setRole({
             sessionID,
-            role,
+            role: named,
             soft: true,
             clientInstanceID: deps.clientInstanceID,
           })

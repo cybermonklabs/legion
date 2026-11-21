@@ -2,11 +2,12 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, mock, test } from "
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
-import { legacyAgentSubject, roleToken } from "@legion/contracts";
+import { roleToken } from "@legion/contracts";
 import {
   HEARTBEAT_RETRY_MAX_MS,
   HEARTBEAT_RETRY_MIN_MS,
 } from "@legion/envoy-client/envoy-settings";
+import { ownAgentSubject } from "@legion/envoy-client/stream-topics";
 import type { ZodNumberProperty } from "@legion/pi-shared/pi-types";
 import { captureEnvironment, type EnvironmentRestore } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -329,7 +330,7 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   expect(registrations).toHaveLength(3);
   expect(registrations[2]).toMatchObject({
     session_id: sessionID,
-    topics: [legacyAgentSubject(sessionID)],
+    topics: [ownAgentSubject(sessionID)],
   });
   // The heartbeat pass reads the role back, which this listener stub answers with no record, so
   // the pass fails: the pane arms the one extra call a failed heartbeat buys on the host's

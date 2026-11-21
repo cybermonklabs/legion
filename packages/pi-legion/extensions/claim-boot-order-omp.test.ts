@@ -8,9 +8,11 @@ import {
   type Cleanup,
   call,
   deliveryFor,
+  listenerRoleKey,
   messageStream,
   ompRoot,
   type Request,
+  readsRole,
   sendRelayFrame,
   serveStandin,
   spawnRpc,
@@ -262,7 +264,8 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
     }
     const sid = typeof body.session_id === "string" ? body.session_id : "";
     if (url.pathname === "/v1/roles/set") {
-      if (body.role === CLAIM_TOKEN && roleHolder === "") {
+      const claimed = typeof body.role === "string" ? listenerRoleKey(body.role) : "";
+      if (claimed === CLAIM_TOKEN && roleHolder === "") {
         claimAt = Date.now();
         // The next turn of the stand-in's event loop, so the grant goes out before the lane it
         // hands over, as the listener grants a claim and then forwards what it kept.
@@ -270,7 +273,7 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
       }
       roleHolder = sid;
     }
-    if (url.pathname === `/v1/roles/${CLAIM_TOKEN}`) {
+    if (readsRole(url, CLAIM_TOKEN)) {
       return Response.json({ role: CLAIM_TOKEN, holder: roleHolder, last_seen: 1 });
     }
     // Every registration asks for a consumer and is refused without one in the client

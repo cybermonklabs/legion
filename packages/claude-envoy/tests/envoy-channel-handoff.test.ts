@@ -27,6 +27,7 @@ import {
   directSubject,
   FakeNats,
   FakeNotifier,
+  followedSubject,
   noInterest,
   observedClient,
   recordingClient,
@@ -101,12 +102,14 @@ test("follows the session id its Claude process hands off: new subject first, th
       "nats.unsubscribe notifications.envoy.deliver.ses_old",
       "nats.subscribe notifications.envoy.deliver.ses_new",
       reregister,
-      "setRole ses_new reviewer soft previous=ses_old",
+      // A free-form role, claimed under no project: the session's token lists none.
+      "setRole ses_new _.reviewer soft previous=ses_old",
       reregister,
     ])
     // The listener merges registered topics into the entry and never drops one, so no
-    // registration under the new id may carry the old id's direct subject.
+    // registration under the new id may carry the old id's direct subject, in either form.
     expect(newRegistrationTopics.flat()).not.toContain("notifications.agent.ses_old")
+    expect(newRegistrationTopics.flat()).not.toContain("notifications.agent.*.ses_old")
     // Whatever followed is a later tick doing nothing but re-registering.
     expect(handoffCalls.slice(6).filter((call) => call !== reregister)).toEqual([])
     expect(identity.id).toBe("ses_new")
@@ -561,7 +564,7 @@ test("a handoff whose first registration under the new id fails takes the role b
       async () => (await readFile(newRoleFile, "utf8").catch(() => undefined)) === expectedRole,
       `${expectedRole.trim()} in ${newRoleFile}`,
     )
-    expect(calls).toContain("setRole ses_new reviewer soft previous=ses_old")
+    expect(calls).toContain("setRole ses_new _.reviewer soft previous=ses_old")
     expect(await readdir(join(stateDirectory, "roles"))).toEqual(["ses_new.json"])
   } finally {
     await session.shutdown()
@@ -719,7 +722,7 @@ test("two handoffs before a registration succeeds move the role from the first i
       async () => (await readFile(cRoleFile, "utf8").catch(() => undefined)) === expectedRole,
       `${expectedRole.trim()} in ${cRoleFile}`,
     )
-    expect(calls).toContain("setRole ses_c reviewer soft previous=ses_a")
+    expect(calls).toContain("setRole ses_c _.reviewer soft previous=ses_a")
     expect(await readdir(join(stateDirectory, "roles"))).toEqual(["ses_c.json"])
   } finally {
     await session.shutdown()
@@ -1034,7 +1037,7 @@ test("a role file that cannot be read does not stop the heartbeat adopting the r
       async () => session.topics().includes(alreadyRegistered),
       `the heartbeat adopting ${alreadyRegistered}`,
     )
-    expect([...entry].sort()).toEqual([directSubject, alreadyRegistered])
+    expect([...entry].sort()).toEqual([followedSubject, directSubject, alreadyRegistered])
   } finally {
     await session.shutdown()
   }

@@ -12,7 +12,6 @@ import {
   LISTENER_CALL_ATTEMPTS,
   LISTENER_CALL_RETRY_DELAY_MS,
   LISTENER_CALL_TIMEOUT_MS,
-  legacyAgentSubject,
   type OpenAsk,
   type OpenAsksResponse,
   ROLE_TOPIC_PREFIX,
@@ -124,7 +123,12 @@ import {
   sessionSettings,
 } from "@legion/envoy-client/session-settings";
 import { postSlackReply } from "@legion/envoy-client/slack-post";
-import { refuseUncapturedTopics, replayFollowedSubjects } from "@legion/envoy-client/stream-topics";
+import {
+  isOwnAgentSubject,
+  ownAgentSubject,
+  refuseUncapturedTopics,
+  replayFollowedSubjects,
+} from "@legion/envoy-client/stream-topics";
 import { readTmuxPlace } from "@legion/envoy-client/tmux-place";
 import { createTmuxPlaceCache } from "@legion/envoy-client/tmux-place-cache";
 import {
@@ -2442,7 +2446,7 @@ export default function envoyExtension(hostApi: PiApi): void {
   const followedSubjects = (): string[] => {
     if (sessionID === "") return [];
     return replayFollowedSubjects(
-      legacyAgentSubject(sessionID),
+      ownAgentSubject(sessionID),
       followed,
       registrationState.isRoleBound
     );
@@ -3450,7 +3454,7 @@ export default function envoyExtension(hostApi: PiApi): void {
             : passFailure?.sessionID === registeringFor
               ? passFailure.text
               : undefined),
-      ownAgentSubject: legacyAgentSubject(registeringFor),
+      ownAgentSubject: ownAgentSubject(registeringFor),
       followed,
       roles: role === undefined ? [] : [role],
       outage: inboundOutage,
@@ -3725,7 +3729,7 @@ export default function envoyExtension(hostApi: PiApi): void {
       activeSessionContext?.sessionManager.getEntries() ?? []
     ).filter((topic) => !(slackRetired && slackTopicChannel(topic) !== undefined));
     for (const topic of new Set([...registered, ...remembered])) {
-      if (topic === legacyAgentSubject(sessionID) || topic.startsWith(ROLE_TOPIC_PREFIX)) continue;
+      if (isOwnAgentSubject(topic, sessionID) || topic.startsWith(ROLE_TOPIC_PREFIX)) continue;
       if (retired.includes(topic)) continue;
       await handle.subscribe(topic);
     }
@@ -3793,7 +3797,9 @@ export default function envoyExtension(hostApi: PiApi): void {
         : role;
     const recorded = recordedRole(branch);
     if (recorded === null) return undefined;
-    if (recorded !== undefined) return want(recorded);
+    // A record names the role as the move that wrote it did, in either form: compared, claimed
+    // and refused by the one name it has here (`roleName`).
+    if (recorded !== undefined) return want(registrationState.roleName(recorded, id));
     if (sessionRole !== undefined && sessionRoleRefusal(id, sessionRole) === undefined) {
       return sessionRole;
     }
@@ -3804,8 +3810,12 @@ export default function envoyExtension(hostApi: PiApi): void {
     if (!readRows) return undefined;
     for (const source of lineage) {
       const registry = await handle.readInterest(source);
-      const topic = registry?.topics.find((candidate) => candidate.startsWith(ROLE_TOPIC_PREFIX));
-      if (topic !== undefined) return want(topic.slice(ROLE_TOPIC_PREFIX.length));
+      // A stored record names a role by its claim's lane, the bare role for a claim of the
+      // project its own name gives and `<project>.<role>` for any other (`roleNameOfLane`).
+      const role = registry?.topics
+        .map((candidate) => registrationState.roleNameOfLane(candidate, id))
+        .find((named) => named !== undefined);
+      if (role !== undefined) return want(role);
     }
     return undefined;
   };
@@ -3928,7 +3938,9 @@ export default function envoyExtension(hostApi: PiApi): void {
       if (host !== lastHeard) lastHeard = "";
     }
     for (const other of handle.forgetOtherAgentSessions(host)) {
-      unfollow(legacyAgentSubject(other));
+      // That session's agent subject in every form this process follows it in: its own, opened
+      // below when it was the host's, and the old form a fork's stored row brings back.
+      for (const topic of [...followed]) if (isOwnAgentSubject(topic, other)) unfollow(topic);
       leftSessions.add(other);
     }
     // Another session's relay: its unsettled frames go back to the listener (`nak`).
@@ -3983,7 +3995,7 @@ export default function envoyExtension(hostApi: PiApi): void {
           if (broker !== undefined) {
             await followNatsCredential(connected, broker, followBoundMs(passDeadlineMs()));
           }
-          await handle.subscribe(legacyAgentSubject(host));
+          await handle.subscribe(ownAgentSubject(host));
         }
         // The relay subject opens before any registration asks for consumer delivery, so the
         // listener's first relayed frame has a subscriber. A viewer's replay request and its watch
@@ -4270,7 +4282,7 @@ export default function envoyExtension(hostApi: PiApi): void {
       // A role move still in flight could end the role just after the subscription opens, so the
       // role is read once every move started before this call has landed.
       await registrationState.roleMoves.settled();
-      if (!registrationState.holdsRoleTopic(ROLE_TOPIC_PREFIX + whileHolding)) {
+      if (!registrationState.holdsRole(whileHolding)) {
         throw new Error(
           `Envoy session ${targetSessionID} does not hold role ${whileHolding} for a notice subscription`
         );
@@ -5195,7 +5207,7 @@ export default function envoyExtension(hostApi: PiApi): void {
           // so it is told by name, in the listener's own words, rather than left following a
           // subject nothing is ever delivered on. A private stream subject is left out of the
           // registration without a word, as it always was (`refuseUncapturedTopics`).
-          refuseUncapturedTopics(sessionID, legacyAgentSubject(sessionID), requested);
+          refuseUncapturedTopics(sessionID, ownAgentSubject(sessionID), requested);
           const added: string[] = [];
           const already: string[] = [];
           for (const topic of requested) {
@@ -5227,13 +5239,12 @@ export default function envoyExtension(hostApi: PiApi): void {
           );
         }
         case EnvoyToolOperation.unsubscribe: {
-          // The session's own inbox is not a subscription the tool manages.
+          // The session's own inbox, in either form, is not a subscription the tool manages.
           // A role topic is followed through the independently-held role claim: drop the local
           // follow without unregistering that interest.
-          const inbox = legacyAgentSubject(sessionID);
           // Concrete subjects, a named `X.>` already expanded to `X.>` and `X`.
           const candidates = topicsFor(parameters, [...followed]).filter(
-            (subject) => subject !== inbox
+            (subject) => !isOwnAgentSubject(subject, sessionID)
           );
           // A subject another plugin opened for the role this session holds lasts as long as the
           // role does, so the tool keeps it and says so rather than leave the session deaf to it.
@@ -5338,7 +5349,7 @@ export default function envoyExtension(hostApi: PiApi): void {
           );
         }
         case EnvoyToolOperation.setRole: {
-          const role = stringFor(parameters, "role");
+          let role = stringFor(parameters, "role");
           // Read and checked inside the move, so a move landing first is the role this one leaves.
           // The session the move is decided for, read when its turn comes and kept for the
           // refusal below, which the session the host is on by then would misname.
@@ -5348,6 +5359,9 @@ export default function envoyExtension(hostApi: PiApi): void {
             async (handle) => {
               target = sessionID;
               handle.actFor(target);
+              // The role by the one name it has for this session, however the model named it
+              // (`roleName`), so the hold it compares and the record it writes read alike.
+              role = registrationState.roleName(role, target);
               requireSessionRoleFor(target, role);
               const held = registrationState.heldRole();
               const moving = held !== undefined && held !== role;
@@ -5380,7 +5394,9 @@ export default function envoyExtension(hostApi: PiApi): void {
           );
         }
         case EnvoyToolOperation.getRole: {
-          const role = await client.getRole(stringFor(parameters, "role"));
+          const role = await client.getRole(
+            registrationState.roleClaimName(stringFor(parameters, "role"), sessionID)
+          );
           // A listener that names only one of the two states still shows the model one answer:
           // what state the holder is in, and when it was last seen.
           const held = { ...role, holder_state: holderStateOf(role) };

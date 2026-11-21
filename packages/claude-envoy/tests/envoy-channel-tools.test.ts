@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { chmodSync, writeFileSync } from "node:fs"
 import { delimiter, join } from "node:path"
+import { placedRoleName, placeRole } from "@legion/envoy-client/stream-topics"
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
 import {
   createEnvoyClient,
@@ -24,7 +25,9 @@ isolatePaneEnvironment()
 
 const makeDirectory = temporaryDirectories("claude-envoy-slack")
 
-function sessionWith(followed: string[]): ChannelSession {
+/** A session following `followed`, whose access token lists `projects` as the listener answered
+ *  its registration (`placeRole`). */
+function sessionWith(followed: string[], projects?: readonly string[]): ChannelSession {
   return {
     delivery: {
       enqueue: async () => true,
@@ -42,6 +45,7 @@ function sessionWith(followed: string[]): ChannelSession {
     capabilitiesChanged: () => undefined,
     observe: () => undefined,
     messageOf: () => undefined,
+    roleClaimName: (role) => placedRoleName(placeRole(role, projects)),
     shutdown: async () => undefined,
   }
 }
@@ -280,11 +284,42 @@ test("the role a tool claims names the process claiming it on the wire", async (
 
   await executeEnvoyTool(runtime, "envoy_role_set", { role: "reviewer" })
 
+  // A token that lists no project claims a free-form role under none.
   expect(JSON.parse(body)).toEqual({
     session_id: "ses_claude",
-    role: "reviewer",
+    role: "_.reviewer",
     client_instance_id: INSTANCE,
   })
+})
+
+test("the role tools claim and read a free-form role under the one project the token lists", async () => {
+  const requests: { readonly url: string; readonly body: string }[] = []
+  const client = createEnvoyClient({
+    baseUrl: "http://envoy.test",
+    fetch: async (request, init) => {
+      requests.push({ url: String(request), body: String(init?.body) })
+      return String(request).includes("/v1/roles/set")
+        ? Response.json({
+            session_id: "ses_claude",
+            machine_id: "devbox",
+            dir: "/work",
+            topics: ["notifications.role.PRIV.reviewer"],
+          })
+        : Response.json({ role: "PRIV.reviewer", holder: "ses_claude", last_seen: 1 })
+    },
+  })
+  const runtime: ChannelToolRuntime = {
+    identity,
+    client,
+    session: sessionWith([], ["PRIV"]),
+    clientInstanceID: INSTANCE,
+  }
+
+  await executeEnvoyTool(runtime, "envoy_role_set", { role: "reviewer" })
+  await executeEnvoyTool(runtime, "envoy_role_get", { role: "reviewer" })
+
+  expect(JSON.parse(requests[0]?.body ?? "")).toMatchObject({ role: "PRIV.reviewer" })
+  expect(requests[1]?.url).toBe("http://envoy.test/v1/roles/PRIV.reviewer")
 })
 
 test("a send that is not confirmed names its key, and a resend under that key sends it again", async () => {

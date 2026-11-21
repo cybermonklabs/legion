@@ -9,6 +9,7 @@
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { canonicalRole, roleClaimKey } from "@legion/contracts";
 import {
   deliverSubject,
   RelayHeader,
@@ -116,6 +117,28 @@ export function deliveryFor(
       streamID: STANDIN_STREAM_ID,
     }),
   };
+}
+
+/**
+ * The key the listener keeps a claim of `role` under, whichever form names the role: the bare
+ * role for a claim of the project its own name gives, else `<project>.<role>` (`roleClaimKey` of
+ * `canonicalRole`). A stand-in listener keys its holders by it, so a claim or a read that names
+ * the role in either form finds the one holder, as the listener's own claim and read routes do.
+ */
+export function listenerRoleKey(role: string): string {
+  const { project, name } = canonicalRole(role);
+  return roleClaimKey(project, name);
+}
+
+/** Whether `url` is a role read (`GET /v1/roles/<role>`) of `role`, either of them named in
+ *  either form: the listener reads a claim under its key (`listenerRoleKey`). */
+export function readsRole(url: URL, role: string): boolean {
+  const read = /^\/v1\/roles\/([^/]+)$/.exec(url.pathname)?.[1];
+  return (
+    read !== undefined &&
+    read !== "set" &&
+    listenerRoleKey(decodeURIComponent(read)) === listenerRoleKey(role)
+  );
 }
 
 /** What a relay frame needs of a NATS connection; `nats`'s `NatsConnection` is one. Its options,

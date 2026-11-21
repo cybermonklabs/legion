@@ -9,6 +9,7 @@
 import { expect, spyOn, test } from "bun:test"
 import { mkdir, open, readdir, readFile, stat } from "node:fs/promises"
 import { legacyAgentSubject } from "@legion/contracts"
+import { ownAgentSubject } from "@legion/envoy-client/stream-topics"
 import type { Interest, SubscribeResult } from "@legion/envoy-client/transport"
 import { type ChannelNotification, startChannelSession } from "../src/envoy-channel-server"
 import { type ReplayStateFile, replayStateFile, writeReplayState } from "../src/replay-state"
@@ -29,7 +30,10 @@ isolatePaneEnvironment()
 const scratchState = useScratchState()
 
 const SESSION = "ses_replay"
+/** A message to the session, as the listener stored it: the old form, which every reader takes. */
 const DIRECT = legacyAgentSubject(SESSION)
+/** The session's own subject as it follows, registers and persists it: under every project. */
+const FOLLOWED = ownAgentSubject(SESSION)
 const ISSUE = "DSP-7"
 const ISSUE_TOPIC = `notifications.dispatch.issue.${ISSUE}.>`
 const ISSUE_BASE = `notifications.dispatch.issue.${ISSUE}`
@@ -232,9 +236,11 @@ test("a session the listener reaped follows its remembered topics again and regi
     }),
   )
   try {
-    expect(session.topics()).toEqual(expect.arrayContaining([DIRECT, ISSUE_BASE, ISSUE_TOPIC]))
+    // A state an earlier build persisted names the old form; the session follows its own subject
+    // in the form it registers, once.
+    expect(session.topics()).toEqual(expect.arrayContaining([FOLLOWED, ISSUE_BASE, ISSUE_TOPIC]))
     expect(registry.topicsOf(SESSION)).toEqual(
-      expect.arrayContaining([DIRECT, ISSUE_BASE, ISSUE_TOPIC]),
+      expect.arrayContaining([FOLLOWED, ISSUE_BASE, ISSUE_TOPIC]),
     )
   } finally {
     await session.shutdown()
@@ -309,7 +315,7 @@ test("a followed topic reaching a private stream subject is followed and never r
 
     expect(session.topics()).toEqual(expect.arrayContaining([...refused, ISSUE_TOPIC]))
     const registered = registry.topicsOf(SESSION)
-    expect(registered).toEqual(expect.arrayContaining([DIRECT, ISSUE_TOPIC]))
+    expect(registered).toEqual(expect.arrayContaining([FOLLOWED, ISSUE_TOPIC]))
     for (const topic of refused) expect(registered).not.toContain(topic)
   } finally {
     await session.shutdown()
@@ -345,7 +351,7 @@ test("the delivery state file is private to its user and replaced whole by each 
     expect((await readdir(directory)).filter((name) => name.endsWith(".tmp"))).toEqual([])
     const state = await stateOf(directory, SESSION)
     expect(state.state?.topics).toEqual([
-      DIRECT,
+      FOLLOWED,
       ISSUE_BASE,
       ISSUE_TOPIC,
       "notifications.team.deploy",
@@ -453,7 +459,7 @@ test("a /clear handoff to a new session id starts a fresh delivery state in a fi
     const old = await stateOf(directory, "ses_old")
     expect(old.ledger.map((entry) => entry.event_id)).toEqual([before.eventId])
     expect(old.state?.topics).toEqual(
-      expect.arrayContaining([legacyAgentSubject("ses_old"), ISSUE_TOPIC]),
+      expect.arrayContaining([ownAgentSubject("ses_old"), ISSUE_TOPIC]),
     )
 
     const taken = peerMessage("ses_new", "taken")

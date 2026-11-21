@@ -17,6 +17,9 @@ const session: ChannelSession = {
   capabilitiesChanged: () => undefined,
   observe: () => undefined,
   messageOf: () => undefined,
+  roleClaimName: () => {
+    throw new Error("this test claims no role")
+  },
   shutdown: async () => undefined,
 }
 

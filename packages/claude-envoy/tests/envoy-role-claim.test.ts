@@ -137,7 +137,8 @@ test("reasserts a role claimed after channel startup on the next heartbeat", asy
     jest.useRealTimers()
     await reasserted.promise
     expect(setRoles).toEqual([
-      { sessionID: "ses_current", role: "reviewer", soft: true, clientInstanceID: INSTANCE },
+      // A free-form role the session's token names no project for is claimed under none.
+      { sessionID: "ses_current", role: "_.reviewer", soft: true, clientInstanceID: INSTANCE },
     ])
   } finally {
     await session?.shutdown()
@@ -283,7 +284,7 @@ test("a record another process wrote is pressed while this process holds no role
     expect(setRoles).toEqual([
       {
         sessionID: "ses_new",
-        role: "architect",
+        role: "_.architect",
         soft: true,
         previousSessionID: "ses_old",
         clientInstanceID: options.clientInstanceID,
@@ -342,7 +343,7 @@ test("every role claim and every release carries that same instance id, not one 
     // since the listener frees a role claim only for the process that made it.
     const instance = subscribes[0]?.clientInstanceID
     expect(instance).toMatch(/^[0-9a-f]{32}$/)
-    expect(claims.map(({ role }) => role)).toEqual(["reviewer"])
+    expect(claims.map(({ role }) => role)).toEqual(["_.reviewer"])
     expect(claims.filter((claim) => claim.clientInstanceID === instance)).toHaveLength(
       claims.length,
     )
@@ -411,7 +412,7 @@ test("a refused claim naming the predecessor itself as holder keeps that record 
     expect(setRoles).toEqual(
       setRoles.map(() => ({
         sessionID: "ses_claude",
-        role: "reviewer",
+        role: "_.reviewer",
         soft: true,
         previousSessionID: "ses_claude",
         clientInstanceID: options.clientInstanceID,

@@ -1,0 +1,6 @@
+kind: Changed
+custom:
+  Issue: pr4710
+body: |-
+  A stall notice goes to the architect's or controller's lane under the project its role token
+  gives, `notifications.role.<PROJECT>.<role>`, which is how that role's claim is keyed.

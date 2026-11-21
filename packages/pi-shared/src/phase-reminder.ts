@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ROLE_TOPIC_PREFIX, roleForPhase, roleToken } from "@legion/contracts";
+import { roleForPhase, roleProject, roleSubject, roleToken } from "@legion/contracts";
 import type { LegionIssue } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
@@ -329,9 +329,10 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
     try {
       // An issue whose own architect claim is live owns this worker; otherwise the tree's does.
       const live = architectLive(record);
-      const topic =
-        ROLE_TOPIC_PREFIX +
-        roleToken(deps.project ?? "", live ? claim.issue : claim.tree, "architect");
+      // The architect's lane under the project its role token gives (`roleProject`), as its claim
+      // is keyed: never the Legion project token itself.
+      const architect = roleToken(deps.project ?? "", live ? claim.issue : claim.tree, "architect");
+      const topic = roleSubject(roleProject(architect), architect);
       const answer = await publish({
         topic,
         message:

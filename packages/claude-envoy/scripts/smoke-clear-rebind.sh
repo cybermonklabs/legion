@@ -145,14 +145,18 @@ moved=$((SECONDS - cleared_at))
 printf 'the entry moved %ss after /clear (heartbeat every %sms)\n' "$moved" "$heartbeat_ms"
 
 # Checked at once and again two heartbeats later: a later registration must not bring it back.
+# The plugin registers its direct subject under every project (notifications.agent.*.<id>); the
+# listener adds the old form (notifications.agent.<id>) to every registration beside it, so the
+# pre-/clear subject must be gone in both forms.
 check_entry() {
   local entry
   entry="$(entries | jq -c --arg id "$after_id" '.[] | select(.session_id == $id)')"
   printf '%s: %s\n' "$1" "$entry"
-  jq -e --arg own "notifications.agent.${after_id}" '(.topics // []) | index($own)' <<<"$entry" >/dev/null \
-    || fail "the new entry does not list its own direct subject notifications.agent.${after_id}"
-  if jq -e --arg old "notifications.agent.${before}" '(.topics // []) | index($old)' <<<"$entry" >/dev/null; then
-    fail "the new entry still lists the pre-/clear direct subject notifications.agent.${before}"
+  jq -e --arg own "notifications.agent.*.${after_id}" '(.topics // []) | index($own)' <<<"$entry" >/dev/null \
+    || fail "the new entry does not list its own direct subject notifications.agent.*.${after_id}"
+  if jq -e --arg new "notifications.agent.*.${before}" --arg old "notifications.agent.${before}" \
+    '(.topics // []) | (index($new) // index($old))' <<<"$entry" >/dev/null; then
+    fail "the new entry still lists the pre-/clear direct subject of ${before}"
   fi
 }
 check_entry "after /clear"

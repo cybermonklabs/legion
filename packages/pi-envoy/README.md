@@ -470,7 +470,7 @@ one with `dispatch comment --reply-to-ask`, makes the session a follower of that
 and replies reach the session directly, server-side), and the command prints
 `Following ask <id> on <owner>: …` after its result the first time the session follows that ask.
 Whole-issue or whole-document subscription is the model's own `envoy_subscribe` of the topic a
-write result names (`notifications.dispatch.issue.<KEY>.>` or
+write result names (`notifications.dispatch.issue.<PROJECT>.<KEY>.>` or
 `notifications.dispatch.document.<PROJECT>.<SLUG>.>`), which it names only when none of the
 session's subscriptions, as the Envoy listener records them, covers that owner.
 

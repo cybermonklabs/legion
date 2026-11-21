@@ -240,13 +240,13 @@ export const envoyToolSpecs = [
   {
     name: "envoy_role_set",
     description:
-      "Set the current session as the holder of a named role. Messages published to notifications.role.<role> route to this session. Moving to a different role is refused while another plugin holds subscriptions that last only as long as this session keeps its current role.",
+      "Set the current session as the holder of a named role. The role works for a project: a Legion role (legion-<project>-…) for its own, any other role for the one project this session's access token lists, else for none (_). Messages published to notifications.role.<project>.<role> route to this session. Moving to a different role is refused while another plugin holds subscriptions that last only as long as this session keeps its current role.",
     arguments: (schema) => ({ role: schema.string() }),
     operation: EnvoyToolOperation.setRole,
   },
   {
     name: "envoy_role_get",
-    description: `Get the holder of a named Envoy role, with its holder_state and the holder's last_seen. A holder that is only unresponsive still holds the role: nothing a lookup does releases its claim, and only a gone holder leaves the role unheld. ${SESSION_STATE_GUIDE}`,
+    description: `Get the holder of a named Envoy role, with its holder_state and the holder's last_seen. The role is read under the project envoy_role_set would claim it under; name <project>.<role> to read another project's. A holder that is only unresponsive still holds the role: nothing a lookup does releases its claim, and only a gone holder leaves the role unheld. ${SESSION_STATE_GUIDE}`,
     arguments: (schema) => ({ role: schema.string() }),
     operation: EnvoyToolOperation.getRole,
   },

@@ -19,11 +19,12 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { EnvelopeSchema, legacyAgentSubject } from "@legion/contracts";
+import { EnvelopeSchema } from "@legion/contracts";
 import { connect, Events, type KV, type NatsConnection, StringCodec } from "nats";
 import { z } from "zod";
 import { createConsumerDelivery } from "../src/consumer-delivery";
 import { createDeliveryLedger } from "../src/delivery-ledger";
+import { ownAgentSubject, placedRoleName, placeRole } from "../src/stream-topics";
 import { createEnvoyClient, type EnvoyClient, type SessionState } from "../src/transport";
 import {
   type EnvoyStack,
@@ -157,7 +158,10 @@ async function runSessionChild(config: ChildConfig): Promise<never> {
     process.stdout.write(`${JSON.stringify(event)}\n`);
   };
   const client = createEnvoyClient({ baseUrl: config.envoyUrl, fetch });
-  const subject = legacyAgentSubject(config.sessionID);
+  const subject = ownAgentSubject(config.sessionID);
+  // The registering token's projects, as the listener answered the last registration: what
+  // places the role this child claims, as each plugin places its own.
+  let projects: readonly string[] | undefined;
   const nats = await connect({ servers: [config.natsUrl], name: config.sessionID });
   const codec = StringCodec();
   // The ledger a host keeps of what it has already shown. Nothing is persisted: this child lives
@@ -216,11 +220,15 @@ async function runSessionChild(config: ChildConfig): Promise<never> {
       delivery: delivery.registration(),
     });
     delivery.answered(answer.delivery);
+    projects = answer.projects ?? projects;
     say({ event: "registered", at: Date.now() });
   };
 
   await register();
-  const claim = await client.setRole({ sessionID: config.sessionID, role: config.role });
+  const claim = await client.setRole({
+    sessionID: config.sessionID,
+    role: placedRoleName(placeRole(config.role, projects)),
+  });
   say({ event: "role", claimed: claim.claimed });
   setInterval(() => {
     void (async () => {

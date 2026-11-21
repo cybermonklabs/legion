@@ -14,9 +14,9 @@ test("includes the session route and configured topic patterns", async () => {
         })
       : undefined
 
-  // then
+  // then: the session route is its messages under every project
   expect(output).toEqual([
-    "notifications.agent.claude-qa",
+    "notifications.agent.*.claude-qa",
     "notifications.role.qa",
     "team.bridge",
     "team.bridge.>",

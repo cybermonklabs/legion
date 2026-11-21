@@ -36,6 +36,9 @@ hex="$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
 readonly hex
 readonly session="legion-smoke-${hex}"
 readonly role="legion-smoke-${hex}"
+# A Legion role token (legion-<token>-…) works for the project its token gives in upper case,
+# SMOKE here: the plugin claims it as SMOKE.<role>, and its lane is notifications.role.SMOKE.<role>.
+readonly placed_role="SMOKE.${role}"
 readonly message="smoke-delivery-payload-${hex}"
 
 # The trap is installed before anything that allocates a resource (including
@@ -141,7 +144,7 @@ wait_for_role_claim() {
     remaining=$((role_claim_timeout - (SECONDS - start)))
     ((remaining > 0)) || return 1
     request_timeout=$((remaining < curl_max_time ? remaining : curl_max_time))
-    status="$(http_status "$request_timeout" "${envoy_url}/v1/roles/${role}")"
+    status="$(http_status "$request_timeout" "${envoy_url}/v1/roles/${placed_role}")"
     [[ "$status" == "200" ]] && return 0
     compose_box_has_prompt && tmux send-keys -t "$session" Enter
     remaining=$((role_claim_timeout - (SECONDS - start)))
@@ -179,7 +182,7 @@ wait_for_role_clear() {
     remaining=$((teardown_timeout - (SECONDS - start)))
     ((remaining > 0)) || return 1
     request_timeout=$((remaining < curl_max_time ? remaining : curl_max_time))
-    last_role_status="$(http_status "$request_timeout" "${envoy_url}/v1/roles/${role}")"
+    last_role_status="$(http_status "$request_timeout" "${envoy_url}/v1/roles/${placed_role}")"
     [[ "$last_role_status" == "404" ]] && return 0
     remaining=$((teardown_timeout - (SECONDS - start)))
     ((remaining > 0)) && sleep "$((remaining < 1 ? remaining : 1))"
@@ -198,7 +201,7 @@ prompt="Call the envoy_role_set tool with role=\"${role}\". Once it succeeds, do
 send_prompt "$prompt"
 
 printf 'waiting up to %ss for role %s to be claimed (GET %s/v1/roles/%s)\n' \
-  "$role_claim_timeout" "$role" "$envoy_url" "$role"
+  "$role_claim_timeout" "$role" "$envoy_url" "$placed_role"
 claim_start=$SECONDS
 if ! wait_for_role_claim; then
   fail "role ${role} was not claimed within ${role_claim_timeout}s; pane:
@@ -208,9 +211,9 @@ claim_elapsed=$((SECONDS - claim_start))
 printf 'role claimed after %ss\n' "$claim_elapsed"
 
 # The bare role token is a JetStream subject with no bound stream (500); the
-# namespaced notifications.role.<role> topic is what the listener's role
+# namespaced notifications.role.<project>.<role> topic is what the listener's role
 # routing subscribes to.
-publish_topic="notifications.role.${role}"
+publish_topic="notifications.role.${placed_role}"
 publish_status="$(http_status "$curl_max_time" -X POST -H 'Content-Type: application/json' \
   "${envoy_url}/v1/messages/publish" \
   -d "{\"topic\":\"${publish_topic}\",\"message\":\"${message}\"}")"

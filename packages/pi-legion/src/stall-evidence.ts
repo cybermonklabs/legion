@@ -4,8 +4,9 @@ import {
   controllerToken,
   isLegionProjectToken,
   type LegionRole,
+  roleProject,
+  roleSubject,
   roleToken,
-  roleTopic,
 } from "@legion/contracts";
 import type { LegionIssue } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
@@ -535,8 +536,11 @@ export function stallNoticeTopic(input: StallNoticeInput): StallNotice {
     };
   }
   if (claim === undefined) return { kind: "none", why: "this session holds no claim yet" };
+  // Each lane is the role's under the project its role token gives (`roleProject`), as the
+  // role's claim is keyed: never the Legion project token itself.
+  const lane = (role: string): string => roleSubject(roleProject(role), role);
   if (session.kind === "root-architect") {
-    return { kind: "topic", topic: roleTopic(controllerToken(project)) };
+    return { kind: "topic", topic: lane(controllerToken(project)) };
   }
   const own = roleToken(project, claim.issue, claim.role);
   const issueArchitect = roleToken(project, claim.issue, "architect");
@@ -548,7 +552,7 @@ export function stallNoticeTopic(input: StallNoticeInput): StallNotice {
       why: "this session holds the only architect role its notice could reach",
     };
   }
-  return { kind: "topic", topic: roleTopic(token) };
+  return { kind: "topic", topic: lane(token) };
 }
 
 export interface StallTellerDeps {

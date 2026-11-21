@@ -631,7 +631,9 @@ row5_omp() {
   role="$(role_for r5omp)"
   x="$(session_for r5x)"
   left="$(session_for r5left)"
-  topic="notifications.role.${role}"
+  # The lane process A hands back: a free-form role works for the one project its session's access
+  # token lists, and these sessions present none, so for no project (`_`).
+  topic="notifications.role._.${role}"
   begin_row "INFRA-783 — a second Oh My Pi process in the live holder's session is refused the role"
   start_omp omp-a
   send omp-a "$(jq -nc --arg s "$x" '{op:"start",session:$s,roles:[]}')"

@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { createServer, type Socket } from "node:net"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { roleProject } from "@legion/contracts"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
@@ -200,7 +201,13 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     expect(instance).toMatch(/^[0-9a-f]{32}$/)
     expect([...new Set(instances)]).toEqual([instance])
     expect(roles).toEqual([
-      { session_id: SESSION, role: claimToken, soft: true, client_instance_id: instance },
+      // The claim names the role token under the project its own name gives.
+      {
+        session_id: SESSION,
+        role: `${roleProject(claimToken)}.${claimToken}`,
+        soft: true,
+        client_instance_id: instance,
+      },
     ])
     // Dispatch refuses a mode the session does not advertise, and sends a Send by default: every
     // registration of the session carries both modes the bridge serves.

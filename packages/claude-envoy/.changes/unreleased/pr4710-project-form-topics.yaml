@@ -1,0 +1,8 @@
+kind: Changed
+custom:
+  Issue: pr4710
+body: |-
+  The channel server registers and follows its session's own subject under every project,
+  `notifications.agent.*.<session>`, and claims and reads a role under the project it works for:
+  a Legion role under its own, a free-form role under the one project the session's access token
+  lists, else `_`.

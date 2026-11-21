@@ -1,12 +1,102 @@
 import {
   AGENT_TOPIC_PREFIX,
+  agentSubject,
+  canonicalRole,
+  claimProject,
   DISPATCH_TOPIC_PREFIX,
   GHOSTWISPR_TOPIC_PREFIX,
   LEGION_NOTICE_TOPIC_PREFIX,
   legacyTwin,
+  NO_PROJECT,
+  parseRoleClaimKey,
   ROLE_TOPIC_PREFIX,
+  roleSubject,
   uncapturedTopicRefusal,
 } from "@legion/contracts";
+
+/** A role and the project it is claimed, read and addressed under. */
+export interface PlacedRole {
+  readonly project: string;
+  readonly role: string;
+}
+
+/**
+ * The project `role` is claimed, read and addressed under. A Legion role token
+ * (`legion-<token>-…`) works for the project its own name gives (`roleProject`), whatever the
+ * session's token lists. A free-form role name (`reviewer`, `lead-infra`) works for the one project
+ * the session's broker token lists, which the listener answers each registration with
+ * (`SubscribeResult.projects`), and for `NO_PROJECT` where the token lists none or several, or the
+ * listener named none (one that predates the field, or a registration not yet answered). A role
+ * already named in the new form (`<project>.<role>`, `canonicalRole`) keeps the project it names,
+ * which the listener judges (`contracts.ClaimProject`). The Legion project token
+ * (`LEGION_PROJECT`, `infra`) is never a project here: only the listener's list of project keys
+ * is read, each held to `claimProject`, which takes nothing but a project key or `NO_PROJECT`.
+ */
+export function placeRole(role: string, tokenProjects: readonly string[] | undefined): PlacedRole {
+  const named = canonicalRole(role);
+  if (!named.legacy || named.project !== NO_PROJECT) {
+    return { project: named.project, role: named.name };
+  }
+  const only = tokenProjects?.length === 1 ? tokenProjects[0] : undefined;
+  const project = only === undefined ? NO_PROJECT : claimProject(named.name, only);
+  return { project: project instanceof Error ? NO_PROJECT : project, role: named.name };
+}
+
+/** The name a claim (`POST /v1/roles/set`) and a role read (`GET /v1/roles/<role>`) give a placed
+ *  role, its project first: `INFRA.legion-infra-infra-12-architect`, `_.reviewer`. */
+export function placedRoleName(placed: PlacedRole): string {
+  return `${placed.project}.${placed.role}`;
+}
+
+/** A placed role's lane, `notifications.role.<project>.<role>` (`roleSubject`). */
+export function placedRoleLane(placed: PlacedRole): string {
+  return roleSubject(placed.project, placed.role);
+}
+
+/**
+ * The role a role lane names, in either form, and undefined for any other topic: the new form
+ * `notifications.role.<project>.<role>`, and a lane named by a claim's key, which is the bare role
+ * for a claim of the project the role's own name gives (`parseRoleClaimKey`). That is how the
+ * listener writes a claim's lane onto its holder's interest record, so a host reads back the role
+ * a stored record names here.
+ */
+export function roleOfLane(topic: string): PlacedRole | undefined {
+  if (!topic.startsWith(ROLE_TOPIC_PREFIX)) return undefined;
+  const rest = topic.slice(ROLE_TOPIC_PREFIX.length);
+  return rest === "" ? undefined : parseRoleClaimKey(rest);
+}
+
+/**
+ * A session's own agent subject as a host registers, follows and persists it: the session's
+ * messages under every project, `notifications.agent.*.<session>`, which is the new form
+ * (`canonicalTopic`) of the old `notifications.agent.<session>`. A sender names a message's
+ * project (`agentSubject`), so the session's own interest names none of its own: it is the
+ * wildcard over every project. The listener filters the session's consumer on every form of it
+ * (`bus.SessionConsumerFilters`), so the session receives its messages whichever form a producer
+ * still writes; a reader of a delivered subject asks `agentSubjectSession` whose it is.
+ */
+export function ownAgentSubject(sessionID: string): string {
+  return agentSubject("*", sessionID);
+}
+
+/**
+ * The one session an agent subject names, read in either form through `legacyTwin`: the old
+ * `notifications.agent.<session>`, or the new one under a project, `NO_PROJECT` or a wildcard over
+ * every project. Undefined for a name of any other family and for one naming more than a session
+ * (`notifications.agent.x.y.z`, or a token in the project's place that is none). A wildcard where
+ * the session would be is answered as it is written (`*`, `>`), which no session id equals.
+ */
+export function agentSubjectSession(subject: string): string | undefined {
+  const old = legacyTwin(subject) ?? subject;
+  if (!old.startsWith(AGENT_TOPIC_PREFIX)) return undefined;
+  const session = old.slice(AGENT_TOPIC_PREFIX.length);
+  return session === "" || session.includes(".") ? undefined : session;
+}
+
+/** Whether `subject` is `sessionID`'s own agent subject, in either form (`agentSubjectSession`). */
+export function isOwnAgentSubject(subject: string, sessionID: string): boolean {
+  return agentSubjectSession(subject) === sessionID;
+}
 
 /** The topic a failed delivery's report goes to is this prefix followed by the original topic. */
 export const EXCEPTION_TOPIC_PREFIX = "notifications.envoy.exceptions.";
@@ -156,12 +246,13 @@ export function subjectsOverlap(a: string, b: string): boolean {
  * team lane beside it), another project's controller lane, and every wildcard reaching any of
  * them (`notifications.agent.*`, `notifications.>`, `notifications.*.<x>`,
  * `notifications.envoy.>`) count. Two literal subjects are this session's own: `ownAgentSubject`,
- * in either form (its new form under a project, `NO_PROJECT` or a wildcard over every project,
- * whose old form `legacyTwin` reads back), and the controller notice lane of a project whose
- * controller role `roles` names (`controllerNoticeRole`), which its holder registers because a
- * session receives what its own consumer delivers and nothing else. This mirrors the listener's
- * rule, `ReachesPrivateStreamSubject` in packages/envoy/internal/bus/stream.go: the listener stores
- * no such interest, so a host registers none.
+ * in either form (the old `notifications.agent.<session>`, or the new one under a project,
+ * `NO_PROJECT` or a wildcard over every project, which `agentSubjectSession` reads back), and the
+ * controller notice lane of a project whose controller role `roles` names
+ * (`controllerNoticeRole`), which its holder registers because a session receives what its own
+ * consumer delivers and nothing else. This mirrors the listener's rule,
+ * `ReachesPrivateStreamSubject` in packages/envoy/internal/bus/stream.go: the listener stores no
+ * such interest, so a host registers none.
  */
 export function reachesPrivateStreamSubject(
   ownAgentSubject: string,
@@ -171,16 +262,25 @@ export function reachesPrivateStreamSubject(
   if (!PRIVATE_STREAM_SUBJECTS.some((subject) => subjectsOverlap(topic, subject))) return false;
   const role = controllerNoticeRole(topic);
   if (role !== undefined) return !roles.includes(role);
-  // A session id holding `*` or `>` makes a wildcard of its "own" agent subject, no session's alone.
-  const own = topic === ownAgentSubject || legacyTwin(topic) === ownAgentSubject;
-  return !own || /[*>]/.test(ownAgentSubject);
+  // The session's own agent subject in any form, and only while it names one session: a session
+  // id holding `*` or `>` makes a wildcard of its "own" agent subject, no session's alone.
+  const session = agentSubjectSession(ownAgentSubject);
+  return session === undefined || /[*>]/.test(session) || agentSubjectSession(topic) !== session;
+}
+
+/** Whether `topic` is anything but `ownAgentSubject` in another form, which a registration and a
+ *  restore carry once, as `ownAgentSubject` itself: a stored row read back holds the old form the
+ *  listener adds to every registration, and a state an earlier build persisted holds it too. */
+function notOwnAgentSubject(ownAgentSubject: string, topic: string): boolean {
+  const session = agentSubjectSession(ownAgentSubject);
+  return session === undefined || agentSubjectSession(topic) !== session;
 }
 
 /**
  * The topics a registration carries, for every host that builds one: the session's own agent
- * subject, which its consumer is always filtered on, and every topic it follows that the
- * listener will store for it. Two are left out, and a host that followed one still follows it:
- * it just never goes to the listener.
+ * subject, which its consumer is always filtered on, once and in the form `ownAgentSubject`
+ * names, and every topic it follows that the listener will store for it. Two are left out, and
+ * a host that followed one still follows it: it just never goes to the listener.
  *
  * A topic reaching a private stream subject that is not this session's
  * (`reachesPrivateStreamSubject`) is left out because the listener leaves it out of the stored
@@ -207,6 +307,7 @@ export function registrationTopics(
       ownAgentSubject,
       ...[...followed].filter(
         (topic) =>
+          notOwnAgentSubject(ownAgentSubject, topic) &&
           !reachesPrivateStreamSubject(ownAgentSubject, topic, roles) &&
           !streamDeliversNothing(topic)
       ),
@@ -216,10 +317,11 @@ export function registrationTopics(
 
 /**
  * The subjects a restore follows again, which is what the ledger persists: the session's own
- * agent subject, then every topic it follows but a role's and one reaching a private stream
- * subject. A role's topic — a role lane, or a subject the host holds only while it holds a role
- * (`heldForRole`) — is the role claim's to open, so a process that restores this state without
- * the role follows none of it; another session's agent subject (a fork's parent, until the host
+ * agent subject, once and in the form `ownAgentSubject` names, then every topic it follows but a
+ * role's and one reaching a private stream subject. A role's topic — a role lane, or a subject
+ * the host holds only while it holds a role (`heldForRole`) — is the role claim's to open, so a
+ * process that restores this state without the role follows none of it; another session's agent
+ * subject (a fork's parent, until the host
  * closes it), a failed-delivery lane, a controller notice lane, or a wildcard reaching one of
  * them, is not this session's to follow, and the listener would refuse it
  * (`reachesPrivateStreamSubject`).
@@ -232,6 +334,7 @@ export function replayFollowedSubjects(
   const followed = [...topics].filter(
     (topic) =>
       !topic.startsWith(ROLE_TOPIC_PREFIX) &&
+      notOwnAgentSubject(ownAgentSubject, topic) &&
       !reachesPrivateStreamSubject(ownAgentSubject, topic) &&
       !heldForRole(topic)
   );

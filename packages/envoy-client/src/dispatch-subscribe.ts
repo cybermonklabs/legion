@@ -1,4 +1,8 @@
-import { DispatchEventSchema, SubscriptionRemovedEventPayloadSchema } from "@legion/contracts";
+import {
+  DispatchEventSchema,
+  SubscriptionRemovedEventPayloadSchema,
+  topicForms,
+} from "@legion/contracts";
 import { commandLine } from "./dispatch-command";
 import { documentTopicOf, issueTopic, type OwnerTopic } from "./dispatch-owner";
 
@@ -57,14 +61,19 @@ export function ownerSubscribeLine(
  * wildcard rule (`routing.Match`): its tokens match the owner's subject token for token (`*`
  * matching any one), then end in `>`. An event type can span tokens (`ask.answered`), so a
  * topic that names a token past the owner's subject, `*` included, receives only some of them.
+ * The subscription is read in every form the listener takes it in (`topicForms`): one a session
+ * registered in the old form, naming an issue's key alone, still receives that issue's events,
+ * since the listener filters its consumer on both forms.
  */
 export function subscriptionCovers(topic: string, owner: OwnerTopic): boolean {
   const base = owner.topic.slice(0, -".>".length).split(".");
-  for (const [index, part] of topic.split(".").entries()) {
-    if (part === ">") return true;
-    if (index >= base.length || (part !== "*" && part !== base[index])) return false;
-  }
-  return false;
+  return topicForms(topic).some((form) => {
+    for (const [index, part] of form.split(".").entries()) {
+      if (part === ">") return true;
+      if (index >= base.length || (part !== "*" && part !== base[index])) return false;
+    }
+    return false;
+  });
 }
 
 /**

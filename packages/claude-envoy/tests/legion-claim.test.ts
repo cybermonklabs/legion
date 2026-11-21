@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { SESSION_HEARTBEAT_MS, SESSION_LIVE_WINDOW_MS } from "@legion/contracts"
+import { roleProject, SESSION_HEARTBEAT_MS, SESSION_LIVE_WINDOW_MS } from "@legion/contracts"
 import type { SetRoleInput, SetRoleResult } from "@legion/envoy-client/transport"
 import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
@@ -20,6 +20,8 @@ import {
 } from "../src/legion-claim"
 
 const SESSION = "0b9c2f4e-2d3a-4c55-9a1e-6f7d8e9a0b1c"
+/** A Legion role token as a claim names it: under the project its own name gives. */
+const claimedAs = (token: string): string => `${roleProject(token)}.${token}`
 /** The channel server's client instance, which the pane's claim names as its process. */
 const INSTANCE = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
 /** The first-turn signal a case whose subject is the claim itself passes: the turn is reported
@@ -198,7 +200,7 @@ test("registers once the transcript exists, claims the claim token's role soft, 
   expect(setRoles).toEqual([
     {
       sessionID: SESSION,
-      role: String(registered["claimToken"]),
+      role: claimedAs(String(registered["claimToken"])),
       soft: true,
       clientInstanceID: INSTANCE,
     },
@@ -367,7 +369,7 @@ test("a claim refused by a standing claim under this session's own id is asked a
   expect(setRoles).toEqual(
     setRoles.map(() => ({
       sessionID: SESSION,
-      role: token,
+      role: claimedAs(token),
       soft: true,
       clientInstanceID: INSTANCE,
     })),
@@ -723,7 +725,7 @@ test("the name is taken at the turn the server signals, not at the boot, and two
 
   const token = String(registeredClaim["claimToken"])
   expect(pane.setRoles).toEqual([
-    { sessionID: SESSION, role: token, soft: true, clientInstanceID: INSTANCE },
+    { sessionID: SESSION, role: claimedAs(token), soft: true, clientInstanceID: INSTANCE },
   ])
   expect(pane.remembered).toEqual([token])
   expect(pane.stops()).toBe(0)

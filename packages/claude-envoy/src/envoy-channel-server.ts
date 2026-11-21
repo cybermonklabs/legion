@@ -4,7 +4,6 @@ import { setImmediate as nextTurn } from "node:timers/promises"
 import {
   DELIVERY_CAPABILITIES,
   type DeliveryCapability,
-  legacyAgentSubject,
   ROLE_TOPIC_PREFIX,
   zodSchemaApi,
 } from "@legion/contracts"
@@ -55,6 +54,10 @@ import {
 } from "@legion/envoy-client/session-settings"
 import { postSlackReply } from "@legion/envoy-client/slack-post"
 import {
+  isOwnAgentSubject,
+  ownAgentSubject,
+  placedRoleName,
+  placeRole,
   refuseUncapturedTopics,
   registrationTopics,
   rememberedTopics,
@@ -306,6 +309,12 @@ export interface ChannelSession {
   unfollow(topics: readonly string[]): Promise<readonly string[]>
   /** Persist the role held by an explicit envoy_role_set call, or by the Legion claim. */
   rememberRole(role: string): Promise<void>
+  /**
+   * `role` as a claim and a role read name it, `<project>.<role>`: under the project it works
+   * for (`placeRole`), which for a free-form role is the one project this session's access token
+   * lists, as the listener answered its last registration (`SubscribeResult.projects`).
+   */
+  roleClaimName(role: string): string
   /**
    * Sets the one hook the heartbeat runs after it re-establishes this session as its held role's
    * live holder: `"reclaimed"` when the listener had stopped naming this session and a soft claim
@@ -784,7 +793,7 @@ async function flushThroughRedials(
  */
 export async function startChannelSession(options: ChannelSessionOptions): Promise<ChannelSession> {
   const { identity } = options
-  let directSubject = legacyAgentSubject(identity.id)
+  let directSubject = ownAgentSubject(identity.id)
   /** The NATS connection the session holds now, and the credential move that goes with it: the
    *  start's, until it closes for good and `options.reopen` opens another (`connectionClosed`). */
   let connection = options.connection
@@ -819,6 +828,14 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   })
   const userTopics = new Set<string>()
   let heldRole: string | undefined
+  /**
+   * The projects the listener answered this session's last registration with
+   * (`SubscribeResult.projects`): its access token's list, which places every free-form role this
+   * session claims or reads (`placeRole`). Undefined until a listener names it, which places such
+   * a role under no project.
+   */
+  let tokenProjects: readonly string[] | undefined
+  const roleClaimName = (role: string): string => placedRoleName(placeRole(role, tokenProjects))
   let shuttingDown = false
   const handoffFile =
     options.handoffPid === undefined
@@ -1451,6 +1468,10 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // lists, leaves the session with no consumer at all, as every other failed registration
       // does: the session is told once and the heartbeat asks again.
       answered: (result) => {
+        // The projects the registering token lists, for the session this process serves now.
+        if (result.projects !== undefined && sessionID === identity.id) {
+          tokenProjects = result.projects
+        }
         if (asking !== undefined) takeDeliveryAnswer(sessionID, asking, result)
       },
     })
@@ -1527,7 +1548,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     }
     const claim = await options.client.setRole({
       sessionID: identity.id,
-      role: persisted.role,
+      role: roleClaimName(persisted.role),
       soft: true,
       previousSessionID: persisted.session_id,
       clientInstanceID: options.clientInstanceID,
@@ -1609,7 +1630,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   const reassertRole = async (afterOutage: boolean): Promise<void> => {
     if (heldRole === undefined) return
     const role = heldRole
-    const holding = await options.client.getRole(role).catch(undefinedOnNotFound)
+    const holding = await options.client.getRole(roleClaimName(role)).catch(undefinedOnNotFound)
     if (roleHeldBy(holding, identity.id, options.clientInstanceID)) {
       await refreshRoleRecord()
       if (afterOutage) fireRegained(role, "reregistered")
@@ -1617,7 +1638,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     }
     const result = await options.client.setRole({
       sessionID: identity.id,
-      role,
+      role: roleClaimName(role),
       soft: true,
       clientInstanceID: options.clientInstanceID,
     })
@@ -1682,7 +1703,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     if (next === undefined || next === identity.id) return
     const previous = identity.id
     const previousSubject = directSubject
-    const nextSubject = legacyAgentSubject(next)
+    const nextSubject = ownAgentSubject(next)
     followedTopics.follow(nextSubject)
     try {
       // Bounded: this runs inside the registry chain, and a flush on a stalled NATS
@@ -1781,7 +1802,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     if (shuttingDown) return
     if (!interestsRead) {
       for (const topic of registry?.topics ?? []) {
-        if (topic === directSubject || topic.startsWith(ROLE_TOPIC_PREFIX)) continue
+        // The session's own agent subject, in either form: the listener adds its old form to
+        // every registration's row beside the one this session registers.
+        if (isOwnAgentSubject(topic, identity.id) || topic.startsWith(ROLE_TOPIC_PREFIX)) continue
         userTopics.add(topic)
         followedTopics.follow(topic)
       }
@@ -1792,7 +1815,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     const followed = new Set(followedTopics.topics())
     const drifted = registry.topics.filter(
       (topic) =>
-        topic !== directSubject && !topic.startsWith(ROLE_TOPIC_PREFIX) && !followed.has(topic),
+        !isOwnAgentSubject(topic, identity.id) &&
+        !topic.startsWith(ROLE_TOPIC_PREFIX) &&
+        !followed.has(topic),
     )
     if (drifted.length === 0) return
     await options.client.unsubscribe({
@@ -2182,7 +2207,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       if (shuttingDown) return []
       const fresh: string[] = []
       for (const topic of expandSubscriptionTopics(topics)) {
-        if (topic === directSubject || userTopics.has(topic)) continue
+        if (isOwnAgentSubject(topic, identity.id) || userTopics.has(topic)) continue
         userTopics.add(topic)
         followedTopics.follow(topic)
         fresh.push(topic)
@@ -2232,6 +2257,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         await writeRoleRecord(roleStateFile(options.stateDirectory, identity.id), role)
       })
     },
+    roleClaimName,
     async shutdown() {
       if (shuttingDown) return
       shuttingDown = true
@@ -2365,9 +2391,11 @@ export async function executeEnvoyTool(
       // The claim names this process, as every claim this server makes does: the listener
       // records it as the role's holder, so a second process on this session id cannot be
       // mistaken for the one holding the role.
+      // The claim names the role under the project it works for (`roleClaimName`); the record
+      // keeps the name the model gave, which every later claim places the same way.
       const result = await runtime.client.setRole({
         sessionID: identity.id,
-        role: args.role,
+        role: runtime.session.roleClaimName(args.role),
         clientInstanceID: runtime.clientInstanceID,
       })
       if (!result.claimed) throw new Error(`role ${args.role} is held by ${result.holder}`)
@@ -2376,7 +2404,7 @@ export async function executeEnvoyTool(
     }
     case EnvoyToolOperation.getRole: {
       const args = parseArguments(spec, input)
-      const role = await runtime.client.getRole(args.role)
+      const role = await runtime.client.getRole(runtime.session.roleClaimName(args.role))
       // A listener that names only one of the two states still shows the model one answer: what
       // state the holder is in, and when it was last seen.
       return { ...role, holder_state: holderStateOf(role) }

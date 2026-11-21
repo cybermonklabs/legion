@@ -224,6 +224,19 @@ test("a notice accepted after its run ended acknowledges nothing of the next run
   expect(entries.at(-1)).toMatchObject({ count: 2, reported: true });
 });
 
+// The notice goes to the architect's lane under the project its role token gives, which is how
+// that role's claim is keyed: never under the Legion project token, and never in the old form a
+// later listener counts as legacy.
+test("the notice is published on the architect's lane under its role's own project", async () => {
+  const { reminder, timers, published } = rig({});
+  expect(await reminder.settle(said("Pushed."))).toBeString();
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  await fireLast(timers);
+  expect(published.map((notice) => notice.topic)).toEqual([
+    "notifications.role.LEGION.legion-legion-legion-208-architect",
+  ]);
+});
+
 // A failure other than "no live session holds the role" is not dropped: the next delivered
 // reminder of the run publishes the same notice again, under the same key, until one is accepted.
 test("a notice the listener failed is published again by the run's next reminder, under the same key", async () => {

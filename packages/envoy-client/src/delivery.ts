@@ -23,12 +23,11 @@ import {
   EXPECTS_REPLY_VALUES,
   type ExpectsReply,
   IssueEventPayloadSchema as IssuePayloadSchema,
-  legacyAgentSubject,
   MessageDeliveryEventPayloadSchema as MessageDeliveryPayloadSchema,
   MessageEventPayloadSchema as MessagePayloadSchema,
+  parseRoleClaimKey,
   type SessionAnswerRelation,
   SubscriptionRemovedEventPayloadSchema as SubscriptionRemovedPayloadSchema,
-  topicForms,
 } from "@legion/contracts";
 import { encode } from "@toon-format/toon";
 import { z } from "zod";
@@ -40,6 +39,7 @@ import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "./dispa
 import { pictureAddresses } from "./dispatch-pictures";
 import { humanEditDiffBlock, humanEditHead } from "./human-edit";
 import { sessionAnswerRelationPhrase } from "./session-answer-relations";
+import { isOwnAgentSubject, placedRoleLane } from "./stream-topics";
 
 const KNOWN_SOURCES: Readonly<Record<string, unknown>> = EnvelopeSchema.shape.source.enum;
 const FOREIGN_SESSION_ID = /\b01a0[0-9a-f]{4}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}\b/g;
@@ -1142,7 +1142,7 @@ export function renderInbound(
         // edit that only moved a version, or a version nobody named. `notify` is a different
         // question — whether to wake the issue's route and claimant — and it is false for every
         // event an agent wrote, so skipping on it dropped exactly the activity a session that
-        // subscribed to `notifications.dispatch.issue.<KEY>.>` asked for
+        // subscribed to `notifications.dispatch.issue.<PROJECT>.<KEY>.>` asked for
         // (skills/dispatch/SKILL.md). A frame with no `quiet` was published by a Dispatch from
         // before this field and is judged by the old rule: the stream still holds 72 hours of
         // them, and a replay must not start showing their receipts and autosaves.
@@ -1371,10 +1371,7 @@ export function renderInbound(
       ...(dispatchIssue === undefined ? [] : [dispatchIssue]),
     ].join(", ") || undefined;
   const rendered = {
-    // The session's inbox in either form, the session alone or under a project, names it the
-    // recipient: every form of such a topic holds the old one (`topicForms`), no other session's.
-    ...(envelope.topic !== undefined &&
-    topicForms(envelope.topic).includes(legacyAgentSubject(sessionID))
+    ...(envelope.topic !== undefined && isOwnAgentSubject(envelope.topic, sessionID)
       ? { to: `you (${sessionID})` }
       : {}),
     from: senderLabel(envelope),
@@ -1392,9 +1389,11 @@ export function renderInbound(
     ...(role === undefined || wantsNoReply
       ? {}
       : {
+          // The sender's role as its claim is keyed (`parseRoleClaimKey`), so the reply goes to
+          // the lane of that very claim, its project named.
           reply_role: {
             tool: "envoy_publish",
-            args: { topic: `notifications.role.${role}`, message: "..." },
+            args: { topic: placedRoleLane(parseRoleClaimKey(role)), message: "..." },
           },
         }),
     ...(dispatchRendered

@@ -34,6 +34,7 @@ import {
   type Envelope,
   legacyDispatchIssueSubject,
   type SessionAnswer,
+  topicForms,
   uncapturedTopicRefusal,
 } from "@legion/contracts";
 import {
@@ -60,7 +61,12 @@ import {
   renderSessionAnswers,
   sessionAnswersFailureLine,
 } from "@legion/envoy-client/session-answers";
-import { subjectsOverlap } from "@legion/envoy-client/stream-topics";
+import {
+  agentSubjectSession,
+  placedRoleName,
+  placeRole,
+  subjectsOverlap,
+} from "@legion/envoy-client/stream-topics";
 import {
   type EnvoyStack,
   envoyStackEnabled,
@@ -91,6 +97,7 @@ import {
   subscribeLegionNotice,
 } from "@legion/pi-shared/role-claim-bridge";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
+import { listenerRoleKey, readsRole } from "@legion/pi-shared/test/omp-harness";
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
@@ -164,12 +171,20 @@ let relaySeq = 0;
  */
 const registeredTopics = new Set<string>();
 
-/** Whether a registered topic reaches `subject`, under NATS wildcard rules. */
+/** Whether a registered topic reaches `subject`, under NATS wildcard rules, read in every form of
+ *  its name, as the listener filters the session's consumer (`bus.SessionConsumerFilters`). */
 function relayCarries(subject: string): boolean {
   for (const topic of registeredTopics) {
-    if (subjectsOverlap(topic, subject)) return true;
+    if (topicForms(topic).some((form) => subjectsOverlap(form, subject))) return true;
   }
   return false;
+}
+
+/** A role lane as the listener writes it onto its holder's record, `notifications.role.<claim
+ *  key>` (`listenerRoleKey`), whatever form the client named it in; any other topic as it is. */
+function listenerRoleTopic(topic: string): string {
+  const lane = "notifications.role.";
+  return topic.startsWith(lane) ? `${lane}${listenerRoleKey(topic.slice(lane.length))}` : topic;
 }
 
 /**
@@ -247,12 +262,11 @@ test("a row's fetch that hands on through globalThis.fetch fails at once, naming
  */
 function relayControls(subject: string): SubscriptionControls | undefined {
   if (!relayCarries(subject)) return undefined;
-  const AGENT_PREFIX = "notifications.agent.";
+  // An agent subject, in either form, is one session's own.
+  const session = agentSubjectSession(subject);
   let live: SubscriptionControls | undefined;
   let closed: SubscriptionControls | undefined;
-  const own = subject.startsWith(AGENT_PREFIX)
-    ? openSubscriptions.get(deliverSubject(subject.slice(AGENT_PREFIX.length)))
-    : undefined;
+  const own = session === undefined ? undefined : openSubscriptions.get(deliverSubject(session));
   for (const [on, controls] of openSubscriptions) {
     if (!on.startsWith("notifications.envoy.deliver.")) continue;
     if (controls.active()) live ??= controls;
@@ -1602,9 +1616,16 @@ function roleClaimRecord(role: string, session: string): unknown {
 }
 
 /** The body a claim of `role` for `session` sends, `rest` carrying what that claim adds (`soft`,
- *  `previous_session_id`): every claim names the process making it (INFRA-783). */
+ *  `previous_session_id`): every claim names the process making it, and names the role
+ *  under the project it works for (`placeRole`). These sessions' listeners answer no token
+ *  projects, so a free-form role is claimed under none (`_`). */
 function roleClaimBody(session: string, role: string, rest: Record<string, unknown> = {}): unknown {
-  return { session_id: session, role, ...rest, client_instance_id: ANY_CLIENT_INSTANCE };
+  return {
+    session_id: session,
+    role: placedRoleName(placeRole(role, undefined)),
+    ...rest,
+    client_instance_id: ANY_CLIENT_INSTANCE,
+  };
 }
 
 /** What a session pod's listener was sent: a registration of a session, or a role claim's body. */
@@ -1648,7 +1669,7 @@ function sessionPodListener(): SessionPodListener {
     if (pathname === "/v1/interests/unsubscribe") {
       for (const topic of body.topics as string[]) {
         if (!topic.startsWith("notifications.role.")) continue;
-        const role = topic.slice("notifications.role.".length);
+        const role = listenerRoleKey(topic.slice("notifications.role.".length));
         released.push(`${role}@${body.session_id}`);
         if (holders.get(role) === body.session_id) holders.delete(role);
       }
@@ -1668,16 +1689,17 @@ function sessionPodListener(): SessionPodListener {
     }
     if (pathname === "/v1/roles/set") {
       seen.push({ claimed: body });
-      holders.set(body.role, body.session_id);
+      const key = listenerRoleKey(body.role);
+      holders.set(key, body.session_id);
       return response({
         session_id: body.session_id,
         machine_id: "test",
         dir: "/tmp/envoy-omp-test",
-        topics: [`notifications.role.${body.role}`],
+        topics: [`notifications.role.${key}`],
       });
     }
     if (pathname.startsWith("/v1/roles/")) {
-      const role = pathname.slice("/v1/roles/".length);
+      const role = listenerRoleKey(decodeURIComponent(pathname.slice("/v1/roles/".length)));
       const holder = holders.get(role);
       if (holder === undefined) {
         return Response.json({ error: `no holder for role ${role}` }, { status: 404 });
@@ -4051,13 +4073,14 @@ describe("envoy OMP extension", () => {
     await fixture.tools.find((tool) => tool.name === "envoy_sessions")?.execute("", {});
 
     expect(requests).toEqual([
-      // session_start registers the direct subject before tool calls.
+      // session_start registers the direct subject before tool calls: the session's messages
+      // under every project.
       {
         path: "/v1/interests/subscribe",
         body: {
           session_id: "ses_omp",
           dir: "/tmp/envoy-omp-test",
-          topics: ["notifications.agent.ses_omp"],
+          topics: ["notifications.agent.*.ses_omp"],
           port: 0,
           title: "",
           driving: false,
@@ -4076,7 +4099,8 @@ describe("envoy OMP extension", () => {
         path: "/v1/roles/set",
         body: {
           session_id: "ses_omp",
-          role: "controller",
+          // A free-form role, under no project: this listener names no token projects.
+          role: "_.controller",
           // The process making the claim, the same id the registration carries (INFRA-783).
           client_instance_id: expect.stringMatching(/^[0-9a-f]{32}$/),
         },
@@ -4556,7 +4580,7 @@ describe("envoy OMP extension", () => {
       }
       if (url.pathname === "/v1/roles/set") {
         const body = JSON.parse(init?.body?.toString() ?? "{}");
-        roleClaims.push({ session_id: body.session_id, role: body.role });
+        roleClaims.push({ session_id: body.session_id, role: listenerRoleKey(body.role) });
         return response({
           session_id: body.session_id,
           machine_id: "test",
@@ -4585,18 +4609,12 @@ describe("envoy OMP extension", () => {
     expect(roleClaims).toEqual([{ session_id: "ses_omp", role: "legion-controller" }]);
   });
 
-  // The listener's record keeps a claimed role's lane in the form it writes it,
-  // `notifications.role.<role>`, whichever form the claim named (packages/envoy/cmd/listener,
-  // `roleSetHandler`), and a resumed session reads the role it should hold off its record by
-  // cutting that lane's prefix (`desiredRole`). So the role it claims again is the role itself. The
-  // second row is the control the first leans on: a record rewritten to the new form,
-  // `notifications.role.INFRA.<role>`, reads to this very comparison as a role named
-  // `INFRA.<role>`, so a store that rewrote it would show here.
   for (const { name, rewrite, claimed } of [
     {
       name: "as the listener wrote it",
       rewrite: false,
-      claimed: "legion-infra-controller",
+      // Read back to the role, and claimed under the project its own name gives, in either form.
+      claimed: "INFRA.legion-infra-controller",
     },
     {
       name: "rewritten to the new form",
@@ -4669,7 +4687,7 @@ describe("envoy OMP extension", () => {
       if (url.pathname === "/v1/interests/ses_after") return response({ error: "not found" });
       if (url.pathname === "/v1/roles/set") {
         const body = JSON.parse(init?.body?.toString() ?? "{}");
-        roleClaims.push({ session_id: body.session_id, role: body.role });
+        roleClaims.push({ session_id: body.session_id, role: listenerRoleKey(body.role) });
         return response({
           session_id: body.session_id,
           machine_id: "test",
@@ -4730,7 +4748,7 @@ describe("envoy OMP extension", () => {
             status: 404,
           });
         }
-        roleClaims.push({ session_id: body.session_id, role: body.role });
+        roleClaims.push({ session_id: body.session_id, role: listenerRoleKey(body.role) });
         return response({
           session_id: body.session_id,
           machine_id: "test",
@@ -4766,7 +4784,7 @@ describe("envoy OMP extension", () => {
       }
       if (url.pathname === "/v1/roles/set") {
         const body = JSON.parse(init?.body?.toString() ?? "{}");
-        roleClaims.push({ session_id: body.session_id, role: body.role });
+        roleClaims.push({ session_id: body.session_id, role: listenerRoleKey(body.role) });
         return response({
           session_id: body.session_id,
           machine_id: "test",
@@ -4832,7 +4850,7 @@ describe("envoy OMP extension", () => {
         return response({ error: "nats: key not found" });
       if (url.pathname === "/v1/roles/set") {
         const body = JSON.parse(init?.body?.toString() ?? "{}");
-        roleClaims.push({ session_id: body.session_id, role: body.role });
+        roleClaims.push({ session_id: body.session_id, role: listenerRoleKey(body.role) });
         return response({
           session_id: body.session_id,
           machine_id: "test",
@@ -7246,12 +7264,13 @@ console.log(JSON.stringify(args));
     expect(moved.isError).toBeFalsy();
     expect(moved.details).toEqual({ role: "legion-reviewer", released: "legion-controller" });
     expect(moved.content[0]?.text).toContain("legion-controller");
-    expect(unregistrations).toEqual([["notifications.role.legion-controller"]]);
+    // The hand-back names the lane of the claim it gives back, under its project (none here).
+    expect(unregistrations).toEqual([["notifications.role._.legion-controller"]]);
     const result = await unsubscribeTool.execute("", {
       topics: ["notifications.role.legion-reviewer"],
     });
     expect(result.content[0]?.text).toBe("Unsubscribed: (none)");
-    expect(unregistrations).toEqual([["notifications.role.legion-controller"]]);
+    expect(unregistrations).toEqual([["notifications.role._.legion-controller"]]);
   });
 
   test("the model's role and unsubscribe tools keep a held role's role-bound topics followed", async () => {
@@ -7264,7 +7283,7 @@ console.log(JSON.stringify(args));
       const url = new URL(input.toString());
       const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
       if (url.pathname === "/v1/roles/set") {
-        const claimed = typeof body?.role === "string" ? body.role : "";
+        const claimed = listenerRoleKey(typeof body?.role === "string" ? body.role : "");
         roleClaims.push(claimed);
         return response({
           session_id: "ses_role_bound",
@@ -7863,7 +7882,9 @@ console.log(JSON.stringify(args));
       const url = new URL(input.toString());
       const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
       if (url.pathname === "/v1/roles/set") {
-        const claimed = typeof body?.role === "string" ? body.role : "";
+        // Keyed as the listener keys a claim, whatever form the role was named in: the bare name
+        // for a role of the project its own name gives (`listenerRoleKey`).
+        const claimed = listenerRoleKey(typeof body?.role === "string" ? body.role : "");
         const claimant = body?.session_id;
         claims.push(claimed);
         claimSessions.push(`${claimed}@${claimant}`);
@@ -7913,7 +7934,7 @@ console.log(JSON.stringify(args));
       }
       const roleRead = /^\/v1\/roles\/([^/]+)$/.exec(url.pathname);
       if (roleRead !== null && (init?.method ?? "GET") === "GET") {
-        const role = decodeURIComponent(roleRead[1] ?? "");
+        const role = listenerRoleKey(decodeURIComponent(roleRead[1] ?? ""));
         // The listener settles its answer as it takes the read, so a gated read is one whose
         // answer is already in flight: it names the holder of that moment, not the holder of the
         // moment the caller finally hears it.
@@ -7948,7 +7969,7 @@ console.log(JSON.stringify(args));
         if (
           handBackGate !== undefined &&
           body?.session_id === handBackGate.session &&
-          (body?.topics ?? []).includes(handBackGate.topic)
+          (body?.topics ?? []).map(listenerRoleTopic).includes(handBackGate.topic)
         ) {
           const { reached, release } = handBackGate;
           handBackGate = undefined;
@@ -7959,7 +7980,8 @@ console.log(JSON.stringify(args));
           failingHandBacks -= 1;
           return new Response(JSON.stringify({ error: "listener failed" }), { status: 500 });
         }
-        for (const topic of body?.topics ?? []) {
+        // Each lane as the listener writes it onto the record, its claim's key (`listenerRoleTopic`).
+        for (const topic of (body?.topics ?? []).map(listenerRoleTopic)) {
           handedBack.push(`${topic}@${body?.session_id}`);
           const role = String(topic).replace("notifications.role.", "");
           // The listener frees a role claim only for the process that made it; a claim whose
@@ -11709,7 +11731,7 @@ console.log(JSON.stringify(args));
           topics: ["notifications.role.legion-controller"],
         });
       }
-      if (url.pathname === "/v1/roles/legion-controller") {
+      if (readsRole(url, "legion-controller")) {
         return response({ role: "legion-controller", holder: "ses_role_heartbeat", last_seen: 1 });
       }
       if (url.pathname === "/v1/interests/subscribe") {
@@ -11752,7 +11774,7 @@ console.log(JSON.stringify(args));
     expect(registrations[1]).toMatchObject({
       session_id: "ses_role_heartbeat",
       self_subscribed: true,
-      topics: ["notifications.agent.ses_role_heartbeat"],
+      topics: ["notifications.agent.*.ses_role_heartbeat"],
     });
   });
 
@@ -12135,7 +12157,8 @@ console.log(JSON.stringify(args));
       `envoy: ENVOY_SESSION_ROLE fan-cloud belongs to session ses_pod_parent; this session ${session} claims nothing`;
     expect(report).toEqual({
       session: "ses_pod_parent",
-      claims: [{ role: "fan-cloud", session_id: "ses_pod_parent" }],
+      // The launch's free-form role, claimed under no project: no listener named the token's.
+      claims: [{ role: "_.fan-cloud", session_id: "ses_pod_parent" }],
       lines: [],
       children: [
         {
@@ -12163,7 +12186,7 @@ console.log(JSON.stringify(args));
     const unsubscriptions: (readonly string[])[] = [];
     globalThis.fetch = async (input, init) => {
       const url = new URL(input.toString());
-      if (url.pathname === `/v1/roles/${role}`) {
+      if (readsRole(url, role)) {
         if (!listenerHoldsClaim) {
           return Response.json({ error: `no holder for role ${role}` }, { status: 404 });
         }
@@ -12310,7 +12333,8 @@ console.log(JSON.stringify(args));
   test("unsubscribes role-shaped subscriptions locally without releasing the held role", async () => {
     const role = "librarian";
     const roleTopic = `notifications.role.${role}`;
-    const agentTopic = "notifications.agent.ses_role_subscription";
+    // The session's own subject as it registers it: its messages under every project.
+    const agentTopic = "notifications.agent.*.ses_role_subscription";
     const unsubscriptions: (readonly string[])[] = [];
     globalThis.fetch = async (input, init) => {
       const url = new URL(input.toString());
@@ -12398,7 +12422,7 @@ console.log(JSON.stringify(args));
     const reasserted = Promise.withResolvers<void>();
     globalThis.fetch = async (input, init) => {
       const url = new URL(input.toString());
-      if (url.pathname === `/v1/roles/${role}`) {
+      if (readsRole(url, role)) {
         roleReads.push(url.pathname);
         if (!listenerHoldsClaim) {
           return Response.json({ error: `no holder for role ${role}` }, { status: 404 });
@@ -12444,7 +12468,8 @@ console.log(JSON.stringify(args));
     await reasserted.promise;
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(roleReads).toEqual([`/v1/roles/${role}`]);
+    // The read names the role under the project it is claimed under (none here).
+    expect(roleReads).toEqual([`/v1/roles/_.${role}`]);
     expect(roleClaims).toEqual([
       roleClaimBody("ses_reassert", role),
       roleClaimBody("ses_reassert", role, { soft: true }),
@@ -12466,7 +12491,7 @@ console.log(JSON.stringify(args));
     const reasserted = Promise.withResolvers<void>();
     globalThis.fetch = async (input, init) => {
       const url = new URL(input.toString());
-      if (url.pathname === `/v1/roles/${role}`) {
+      if (readsRole(url, role)) {
         // The listener's own refusal body (writeRoleHolderError), not a bare error string.
         return Response.json(
           {
@@ -12528,7 +12553,7 @@ console.log(JSON.stringify(args));
     let registrations = 0;
     globalThis.fetch = async (input, init) => {
       const url = new URL(input.toString());
-      if (url.pathname === `/v1/roles/${role}`) {
+      if (readsRole(url, role)) {
         roleReads += 1;
         return response({ role, holder: "ses_quiet", last_seen: 1 });
       }
@@ -12582,7 +12607,7 @@ console.log(JSON.stringify(args));
     let registrations = 0;
     globalThis.fetch = async (input, init) => {
       const url = new URL(input.toString());
-      if (url.pathname === `/v1/roles/${role}`) {
+      if (readsRole(url, role)) {
         if (!newerHolderLive) {
           return Response.json({ error: "no live holder" }, { status: 404 });
         }
@@ -12674,7 +12699,7 @@ console.log(JSON.stringify(args));
     globalThis.fetch = async (input, init) => {
       if (registryDown) throw new Error("network unreachable");
       const url = new URL(input.toString());
-      if (url.pathname === `/v1/roles/${role}`) {
+      if (readsRole(url, role)) {
         return response({ role, holder: "ses_outage", last_seen: 1 });
       }
       if (url.pathname === "/v1/roles/set") {
@@ -12748,7 +12773,7 @@ console.log(JSON.stringify(args));
     const thirdRegistration = Promise.withResolvers<void>();
     globalThis.fetch = async (input, init) => {
       const url = new URL(input.toString());
-      if (url.pathname === `/v1/roles/${role}`) {
+      if (readsRole(url, role)) {
         if (!listenerHoldsClaim) {
           return Response.json({ error: `no holder for role ${role}` }, { status: 404 });
         }
@@ -12898,7 +12923,7 @@ console.log(JSON.stringify(args));
       let registrations = 0;
       globalThis.fetch = async (input, init) => {
         const url = new URL(input.toString());
-        if (url.pathname === `/v1/roles/${role}`) {
+        if (readsRole(url, role)) {
           if (wedgeRoleRead) {
             wedgeRoleRead = false;
             await answered.promise;
@@ -13106,7 +13131,7 @@ console.log(JSON.stringify(args));
       const roleClaims: unknown[] = [];
       globalThis.fetch = async (input, init) => {
         const url = new URL(input.toString());
-        if (url.pathname === `/v1/roles/${role}`) {
+        if (readsRole(url, role)) {
           return response({ role, holder: "ses_stall_regain", last_seen: 1 });
         }
         if (url.pathname === "/v1/roles/set") {
@@ -13202,7 +13227,10 @@ console.log(JSON.stringify(args));
             readonly session_id: string;
             readonly topics: readonly string[];
           };
-          for (const topic of body.topics) handedBack.push(`${topic}@${body.session_id}`);
+          // Each lane as the listener writes it onto the record (`listenerRoleTopic`).
+          for (const topic of body.topics) {
+            handedBack.push(`${listenerRoleTopic(topic)}@${body.session_id}`);
+          }
           return response({});
         }
         return responseWithRegistration(input, init, {});
@@ -13361,7 +13389,7 @@ console.log(JSON.stringify(args));
     const roleClaims: unknown[] = [];
     globalThis.fetch = async (input, init) => {
       const url = new URL(input.toString());
-      if (url.pathname === `/v1/roles/${role}`) {
+      if (readsRole(url, role)) {
         // A body the client cannot parse fails immediately, without the transport's 5xx retry.
         if (roleReadBroken) return response({});
         return response({ role, holder: "ses_role_read", last_seen: 1 });
@@ -13431,7 +13459,7 @@ console.log(JSON.stringify(args));
         if (registryDown) throw new Error("network unreachable");
         registrations += 1;
       }
-      if (url.pathname === `/v1/roles/${role}`) {
+      if (readsRole(url, role)) {
         // A body the client cannot parse fails immediately, without the transport's 5xx retry.
         if (roleReadBroken) return response({});
         return response({ role, holder: "ses_late_regain", last_seen: 1 });
@@ -13525,7 +13553,7 @@ console.log(JSON.stringify(args));
       body: {
         session_id: "ses_register",
         dir: "/tmp/envoy-omp-test",
-        topics: ["notifications.agent.ses_register"],
+        topics: ["notifications.agent.*.ses_register"],
         port: 0,
         title: "",
         driving: false,
@@ -13578,7 +13606,7 @@ console.log(JSON.stringify(args));
     const followed = await followedTopics(fixture.tools, context);
     for (const topic of [...refused, issue]) expect(followed).toContain(topic);
     const topics = registrations.at(-1)?.topics ?? [];
-    expect(topics).toContain("notifications.agent.ses_bounded");
+    expect(topics).toContain("notifications.agent.*.ses_bounded");
     expect(topics).toContain(issue);
     for (const topic of refused) expect(topics).not.toContain(topic);
   });
@@ -19990,40 +20018,41 @@ console.log(JSON.stringify(args));
 
     const topic = "notifications.github.o.r.pr.42.>";
     const base = "notifications.github.o.r.pr.42";
+    // The session's own inbox, its messages under every project.
+    const inbox = "notifications.agent.*.ses_registry";
     await subscribeTool.execute("", { topics: [topic] });
-    expect(registrations.at(-1)?.topics).toEqual(["notifications.agent.ses_registry", base, topic]);
+    expect(registrations.at(-1)?.topics).toEqual([inbox, base, topic]);
     expect(natsState.controls.get(base)?.active()).toBe(true);
     expect(natsState.controls.get(topic)?.active()).toBe(true);
 
     for (const tick of intervals) tick();
-    expect(registrations.at(-1)?.topics).toEqual(["notifications.agent.ses_registry", base, topic]);
+    expect(registrations.at(-1)?.topics).toEqual([inbox, base, topic]);
     const subscribed = await listTool.execute("", {});
     expect(subscribed.details.interests).toEqual([
-      { topic: "notifications.agent.ses_registry", source: "both" },
+      { topic: inbox, source: "both" },
       { topic: base, source: "both" },
       { topic, source: "both" },
     ]);
 
     await unsubscribeTool.execute("", { topics: [topic] });
     expect(unregistrations).toEqual([[base, topic]]);
-    expect(registrations.at(-1)?.topics).toEqual(["notifications.agent.ses_registry"]);
+    expect(registrations.at(-1)?.topics).toEqual([inbox]);
     const result = await listTool.execute("", {});
     expect(JSON.parse(result.content[0]?.text ?? "")).toMatchObject({
-      topics: ["notifications.agent.ses_registry"],
+      topics: [inbox],
     });
-    expect(result.details.interests).toEqual([
-      { topic: "notifications.agent.ses_registry", source: "both" },
-    ]);
+    expect(result.details.interests).toEqual([{ topic: inbox, source: "both" }]);
 
     // The session's own inbox survives "remove all" and an explicit request
-    // alike: it is how direct messages reach the session, not a subscription
-    // the tool manages.
+    // alike, in either form: it is how direct messages reach the session, not a
+    // subscription the tool manages.
     await subscribeTool.execute("", { topics: [topic] });
-    const inbox = "notifications.agent.ses_registry";
     const removeAll = await unsubscribeTool.execute("", {});
     expect(removeAll.details.removed).toEqual([base, topic]);
     expect(natsState.controls.get(inbox)?.active()).toBe(true);
-    const explicit = await unsubscribeTool.execute("", { topics: [inbox] });
+    const explicit = await unsubscribeTool.execute("", {
+      topics: [inbox, "notifications.agent.ses_registry"],
+    });
     expect(explicit.details.removed).toEqual([]);
     expect(natsState.controls.get(inbox)?.active()).toBe(true);
     expect(registrations.at(-1)?.topics).toEqual([inbox]);
@@ -20047,11 +20076,17 @@ console.log(JSON.stringify(args));
         });
       }
       if (url.pathname === "/v1/interests/ses_list") {
+        // The listener's row: the session's own subject as it registered it, the old form the
+        // listener adds to every registration beside it, and a topic only the row names.
         return response({
           session_id: "ses_list",
           machine_id: "test",
           dir: "/tmp/envoy-omp-test",
-          topics: ["notifications.agent.ses_list", "notifications.team.registry-only"],
+          topics: [
+            "notifications.agent.*.ses_list",
+            "notifications.agent.ses_list",
+            "notifications.team.registry-only",
+          ],
         });
       }
       return response({ session_id: "ses_list", machine_id: "test", dir: "/tmp", topics: [] });
@@ -20071,13 +20106,15 @@ console.log(JSON.stringify(args));
 
     expect(JSON.parse(result.content[0]?.text ?? "")).toMatchObject({
       topics: [
+        "notifications.agent.*.ses_list",
         "notifications.agent.ses_list",
         "notifications.team.registry-only",
         "notifications.team.live-only",
       ],
     });
     expect(result.details.interests).toEqual([
-      { topic: "notifications.agent.ses_list", source: "both" },
+      { topic: "notifications.agent.*.ses_list", source: "both" },
+      { topic: "notifications.agent.ses_list", source: "registry" },
       { topic: "notifications.team.registry-only", source: "registry" },
       { topic: "notifications.team.live-only", source: "live" },
     ]);

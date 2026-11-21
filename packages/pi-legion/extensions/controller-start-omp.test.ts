@@ -16,10 +16,12 @@ import {
   type Cleanup,
   deliveryFor,
   type Interactive,
+  listenerRoleKey,
   messageStream,
   ompNatsGuard,
   ompRoot,
   type Request,
+  readsRole,
   relayFirstAnswers,
   sendRelayFrame,
   serveStandin,
@@ -498,11 +500,12 @@ async function serveController(
     // the read below answers that session, and a claim of the role is refused with it, as the
     // listener refuses a claim of a role a live session holds.
     const otherHolder = hooks.roleHeldBy?.();
-    if (
+    // A claim of the controller role, whichever form names it, as the listener keys a claim.
+    const claimsController =
       url.pathname === "/v1/roles/set" &&
-      body.role === registered.claimToken &&
-      hooks.roleSetBusy?.()
-    ) {
+      typeof body.role === "string" &&
+      listenerRoleKey(body.role) === registered.claimToken;
+    if (claimsController && hooks.roleSetBusy?.()) {
       return Response.json(
         {
           error:
@@ -512,7 +515,7 @@ async function serveController(
       );
     }
     if (url.pathname === "/v1/roles/set") {
-      if (otherHolder !== undefined && body.role === registered.claimToken) {
+      if (otherHolder !== undefined && claimsController) {
         return Response.json(
           {
             error: `role ${registered.claimToken} is held by ${otherHolder}`,
@@ -522,7 +525,7 @@ async function serveController(
           { status: 409 }
         );
       }
-      if (body.role === registered.claimToken && roleHolder === "") {
+      if (claimsController && roleHolder === "") {
         setImmediate(() => hooks.onRoleClaim?.(sid));
         noticeInterestDue = true;
       }
@@ -540,7 +543,7 @@ async function serveController(
       const answer = hooks.onRegistration?.(sid, topics);
       if (answer !== undefined) return answer;
     }
-    if (url.pathname === `/v1/roles/${registered.claimToken}`) {
+    if (readsRole(url, registered.claimToken)) {
       return Response.json({
         role: registered.claimToken,
         holder: otherHolder ?? roleHolder,
@@ -2170,7 +2173,8 @@ test.skipIf(skip)(
     const after = await session.until("a registration that carries neither topic", () =>
       registered.slice(ended).find((topics) => !topics.includes(lane) && !topics.includes(mentions))
     );
-    expect(after).toContain(`notifications.agent.${claimed}`);
+    // The session's own subject, as it registers it: its messages under every project.
+    expect(after).toContain(`notifications.agent.*.${claimed}`);
 
     // What the stream stores on either subject still reaches the session's deliver subject, as a
     // listener that went on relaying them would send it, and the session drops both itself: it

@@ -17,7 +17,15 @@ function notice(details: unknown, topics: readonly string[] | null): string {
 describe("subscriptionCovers", () => {
   test("a topic covers an owner when it receives every event on it, as the listener matches", () => {
     const issue = issueTopic("DSP-42");
+    // The issue's own topic names its key's project first.
+    expect(issue).toEqual({ label: "DSP-42", topic: "notifications.dispatch.issue.DSP.DSP-42.>" });
     for (const topic of [
+      "notifications.dispatch.issue.DSP.DSP-42.>",
+      // Every issue of the project, and the key under any project.
+      "notifications.dispatch.issue.DSP.>",
+      "notifications.dispatch.issue.*.DSP-42.>",
+      // A subscription a session made in the old form still receives the issue's events: the
+      // listener filters its consumer on both forms (`topicForms`).
       "notifications.dispatch.issue.DSP-42.>",
       "notifications.dispatch.issue.*.>",
       "notifications.dispatch.issue.>",
@@ -35,6 +43,11 @@ describe("subscriptionCovers", () => {
       "notifications.dispatch.issue.DSP-4.>",
       "notifications.dispatch.issue.DSP-420.>",
       "notifications.dispatch.issue.DSP-42.comment.created",
+      "notifications.dispatch.issue.DSP.DSP-42.*",
+      "notifications.dispatch.issue.DSP.DSP-4.>",
+      // The key under another project names no event of this issue.
+      "notifications.dispatch.issue.OPS.DSP-42.>",
+      "notifications.dispatch.issue.OPS.>",
       "notifications.dispatch.document.DSP.spec.>",
       "notifications.agent.ses-1",
       "notifications.role.reviewer",
@@ -56,11 +69,12 @@ describe("the follow notice", () => {
     const follows =
       "Following ask ask-1 on DSP-42: its answer and replies reach you directly (dispatch follow --ask ask-1 --action unfollow to stop).";
     const subscribe =
-      " For every event on DSP-42: envoy_subscribe notifications.dispatch.issue.DSP-42.>.";
+      " For every event on DSP-42: envoy_subscribe notifications.dispatch.issue.DSP.DSP-42.>.";
     expect(followedAsk(details)).toEqual({ ask: "ask-1", owner: issueTopic("DSP-42") });
     expect(notice(details, ["notifications.agent.ses-1"])).toBe(`${follows}${subscribe}`);
     expect(notice(details, [])).toBe(`${follows}${subscribe}`);
     expect(notice(details, ["notifications.dispatch.issue.DSP-42.>"])).toBe(follows);
+    expect(notice(details, ["notifications.dispatch.issue.DSP.DSP-42.>"])).toBe(follows);
     expect(notice(details, ["notifications.dispatch.>"])).toBe(follows);
     // Subscriptions that could not be read say nothing about what the session receives.
     expect(notice(details, null)).toBe(follows);

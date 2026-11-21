@@ -1,5 +1,11 @@
-import { ROLE_TOPIC_PREFIX } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
+import {
+  type PlacedRole,
+  placedRoleLane,
+  placedRoleName,
+  placeRole,
+  roleOfLane,
+} from "@legion/envoy-client/stream-topics";
 import {
   EnvoyApiError,
   type EnvoyClient,
@@ -353,10 +359,23 @@ export interface RegistrationState {
   ) => Promise<void>;
 
   // — readers —
-  /** The role this session holds, if any. */
+  /** The role this session holds, if any, by its one name here (`roleName`). */
   readonly heldRole: () => string | undefined;
-  /** Whether `topic` is the role topic this session holds. */
-  readonly holdsRoleTopic: (topic: string) => boolean;
+  /** Whether this session holds `role`, named in either form, under the project it places at. */
+  readonly holdsRole: (role: string) => boolean;
+  /**
+   * The one name `role` has for `sessionID`, however it was named: the role alone where placing
+   * it for that session (`placeRole`, under the projects its last registration was answered
+   * with) puts it under the project the name gives, else `<project>.<role>`. Every role this
+   * process compares, records or shows goes through it, so one role never reads as two.
+   */
+  readonly roleName: (role: string, sessionID: string) => string;
+  /** The role a role lane names, as `roleName` names it for `sessionID`; undefined for any other
+   *  topic. A role read back from a stored interest record is named so. */
+  readonly roleNameOfLane: (topic: string, sessionID: string) => string | undefined;
+  /** `role` placed for `sessionID` as a claim and a role read name it, `<project>.<role>`
+   *  (`placedRoleName`). */
+  readonly roleClaimName: (role: string, sessionID: string) => string;
   /** The session id the listener names for the role this session holds. */
   readonly holdSessionID: () => string | undefined;
   /** Whether `subject` is taken only while this session holds its role. */
@@ -426,8 +445,34 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
   const agentSessions = new Set<string>();
   // The session whose agent subject, stream watch and registered interests a pass opened in full.
   let inboundOpenFor = "";
+  // The projects the listener answered each session's last registration with
+  // (`SubscribeResult.projects`): its access token's list, which places every free-form role this
+  // process claims or reads for that session (`placeRole`). A session it holds none for, from a
+  // listener that names none or before its first answer, places such a role under no project.
+  const tokenProjects = new Map<string, readonly string[]>();
+  const placed = (role: string, sessionID: string): PlacedRole =>
+    placeRole(role, tokenProjects.get(sessionID));
+  const roleClaimName = (role: string, sessionID: string): string =>
+    placedRoleName(placed(role, sessionID));
+  const roleName = (role: string, sessionID: string): string => {
+    const at = placed(role, sessionID);
+    return placed(at.role, sessionID).project === at.project ? at.role : placedRoleName(at);
+  };
+  const roleNameOfLane = (topic: string, sessionID: string): string | undefined => {
+    const lane = roleOfLane(topic);
+    return lane === undefined ? undefined : roleName(placedRoleName(lane), sessionID);
+  };
+  // Whether `topic`, a role lane in either form, names `role` as placed for `sessionID`.
+  const laneNames = (topic: string, role: string, sessionID: string): boolean => {
+    const lane = roleOfLane(topic);
+    const at = placed(role, sessionID);
+    return lane !== undefined && lane.project === at.project && lane.role === at.role;
+  };
 
-  const heldRole = (): string | undefined => claimedRoleTopic?.slice(ROLE_TOPIC_PREFIX.length);
+  const heldRole = (): string | undefined =>
+    claimedRoleTopic === undefined
+      ? undefined
+      : roleNameOfLane(claimedRoleTopic, claimedRoleSessionID ?? "");
   const isRoleBound = (subject: string): boolean => roleNoticeSubjects.has(subject);
 
   // The session stops holding its role: close the notice subjects it took for it, so a holder
@@ -454,6 +499,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
       .then((result) => {
         registeredFor = input.sessionID;
         registeredAt = Date.now();
+        if (result.projects !== undefined) tokenProjects.set(input.sessionID, result.projects);
         return result;
       });
   };
@@ -566,7 +612,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         // that live process's role.
         if (
           wanted === undefined ||
-          hold.topic !== ROLE_TOPIC_PREFIX + wanted ||
+          !laneNames(hold.topic, wanted, hold.id) ||
           !deps.sessionOpen(hold.id)
         ) {
           return false;
@@ -588,12 +634,15 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     ): Promise<boolean> => {
       const id = actingFor();
       guard();
-      const topic = ROLE_TOPIC_PREFIX + role;
+      // The claim names the role under the project it works for (`placeRole`), and the hold is
+      // that claim's lane, which the hand-back names when it gives the claim back.
+      const at = placed(role, id);
+      const topic = placedRoleLane(at);
       const previousTopic = claimedRoleTopic;
       const previousHoldID = claimedRoleSessionID;
       const result = await deps.client().setRole({
         sessionID: id,
-        role,
+        role: placedRoleName(at),
         soft: options.soft,
         previousSessionID: options.previousSessionID,
         // The process making the claim: a role already held under this very session id is the
@@ -640,7 +689,12 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         if (result.holder === id) return false;
         // Only a soft claim is refused. A holder that is this process's own abandoned hold is
         // waited out, since the listener reaps it; any other is the newer holder.
-        const waitingOnReap = await holds.observeAbandonedHold(topic, role, result.holder, live);
+        const waitingOnReap = await holds.observeAbandonedHold(
+          topic,
+          placedRoleName(at),
+          result.holder,
+          live
+        );
         // The hold was read across a wait: this task may have been refused since, and the claim
         // that replaced it may already have cleared the refusal this one is about to record.
         // Nothing is written then, and the line says so.
@@ -673,13 +727,14 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     const reassertRole = async (role: string, afterOutage: boolean): Promise<RoleReassertion> => {
       const id = actingFor();
       guard();
-      const topic = ROLE_TOPIC_PREFIX + role;
+      const at = placed(role, id);
+      const topic = placedRoleLane(at);
       const client = deps.client();
       // Whether this process still holds the role the re-assertion was decided for: a session
       // event can end it while the listener is read or claimed, and the task that ends it owns
       // the role from there.
       const stillHolds = (): boolean => claimedRoleTopic === topic;
-      const holding = await client.getRole(role).then(
+      const holding = await client.getRole(placedRoleName(at)).then(
         (info) => info,
         (error: unknown) => {
           // 404 is the listener's answer for "no live holder", not a failure.
@@ -695,7 +750,12 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
       if (roleHeldBy(holding, id, clientInstanceID)) {
         return afterOutage ? { decided: true, regain: "reregistered" } : { decided: true };
       }
-      const result = await client.setRole({ sessionID: id, role, soft: true, clientInstanceID });
+      const result = await client.setRole({
+        sessionID: id,
+        role: placedRoleName(at),
+        soft: true,
+        clientInstanceID,
+      });
       guard();
       if (!stillHolds()) return { decided: false };
       if (!result.claimed) {
@@ -827,7 +887,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         guard();
         return deps
           .client()
-          .getRole(role)
+          .getRole(roleClaimName(role, actingFor()))
           .then(
             (info) => info.holder,
             () => undefined
@@ -942,7 +1002,11 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
       const holdID = claimedRoleSessionID;
       if (held === undefined || topic === undefined || holdID === undefined) return;
       const carried = holdID === host || lineage.includes(holdID);
-      const wanted = recordedRole === undefined ? carried : recordedRole === held;
+      // A record names its role as the session that wrote it did, in either form.
+      const wanted =
+        recordedRole === undefined
+          ? carried
+          : recordedRole !== null && roleName(recordedRole, holdID) === held;
       if (wanted) return;
       endRole();
       if (holdID !== "") holds.recordEndedHold(topic, holdID);
@@ -964,7 +1028,12 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     adoptClaimAfterSessionMoved: moveHold,
 
     heldRole,
-    holdsRoleTopic: (topic) => claimedRoleTopic === topic,
+    holdsRole: (role) =>
+      claimedRoleTopic !== undefined &&
+      laneNames(claimedRoleTopic, role, claimedRoleSessionID ?? ""),
+    roleName,
+    roleNameOfLane,
+    roleClaimName,
     holdSessionID: () => claimedRoleSessionID,
     isRoleBound,
     roleBoundSubjects: () => [...roleNoticeSubjects],

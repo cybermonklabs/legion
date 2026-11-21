@@ -575,7 +575,12 @@ export function sessionOptions(
   }
 }
 
+/** The subject a message to this session arrives on, as the listener stored it: the old form here,
+ *  which every reader still takes. */
 export const directSubject = "notifications.agent.ses_claude"
+/** The session's own agent subject as it follows and registers it: its messages under every
+ *  project (`ownAgentSubject`). */
+export const followedSubject = "notifications.agent.*.ses_claude"
 export const deliveryRaw = JSON.stringify({
   event_id: "evt-42",
   dedupe_key: "delivery-42",

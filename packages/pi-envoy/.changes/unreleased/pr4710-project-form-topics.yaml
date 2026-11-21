@@ -1,0 +1,10 @@
+kind: Changed
+custom:
+  Issue: pr4710
+body: |-
+  The extension registers and follows its session's own subject under every project,
+  `notifications.agent.*.<session>`, and claims and reads a role under the project it works for:
+  a Legion role under its own, a free-form role under the one project the session's access token
+  lists, else `_` (`envoy_role_set` sends `<project>.<role>`). It keeps the token's projects from
+  each registration's answer, gives each role one name, and hands back the lane of the claim it
+  holds.

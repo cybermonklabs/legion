@@ -35,6 +35,7 @@ import {
   type FakeClient,
   FakeNats,
   FakeNotifier,
+  followedSubject,
   noInterest,
   recordingClient,
   sessionOptions,
@@ -445,7 +446,7 @@ test("registers aside capability and soft-reclaims the role persisted for a resu
     expect(subscribes).toEqual([
       expect.objectContaining({
         sessionID: "ses_claude",
-        topics: [directSubject],
+        topics: [followedSubject],
         capabilities: ["aside", "steer"],
         selfSubscribed: true,
         plugin: { name: "@sjawhar/claude-envoy", version: "afe10b2f3e1b" },
@@ -454,7 +455,7 @@ test("registers aside capability and soft-reclaims the role persisted for a resu
     expect(setRoles).toEqual([
       {
         sessionID: "ses_claude",
-        role: "reviewer",
+        role: "_.reviewer",
         soft: true,
         previousSessionID: "ses_claude",
         clientInstanceID: options.clientInstanceID,
