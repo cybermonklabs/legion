@@ -86,6 +86,9 @@ type testServer struct {
 	// server serves an enrollment, as cmd/cipherd reads BROKER_SESSION_ACCOUNT_PAIRS into it before
 	// the broker serves.
 	sessions *oauthstore.Store
+	// handler is what the server serves, behind the answer recorder: a row that must end a
+	// request's context at a moment of its own serves the request through it directly.
+	handler http.Handler
 }
 
 // podAudience is the audience the test server's pod verifier checks and podToken mints for.
@@ -133,7 +136,8 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	// withRequestDeadline, counting on a registry of the server's own, so every answer a test reads
 	// is the one a deployment sends.
 	registry := metrics.New()
-	srv := httptest.NewServer(answer.Middleware(mux, answer.NewAnswers(registry)))
+	handler := answer.Middleware(mux, answer.NewAnswers(registry))
+	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
 	issuer := oidctest.New(t)
@@ -201,7 +205,7 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	adjust(&deps)
 	api.Register(mux, deps)
 
-	ts := &testServer{URL: srv.URL, Store: st, Secrets: local, podIssuer: issuer, podKey: podKey, machine: reqMachine, ServiceLogins: serviceLogins, registry: registry, sessions: sessions}
+	ts := &testServer{URL: srv.URL, Store: st, Secrets: local, podIssuer: issuer, podKey: podKey, machine: reqMachine, ServiceLogins: serviceLogins, registry: registry, sessions: sessions, handler: handler}
 	ts.uiToken = ts.accountToken(t, dispatchAccount, "", time.Hour)
 	return ts
 }

@@ -196,6 +196,9 @@ type server struct {
 	// repositoryCalls counts each edge listener's calls of GET /v1/project-repositories still
 	// waiting on Dispatch, at most maxRepositoryCallsInFlight each.
 	repositoryCalls *callsInFlight
+	// ownOnlyLogged lets MachineLoginsOwnOnlyMessage be written once per person per
+	// ownOnlyLogEvery (machineLoginsOwnOnly).
+	ownOnlyLogged *ratelimit.Keyed
 }
 
 func Register(mux *http.ServeMux, deps Deps) {
@@ -244,6 +247,7 @@ func Register(mux *http.ServeMux, deps Deps) {
 		tokenLimiter:    ratelimit.NewKeyed(token),
 		accountLimiter:  ratelimit.NewKeyed(account),
 		repositoryCalls: newCallsInFlight(maxRepositoryCallsInFlight),
+		ownOnlyLogged:   ratelimit.NewKeyed(ratelimit.Limit{Every: ownOnlyLogEvery, Burst: 1}),
 	}
 	for _, route := range routes() {
 		// A broker with no provider serves neither the OAuth routes nor the document that names

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
@@ -84,11 +85,12 @@ func (s *server) listLauncherCredentials(w http.ResponseWriter, r *http.Request,
 // a person Dispatch calls a restricted member (projectaccess.Restricted), since a service's login is
 // every signed-in person's only as an approver of it, and ending one ends every session it
 // enrolled; and for anyone while Dispatch cannot say what kind of member they are, which it logs
-// (MachineLoginsOwnOnlyMessage) unless the caller went away. A person's own logins stay theirs to
-// list and end whatever Dispatch answers, as a lost machine's login must, and a service's login is
-// out of reach of a person the broker cannot read, as it is of a restricted member. route names
-// the route for the log line. It asks Dispatch through the enroll service's client within
-// projectaccess.RelayedReadBound, and asks nothing on a broker with no client of Dispatch.
+// (MachineLoginsOwnOnlyMessage) once per person per ownOnlyLogEvery, unless the caller went away.
+// A person's own logins stay theirs to list and end whatever Dispatch answers, as a lost machine's
+// login must, and a service's login is out of reach of a person the broker cannot read, as it is
+// of a restricted member. route names the route for the log line. It asks Dispatch through the
+// enroll service's client within projectaccess.RelayedReadBound, and asks nothing on a broker with
+// no client of Dispatch.
 func (s *server) machineLoginsOwnOnly(r *http.Request, person, route string) bool {
 	if s.deps.Enroll.Projects == nil {
 		return false
@@ -98,7 +100,7 @@ func (s *server) machineLoginsOwnOnly(r *http.Request, person, route string) boo
 	login := record.CanonicalLogin(person)
 	restricted, err := projectaccess.Restricted(ctx, s.deps.Enroll.Projects, login)
 	if err != nil {
-		if r.Context().Err() == nil {
+		if r.Context().Err() == nil && s.ownOnlyLogged.Allow(login) {
 			slog.Warn(MachineLoginsOwnOnlyMessage, "route", route, "person", login, "error", err)
 		}
 		return true
@@ -106,11 +108,16 @@ func (s *server) machineLoginsOwnOnly(r *http.Request, person, route string) boo
 	return restricted
 }
 
-// MachineLoginsOwnOnlyMessage is logged, at WARN, for each machine-login list or revoke that held
-// the person to their own logins because Dispatch could not say whether they are a restricted
-// member (machineLoginsOwnOnly), followed by route=<list or revoke>, person=<the canonical login>
-// and error=<why it could not ask>.
+// MachineLoginsOwnOnlyMessage is logged, at WARN, when a machine-login list or revoke held the
+// person to their own logins because Dispatch could not say whether they are a restricted member
+// (machineLoginsOwnOnly), at most once per person per ownOnlyLogEvery, followed by route=<list or
+// revoke>, person=<the canonical login> and error=<why it could not ask>.
 const MachineLoginsOwnOnlyMessage = "broker: a machine-login route holds the person to their own logins, since Dispatch could not say whether the person is a restricted member"
+
+// ownOnlyLogEvery is how often MachineLoginsOwnOnlyMessage may name one person: Dispatch's page
+// reads the list each time it opens, so an outage would otherwise write a line for every open and
+// every revoke, and one line a minute still dates the outage for that person.
+const ownOnlyLogEvery = time.Minute
 
 // writeLauncherCredentials answers the machine logins list names for person, each one that can
 // still reach a secret: not revoked, and either unexpired or expired with a session it enrolled

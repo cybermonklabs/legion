@@ -17,7 +17,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strings"
@@ -380,12 +382,15 @@ func TestARestrictedMemberListsAndEndsNoServicesMachineLogin(t *testing.T) {
 // down, or refuses the broker's own account — the machine-login routes hold him to his own logins,
 // as they hold a restricted member: GET /v1/launcher-credentials lists his own login and not the
 // Legion daemon's, his revoke of his own login ends it, and his revoke of the daemon's answers 404
-// NOT_FOUND, ending nothing. The control: once Dispatch answers him a full member, his list holds
-// the daemon's login again.
+// NOT_FOUND, ending nothing. Over his nine calls the broker writes the WARN line that says so
+// (api.MachineLoginsOwnOnlyMessage) once, since it writes it at most once per person per minute.
+// The control: once Dispatch answers him a full member, his list holds the daemon's login again.
 func TestAFullMemberEndsTheirOwnMachineLoginWhileTheirKindCannotBeRead(t *testing.T) {
 	const bob = "bob@example.com"
 	ts, access, stand := restrictedStand(t)
 	tokenLogin, _ := ts.mintServiceLauncherCredential(t)
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
 	for _, fault := range []struct {
 		name, host string
 		set        func(*projectaccesstest.Server)
@@ -402,8 +407,6 @@ func TestAFullMemberEndsTheirOwnMachineLoginWhileTheirKindCannotBeRead(t *testin
 			faulty := projectaccesstest.NewServer(t, nil, map[string]string{bob: projectaccess.MemberFull})
 			fault.set(faulty)
 			access.Serve(faulty)
-			capture := &logtest.Recorder{}
-			logtest.SetDefault(t, capture)
 			if got := ts.machineLoginIDs(t, bob); !slices.Contains(got, own) || slices.Contains(got, tokenLogin) {
 				t.Fatalf("GET /v1/launcher-credentials?approver=%s = %v; want his own login %s and not the daemon's %s", bob, got, own, tokenLogin)
 			}
@@ -417,16 +420,16 @@ func TestAFullMemberEndsTheirOwnMachineLoginWhileTheirKindCannotBeRead(t *testin
 			if faulty.Calls() == 0 {
 				t.Fatal("the faulty Dispatch was never asked: the row is blind")
 			}
-			var held int
-			for _, rec := range capture.Records() {
-				if rec.Message == api.MachineLoginsOwnOnlyMessage && rec.Level == slog.LevelWarn {
-					held++
-				}
-			}
-			if held != 3 {
-				t.Fatalf("the log holds %d WARN lines of %q; want one for each of his three calls", held, api.MachineLoginsOwnOnlyMessage)
-			}
 		})
+	}
+	var held int
+	for _, rec := range capture.Records() {
+		if rec.Message == api.MachineLoginsOwnOnlyMessage && rec.Level == slog.LevelWarn {
+			held++
+		}
+	}
+	if held != 1 {
+		t.Fatalf("the log holds %d WARN lines of %q for his nine calls; want one", held, api.MachineLoginsOwnOnlyMessage)
 	}
 
 	access.Serve(stand)
@@ -435,6 +438,89 @@ func TestAFullMemberEndsTheirOwnMachineLoginWhileTheirKindCannotBeRead(t *testin
 			t.Fatalf("GET /v1/launcher-credentials?approver=%s once Dispatch answers = %v; want the daemon's login %s", bob, got, tokenLogin)
 		}
 	})
+}
+
+// TestTheOwnLoginsLineIsWrittenOncePerPersonPerMinute: while the broker cannot read a person's
+// member kind, each machine-login call holds them to their own logins, and the WARN line that says
+// so (api.MachineLoginsOwnOnlyMessage) is written once per person per minute, however often they
+// call: Dispatch's page reads the list each time it opens. While Dispatch is down, bob lists his
+// machine logins three times and carol once: one line names bob and one names carol.
+func TestTheOwnLoginsLineIsWrittenOncePerPersonPerMinute(t *testing.T) {
+	const bob = "bob@example.com"
+	ts, access, _ := restrictedStand(t)
+	down := projectaccesstest.NewServer(t, nil, nil)
+	down.SetDown(true)
+	access.Serve(down)
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	for range 3 {
+		ts.machineLoginIDs(t, bob)
+	}
+	ts.machineLoginIDs(t, hiddenInsider)
+	if down.Calls() == 0 {
+		t.Fatal("the down Dispatch was never asked: the row is blind")
+	}
+	held := map[string]int{}
+	for _, rec := range capture.Records() {
+		if rec.Message != api.MachineLoginsOwnOnlyMessage || rec.Level != slog.LevelWarn {
+			continue
+		}
+		rec.Attrs(func(a slog.Attr) bool {
+			if a.Key == "person" {
+				held[a.Value.String()]++
+			}
+			return true
+		})
+	}
+	if want := map[string]int{bob: 1, hiddenInsider: 1}; !maps.Equal(held, want) {
+		t.Fatalf("the WARN lines of %q name %v; want %v", api.MachineLoginsOwnOnlyMessage, held, want)
+	}
+}
+
+// TestARevokeWhoseCallerHungUpWritesNothingAndNoErrorLine: Dispatch's server relays the revoke of
+// a grant by the person it names as its approver, and hangs up while the broker asks Dispatch what
+// kind of member that person is. A caller that hung up says nothing of Dispatch, so the revoke
+// does not go ahead as it would while Dispatch does not answer: it ends nothing, writes no ERROR
+// line, and is counted cancelled (answer.Recorder.NoteCallerEnded), as every route counts a caller
+// that hung up.
+func TestARevokeWhoseCallerHungUpWritesNothingAndNoErrorLine(t *testing.T) {
+	ts := newTestServer(t)
+	box, boxKey := ts.newSessionEnrollment(t, "hang-up-box-"+t.Name(), "operator@example.com")
+	grant := ts.approveAs(t, ts.requestAs(t, boxKey, box, "DEEL_API_KEY"), testApprover)
+	before := ts.writtenRows(t)
+	ctx, hangUp := context.WithCancel(t.Context())
+	// Dispatch has the broker's question when its own caller goes: the broker's read fails with
+	// the request's cancellation, as it does when Dispatch's server hangs up on the route.
+	hanging := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		hangUp()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(hanging.Close)
+	ts.machine.Projects = projectaccess.New(hanging.URL, projectaccesstest.NewServer(t, nil, nil).Account, nil)
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+
+	request := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/grants/"+grant+"/revoke-by-approver", strings.NewReader(`{"approver":"`+testApprover+`"}`))
+	request.Header.Set("Authorization", "Bearer "+ts.uiToken)
+	request.Header.Set("Content-Type", "application/json")
+	ts.handler.ServeHTTP(httptest.NewRecorder(), request)
+
+	for _, rec := range capture.Records() {
+		if rec.Level >= slog.LevelError {
+			t.Errorf("the revoke whose caller hung up wrote the ERROR line %q; want none", rec.Message)
+		}
+	}
+	if got := ts.column(t, `select (revoked_at is null)::text from grants where id=$1`, grant); !slices.Equal(got, []string{"true"}) {
+		t.Fatalf("grant %s live after the revoke whose caller hung up = %v; want true", grant, got)
+	}
+	if after := ts.writtenRows(t); !slices.Equal(after, before) {
+		t.Fatalf("rows written = %v after the revoke whose caller hung up, want %v as before", after, before)
+	}
+	scrape := httptest.NewRecorder()
+	ts.registry.Handler().ServeHTTP(scrape, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if want := `broker_answers_total{outcome="cancelled"`; !strings.Contains(scrape.Body.String(), want) {
+		t.Fatalf("the revoke whose caller hung up was not counted cancelled:\n%s", scrape.Body.String())
+	}
 }
 
 // stalledKinds is a projectaccess.Access whose member-kind reads, once stall is set, Dispatch never
