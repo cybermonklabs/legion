@@ -2,8 +2,12 @@ package legion
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -25,12 +29,101 @@ func stateServer(t *testing.T, body string) *httptest.Server {
 	return server
 }
 
-// TestTheStateReadIsBoundedByTheRequestTimeout: the window is the plan's D14, twenty seconds, and
-// New gives it to every client it builds, so a daemon that accepts a connection and never answers
-// ends one pass rather than holding the minute's loop for good.
+// stuffing is an endless run of the letter a: the padding of a paddedState.
+type stuffing struct{}
+
+func (stuffing) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'a'
+	}
+	return len(p), nil
+}
+
+// paddedState streams a state document of size bytes: INFRA's daemon block and one issue,
+// INFRA-1 in implementing, whose pad member, which the decode ignores, takes the bytes the rest
+// leaves. A reader, so no test holds the document whole.
+func paddedState(size int) io.Reader {
+	const head = `{"daemon":{"project":"INFRA"},"issues":{"INFRA-1":{"key":"INFRA-1","phase":"implementing","pad":"`
+	const tail = `"}}}`
+	return io.MultiReader(strings.NewReader(head), io.LimitReader(stuffing{}, int64(size-len(head)-len(tail))), strings.NewReader(tail))
+}
+
+// streamedState is a daemon stand-in answering GET /legion/v1/state with the size-byte document
+// paddedState streams. It declares the document's Content-Length where declared is set; otherwise
+// net/http sends the document chunked. written receives, once the answer is over, the bytes of the
+// document the stand-in wrote before the document ended or the client hung up.
+func streamedState(t *testing.T, size int, declared bool) (server *httptest.Server, written <-chan int64) {
+	t.Helper()
+	wrote := make(chan int64, 1)
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != StatePath {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if declared {
+			w.Header().Set("Content-Length", strconv.Itoa(size))
+		}
+		sent, _ := io.Copy(w, paddedState(size))
+		select {
+		case wrote <- sent:
+		default:
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server, wrote
+}
+
+// TestTheStateReadAsksForTheObservedView: a whole read asks for `?view=observed`, the view of the
+// route that carries only the members State decodes, and no other query.
+func TestTheStateReadAsksForTheObservedView(t *testing.T) {
+	asked := make(chan *http.Request, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked <- r
+		_, _ = w.Write([]byte(`{"issues":{}}`))
+	}))
+	defer server.Close()
+
+	if _, _, err := New(server.URL).State(t.Context()); err != nil {
+		t.Fatalf("read the state: %v", err)
+	}
+	request := <-asked
+	if request.URL.Path != StatePath {
+		t.Errorf("the read asked for %s, want %s", request.URL.Path, StatePath)
+	}
+	if query := request.URL.Query(); len(query) != 1 || !slices.Equal(query["view"], []string{"observed"}) {
+		t.Errorf("the read's query is %v, want view=observed alone", query)
+	}
+}
+
+// TestAStateOverTheOldCapIsReadWhole: a state of 9 MiB, over the 8 MiB that the INFRA daemon's
+// whole state passes about three days after 2026-11-20, is read whole and its issue is observed.
+func TestAStateOverTheOldCapIsReadWhole(t *testing.T) {
+	const size = 9 << 20
+	server, _ := streamedState(t, size, false)
+
+	state, bytes, err := New(server.URL).State(t.Context())
+	if err != nil {
+		t.Fatalf("a read of a %d-byte state: %v", size, err)
+	}
+	if bytes != size {
+		t.Errorf("bytes = %d, want the %d the daemon sent", bytes, size)
+	}
+	observed := slices.ContainsFunc(state.Observations(), func(o Observation) bool {
+		return o.IssueKey == "INFRA-1" && o.Field == FieldPhase && JSONString(o.Value) == PhaseImplementing
+	})
+	if !observed {
+		t.Errorf("observations = %v, want INFRA-1's phase %q", state.Observations(), PhaseImplementing)
+	}
+}
+
+// TestTheStateReadIsBoundedByTheRequestTimeout: the window is the daemon's own bound on the read,
+// sixty seconds (dispatch://INFRA-3931's D9), and New gives it to every client it builds, so a
+// daemon that accepts a connection and never answers ends one whole read rather than holding its
+// project's runner for good.
 func TestTheStateReadIsBoundedByTheRequestTimeout(t *testing.T) {
-	if RequestTimeout != 20*time.Second {
-		t.Fatalf("RequestTimeout = %s, want the 20s of the plan's D14", RequestTimeout)
+	if RequestTimeout != 60*time.Second {
+		t.Fatalf("RequestTimeout = %s, want the daemon's own 60s bound on the read", RequestTimeout)
 	}
 	if window := New("http://daemon.internal.example").http.Timeout; window != RequestTimeout {
 		t.Fatalf("New gives a client a %s window, want RequestTimeout (%s)", window, RequestTimeout)
@@ -41,7 +134,7 @@ func TestTheStateReadIsBoundedByTheRequestTimeout(t *testing.T) {
 	defer silent.Close()
 
 	// The client's window is what ends the read, shrunk here so the test does not wait the
-	// production twenty seconds out.
+	// production sixty seconds out.
 	client := New(silent.URL, WithTimeout(150*time.Millisecond))
 
 	started := time.Now()
@@ -58,23 +151,48 @@ func TestTheStateReadIsBoundedByTheRequestTimeout(t *testing.T) {
 }
 
 // TestABodyOverTheCapIsAFailedRead: a daemon answering more than ResponseLimit is a failed read,
-// never a parse of the first 8 MiB. A body exactly at the cap is read, so the bound refuses only
-// what is over it.
+// never a parse of the first 64 MiB, and the failure names the answer's size and the cap. A
+// Content-Length over the cap is refused before the body is read. A body with no Content-Length
+// is read to the cap and the rest is counted, so the size is the whole body's and not the point
+// the read stopped. A body exactly at the cap is read, so the bound refuses only what is over it.
 func TestABodyOverTheCapIsAFailedRead(t *testing.T) {
-	// Valid JSON throughout, so what refuses it is the cap and not the decode.
-	envelope := `{"issues":{},"pad":"` + `"}`
-	padding := strings.Repeat("a", ResponseLimit+1-len(envelope))
-	over := stateServer(t, `{"issues":{},"pad":"`+padding+`"}`)
+	for _, over := range []struct {
+		name     string
+		size     int
+		declared bool
+	}{
+		{"one byte over the cap, chunked", ResponseLimit + 1, false},
+		{"with its Content-Length", 70_000_000, true},
+		{"chunked", 70_000_000, false},
+	} {
+		t.Run(over.name, func(t *testing.T) {
+			server, written := streamedState(t, over.size, over.declared)
 
-	_, bytes, err := New(over.URL).State(t.Context())
-	if !errors.Is(err, ErrResponseTooLarge) || !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("a read of a body over the cap: err = %v, want one wrapping both ErrResponseTooLarge and ErrUnavailable", err)
-	}
-	if bytes != ResponseLimit+1 {
-		t.Errorf("bytes = %d, want the point the read stopped (%d)", bytes, ResponseLimit+1)
+			_, bytes, err := New(server.URL).State(t.Context())
+			if !errors.Is(err, ErrResponseTooLarge) || !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("a read of a body over the cap: err = %v, want one wrapping both ErrResponseTooLarge and ErrUnavailable", err)
+			}
+			if want := fmt.Sprintf("the answer of %d bytes is over the %d-byte cap", over.size, ResponseLimit); !strings.Contains(err.Error(), want) {
+				t.Errorf("the failure reads %q, want it to name the size and the cap: %q", err, want)
+			}
+			if bytes != over.size {
+				t.Errorf("bytes = %d, want the answer's size (%d)", bytes, over.size)
+			}
+			if !over.declared {
+				return
+			}
+			select {
+			case sent := <-written:
+				if sent >= ResponseLimit {
+					t.Errorf("the daemon wrote %d bytes before the client hung up, want fewer than the cap: a Content-Length over it is refused before the body is read", sent)
+				}
+			case <-time.After(30 * time.Second):
+				t.Fatal("the daemon was still writing 30s after the read ended: the client did not hang up")
+			}
+		})
 	}
 
-	atTheCap := stateServer(t, `{"issues":{},"pad":"`+padding[:len(padding)-1]+`"}`)
+	atTheCap, _ := streamedState(t, ResponseLimit, false)
 	state, bytes, err := New(atTheCap.URL).State(t.Context())
 	if err != nil {
 		t.Fatalf("a read of a body exactly at the cap: %v", err)
@@ -82,8 +200,33 @@ func TestABodyOverTheCapIsAFailedRead(t *testing.T) {
 	if bytes != ResponseLimit {
 		t.Errorf("bytes = %d, want the cap (%d)", bytes, ResponseLimit)
 	}
-	if len(state.Issues) != 0 {
-		t.Errorf("issues = %v, want none", state.Issues)
+	if phase := state.Issues["INFRA-1"].Phase; phase != PhaseImplementing {
+		t.Errorf("INFRA-1's phase = %q, want %q", phase, PhaseImplementing)
+	}
+}
+
+// TestABodyCutShortPastTheCapIsAtLeastWhatWasCounted: a body over the cap whose count ends on a
+// failed read, here a daemon that drops the connection in the middle of a chunked body, is a
+// failed read over the cap all the same, and its size is at least the bytes counted.
+func TestABodyCutShortPastTheCapIsAtLeastWhatWasCounted(t *testing.T) {
+	const sent = ResponseLimit + 1<<20
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.Copy(w, io.LimitReader(paddedState(2*sent), sent))
+		w.(http.Flusher).Flush()
+		// The server closes the connection, and the body never gets its last chunk.
+		panic(http.ErrAbortHandler)
+	}))
+	defer server.Close()
+
+	_, bytes, err := New(server.URL).State(t.Context())
+	if !errors.Is(err, ErrResponseTooLarge) || !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("a read of a body cut short past the cap: err = %v, want one wrapping both ErrResponseTooLarge and ErrUnavailable", err)
+	}
+	if want := fmt.Sprintf("the answer of at least %d bytes is over the %d-byte cap", sent, ResponseLimit); !strings.Contains(err.Error(), want) {
+		t.Errorf("the failure reads %q, want %q", err, want)
+	}
+	if bytes != sent {
+		t.Errorf("bytes = %d, want the %d counted", bytes, sent)
 	}
 }
 
@@ -170,7 +313,7 @@ func TestAStateFromTodaysDaemonParses(t *testing.T) {
 }
 
 // TestAMalformedOrRefusedAnswerIsAFailedRead: a body that is not the route's JSON, and a status
-// that is not 200, are each a failed read, so the sampler records the failure and leaves the last
+// that is not 200, are each a failed read, so a whole read records the failure and leaves the last
 // good observations standing.
 func TestAMalformedOrRefusedAnswerIsAFailedRead(t *testing.T) {
 	malformed := stateServer(t, `{"issues": {`)

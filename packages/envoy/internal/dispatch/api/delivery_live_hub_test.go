@@ -2762,9 +2762,9 @@ func legionBodyProject(t *testing.T, body json.RawMessage) string {
 }
 
 // TestALegionBoardsSnapshotAndDeltasLandOnItsGET: the fourth view kind holds the hub's own rule —
-// the snapshot plus every delta a page applies is the GET route's body — through a read of the
-// daemon the sampler announces (legion.StateChannel) and through a write of one of the board's
-// issues, the two things that move it.
+// the snapshot plus every delta a page applies is the GET route's body — through a record of the
+// daemon the Legion intake announces (legion.StateChannel) and through a write of one of the
+// board's issues, the two things that move it.
 func TestALegionBoardsSnapshotAndDeltasLandOnItsGET(t *testing.T) {
 	rig := newHubRig(t, nil)
 	seedLegionProjects(t, rig.handler, "INFRA")
@@ -2777,7 +2777,7 @@ func TestALegionBoardsSnapshotAndDeltasLandOnItsGET(t *testing.T) {
 	requireSameBody(t, "the board's first snapshot", snapshot.Body,
 		getBody(t, rig.handler, windowTarget(t, legionBoardView, snapshot.Body, "")))
 
-	// The sampler's next read finds the implementer's child in review, with no role in a turn.
+	// The intake's next record finds the implementer's child in review, with no role in a turn.
 	held := snapshot.Body
 	now := rig.clock.Now()
 	seedLegionObservation(t, rig.database, "INFRA", "INFRA-4", legion.FieldPhase, `"reviewing"`, now)

@@ -143,13 +143,25 @@ type GitHubApps struct {
 const missingDispatchTokenFile = "dispatch_token_file is required when dispatch_url is configured"
 
 var (
-	projectKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*$`)
-	roleNamePattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+	roleNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 	// slackChannelPattern is a Slack channel id: C for a public channel, G for a private one, then
 	// capital letters and digits. It is one NATS subject token of the mention topic the controller
 	// subscribes to (notifications.slack.<team>.<channel>.mention), so nothing else is taken.
 	slackChannelPattern = regexp.MustCompile(`^[CG][A-Z0-9]+$`)
 )
+
+// CheckProjectKey refuses a `project` that is no Dispatch project key in the one shape the
+// contract takes for one (claim.IsProjectKey, claim.ProjectKeyPattern), naming the key. The
+// daemon's project is the key its state events, its Dispatch writes and its role topics are named
+// by, so a key the contract refuses would let the daemon migrate its store and mint its App tokens
+// and then fail at its first state event; the loader refuses it first (resolve), and so does the
+// boot's own first read of a configuration it was handed (internal/daemon's readBoot).
+func CheckProjectKey(project string) error {
+	if claim.IsProjectKey(project) {
+		return nil
+	}
+	return fmt.Errorf("project %q is no Dispatch project key: it must match %s, a capital letter and then one to nine capital letters or digits", project, claim.ProjectKeyPattern)
+}
 
 // readProjects is `projects`, and the warnings its projects raise (Config.Warnings), in file
 // order: a key a project still sets that the daemon no longer reads is warned about, never
@@ -165,8 +177,8 @@ func readProjects(value *yaml.Node, key string) (map[string]Project, []string, e
 	for index := 0; index+1 < len(value.Content); index += 2 {
 		keyNode, entryNode := value.Content[index], value.Content[index+1]
 		name := keyNode.Value
-		if keyNode.Kind != yaml.ScalarNode || !projectKeyPattern.MatchString(name) {
-			return nil, nil, fmt.Errorf(`%s key %q must match ^[A-Z][A-Z0-9]*$`, key, name)
+		if keyNode.Kind != yaml.ScalarNode || !claim.IsProjectKey(name) {
+			return nil, nil, fmt.Errorf(`%s key %q must match %s`, key, name, claim.ProjectKeyPattern)
 		}
 		if _, exists := projects[name]; exists {
 			return nil, nil, fmt.Errorf("%s names %s twice", key, name)

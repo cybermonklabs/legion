@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/testgolden"
 )
 
 // requestShapesFixture records the field paths of every request body a plugin sends, one record
@@ -167,7 +168,7 @@ func sortedRequestShapes(records []requestShape) []requestShape {
 // readRequestShapes is the fixture as it stands, and false where no file is there yet.
 func readRequestShapes(t *testing.T) ([]requestShape, bool) {
 	t.Helper()
-	encoded, err := os.ReadFile(goldenPath(requestShapesFixture))
+	encoded, err := os.ReadFile(testgolden.Path(requestShapesFixture))
 	if os.IsNotExist(err) {
 		return nil, false
 	}

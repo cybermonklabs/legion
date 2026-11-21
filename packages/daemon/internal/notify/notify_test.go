@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -17,6 +19,91 @@ import (
 func TestControllerTopicIsTheControllersNoticeSubject(t *testing.T) {
 	if got := ControllerTopic("legion"); got != "notifications.legion.legion.controller" {
 		t.Fatalf("ControllerTopic = %q, want the controller's notice subject", got)
+	}
+}
+
+// The state topic is the subject the contract builds for a project token (legionStateSubject,
+// packages/contracts/src/subject.ts), byte for byte: every row of the shared fixture that the
+// contract's own test and Envoy's Go test run for that builder is held here too, so the daemon
+// publishes on the subject Dispatch's durable filters on.
+func TestStateTopicIsTheContractsStateSubject(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "subject-project.json"))
+	if err != nil {
+		t.Fatalf("read the subject fixture: %v", err)
+	}
+	var fixture struct {
+		Builders []struct {
+			Fn   string   `json:"fn"`
+			Args []string `json:"args"`
+			Want string   `json:"want"`
+		} `json:"builders"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("decode the subject fixture: %v", err)
+	}
+	rows := 0
+	for _, row := range fixture.Builders {
+		if row.Fn != "legionStateSubject" {
+			continue
+		}
+		rows++
+		if len(row.Args) != 1 {
+			t.Fatalf("the fixture's legionStateSubject row takes %d arguments %q, want the one project token", len(row.Args), row.Args)
+		}
+		if got := StateTopic(row.Args[0]); got != row.Want {
+			t.Errorf("StateTopic(%q) = %q, want the contract's %q", row.Args[0], got, row.Want)
+		}
+	}
+	if rows == 0 {
+		t.Fatal("the subject fixture has no legionStateSubject row to hold StateTopic to")
+	}
+}
+
+// A publish the listener refuses for the message itself, 400 for a field or a topic it does not
+// take and 413 for a message larger than NATS takes whole, each with its own JSON error
+// (writeJSONError, writeNATSError, packages/envoy/cmd/listener/api.go), is told apart from every
+// other failure: the listener answers the same message the same way however often it is sent. A
+// 400 or a 413 with no such error, as a proxy in front of the listener could write, stays an
+// ordinary failure, and so does every other status.
+func TestHTTPPublisherTellsARefusalOfTheMessageItselfApart(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  int
+		body    string
+		refused *ErrMessageRefused
+	}{
+		{"a topic no stream subject captures", http.StatusBadRequest,
+			`{"error":"no stream subject captures notifications.legion.demo.state, so no session would receive it; publish to a notifications.team.<name> topic instead","expected":["topic"]}`,
+			&ErrMessageRefused{Status: http.StatusBadRequest, Message: "no stream subject captures notifications.legion.demo.state, so no session would receive it; publish to a notifications.team.<name> topic instead"}},
+		{"a message NATS does not take whole", http.StatusRequestEntityTooLarge,
+			`{"error":"bus: the message is too large: nats: maximum payload exceeded"}`,
+			&ErrMessageRefused{Status: http.StatusRequestEntityTooLarge, Message: "bus: the message is too large: nats: maximum payload exceeded"}},
+		{"a 413 that is not JSON", http.StatusRequestEntityTooLarge, `<html>413 Request Entity Too Large</html>`, nil},
+		{"a 400 with no error", http.StatusBadRequest, `{}`, nil},
+		{"the stream is down", http.StatusServiceUnavailable, `{"error":"envoy: the message bus did not answer: nats: timeout"}`, nil},
+		{"a bearer the listener does not take", http.StatusUnauthorized, `{"error":"unauthorized"}`, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			err := New(server.URL, "").Publish(context.Background(), StateTopic("demo"), "DEMO state 1-1", map[string]string{"project": "DEMO"}, "legion-outbox:9")
+			if err == nil || !strings.Contains(err.Error(), tc.body) {
+				t.Fatalf("publish error = %v, want the listener's answer %s", err, tc.body)
+			}
+			var refused ErrMessageRefused
+			if got := errors.As(err, &refused); got != (tc.refused != nil) || got && refused != *tc.refused {
+				t.Fatalf("errors.As(%v, ErrMessageRefused) = %t with %+v, want %+v", err, got, refused, tc.refused)
+			}
+			var denied ErrPublishDenied
+			if errors.As(err, &denied) || errors.Is(err, ErrNoHolder) {
+				t.Fatalf("publish error = %v, want no denial and no missing holder", err)
+			}
+		})
 	}
 }
 

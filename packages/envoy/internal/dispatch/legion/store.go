@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -25,21 +26,36 @@ type Settings struct {
 // query that returns a setting selects exactly this.
 const settingsColumns = `project, state_url, created_by, updated_at`
 
-// ErrNoSettings is "this project names no Legion daemon": the sampler reads nothing for it and
-// the board has nothing to show.
+// ErrNoSettings is "this project names no Legion daemon": the intake reads nothing for it and
+// drops its state events, and the board has nothing to show.
 var ErrNoSettings = errors.New("this project has no Legion daemon configured")
 
-// StateChannel is the Postgres notification channel one read of a daemon's state announces itself
-// on, with the project as its payload, in the shape of delivery.SettingsChannel: nothing commits
-// to announce a remote daemon's state, so the sampler's own write is what an open Legion board
-// hears (api/delivery_live_hub.go). A read announces itself whether or not it changed an
-// observation, since the board's header carries the read itself — when it was made, and why it
+// StateChannel is the Postgres notification channel each record of a daemon's state announces
+// itself on, with the project as its payload, in the shape of delivery.SettingsChannel: a batch of
+// state events the intake applied, and a whole read (Intake.readWhole). Nothing in Dispatch's own
+// event log announces a remote daemon's state, so the intake's own write is what an open Legion
+// board hears (api/delivery_live_hub.go). A whole read announces itself whether or not it changed
+// an observation, since the board's header carries the read itself — when it was made, and why it
 // failed.
 const StateChannel = "dispatch_legion_state"
 
-// NotifyRead announces a read of project's daemon on StateChannel.
-func NotifyRead(ctx context.Context, pool *store.Pool, project string) error {
-	if _, err := pool.Exec(ctx, `select pg_notify($1, $2)`, StateChannel, project); err != nil {
+// SettingsChannel is the Postgres notification channel a write of a Legion setting announces
+// itself on at commit, with the project as its payload (PutSettings, DeleteSettings): the channel
+// whose wake (pglisten.Hub) the server hands the intake, which reads the setting's daemon whole
+// once its cursor is gone (Intake.SettingsChanged).
+const SettingsChannel = "dispatch_legion_settings"
+
+// Execer is what NotifyRead needs of its connection: the pool, or the transaction of the record it
+// announces.
+type Execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// NotifyRead announces a record of project's daemon's state on StateChannel. Inside the record's
+// own transaction (applyBatch, recordRead) Postgres sends the announcement at the commit, so an
+// open board hears each record that committed and no record that did not.
+func NotifyRead(ctx context.Context, db Execer, project string) error {
+	if _, err := db.Exec(ctx, `select pg_notify($1, $2)`, StateChannel, project); err != nil {
 		return fmt.Errorf("announce the Legion state read of %s: %w", project, err)
 	}
 	return nil
@@ -95,12 +111,22 @@ func GetSettings(ctx context.Context, pool *store.Pool, project string) (Setting
 // PutSettings sets the daemon a project is read from, and answers the row as it stands. created_by
 // is the actor that first set the project's setting, as repo_projects.created_by is the actor that
 // first mapped a repository: a later write changes the URL and the time and keeps it.
+//
+// The write forgets how far the project's observations had followed its daemon, in its own
+// transaction (settingWritten): the intake then has no starting point for the project, and reads
+// the daemon whole when the write's notification wakes it. So a write of the same URL is the way
+// to have a project's state read whole again.
 func PutSettings(ctx context.Context, pool *store.Pool, project, stateURL string, actor model.Actor) (Settings, error) {
 	createdBy, err := json.Marshal(actor)
 	if err != nil {
 		return Settings{}, fmt.Errorf("encode the Legion setting's author: %w", err)
 	}
-	settings, err := scanSettings(pool.QueryRow(ctx, `
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return Settings{}, fmt.Errorf("open the transaction of the Legion setting of %s: %w", project, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	settings, err := scanSettings(tx.QueryRow(ctx, `
 		insert into legion_settings (project, state_url, created_by, updated_at)
 		values ($1, $2, $3, now())
 		on conflict (project) do update set state_url = excluded.state_url, updated_at = now()
@@ -108,84 +134,123 @@ func PutSettings(ctx context.Context, pool *store.Pool, project, stateURL string
 	if err != nil {
 		return Settings{}, fmt.Errorf("write the Legion setting of %s: %w", project, err)
 	}
+	if err := settingWritten(ctx, tx, project); err != nil {
+		return Settings{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Settings{}, fmt.Errorf("commit the Legion setting of %s: %w", project, err)
+	}
 	return settings, nil
 }
 
 // DeleteSettings removes a project's setting and reports whether it had one. The project's reads
-// and observations stay: they are what was observed, and nothing re-reads them.
+// and observations stay: they are what was observed, and nothing re-reads them. Where it had one,
+// the delete forgets how far the project's observations had followed its daemon too
+// (settingWritten), so a setting written again starts from a whole read.
 func DeleteSettings(ctx context.Context, pool *store.Pool, project string) (bool, error) {
-	tag, err := pool.Exec(ctx, `delete from legion_settings where project = $1`, project)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("open the transaction of the Legion setting of %s: %w", project, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `delete from legion_settings where project = $1`, project)
 	if err != nil {
 		return false, fmt.Errorf("delete the Legion setting of %s: %w", project, err)
 	}
-	return tag.RowsAffected() > 0, nil
-}
-
-// RecordRead records a read of project's daemon that answered its state, in one transaction: every
-// observation that moved (recordObservations), then the legion_reads row that says the read
-// succeeded and how many bytes it sent. It answers how many observations it wrote.
-//
-// The board's header reads the newest legion_reads row as the last good read, and its columns
-// read the newest observations, so the two commit together or not at all: a read whose
-// observations Postgres refuses leaves no row saying it succeeded over data it did not store. The
-// caller records such a read as failed (RecordFailedRead), and the last good read stands.
-func RecordRead(ctx context.Context, pool *store.Pool, project string, at time.Time, bytes int, observations []Observation) (int64, error) {
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("open the transaction of the Legion state read of %s: %w", project, err)
+	if tag.RowsAffected() == 0 {
+		return false, nil
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	written, err := recordObservations(ctx, tx, project, at, observations)
-	if err != nil {
-		return 0, err
-	}
-	if _, err := tx.Exec(ctx, insertRead, project, at, true, nil, bytes); err != nil {
-		return 0, fmt.Errorf("store the Legion state read of %s: %w", project, err)
+	if err := settingWritten(ctx, tx, project); err != nil {
+		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("commit the Legion state read of %s: %w", project, err)
+		return false, fmt.Errorf("commit the delete of the Legion setting of %s: %w", project, err)
 	}
-	return written, nil
+	return true, nil
 }
 
-// RecordFailedRead appends the legion_reads row of a read of project's daemon that failed: how
-// many bytes the daemon sent, and why the read failed, which the board's header names. It writes
-// no observation, so the last good read's observations stand.
-func RecordFailedRead(ctx context.Context, pool *store.Pool, project string, at time.Time, bytes int, failure error) error {
-	if _, err := pool.Exec(ctx, insertRead, project, at, false, failure.Error(), bytes); err != nil {
-		return fmt.Errorf("record the failed Legion state read of %s: %w", project, err)
+// settingWritten is what every write of project's setting does in its own transaction: it deletes
+// the project's event cursor, and with it the parts of a split transaction held for it (their
+// foreign key), so the intake has no starting point for it, and notifies SettingsChannel, which
+// reaches the intake at the write's commit (Intake.SettingsChanged).
+func settingWritten(ctx context.Context, tx pgx.Tx, project string) error {
+	if _, err := tx.Exec(ctx, `
+		with forgotten as (delete from legion_event_cursors where project = $1)
+		select pg_notify($2, $1)
+	`, project, SettingsChannel); err != nil {
+		return fmt.Errorf("forget where the Legion events of %s stood: %w", project, err)
 	}
 	return nil
 }
 
-// insertRead appends one legion_reads row: project, read_at, ok, error, bytes.
+// recordRead is the step every whole read's record takes inside its transaction (recordWhole):
+// the read's observations where it observed them (recordObservations), its legion_reads row of
+// kind `read` at the read's time, naming reason and its failure, and its announcement on
+// StateChannel (NotifyRead). It answers how many observations it wrote.
+//
+// The board's header reads the newest legion_reads row as the last read, and its columns read the
+// newest observations, so the two commit together or not at all: a read whose observations
+// Postgres refuses leaves no row saying it succeeded over data it did not store.
+func recordRead(ctx context.Context, tx pgx.Tx, project, reason string, read *wholeRead) (written int64, err error) {
+	if read.observed {
+		if written, err = recordObservations(ctx, tx, project, read.at, read.observations); err != nil {
+			return 0, err
+		}
+	}
+	var failure *string
+	if read.failure != nil {
+		text := read.failure.Error()
+		failure = &text
+	}
+	if _, err := tx.Exec(ctx, insertRead, project, read.at, read.failure == nil, failure, read.bytes, readKindRead, reason); err != nil {
+		return 0, fmt.Errorf("store the Legion state read of %s: %w", project, err)
+	}
+	if err := NotifyRead(ctx, tx, project); err != nil {
+		return 0, err
+	}
+	return written, nil
+}
+
+// insertRead appends one legion_reads row: project, read_at, ok, error, bytes, kind and reason.
+// recorded_at is the transaction's own time, its default.
 const insertRead = `
-	insert into legion_reads (project, read_at, ok, error, bytes)
-	values ($1, $2, $3, $4, $5)
+	insert into legion_reads (project, read_at, ok, error, bytes, kind, reason)
+	values ($1, $2, $3, $4, $5, $6, $7)
 `
+
+// The kinds of legion_reads row (migration 20261118212431): a whole read of a daemon's state, and
+// one message of state events the intake applied.
+const (
+	readKindRead   = "read"
+	readKindEvents = "events"
+)
 
 // ReadRetention is how long legion_reads keeps a read of a daemon. The Legion board reads the
 // newest row of a project and nothing reads an older one, so the rest are a week of history for
-// whoever asks why a daemon stopped answering — the horizon delivery_changes keeps for the same
-// reason, a day, measured against a table that gains a row a minute per project rather than one
-// per change.
+// whoever asks why a daemon stopped answering, or how late its events reached Dispatch
+// (recorded_at beside read_at). The table gains a row for each message of state events the intake
+// applies, one per daemon transaction that moved what Dispatch observes, and one for each whole
+// read.
 const ReadRetention = 7 * 24 * time.Hour
 
 // PruneReads deletes every read older than ReadRetention that is not its project's newest, and
-// answers how many it deleted: the table is append-only, one row per project per minute, and
-// delivery.PruneChanges keeps delivery_changes the same way, from the loop that writes it.
+// answers how many it deleted: the table is append-only, a row per batch of state events and per
+// whole read, and the intake runs this after a batch at most once an hour (Intake.pruneHourly), as
+// delivery.PruneChanges keeps delivery_changes from the loop that writes it.
 //
 // Each project keeps its newest read whatever its age, because that row is the freshness the
 // board's header shows: a daemon nobody has read for a week reads as a stale read, never as a
-// daemon that was never read. The cutoff is the database's own now(), as each row's read_at is
-// the sampler's, so one clock decides whichever replica prunes.
+// daemon that was never read. The newest is the newest Dispatch wrote, by recorded_at and then id,
+// as the header reads it (api/legion_board.go): a batch's read_at is the daemon's clock and a whole
+// read's is Dispatch's, so read_at does not order the two kinds. The cutoff is the database's own
+// now(), so one clock decides whichever replica prunes.
 func PruneReads(ctx context.Context, pool *store.Pool) (int64, error) {
 	tag, err := pool.Exec(ctx, `
 		delete from legion_reads old
 		where old.read_at < now() - $1::interval
 		  and exists (
 		    select 1 from legion_reads newer
-		    where newer.project = old.project and (newer.read_at, newer.id) > (old.read_at, old.id)
+		    where newer.project = old.project and (newer.recorded_at, newer.id) > (old.recorded_at, old.id)
 		  )
 	`, ReadRetention)
 	if err != nil {
@@ -207,21 +272,26 @@ func PruneReads(ctx context.Context, pool *store.Pool) (int64, error) {
 //
 // The newest rows it compares against are legion_current's: the trigger of migration
 // 20261117022936 keeps that table in the same transaction as every insert here, so the comparison
-// reads one row per field rather than the project's whole history. It takes the rows that hold a
-// value; a field whose newest row is `null` compares as `null` all the same, as a field with no
-// row does.
+// reads one row per field rather than the project's whole history. A field whose newest row is
+// `null` compares as `null`, as a field with no row does.
 //
-// One statement, so a pass of some hundreds of fields is one round trip, and Postgres's own jsonb
+// Every row is observed at one moment: the read's time, or 1 µs after the project's newest row
+// where that is later, the `null` rows included. So a read's rows are always their fields' newest,
+// and legion_current, which moves only forward, holds them; and every row of the read shares its
+// moment, which is how the metrics tell an issue the read dropped (a `null` phase and a `null`
+// slot at one moment) from a slot released (metrics' slotSpans). A row an event wrote (the
+// intake's recordEvents) is observed at the daemon's commit time, which can be past Dispatch's
+// clock when the daemon's runs ahead, and a whole read made after it is the newer state all the
+// same; the events follow the same rule the other way round, field by field, so whichever of the
+// two Dispatch writes last is the newest. The read's own legion_reads row keeps the read's time.
+//
+// One statement, so a read of some hundreds of fields is one round trip, and Postgres's own jsonb
 // comparison decides what changed: a Go encoding that ordered an object's keys differently from
-// jsonb would otherwise write a row every minute for a value that never moved. A row the lease
-// already let another replica write is therefore not written twice even if the leases overlapped.
+// jsonb would otherwise write a row at every read for a value that never moved. A row another
+// process already wrote is therefore not written twice, even where two holders of the intake's
+// durable overlapped.
 func recordObservations(ctx context.Context, tx pgx.Tx, project string, at time.Time, observations []Observation) (int64, error) {
-	issueKeys := make([]string, len(observations))
-	fields := make([]string, len(observations))
-	values := make([]string, len(observations))
-	for index, observation := range observations {
-		issueKeys[index], fields[index], values[index] = observation.IssueKey, observation.Field, string(observation.Value)
-	}
+	issueKeys, fields, values := observationColumns(observations)
 	tag, err := tx.Exec(ctx, `
 		with found as (
 			select observed.issue_key, observed.field, observed.value::jsonb as value
@@ -229,13 +299,18 @@ func recordObservations(ctx context.Context, tx pgx.Tx, project string, at time.
 		), newest as (
 			select issue_key, field, value
 			from legion_current
-			where project = $1 and value <> 'null'::jsonb
+			where project = $1
+		), moment as (
+			select greatest($5::timestamptz, max(observed_at) + interval '1 microsecond') as at
+			from legion_current
+			where project = $1
 		)
 		insert into legion_observations (project, issue_key, field, value, observed_at)
 		select $1, coalesce(found.issue_key, newest.issue_key), coalesce(found.field, newest.field),
-			coalesce(found.value, 'null'::jsonb), $5::timestamptz
+			coalesce(found.value, 'null'::jsonb), moment.at
 		from found
 		full join newest on newest.issue_key = found.issue_key and newest.field = found.field
+		cross join moment
 		where coalesce(newest.value, 'null'::jsonb) is distinct from coalesce(found.value, 'null'::jsonb)
 	`, project, issueKeys, fields, values, at)
 	if err != nil {
@@ -244,7 +319,19 @@ func recordObservations(ctx context.Context, tx pgx.Tx, project string, at time.
 	return tag.RowsAffected(), nil
 }
 
-// Newest is one field's newest value, never `null`, and when the sampler recorded it: when the
+// observationColumns is observations as the three arrays recordObservations and recordEvents
+// unnest, in the observations' order: the issue keys, the fields and the values' JSON text.
+func observationColumns(observations []Observation) (issueKeys, fields, values []string) {
+	issueKeys = make([]string, len(observations))
+	fields = make([]string, len(observations))
+	values = make([]string, len(observations))
+	for index, observation := range observations {
+		issueKeys[index], fields[index], values[index] = observation.IssueKey, observation.Field, string(observation.Value)
+	}
+	return issueKeys, fields, values
+}
+
+// Newest is one field's newest value, never `null`, and when Dispatch recorded it: when the
 // field took that value, since a row is written only where a value moved.
 type Newest struct {
 	Observation
@@ -252,21 +339,22 @@ type Newest struct {
 }
 
 // Queryer is what ReadCurrent needs of its connection: the pool, or a transaction a reader holds
-// open on it so its other reads of what the sampler writes answer the same moment — the Legion
-// board's header (api/legion_board.go's readSampled) and the metrics' observations (theirs).
+// open on it so its other reads of what the intake writes answer the same moment — the Legion
+// board's header (api/legion_board.go's readRecorded) and the metrics' observations (theirs).
 type Queryer interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// Current is what project's legion_current holds as of the newest good read. A caller that reads
-// it beside another sampler table does so in one repeatable-read transaction (Queryer), which is
-// what makes one answer one snapshot; ReadCurrent is the one statement of which issues the daemon
-// reports.
+// Current is what project's legion_current holds as of the newest good read and every batch of
+// state events applied after it. A caller that reads it beside another of the intake's tables
+// does so in one repeatable-read transaction (Queryer), which is what makes one answer one
+// snapshot; ReadCurrent is the one statement of which issues the daemon reports.
 type Current struct {
 	// Newest is every field that holds a value: every field of every issue the newest good read
-	// carried, and the project's own under AdmissionKey. The Legion board's cards are these.
+	// carried or a later state event gave a value, and the project's own under AdmissionKey. The
+	// Legion board's cards are these.
 	Newest []Newest
-	// Reported is every issue the daemon reports, against the `tree` the newest good read names
+	// Reported is every issue the daemon reports, against the `tree` its newest observation names
 	// for it, "" where it names none (ReadCurrent says which issues those are).
 	Reported map[string]string
 }
@@ -274,18 +362,20 @@ type Current struct {
 // ReadCurrent reads project's legion_current in one statement, one row per field and none of the
 // history: every row that holds a value, and every `phase` row. A field the newest good read no
 // longer carries, and every field of an issue gone from the daemon's state, has a `null` newest
-// row (recordObservations), so it is in no Newest.
+// row (recordObservations), and so has a field a state event set to none (recordEvents), so it is
+// in no Newest.
 //
 // Reported is the daemon's half of what makes an issue a Legion issue (TreeNode), which the Legion
 // board and the metrics both read here, so the two place an issue in one tree. The daemon reports
 // an issue that is in its state, or that Dispatch observed a phase of (dispatch://INFRA-1077's
 // spec, "The top issue of a tree"): an issue with a field whose newest row holds a value, which is
-// the newest good read carrying it, or with a `phase` row at all. The sampler writes no first
-// `null`, so a field that has a row was once given a value, and an issue that left the daemon's
-// state keeps its `phase` row, written `null` when it left: it stays a Legion issue, so a child of
-// it climbs through it to the tree above, while it carries no card and no tree, since its `tree`
-// was written `null` with the rest. The rows under AdmissionKey belong to no issue — the admission
-// block and the daemon's settings — so they report nothing.
+// the newest good read carrying it or a state event giving it one, or with a `phase` row at all.
+// Neither a whole read nor a state event writes a first `null`, so a field that has a row was once
+// given a value, and an issue that left the daemon's state keeps its `phase` row, written `null`
+// when it left: it stays a Legion issue, so a child of it climbs through it to the tree above,
+// while it carries no card and no tree, since its `tree` was written `null` with the rest. The
+// rows under AdmissionKey belong to no issue — the admission block and the daemon's settings —
+// so they report nothing.
 func ReadCurrent(ctx context.Context, db Queryer, project string) (Current, error) {
 	rows, err := db.Query(ctx, `
 		select issue_key, field, nullif(value, 'null'::jsonb), observed_at

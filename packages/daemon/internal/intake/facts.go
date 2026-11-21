@@ -517,6 +517,18 @@ type EntrySweep struct{}
 
 func (EntrySweep) namedIssue() (string, bool) { return "", false }
 
+// LingerDeadline is the moment a root's linger the admission block reads runs out, applied as a
+// synthetic fact by the daemon's one timer for it (internal/daemon's wakeAtLingerDeadlines) and
+// never decoded from an event. The block reads a root's linger against the pass's clock
+// (record.HeldReasonOf's tree_closed word, record.Lingering), so it changes at that deadline with
+// no write at all, and an admission pass runs on a fact: this is the fact that runs one there.
+// Admission is the only handler that acts on it, and does nothing but end its pass as every pass
+// ends, with the block written where it moved (admit's queueAdmissionBlock), which queues that
+// change's state event. It carries nothing: the pass reads the whole project and the clock.
+type LingerDeadline struct{}
+
+func (LingerDeadline) namedIssue() (string, bool) { return "", false }
+
 // ProjectResumed is the resume of the daemon's project's pause, applied as a synthetic fact once
 // the resume has committed and never decoded from an event (internal/daemon's
 // projectPause.Resumed, decision 22 of dispatch://INFRA-3759). It is the resume's one admission

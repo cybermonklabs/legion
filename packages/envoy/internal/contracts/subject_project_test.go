@@ -109,6 +109,7 @@ func TestTheGeneratedBuildersWriteTheSharedFixturesNames(t *testing.T) {
 		"legacyAgentSubject":   func(args []string) string { return LegacyAgentSubject(args[0]) },
 		"roleSubject":          func(args []string) string { return RoleSubject(args[0], args[1]) },
 		"legionWakeSubject":    func(args []string) string { return LegionWakeSubject(args[0]) },
+		"legionStateSubject":   func(args []string) string { return LegionStateSubject(args[0]) },
 	}
 	for _, row := range readSubjectProjectFixture(t).Builders {
 		build, ok := builders[row.Fn]

@@ -88,7 +88,7 @@ func TestStatusWithTheOperatorTokenFileMintsAGrantAndSetsTheStatus(t *testing.T)
 func TestStatusWithTheOperatorTokenFileFindsTheDaemonFromTheConfiguration(t *testing.T) {
 	d := newControllerDaemon(t)
 	tokenFile := writeFile(t, "operator-token", controllerOperatorToken+"\n")
-	code, _, errb := issueStatus(t, "LEGSMOKE-3", "icebox", "--operator-token-file", tokenFile, "--config", legionConfig(t, "demo", d.port))
+	code, _, errb := issueStatus(t, "LEGSMOKE-3", "icebox", "--operator-token-file", tokenFile, "--config", legionConfig(t, "DEMO", d.port))
 	if code != 0 {
 		t.Fatalf("legion issue status = %d, stderr %q", code, errb)
 	}

@@ -15,8 +15,9 @@ import (
 // NATS while every other client keeps its own connection: Cut drops it, as a network that ends a
 // connection does, and Freeze silences it, as a network that drops packets does, and Restore ends
 // either. A Proxy started with ProxyLatency adds a round trip's delay to everything it relays, as
-// the route to a remote NATS hub does, and one started with ProxyRate moves no faster than its
-// rate, as a slow link does.
+// the route to a remote NATS hub does, one started with ProxyRate moves no faster than its rate,
+// as a slow link does, and one started with ProxyReceiveBuffer takes in only that much of a
+// client's stream while it is frozen.
 type Proxy struct {
 	listener net.Listener
 	target   string
@@ -26,6 +27,9 @@ type Proxy struct {
 	closing  sync.Once
 	// rate is the bytes a second each direction of each connection reads at, 0 for no limit.
 	rate int
+	// receiveBuffer is the receive buffer (SO_RCVBUF) of each client connection the proxy accepts,
+	// 0 for the stack's own.
+	receiveBuffer int
 
 	mu sync.Mutex
 	// conns are both ends of every connection the proxy is relaying.
@@ -55,6 +59,14 @@ func ProxyLatency(rtt time.Duration) ProxyOption {
 // holds more than one read ahead of the rate, and the sender, not the proxy, buffers the rest.
 func ProxyRate(bytesPerSecond int) ProxyOption {
 	return func(p *Proxy) { p.rate = bytesPerSecond }
+}
+
+// ProxyReceiveBuffer sets the receive buffer (SO_RCVBUF) of each client connection the proxy
+// accepts to bytes, before the proxy relays a byte of it, so a client whose stream the proxy stops
+// reading (Freeze) can put only that much more into it. It is set at accept: a buffer made smaller
+// later leaves the window the stack has already advertised to the client.
+func ProxyReceiveBuffer(bytes int) ProxyOption {
+	return func(p *Proxy) { p.receiveBuffer = bytes }
 }
 
 // StartProxy relays to the NATS server at target, a client URL such as Start returns, on a
@@ -155,8 +167,14 @@ func (p *Proxy) serve() {
 }
 
 // join dials the server for client and relays the two into each other, or closes client at once
-// while the proxy is cut or when the dial fails.
+// while the proxy is cut or when the dial fails. It sets client's receive buffer first
+// (ProxyReceiveBuffer): the client sends nothing before the server's INFO, which reaches it only
+// once the relay has begun. A size the stack refuses leaves the stack's own, which HoldWriteLock
+// reads back.
 func (p *Proxy) join(client net.Conn) {
+	if tcp, ok := client.(*net.TCPConn); ok && p.receiveBuffer > 0 {
+		_ = tcp.SetReadBuffer(p.receiveBuffer)
+	}
 	if !p.track(client) {
 		return
 	}

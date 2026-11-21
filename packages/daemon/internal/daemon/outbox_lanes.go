@@ -16,11 +16,14 @@ import (
 
 // The outbox runs its rows on lanes. A lane is one issue's rows of one kind of work — its lifecycle
 // rows (starts, stops, the branch, the workspace), its board rows (status writes, messages,
-// notices) or its role messages (the end of a role's phase), record.OutboxLane — run one at a time
-// in the order they are due, on a goroutine of its own that lives only while the issue has such
-// rows. A lane is woken by the write that commits one
-// of its rows (projectRecords, through intake.OnCommit), by the timer it arms for its next row due
-// later, and by the sweep, which every outboxLease lists the lanes with a row still in the outbox
+// notices), its role messages (the end of a role's phase) or its claim release, record.OutboxLane
+// — run one at a time in the order they are due, on a goroutine of its own that lives only while
+// the issue has such rows. The project's state events (record.LaneState) are one lane more, keyed
+// by the bare Dispatch project key that every state row carries as its issue, so a wake of that key
+// and any state kind, the sweep and the timer start and run it as they do an issue's: its rows run
+// one message at a time, in sequence order (stateEvents). A lane is woken by the write that commits
+// one of its rows (projectRecords, through intake.OnCommit), by the timer it arms for its next row
+// due later, and by the sweep, which every outboxLease lists the lanes with a row still in the outbox
 // (record.Store.UnfinishedLanes) and wakes each: a row whose run ended without its finish or retry
 // recorded — a lost database connection, a daemon that died mid-row — keeps its lease until it
 // lapses, and the sweep after the lapse wakes its lane, which lists it due again and runs it. The
@@ -330,14 +333,21 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 	renewal := r.renewLease(store.ForConcurrentWorker(ctx), row, now)
 	err := r.execute(ctx, row)
 	renewal.stop()
-	settleCtx := ctx
-	if ctx.Err() != nil {
-		var cancel context.CancelFunc
-		settleCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), outboxSettleTimeout)
-		defer cancel()
-	}
+	settleCtx, cancel := settleContext(ctx)
+	defer cancel()
 	r.settle(settleCtx, row, err)
 	return nil
+}
+
+// settleContext is the context a row's run records what it came to on, once its effect ran: ctx
+// while ctx lives, and once the daemon's stop has ended ctx, a context of its own bounded by
+// outboxSettleTimeout, since a record the stop cut short would leave the row to run again at the
+// next boot as though it had not.
+func settleContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx.Err() == nil {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), outboxSettleTimeout)
 }
 
 // leaseRenewal keeps a running row's lease live (renewLease): when the run began, the tick armed

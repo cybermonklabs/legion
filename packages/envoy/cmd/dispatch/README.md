@@ -1056,7 +1056,7 @@ What the two processes share, and what each keeps to itself:
 
 - No leased background loop runs a pass beside another process's pass of the same loop.
   Each pass takes a named session-level advisory lease for its length (`duty.Exclusive`), so a process whose attempt lands inside another's pass finds it held and logs a skip.
-  The thirteen timer loops — the delivery reconcile, the architecture import, the webhook redelivery sweep, the CI reconcile pass (lease `ci-reconcile`, beside the redelivery sweep in what it recovers), the hourly document compaction sweep (lease `document-compaction`, first tick at start, with or without NATS), the block index reconciliation, the term-statistics refresh, the repair of closed and reopened issues' asks, the keyed writes' maintenance sweep (lease `suggestion-outcomes`), the document settlement resumption, the prune of the registry of live server processes, the Legion sampler's read of each project's daemon (lease `legion-state`, first tick at start, one pass a minute) and the display tree fill (`texttreefill`, lease `text-tree-fill`)
+  The twelve timer loops — the delivery reconcile, the architecture import, the webhook redelivery sweep, the CI reconcile pass (lease `ci-reconcile`, beside the redelivery sweep in what it recovers), the hourly document compaction sweep (lease `document-compaction`, first tick at start, with or without NATS), the block index reconciliation, the term-statistics refresh, the repair of closed and reopened issues' asks, the keyed writes' maintenance sweep (lease `suggestion-outcomes`), the document settlement resumption, the prune of the registry of live server processes and the display tree fill (`texttreefill`, lease `text-tree-fill`)
   — also record each pass in `duty_passes` (migration `0115`), in a row per lease and period, so a process whose tick lands between another's passes
   — the ordinary case, since each ticker draws its phase at boot and a rolling update starts the second process minutes after the first
   — finds the period already served and logs the same skip: each runs once per period across the processes.
@@ -1070,7 +1070,7 @@ What the two processes share, and what each keeps to itself:
 
 - The embeddings `project_key` fill (lease `embeddings-project-key-fill`, `api.RunEmbeddingProjectKeyFill`) is leased and is no loop of a cadence: it is one pass of one to two hours that labels the rows stored before migration `20261109120000`, started once at boot, and it takes its lease with no period because the cursor row of `20261109120100` says when there is nothing left to do, so the process of a roll that finds the lease held logs the skip and fills nothing.
   That process then tries for the lease again every five minutes until that cursor row reads done, so a holder killed mid-pass costs the labelling one wait rather than lasting until something next boots, and each process's goroutine and its lease-pool connection go back for good once the rows are labelled.
-  Eighteen names are leased in all: the fourteen leased loops of the two items above and the Legion sampler, the CI reconcile among them, one per delivery durable for the intake's take-over, and the fill, and the lease pool holds a connection for each of those callers, for each of the four callers of the two intakes' holds and for each of the two callers of the keyword fill's hold, twenty-four (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names; every caller reserves its connection by name at boot and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly the pool's size).
+  Eighteen names are leased in all: the fourteen leased loops of the two items above, the CI reconcile among them, one per durable for its intake's take-over (the two delivery durables and the Legion state intake's `legion-state-events`), and the fill, and the lease pool holds a connection for each of those callers, for each of the six callers of the three intakes' holds and for each of the two callers of the keyword fill's hold, twenty-six (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names; every caller reserves its connection by name at boot and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly the pool's size).
   The delivery live hub, the event-stream relay, the process's shared listener connection, with the document rooms' room sync and the woken loops' wakes on it, and the document rooms' timers stay per-process by design (below), the embedding queue and the task progress reconciliation claim their own work, the outbox publishes under its hold (above), and the keyword fill writes under a hold of its own (Background loops, below);
   the embedding queue's coverage pass runs in every process with no lease, each of its steps safe beside another process's, and only the processes whose embedder has the one active identity embed or drop a vector (Search, below);
   `cmd/dispatch/main.go` says at the call site which loop is which and why.
@@ -1255,12 +1255,12 @@ During the roll that releases this behaviour, processes of the earlier build beh
 Every change this build writes still notifies `dispatch_doc_changed`, which the earlier build reads, and an issue that the earlier build closes still closes this build's rooms through the trigger.
 
 **Each process holds its own connections, so a second process doubles them.**
-Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 24 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 115 connections to Postgres (`store.ConnectionsPerProcess`):
+Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 26 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 117 connections to Postgres (`store.ConnectionsPerProcess`):
 
 | Pool | Connections | What takes them |
 | --- | --- | --- |
 | Shared (`sharedPoolSize`) | 64 | Requests, settlements, and the document writers that hold a room's lock on a connection of their own (`lockRoom` through `withRoomLock`: snapshots, prunes, deletions). |
-| Leases (`store.LeasePoolSize`) | 24 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`), the delivery intakes' holds and the keyword fill's hold (`duty.Hold`) with the fill's batches, the Legion sampler's read of each project's daemon, the embeddings `project_key` fill and the display tree fill among them, one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`). |
+| Leases (`store.LeasePoolSize`) | 26 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`), the embeddings `project_key` fill and the display tree fill among them, the intakes' holds (`duty.Hold`), the two delivery intakes' and the Legion state intake's, and the keyword fill's hold with the fill's batches, one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`). |
 | Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates; `application_name=dispatch-room-appends`. |
 | Rooms (`RoomsPoolSize`) | 4 | Document loads; `application_name=dispatch-rooms`. |
 | Compaction (`compactionPoolSize`) | 2 | A document's compaction: the read transaction of the rows it folds, and its write back under the document's lock (`Pool.Compaction`); `application_name=dispatch-compaction`. |
@@ -1271,7 +1271,7 @@ Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a se
 | Registry (`registryPoolSize`) | 1 | Held for the life of the process: the heartbeat that stamps its row in the registry of live server processes every 5 seconds (`processes.Register`). |
 | Listeners (`listenerConnections`) | 5 | What the process may hold at once, each on a connection of its own: the events outbox's `LISTEN` on `dispatch_events` and `dispatch_duty_holds`, the shared listener hub the document rooms' room sync and the woken background loops wait on, and the document rooms' NOTIFY sender, each held for the life of the process, and the delivery hub's and the event stream relay's, each held only while something subscribes to them. |
 
-Two processes at their ceiling hold 230, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
+Two processes at their ceiling hold 234, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
 
 **A connection is closed after its next response once it is 60 seconds old** (`maxConnAge`, `cmd/dispatch/conn_age.go`):
 the server stamps each connection's accept time and answers the first request it reads at that age or later with `Connection: close`, and a request carrying an `Upgrade` header, a websocket handshake, keeps its connection.
@@ -1656,7 +1656,7 @@ A process that the registry has not admitted serves no answers read, so the paus
 **One shared listener per process.**
 Every woken loop waits on the process's one `pglisten.Hub`, the shared LISTEN connection the document rooms' room sync is registered on too (named `dispatch-listener <process id>` in `pg_stat_activity`, logged under the owner `dispatch`), which holds one connection from the store's listener pool and LISTENs on every loop's channel beside the room-sync channels.
 A channel is registered only for a loop that will run:
-`dispatch_embeddings` only with an embedder, `dispatch_delivery_settings` only with NATS and the GitHub App, and `dispatch_github_read_attempts` only with a GitHub App configured.
+`dispatch_embeddings` only with an embedder, `dispatch_delivery_settings` only with NATS and the GitHub App, `dispatch_legion_settings` only with NATS, and `dispatch_github_read_attempts` only with a GitHub App configured.
 No loop waits for the listener: each runs its boot pass whether or not it has connected, and keeps its due-time timers while it has no connection.
 Postgres does not replay a notification sent while nothing listened, so the hub signals every loop after each successful LISTEN, the first included, and a change made while it was redialing (backing off 1 to 30 s) is caught up then.
 
@@ -1717,6 +1717,44 @@ A take-over under way when the context ends — a standby's poll
 its own bounds (`takeOverFinishWithin`, 10 s, and the hold's deadline) end it inside that budget, and no attempt starts once the context has ended.
 The server's shutdown waits for `Run`'s stop, which begins at the signal and gives handlers 15 s from it, then closes the intake client and waits each pending hand-back finalizer before it deregisters the process and closes the database pool.
 That wait can outlive the usual shutdown reserve only while `Client.Close` waits for nats.go's one-minute write deadline; a kubelet kill then ends the client and renewal, and the hold lapses.
+
+**The Legion state intake** (`legion.Intake`, `internal/dispatch/legion/intake.go`) takes every Legion daemon's state events from the durable `legion-state-events` on `notifications.legion.*.state`, under a hold as the GitHub intake's is (`delivery.NewHeldDurable`), and runs whenever the process has NATS, with or without the GitHub App.
+A daemon publishes one message for each transaction it committed that moved what Dispatch observes: an issue's phase, tree, slot or wait, a role's claim, the admission block, or its boot.
+Each message names the store its sequence is counted in (`stateId`, which the state route serves as `daemon.stateId`), and the intake applies no message of another store than the one its starting point read, and no message at all while no good whole read has given the project's cursor a store.
+A message whose events do not run from its `firstSeq` to its `seq`, one sequence each, does not decode: the intake logs it at ERROR, acknowledges it and moves no cursor.
+A transaction whose events pass 900 KB goes out as consecutive messages, split between events (`stateMessageBound`, `packages/daemon/internal/daemon/outbox.go`), and each of them but the last carries `more: true`.
+The intake holds those parts in `legion_event_parts` and applies the events of all of them in one batch when the last part arrives, so no row holds a value of a transaction that did not arrive whole.
+Messages run under the project their payload names, one at a time per project, and each transaction applied writes the fields it moved, one `legion_reads` row of kind `events` and the project's cursor (`legion_event_cursors`) in one transaction, whose commit wakes the project's board (`legion.StateChannel`).
+It reads a daemon's `GET /legion/v1/state?view=observed` whole, on the same project's runner, only where the events cannot carry the state: a project with no starting point, at each take-over and at each write of its Legion setting (`dispatch_legion_settings`, on the shared listener above);
+a boot event that does not follow the cursor, or whose `schemaVersion` is not the one the cursor holds;
+a message past a gap the stream no longer holds, or a message that does not continue the parts held for it;
+a message of another store, so a daemon whose store was replaced is found again;
+a message the database refuses for good (a Postgres error of SQLSTATE class 22 or 23), which the intake logs at WARN and acknowledges, and does not try again in place;
+and a read owed since one failed.
+The observed view carries only the members the intake decodes, and a daemon of an earlier build ignores the query and serves its whole state, which the intake reads the same way.
+A whole read waits up to 60 s (`legion.RequestTimeout`) and reads at most 64 MiB of the answer (`legion.ResponseLimit`).
+An answer over the cap is a failed read: its `legion_reads` row names the answer's size and the cap, and its `bytes` is that size.
+A project's whole reads start at least a minute apart (`legion.ReadRetryAfter`), whatever their reason, and a good starting read holds back no read after it.
+A message that calls for a read inside that minute makes none: the cursor records the read owed with the message's reason (`legion_event_cursors.read_reasons`).
+The first message that owes the read goes back to the stream unacknowledged, with a redelivery delay of the time left in the minute (`delivery.HeldMessage.HandBackAfter`), and the cursor names it as the read's holder (`read_holder`), so its redelivery makes the read;
+every later message that joins the owed read is acknowledged.
+A message that goes back to the stream logs `legion intake: a state message goes back to the stream until its project's owed whole read is due` at INFO and no other line for that delivery.
+A read that fails sends the holder back for another minute, at most 10 times in all (`stateMaxHolds`, counted on the message's own `NumDelivered`, so no column holds the count).
+The holder's next delivery is then acknowledged, whatever its read comes to, the cursor names no holder from then on, and the intake logs `legion intake: a state message went back to the stream the most times allowed for its project's owed whole read, so it is acknowledged and the read stays owed` at WARN.
+A failed read that no message holds waits for the project's next message, boot, settings change or take-over, which makes it once the minute is over: a failed starting read is one, since no message makes it, and so is a read whose message went back 10 times.
+The durable sets no `MaxDeliver`, so the server never drops the holder, and its two-minute ack wait is past the longest delay.
+While the holder waits, the durable's ack floor stays below it, so a take-over, which creates the durable again at that floor, replays every message after the holder.
+The bound of 10 hand-backs holds the floor for about 11 minutes at the most where the daemon answers each read within seconds, and for up to a minute longer for each read the daemon does not answer.
+So a project has at most one whole read in flight and at most one owed, a burst of messages that call for reads holds the durable's window for one read at the most, and each project that owes a read holds one message of the window.
+Where a message holds the read, a project that goes quiet is at most a minute behind, and its message tries a read that fails again at most 10 times, a minute apart, before the read waits for the project's next message, boot, settings change or take-over.
+While a read is owed, the intake applies a message that follows the cursor, and drops a gap, a boot that does not follow, a part that does not continue the held parts and a message of another store, since the owed read holds their events.
+A whole read that fails keeps the parts held, and a good one deletes them, since its snapshot holds them.
+A message whose first sequence is still past the next one after a good read it called for is no event of the daemon read, since the daemon commits each event before it publishes it.
+The intake drops such a message too, and logs each drop at INFO, at most once an hour for each reason and project.
+The intake takes no starting point while a Dispatch process of an earlier build is in the fleet: a `server_processes` row at `legion_state_intake` 0 that heartbeated in the last 10 minutes (`processes.EarlierLegionIntake`), since that build still reads each daemon whole every minute.
+Meanwhile a message of a project with no starting point writes nothing and is finished, and the next message, settings write or take-over after that process has left takes the starting point.
+No timer reads a daemon, and each whole read logs `legion intake: whole read` at INFO with the first reason it was owed for as its `reason` and every reason it joined as its `reasons`.
+It stops with the two delivery intakes, under the same 15 s from the signal, before the shutdown closes the database pool.
 
 ## Database migrations
 
@@ -4302,7 +4340,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/projects/{key}/legion/daemon` (GET, PUT, DELETE; cookie, trusted header, or bearer)
 
-  The Legion daemon this project's state is read from: GET reads it, with the actor that first named it and when it was last written, or `null` when the project names none; PUT names it, `{state_url}`; DELETE stops reading it, what the sampler already recorded staying.
+  The Legion daemon this project's state is read from: GET reads it, with the actor that first named it and when it was last written, or `null` when the project names none; PUT names it, `{state_url}`, and, when Dispatch has NATS, has the Legion state intake read that daemon's state whole once, the same URL again included; DELETE stops reading it, what Dispatch already recorded staying.
   No route lists every project's daemon, since R26 of dispatch://INFRA-979's spec permits one cross-project read and this is not it: the Settings page's Legion section reads each project's.
   A `state_url` that is not an absolute http(s) URL with a host and no path is `400 LEGION_SETTING_INPUT`, a DELETE for a project that names no daemon `404 NOT_FOUND`, a key that is not a project key `400 INVALID_PROJECT`, and a project that does not exist `404 PROJECT_NOT_FOUND`.
   The daemon points Dispatch at a host, so it belongs to the deployment rather than to the project it is addressed under, and a project-scoped credential is refused the PUT and the DELETE as it is a repository mapping, the project this path names included.
@@ -4310,7 +4348,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/projects/{key}/legion/board` (GET; cookie, trusted header, or bearer)
 
-  The Legion board of the project its path names, from what the sampler recorded of that project's daemon; the `/ws/live` `legion` view carries the same body and pushes each change, and no page draws it.
+  The Legion board of the project its path names, from what Dispatch recorded of that project's daemon (the Legion state intake, Background loops above); the `/ws/live` `legion` view carries the same body and pushes each change, and no page draws it.
   Eleven columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `retro`, `merging`, `awaiting_person`, `held`), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure.
   `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for a project that does not exist.
 

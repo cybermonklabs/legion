@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  The plugin declares daemon API contract 207, which adds `daemon.stateSeq`, `daemon.stateId`
+  and `daemon.stateRun` to `GET /legion/v1/state`: the sequence of the newest state event the
+  daemon committed, read in the same snapshot as the rest of the answer, the id of the store that
+  sequence is counted in, and the id of the daemon run that serves the answer. The plugin reads the
+  three keys as optional, and a daemon serves the answer without them to a plugin that declares a
+  contract below 207.
+custom:
+  Issue: pr4432

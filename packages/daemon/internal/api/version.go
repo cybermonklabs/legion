@@ -2978,4 +2978,80 @@ package api
 // merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 202
+//
+// 207: dispatch://INFRA-3931 -- the daemon block of `GET /legion/v1/state` gains `stateSeq`
+// (api.DaemonInfo.StateSeq), the sequence of the newest state event the project's daemon
+// committed (state_publication.last_seq, record.Store.StatePublication), read in the route's own
+// repeatable-read snapshot: every state event at or below it is in the body and every one above
+// it is not, so a reader of the daemon's state events (`notifications.legion.<token>.state`)
+// starts after a whole read at `stateSeq + 1`, with nothing lost and nothing applied twice. Beside
+// it, `stateId` (api.DaemonInfo.StateID) is the id of the store that count is kept in
+// (state_publication.store_id), made at the project's first state row and never changed, which
+// every state message carries: a reader applies only messages whose `stateId` is its starting
+// point's. Beside both, `stateRun` (api.DaemonInfo.StateRun) is the id of the daemon run that
+// serves the body, minted at the process's start, which is the `run` every state message of that
+// run carries: a reader takes it as its starting point's run, so a boot of that run at or below
+// `stateSeq` is one the body already holds and not a daemon whose sequence went back. The route
+// writes `stateSeq` on every body, 0 while the project has no state row, `stateId` once the
+// project has one, and `stateRun` from a daemon whose state events are on (one with a workflow),
+// and a caller whose contract is below 207, whether it states it (`Legion-Plugin-Contract`) or
+// the claims of its pod record it, is served the daemon block without any of the three
+// (shaping.go's stateSeqContract and withoutStateSeq): one built before sjawhar/legion#2788 reads
+// the state with a strict schema and would refuse the whole body for a key it does not name, and
+// one built after strips the keys instead.
+// `packages/contracts/src/legion-api.ts` reads the three keys as optional, so a reader of this
+// contract served such a body, or the body of a daemon before 207, takes them as absent rather
+// than as 0.
+// The same contract adds the observed view of the route, `GET /legion/v1/state?view=observed`
+// (api.ObservedState, StateSource.ObservedState): what Dispatch observes of a daemon and nothing
+// more, read in a repeatable-read, read-only snapshot of its own under the same bound as the whole
+// state. It carries the whole state's daemon block, its `settings` and its `admission` block,
+// unfiltered and in the same order, and `issues`, every issue the whole state lists with only its
+// `key`, `phase`, `tree`, `slot.index`, `waitingOn`, `architect.state` and
+// `workers.<role>.claim.state`, each absent where the whole state's is absent. The view is an
+// answer of its own (answers.go's AnswerObservedState), which arrived at this contract, and it is
+// served at the caller's contract by the whole state's own bands and value strips (shaping.go's
+// observedFor), so at every contract this daemon serves, each member of the view is the whole
+// state's member at that contract: a caller below 207 reads no `stateSeq`, `stateId` or
+// `stateRun` in either body, and a caller below 51 no `admission.trees` and no issue's `tree`. The
+// route answers any other `view` 400 INVALID_VIEW, and a request with no `view` gets the whole
+// state, whose body does not change. `packages/contracts/src/legion-api.ts` reads the view as
+// LegionObservedStateResponse.
+// (This change first took 166, the lowest number above main's 152 that no open pull request
+// declared, as `.github/scripts/check-daemon-api-contract.sh` read it on 2026-11-18: 153 #4115,
+// 154 #3659, 155 #4273, 156 #4065, 157 #3993, 158 #4251, #4259, #4261, #4269 and #4290, 159 #4175,
+// 160 #3519, 161 #4173, #4180 and #4193, 162 #2230 and #3712, 163 #4049, 164 #4017 and 165 #4392.
+// While it was open, main moved on to 160 and then to 168 (#4488, which passed over 167 as
+// declared), past 166, so at the merge of 2026-11-19 that brought main in at a20e0b0593 the number
+// moved again: the same check, read on 2026-11-19, named 175 as the lowest number above main's 168
+// that no open pull request declares, with 169 declared by #3831 and #4065, 170 by #2230, #4030,
+// #4173, #4180 and #4193, 171 by #4115, #4485 and #4495, 172 by #3659, 173 by #4493 and 174 by
+// #4273. While it was still open, main took 178 (entry 178 above, #4115), which passed over 176
+// and 177 as declared and stands above 175, so at the merge of 2026-11-20 that brought main in at
+// bbd99eae86 the number moved a third time: the same check, read on 2026-11-20, named 183 as the
+// lowest number above main's 178 that no open pull request declares, with 179 declared by #4392
+// and #4540, 180 by #4049 and #4175, 181 by #4273 and #4553, and 182 by #4495. While it was
+// still open, main took 188 (entry 188 above, #4543), which stands above 183, so at the merge of
+// 2026-11-20 that brought main in at 1c7c825367 the number moved a fourth time: the same check,
+// read on 2026-11-20 at 10:40Z, named 193 as the lowest number above main's 188 that no open pull
+// request declares, with 189 declared by #3831, #4592 and #4596, 190 by #4493 and #4578, 191 by
+// #4495, and 192 by #4611. While it was still open, main took 189 (the entry above, #4581), so at
+// the merge of 2026-11-20 that brought main in at a4cd4949fc the number moved a fifth time: the
+// same check, read on 2026-11-20 at 16:09Z, named 196 as the lowest number above main's 189 that no
+// open pull request declares, with 190 declared by #4578, 191 by #2230, #4049, #4495 and #4573, 192
+// by #3993, #4173, #4175, #4182, #4193, #4273, #4392 and #4580, 193 by #3659, #3712, #4065 and
+// #4553 as well as this change, 194 by #3831 and #4030, and 195 by #4493 and #4590. At the merge
+// of 2026-11-20 that brought main in at 8a9540682d (main's 193, entry 193 above, #3659), the same
+// check, read on 2026-11-20 at about 23:20Z, refused 196: the tip of main then carried 199, so the
+// number moved a sixth time, to 202, the lowest number above 199 that no open pull request
+// declares, with 200 declared by #4065, #4493 and #4580, and 201 by #4553 and #4611. The forward
+// merge of 2026-11-20 that brought main in at f1d27d3a82 brought that 199 (#4495's entry above),
+// and the same check accepted 202, above it. The forward merge of 2026-11-21 that brought main in
+// at 1cdf5b9ceb brought main's own 202 (#4493's entry above, INFRA-4401), so the number moved a
+// seventh time: the same check, read on 2026-11-21 at about 03:50Z, named 207 as the lowest
+// number above main's 202 that no open pull request declares, with 203 declared by #2230, #3993,
+// #4065, #4175, #4553, #4592, #4596 and #4661, 204 by #3831 and #4030, 205 by #4573 and 206 by
+// #4540. A caller from 202 to 206 is served 202's `repositories.live` and none of the three keys.
+// That is a reading and never the rule: read main's own number and every open head again at the
+// next forward merge rather than from this line.)
+const DaemonAPIVersion = 207

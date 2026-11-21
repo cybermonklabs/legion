@@ -27,17 +27,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testgolden"
 )
 
 var updateGolden = flag.Bool("update", false, "rewrite the golden fixtures this package pins")
-
-// goldenPath is the cross-language pin: Go writes the wire shape, and
-// `packages/contracts/src/legion-api.test.ts` parses it through the zod schema the plugin reads
-// with and holds the parse equal to the file, so a Go field with no zod line is named there. Go
-// is the source of truth; the fixture is how the schema is held to it.
-func goldenPath(name string) string {
-	return filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", name)
-}
 
 // settingsFixtureFile is the maximal kubernetes legion.yaml the state golden and the settings tests
 // share: every key the loader models is set, and every value a credential, its source or its file
@@ -298,6 +291,14 @@ func populatedState(t *testing.T) State {
 			Boots:         4,
 			FirstBootAt:   time.Date(2026, 9, 18, 14, 3, 27, 0, time.UTC),
 			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
+			// The daemon's source sets the sequence on every body it answers; 43 is the newest
+			// state event this snapshot holds, which the fixture names so the key is on the wire,
+			// the store id beside it is the one every state message of that count carries, and
+			// the run is the daemon run that serves the body, which every message it publishes
+			// carries.
+			StateSeq: new(int64(43)),
+			StateID:  "7c1e9a4d-3b52-4f08-a6d1-2e9b0c5f8a37",
+			StateRun: "2d8f4b6a-9c1e-4e73-b5a0-7f3c1d9e6b28",
 		},
 		Admission: Admission{
 			Cap:    5,
@@ -1112,10 +1113,16 @@ func newest(times ...time.Time) time.Time {
 // source answers no mark and the route writes one (shaping's stateFor), so the fixture carries
 // the two numbers of `contract` and the plugin's schema is held to them. A caller below the
 // contract that added it is served no such key, which TestANarrowedBodySaysSo holds.
+//
+// Beside it the test writes the observed view's golden (observed-state.json), the observed view of
+// the same state (observedOf): the same daemon block, settings and admission block, and each issue
+// of state.json with the members Dispatch observes (ObservedIssue), so `legion-api.test.ts` holds
+// the observed schema to the body a deployment with this state serves at `?view=observed`.
 func TestStateGolden(t *testing.T) {
 	state := populatedState(t)
 	state.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: DaemonAPIVersion}
 	golden(t, "state.json", state)
+	golden(t, "observed-state.json", observedOf(state))
 }
 
 // The state route's body for a caller whose plugin is at the contract before
@@ -1390,35 +1397,11 @@ func TestPauseRouteGoldens(t *testing.T) {
 	}
 }
 
-// golden pins one response's wire shape: Go writes it (`-update`), and
-// `packages/contracts/src/legion-api.test.ts` parses it through the schema of the response it is
-// and holds the parse equal to the file. A fixture that differs from what Go now writes is stale.
+// golden pins one response's wire shape to its daemon API fixture through the helper every writer
+// of one shares (testgolden.Check), under this package's own `-update` flag and command.
 func golden(t *testing.T, name string, value any) {
 	t.Helper()
-	encoded, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal %s: %v", name, err)
-	}
-	encoded = append(encoded, '\n')
-
-	path := goldenPath(name)
-	if *updateGolden {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("create fixture directory: %v", err)
-		}
-		if err := os.WriteFile(path, encoded, 0o644); err != nil {
-			t.Fatalf("write golden: %v", err)
-		}
-		return
-	}
-
-	want, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read golden (run `go test ./internal/api/ -update`): %v", err)
-	}
-	if !bytes.Equal(encoded, want) {
-		t.Fatalf("%s is stale\n got: %s\nwant: %s", name, encoded, want)
-	}
+	testgolden.Check(t, name, value, *updateGolden, "go test ./internal/api/ -update")
 }
 
 // The register response is what the plugin reads its claim, its secret and the task agents its

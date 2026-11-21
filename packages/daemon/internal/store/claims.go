@@ -63,13 +63,13 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 // PutClaim persists an admitted claim's state: every write a claim's machine makes. A claim enters
 // the store through AdmitClaim, which binds it to its tree's open lifecycle first; PutClaim alone
 // writes historical state in migrations and test fixtures. A write that can queue a role-holder
-// publication is one transaction with the publication it queues (putClaim); a write that can queue
-// none (queuesRoleHolders) is one statement on the pool, with no transaction around it.
+// publication or a state event is one transaction with what it queues (putClaim); a write that
+// can queue neither (queuesWithClaim) is one statement on the pool, with no transaction around it.
 func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
-	if !s.queuesRoleHolders(c) {
+	if !s.queuesWithClaim(c) {
 		return upsertClaim(ctx, s.pool, c)
 	}
-	var queued bool
+	var queued ClaimQueued
 	var wrote error
 	if err := s.Tx(ctx, func(tx pgx.Tx) error {
 		queued, wrote = s.putClaim(ctx, tx, c)
@@ -90,10 +90,10 @@ func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
 // PutClaimTx is PutClaim inside a caller's transaction: the stop a project's pause makes writes
 // the claim with the pause's records in one transaction (decision 6 of dispatch://INFRA-3759,
 // supervise.Deps.PauseStopped), so a stopped claim never stands without them. Like every claim
-// write it goes through putClaim, so the publication of the issue's role sessions it queues is in
-// the same transaction; it answers whether it queued one, and the caller tells CommittedClaim once
-// its transaction has committed.
-func (s *Store) PutClaimTx(ctx context.Context, tx pgx.Tx, c supervise.Claim) (bool, error) {
+// write it goes through putClaim, so the publication of the issue's role sessions and the state
+// event it queues are in the same transaction; it answers what it queued, and the caller tells
+// CommittedClaim once its transaction has committed.
+func (s *Store) PutClaimTx(ctx context.Context, tx pgx.Tx, c supervise.Claim) (ClaimQueued, error) {
 	return s.putClaim(ctx, tx, c)
 }
 
@@ -288,41 +288,134 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 }
 
 // putClaim writes claim c inside tx, the transaction of a claim write and whatever goes with it,
-// and queues the publication of c's issue's role sessions in the same transaction when the write
-// changes the session the row names as the holder of c's role (storedRoleHolder, roleHolder,
-// EnqueueRoleHolders): the agent registers, a new session takes the role, or the claim leaves a
-// state that holds it — retired, failed, suspended, or launching again. A write that changes no
-// holder queues nothing, and neither does a write that can queue none (queuesRoleHolders), such as
-// a write of a claim of another project's issue, whose row only that project's daemon runs.
-// It answers whether it queued, so that the caller can wake the lane once tx commits
+// and queues in the same transaction what the write owes Dispatch. The publication of c's issue's
+// role sessions is queued when the write changes the session the row names as the holder of c's
+// role (roleHolder, EnqueueRoleHolders): the agent registers, a new session takes the role, or the
+// claim leaves a state that holds it — retired, failed, suspended, or launching again. The state
+// event is queued when the write moves the state the state route serves at c's issue's role, or
+// is the first to list an issue the daemon holds no record of (queueClaimState). Both are read
+// against the row the write replaces, read under its lock (lockedClaim). A write that changes
+// neither queues nothing, and neither does a write that can queue nothing (queuesWithClaim). A
+// write of a claim of another project's issue queues no publication, since only that project's
+// daemon runs a row keyed by its issue (queuesRoleHolders).
+// It answers what it queued, so that the caller can wake each lane once tx commits
 // (CommittedClaim). Every claim write goes through here — PutClaim, PutClaimAndDelivery,
 // RetireDelivery, AdmitClaim, and the pause's stop through PutClaimTx and PutClaimAndDeliveryTx —
-// so whichever decision makes a write, the store holds the change
-// and its publication together, or neither; PutClaim alone writes on the pool when it can queue
-// none, since then nothing goes with the write.
-func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) (bool, error) {
-	if !s.queuesRoleHolders(c) {
-		return false, upsertClaim(ctx, tx, c)
+// so whichever decision makes a write, the store holds the change and what it queued together,
+// or neither; PutClaim alone writes on the pool when it can queue nothing, since then nothing goes
+// with the write.
+func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) (ClaimQueued, error) {
+	holders, state := s.queuesRoleHolders(c), s.queuesState(c)
+	if !holders && state == nil {
+		return ClaimQueued{}, upsertClaim(ctx, tx, c)
 	}
-	stored, err := storedRoleHolder(ctx, tx, c)
+	stored, err := lockedClaim(ctx, tx, c, state)
 	if err != nil {
-		return false, fmt.Errorf("put claim %s: %w", c.Token, err)
+		return ClaimQueued{}, fmt.Errorf("put claim %s: %w", c.Token, err)
 	}
 	if err := upsertClaim(ctx, tx, c); err != nil {
-		return false, err
+		return ClaimQueued{}, err
 	}
-	if roleHolder(c.State, c.Session) == stored {
-		return false, nil
+	var queued ClaimQueued
+	if holders && roleHolder(c.State, c.Session) != roleHolder(stored.state, stored.session) {
+		if queued.roleHolders, err = EnqueueRoleHolders(ctx, tx, c.Project, c.Issue, time.Now().UTC()); err != nil {
+			return ClaimQueued{}, fmt.Errorf("put claim %s: %w", c.Token, err)
+		}
 	}
-	queued, err := EnqueueRoleHolders(ctx, tx, c.Project, c.Issue, time.Now().UTC())
-	if err != nil {
-		return false, fmt.Errorf("put claim %s: %w", c.Token, err)
+	if state != nil {
+		if queued.state, err = queueClaimState(ctx, tx, state, c, stored); err != nil {
+			return ClaimQueued{}, fmt.Errorf("put claim %s: %w", c.Token, err)
+		}
 	}
 	return queued, nil
 }
 
+// queuesWithClaim is whether a write of claim c can queue anything in its transaction: a
+// role-holder publication (queuesRoleHolders) or a state event (queuesState). A write for which it
+// is false needs no transaction (PutClaim).
+func (s *Store) queuesWithClaim(c supervise.Claim) bool {
+	return s.queuesRoleHolders(c) || s.queuesState(c) != nil
+}
+
+// ClaimQueued is what one claim write queued in its transaction (putClaim): the publication of
+// its issue's role sessions, and its state event. A caller that wrote a claim in its own
+// transaction (PutClaimTx, PutClaimAndDeliveryTx) holds it until that transaction commits and
+// then hands it to CommittedClaim.
+type ClaimQueued struct {
+	roleHolders bool
+	state       bool
+}
+
+// CommittedClaim is told each claim write whose transaction has committed, with what that write
+// queued, and tells each wake whose row the write queued: the issue to the role-holder
+// publication's (PublishRoleHolders), and the state events' (PublishState). The store's own claim
+// writes tell it, and a caller that wrote a claim in its own transaction (PutClaimTx,
+// PutClaimAndDeliveryTx) tells it after its commit.
+func (s *Store) CommittedClaim(c supervise.Claim, queued ClaimQueued) {
+	if queued.roleHolders {
+		if woken := s.roleHoldersQueued.Load(); woken != nil {
+			(*woken)(c.Issue)
+		}
+	}
+	if queued.state {
+		if state := s.stateQueued.Load(); state != nil {
+			state.woken()
+		}
+	}
+}
+
+// storedClaim is what the row of a claim holds before a write replaces it (lockedClaim): its state
+// and its session, both empty for a claim the store does not hold yet. unlisted is whether the
+// write is the first to list the claim's issue in the state route at all: the issue has no issues
+// row of the daemon's Dispatch project, so the route serves it for its claims alone, at phase
+// unrecorded (internal/projection's Project, over the issues internal/daemon's projectRecords
+// keeps), and no claim of the claim's project names it yet. It is read only with the state events
+// on (PublishState).
+type storedClaim struct {
+	state    supervise.ClaimState
+	session  string
+	unlisted bool
+}
+
+// lockedClaim reads the row of c before c is written, under the row's lock, so that no other write
+// of the claim lands between this read and the write that replaces it. A claim's first row is its
+// admission (AdmitClaim), which is globally serialized, so two first writes of one claim never race
+// past this read. With the state events on (state), a claim the store holds no row of is read for
+// whether the write lists c's issue first (storedClaim.unlisted): never for a claim the store holds
+// a row of, since that row names the issue already; else whether the issue has a record of state's
+// project, and, only for an issue that has none, whether any claim of c's project names it. That
+// second read is rare, since almost every claim write is of a claim the store already holds, and
+// the claims table has no index on the issue.
+func lockedClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim, state *statePublication) (storedClaim, error) {
+	var stored storedClaim
+	var storedState, session *string
+	err := tx.QueryRow(ctx, `select state, session from claims where token = $1 for update`,
+		string(c.Token)).Scan(&storedState, &session)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if state == nil {
+			return stored, nil
+		}
+		if err := tx.QueryRow(ctx, `select case when exists (select 1 from issues where key = $1 and project = $2) then false
+			else not exists (select 1 from claims where issue = $1 and project = $3) end`,
+			c.Issue, state.project, c.Project).Scan(&stored.unlisted); err != nil {
+			return storedClaim{}, fmt.Errorf("read whether %s lists %s first: %w", c.Token, c.Issue, err)
+		}
+		return stored, nil
+	}
+	if err != nil {
+		return storedClaim{}, fmt.Errorf("read the row of %s: %w", c.Token, err)
+	}
+	if storedState != nil {
+		stored.state = supervise.ClaimState(*storedState)
+	}
+	if session != nil {
+		stored.session = *session
+	}
+	return stored, nil
+}
+
 // upsertClaim writes the row of claim c on db: putClaim's transaction, or the pool for a PutClaim
-// that can queue no publication.
+// that can queue nothing.
 //
 // The write that records a retirement stamps the claim with retired_at_write_mark, a number
 // from outbox_write_mark_seq, and every other write leaves the column where it stands: the mark
@@ -755,7 +848,7 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 // never prompted again and the phase waits. It is also where a confirmation tells the decisions
 // its delivery holds, in that same transaction and for the same reason.
 func (s *Store) PutClaimAndDelivery(ctx context.Context, c supervise.Claim, d supervise.Delivery) error {
-	var queued bool
+	var queued ClaimQueued
 	if err := s.Tx(ctx, func(tx pgx.Tx) (err error) {
 		queued, err = s.PutClaimAndDeliveryTx(ctx, tx, c, d)
 		return err
@@ -767,13 +860,13 @@ func (s *Store) PutClaimAndDelivery(ctx context.Context, c supervise.Claim, d su
 }
 
 // PutClaimAndDeliveryTx is PutClaimAndDelivery inside a caller's transaction, for the stop a
-// project's pause makes of a claim that holds a pending delivery (PutClaimTx). It answers whether
-// the claim's write queued the publication of its issue's role sessions, for the caller's
-// CommittedClaim once its transaction has committed.
-func (s *Store) PutClaimAndDeliveryTx(ctx context.Context, tx pgx.Tx, c supervise.Claim, d supervise.Delivery) (bool, error) {
+// project's pause makes of a claim that holds a pending delivery (PutClaimTx). It answers what the
+// claim's write queued, the publication of its issue's role sessions and its state event, for the
+// caller's CommittedClaim once its transaction has committed.
+func (s *Store) PutClaimAndDeliveryTx(ctx context.Context, tx pgx.Tx, c supervise.Claim, d supervise.Delivery) (ClaimQueued, error) {
 	queued, err := s.putClaim(ctx, tx, c)
 	if err != nil {
-		return false, err
+		return ClaimQueued{}, err
 	}
 	return queued, putDelivery(ctx, tx, c.Token, d)
 }
@@ -798,7 +891,7 @@ func (s *Store) PutClaimAndDeliveryTx(ctx context.Context, tx pgx.Tx, c supervis
 // only be read from the row, so it is read here, in the same transaction as the delete that
 // found nothing.
 func (s *Store) RetireDelivery(ctx context.Context, c supervise.Claim, deliveryID string) error {
-	var queued bool
+	var queued ClaimQueued
 	if err := s.Tx(ctx, func(tx pgx.Tx) (err error) {
 		if queued, err = s.putClaim(ctx, tx, c); err != nil {
 			return err

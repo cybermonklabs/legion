@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  An intake's stop keeps the delivery durable's hold until every hand-back of its subscription
+  has settled, a hand-back the subscription's callback makes during the drain included. Before,
+  a hand-back was counted only when its publish began, after reads that can wait. A stop whose
+  drain gave up in that time released the hold at once, and the hand-back could then reach the
+  durable that a standby had created again, which delivered that message a second time. Once the
+  stop is about to release the hold, a hand-back is withheld, and the message stays with the
+  durable for the next holder's take-over.
+custom:
+  Issue: pr4432

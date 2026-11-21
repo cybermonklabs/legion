@@ -177,8 +177,9 @@ func (g *hubGeneration) leaveLocked(sub *deliverySub) {
 // The channels the delivery hub listens on. delivery_changes carries no payload and is notified as
 // a delivery_changes row commits (migration 0100); delivery_freshness carries the settings row's
 // freshness columns as JSON (0100); legion.StateChannel carries a project key and is notified by
-// the sampler after each read of that project's Legion daemon, which is the only thing that moves
-// a Legion board besides Dispatch's own events.
+// the Legion intake after each batch of state events it applied and each whole read of that
+// project's Legion daemon, which are the only things that move a Legion board besides Dispatch's
+// own events.
 const (
 	deliveryChangesChannel   = "delivery_changes"
 	deliveryFreshnessChannel = "delivery_freshness"
@@ -504,9 +505,10 @@ func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 	}
 }
 
-// dirtyLegionBoard marks the board of the project a read of a Legion daemon just recorded. The
-// sampler announces every read, failed or not: the header carries the read itself, so a board
-// whose daemon stopped answering moves as surely as one whose issues did.
+// dirtyLegionBoard marks the board of the project whose Legion daemon Dispatch just recorded: a
+// batch of its state events, or a whole read. The intake announces every whole read, failed or
+// not: the header carries the read itself, so a board whose daemon stopped answering moves as
+// surely as one whose issues did.
 func (h *deliveryHub) dirtyLegionBoard(g *hubGeneration, project string) {
 	now := h.clock.Now()
 	h.mu.Lock()

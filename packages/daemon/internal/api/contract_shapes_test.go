@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testgolden"
 )
 
 // contractShapesFixture records what this daemon serves every contract it supports: for each
@@ -1235,7 +1236,7 @@ func sortedShapeRecords(records []contractShape) []contractShape {
 // the one bootstrap run.
 func readContractShapes(t *testing.T) ([]contractShape, bool) {
 	t.Helper()
-	encoded, err := os.ReadFile(goldenPath(contractShapesFixture))
+	encoded, err := os.ReadFile(testgolden.Path(contractShapesFixture))
 	if os.IsNotExist(err) {
 		return nil, false
 	}

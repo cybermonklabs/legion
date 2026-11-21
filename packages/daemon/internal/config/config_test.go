@@ -261,10 +261,50 @@ func TestLoadMinimalFileAppliesDefaults(t *testing.T) {
 // Stage 2 command paths only need the local daemon record. They keep loading until Task 3.12
 // wires the workflow's App and Dispatch clients, which is the first operation that needs them.
 func TestLoadAllowsStage2ConfigWithoutWorkflowKeys(t *testing.T) {
-	_, err := Load(writeConfigFile(t, "project: demo\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\n"), noEnv)
+	_, err := Load(writeConfigFile(t, "project: DEMO\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\n"), noEnv)
 
 	if err != nil {
 		t.Fatalf("Load: %v", err)
+	}
+}
+
+// A `project` the contract takes for no Dispatch project key is refused when the settings load,
+// naming the key: eleven capitals, one past the ten the contract's PROJECT_KEY_PATTERN takes
+// (claim.ProjectKeyPattern), and a key in lower case. The refusal is the loader's, so it comes
+// before the boot opens or migrates its store or mints any credential: the file's postgres_dsn
+// points at a port nothing serves and its implement App's key is read by a command that leaves a
+// mark when it runs, and the load answers with the key's refusal and leaves no mark.
+func TestLoadRefusesAProjectKeyTheContractRefusesBeforeTheStoreOrAnyCredential(t *testing.T) {
+	for _, key := range []string{"INFRASTRUCT", "demo"} {
+		t.Run(key, func(t *testing.T) {
+			mark := filepath.Join(t.TempDir(), "minted")
+			body := strings.Replace(minimalFile, "project: DEMO\n", "project: "+key+"\n", 1)
+			body = strings.Replace(body, "postgres://legion@127.0.0.1:5432/legion", "postgres://legion@127.0.0.1:1/legion?connect_timeout=1", 1)
+			body = strings.Replace(body, "private_key: implement-test-key", fmt.Sprintf("private_key_command: %q", "touch "+mark+"; printf implement-test-key"), 1)
+			if body == minimalFile || !strings.Contains(body, "project: "+key+"\n") || !strings.Contains(body, "127.0.0.1:1/") || !strings.Contains(body, mark) {
+				t.Fatalf("the file is not the one this test means: %s", body)
+			}
+
+			_, err := Load(writeConfigFile(t, body), noEnv)
+
+			want := fmt.Sprintf("project %q is no Dispatch project key: it must match ^[A-Z][A-Z0-9]{1,9}$, a capital letter and then one to nine capital letters or digits", key)
+			if err == nil || err.Error() != want {
+				t.Fatalf("Load = %v, want %q", err, want)
+			}
+			if _, err := os.Stat(mark); !os.IsNotExist(err) {
+				t.Fatalf("the App key command ran before the key was refused (stat %s: %v)", mark, err)
+			}
+		})
+	}
+	// The same file with a key the contract takes loads, its App key command run, so the mark is
+	// what tells a refusal that came first from one that came after the command.
+	mark := filepath.Join(t.TempDir(), "minted")
+	body := strings.Replace(minimalFile, "private_key: implement-test-key", fmt.Sprintf("private_key_command: %q", "touch "+mark+"; printf implement-test-key"), 1)
+	if _, err := Load(writeConfigFile(t, body), noEnv); err != nil {
+		t.Fatalf("Load of DEMO = %v, want it loaded", err)
+	}
+	if _, err := os.Stat(mark); err != nil {
+		t.Fatalf("the App key command left no mark on a load that ran it: %v", err)
 	}
 }
 
@@ -833,7 +873,13 @@ func TestLoadRefusesEveryStage3Key(t *testing.T) {
 		{
 			name: "projects key is invalid",
 			body: minimalFile + "projects: {demo: {}}\n",
-			want: `projects key "demo" must match ^[A-Z][A-Z0-9]*$`,
+			want: `projects key "demo" must match ^[A-Z][A-Z0-9]{1,9}$`,
+		},
+		{
+			// The contract's project key is at most ten characters (claim.ProjectKeyPattern).
+			name: "projects key is eleven characters",
+			body: minimalFile + "projects: {INFRASTRUCT: {}}\n",
+			want: `projects key "INFRASTRUCT" must match ^[A-Z][A-Z0-9]{1,9}$`,
 		},
 		{
 			// The daemon takes each issue's repository from Dispatch, so a file that still names a
@@ -874,7 +920,7 @@ func TestLoadRefusesEveryStage3Key(t *testing.T) {
 		},
 		{
 			name: "github_apps is required for workflow configuration",
-			body: "project: demo\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\nprojects: {DEMO: {}}\n",
+			body: "project: DEMO\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\nprojects: {DEMO: {}}\n",
 			want: "github_apps is required",
 		},
 		{
@@ -1028,12 +1074,12 @@ func TestLoadRefuses(t *testing.T) {
 	}{
 		{
 			name: "postgres_dsn absent from the file and the environment",
-			body: "project: demo\nstate_dir: /var/lib/legion\n",
+			body: "project: DEMO\nstate_dir: /var/lib/legion\n",
 			want: "postgres_dsn is required (or set LEGION_POSTGRES_DSN)",
 		},
 		{
 			name: "postgres_dsn present but blank",
-			body: "project: demo\nstate_dir: /var/lib/legion\npostgres_dsn: \"  \"\n",
+			body: "project: DEMO\nstate_dir: /var/lib/legion\npostgres_dsn: \"  \"\n",
 			want: "postgres_dsn is required (or set LEGION_POSTGRES_DSN)",
 		},
 		{
@@ -1043,7 +1089,7 @@ func TestLoadRefuses(t *testing.T) {
 		},
 		{
 			name: "state_dir absent",
-			body: "project: demo\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\n",
+			body: "project: DEMO\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\n",
 			want: "state_dir is required",
 		},
 		{

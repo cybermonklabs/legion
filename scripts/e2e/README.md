@@ -583,7 +583,7 @@ Everything the run takes is its own, so two runs on one box
 
 - `XDG_STATE_HOME=<work>/xdg` — so the legions registry the run writes is its own, never the box's `~/.local/state/legion/legions.json`.
 
-- a per-run project key (`E2E<pid><epoch>`), and `E2E<pid><epoch>R` for the daemon behind the proxy
+- a per-run project key (`E2E` and the sum of the pid and the epoch, modulo 1,000,000), and that key with `R` after it for the daemon behind the proxy, each a Dispatch project key of at most ten characters, which is the one shape the loader takes
   — boots are counted per project, so a fresh key is what makes `boots == 1` true on a store that has served other runs, and the proxied daemon's boot is not counted in it.
 
 - a daemon port the kernel chose, held for the whole run by a keeper ([`lib/rig.sh`](#librigsh)'s `keep_port`, [`lib/held-port.py`](#libheld-portpy)):
@@ -720,7 +720,7 @@ What it stands up, all of it the run's own:
   The daemon resolves the secret at boot and writes it as a daemon-held 0600 file; every pane's shim exports it to OMP alone.
   The run never reads the value; it checks the length in OMP's environment.
 
-- **The daemon**: `legion.yaml` with a fresh project key per run (`S2E<pid><epoch>` — a retired claim is never spawned again, so a reused key would fail on a store that served an earlier run), a port the kernel chose, held for the whole run by a [`lib/held-port.py`](#libheld-portpy) keeper, which each start serves on (`LEGION_LISTEN_FD`;
+- **The daemon**: `legion.yaml` with a fresh project key per run (`S2E` and the sum of the pid and the epoch, modulo 10,000,000, a Dispatch project key of at most ten characters — a retired claim is never spawned again, so a reused key would fail on a store that served an earlier run), a port the kernel chose, held for the whole run by a [`lib/held-port.py`](#libheld-portpy) keeper, which each start serves on (`LEGION_LISTEN_FD`;
   the restart keeps it), as the second daemon's is by a keeper of its own, `probe_interval_seconds: 5`, and the operator token file `legion claims` presents.
   `XDG_STATE_HOME` and `TMUX_TMPDIR` point into the work directory, so the legions registry and the private tmux servers are the run's.
 

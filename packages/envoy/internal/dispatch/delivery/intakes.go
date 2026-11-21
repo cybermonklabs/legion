@@ -22,8 +22,8 @@ const (
 // IntakeLeases is the lease-pool reservation of each intake's callers (ReserveIntakeLeases),
 // which StartIntakes hands the intake it was taken for.
 type IntakeLeases struct {
-	events intakeLeases
-	jobs   intakeLeases
+	events DurableLeases
+	jobs   DurableLeases
 }
 
 // ReserveIntakeLeases reserves the connections of the lease pool the intakes can be inside at the
@@ -39,20 +39,23 @@ type IntakeLeases struct {
 // reserves the same callers and the count the server checks against the pool's size is the one
 // the pool is sized for.
 func ReserveIntakeLeases(callers *store.LeaseCallers) (IntakeLeases, error) {
-	events, err := reserveDurableLeases(callers, bus.DispatchDeliveryDurable)
+	events, err := ReserveDurableLeases(callers, bus.DispatchDeliveryDurable)
 	if err != nil {
 		return IntakeLeases{}, err
 	}
-	jobs, err := reserveDurableLeases(callers, bus.DispatchJobDurable)
+	jobs, err := ReserveDurableLeases(callers, bus.DispatchJobDurable)
 	if err != nil {
 		return IntakeLeases{}, err
 	}
 	return IntakeLeases{events: events, jobs: jobs}, nil
 }
 
-// reserveDurableLeases reserves one durable's three callers (store.LeaseCallers.ForAll) and
-// returns the lease pool they all take their connections from.
-func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLeases, error) {
+// ReserveDurableLeases reserves one held durable's three callers of the lease pool - its consumer
+// lease, its hold's statements and its hold's renewal, as ReserveIntakeLeases says - at once
+// (store.LeaseCallers.ForAll), and returns the lease pool they all take their connections from.
+// ReserveIntakeLeases reserves the intakes' two durables through it, and a held durable outside
+// this package (NewHeldDurable) its own.
+func ReserveDurableLeases(callers *store.LeaseCallers, durable string) (DurableLeases, error) {
 	leases, err := callers.ForAll(consumerLease(durable), intakeHoldName(durable), intakeHoldName(durable)+" renewal")
 	if err != nil {
 		return nil, err

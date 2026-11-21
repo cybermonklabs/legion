@@ -94,9 +94,11 @@ func parseIntakeHoldToken(token string) intakeHoldToken {
 	return intakeHoldToken{subject: subject, start: sequence}
 }
 
-// intakeLeases is the pool an intake takes its durable's hold and consumer lease on and renews the
-// hold through: store.Pool.Leases, which StartIntakes hands each intake. A *pgxpool.Pool is both.
-type intakeLeases interface {
+// DurableLeases is the pool a held durable takes its hold and consumer lease on and renews the hold
+// through: the reservation ReserveDurableLeases makes of store.Pool.Leases, which StartIntakes hands
+// each intake and a held durable outside this package (NewHeldDurable) takes from its own. A
+// *pgxpool.Pool is both.
+type DurableLeases interface {
 	duty.Leases
 	duty.Holds
 }
@@ -193,7 +195,7 @@ func (t *bindThrottle) reportStandby(name, message string) {
 // from any goroutine.
 type heldDurable struct {
 	nats   *bus.Client
-	leases intakeLeases
+	leases DurableLeases
 	// holder names this intake in its hold's row: each intake draws one as it is built.
 	holder uuid.UUID
 	// throttle is this intake's own standby-log state (bindThrottle).
@@ -218,6 +220,11 @@ type heldDurable struct {
 	recorded intakeHoldToken
 	// subject is the deliver subject this intake delivers at, and empty while it delivers nothing.
 	subject string
+	// bound, when not nil, is the owner's take-over callback: it runs on the run loop once each
+	// take-over has bound the durable, with the subject recorded and the subscription delivering,
+	// so work it queues on a key (queue) runs on that subscription's keyed runner. The two intakes
+	// of this package set none; a held durable outside it names one (NewHeldDurable).
+	bound func()
 	// boundHook, when not nil, runs once a take-over has bound the durable, before the take-over
 	// returns. It is nil outside tests: a test sets it to hold a take-over that has bound the
 	// durable until past Run's ctx's end.
@@ -234,13 +241,117 @@ type heldDurable struct {
 
 // newHeldDurable builds the delivery from config's durable on natsClient, taking its hold and
 // consumer lease on leases, routing each message by key and handing it to handle.
-func newHeldDurable(natsClient *bus.Client, leases intakeLeases, config func() natsgo.ConsumerConfig,
+func newHeldDurable(natsClient *bus.Client, leases DurableLeases, config func() natsgo.ConsumerConfig,
 	key func(*natsgo.Msg) (string, *contracts.Envelope, bool), handle func(*intakeDelivery, intakeMessage),
 ) heldDurable {
 	return heldDurable{
 		nats: natsClient, leases: leases, holder: uuid.New(), throttle: &bindThrottle{},
 		config: config, name: config().Durable, key: key, handle: handle,
 	}
+}
+
+// queue hands work to key's goroutine of the subscription this intake delivers on, behind the
+// messages and the work key already has waiting, so it never runs beside one of key's messages,
+// and reports whether it took work. It takes nothing while this intake delivers nothing, once that
+// subscription has begun to stop, or once its hold no longer covers it: the work then has no
+// runner to wait on, and the next take-over's callback (bound) is where its owner queues it again.
+// Work taken runs under the subscription's handling context, which the stop cancels when it gives
+// its handlers up; work still waiting behind its key at the stop is dropped, since it holds no
+// message to hand back (intakeDelivery.stop).
+func (d *heldDurable) queue(key string, work func(context.Context)) bool {
+	d.mu.Lock()
+	delivery := d.delivering
+	d.mu.Unlock()
+	if delivery == nil || delivery.stopping.Load() || !delivery.holdCovers() {
+		return false
+	}
+	return delivery.keys.run(key, intakeMessage{work: work})
+}
+
+// HeldDurable is a heldDurable for a consumer outside this package: Dispatch's Legion state intake
+// (legion.Intake) delivers from its own durable under that durable's own hold and consumer lease,
+// exactly as the two intakes here deliver from theirs, so that of every envoy-dispatch process one
+// delivers from it at a time. Its owner names the durable's config, how a message is keyed, how
+// one is handled, and what runs once a take-over has bound the durable; Run, Queue and Stop are
+// what it does with them.
+type HeldDurable struct {
+	heldDurable
+}
+
+// HeldMessage is one message a HeldDurable hands its handler, on the goroutine of the message's
+// key: the message, its envelope as the key decoded it (nil where it did not decode), and the
+// delivery it arrived on, which answers it.
+type HeldMessage struct {
+	Msg      *natsgo.Msg
+	Envelope *contracts.Envelope
+	delivery *intakeDelivery
+}
+
+// NewHeldDurable builds the delivery from config's durable on natsClient, a client the owner opens
+// for it alone (a bus.Client holds one JetStream subscription), taking the durable's hold and
+// consumer lease on leases (ReserveDurableLeases), keying each message by key and handing it to
+// handle on that key's goroutine. bound, when not nil, runs once each take-over has bound the
+// durable, on the run loop: its first creation, and every take-over after it by this process. It
+// should only queue work (Queue), since the run loop waits for it.
+func NewHeldDurable(natsClient *bus.Client, leases DurableLeases, config func() natsgo.ConsumerConfig,
+	key func(*natsgo.Msg) (string, *contracts.Envelope, bool), handle func(HeldMessage), bound func(),
+) *HeldDurable {
+	held := &HeldDurable{heldDurable: newHeldDurable(natsClient, leases, config, key, func(delivery *intakeDelivery, message intakeMessage) {
+		handle(HeldMessage{Msg: message.msg, Envelope: message.envelope, delivery: delivery})
+	})}
+	held.bound = bound
+	return held
+}
+
+// Run delivers from the durable while this process holds its hold, and stands by for the hold
+// otherwise, until ctx ends; then it stops delivering and releases the hold under intakeStopBudget
+// from ctx's end, as the intakes' Runs do (heldDurable.run), and returns.
+func (h *HeldDurable) Run(ctx context.Context) {
+	h.run(ctx, nil, func() bool { return true })
+}
+
+// Stop, called once Run has returned, closes the durable's NATS client and then waits for each
+// hand-back finalizer Run left behind, as stopIntakes does for the two intakes here: Run can
+// return at its stop deadline with a hand-back still waiting for NATS, the close settles it, and
+// its finalizer releases the hold through the still-open pool before Stop returns. So an owner that
+// closes the pool after Stop, as cmd/dispatch's shutdown does, closes it under no finalizer's
+// write.
+func (h *HeldDurable) Stop() {
+	h.nats.Close()
+	h.waitFinalizers()
+}
+
+// Queue runs work on key's goroutine, in its turn among key's messages, and reports whether it
+// took it (heldDurable.queue): never while this process does not deliver from the durable.
+func (h *HeldDurable) Queue(key string, work func(context.Context)) bool {
+	return h.queue(key, work)
+}
+
+// Context is the context the message's handling runs under: the stop cancels it when it gives the
+// handlers still running up (StopDelivering), and a handler then hands its message back.
+func (m HeldMessage) Context() context.Context {
+	return m.delivery.handling
+}
+
+// Ack acknowledges the message, and hands it back for redelivery when the acknowledgement does not
+// reach the server (intakeDelivery.acknowledge).
+func (m HeldMessage) Ack() {
+	m.delivery.acknowledge(m.Msg)
+}
+
+// HandBack hands the message back for redelivery at once, while the hold still covers this
+// delivery, and leaves it with the durable for the next holder's take-over once it does not
+// (intakeDelivery.handBack).
+func (m HeldMessage) HandBack() {
+	m.delivery.handBack(m.Msg)
+}
+
+// HandBackAfter hands the message back for redelivery in after: the handler's own answer that the
+// message is to come round again later, not now (legion.Intake's owed read). It is published only
+// while this delivery may still answer the durable, and withheld otherwise, the message left with
+// the durable for the next holder's take-over (intakeDelivery.handBackOwn).
+func (m HeldMessage) HandBackAfter(after time.Duration) {
+	m.delivery.handBackOwn(m.Msg, after)
 }
 
 // intakeHoldLost is the line of an intake whose durable's hold is no longer its own, so it stops
@@ -454,9 +565,15 @@ func (d *heldDurable) takeOver(ctx context.Context) {
 // deployed config when a newer build stamped it with a higher generation, this build's (wanted)
 // otherwise, on a fresh deliver subject, starting at the stream sequence after the durable's ack
 // floor. Starting there, the recreated durable redelivers at once every message the durable had
-// not acknowledged -- what a dead holder had been handed, what a stopped one handed back --
-// replays nothing it had, and skips nothing (TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse,
-// and TestATakeOverWhoseCreateFailsCreatesTheDurableAtItsFloorOnTheNextAttempt for a create retried).
+// not acknowledged -- what a dead holder had been handed, what a stopped one handed back, what a
+// handler handed back with a delay (intakeDelivery.handBackOwn) -- and skips nothing
+// (TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse, and
+// TestATakeOverWhoseCreateFailsCreatesTheDurableAtItsFloorOnTheNextAttempt for a create retried).
+// The ack floor stays below the oldest message not acknowledged, so the recreated durable also
+// replays every message after that one that the durable had acknowledged. A message handed back
+// with a delay holds the floor there for a bounded time: an envelope whose head row was not stored
+// for headWriteMaxDeliveries deliveries, and a Legion state message that holds its project's owed
+// read for about 11 minutes (legion's stateMaxHolds).
 // The take-over records that start in its hold's token before it deletes the durable, and
 // finishTakeOver says what a create that fails after the delete leaves behind.
 // The deployed metadata keeps its own keys and drops the ones nats-server sets itself (the
@@ -515,10 +632,10 @@ const (
 // finishTakeOver makes the durable deliver to this intake at create's start, under the consumer
 // lease its caller (takeOver) holds: it deletes the durable when deleteFirst is set, subscribes
 // to create's deliver subject, creates the durable with create, and records the subject alone as
-// the hold's token. Each step that fails is tried again (retryHeld) until it succeeds, this intake
-// no longer holds its hold, the grant refuses it, or takeOverFinishWithin has passed. It runs on a
-// context of its own rather than the run's, so a stop that comes while the durable is deleted does
-// not leave it so.
+// the hold's token; then it runs the owner's take-over callback (bound), if it names one. Each
+// step that fails is tried again (retryHeld) until it succeeds, this intake no longer holds its
+// hold, the grant refuses it, or takeOverFinishWithin has passed. It runs on a context of its own
+// rather than the run's, so a stop that comes while the durable is deleted does not leave it so.
 // Every step is safe to try again: a delete of a durable already gone succeeds, and a create of
 // a durable that a timed-out try did create, with this same config, returns that durable.
 //
@@ -574,6 +691,9 @@ func (d *heldDurable) finishTakeOver(create natsgo.ConsumerConfig, deleteFirst b
 	d.recorded, d.subject = bound, create.DeliverSubject
 	slog.Info("dispatch delivery: NATS consumer bound", "name", d.name, "subject", create.FilterSubject,
 		"start_seq", create.OptStartSeq, "generation", bus.MetadataGeneration(create.Metadata, consumerGenerationKey))
+	if d.bound != nil {
+		d.bound()
+	}
 	if d.boundHook != nil {
 		d.boundHook()
 	}
@@ -664,11 +784,14 @@ func (d *heldDurable) check(ctx context.Context) {
 }
 
 // stop is the end of run: it stops delivering under ctx, the run's stop deadline, and releases the
-// hold once every hand-back reached the server (handBacksReached), so a standby takes the durable
-// over at once and is redelivered whatever this intake handed back. A hold whose token still records
-// a take-over's start (intakeHoldToken) is lapsed instead, which frees it as Release does and keeps
-// the row, so the next holder reads that start. The release runs on a context of its own: it is one
-// statement, and it must reach the database even when the stop's budget has run out.
+// hold once every hand-back the delivery took has settled and every one it published reached the
+// server (handBacksReached), so a standby takes the durable over at once and is redelivered
+// whatever this intake handed back. Before that release, it seals the delivery
+// (intakeDelivery.seal): a hand-back that begins after the seal is withheld, so none is
+// published after the release. A hold whose token still records a take-over's start
+// (intakeHoldToken) is lapsed instead, which frees it as Release does and keeps the row, so the
+// next holder reads that start. The release runs on a context of its own: it is one statement, and
+// it must reach the database even when the stop's budget has run out.
 //
 // A hand-back still pending when the stop's context ends does not keep Run past that context, and
 // does not give the hold up either. A hand-back is a publish at the message's reply subject, which
@@ -715,16 +838,23 @@ const intakeHoldFinalizing = "dispatch delivery: a hand-back has not reached NAT
 // releases it once that hand-back has landed and a flush of the connection answers, or once the
 // intake client's connection has closed. Close flushes a NATS client's outbound buffer before it
 // closes its socket, so a hand-back waiting then is either sent at close or dropped with the
-// connection; only then is it safe to release the hold. It runs on a goroutine of its own that
+// connection; only then is it safe to release the hold. It waits until no hand-back of the delivery
+// is taken and not settled, and then seals the delivery (intakeDelivery.seal); when a hand-back was
+// taken during that wait, the seal fails and it waits again. It runs on a goroutine of its own that
 // nothing in Run waits for, so it waits for nats.go's lock with no bound and makes one flush at a
 // time. StartIntakes waits for it after it closes that client and before it returns to a caller
 // that can close the database pool. A lost hold ends it: another holder may then act, as after any
 // loss of the hold.
 func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hold, lapse bool) {
-	select {
-	case <-delivery.handBacksLanded():
-	case <-hold.Lost():
-		return
+	for {
+		select {
+		case <-delivery.handBacksLanded():
+		case <-hold.Lost():
+			return
+		}
+		if delivery.seal() {
+			break
+		}
 	}
 	retry := time.NewTicker(intakeFlushWait)
 	defer retry.Stop()
@@ -770,30 +900,57 @@ func (d *heldDurable) releaseHold(hold *duty.Hold, lapse bool) {
 	}
 }
 
-// handBacksReached reports whether every hand-back delivery published has reached the server. A
-// publish NATS had not taken when the stop went on without it (intakeDelivery.publishHandBack) is
-// waited for first, until ctx ends or hold is lost: the stop can return with one still waiting, since
-// its drain ends once nats.go has answered the drain's flush and run the messages it had buffered,
-// which need not wait for the write that holds nats.go's lock. Then the connection is flushed, a round
-// trip to the server, so the hand-backs nats.go had queued have reached it (flushHandBacks). A
-// delivery that handed nothing back reports true at once.
+// handBacksReached seals delivery (intakeDelivery.seal) once no hand-back of it is taken and not
+// settled, and reports whether every hand-back it published has then reached the server. While a
+// hand-back is taken and not settled, the seal fails, and it waits for that hand-back until ctx ends
+// or hold is lost, when it reports false; once the hand-back settles, it tries to seal again, so a
+// hand-back taken during the wait is waited for in turn. When the stop returns, a hand-back can
+// still be taken and not settled: a publish NATS had not taken when the stop went on without it
+// (intakeDelivery.publishHandBack), or the hand-back of the callback that nats.go runs for a
+// message the client had buffered, after the drain loop gave up and unsubscribed. Once the delivery
+// is sealed with a hand-back published, the connection is flushed, a round trip to the server, so
+// the hand-backs nats.go had queued have reached it (flushHandBacks). A delivery sealed with no
+// hand-back published reports true at once, as does no delivery.
 func (d *heldDurable) handBacksReached(ctx context.Context, delivery *intakeDelivery, hold *duty.Hold) bool {
-	if delivery == nil || !delivery.handedBack() {
+	if delivery == nil {
 		return true
 	}
-	landed := delivery.handBacksLanded()
-	select {
-	case <-landed:
-	case <-hold.Lost():
-	case <-ctx.Done():
+	hooked := false
+	waiting := func() {
+		if hooked {
+			return
+		}
+		hooked = true
+		if hook := handBacksWaiting.Load(); hook != nil {
+			(*hook)()
+		}
 	}
-	select {
-	case <-landed:
-	default:
-		return false
+	for !delivery.seal() {
+		waiting()
+		landed := delivery.handBacksLanded()
+		select {
+		case <-landed:
+		case <-hold.Lost():
+		case <-ctx.Done():
+		}
+		select {
+		case <-landed:
+		default:
+			return false
+		}
 	}
+	if !delivery.handedBack() {
+		return true
+	}
+	waiting()
 	return d.flushHandBacks()
 }
+
+// handBacksWaiting is nil outside the release row. It runs once in a stop, before the stop releases
+// its hold (handBacksReached): the first time the stop waits for a hand-back its delivery took and
+// has not settled, or else before the flush when its delivery published a hand-back. So the row
+// sees that the stop waits for its hand-backs with its hold live.
+var handBacksWaiting atomic.Pointer[func()]
 
 // flushHandBacks is handBacksSettled within intakeFlushWait, on a bound of its own as the release
 // that follows it is: both are part of what follows the stop's deadline (intakeStopBudget), and a

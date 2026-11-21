@@ -27,7 +27,8 @@ import (
 // does when a query of it is cut short, and what the production failure looked like from the
 // route — a read inside an open transaction that never came back. Released, it answers an empty
 // state, which is all the second read of the test needs. api.StateSource is an interface, so the
-// route takes this in the daemon's own source's place (daemon.go's source).
+// route takes this in the daemon's own source's place (daemon.go's source). Its observed view is
+// held and released the same way.
 type heldState struct {
 	held atomic.Bool
 }
@@ -39,6 +40,18 @@ func (s *heldState) State(ctx context.Context, _ pgx.Tx) (api.State, []supervise
 	<-ctx.Done()
 	return api.State{}, nil, ctx.Err()
 }
+
+func (s *heldState) ObservedState(ctx context.Context, _ pgx.Tx) (api.ObservedState, []supervise.Claim, error) {
+	if !s.held.Load() {
+		return api.ObservedState{}, nil, nil
+	}
+	<-ctx.Done()
+	return api.ObservedState{}, nil, ctx.Err()
+}
+
+// stateTargets is the state route's two answers, the whole state and the observed view, which
+// read through one transaction under one bound (api's stateRoute).
+var stateTargets = []string{"/legion/v1/state", "/legion/v1/state?view=observed"}
 
 // backendIdleInTransaction and backendWaitingOnALock are the two conditions this package's tests
 // count the daemon's backends under: a backend inside an open transaction with no statement
@@ -71,7 +84,7 @@ func daemonBackends(t *testing.T, pool *store.Pool, application, condition strin
 
 // A state read that does not finish is ended by the route's own deadline: the client is answered
 // a failure while it is still connected, the transaction is ended rather than left open, and the
-// connection goes back to the pool for the next caller.
+// connection goes back to the pool for the next caller. The observed view is read the same way.
 //
 // Without the route's deadline this same test hangs: the only thing that would end the read is
 // the client giving up, so nothing answers and the test fails when its client runs out of
@@ -99,7 +112,6 @@ func TestTheStateRouteEndsItsTransactionAtItsDeadline(t *testing.T) {
 	t.Cleanup(st.Close)
 
 	state := &heldState{}
-	state.held.Store(true)
 	handler := api.NewServer("127.0.0.1", 0, api.Options{
 		State: state, StateTransactions: st, StateReadBound: bound, Log: quietLogger(),
 	}).Handler
@@ -107,44 +119,47 @@ func TestTheStateRouteEndsItsTransactionAtItsDeadline(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := &http.Client{Timeout: clientPatience}
 
-	started := time.Now()
-	response, err := client.Get(server.URL + "/legion/v1/state")
-	if err != nil {
-		t.Fatalf("the held state read did not answer within the client's %s: %v", clientPatience, err)
-	}
-	body, err := io.ReadAll(response.Body)
-	response.Body.Close()
-	if err != nil {
-		t.Fatalf("read what the held state read answered: %v", err)
-	}
-	if response.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("the held state read answered %d (%s), want 500 at the route's own deadline",
-			response.StatusCode, strings.TrimSpace(string(body)))
-	}
-	if took := time.Since(started); took < bound {
-		t.Fatalf("the held state read answered after %s, want it held to the route's %s bound", took, bound)
-	}
+	for _, target := range stateTargets {
+		state.held.Store(true)
+		started := time.Now()
+		response, err := client.Get(server.URL + target)
+		if err != nil {
+			t.Fatalf("the held read of %s did not answer within the client's %s: %v", target, clientPatience, err)
+		}
+		body, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil {
+			t.Fatalf("read what the held read of %s answered: %v", target, err)
+		}
+		if response.StatusCode != http.StatusInternalServerError {
+			t.Fatalf("the held read of %s answered %d (%s), want 500 at the route's own deadline",
+				target, response.StatusCode, strings.TrimSpace(string(body)))
+		}
+		if took := time.Since(started); took < bound {
+			t.Fatalf("the held read of %s answered after %s, want it held to the route's %s bound", target, took, bound)
+		}
 
-	// The transaction is ended, not merely abandoned by a handler that returned: no backend of
-	// the daemon's pool sits inside one.
-	testwait.Eventually(t, "the state route's transaction to end", func() bool {
-		return daemonBackends(t, watcher, application, backendIdleInTransaction) == 0
-	})
+		// The transaction is ended, not merely abandoned by a handler that returned: no backend of
+		// the daemon's pool sits inside one.
+		testwait.Eventually(t, "the state route's transaction to end", func() bool {
+			return daemonBackends(t, watcher, application, backendIdleInTransaction) == 0
+		})
 
-	// And the connection is back: the daemon's pool has exactly one, so a read that is served at
-	// all is served on the connection the held read gave up.
-	state.held.Store(false)
-	next, err := client.Get(server.URL + "/legion/v1/state")
-	if err != nil {
-		t.Fatalf("the read after the held one: %v", err)
-	}
-	served, err := io.ReadAll(next.Body)
-	next.Body.Close()
-	if err != nil {
-		t.Fatalf("read what the next state read answered: %v", err)
-	}
-	if next.StatusCode != http.StatusOK {
-		t.Fatalf("the read after the held one answered %d (%s), want the connection back and the state served",
-			next.StatusCode, strings.TrimSpace(string(served)))
+		// And the connection is back: the daemon's pool has exactly one, so a read that is served
+		// at all is served on the connection the held read gave up.
+		state.held.Store(false)
+		next, err := client.Get(server.URL + target)
+		if err != nil {
+			t.Fatalf("the read of %s after the held one: %v", target, err)
+		}
+		served, err := io.ReadAll(next.Body)
+		next.Body.Close()
+		if err != nil {
+			t.Fatalf("read what the next read of %s answered: %v", target, err)
+		}
+		if next.StatusCode != http.StatusOK {
+			t.Fatalf("the read of %s after the held one answered %d (%s), want the connection back and the state served",
+				target, next.StatusCode, strings.TrimSpace(string(served)))
+		}
 	}
 }

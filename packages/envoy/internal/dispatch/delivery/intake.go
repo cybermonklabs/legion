@@ -66,7 +66,7 @@ type Intake struct {
 // newIntake builds an Intake on natsClient, a connected client StartIntakes opens for it alone,
 // holding its durable and taking it over under a hold and a lease it takes on leases, and routing
 // by settings.
-func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache) *Intake {
+func newIntake(natsClient *bus.Client, pool *store.Pool, leases DurableLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache) *Intake {
 	in := &Intake{pool: pool, github: github, events: broker, settings: settings}
 	in.heldDurable = newHeldDurable(natsClient, leases, deliveryConsumerConfig, intakeKey, in.deliver)
 	return in
@@ -368,7 +368,7 @@ func consumerGenerationMetadata() map[string]string {
 // the same pair again.
 //
 // That hand-back is this process's own answer to the durable, and it is made only while the
-// hold still covers it (intakeDelivery.mayAnswer): a hand-back a process makes after its hold
+// hold still covers it (intakeDelivery.handBackOwn): a hand-back a process makes after its hold
 // has lapsed reaches the durable a take-over recreated under the same name, where it would move
 // the new holder's pending entry for that message and have it delivered a second time. Withheld,
 // the message is not lost: it stays outstanding, and the take-over's recreate at the durable's

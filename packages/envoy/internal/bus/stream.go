@@ -118,6 +118,11 @@ const DispatchDeliveryDurable = "delivery-events"
 // run's job events (internal/dispatch/delivery).
 const DispatchJobDurable = "delivery-jobs"
 
+// DispatchLegionStateDurable is the stream's durable consumer Dispatch's Legion state intake binds,
+// over every Legion daemon's state lane, notifications.legion.*.state
+// (internal/dispatch/legion, intake.go).
+const DispatchLegionStateDurable = "legion-state-events"
+
 // ListenerDurable is the durable consumer of the stream that the listener of machine machineID
 // binds. A space in the machine id is a hyphen in the name.
 func ListenerDurable(machineID string) string {

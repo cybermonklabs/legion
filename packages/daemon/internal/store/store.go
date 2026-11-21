@@ -67,6 +67,9 @@ type Store struct {
 	// roleHoldersQueued is PublishRoleHolders' wake, read at each claim write. It is nil until the
 	// daemon turns the publication on, and while it is nil no claim write queues one.
 	roleHoldersQueued atomic.Pointer[func(issue string)]
+	// stateQueued is PublishState's switch, read at each claim write. It is nil until the daemon
+	// turns the state events on, and while it is nil no claim write queues one.
+	stateQueued atomic.Pointer[statePublication]
 }
 
 // Open connects to dsn and waits for the server to answer, so a daemon that

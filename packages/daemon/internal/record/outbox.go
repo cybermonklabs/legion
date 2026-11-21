@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/stateevent"
 )
 
 // OutboxKind names one durable side effect.
@@ -59,6 +60,13 @@ const (
 	// OutboxKindRoleHoldersPublish publishes the live role sessions of one issue onto its Dispatch
 	// row (RoleHoldersPublish).
 	OutboxKindRoleHoldersPublish OutboxKind = "role_holders_publish"
+	// OutboxKindStateChange, OutboxKindStateAdmission and OutboxKindStateBoot are the daemon's
+	// state events (StateChange, StateAdmission, StateBoot), named as package stateevent names
+	// them. Like gated_steps_publish, each row's issue column holds the bare project key, so a
+	// project's state events run on one lane (LaneState).
+	OutboxKindStateChange    OutboxKind = stateevent.KindChange
+	OutboxKindStateAdmission OutboxKind = stateevent.KindAdmission
+	OutboxKindStateBoot      OutboxKind = stateevent.KindBoot
 	// OutboxKindStepRecord writes one start or one end of a step of the issue onto Dispatch's
 	// record of that step, or the rating a retro gave the plan onto the retro's record
 	// (StepRecord).
@@ -83,7 +91,7 @@ const (
 // with the starts and suspends they queue. The board lane runs the issue's Dispatch writes and
 // notice publishes beside them, so a status write or a notice never waits behind a start pulling
 // an image, and a slow publish never holds a stop back. It carries the deployment's gated-steps
-// publish too, the one row addressed to the bare project key rather than to an issue, so that
+// publish too, addressed like each state row (LaneState) to the bare project key, so that
 // write runs on a board lane of the project's own, behind none of any issue's rows and holding
 // none of them back. The role-message lane runs the kinds the daemon addresses to one role of
 // the issue on that role's own topic: a hook's words, which go to a phase worker (hook_prompt),
@@ -109,6 +117,14 @@ const (
 // their own, so a Dispatch that is slow to take a record, or one that backs a record off until it
 // has the route, delays no status write, notice or start of that issue: a record is history, and
 // the work it records never waits for it.
+//
+// The state lane runs the daemon's state events (state_change, state_admission, state_boot), and
+// it is a project's lane, not an issue's: every state row carries the bare Dispatch project key in
+// its issue column, as the gated-steps publish does, so a project has exactly one state lane. Each
+// row takes its sequence when its transaction commits (OutboxRow.StateSeq), and the lane publishes
+// the rows strictly in that order (store.go's outboxInOrder): a row that fails holds every later
+// state row of its project until it is published. Dispatch reads the sequence for gaps, and lanes
+// that ran side by side, one per issue, would publish out of sequence.
 type OutboxLane string
 
 const (
@@ -117,6 +133,7 @@ const (
 	LaneRoleMessage OutboxLane = "role_message"
 	LaneClaim       OutboxLane = "claim"
 	LaneRecord      OutboxLane = "record"
+	LaneState       OutboxLane = "state"
 )
 
 // laneKinds is each lane's kinds in the order LaneKinds lists them. Every OutboxKind is in exactly
@@ -127,6 +144,7 @@ var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},
 	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
+	LaneState:       {OutboxKindStateChange, OutboxKindStateAdmission, OutboxKindStateBoot},
 }
 
 // LaneOf is the lane that runs kind.
@@ -144,9 +162,9 @@ func LaneKinds(lane OutboxLane) []OutboxKind {
 	return slices.Clone(laneKinds[lane])
 }
 
-// OutboxLanes is every lane an issue's rows run on, in name order: the lanes laneKinds holds, so
-// a reader that needs every lane, or every kind, takes them from here rather than from a list of
-// its own, which a new lane would leave short.
+// OutboxLanes is every lane the outbox's rows run on, in name order: the lanes laneKinds holds, an
+// issue's five and the project's state lane, so a reader that needs every lane, or every kind,
+// takes them from here rather than from a list of its own, which a new lane would leave short.
 func OutboxLanes() []OutboxLane {
 	return slices.Sorted(maps.Keys(laneKinds))
 }
@@ -178,8 +196,11 @@ type pauseHold struct {
 // one role (hook_prompt, role_message, update_ask, merge_forward) and the merger's merge-queue
 // message, and the three rows of a production check (check_wake, check_look, check_bound). Every
 // other row runs while the project is paused: the stops (a supervise row of any other op,
-// issue_suspend, issue_release), the writes to Dispatch, and the controller's notices
-// (controller_notice), since the pause never holds the controller (spec Design item 8).
+// issue_suspend, issue_release), the writes to Dispatch, the controller's notices
+// (controller_notice), since the pause never holds the controller (spec Design item 8), and the
+// state events (LaneState), since a pause's own claim moves are changes Dispatch observes. A state
+// row carries the bare project key, which the pause's project scope matches, so it runs through
+// the pause only because its kind is none of these.
 //
 // The outbox's claim reads the list as SQL literals (store.go's outboxPauseFree, built from it),
 // so DueRows, ClaimRow, HeldRows and PauseHeldRows hold exactly these rows, and the resume marks
@@ -1411,6 +1432,44 @@ type RoleHoldersPublish struct {
 
 func (RoleHoldersPublish) OutboxKind() OutboxKind { return OutboxKindRoleHoldersPublish }
 
+// StateChange is a state_change row's payload: one write that moved what Dispatch observes of an
+// issue (stateevent.Change, which documents its fields). Its shape and its checks are package
+// stateevent's, which the claim writes of internal/store build too, so every state row has one
+// shape. It is a type of its own over that shape, not an alias, only because an outbox payload
+// carries its kind as a method (OutboxPayload), and a method cannot be declared on another
+// package's type; StateChange(change) and stateevent.Change(value) convert between the two.
+type StateChange stateevent.Change
+
+func (StateChange) OutboxKind() OutboxKind { return OutboxKindStateChange }
+
+// StateField names one field of an issue that a state change can move (stateevent.Field).
+type StateField = stateevent.Field
+
+// The five fields Dispatch observes of an issue, named as the state route serves them.
+const (
+	StateFieldPhase     = stateevent.FieldPhase
+	StateFieldTree      = stateevent.FieldTree
+	StateFieldSlot      = stateevent.FieldSlot
+	StateFieldWaitingOn = stateevent.FieldWaitingOn
+	StateFieldClaim     = stateevent.FieldClaim
+)
+
+// StateFieldChange is one field a write moved (stateevent.FieldChange).
+type StateFieldChange = stateevent.FieldChange
+
+// StateAdmission is a state_admission row's payload, the whole admission block the state route
+// serves (stateevent.Admission). Its producer encodes AdmissionBlock, whose JSON is the route's own
+// (QueueAdmissionBlock). It is a type of its own over that shape for the reason StateChange is.
+type StateAdmission stateevent.Admission
+
+func (StateAdmission) OutboxKind() OutboxKind { return OutboxKindStateAdmission }
+
+// StateBoot is a state_boot row's payload, a daemon run's first state event (stateevent.Boot). It
+// is a type of its own over that shape for the reason StateChange is.
+type StateBoot stateevent.Boot
+
+func (StateBoot) OutboxKind() OutboxKind { return OutboxKindStateBoot }
+
 // StepRecord is one write of an issue's record of one step onto Dispatch (PUT
 // /api/v1/issues/{key}/steps/{id}): the start of the step, its end, or the report alone of a
 // completion that landed after that end (workflow's reportEndedStep). ID is the record's id, a
@@ -2062,6 +2121,24 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindStateChange:
+		value := StateChange{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindStateAdmission:
+		value := StateAdmission{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindStateBoot:
+		value := StateBoot{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindIssueBranch:
 		value := IssueBranch{}
 		if err := decoder.Decode(&value); err != nil {
@@ -2389,6 +2466,21 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 	case RoleHoldersPublish:
 		if value.Issue == "" {
 			return fmt.Errorf("a role-holders publish requires the issue whose role sessions it writes")
+		}
+	// A state row's message is what Dispatch writes its observations from, so a row that would
+	// publish a message the contract refuses (legionStateMessage) is refused here instead, by the
+	// checks package stateevent holds for every state row, the claim writes' among them.
+	case StateChange:
+		if err := stateevent.Change(value).Validate(); err != nil {
+			return err
+		}
+	case StateAdmission:
+		if err := stateevent.Admission(value).Validate(); err != nil {
+			return err
+		}
+	case StateBoot:
+		if err := stateevent.Boot(value).Validate(); err != nil {
+			return err
 		}
 	case CheckWakeDue:
 		if value.Look <= 0 {

@@ -266,6 +266,12 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
 		}
 		return shapeIssue(issue, restore, strip, nil), took
+	case AnswerObservedState:
+		observed, isObserved := body.(ObservedState)
+		if !isObserved {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		return observedFor(observed, restore, strip), took
 	case AnswerReleaseRecords:
 		records, isRecords := body.(ReleaseRecordsResponse)
 		if !isRecords {
@@ -459,6 +465,49 @@ func shapeIssue(issue Issue, restore, strip int, took *tookOff) Issue {
 	return issue
 }
 
+// observedFor is the observed view's row of shapeAnswer (AnswerObservedState): observed as a
+// caller at restore and strip reads it, narrowed by the very bands and value strips stateFor
+// applies to the whole state. The view is read as the part of a whole state it is (stateOfObserved),
+// shaped by stateFor, and read back (observedOf), so at every contract each member of the view is
+// the whole state's member at that contract, and a band a later contract adds to a member the
+// view carries reaches the view with no line here. The whole state's mark (ContractView) is no
+// member of the view and is left out with the rest of the whole state's keys.
+//
+// A caller at this daemon's own contract is served the view the source answered, with no copy
+// made of it: stateFor applies no band to it, and no value strip takes anything from it. That is
+// every read Dispatch makes, since it states no contract and asks from no pod. The shaping
+// records nothing in the log, where recordShaping writes the whole state's lines alone.
+func observedFor(observed ObservedState, restore, strip int) ObservedState {
+	if restore >= DaemonAPIVersion && strip >= DaemonAPIVersion {
+		return observed
+	}
+	return observedOf(stateFor(stateOfObserved(observed), restore, strip, nil))
+}
+
+// stateOfObserved is observed as the part of a whole state it is: its daemon block, its settings,
+// its admission block, and each issue with the members the view carries, its slot holding its
+// index alone and each claim view its state alone. observedOf reads it back to the same view.
+func stateOfObserved(observed ObservedState) State {
+	issues := make(map[string]Issue, len(observed.Issues))
+	for key, view := range observed.Issues {
+		issue := Issue{Key: view.Key, Phase: view.Phase, Tree: view.Tree, WaitingOn: view.WaitingOn}
+		if view.Slot != nil {
+			issue.Slot = &SlotView{Index: view.Slot.Index}
+		}
+		if view.Architect != nil {
+			issue.Architect = &ClaimView{State: view.Architect.State}
+		}
+		if len(view.Workers) > 0 {
+			issue.Workers = make(map[claim.Role]PhaseView, len(view.Workers))
+			for role, worker := range view.Workers {
+				issue.Workers[role] = PhaseView{Claim: ClaimView{State: worker.Claim.State}}
+			}
+		}
+		issues[key] = issue
+	}
+	return State{Daemon: observed.Daemon, Settings: observed.Settings, Admission: observed.Admission, Issues: issues}
+}
+
 // narrowedTheState is the message of the line the daemon writes for each band it serves the
 // state down by, named here because the test that reads the daemon's own log reads the same
 // string (TestANarrowedBodySaysSo).
@@ -558,6 +607,8 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
+	{contract: stateSeqContract, state: withoutStateSeq,
+		dropped: "daemon.stateSeq, daemon.stateId and daemon.stateRun"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -971,9 +1022,27 @@ const pauseContract = 178
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract this block arrived at stays where it is. It moves only
-// with this change's own number, and it is the last number of answers.go's SupportedContracts,
-// which names the constant rather than its number for that reason.
+// with this change's own number, and answers.go's SupportedContracts names the constant rather
+// than its number for that reason.
 const repositoriesLiveContract = 202
+
+// stateSeqContract is the daemon contract that added `daemon.stateSeq`, the sequence of the newest
+// state event the project's daemon committed, read in the body's own snapshot, and beside it
+// `daemon.stateId`, the id of the store that count is kept in, and `daemon.stateRun`, the id of the
+// daemon run that serves the body (version.go's 207, DaemonInfo.StateSeq, StateID and
+// StateRun). A plugin before it is served the daemon block without the three keys
+// (withoutStateSeq, its row of stateNarrowings): one built before sjawhar/legion#2788 reads the
+// state with a strict schema and would refuse the whole body for a key it does not name, and one
+// built after strips the keys instead, so the strip is what keeps them from a caller that did not
+// ask for them rather than what keeps such a caller reading at all. The same contract added the
+// observed view of the state route (AnswerObservedState), which carries the same daemon block and
+// is narrowed by the same band (observedFor). repositoriesLiveContract stands below it with no row
+// of stateNarrowings between the two, so a caller at or above repositoriesLiveContract and below
+// this contract is served `repositories.live` and none of the three keys.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract these keys arrived at stays where it is.
+const stateSeqContract = 207
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
@@ -1574,6 +1643,20 @@ func withoutPause(state State) (State, bool) {
 	return state, moved
 }
 
+// withoutStateSeq is state with no `daemon.stateSeq`, no `daemon.stateId` and no
+// `daemon.stateRun`, the three keys stateSeqContract added to this route; nothing else of that
+// contract is a key of the state. The sequence is left off rather than zeroed, because the strict
+// reader before the contract refuses it when it is 0 as surely as when it names a sequence, and a
+// 0 would tell a reader of this contract that the project has no state event. The daemon's own
+// source sets the sequence on every body it answers, 0 included, so the band reports a move for
+// every such body; a state built without any of the three carries nothing to strip. The daemon
+// block is a value of the state's own, so the state the source answered is left as it was.
+func withoutStateSeq(state State) (State, bool) {
+	moved := state.Daemon.StateSeq != nil || state.Daemon.StateID != "" || state.Daemon.StateRun != ""
+	state.Daemon.StateSeq, state.Daemon.StateID, state.Daemon.StateRun = nil, "", ""
+	return state, moved
+}
+
 // withoutResumePauses is records with no resume carrying `pause`, the one key pauseContract added
 // to the release records. The key is `omitempty` and absent from a wake no pause held, so records
 // whose resumes carry none are returned as they are, with no copy made. Otherwise the resumes are
@@ -1720,6 +1803,14 @@ func stripTurnRecord(view ClaimView) ClaimView {
 // is the plugin's table alone, and it shapes to nothing, since no contract describes a shape for
 // a body no plugin reads (writeUnparsedAnswer).
 const answerUnparsed AnswerID = "unparsed"
+
+// AnswerObservedState names the observed view of the state route, the body of
+// `GET /legion/v1/state?view=observed` (ObservedState), which Dispatch reads. It is no row of
+// Answers, which is the plugin's table alone: no plugin parses the view, and pi-shared's census of
+// that table holds every row to a parse site of the plugin's client. It is shaped all the same,
+// unlike answerUnparsed: a caller below a contract reads no member of the view that the whole
+// state does not serve it at that contract (observedFor).
+const AnswerObservedState AnswerID = "observed-state"
 
 // answerWritten is told the pattern of the route and the id of the answer of every body this
 // package writes (writeAnswerFrom). It is nil in a daemon and set by one test of this package,

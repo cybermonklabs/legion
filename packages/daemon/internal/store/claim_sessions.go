@@ -119,7 +119,7 @@ func (s *Store) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []sup
 		kinds[i], names[i] = string(h.Kind), h.Name
 	}
 	var freed []supervise.Hold
-	var queued bool
+	var queued ClaimQueued
 	if err := s.Tx(ctx, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `delete from claim_sessions h
 			using unnest($3::text[], $4::text[]) as f(kind, name)

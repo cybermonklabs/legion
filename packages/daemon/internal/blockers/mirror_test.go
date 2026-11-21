@@ -92,8 +92,9 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		intake.HandoffComplete{}, intake.BackwardMove{}, intake.RetryOrEscalate{}, intake.RestartPhase{}, intake.SignOff{},
 		intake.GateRegistered{}, intake.CloseRoot{}, intake.ClaimFailed{}, intake.SessionLost{}, intake.SessionStoreFault{},
 		intake.MemoryGuardKill{}, intake.VolumeNearFull{}, intake.ClaimReady{}, intake.TaskConfirmed{}, intake.GateRequestFound{},
-		intake.CatchUpApplied{}, intake.LingerExpired{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{}, intake.CheckReport{},
-		intake.CheckWakeDue{}, intake.CheckLookEnded{}, intake.CheckBound{}, intake.ListenerWake{}, intake.PodBackstopDue{},
+		intake.CatchUpApplied{}, intake.LingerExpired{}, intake.LingerDeadline{}, intake.DaemonBooted{},
+		intake.CutoverMergerRepair{}, intake.CheckReport{}, intake.CheckWakeDue{}, intake.CheckLookEnded{},
+		intake.CheckBound{}, intake.ListenerWake{}, intake.PodBackstopDue{},
 		intake.WorkerSilent{}, intake.WorkerBackgroundStalled{},
 	} {
 		rows = append(rows, row{fact: fact})

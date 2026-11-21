@@ -1009,6 +1009,12 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if file.Project == nil || strings.TrimSpace(*file.Project) == "" {
 		return Config{}, errors.New("project is required")
 	}
+	// The key's shape is refused before any other setting is resolved, and the loader opens no
+	// store and mints no credential, so a daemon given a key the contract refuses stops here,
+	// before its boot migrates anything or mints an App token.
+	if err := CheckProjectKey(*file.Project); err != nil {
+		return Config{}, err
+	}
 	cfg.Project = *file.Project
 
 	if file.StateDir == nil || strings.TrimSpace(*file.StateDir) == "" {

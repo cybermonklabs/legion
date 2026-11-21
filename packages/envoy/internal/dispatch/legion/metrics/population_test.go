@@ -23,7 +23,8 @@ func after(hours float64) time.Time {
 
 // corpus writes the event log, handoffs and observations of one finished child of one root, the
 // shapes Read gathers: a session titled by its role and issue, status snapshots, a handoff, the
-// sampler's observations, a merged pull request, and an issue the implementer filed in the tree.
+// observations Dispatch records, a merged pull request, and an issue the implementer filed in the
+// tree.
 func corpus(t *testing.T) *store.Store {
 	t.Helper()
 	database := storetest.Open(t)
@@ -283,7 +284,7 @@ func TestOnlyAnAskOpenedByASessionOfTheIssuesOwnTreeMakesItWaitOnAPerson(t *test
 }
 
 // TestReadTakesTheTimelinesAndTheTreesFromOneSnapshot: Read takes the window's observations and
-// the project's reported set, with its trees, from one snapshot (readSampled), so a sampler commit
+// the project's reported set, with its trees, from one snapshot (readRecorded), so an intake commit
 // during the read moves both or neither. The commit here lands, on another connection, the moment
 // the first statement reading legion_observations or legion_current ends, and every other such
 // statement waits for it, so the two reads straddle it whether they run in turn or side by side:
@@ -335,5 +336,64 @@ func TestReadTakesTheTimelinesAndTheTreesFromOneSnapshot(t *testing.T) {
 	}
 	if observed, tree := newest(population); observed != "INFRA-2" || tree != "INFRA-2" {
 		t.Errorf("the next read has INFRA-2's newest tree observation %q and its Tree %q, want INFRA-2 for both, the commit's", observed, tree)
+	}
+}
+
+// TestAWholeReadThatDropsAnIssueIsReadAsADrop: a whole read that no longer carries an issue writes
+// a `null` row for each of the issue's fields, and the metrics read a `null` slot beside a `null`
+// phase at one moment as a drop, not a release (TestANullSlotMarkIsAReleaseOnlyInAReadThatStillCarriesTheIssue).
+// Here the issue's slot has a row newer than the dropping read's own time, as a state event of a
+// daemon whose clock runs ahead of Dispatch's writes, and its phase has none. A whole read still
+// writes its two `null` rows at one moment, 1 µs after that newer row (legion's
+// recordObservations, which legion's TestAWholeReadAfterEventsAheadOfDispatchsClockIsTheNewestState
+// holds to that rule through the intake's own whole read), and those are the rows seeded here. So
+// the root, admitted and holding a slot from hour 0 with its architect at work, is in design to its
+// close at hour 6, and spends no hour in the queue. Each `null` at its own field's moment would read
+// the slot's as a release, and put the hours after it in the queue.
+func TestAWholeReadThatDropsAnIssueIsReadAsADrop(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := t.Context()
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := database.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("seed (%s): %v", sql, err)
+		}
+	}
+	exec(`insert into projects (key, name, default_assignee) values ('INFRA', 'INFRA', 'alice')`)
+	exec(`insert into issues (key, project_key, number, title, status, rank, created_by, created_at, closed_at)
+		values ('INFRA-1', 'INFRA', 1, 'The root', 'done', 'm', '{"kind":"user","id":"alice"}'::jsonb, $1, $2)`, after(-1), after(6))
+	exec(`insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		values ('INFRA-1', 1, 'comment.created', $1::jsonb, '{}'::jsonb, false, $2)`,
+		`{"kind":"session","id":"s-architect","origin":{"session_title":"Legion architect · INFRA-1"}}`, after(0))
+
+	observe := func(field, value string, at time.Time) {
+		t.Helper()
+		exec(`insert into legion_observations (project, issue_key, field, value, observed_at)
+			values ('INFRA', 'INFRA-1', $1, $2::jsonb, $3)`, field, value, at)
+	}
+	// The read at hour 0 finds the root admitted in slot 0.
+	observe(legion.FieldPhase, `"admitted"`, after(0))
+	observe(legion.FieldSlot, `0`, after(0))
+	// A state event gives the root slot 1, on a daemon clock three hours ahead of Dispatch's.
+	observe(legion.FieldSlot, `1`, after(3))
+	// The read at hour 2 on Dispatch's clock no longer carries the root: its `null` rows, both at
+	// one moment, 1 µs after the project's newest row.
+	moment := after(3).Add(time.Microsecond)
+	observe(legion.FieldPhase, `null`, moment)
+	observe(legion.FieldSlot, `null`, moment)
+
+	population, err := Read(ctx, database.Pool, nil, "INFRA", after(-2), after(24))
+	if err != nil {
+		t.Fatalf("read the population: %v", err)
+	}
+	report := Compute(population, ScopeAll, after(24))
+	if len(report.WorkTime.Issues) != 1 {
+		t.Fatalf("work-time rows = %+v, want the root alone", report.WorkTime.Issues)
+	}
+	if row := report.WorkTime.Issues[0]; row.Hours != 6 || row.QueuedHours != 0 {
+		t.Errorf("the root's work time = %g h with %g h queued, want 6 h with none queued: a drop releases no slot", row.Hours, row.QueuedHours)
+	}
+	if bar := barOf(t, report, "architect"); bar.Hours != 6 {
+		t.Errorf("the architect bar = %g h, want 6: the root is in design from hour 0 to its close", bar.Hours)
 	}
 }

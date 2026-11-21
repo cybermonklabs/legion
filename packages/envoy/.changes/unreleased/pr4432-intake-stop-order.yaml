@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  An intake's stop takes the messages that wait behind their keys before it gives up the
+  handlers that run. Before, a stop under a context that had already ended gave up the handler
+  in progress first, and the next message of that key could start its handler as the first one
+  returned. That handler was given up at once and its message was left with the durable until
+  its ack wait ended, not handed back when the stop ended. The message was not lost.
+custom:
+  Issue: pr4432

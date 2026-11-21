@@ -72,7 +72,7 @@ func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
 			Number: 2 * ConnectionsPerProcess, Says: "two processes at their ceiling"},
 		{File: storeArch, Pattern: `per caller of the keyword fill's hold, ` + number,
 			Number: LeasePoolSize,
-			Says:   "the lease pool's connections, one per leased loop and per hold caller"},
+			Says:   "the lease pool's connections, one per leased name and per hold caller"},
 
 		// The rest of the pool table, each row stating the constant beside its name, and the
 		// site page's enumeration of the same pools in prose, where four of the counts are

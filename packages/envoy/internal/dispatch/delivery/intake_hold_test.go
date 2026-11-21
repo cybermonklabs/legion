@@ -230,6 +230,20 @@ func keyedRunnerStopped(intake *Intake) bool {
 	return delivering.keys.stopped
 }
 
+// keyedRunnerQueued is how many items wait behind their keys in the keyed runner of the delivery
+// this process's intake is subscribed with.
+func (p *intakeProcess) keyedRunnerQueued() int { return keyedRunnerQueued(p.intake) }
+
+// keyedRunnerQueued is how many items wait behind their key's handler in the keyed runner of the
+// delivery intake is subscribed with (queuedBehindKeys), and 0 while intake has no delivery.
+func keyedRunnerQueued(intake *Intake) int {
+	delivering := subscribedDelivery(intake)
+	if delivering == nil {
+		return 0
+	}
+	return queuedBehindKeys(delivering)
+}
+
 // heldListReleased reports whether this process's intake has released the held list of the
 // delivery it is subscribed with.
 func (p *intakeProcess) heldListReleased() bool { return heldListReleased(p.intake) }

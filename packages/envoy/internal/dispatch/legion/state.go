@@ -25,7 +25,8 @@ import (
 //     issues' parent chain instead.
 
 // State is a daemon's state as Dispatch records it: its issues, its admission block, the settings
-// it reports, and nothing else of the document.
+// it reports, the members of its daemon block a whole read checks (Daemon), and nothing else of the
+// document.
 type State struct {
 	Issues map[string]Issue `json:"issues"`
 	// Admission is the daemon's admission block, absent from a document that carries none: the
@@ -37,6 +38,33 @@ type State struct {
 	// bytes the daemon sent: the board carries them and Dispatch models none of them, so a key
 	// added to legion.yaml is recorded the day a daemon sends it.
 	Settings map[string]json.RawMessage `json:"settings,omitempty"`
+	// Daemon is the daemon block, which no observation records: a whole read (fetchWhole) checks
+	// the state is the setting's project's and takes the starting point it reflects from it.
+	Daemon *Daemon `json:"daemon,omitempty"`
+}
+
+// Daemon is the state's daemon block in the members a whole read checks.
+type Daemon struct {
+	// Project is the Dispatch project whose state the daemon serves.
+	Project string `json:"project"`
+	// SchemaVersion is the highest migration version the daemon's store records. A boot event
+	// whose schemaVersion is another calls for a whole read (ReadReasonSchema). A pointer, so a
+	// document that serves none stays apart from one that serves 0.
+	SchemaVersion *int64 `json:"schemaVersion,omitempty"`
+	// StateSeq is the sequence of the newest state event the daemon committed in the snapshot the
+	// document was read from (dispatch://INFRA-3931): every event at or below it is in the
+	// document and none above it is. A pointer, so a daemon that serves none (one without state
+	// events) and one that serves 0 (one that has committed no state event yet) stay apart.
+	StateSeq *int64 `json:"stateSeq,omitempty"`
+	// StateID is the id of the store StateSeq is counted in, which the daemon made at the
+	// project's first state event and never changes, and which every state message carries as its
+	// stateId: the intake applies only a message of this id. Empty where the daemon serves none.
+	StateID string `json:"stateId,omitempty"`
+	// StateRun is the id of the daemon run that serves the document, the run every state message
+	// of that run carries. A good whole read takes it as the cursor's run, so a boot of that run at
+	// or below StateSeq is one the read already holds (stateMessage.unfollowed). Empty where the
+	// daemon serves none.
+	StateRun string `json:"stateRun,omitempty"`
 }
 
 // Admission is the admission block in the members Dispatch records. Every member is optional and
@@ -177,44 +205,79 @@ type Observation struct {
 // older. The issue's status and its pull request are not observed, since neither the board nor
 // the metrics reads either: the metrics read an issue's status from Dispatch's own events
 // (metrics' readStatusMarks).
+//
+// Each value is its field's one conversion (phaseValue and the rest below), which a state event
+// passes through too (intake.go), so a read and an event never encode one value differently.
 func (s State) Observations() []Observation {
 	keys := slices.Sorted(maps.Keys(s.Issues))
 	// The three fields every issue carries and one claim each, and the project's two.
 	observations := make([]Observation, 0, len(keys)*4+2)
-	for _, project := range []struct {
-		field string
-		value any
-	}{
-		{FieldAdmission, s.Admission},
-		{FieldSettings, s.Settings},
-	} {
-		observations = append(observations, Observation{
-			IssueKey: AdmissionKey, Field: project.field, Value: encodeValue(project.value),
-		})
-	}
+	observations = append(observations,
+		Observation{IssueKey: AdmissionKey, Field: FieldAdmission, Value: admissionValue(s.Admission)},
+		Observation{IssueKey: AdmissionKey, Field: FieldSettings, Value: settingsValue(s.Settings)},
+	)
 	for _, key := range keys {
 		issue := s.Issues[key]
-		add := func(field string, value any) {
-			observations = append(observations, Observation{IssueKey: key, Field: field, Value: encodeValue(value)})
+		add := func(field string, value json.RawMessage) {
+			observations = append(observations, Observation{IssueKey: key, Field: field, Value: value})
 		}
-		add(FieldPhase, issue.Phase)
+		add(FieldPhase, phaseValue(issue.Phase))
 		if issue.Tree != nil {
-			add(FieldTree, optional(*issue.Tree))
+			add(FieldTree, treeValue(issue.Tree))
 		}
-		var slot any
-		if issue.Slot != nil {
-			slot = issue.Slot.Index
-		}
-		add(FieldSlot, slot)
-		add(FieldWaitingOn, rawOrNil(issue.WaitingOn))
+		add(FieldSlot, slotValue(issue.Slot))
+		add(FieldWaitingOn, waitingOnValue(issue.WaitingOn))
 		if issue.Architect != nil {
-			add(ClaimFieldPrefix+"architect", optional(issue.Architect.State))
+			add(ClaimFieldPrefix+"architect", claimValue(issue.Architect.State))
 		}
 		for _, role := range slices.Sorted(maps.Keys(issue.Workers)) {
-			add(ClaimFieldPrefix+role, optional(issue.Workers[role].Claim.State))
+			add(ClaimFieldPrefix+role, claimValue(issue.Workers[role].Claim.State))
 		}
 	}
 	return observations
+}
+
+// The one conversion of each observed field, from the field as a state document carries it to the
+// value legion_observations holds: a whole read's (Observations) and a state event's (intake.go's
+// stateEvent.observe, through changeObservation) alike, each of which decodes the daemon's value
+// into the field's own type here first.
+
+// phaseValue is an issue's phase.
+func phaseValue(phase string) json.RawMessage { return encodeValue(phase) }
+
+// treeValue is an issue's tree root, `null` for none. An empty root is one the daemon left out:
+// the field is `omitempty` on the wire.
+func treeValue(tree *string) json.RawMessage {
+	if tree == nil {
+		return encodeValue(nil)
+	}
+	return encodeValue(optional(*tree))
+}
+
+// slotValue is the index of the admission slot an issue holds, `null` for none.
+func slotValue(slot *Slot) json.RawMessage {
+	if slot == nil {
+		return encodeValue(nil)
+	}
+	return encodeValue(slot.Index)
+}
+
+// waitingOnValue is what an issue waits on from a person, as the daemon sent it, `null` for
+// nothing.
+func waitingOnValue(waitingOn json.RawMessage) json.RawMessage {
+	return encodeValue(rawOrNil(waitingOn))
+}
+
+// claimValue is one role's claim state, `null` for a claim that names none.
+func claimValue(state string) json.RawMessage { return encodeValue(optional(state)) }
+
+// admissionValue is the admission block in the members Dispatch records (Admission), `null` for
+// none.
+func admissionValue(admission *Admission) json.RawMessage { return encodeValue(admission) }
+
+// settingsValue is the settings the daemon reports, `null` for none.
+func settingsValue(settings map[string]json.RawMessage) json.RawMessage {
+	return encodeValue(settings)
 }
 
 // encodeValue is value as the jsonb column holds it: its JSON, or `null` for a value that does not

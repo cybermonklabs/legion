@@ -240,14 +240,14 @@ type computation struct {
 // it on (Population.Phases).
 type phaseTimeline struct {
 	spans []PhaseSpan
-	// firstObserved is the index of the first span the sampler observed, and len(spans) for an
-	// issue it never observed.
+	// firstObserved is the index of the first span Dispatch observed of the issue, and len(spans)
+	// for an issue it never observed.
 	firstObserved int
 }
 
 // statusesBefore is the part of the issue's status history the rules before observations read:
 // the statuses written before the observed part of its timeline begins, which is all of them for
-// an issue the sampler never observed.
+// an issue Dispatch never observed.
 func (t phaseTimeline) statusesBefore(issue *Issue) []Mark {
 	if t.firstObserved == len(t.spans) {
 		return issue.StatusMarks
@@ -582,8 +582,8 @@ func (c *computation) rework(finished []*Issue) Rework {
 // reviewRounds is "entries into `reviewing`, or into status `needs_review` before observations":
 // the entries into `needs_review` of the status history written before the observed part of the
 // issue's timeline begins, and the entries into `reviewing` of that observed part. A `reviewing`
-// stretch the sampler first saw is no new entry where the event log's part ends in reviewing too.
-// An issue whose only `phase` mark is the one the sampler's first pass left after it closed has
+// stretch Dispatch first observed is no new entry where the event log's part ends in reviewing too.
+// An issue whose only `phase` mark is the one Dispatch's first whole read left after it closed has
 // no observed part: the stretch that mark opens lies after the close, so observedPhases clips it
 // to nothing, and its rounds are its status entries.
 func reviewRounds(issue *Issue, timeline phaseTimeline) int {

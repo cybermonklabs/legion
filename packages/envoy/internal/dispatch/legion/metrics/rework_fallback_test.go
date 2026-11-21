@@ -16,8 +16,8 @@ import (
 //
 // Each case below is the smallest fixture that shows the rule, written from the Design.
 
-// TestReviewRoundsStillCountStatusEntriesWhenTheOnlyObservationFollowsTheClose: the first pass of
-// the sampler writes one `phase` observation for every issue the daemon's state names, and the
+// TestReviewRoundsStillCountStatusEntriesWhenTheOnlyObservationFollowsTheClose: Dispatch's first
+// whole read writes one `phase` observation for every issue the daemon's state names, and the
 // daemon's state names every issue it has recorded, closed ones included — in the A2 corpus all
 // 289 finished issues carry exactly one mark, `"done"`, stamped after they closed. `reviewRounds`
 // gates on whether the issue carries any `phase` observation at all, so that one trailing mark
@@ -36,7 +36,7 @@ func TestReviewRoundsStillCountStatusEntriesWhenTheOnlyObservationFollowsTheClos
 		statusAt(hour(6), "in_progress").
 		statusAt(hour(7), "needs_review").
 		statusAt(hour(8), "done").
-		// The one mark the first sampler pass leaves on an issue that closed hours ago.
+		// The one mark Dispatch's first whole read leaves on an issue that closed hours ago.
 		observeString("phase", hour(12), "done")
 
 	report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))

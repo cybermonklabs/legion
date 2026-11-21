@@ -191,10 +191,10 @@ func KVRead(bucket string) []string {
 }
 
 // DispatchDurables are the fixed durable consumers of the stream that Dispatch's grant lets it
-// bind, beside the listener durable of its machine id. Two users holding Dispatch would bind the
-// same ones.
+// bind, beside the listener durable of its machine id: the two delivery intakes' and the Legion
+// state intake's. Two users holding Dispatch would bind the same ones.
 func DispatchDurables() []string {
-	return []string{bus.DispatchDeliveryDurable, bus.DispatchJobDurable}
+	return []string{bus.DispatchDeliveryDurable, bus.DispatchJobDurable, bus.DispatchLegionStateDurable}
 }
 
 // Dispatch is the grant of Dispatch's one NATS user, which envoy-dispatch and the envoy-listener

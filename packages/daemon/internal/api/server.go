@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -793,13 +794,61 @@ func (s *server) refusedWhilePaused(w http.ResponseWriter, r *http.Request, requ
 }
 
 // projectState is the project's own value, as every route that reads it reads it: one
-// repeatable-read read-only snapshot, one read of the source, and the consumers' lag read after
-// that snapshot commits. It writes its own refusal and answers false where it wrote one, so the
-// two reading routes share the transaction, the read and the refusals and differ only in what
-// each answers from the value.
+// repeatable-read read-only snapshot (readSnapshot), one read of the source, and the consumers'
+// lag read after that snapshot commits. It writes its own refusal and answers false where it wrote
+// one, so the two reading routes share the transaction, the read and the refusals and differ only
+// in what each answers from the value.
 //
 // The claims are the snapshot's own, which is what a caller's contract is read from
 // (writeAnswerFrom): a claim and the state it was projected into cannot come from two moments.
+func (s *server) projectState(w http.ResponseWriter, r *http.Request) (State, []supervise.Claim, bool) {
+	reading, cancel := context.WithTimeout(r.Context(), s.stateBound)
+	defer cancel()
+	var state State
+	var claims []supervise.Claim
+	read := func(tx pgx.Tx) (err error) {
+		state, claims, err = s.state.State(reading, tx)
+		return err
+	}
+	if !s.readSnapshot(w, r, reading, "api: state source failed", read) {
+		return State{}, nil, false
+	}
+	// The consumers' lag is read from NATS after the commit, so a slow or silent NATS server holds
+	// no snapshot open; what it does not answer is each consumer's `unavailable`, never a refusal.
+	if s.consumerLag != nil {
+		state.Consumers = ConsumerLagViewsOf(s.consumerLag(reading))
+	}
+	// The fleet's lowest plugin contract is read from the claims of the very snapshot the state
+	// was projected from, so the number the body reports and the shapes the body was served at
+	// are read from one moment (State.LowestPluginContract).
+	state.LowestPluginContract = lowestPluginContract(claims)
+	return state, claims, true
+}
+
+// observedState is the observed view of the project's state (ObservedState,
+// StateSource.ObservedState), read as projectState reads the whole state: in one snapshot of its
+// own (readSnapshot), under the same bound, statement timeout and rollback. The claims are the
+// snapshot's own, which the caller's contract is read from, as they are for the whole state. It
+// reads no consumers' lag, which is no part of what Dispatch observes.
+func (s *server) observedState(w http.ResponseWriter, r *http.Request) (ObservedState, []supervise.Claim, bool) {
+	reading, cancel := context.WithTimeout(r.Context(), s.stateBound)
+	defer cancel()
+	var observed ObservedState
+	var claims []supervise.Claim
+	read := func(tx pgx.Tx) (err error) {
+		observed, claims, err = s.state.ObservedState(reading, tx)
+		return err
+	}
+	if !s.readSnapshot(w, r, reading, "api: observed state source failed", read) {
+		return ObservedState{}, nil, false
+	}
+	return observed, claims, true
+}
+
+// readSnapshot runs read in one repeatable-read read-only transaction and commits it, which is
+// how both views of the state read the source (projectState, observedState). It writes its own
+// refusal and answers false where it wrote one; failed is the line it logs when read fails.
+// reading is the caller's context, under the read's bound.
 //
 // The read runs under a bound of the daemon's own (stateReadBound, Options.StateReadBound).
 // Before INFRA-3169 the only thing that ended this read was the client giving up, so a read that
@@ -821,21 +870,19 @@ func (s *server) refusedWhilePaused(w http.ResponseWriter, r *http.Request, requ
 // a byte is written — so the handler would hold a second full copy of a body that measured
 // 4,055,424 bytes on the production deployment on 2026-11-12. One such copy per concurrent read
 // is a second resource failure inside the first one this bounds.
-func (s *server) projectState(w http.ResponseWriter, r *http.Request) (State, []supervise.Claim, bool) {
+func (s *server) readSnapshot(w http.ResponseWriter, r *http.Request, reading context.Context, failed string, read func(pgx.Tx) error) bool {
 	if s.stateTransactions == nil {
 		s.log.Error("api: state transaction source is unset")
 		s.refuse(w, r, http.StatusInternalServerError, "state unavailable")
-		return State{}, nil, false
+		return false
 	}
-	reading, cancel := context.WithTimeout(r.Context(), s.stateBound)
-	defer cancel()
 	tx, err := s.stateTransactions.BeginTx(reading, pgx.TxOptions{
 		IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly,
 	})
 	if err != nil {
 		s.logRequestFailure(r, err, "api: begin state transaction failed")
 		s.refuse(w, r, http.StatusInternalServerError, "state unavailable")
-		return State{}, nil, false
+		return false
 	}
 	defer func() {
 		// The rollback runs on a context detached from the read's, with a little budget of its
@@ -851,37 +898,67 @@ func (s *server) projectState(w http.ResponseWriter, r *http.Request) (State, []
 	if _, err := tx.Exec(reading, "set local statement_timeout = "+strconv.FormatInt(statementBound(s.stateBound), 10)); err != nil {
 		s.logRequestFailure(r, err, "api: bound the state transaction's statements failed")
 		s.refuse(w, r, http.StatusInternalServerError, "state unavailable")
-		return State{}, nil, false
+		return false
 	}
-	state, claims, err := s.state.State(reading, tx)
-	if err != nil {
-		s.logRequestFailure(r, err, "api: state source failed")
+	if err := read(tx); err != nil {
+		s.logRequestFailure(r, err, failed)
 		s.refuse(w, r, http.StatusInternalServerError, "state unavailable")
-		return State{}, nil, false
+		return false
 	}
 	if err := tx.Commit(reading); err != nil {
 		s.logRequestFailure(r, err, "api: commit state transaction failed")
 		s.refuse(w, r, http.StatusInternalServerError, "state unavailable")
-		return State{}, nil, false
+		return false
 	}
-	// The consumers' lag is read from NATS after the commit, so a slow or silent NATS server holds
-	// no snapshot open; what it does not answer is each consumer's `unavailable`, never a refusal.
-	if s.consumerLag != nil {
-		state.Consumers = ConsumerLagViewsOf(s.consumerLag(reading))
-	}
-	// The fleet's lowest plugin contract is read from the claims of the very snapshot the state
-	// was projected from, so the number the body reports and the shapes the body was served at
-	// are read from one moment (State.LowestPluginContract).
-	state.LowestPluginContract = lowestPluginContract(claims)
-	return state, claims, true
+	return true
 }
 
+// stateRoute answers the whole state, or with `?view=observed` the observed view, which is what
+// Dispatch reads (ObservedState). Each is read in its own snapshot (projectState, observedState)
+// and served through the one writer at the caller's contract: the observed view is narrowed by the
+// whole state's own bands and strips, so at every contract its members are the whole state's
+// (shaping.go's observedFor). Any other `view` is refused before a transaction begins
+// (observedViewAsked).
 func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
+	observed, ok := s.observedViewAsked(w, r)
+	if !ok {
+		return
+	}
+	if observed {
+		view, claims, ok := s.observedState(w, r)
+		if !ok {
+			return
+		}
+		s.writeAnswerFrom(w, r, AnswerObservedState, http.StatusOK, view, claims)
+		return
+	}
 	state, claims, ok := s.projectState(w, r)
 	if !ok {
 		return
 	}
 	s.writeAnswerFrom(w, r, AnswerState, http.StatusOK, state, claims)
+}
+
+// observedView is the one value of the state route's `view` parameter: the observed view
+// (ObservedState).
+const observedView = "observed"
+
+// observedViewAsked is whether r asks the state route for the observed view, and false with ok when
+// it asks for the whole state, which a request with no `view` parameter does. A `view` of any other
+// value, an empty one or a second one among them, is answered 400 INVALID_VIEW here, naming the
+// value and the one view the route serves, and ok is false: the route then reads nothing.
+func (s *server) observedViewAsked(w http.ResponseWriter, r *http.Request) (observed, ok bool) {
+	views, asked := r.URL.Query()["view"]
+	if !asked {
+		return false, true
+	}
+	if len(views) == 1 && views[0] == observedView {
+		return true, true
+	}
+	s.writeFailure(w, r, http.StatusBadRequest, "INVALID_VIEW", fmt.Sprintf(
+		"view %q is no view of the state: the one view this route serves is %q, and a request with no view gets the whole state",
+		strings.Join(views, ","), observedView))
+	return false, false
 }
 
 // statementBound is bound as PostgreSQL's statement_timeout takes it: whole milliseconds, and

@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  The state route reads the phase rows of all issues in one statement (`record.Store.AllPhases`),
+  and the pull requests and the design gates of all issues in one statement each
+  (`PullRequestsOf`, `Gates`). Before, it read these three facts with three statements for each
+  issue, so it no longer makes a statement for each issue. On 2026-11-20 the INFRA daemon held
+  3,273 issues, which was 9,819 statements in one read of the state. The body of the full state
+  does not change.
+custom:
+  Issue: pr4432

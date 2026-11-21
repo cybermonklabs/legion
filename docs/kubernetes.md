@@ -2236,6 +2236,9 @@ select i.key, row_number() over (order by i.key) + coalesce((select max(index) f
 Read the count the second statement wrote against the deployment's `admissionCap` before starting the earlier image: it writes a row per running root whatever the cap, as this release's own migration does, and the earlier release's cap loop drains the surplus as trees finish rather than refusing to boot.
 Set `admissionCap` back to the value it had before the upgrade in the same change that pins the earlier image, since this release's value counts issues and the earlier one's counts trees.
 
+These statements publish no state event, since an edit by SQL never does.
+A daemon of a release before the one that publishes state events publishes none at all, so roll Dispatch back first, to the release before that one, and then roll back the daemon ([Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events)).
+
 A root in `todo` is left out because it holds a slot under neither release: it goes back into the earlier release's waiting line, whose own admission pass gives it a slot and opens its tree when the line reaches it.
 Giving it one here would be the opposite of a rollback.
 The earlier release's `line` passes over a root that already holds a slot, and its `releasesSlot` and `releaseInactiveSlots` free only a root that is done, waiting on a person, or out of the workflow (`internal/admit/admit.go` on that release), so a queued root would hold its slot for ever, be promoted by nothing and fill the cap.
@@ -2432,6 +2435,117 @@ While no Dispatch release reads `issue_role_holders` to record a result, the rol
 After such a release is live, an earlier daemon publishes nothing, and each new or relaunched session records its results with no role.
 So roll Dispatch back first, to the release before that one, and then roll back the daemon.
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
+
+#### Rolling out and rolling back the release that publishes the daemon's state events
+
+This release has the daemon publish each change of what Dispatch observes as a state event, and Dispatch writes its Legion observations from those events (dispatch://INFRA-3931).
+Before it, Dispatch read each configured daemon's `GET /legion/v1/state` once a minute.
+The daemon writes each event as an outbox row in the transaction of the write it reports, on one `state` lane per project, and it publishes the rows of each committed transaction as one message on `notifications.legion.<token>.state`, or as consecutive messages split between events where they pass 900 KB (`stateMessageBound`).
+Its migration `20261119184200_state_events` adds the three state kinds to the outbox's kind check (`outbox_kind_check`), the tables `state_publication` and `state_admission_blocks`, three columns on `outbox`, and the commit trigger that gives each state row its sequence.
+That migration writes the whole list, `conflict_confirm`, `merge_forward` and `phase_ended` among its kinds, and its version stands above `20261119003157_conflict_reads_and_merge_forward`, so it writes the list last on any database.
+Dispatch's migration `20261118212431_legion_events` adds `kind` and `recorded_at` to `legion_reads`, each with a default, and `reason`, which is null on a row that names no reason.
+It also adds the index `legion_reads_project_recorded_at` and the tables `legion_event_cursors` and `legion_event_parts`.
+It adds `legion_state_intake` to `server_processes`, with the default 0: a process of this release registers 1, and a process of an earlier release does not name the column, so its row reads 0.
+
+Roll out the three parts in this order:
+
+1. **The `envoy-infra` release that grants Dispatch the durable `legion-state-events`, applied to the NATS hub.**
+   The grant is Dispatch's permission set (`core.DispatchDurables()`, `packages/envoy/infra/core/permissions.go`).
+   A changed permission set rewrites the hub's rendered authorization, and on a VM hub that replaces the hub's instance.
+   Without the grant, the hub refuses Dispatch's calls on the durable, so Dispatch creates no durable and no state event reaches its observations.
+   The take-over's ERROR lines (`dispatch delivery: …`) then name `legion-state-events`.
+
+2. **The daemon release, on every project that has a Legion setting.**
+   A daemon with a workflow writes its boot event at each start, and then an event for each change.
+   A daemon with no workflow (no `dispatch_url`) writes no state event at all.
+   The daemon publishes while the earlier Dispatch still reads each daemon once a minute.
+   That Dispatch ignores `daemon.stateSeq`, since its decode reads only the fields it names (`legion/state.go` on that release).
+   The messages wait in the stream, and nothing reads them yet.
+
+3. **The Dispatch release.**
+   Its intake creates the durable at its first take-over, delivering new messages only, then reads each configured project's daemon whole once, and then applies the events.
+   It takes that first read of a project only when no Dispatch process of an earlier release is in the fleet: no `server_processes` row at `legion_state_intake` 0 has a heartbeat in the last 10 minutes.
+   An earlier release still reads each daemon once a minute, and a row of that read could land after the first read and after the events applied on it.
+   So while a process of the earlier release runs, and for 10 minutes after its last heartbeat, the intake reads no daemon, and a message of a project with no first read writes nothing and is finished.
+   It logs `legion intake: a Dispatch process of an earlier build is in the fleet, so no starting point is taken` at INFO, at most once an hour for each project.
+   The first message, write of a Legion setting or take-over after that time makes the first read.
+   No timer makes it.
+   A project whose daemon does not run the daemon release gets one read, recorded as a failed `legion_reads` row whose error names why (`the daemon serves no daemon.stateSeq, so it publishes no state events`), and its board's header shows that failure.
+   The read still records that daemon's state, and nothing reads the project again until its daemon publishes an event, a Legion setting is written, or the durable is taken over again.
+   During the roll, a process of the earlier Dispatch release goes on reading each daemon once a minute, and its `legion_reads` rows take the new columns' defaults.
+   Each whole read is `GET /legion/v1/state?view=observed`, the observed view of the daemon's state (daemon API contract 207).
+   The view has the daemon block, `settings` and `admission` of the whole state, and each issue of the whole state with only its `key`, `phase`, `tree`, `slot.index`, `waitingOn`, `architect.state` and `workers.<role>.claim.state`.
+   The daemon serves the view at the caller's contract with the same rule as the whole state, so at each contract every member of the view is the member the whole state serves there: a caller below 207 gets no `stateSeq`, `stateId` or `stateRun` in either answer.
+   Dispatch states no contract and asks from no pod, so it gets the view at the daemon's own contract.
+   The daemon reads the view in the same repeatable-read snapshot as the whole state, under the same 60-second bound, and reads the phase rows of all issues in one statement.
+   On 2026-11-20 the INFRA daemon's whole state was 7,307,929 bytes, and the part of it that the view serves was 665,962 bytes.
+   A daemon of an earlier release does not know the `view` parameter, so it answers the whole state.
+
+After the roll, the intake reads a project's daemon whole again in these cases, and logs each read with its reason:
+
+- **A boot whose schema version moved** (reason `schema`): the boot event's `schemaVersion` is not the `daemon.schemaVersion` the last read found.
+  A migration can change what Dispatch observes and publish no event.
+
+- **A transaction split over messages that does not arrive whole** (reason `gap`): the intake holds each message with `more: true` in `legion_event_parts` and applies nothing of the transaction until its last message arrives.
+  A gap after the held parts, or a message of another run, makes the read.
+  A good read deletes the parts, since its snapshot holds them, and a read that fails keeps them.
+
+- **A message the database refuses for good** (reason `refused`): a Postgres error of SQLSTATE class 22 or 23, which no retry can write.
+  The intake acknowledges the message unapplied, logs `legion intake: the database refuses a state message for good, so it is finished and the project is read whole` at WARN with the project, the sequences and the SQLSTATE, and reads the project whole.
+  Where that read is not due and the message holds it (below), the message goes back to the stream instead, and that delivery logs the hand-back alone; the message's next delivery is refused again.
+  It tries every other database error again in place.
+
+- **A message of another store** (reason `store`): the message's `stateId` is not the `daemon.stateId` of the last good read.
+  The intake applies nothing of it, and the read finds again a daemon whose store was replaced.
+
+A project's whole reads start at least a minute apart, whatever their reason, and a good starting read holds back no read after it.
+A message that calls for a read inside that minute makes none: the intake records the read owed on the project's cursor, with the message's reason.
+The first message that owes the read goes back to the stream unacknowledged until the minute has passed, and its redelivery makes the read.
+For each such hand-back the intake logs `legion intake: a state message goes back to the stream until its project's owed whole read is due` at INFO, with the project, the message's sequences, the read the message calls for as `reason`, its `delivery` count and the `delay`, and logs no other line for that delivery.
+The intake acknowledges every later message that joins the owed read.
+A read that fails sends the first message back for another minute, at most 10 times in all.
+Its next delivery is then acknowledged, whatever its read comes to, and the intake logs `legion intake: a state message went back to the stream the most times allowed for its project's owed whole read, so it is acknowledged and the read stays owed` at WARN.
+A failed read that no message holds waits for the project's next message, boot, settings change or take-over, which makes it once the minute is over: a failed starting read is one, since no message makes it, and so is a read whose message went back 10 times.
+No timer makes a read.
+While a message holds the read, the durable's ack floor stays below it, so a take-over of the durable replays every message after it: at most about 11 minutes of messages where the daemon answers each read within seconds.
+The read's log line names the first reason as `reason` and every reason it was owed for as `reasons`, for example `reasons=gap,boot`.
+So a burst of messages that each call for a read, forged or from a bug, makes one read a minute and holds no other project's messages for longer than that one read, and each project that owes a read holds one message of the durable's window.
+Where a message holds the read, a project that goes quiet is at most a minute behind.
+While a read is owed, the intake applies each message that follows the cursor, and drops a gap, a boot that does not follow, a part that does not continue the held parts and a message of another store, since the read holds their events.
+While no good read has given a project's cursor a store, for example after a write of the setting whose first read failed, the intake applies no message of the project at all, so no message of the daemon the setting named before is applied.
+
+The readings of production on 2026-11-18 were these.
+Production Dispatch (commit `4055c4a5`) had no Legion setting, so step 2 covered no project there, and the take-over of step 3 reads no daemon.
+The daemons of namespace `legion`, INFRA, BET, LINUX and OSSV, each run a workflow, so each publishes state events from its first boot on the daemon release.
+The VM hub's `ENVOY_NOTIFICATIONS` stream has no byte limit, so the state lane's messages leave it by age alone, after 72 hours.
+
+**Dispatch rolls back alone.**
+Its earlier release reads each daemon once a minute again, and its `legion_reads` rows take the new columns' defaults, so its migration needs no statement.
+The durable stays on the stream, and the hub keeps the grant.
+Once no process of this release is left, delete the event cursors, and with them the held parts of split transactions, so that a later roll forward starts each project from a whole read:
+
+```sql
+delete from legion_event_cursors;
+```
+
+Without the delete, the roll forward's take-over delivers each message the stream still holds from the time of the rollback.
+The intake then writes those values after the rows the earlier release wrote, so the history shows the changes of that time a second time, at the roll forward.
+Where the rollback lasted longer than the stream keeps a message (72 hours), the first message after it is a gap, and the intake reads the whole state at it.
+
+**The daemon's migration is forward-only, as every daemon migration is.**
+An earlier daemon boots on the migrated schema.
+It writes no state kind, the commit trigger runs for those kinds alone, and it puts the three kinds in no outbox lane, so a state row left unpublished waits and holds back no other row.
+The kind check keeps every kind an earlier release writes, `phase_ended`, `conflict_confirm` and `merge_forward` among them, so it refuses nothing that release writes.
+Roll Dispatch back first, and then the daemon.
+A Dispatch of this release reads a daemon without the change once and records a failed read, since that daemon serves no `daemon.stateSeq`.
+That daemon sends no event, so Dispatch reads it again only at a take-over of the durable or at a write of a Legion setting (`cursor.readFor` in `legion/intake.go`), and its board shows nothing between those reads.
+A write of that project's own setting reads it at once, and a take-over or a write of another project's setting reads it only a minute or more after the last read.
+Where a daemon was rolled back under a Dispatch of this release, `PUT` the project's Legion setting again with the same URL once the daemon runs this release again.
+The boot event of that roll forward follows the cursor and carries the same schema version the earlier daemon's state served, since the migration stayed applied, so nothing else has Dispatch read the state the earlier daemon wrote.
+
+**An edit of the daemon's database by SQL publishes no state event.**
+Only the daemon's own writes queue one.
+After an operator changes an issue's phase, tree or wait, a slot or a claim by SQL, `PUT` the project's Legion setting with its same URL, and Dispatch reads the daemon's state whole once.
 
 #### Rolling back the broker release that holds a pod's grants to the daemon that enrolled it
 
@@ -3204,6 +3318,7 @@ The migrations recorded above this one are these.
 20261117112334_pull_request_statuses, of cybermonklabs/legion#4299, adds `pull_requests.statuses` at its default, the empty list, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; the way back in its own header drops the column.
 20261117200337_update_ask_marks_at_delivery, of cybermonklabs/legion#4337, clears `claims.update_tasked_at` on each claim whose update ask of the round it records still waits in the outbox, and touches none of the six either, so the block holds over it; it alters no table and has no down file, so it leaves nothing for the block to reverse.
 20261119003157_conflict_reads_and_merge_forward, of cybermonklabs/legion#4464, writes the outbox's kind check again with `conflict_confirm` and `merge_forward` added to the plan record's list, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that merges a conflicting head forward in its phase](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase).
+20261119184200_state_events, of dispatch://INFRA-3931, writes the outbox's kind check again after 20261119003157 does, with the three state kinds added to that migration's list, `conflict_confirm` and `merge_forward` among it, and adds the tables `state_publication` and `state_admission_blocks`, the columns `outbox.state_seq`, `outbox.state_at` and `outbox.state_tx`, and the commit trigger that fills them; it touches none of the six, so the block holds over it and leaves what it adds standing, and a rollback to a release before it takes the steps of its own section, [Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events).
 20261120042902_claim_agent_resume_generation, of dispatch://INFRA-4108, adds `claims.agent_resume_generation` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which deletes the queued `session-forgotten` notices no earlier release decodes, drops the column and deletes its version row.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;

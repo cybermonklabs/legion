@@ -58,6 +58,13 @@ type workflowRuntime struct {
 	admission *admit.Admission
 	handlers  []intake.Handler
 	dispatch  dispatch.Client
+	// recordStore is the Postgres store openWorkflow builds records over (projectRecords), kept so
+	// the boot can turn its state events on once the boot event is queued (publishRecordStates).
+	recordStore *record.Postgres
+	// stateRun is the run id the boot turned the state events on under (publishRecordStates), the
+	// `run` of every state message this daemon run publishes, which the state route serves as
+	// `daemon.stateRun` (source.stateRun). The boot writes it once, before the API serves.
+	stateRun string
 	// gatedSteps are the design-gate steps the project gates, which the send-time narrowing of a
 	// held architect task reads: a catch-up it writes to another tree's architect is composed
 	// under them (rootTask, workflow.CatchUpTheTreesOwed). The empty list gates no step
@@ -161,6 +168,10 @@ type workflowRuntime struct {
 	// entrySweep is tickEntrySweep's period, zero being entrySweepInterval; a test shortens it
 	// so it waits out its own period rather than the daemon's minute.
 	entrySweep time.Duration
+	// lingerWake carries the deadline every admission pass reports, the next moment its block can
+	// change with no write, to the daemon's one timer for it (wakeAtLingerDeadlines); openWorkflow
+	// registers it with the admission pass.
+	lingerWake *lingerWake
 	// holdWarnAfter and holdWarnEvery bound the watchdog log a hold that never releases gets: zero
 	// means the production defaults. A test shortens both to bound how long the warning takes to
 	// observe.
@@ -679,8 +690,11 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// The database is shared by every project's daemon: the workflow reads this project's issues.
 	// The rows the workflow writes through these records wake the outbox's lanes (projectRecords),
 	// through the runtime, since the outbox itself is built later (attach), and each write that can
-	// change the live records asks the refresher to read them again at its commit (wakeLive).
-	w.records = projectRecords{Store: record.NewStore(), project: cfg.Project, wake: w.wakeOutbox, live: w.wakeLive, log: log}
+	// change the live records asks the refresher to read them again at its commit (wakeLive). The
+	// record store is kept beside the scoped records for the switch that turns its state events on
+	// (publishRecordStates).
+	w.recordStore = record.NewStore()
+	w.records = projectRecords{Store: w.recordStore, project: cfg.Project, wake: w.wakeOutbox, live: w.wakeLive, log: log}
 	w.pool = st.Pool()
 	engineCfg := engineConfig(cfg, reviewAppLogin, hookPrompts)
 	// The engine reads and writes the pod tables of the idle release through the store's own
@@ -715,6 +729,11 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// silent list is read against (admit's UseWorkerSilence, config.Config.WorkerSilence and
 	// config.Config.WorkerBackground).
 	w.admission.UseWorkerSilence(cfg.WorkerSilence, cfg.WorkerBackground)
+	// Every admission pass that judges the block reports the next linger deadline it reads, and
+	// the daemon's one timer for it runs a pass then (wakeAtLingerDeadlines, which run starts). A
+	// pass reports only with the state events on, which the boot turns on after this.
+	w.lingerWake = newLingerWake()
+	w.admission.UseLingerWake(w.lingerWake.arm)
 	// The mirror runs before both deciders, and that order is load-bearing. The engine decides
 	// whether to start a child and admission whether to admit a root inside this same
 	// transaction, from the mirror's rows, so the row an event carries must already be written
@@ -1965,6 +1984,10 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 	})
 	group.Go(func() error {
 		w.tickEntrySweep(store.ForConcurrentWorker(running))
+		return nil
+	})
+	group.Go(func() error {
+		w.wakeAtLingerDeadlines(store.ForConcurrentWorker(running))
 		return nil
 	})
 	group.Go(func() error {

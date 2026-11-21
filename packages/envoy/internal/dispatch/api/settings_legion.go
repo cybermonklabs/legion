@@ -62,6 +62,11 @@ type putLegionSettingInput struct {
 // putLegionSetting answers PUT /api/v1/projects/{key}/legion/daemon: name the daemon that
 // project's state is read from. An unknown project is 404 PROJECT_NOT_FOUND, and a state_url that
 // is not an absolute http(s) URL with a host and no path is 400 LEGION_SETTING_INPUT.
+//
+// The write deletes the project's event cursor and notifies legion.SettingsChannel in its own
+// transaction (legion.PutSettings), so the Legion state intake, which the server's shared listener
+// wakes on that channel, reads the daemon whole once: a PUT of the same URL is the way to have a
+// project's state read whole again.
 func (s *server) putLegionSetting(w http.ResponseWriter, r *http.Request) {
 	var input putLegionSettingInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -87,8 +92,8 @@ func (s *server) putLegionSetting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// An open Legion board of this project was told LEGION_NOT_CONFIGURED and otherwise waits for
-	// the sampler's next read to hear that it now has a daemon. The write announces itself on the
-	// same channel a read does, so the board appears as soon as the URL is set.
+	// the intake's read of the new daemon to hear that it now has one. The write announces itself
+	// on the same channel a read does, so the board appears as soon as the URL is set.
 	if err := legion.NotifyRead(r.Context(), s.deps.Store.Pool, project); err != nil {
 		slog.Warn("dispatch: announce a Legion setting write", "project", project, "error", err)
 	}
@@ -96,8 +101,10 @@ func (s *server) putLegionSetting(w http.ResponseWriter, r *http.Request) {
 }
 
 // deleteLegionSetting answers DELETE /api/v1/projects/{key}/legion/daemon: stop reading that
-// project's daemon. What was already read stays; nothing re-reads it. A project with no setting
-// is 404 NOT_FOUND, and an unknown one 404 PROJECT_NOT_FOUND.
+// project's daemon. What was already read stays; nothing re-reads it. The delete takes the
+// project's event cursor with it and notifies legion.SettingsChannel in its own transaction
+// (legion.DeleteSettings), so a setting written again starts from a whole read. A project with no
+// setting is 404 NOT_FOUND, and an unknown one 404 PROJECT_NOT_FOUND.
 func (s *server) deleteLegionSetting(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireActor(w, r, nil); !ok {
 		return

@@ -578,6 +578,19 @@ func LegionWakeSubject(token string) string {
 	return "notifications.legion." + token + ".wake"
 }
 
+// LegionStateSuffix ends the state lane of every Legion deployment, so that a reader of every
+// deployment's state lane names them all with one pattern, LegionNoticeTopicPrefix + "*" +
+// LegionStateSuffix, as Dispatch's durable does. LegionStateSubject is the state lane of the
+// Legion deployment whose project token is token: the daemon publishes its state events there,
+// one message per committed transaction. Generated from LEGION_STATE_SUFFIX and
+// legionStateSubject in packages/contracts, so the daemon's publish and Dispatch's filter name
+// one lane.
+const LegionStateSuffix = ".state"
+
+func LegionStateSubject(token string) string {
+	return "notifications.legion." + token + ".state"
+}
+
 // GithubRepositoryPrefix begins every GitHub subject with its repository's owner and name, each one
 // segment: a name may hold a dot, which a NATS subject splits on. Mirrored on the TS side as
 // `githubRepositoryPrefix`.
