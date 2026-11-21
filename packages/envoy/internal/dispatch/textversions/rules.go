@@ -16,18 +16,26 @@ import (
 // cursor row it creates (search_text_versions_fill.rules). Each batch keeps there the lower of the
 // version stored and this one (advanceCursorQuery), so the column holds the lowest rules version
 // that wrote the rows up to the cursor, and a later build that reads more event types knows which
-// events to read again.
-const rulesVersion = 1
+// events to read again. Version 1 read issues, primary documents, the creates, replies and edits
+// of comments, the creates and replies of issue messages, and asks; version 2 reads, besides,
+// message.edited, comment.deleted and message.deleted (dispatch://INFRA-1523), and takes a post's
+// whole body from its body history (bodyFromHistory). No build reads events again for a lower
+// stored version: no build before version 2 writes an event of those three types, so a log a
+// version 1 fill read holds none of them unless a version 1 fill read past events a version 2
+// build wrote beside it, which it passes as types no rule reads.
+const rulesVersion = 2
 
 // Where a version's body came from, the values of search_text_versions.body_from this build
-// writes: the event's payload, whole; the item's present row, which shows no later change; and
-// revision 1 of a comment's blocks; or the event's own text, cut short, where no source holds the
-// whole body. 'history', a post's body history, is a later build's.
+// writes: the event's payload, whole, which is also where a deleted post's empty body comes from
+// (deletedPostVersion); the item's present row, which shows no later change; the post's body
+// history, the body its first later edit or delete kept (historyBody); revision 1 of a comment's
+// blocks; or the event's own text, cut short, where no source holds the whole body.
 const (
-	bodyFromEvent  = "event"
-	bodyFromRow    = "row"
-	bodyFromBlocks = "blocks"
-	bodyFromCut    = "cut"
+	bodyFromEvent   = "event"
+	bodyFromRow     = "row"
+	bodyFromHistory = "history"
+	bodyFromBlocks  = "blocks"
+	bodyFromCut     = "cut"
 )
 
 // The kinds of item the keyword table holds, the values of search_text_versions.kind.
@@ -38,7 +46,7 @@ const (
 	kindAsk     = "ask"
 )
 
-// versionRules holds the rule of each event type that can start a version (rules version 1).
+// versionRules holds the rule of each event type that can start a version (rules version 2).
 // Every other type is in unchangingTypes: TestEveryEventTypeIsSortedForTheKeywordFill holds each
 // member of contracts.DispatchEventTypes in exactly one of the two.
 //
@@ -53,11 +61,15 @@ const (
 //
 // A comment's version starts at comment.created and comment.answered (a reply is a new comment)
 // and at a comment.edited whose body differs; an issue message's at message.created and
-// message.answered (a reply is a new message), and a message of no issue starts none, since the
-// keyword table leaves direct messages out. An ask's starts at ask.opened (a reopen is one too),
-// ask.edited and ask.answered (a restored answer included) when its body, its question, a space
-// and ask_search_suffix of its options and answer as readEventsQuery reads it (askBodySQL),
-// differs from its latest version's.
+// message.answered (a reply is a new message) and at a message.edited whose body differs, and a
+// message of no issue starts none, since the keyword table leaves direct messages out. A
+// comment.deleted or message.deleted starts the post's version of the empty body
+// (deletedPostVersion): the delete clears the post's body (api's clearDeletedPostBody), and the
+// post's search trigger makes its search column the vector of the empty body (comments_search and
+// messages_search, migrations 0059 and 0061, as 0087 wrote them), which that version's equals.
+// An ask's starts at ask.opened (a reopen is one too), ask.edited and ask.answered (a restored
+// answer included) when its body, its question, a space and ask_search_suffix of its options and
+// answer as readEventsQuery reads it (askBodySQL), differs from its latest version's.
 var versionRules = map[string]rule{
 	"issue.created":    issueCreated,
 	"issue.updated":    issueRetitled,
@@ -66,8 +78,11 @@ var versionRules = map[string]rule{
 	"comment.created":  postVersion(kindComment, false),
 	"comment.answered": postVersion(kindComment, false),
 	"comment.edited":   postVersion(kindComment, true),
+	"comment.deleted":  deletedPostVersion(kindComment),
 	"message.created":  postVersion(kindMessage, false),
 	"message.answered": postVersion(kindMessage, false),
+	"message.edited":   postVersion(kindMessage, true),
+	"message.deleted":  deletedPostVersion(kindMessage),
 	"ask.opened":       askVersion,
 	"ask.edited":       askVersion,
 	"ask.answered":     askVersion,
@@ -357,19 +372,9 @@ func primaryDocumentVersion(e event, latest latestVersion) (version, bool, error
 // text, so that id need not be one.
 func postVersion(kind string, onlyWhenChanged bool) rule {
 	return func(e event, latest latestVersion) (version, bool, error) {
-		var p postPayload
-		if err := decodePayload(e, &p); err != nil {
+		p, issueKey, ok, err := decodePost(e, kind)
+		if err != nil || !ok {
 			return version{}, false, err
-		}
-		if p.ID == nil || *p.ID == "" {
-			return version{}, false, missing("id")
-		}
-		issueKey := p.IssueKey
-		if issueKey == nil {
-			issueKey = e.IssueKey
-		}
-		if kind == kindMessage && issueKey == nil {
-			return version{}, false, nil
 		}
 		if p.Body == nil {
 			return version{}, false, missing("body")
@@ -389,6 +394,50 @@ func postVersion(kind string, onlyWhenChanged bool) rule {
 		v.Body, v.BodyTruncated = *p.Body, p.BodyTruncated
 		return v, true, nil
 	}
+}
+
+// deletedPostVersion is the rule of a delete of a comment or a message of kind (comment.deleted,
+// message.deleted): the delete clears the post's body, so the version holds the empty body. The
+// rule reads no body from the payload: what the event says is that the body is gone, which its
+// type says whole, so the version's body_from is bodyFromEvent, as for a body an event carries
+// whole; no other source could say more, the post's row holding the empty body and its history
+// the body the delete replaced. It starts no version where the post's latest version is already
+// empty, as an edit that keeps the body starts none; a post that stands never has an empty body
+// (the create and the edit refuse one), so only an earlier delete's version is. A message of no
+// issue starts none. No statement casts the post's id, which need not be a uuid.
+func deletedPostVersion(kind string) rule {
+	return func(e event, latest latestVersion) (version, bool, error) {
+		p, issueKey, ok, err := decodePost(e, kind)
+		if err != nil || !ok {
+			return version{}, false, err
+		}
+		if prior := latest(kind, *p.ID); prior != nil && prior.Body == "" {
+			return version{}, false, nil
+		}
+		v, err := newVersion(e, kind, *p.ID, issueKey)
+		if err != nil {
+			return version{}, false, err
+		}
+		return v, true, nil
+	}
+}
+
+// decodePost reads e's payload as an event of a post of kind: the payload, with its id, which
+// must be there, and the post's issue, the payload's, else the event's. ok is false for a message
+// of no issue, whose events start no version, since the keyword table leaves direct messages out.
+func decodePost(e event, kind string) (postPayload, *string, bool, error) {
+	var p postPayload
+	if err := decodePayload(e, &p); err != nil {
+		return postPayload{}, nil, false, err
+	}
+	if p.ID == nil || *p.ID == "" {
+		return postPayload{}, nil, false, missing("id")
+	}
+	issueKey := p.IssueKey
+	if issueKey == nil {
+		issueKey = e.IssueKey
+	}
+	return p, issueKey, kind != kindMessage || issueKey != nil, nil
 }
 
 // askVersion is the rule of ask.opened, ask.edited and ask.answered: the version holds the ask's
@@ -453,13 +502,15 @@ type decided struct {
 //
 //   - A post whose event cut its body (body_truncated) takes it whole, in this order: from its
 //     present row where, in the one snapshot that reads the row, no committed event of the post
-//     after the event changes its text (presentBodyReads: a comment's comment.edited, and none
-//     of an issue message's, which no build edits), so the row still holds the text the event
-//     wrote (presentBody, bodyFromRow); for a comment.created, from revision 1 of its blocks when
-//     every block of that revision was inserted by the comment's own transaction
-//     (firstRevisionBody, bodyFromBlocks); else it keeps the event's text (bodyFromCut), with a
-//     warning naming the item and the event, and counts in Cut. An edit whose whole body equals
-//     its latest version's starts no version.
+//     after the event changes its text (postBodyReads: a comment's comment.edited and
+//     comment.deleted, an issue message's message.edited and message.deleted), so the row still
+//     holds the text the event wrote (presentBody, bodyFromRow); else from the post's body
+//     history, the body the first of those later events kept, where each of the post's events
+//     of those types kept one (historyBody, bodyFromHistory); for a comment.created, from
+//     revision 1 of its blocks when every block of that revision was inserted by the comment's
+//     own transaction (firstRevisionBody, bodyFromBlocks); else it keeps the event's text
+//     (bodyFromCut), with a warning naming the item and the event, and counts in Cut. An edit
+//     whose whole body equals its latest version's starts no version.
 //   - An issue.created whose primary document's version 1 was not written at its created_at, by
 //     the create's own transaction, still holds that version, with a warning naming the issue.
 //   - An issue event before any version of its issue, which only a log that lacks the issue's

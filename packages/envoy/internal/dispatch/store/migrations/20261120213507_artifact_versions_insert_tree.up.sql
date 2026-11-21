@@ -1,0 +1,35 @@
+-- 20261120213507_artifact_versions_insert_tree.up.sql
+--
+-- dispatch://INFRA-1523 (R3, the architect's ruling of 2026-11-20 20:55Z and his acceptance of
+-- this column at 21:21Z): no read of a stored document version gives the words of a pending insert
+-- suggestion whose comment its author deleted, though the version stores them.
+--
+--   insert_tree   the ProseMirror tree the version's markdown was rendered from, as pmdoc's JSON
+--                 (pmdoc.Node.JSON), written in the insert that stores the markdown and only when
+--                 that tree holds an insert suggestion's mark (docs.InsertTree), and null for every
+--                 other row. The markdown carries no anchor mark (pmdoc.Render), so this is the one
+--                 record of which of the version's words a pending insert put there, by the mark's
+--                 id: every read of the version's text masks it by that id
+--                 (docs.MaskedVersionText), dropping the words of each insert whose comment
+--                 (anchor.mark_id) is deleted and was not accepted. The markdown, its sha256 and the
+--                 approvals pinned to it stay as stored.
+--
+-- A version stored before this migration carries null here, and so does every version a release
+-- that does not write the column stores during the roll: its text is answered as stored, which is
+-- what the release before this one answers for every version. No backfill writes the column: the
+-- marks a stored version's markdown was rendered without are in no table once the document's
+-- history has compacted (docs/compaction.go), and a census that rewrites a row refuses the deploy
+-- (cmd/dispatch/README.md, "Pre-deploy census").
+--
+-- Adding a nullable column with no default is a catalog change that rewrites no row. The ALTER
+-- takes ACCESS EXCLUSIVE on artifact_versions, which every document version write inserts into and
+-- every version read reads, and holds it only for the catalog write. It must first wait for every
+-- transaction that holds the table: the runner bounds that wait at pgmigrate.LockTimeout (five
+-- seconds) and tries again up to pgmigrate.LockTimeoutAttempts times, after which the migration
+-- fails the boot, and every write queued behind the ALTER waits as long as it does.
+--
+-- The release before this one neither reads nor writes the column, and every statement it sends
+-- to artifact_versions names its columns, so the two roll side by side (cmd/dispatch/README.md,
+-- "Database migrations"). Rolling back past this migration is an image rollback alone; the column
+-- left behind is read by nothing.
+alter table artifact_versions add column insert_tree jsonb;

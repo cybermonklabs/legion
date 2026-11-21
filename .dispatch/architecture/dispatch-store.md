@@ -19,9 +19,11 @@ It holds the near-copy gate's record too: one `near_copy_checks` row for each an
 It holds the record of each run of each step of an issue's workflow as a node and its tuples, in `workflow_nodes` and `workflow_tuples` (`20261116235202_workflow_nodes`), the priority's columns, keys and indexes under another name, so the rows copy into the node and tuple store the day it lands. `internal/dispatch/workflowstore` is their one writer: a run is one node of kind `step`, `part_of` its issue, each field an attribute written once, so the start and the end the Legion daemon writes under one id merge in either order and a write that runs again changes nothing; its read answers an issue's runs with each one's attempt, which no write stores. Each node and tuple it writes records its writer as a `model.Actor` (`made_by`), which is why it imports `model`.
 
 It holds the keyword table of each past version of the searchable text, in two tables with no foreign key (`20261120021308_search_text_versions`).
-`search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask, and no row is ever updated.
+`search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask; a new version is a new row.
 `search_text_versions_fill` holds the one cursor row of the keyword fill: every event at or below its `event_id` has its rows.
-The keyword fill (`dispatch-textversions`) is the one writer of both tables, and no migration writes them.
+The keyword fill (`dispatch-textversions`) writes both tables, and no migration writes them.
+One other write updates rows: the delete of a comment whose insert suggestion's words a stored document version holds rewrites, through `store.QueueTextVersionsMask` in its own transaction, the vector of each issue row that names such a version from its masked text, under the advisory lock `search-text-versions-mask` that each fill batch holds exclusively (`store.LockTextVersionsMask`).
+The relation's `deleted_at` is the post's own delete mark on every version of a deleted comment or message.
 `store.TextVersionsAt` gives `store.TextVersions`, the relation of the version of each item that held at a cut, only for a cut at or before the reach.
 It refuses a later cut with `store.TextVersionsNotReachedError`, which names the reach.
 The reach is the latest time at or before which every event has its rows, an event that a transaction still open will commit included.

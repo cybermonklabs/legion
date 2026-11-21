@@ -161,9 +161,12 @@ const secondIssue: IssueDetails = {
   title: "Second issue",
 };
 
-/** The words the margin's compose is anchored to, as the selection bar hands them over. */
+/** The words the margin's compose is anchored to, as the selection bar hands them over: words in
+ *  no pending insert, which it names by an empty list (`ComposerAnchor.insertMarks`), as it does
+ *  for each anchor here. */
 const MARK_ANCHOR = {
   artifact: specArtifact.id,
+  insertMarks: [],
   mark_id: "m-9",
   placement: { blockId: "b-1", prefix: "The quick brown fox ", readings: 1, suffix: "." },
   quote: "jumps over the lazy dog",
@@ -172,6 +175,7 @@ const MARK_ANCHOR = {
 /** Words of CORE-2's spec, where the reader opens a compose while away from CORE-1's. */
 const SECOND_DOCUMENT_ANCHOR = {
   artifact: "artifact-2",
+  insertMarks: [],
   mark_id: "m-20",
   placement: { blockId: "b-1", prefix: "The second ", readings: 1, suffix: "." },
   quote: "spec of another issue",
@@ -180,6 +184,7 @@ const SECOND_DOCUMENT_ANCHOR = {
 /** Other words of CORE-1's spec, where the reader opens the next compose back there. */
 const ANOTHER_ANCHOR = {
   artifact: specArtifact.id,
+  insertMarks: [],
   mark_id: "m-10",
   placement: { blockId: "b-1", prefix: "The ", readings: 1, suffix: " fox jumps" },
   quote: "quick brown",
@@ -187,7 +192,12 @@ const ANOTHER_ANCHOR = {
 
 /** `MARK_ANCHOR`'s words once CORE-1 is closed: its document takes no mark then, so the compose
  *  names them by their quote and which reading of it the reader selected (`quoteAnchor`). */
-const QUOTE_ANCHOR = { artifact: specArtifact.id, occurrence: 0, quote: MARK_ANCHOR.quote };
+const QUOTE_ANCHOR = {
+  artifact: specArtifact.id,
+  insertMarks: [],
+  occurrence: 0,
+  quote: MARK_ANCHOR.quote,
+};
 
 /** CORE-1, closed. */
 const closedIssue: IssueDetails = { ...issue, closed_at: "2026-09-21T00:00:00Z" };

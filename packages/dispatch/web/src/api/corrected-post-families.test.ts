@@ -1,0 +1,2188 @@
+import { expect, spyOn, test } from "bun:test";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, relative } from "node:path";
+import { ID_AMBIGUOUS } from "@legion/contracts";
+import {
+  QueryClient,
+  QueryClientProvider,
+  type QueryKey,
+  QueryObserver,
+  useQuery,
+} from "@tanstack/react-query";
+import { act, render, renderHook, waitFor } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
+
+import { cachedKeysHolding } from "../__tests__/cached-keys-holding";
+import { correction, correctionFeed, DELETION, EDITED_AT } from "../__tests__/correction-feed";
+import { type GraphNode, graphNode } from "../__tests__/graph-fixture";
+import { messageCorrectionFields } from "../__tests__/message-fixture";
+import { ItemMatchList } from "../features/issue/ItemMatchList";
+import { useMarginItems } from "../features/margin/useMarginItems";
+import { replyRow } from "../features/threads/replies-fixture";
+import { ApiError, ambiguousItems, api } from "./client";
+import {
+  CORRECTED_POST_FAMILIES,
+  markCorrectedPost,
+  NO_POST_FAMILIES,
+  REFUSAL_FAMILIES,
+  UNMARKED_TEXT_FAMILIES,
+} from "./corrected-post";
+import { useEventFeed } from "./event-feed";
+import { referenceTargetsQuery, whoAmIQuery } from "./queries";
+import { DispatchQueryClient, hearLiveEvent } from "./query-client";
+import type {
+  Artifact,
+  CommentWithTrees,
+  DispatchEvent,
+  GraphReferences,
+  IDCandidate,
+  MessageRead,
+  MessageWithTrees,
+} from "./types";
+
+// R2 and R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-20 07:46Z and 07:48Z:
+// a correction writes its own facts into every cached family whose answer holds a comment or an
+// issue message, or a copy of one's body or marks (`markCorrectedPost`), so a refetch that fails
+// shows no old words. The list of those families was made by hand and missed two (test round
+// 43), so it is derived here: the families the web app's source keys a query under, read as
+// census query C-Q1 reads them (class C of the surface census), are each written
+// (`CORRECTED_POST_FAMILIES`) or listed as holding no post with why (`NO_POST_FAMILIES`), and
+// each listed family is still keyed somewhere.
+
+/** The web app's source: `web/src`. */
+const SOURCE_ROOT = join(import.meta.dir, "..");
+
+/** Every `.ts` and `.tsx` file under `directory` but the tests, as C-Q1's pathspecs take them:
+ *  no `*.test.ts`, no `*.test.tsx` and nothing under a `__tests__` directory. */
+function sourceFiles(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return entry.name === "__tests__" ? [] : sourceFiles(path);
+    return /\.tsx?$/u.test(entry.name) && !/\.test\.tsx?$/u.test(entry.name) ? [path] : [];
+  });
+}
+
+/** One source file, by its path from `web/src`, with its text. */
+interface Source {
+  readonly path: string;
+  readonly text: string;
+}
+
+const SOURCES: readonly Source[] = sourceFiles(SOURCE_ROOT).map((path) => ({
+  path: relative(SOURCE_ROOT, path),
+  text: readFileSync(path, "utf8"),
+}));
+
+/** C-Q1's own expression, `queryKey: *\[ *"[a-zA-Z_-]+"( *, *"[a-zA-Z_-]+")?`, held at the
+ *  `queryKey:` it is tried at. */
+const LITERAL_KEY = /queryKey: *\[ *"([a-zA-Z_-]+)"(?: *, *"([a-zA-Z_-]+)")?/uy;
+
+/** A family as `CORRECTED_POST_FAMILIES` names it: the key's first string, and its second where
+ *  the key writes one, joined by a space. */
+function familyName(first: string, second: string | undefined): string {
+  return second === undefined ? first : `${first} ${second}`;
+}
+
+/** Where `text[from]`, a quote or a backtick, ends: the index past its closing mark. */
+function quotedEnd(text: string, from: number): number {
+  const quote = text[from];
+  let at = from + 1;
+  let braces = 0;
+  while (at < text.length) {
+    const char = text[at];
+    if (char === "\\") {
+      at += 2;
+      continue;
+    }
+    if (quote === "`" && char === "$" && text[at + 1] === "{") braces += 1;
+    else if (quote === "`" && char === "}" && braces > 0) braces -= 1;
+    else if (char === quote && braces === 0) return at + 1;
+    at += 1;
+  }
+  return at;
+}
+
+/** The expression that starts at `from`: up to the first `,` or `;` at its own depth, or the
+ *  bracket that closes the one it stands in, with its comments left out. */
+function expressionAt(text: string, from: number): string {
+  let depth = 0;
+  let at = from;
+  let expression = "";
+  while (at < text.length) {
+    const char = text[at] ?? "";
+    if (char === '"' || char === "'" || char === "`") {
+      const end = quotedEnd(text, at);
+      expression += text.slice(at, end);
+      at = end;
+      continue;
+    }
+    if (char === "/" && text[at + 1] === "/") {
+      const end = text.indexOf("\n", at);
+      at = end < 0 ? text.length : end;
+      continue;
+    }
+    if (char === "/" && text[at + 1] === "*") {
+      const end = text.indexOf("*/", at);
+      at = end < 0 ? text.length : end + 2;
+      continue;
+    }
+    if ("([{".includes(char)) depth += 1;
+    else if (")]}".includes(char)) {
+      if (depth === 0) break;
+      depth -= 1;
+    } else if ((char === "," || char === ";") && depth === 0) break;
+    expression += char;
+    at += 1;
+  }
+  return expression.trim();
+}
+
+/** Where the bracket at `open` in `expression` is closed: the index of its closing mark, or -1. */
+function closingAt(expression: string, open: number): number {
+  let depth = 0;
+  for (let at = open; at < expression.length; at += 1) {
+    const char = expression[at] ?? "";
+    if (char === '"' || char === "'" || char === "`") {
+      at = quotedEnd(expression, at) - 1;
+      continue;
+    }
+    if ("([{".includes(char)) depth += 1;
+    else if (")]}".includes(char)) {
+      depth -= 1;
+      if (depth === 0) return at;
+    }
+  }
+  return -1;
+}
+
+/** The two branches of `expression` where it is a conditional at its own depth
+ *  (`test ? when : otherwise`); undefined for any other expression. */
+function conditionalBranches(expression: string): readonly [string, string] | undefined {
+  let depth = 0;
+  let question = -1;
+  let pending = 0;
+  for (let at = 0; at < expression.length; at += 1) {
+    const char = expression[at] ?? "";
+    if (char === '"' || char === "'" || char === "`") {
+      at = quotedEnd(expression, at) - 1;
+      continue;
+    }
+    if ("([{".includes(char)) depth += 1;
+    else if (")]}".includes(char)) depth -= 1;
+    if (depth !== 0) continue;
+    // `?.` and `??` are no conditional.
+    if (char === "?" && expression[at + 1] !== "." && expression[at + 1] !== "?") {
+      if (expression[at - 1] === "?") continue;
+      if (question < 0) question = at;
+      else pending += 1;
+    } else if (char === ":" && question >= 0) {
+      if (pending > 0) pending -= 1;
+      else return [expression.slice(question + 1, at).trim(), expression.slice(at + 1).trim()];
+    }
+  }
+  return undefined;
+}
+
+/** `make`'s answer, worked out the first time it is asked for and kept. */
+function once<T>(make: () => T): () => T {
+  let made: { readonly value: T } | undefined;
+  return () => {
+    if (made === undefined) made = { value: make() };
+    return made.value;
+  };
+}
+
+/** A name a file binds with `const` or `let`, or declares as a function, where it binds it. */
+interface Binding {
+  readonly path: string;
+  readonly at: number;
+  readonly exported: boolean;
+  /** The bound expression, or each `return` of a function's body, read from the source the first
+   *  time a key is resolved through the binding. */
+  readonly expressions: () => readonly string[];
+}
+
+/** Every `const`, `let` and `function` of the source, by the name it binds. */
+const BINDINGS: ReadonlyMap<string, readonly Binding[]> = (() => {
+  const bindings = new Map<string, Binding[]>();
+  const bind = (name: string, binding: Binding) => {
+    const named = bindings.get(name);
+    if (named === undefined) bindings.set(name, [binding]);
+    else named.push(binding);
+  };
+  for (const { path, text } of SOURCES) {
+    for (const found of text.matchAll(
+      /(export\s+)?(?:const|let)\s+([a-zA-Z_$][\w$]*)\s*(?::[^=;]+?)?=(?![=>])\s*/gu
+    )) {
+      const from = (found.index ?? 0) + found[0].length;
+      bind(found[2] ?? "", {
+        at: found.index ?? 0,
+        exported: found[1] !== undefined,
+        expressions: once(() => [expressionAt(text, from)]),
+        path,
+      });
+    }
+    for (const found of text.matchAll(/(export\s+)?function\s+([a-zA-Z_$][\w$]*)\s*[<(]/gu)) {
+      const start = text.indexOf("{", text.indexOf(")", found.index ?? 0));
+      bind(found[2] ?? "", {
+        at: found.index ?? 0,
+        exported: found[1] !== undefined,
+        expressions: once(() => {
+          const body = start < 0 ? "" : `{${expressionAt(text, start + 1)}}`;
+          return [...body.matchAll(/\breturn\s+/gu)].map((one) =>
+            expressionAt(body, (one.index ?? 0) + one[0].length)
+          );
+        }),
+        path,
+      });
+    }
+  }
+  return bindings;
+})();
+
+/** The bindings `name` reads at `at` in `path`: the file's own last one before it, else the file's
+ *  first, else every exported one, as an import names it. */
+function bindingsOf(name: string, path: string, at: number): readonly Binding[] {
+  const all = BINDINGS.get(name) ?? [];
+  const own = all.filter((binding) => binding.path === path);
+  const before = own.filter((binding) => binding.at < at).at(-1);
+  if (before !== undefined) return [before];
+  if (own[0] !== undefined) return [own[0]];
+  return all.filter((binding) => binding.exported);
+}
+
+/** What a computed key resolves to: the families it can name, or a key another site keys a query
+ *  under (`someQuery(…).queryKey`), which the test counts there, or a type, where the colon
+ *  annotates a parameter or a field and keys nothing. */
+type Resolved = readonly string[] | "named elsewhere" | "a type";
+
+/** The families `expression`, a key as written at `at` in `path`, names; undefined where no rule
+ *  here reads it. */
+function keyFamilies(
+  expression: string,
+  path: string,
+  at: number,
+  seen: ReadonlySet<string> = new Set()
+): Resolved | undefined {
+  const bare = expression.replace(/\s+(?:as\s+const|satisfies\s[\s\S]+)$/u, "").trim();
+  const branches = conditionalBranches(bare);
+  if (branches !== undefined) {
+    const each = branches.map((branch) => keyFamilies(branch, path, at, seen));
+    if (each.some((one) => one === undefined)) return undefined;
+    return each.flatMap((one) => (Array.isArray(one) ? one : []));
+  }
+  if (bare.startsWith("(") && closingAt(bare, 0) === bare.length - 1) {
+    return keyFamilies(bare.slice(1, -1), path, at, seen);
+  }
+  const arrow = /^(?:\([^)]*\)|[a-zA-Z_$][\w$]*)\s*(?::[^=]+?)?=>\s*/u.exec(bare);
+  if (arrow !== null) {
+    const body = bare.slice(arrow[0].length);
+    if (!body.startsWith("{")) return keyFamilies(body, path, at, seen);
+    const returns = [...body.matchAll(/\breturn\s+/gu)].map((one) =>
+      keyFamilies(expressionAt(body, (one.index ?? 0) + one[0].length), path, at, seen)
+    );
+    if (returns.length === 0 || returns.some((one) => one === undefined)) return undefined;
+    return returns.flatMap((one) => (Array.isArray(one) ? one : []));
+  }
+  if (bare.startsWith("[")) {
+    const head = /^\[\s*"([a-zA-Z_-]+)"(?:\s*,\s*"([a-zA-Z_-]+)")?/u.exec(bare);
+    if (head !== null) return [familyName(head[1] ?? "", head[2])];
+    const spread = /^\[\s*\.\.\./u.exec(bare);
+    return spread === null
+      ? undefined
+      : keyFamilies(expressionAt(bare, spread[0].length), path, at, seen);
+  }
+  if (/\.queryKey$/u.test(bare)) return "named elsewhere";
+  const name = /^[a-zA-Z_$][\w$]*$/u.exec(bare)?.[0];
+  const called = /^([a-zA-Z_$][\w$]*)\s*\(/u.exec(bare);
+  const bound =
+    name ??
+    (called !== null && closingAt(bare, called[0].length - 1) === bare.length - 1
+      ? called[1]
+      : undefined);
+  if (bound === undefined) return undefined;
+  if (name !== undefined && /^[A-Z]/u.test(name)) return "a type";
+  const bindings = bindingsOf(bound, path, at);
+  if (bindings.length === 0) return undefined;
+  const families: string[] = [];
+  for (const binding of bindings) {
+    const key = `${binding.path}:${binding.at}`;
+    if (seen.has(key)) return undefined;
+    for (const bindingExpression of binding.expressions()) {
+      const resolved = keyFamilies(
+        bindingExpression,
+        binding.path,
+        binding.at,
+        new Set([...seen, key])
+      );
+      if (resolved === undefined) return undefined;
+      if (Array.isArray(resolved)) families.push(...resolved);
+    }
+  }
+  return families;
+}
+
+/** One place the source keys a query, by its file and line. */
+interface KeySite {
+  readonly where: string;
+  readonly families: readonly string[];
+}
+
+/** Each `queryKey:` of the source: C-Q1's literal families, and each computed key's (C-Q1's
+ *  second command, `queryKey: *[^\[ ]`, and the keys neither of its commands reads: a literal
+ *  spread from another key, `queryKey: [...myRepliesKey, "count"]`, or one whose array opens on
+ *  the next line). A computed key in a comment is no key. */
+function keySites(): { readonly sites: KeySite[]; readonly unread: string[] } {
+  const sites: KeySite[] = [];
+  const unread: string[] = [];
+  for (const { path, text } of SOURCES) {
+    for (const found of text.matchAll(/queryKey:/gu)) {
+      const at = found.index ?? 0;
+      const line = text.slice(0, at).split("\n").length;
+      const where = `${path}:${line}`;
+      LITERAL_KEY.lastIndex = at;
+      const literal = LITERAL_KEY.exec(text);
+      if (literal !== null) {
+        sites.push({ families: [familyName(literal[1] ?? "", literal[2])], where });
+        continue;
+      }
+      const lineStart = text.lastIndexOf("\n", at) + 1;
+      if (/\/\/|^\s*\*/u.test(text.slice(lineStart, at))) continue;
+      const expression = expressionAt(text, at + found[0].length);
+      const resolved = keyFamilies(expression, path, at);
+      if (resolved === undefined) unread.push(`${where}: queryKey: ${expression}`);
+      else if (Array.isArray(resolved)) sites.push({ families: resolved, where });
+    }
+  }
+  return { sites, unread };
+}
+
+const { sites: KEY_SITES, unread: UNREAD_KEYS } = keySites();
+
+/** Every family the source keys a query under, with the first place it does. */
+const SOURCE_FAMILIES: ReadonlyMap<string, string> = new Map(
+  KEY_SITES.flatMap(({ families, where }) =>
+    families.map((family) => [family, where] as const)
+  ).reverse()
+);
+
+test("every computed query key resolves to the families it names", () => {
+  expect(
+    UNREAD_KEYS.map(
+      (site) => `${site}: write the key as a literal array, or as a name this test resolves`
+    )
+  ).toEqual([]);
+  // The positive control: the reader finds C-Q1's families and the computed ones C-Q1 misses.
+  expect(SOURCE_FAMILIES.has("issue-messages")).toBe(true);
+  expect(SOURCE_FAMILIES.has("me replies")).toBe(true);
+});
+
+test("every query family the source keys is written by a correction or listed as holding no post", () => {
+  const unlisted = [...SOURCE_FAMILIES]
+    .filter(
+      ([family]) =>
+        !Object.hasOwn(CORRECTED_POST_FAMILIES, family) && !Object.hasOwn(NO_POST_FAMILIES, family)
+    )
+    .map(
+      ([family, where]) =>
+        `query family "${family}" (${where}) is in neither list: write it in CORRECTED_POST_FAMILIES, or list it in NO_POST_FAMILIES with why it holds no post`
+    );
+  expect(unlisted).toEqual([]);
+});
+
+test("every family either list names is still keyed in the source, and in one list alone", () => {
+  const listed = [...Object.keys(CORRECTED_POST_FAMILIES), ...Object.keys(NO_POST_FAMILIES)];
+  expect(
+    listed
+      .filter((family) => !SOURCE_FAMILIES.has(family))
+      .map((family) => `listed family "${family}" no longer appears in the source`)
+  ).toEqual([]);
+  expect(
+    Object.keys(CORRECTED_POST_FAMILIES).filter((family) => Object.hasOwn(NO_POST_FAMILIES, family))
+  ).toEqual([]);
+  for (const [family, reason] of Object.entries(NO_POST_FAMILIES)) {
+    expect(reason.trim().length, family).toBeGreaterThan(0);
+  }
+});
+
+// Each written family has a row here below: an answer that holds the post's words in every field
+// the family gives them in, which a delete must leave none of. These tests drive a family's
+// correction through a refetch that fails as well, each in the file it names.
+const WRITTEN_ELSEWHERE: Readonly<
+  Record<string, { readonly file: string; readonly test: string }>
+> = {
+  "ask-thread": {
+    file: "features/inbox/AskThread.test.tsx",
+    test: "a thread whose refetch fails after a reply's edit and delete reads the reply as edited, then deleted",
+  },
+  // The document read by its slug holds no post; it lists the document's versions, whose name a
+  // comment's delete renames (`renamed_version`).
+  "artifact-ref": {
+    file: "api/corrected-post-versions.test.ts",
+    test: "a version a comment's delete renamed takes its new name in a project document's read by its slug, whose refetch fails",
+  },
+  comment: {
+    file: "features/refs/reference-target.test.ts",
+    test: "a post's reference whose refetch fails after its edit and delete reads as edited, then deleted",
+  },
+  comments: {
+    file: "features/margin/PinnedTab.test.tsx",
+    test: "a pinned comment's and message's cards whose refetch fails read as edited, then deleted",
+  },
+  // The issue's details hold no post; they list each document's versions, whose name a comment's
+  // delete renames (`renamed_version`).
+  issue: {
+    file: "api/corrected-post-versions.test.ts",
+    test: "a version a comment's delete renamed takes its new name in the issue's details, whose refetch fails",
+  },
+  "issue-message": {
+    file: "features/refs/reference-target.test.ts",
+    test: "a post's reference whose refetch fails after its edit and delete reads as edited, then deleted",
+  },
+  "issue-messages": {
+    file: "api/corrected-post-messages.test.ts",
+    test: "a message's delete writes its mark into the issue's message list, as into the pinned copy",
+  },
+  "me replies": {
+    file: "features/inbox/useInboxThreadRows.test.tsx",
+    test: "a thread row whose refetch fails after its post's edit and delete reads as edited, then deleted",
+  },
+  "reference-targets": {
+    file: "api/correction-post-addresses.test.ts",
+    test: "a delete writes its mark into each kept member naming the post, and no other",
+  },
+  search: {
+    file: "features/search/SearchPalette.test.tsx",
+    test: "a post's hit whose refetch fails after its edit and delete carries the edited mark, then the deleted line",
+  },
+};
+
+const POST = "5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b";
+/** Another comment or message: a reply quoting the post, or the root of a thread the post replies
+ *  in. */
+const OTHER = "6f7a8b9c-0d1e-4f2a-8b3c-4d5e6f7a8b9c";
+const OLD_WORDS = "Hold the deploy until Friday.";
+/** The post's words as the tree a read gives beside them. */
+const WORDS_TREE = { content: [{ text: OLD_WORDS, type: "text" }], type: "doc" };
+
+/** The post as a comment, or a message, as a read answers it before its correction. */
+function commentOf(id = POST, more: Partial<CommentWithTrees> = {}): CommentWithTrees {
+  return {
+    anchor: null,
+    author: { id: "alice", kind: "user" },
+    body: OLD_WORDS,
+    created_at: "2026-11-19T00:00:00Z",
+    deleted_at: null,
+    deleted_by: null,
+    edited_at: null,
+    id,
+    issue_key: "CORE-1",
+    reply_block: null,
+    reply_to: null,
+    suggestion: null,
+    ...more,
+  } as CommentWithTrees;
+}
+
+function messageOf(id = POST): MessageWithTrees {
+  return {
+    author: { id: "alice", kind: "user" },
+    body: OLD_WORDS,
+    broadcast_id: null,
+    created_at: "2026-11-19T00:00:00Z",
+    deliveries: [],
+    id,
+    in_reply_to: null,
+    issue_key: "CORE-1",
+    reply_block: null,
+    target: "session:019a1c01-0d7b-7a2a-8e93-000000000a01",
+    ...messageCorrectionFields(),
+  };
+}
+
+/** The post's anchor as a pending insert suggestion holds it: its quote is the text the insert put
+ *  in the document, the post's own words, which the post's delete empties (`clearDeletedPostBody`
+ *  in `api/post_history.go`). */
+const INSERT_ANCHOR = {
+  artifact_id: "doc-1",
+  block_id: null,
+  mark_id: "mark-1",
+  orphaned: false,
+  quote: OLD_WORDS,
+  version: 1,
+};
+
+/** The post as a comment with its words in every field a read gives them in: a pending insert
+ *  suggestion's body and its tree, its replacement text and its anchor quote. */
+const insertComment = () => ({
+  ...commentOf(),
+  anchor: INSERT_ANCHOR,
+  body_tree: WORDS_TREE,
+  suggestion: { accepted: null, replace_with: OLD_WORDS },
+});
+
+/** The post as a message, with its words in its body and its tree. */
+const wordyMessage = () => ({ ...messageOf(), body_tree: WORDS_TREE });
+
+/** A reply of `kind` quoting block b1 of the post, with the block's text and tree as a read of the
+ *  reply gives them (`reply_block`). */
+function quotingReply(kind: "comment" | "message") {
+  const reply_block = {
+    block_id: "b1",
+    node: `${kind}/${POST}#b1`,
+    removed: false,
+    text: OLD_WORDS,
+    text_tree: WORDS_TREE,
+  };
+  return kind === "comment"
+    ? { ...commentOf(OTHER), body: "Agreed.", reply_block, reply_to: POST }
+    : { ...messageOf(OTHER), body: "Agreed.", in_reply_to: POST, reply_block };
+}
+
+/** An ask's thread, as its read and an ask row carry it: the post as a reply in it, and a reply
+ *  quoting a block of the post. */
+const askThread = () => ({
+  ask: { id: "ask-1" },
+  replies: [insertComment(), quotingReply("comment")],
+});
+
+/** doc-1 as a read lists its versions: version 2, which an accept of the post's suggestion named
+ *  after the post's body. */
+const DOCUMENT = {
+  id: "doc-1",
+  name: "spec.md",
+  versions: [
+    { number: 1, summary: null },
+    { number: 2, summary: OLD_WORDS },
+  ],
+};
+
+/** A read of version 2 of doc-1 alone, with its name. */
+const VERSION_TWO = { markdown: "Hold the deploy until Monday.\n", number: 2, summary: OLD_WORDS };
+
+/** Two Inbox thread rows of `kind` (`GET /api/v1/me/replies`): one whose root is the post, with its
+ *  words as the row's subject and, for a comment, the root's anchor, whose quote the card prints
+ *  (`ThreadQuote`); and one whose latest reply is the post, with its words as that reply's first
+ *  line. */
+function threadRows(kind: "comment" | "message") {
+  return [
+    replyRow(POST, {
+      kind,
+      subject: OLD_WORDS,
+      ...(kind === "comment" ? { anchor: INSERT_ANCHOR } : {}),
+    }),
+    replyRow(OTHER, { kind, reply: { ...replyRow(OTHER).reply, first_line: OLD_WORDS, id: POST } }),
+  ];
+}
+
+/** What a row reads of the post's copy an answer holds. */
+interface CopyMarks {
+  readonly deleted_at?: string | null;
+  readonly edited_at?: string | null;
+}
+
+/** One written family's cached answer holding a copy of the post, and where in it the copy is. */
+interface WriteRow {
+  readonly family: string;
+  readonly kind: "comment" | "message";
+  readonly key: QueryKey;
+  readonly answer: unknown;
+  /** Each copy of the post the answer holds that an edit and a delete both mark. */
+  readonly copies: (answer: unknown) => readonly CopyMarks[];
+  /** Each copy a delete marks and an edit does not: a thread row's latest reply. */
+  readonly deletedCopies?: (answer: unknown) => readonly CopyMarks[];
+  /** The delete the answer is written: the post's own (`POST_DELETES`), unless the family holds
+   *  a copy only another delete writes. */
+  readonly deleted?: DispatchEvent;
+}
+
+const at = (value: unknown, ...path: (string | number)[]): unknown =>
+  path.reduce<unknown>(
+    (held, step) =>
+      typeof held === "object" && held !== null ? Reflect.get(held, step) : undefined,
+    value
+  );
+const marksAt = (value: unknown, ...path: (string | number)[]): CopyMarks =>
+  (at(value, ...path) ?? {}) as CopyMarks;
+/** Where the copies are in `askThread` held at `path`: the post, and the quote of a block of it. */
+const threadCopies = (answer: unknown, ...path: (string | number)[]): CopyMarks[] => [
+  marksAt(answer, ...path, "replies", 0),
+  marksAt(answer, ...path, "replies", 1, "reply_block"),
+];
+
+const commentEvent: DispatchEvent = {
+  actor: { id: "alice", kind: "user" },
+  artifact_id: null,
+  created_at: "2026-11-19T00:00:00Z",
+  id: 7,
+  issue_key: "CORE-1",
+  notify: true,
+  payload: { ...commentOf(), body_truncated: false },
+  project: "CORE",
+  seq: 7,
+  trees: {},
+  type: "comment.created",
+} as unknown as DispatchEvent;
+
+/** The post's `created` event of `kind` as the log holds it, with the post's words in every field:
+ *  its body and its tree, and a comment's suggestion and anchor quote. */
+const postEvent = (kind: "comment" | "message") => ({
+  ...commentEvent,
+  payload:
+    kind === "comment"
+      ? {
+          ...commentOf(),
+          anchor: INSERT_ANCHOR,
+          body_truncated: false,
+          suggestion: { accepted: null, replace_with: OLD_WORDS },
+        }
+      : { ...messageOf(), body_truncated: false },
+  trees: { "payload.body": WORDS_TREE },
+  type: `${kind}.created`,
+});
+
+/** The post's delete of each kind: a comment's is the delete of the pending insert suggestion
+ *  `insertComment` is, whose event carries the anchor with the quote the delete emptied. */
+const POST_DELETES = {
+  comment: correction("comment", POST, false, { anchor: { ...INSERT_ANCHOR, quote: "" } }),
+  message: correction("message", POST, false),
+};
+
+/** The delete of the post once an accept made its suggestion document text, so the anchor keeps
+ *  its quote, and named version 2 of doc-1 after the post's body: the delete gives that version a
+ *  name of none of it (`renamed_version`). */
+const ACCEPTED_DELETE = correction("comment", POST, false, {
+  anchor: { ...INSERT_ANCHOR, quote: "Friday" },
+  renamed_version: {
+    artifact_id: "doc-1",
+    number: 2,
+    summary: 'Accepted suggestion: "Friday" → "Monday"',
+  },
+});
+
+const ROWS: readonly WriteRow[] = [
+  {
+    answer: askThread(),
+    copies: (answer) => threadCopies(answer),
+    family: "ask",
+    key: ["ask", "ask-1"],
+    kind: "comment",
+  },
+  {
+    answer: askThread(),
+    copies: (answer) => threadCopies(answer),
+    family: "ask-thread",
+    key: ["ask-thread", "ask-1"],
+    kind: "comment",
+  },
+  {
+    answer: [{ id: "ask-1", thread: askThread() }],
+    copies: (answer) => threadCopies(answer, 0, "thread"),
+    family: "asks",
+    key: ["asks", "CORE-1", "thread"],
+    kind: "comment",
+  },
+  {
+    answer: [{ id: "ask-1", thread: askThread() }],
+    copies: (answer) => threadCopies(answer, 0, "thread"),
+    family: "inbox",
+    key: ["inbox"],
+    kind: "comment",
+  },
+  {
+    answer: [insertComment(), quotingReply("comment")],
+    copies: (answer) => [marksAt(answer, 0), marksAt(answer, 1, "reply_block")],
+    family: "artifact",
+    key: ["artifact", "doc-1", "comments"],
+    kind: "comment",
+  },
+  {
+    answer: [{ id: "ask-2", thread: askThread() }],
+    copies: (answer) => threadCopies(answer, 0, "thread"),
+    family: "artifact",
+    key: ["artifact", "doc-1", "asks"],
+    kind: "comment",
+  },
+  // The reads that hold a version's name, which the accept took from the post's body.
+  {
+    answer: DOCUMENT,
+    copies: () => [],
+    deleted: ACCEPTED_DELETE,
+    family: "artifact",
+    key: ["artifact", "doc-1"],
+    kind: "comment",
+  },
+  {
+    answer: VERSION_TWO,
+    copies: () => [],
+    deleted: ACCEPTED_DELETE,
+    family: "artifact",
+    key: ["artifact", "doc-1", "version", 2],
+    kind: "comment",
+  },
+  {
+    answer: VERSION_TWO,
+    copies: () => [],
+    deleted: ACCEPTED_DELETE,
+    family: "artifact",
+    key: ["artifact", "doc-1", 2],
+    kind: "comment",
+  },
+  {
+    answer: DOCUMENT,
+    copies: () => [],
+    deleted: ACCEPTED_DELETE,
+    family: "artifact-ref",
+    key: ["artifact-ref", "CORE/spec"],
+    kind: "comment",
+  },
+  {
+    answer: { artifacts: [DOCUMENT], key: "CORE-1" },
+    copies: () => [],
+    deleted: ACCEPTED_DELETE,
+    family: "issue",
+    key: ["issue", "CORE-1"],
+    kind: "comment",
+  },
+  {
+    answer: { comment: insertComment(), replies: [quotingReply("comment")] },
+    copies: (answer) => [marksAt(answer, "comment"), marksAt(answer, "replies", 0, "reply_block")],
+    family: "comment",
+    key: ["comment", POST],
+    kind: "comment",
+  },
+  {
+    answer: [insertComment(), quotingReply("comment")],
+    copies: (answer) => [marksAt(answer, 0), marksAt(answer, 1, "reply_block")],
+    family: "comments",
+    key: ["comments", "CORE-1"],
+    kind: "comment",
+  },
+  {
+    answer: { pageParams: [0], pages: [[postEvent("comment")]] },
+    copies: (answer) => [marksAt(answer, "pages", 0, 0, "payload")],
+    family: "events",
+    key: ["events", "CORE-1"],
+    kind: "comment",
+  },
+  {
+    answer: [postEvent("message")],
+    copies: (answer) => [marksAt(answer, 0, "payload")],
+    family: "events",
+    key: ["events", "CORE-1", "margin-pinned", [POST]],
+    kind: "message",
+  },
+  {
+    answer: [{ message: wordyMessage(), replies: [quotingReply("message")] }],
+    copies: (answer) => [
+      marksAt(answer, 0, "message"),
+      marksAt(answer, 0, "replies", 0, "reply_block"),
+    ],
+    family: "agents",
+    key: ["agents", "019a1c01-0d7b-7a2a-8e93-000000000a01", "messages"],
+    kind: "message",
+  },
+  {
+    answer: { message: wordyMessage(), replies: [quotingReply("message")] },
+    copies: (answer) => [marksAt(answer, "message"), marksAt(answer, "replies", 0, "reply_block")],
+    family: "issue-message",
+    key: ["issue-message", "CORE-1", POST],
+    kind: "message",
+  },
+  {
+    answer: [{ message: wordyMessage(), replies: [quotingReply("message")] }],
+    copies: (answer) => [
+      marksAt(answer, 0, "message"),
+      marksAt(answer, 0, "replies", 0, "reply_block"),
+    ],
+    family: "issue-messages",
+    key: ["issue-messages", "CORE-1"],
+    kind: "message",
+  },
+  {
+    answer: {
+      pageParams: [0],
+      pages: [
+        {
+          limit: 20,
+          offset: 0,
+          rows: [
+            {
+              ask_id: "ask-1",
+              kind: "reply",
+              reply: { body: OLD_WORDS, body_tree: WORDS_TREE, id: POST },
+            },
+          ],
+          total: 1,
+        },
+      ],
+    },
+    copies: (answer) => [marksAt(answer, "pages", 0, "rows", 0, "reply")],
+    family: "me answers",
+    key: ["me", "answers"],
+    kind: "comment",
+  },
+  // What the reader dismissed (pages), and one owner's unread set (one page).
+  {
+    answer: {
+      pageParams: [0],
+      pages: [{ limit: 20, offset: 0, rows: threadRows("comment"), total: 2 }],
+    },
+    copies: (answer) => [marksAt(answer, "pages", 0, "rows", 0)],
+    deletedCopies: (answer) => [marksAt(answer, "pages", 0, "rows", 1, "reply")],
+    family: "me replies",
+    key: ["me", "replies", "dismissed"],
+    kind: "comment",
+  },
+  {
+    answer: { limit: 20, offset: 0, rows: threadRows("message"), total: 2 },
+    copies: (answer) => [marksAt(answer, "rows", 0)],
+    deletedCopies: (answer) => [marksAt(answer, "rows", 1, "reply")],
+    family: "me replies",
+    key: ["me", "replies", "unread", "CORE-1"],
+    kind: "message",
+  },
+  // A names read naming the post, and a block of it, with each member's words.
+  {
+    answer: {
+      targets: [
+        { gone: false, kind: "comment", name: OLD_WORDS, ref: `dispatch://CORE-1/comment/${POST}` },
+        {
+          gone: false,
+          kind: "block",
+          name: OLD_WORDS,
+          ref: `dispatch://CORE-1/comment/${POST}#b-b1`,
+          text_tree: WORDS_TREE,
+        },
+      ],
+    },
+    copies: (answer) => [marksAt(answer, "targets", 0), marksAt(answer, "targets", 1)],
+    family: "reference-targets",
+    key: referenceTargetsQuery([
+      `dispatch://CORE-1/comment/${POST}`,
+      `dispatch://CORE-1/comment/${POST}#b-b1`,
+    ]).queryKey,
+    kind: "comment",
+  },
+  // The Referenced by panel's list (`ReferencedBy.tsx`), which it draws beside "Referenced by
+  // unavailable" when its read fails: an edge from the comment, and one from a block of it.
+  {
+    answer: {
+      edges: [
+        {
+          created_at: "2026-11-19T00:00:00Z",
+          direction: "in",
+          excerpt: { text: OLD_WORDS },
+          kind: "mentions",
+          node: { id: POST, kind: "comment" },
+          source_seq: 7,
+        },
+        {
+          created_at: "2026-11-19T00:00:00Z",
+          direction: "in",
+          excerpt: { block_id: "b2", text: OLD_WORDS },
+          kind: "mentions",
+          node: {
+            block_id: "b2",
+            id: `comment/${POST}#b2`,
+            kind: "block",
+            parent: { id: POST, kind: "comment" },
+          },
+          source_seq: 8,
+        },
+      ],
+      node: { id: "CORE-1", kind: "issue" },
+    },
+    copies: (answer) => [marksAt(answer, "edges", 0, "node"), marksAt(answer, "edges", 1, "node")],
+    family: "references to",
+    key: ["references", "to", "dispatch://CORE-1"],
+    kind: "comment",
+  },
+  // A read of a block of the post pinned to its first revision: its text, its tree and the text at
+  // the pin.
+  {
+    answer: {
+      edges: [],
+      node: {
+        block_id: "b2",
+        id: `comment/${POST}#b2`,
+        kind: "block",
+        parent: { id: POST, kind: "comment" },
+        pin: {
+          ref: `dispatch://CORE-1/comment/${POST}#b-b2@v1`,
+          state: "unchanged",
+          text: OLD_WORDS,
+          text_tree: WORDS_TREE,
+          version: 1,
+        },
+        text: OLD_WORDS,
+        text_tree: WORDS_TREE,
+      },
+    },
+    copies: (answer) => [marksAt(answer, "node")],
+    family: "references to",
+    key: ["references", "to", `dispatch://CORE-1/comment/${POST}#b-b2@v1`],
+    kind: "comment",
+  },
+  {
+    answer: {
+      results: [
+        {
+          href: `/issues/CORE-1/comments/${POST}`,
+          id: POST,
+          kind: "comment",
+          rank: 1,
+          snippet: OLD_WORDS,
+          snippet_tree: WORDS_TREE,
+        },
+      ],
+    },
+    copies: (answer) => [marksAt(answer, "results", 0)],
+    family: "search",
+    key: ["search", "deploy", {}],
+    kind: "comment",
+  },
+];
+
+test("every family a correction writes has a row that proves the write", () => {
+  const here = new Set(ROWS.map((row) => row.family));
+  expect(Object.keys(CORRECTED_POST_FAMILIES).filter((family) => !here.has(family))).toEqual([]);
+  for (const [family, { file, test: name }] of Object.entries(WRITTEN_ELSEWHERE)) {
+    expect(readFileSync(join(SOURCE_ROOT, file), "utf8"), family).toContain(name);
+  }
+});
+
+// A family whose refusal a correction writes (`REFUSAL_FAMILIES`) is one whose answers it writes
+// too, and its refusal's write is proved below by tests named after it (`<family>: …`); every
+// family those tests name is in the table.
+test("every family whose refusal a correction writes has its answers written too, and tests here of the refusal's write", () => {
+  const named = new Set(
+    [...readFileSync(import.meta.path, "utf8").matchAll(/^test\("([a-z -]+): /gmu)].map(
+      (match) => match[1]
+    )
+  );
+  const refused = Object.keys(REFUSAL_FAMILIES);
+  expect({
+    answersUnwritten: refused.filter((family) => !Object.hasOwn(CORRECTED_POST_FAMILIES, family)),
+    tested: [...named].sort(),
+  }).toEqual({ answersUnwritten: [], tested: [...refused].sort() });
+});
+
+for (const row of ROWS) {
+  test(`a delete writes its mark into ${row.family} (${JSON.stringify(row.key)}), and keeps none of the post's words in any field`, () => {
+    const client = new QueryClient();
+    client.setQueryData(row.key, row.answer);
+    expect(JSON.stringify(client.getQueryData(row.key))).toContain(OLD_WORDS);
+    markCorrectedPost(client, row.deleted ?? POST_DELETES[row.kind]);
+    const answer = client.getQueryData(row.key);
+    const marked = [...row.copies(answer), ...(row.deletedCopies?.(answer) ?? [])];
+    expect(marked.map((copy) => copy.deleted_at)).toEqual(marked.map(() => DELETION.deleted_at));
+    expect(JSON.stringify(answer)).not.toContain(OLD_WORDS);
+  });
+
+  test(`an edit writes its time into ${row.family} (${JSON.stringify(row.key)})`, () => {
+    const client = new QueryClient();
+    client.setQueryData(row.key, row.answer);
+    markCorrectedPost(client, correction(row.kind, POST, true));
+    const answer = client.getQueryData(row.key);
+    expect(row.copies(answer).map((copy) => copy.edited_at)).toEqual(
+      row.copies(row.answer).map(() => EDITED_AT)
+    );
+    expect(JSON.stringify(answer)).toContain(OLD_WORDS);
+  });
+}
+
+// The architect's ruling of 2026-11-21 03:47Z on census rows 7.13 and 8.54: Dispatch refuses the
+// graph read of an id written short that names several items (`ID_AMBIGUOUS`), listing each with
+// its first line, and the page holds that refusal as the query's error, not as its answer. The
+// family's writer writes a correction into it as into an answer (`REFUSAL_FAMILIES`): the post's
+// item carries the edit's time, or loses its first line beside the delete's mark, and the refusal
+// stays a refusal, its other items as they were, so the list the reader chooses from stays drawn.
+const PREFIX_READ = ["references", "to", "dispatch://CORE-1/comment/5e6f7a8b"];
+
+/** Dispatch's refusal of the prefix read: the post and another comment, each with its first line,
+ *  as the prefix layer lists them (`refs.Candidate`). */
+function prefixRefusal(): ApiError {
+  const item = (id: string, first_line: string): IDCandidate => ({
+    first_line,
+    id,
+    issue_key: "CORE-1",
+    kind: "comment",
+    ref: `dispatch://CORE-1/comment/${id}`,
+  });
+  return new ApiError(409, {
+    candidates: [item(POST, OLD_WORDS), item(OTHER, "Agreed.")],
+    code: ID_AMBIGUOUS,
+    error: 'the id prefix "5e6f7a8b" names 2 items; write more of the id',
+  });
+}
+
+/** The items of the refusal the prefix read holds as its error, where it holds one. */
+function refusedItems(client: QueryClient): readonly IDCandidate[] | undefined {
+  return ambiguousItems(client.getQueryState(PREFIX_READ)?.error);
+}
+
+test("references to: an edit writes its time, and a delete its mark, into a refusal of an id written short that lists the post, which stays a refusal and keeps none of the post's first line", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  await client
+    .fetchQuery({ queryFn: () => Promise.reject(prefixRefusal()), queryKey: PREFIX_READ })
+    .catch(() => undefined);
+  const other = refusedItems(client)?.[1];
+
+  markCorrectedPost(client, correction("comment", POST, true));
+  expect(refusedItems(client)?.[0]).toMatchObject({ edited_at: EDITED_AT, first_line: OLD_WORDS });
+
+  markCorrectedPost(client, correction("comment", POST, false));
+  const state = client.getQueryState(PREFIX_READ);
+  const items = refusedItems(client);
+  expect({
+    code: state?.error instanceof ApiError ? state.error.code : undefined,
+    data: state?.data,
+    item: items?.[0],
+    other: items?.[1] === other,
+    status: state?.status,
+  }).toEqual({
+    code: ID_AMBIGUOUS,
+    data: undefined,
+    item: {
+      ...DELETION,
+      edited_at: EDITED_AT,
+      id: POST,
+      issue_key: "CORE-1",
+      kind: "comment",
+      ref: `dispatch://CORE-1/comment/${POST}`,
+    },
+    other: true,
+    status: "error",
+  });
+  expect(JSON.stringify(items)).not.toContain(OLD_WORDS);
+  client.clear();
+});
+
+// A read of the prefix out as the delete arrives, with no refusal before it, was asked before the
+// delete: the refusal it lands can list the post as it stood, so the delete is kept for that read
+// and written into the refusal as it lands, as into an answer such a read lands.
+test("references to: a refusal a read out at the delete lands takes the delete's mark", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const held = Promise.withResolvers<never>();
+  const out = client
+    .fetchQuery({ queryFn: () => held.promise, queryKey: PREFIX_READ })
+    .catch(() => undefined);
+  markCorrectedPost(client, correction("comment", POST, false));
+  held.reject(prefixRefusal());
+  await out;
+  expect(refusedItems(client)?.[0]?.deleted_at).toBe(DELETION.deleted_at);
+  expect(JSON.stringify(refusedItems(client))).not.toContain(OLD_WORDS);
+  client.clear();
+});
+
+// TanStack empties a query's error while a read of it that holds no answer is out (`fetchState`),
+// so while a refused prefix is read again the cache holds no refusal, and the outline draws the
+// list it last drew (census row 8.54). A delete that arrives then gives that read up, which puts
+// the refusal back, writes its mark there, and reads the prefix again, holding the written refusal
+// beside the read asked again: the cache holds the list as the delete left it while that read is
+// out.
+test("references to: a delete that arrives while a refused prefix is read again marks the refusal, which the cache holds while the read it asks again is out", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // How each read of the prefix asked so far is refused, in the order they were asked.
+  const refusals: ((reason: unknown) => void)[] = [];
+  const observer = new QueryObserver(client, {
+    queryFn: () => {
+      const { promise, reject } = Promise.withResolvers<never>();
+      refusals.push(reject);
+      return promise;
+    },
+    queryKey: PREFIX_READ,
+  });
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    await waitFor(() => expect(refusals.length).toBe(1));
+    refusals[0]?.(prefixRefusal());
+    await waitFor(() => expect(client.getQueryState(PREFIX_READ)?.status).toBe("error"));
+    void observer.refetch();
+    await waitFor(() => expect(refusals.length).toBe(2));
+    expect(client.getQueryState(PREFIX_READ)?.error, "TanStack kept the refusal").toBeNull();
+
+    markCorrectedPost(client, correction("comment", POST, false));
+    await waitFor(() => expect(refusals.length).toBe(3));
+    expect(client.getQueryState(PREFIX_READ)?.fetchStatus).toBe("fetching");
+    expect(refusedItems(client)?.[0]?.deleted_at).toBe(DELETION.deleted_at);
+    expect(JSON.stringify(refusedItems(client))).not.toContain(OLD_WORDS);
+  } finally {
+    unsubscribe();
+    client.clear();
+  }
+});
+
+// A prefix read can hold an answer beside a refusal: the id written short named the post once,
+// and a later read was refused (`ID_AMBIGUOUS`), listing the post among others; TanStack keeps the
+// answer and holds the refusal as the read's error, so the page lists the matches. The post's
+// delete writes its mark into both, as a read out at it is given up and the prefix asked again:
+// the refusal stays the read's error and its status, so the page still lists the matches, with the
+// post's line marked deleted, and does not take the prefix as resolved to the post, as writing the
+// answer by `setQueryData` would (it clears the error). Giving up the read asked again puts back
+// the written state, not the one from before the delete.
+test("references to: a delete writes its mark into an answer a refused prefix read holds beside its refusal, which stays the read's error", async () => {
+  const answer = { edges: [], node: graphNode({ id: POST, kind: "comment", text: OLD_WORDS }) };
+  const later = Promise.withResolvers<never>();
+  let asked = 0;
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(PREFIX_READ, answer);
+  const page = new QueryObserver(client, {
+    queryFn: () => {
+      asked += 1;
+      return asked === 1 ? Promise.reject(prefixRefusal()) : later.promise;
+    },
+    queryKey: PREFIX_READ,
+  });
+  const unsubscribe = page.subscribe(() => {});
+  /** What the read holds and how the page reads it. */
+  const held = () => {
+    const state = client.getQueryState(PREFIX_READ);
+    const node = (state?.data as GraphReferences | undefined)?.node;
+    return {
+      isError: page.getCurrentResult().isError,
+      items: refusedItems(client)?.map((item) => [item.id, item.first_line, item.deleted_at]),
+      node: [node?.deleted_at, node?.text],
+      status: state?.status,
+      words: JSON.stringify([state?.data, state?.error]).includes(OLD_WORDS),
+    };
+  };
+  const written = {
+    isError: true,
+    items: [
+      [POST, undefined, DELETION.deleted_at],
+      [OTHER, "Agreed.", undefined],
+    ],
+    node: [DELETION.deleted_at, ""],
+    status: "error" as const,
+    words: false,
+  };
+  try {
+    await waitFor(() => expect(client.getQueryState(PREFIX_READ)?.status).toBe("error"));
+    // A read of the prefix is out beside the answer and the refusal as the delete arrives.
+    void page.refetch();
+    await waitFor(() => expect(asked).toBe(2));
+    markCorrectedPost(client, correction("comment", POST, false));
+    const atDelete = { ...held(), askedAgain: asked === 3 };
+    await client.cancelQueries({ exact: true, queryKey: PREFIX_READ });
+    expect({ atDelete, givenUp: held() }).toEqual({
+      atDelete: { ...written, askedAgain: true },
+      givenUp: written,
+    });
+  } finally {
+    unsubscribe();
+    client.clear();
+  }
+});
+
+// The architect's ruling of 2026-11-20 07:52Z: an answer composed before a correction cannot take
+// the correction's mark out. A read already out when the delete arrives was asked before it, so
+// the feed puts the delete's mark over it (`replaceQueryData`): the read is given up in the same
+// step and the list read again, so the answer the held read composed lands nowhere, and the
+// refetch, which fails here, leaves the mark where it is.
+test("an answer a read out at a delete lands with the post's words keeps the delete's mark, and no body, when the refetch after it fails", async () => {
+  const list = ["issue-messages", "CORE-1"];
+  const read: MessageRead = { message: messageOf(), replies: [] };
+  const held = Promise.withResolvers<MessageRead[]>();
+  let reads = 0;
+  const fetchList = (): Promise<MessageRead[]> => {
+    reads += 1;
+    if (reads === 1) return Promise.resolve([read]);
+    if (reads === 2) return held.promise;
+    return Promise.reject(new Error("the read failed"));
+  };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const feed = correctionFeed(client);
+  const hook = renderHook(
+    () => {
+      useEventFeed();
+      return useQuery({ queryFn: fetchList, queryKey: list });
+    },
+    {
+      wrapper: ({ children }: { children: ReactNode }) =>
+        createElement(QueryClientProvider, { client }, children),
+    }
+  );
+  const message = () => client.getQueryData<MessageRead[]>(list)?.[0]?.message;
+
+  try {
+    await waitFor(() => expect(hook.result.current.data?.[0]?.message.body).toBe(OLD_WORDS));
+    feed.start();
+    void hook.result.current.refetch();
+    await waitFor(() => expect(reads).toBe(2));
+    // The answer the held read composed before the delete lands once the feed has written the
+    // delete's mark.
+    const landAfterTheMark = client.getQueryCache().subscribe(() => {
+      if (message()?.deleted_at !== DELETION.deleted_at) return;
+      landAfterTheMark();
+      held.resolve([read]);
+    });
+    await feed.deliver(correction("message", POST, false), [list]);
+
+    expect(reads).toBe(3);
+    expect({ body: message()?.body, deleted_at: message()?.deleted_at }).toEqual({
+      body: "",
+      deleted_at: DELETION.deleted_at,
+    });
+  } finally {
+    hook.unmount();
+    feed.restore();
+    client.clear();
+  }
+});
+
+// The bound: a correction is kept for the reads out at its arrival of a query whose answer it
+// wrote nothing, and no longer. Here the list has no answer yet, so the delete writes nothing and
+// no write gives the read up: the answer it lands was composed before the delete, and is written
+// the delete's facts. Once the one read out has landed, an answer the cache is handed is left as
+// it is handed.
+test("a correction is kept only while a read out at its arrival is out", async () => {
+  const list = ["issue-messages", "CORE-1"];
+  const read: MessageRead = { message: messageOf(), replies: [] };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const held = Promise.withResolvers<MessageRead[]>();
+  const out = client.fetchQuery({ queryFn: () => held.promise, queryKey: list });
+  expect(client.getQueryState(list)?.fetchStatus).toBe("fetching");
+  markCorrectedPost(client, correction("message", POST, false));
+  held.resolve([read]);
+  await out;
+  expect(client.getQueryData<MessageRead[]>(list)?.[0]?.message.body).toBe("");
+
+  client.setQueryData(list, [read]);
+  expect(client.getQueryData<MessageRead[]>(list)?.[0]?.message.body).toBe(OLD_WORDS);
+  client.clear();
+});
+
+// The architect's ruling of 2026-11-20 13:35Z (W3): a kept correction is written into the answer
+// of a read it was kept for, and into no other. Here the delete is kept for the read of CORE-1's
+// list, out with no answer yet. CORE-2's list, of the same family, is read and answered while
+// that read is still out: the delete was not kept for it, and its answer is left as it lands.
+// The held read then lands, and takes the delete's facts.
+test("a kept correction is written into the answer of a read it was kept for, and not into another query's", async () => {
+  const list = ["issue-messages", "CORE-1"];
+  const other = ["issue-messages", "CORE-2"];
+  const read: MessageRead = { message: messageOf(), replies: [] };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const held = Promise.withResolvers<MessageRead[]>();
+  const out = client.fetchQuery({ queryFn: () => held.promise, queryKey: list });
+  markCorrectedPost(client, correction("message", POST, false));
+
+  await client.fetchQuery({ queryFn: () => Promise.resolve([read]), queryKey: other });
+  expect(client.getQueryState(list)?.fetchStatus).toBe("fetching");
+  expect(client.getQueryData<MessageRead[]>(other)?.[0]?.message.body).toBe(OLD_WORDS);
+
+  held.resolve([read]);
+  await out;
+  expect(client.getQueryData<MessageRead[]>(list)?.[0]?.message.body).toBe("");
+  client.clear();
+});
+
+/** The document a margin shows on CORE-1: its spec. */
+const SPEC: Artifact = {
+  created_at: "2026-11-19T00:00:00Z",
+  created_by: { id: "alice", kind: "user" },
+  id: "doc-1",
+  issue_key: "CORE-1",
+  kind: "doc",
+  name: "spec.md",
+  primary: true,
+  project: "CORE",
+  ref_key: "CORE-1/spec",
+  session_id: null,
+  slug: "spec",
+  versions: [],
+};
+
+// The architect's ruling of 2026-11-20 13:35Z, item 2: a write made after a correction's event
+// from an answer read before it. A margin action on a comment (`useMarginItems`) writes its value
+// over the issue's comments as it starts, and puts back the comments it read then where Dispatch
+// refuses it. Here the comment's author deletes it while an accept of its suggestion is out: the
+// delete's event is heard as the feed hears it (`hearLiveEvent`, then `markCorrectedPost`),
+// Dispatch refuses the accept, which has no replacement text left to move (`409 POST_DELETED`,
+// `commentAction` in `api/comment_actions.go`), and the rollback puts back the comments as they
+// stood before the delete. No read is out at the delete, so it is kept for the accept alone, which
+// is still pending then. The read of the comments after the rollback fails, and the margin's
+// comments read as deleted.
+test("a margin action refused after its comment's delete puts back no word of the comment", async () => {
+  const client = new DispatchQueryClient({
+    defaultOptions: {
+      mutations: { retry: false },
+      queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
+    },
+  });
+  const comments = ["comments", "CORE-1"];
+  const suggestion = { accepted: null, replace_with: "Hold the deploy until Monday." };
+  client.setQueryData(["issue", "CORE-1"], { artifacts: [SPEC], primary_artifact_id: SPEC.id });
+  client.setQueryData(["asks", "CORE-1"], []);
+  client.setQueryData(comments, [commentOf(POST, { suggestion })]);
+  client.setQueryData(["inbox"], []);
+  client.setQueryData(["user-state"], {});
+  const save = Promise.withResolvers<never>();
+  const acceptComment = spyOn(api, "acceptComment").mockReturnValue(save.promise);
+  const listComments = spyOn(api, "listComments").mockRejectedValue(new Error("the read failed"));
+  const places = new Map();
+  const hook = renderHook(
+    () =>
+      useMarginItems({ key: "CORE-1", kind: "issue" }, "comments", SPEC, places, places, undefined),
+    {
+      wrapper: ({ children }: { children: ReactNode }) =>
+        createElement(MemoryRouter, null, createElement(QueryClientProvider, { client }, children)),
+    }
+  );
+  const shown = () => hook.result.current.commentRecords[0];
+  try {
+    act(() => hook.result.current.mutateItem({ id: POST, kind: "accept" }));
+    await waitFor(() => expect(acceptComment).toHaveBeenCalled());
+    await waitFor(() => expect(shown()?.suggestion?.accepted).toBe(true));
+
+    const deleted = correction("comment", POST, false);
+    act(() => {
+      hearLiveEvent(client, deleted, "alice");
+      markCorrectedPost(client, deleted);
+    });
+    expect({ body: shown()?.body, suggestion: shown()?.suggestion }).toEqual({
+      body: "",
+      suggestion: null,
+    });
+    await act(async () => {
+      save.reject(new ApiError(409, { code: "POST_DELETED", error: "this comment is deleted" }));
+    });
+    await waitFor(() => expect(client.isMutating()).toBe(0));
+    await waitFor(() => expect(listComments).toHaveBeenCalled());
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+
+    expect({
+      body: shown()?.body,
+      deleted_at: shown()?.deleted_at,
+      suggestion: shown()?.suggestion,
+    }).toEqual({ body: "", deleted_at: DELETION.deleted_at, suggestion: null });
+  } finally {
+    hook.unmount();
+    acceptComment.mockRestore();
+    listComments.mockRestore();
+    client.clear();
+  }
+});
+
+// A kept edit is written into the answer the read it was kept for lands, and an answer composed
+// after a later edit, whose event has not arrived yet, carries that edit's time: the kept edit's
+// older time never moves it back. The list holds no copy of the post at the edit, so the edit
+// writes nothing there and is kept for the read out. Its delete's facts would apply whatever the
+// answer said.
+test("an answer that lands carrying a later edit than a kept one keeps its own edit's time", async () => {
+  const list = ["issue-messages", "CORE-1"];
+  const later = "2026-11-20T00:45:00.5Z";
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData<MessageRead[]>(list, []);
+  const held = Promise.withResolvers<MessageRead[]>();
+  const out = client.fetchQuery({ queryFn: () => held.promise, queryKey: list });
+  markCorrectedPost(client, correction("message", POST, true));
+  expect(client.getQueryData<MessageRead[]>(list)).toEqual([]);
+  held.resolve([{ message: { ...messageOf(), edited_at: later }, replies: [] }]);
+  await out;
+  expect(client.getQueryData<MessageRead[]>(list)?.[0]?.message.edited_at).toBe(later);
+  client.clear();
+});
+
+// A delete empties the anchor quote of the post's own cached events where it emptied the
+// comment's (`markedEvent`), as the server's read of the log does (`attachPostMarks`): an insert
+// suggestion's quote is the text it put in the document, the comment's own words, which the delete
+// clears (`clearDeletedPostBody`), and the delete's own event carries the anchor with that quote
+// empty. A replace suggestion's quote is the document's own text, which its delete leaves.
+test("a delete empties a cached event's anchor quote where its own event's is empty, and keeps a replace suggestion's", () => {
+  const anchor = {
+    artifact_id: "doc-1",
+    block_id: null,
+    mark_id: "mark-1",
+    orphaned: false,
+    version: 1,
+  };
+  const pinned = ["events", "CORE-1", "margin-pinned", [POST]];
+  const quoteAfter = (cached: string, deleted: string) => {
+    const client = new QueryClient();
+    client.setQueryData(pinned, [
+      {
+        ...commentEvent,
+        payload: { ...commentEvent.payload, anchor: { ...anchor, quote: cached } },
+      },
+    ]);
+    markCorrectedPost(
+      client,
+      correction("comment", POST, false, { anchor: { ...anchor, quote: deleted } })
+    );
+    const payload = at(client.getQueryData(pinned), 0, "payload");
+    return { deleted_at: at(payload, "deleted_at"), quote: at(payload, "anchor", "quote") };
+  };
+  expect({
+    insert: quoteAfter("Friday at noon", ""),
+    replace: quoteAfter("the old wording", "the old wording"),
+  }).toEqual({
+    insert: { deleted_at: DELETION.deleted_at, quote: "" },
+    replace: { deleted_at: DELETION.deleted_at, quote: "the old wording" },
+  });
+});
+
+// A delete empties the anchor quote of a cached Inbox thread row whose root is the post, where it
+// emptied the comment's. The row carries its root comment's anchor (`readMyReplyRows` in
+// `api/replies.go`), and the card prints that anchor's quote above the thread (`ThreadQuote`).
+// Where the root is a pending insert suggestion, the quote is the text the insert put in the
+// document, the comment's own words: its delete empties the row's quote, as it does the comment's
+// own copies and its events', so no word of the suggestion stays in the row. The control: a
+// delete that leaves the quote, a replace suggestion's or a plain comment's, which is the
+// document's own text, leaves the row's.
+test("a delete empties a cached Inbox thread row's anchor quote where its own event's is empty, and keeps a quote of the document's text", () => {
+  const rows = ["me", "replies", "inbox"];
+  const rowAfter = (cached: string, deleted: string) => {
+    const client = new QueryClient();
+    client.setQueryData(rows, {
+      limit: 20,
+      offset: 0,
+      rows: [replyRow(POST, { anchor: { ...INSERT_ANCHOR, quote: cached }, subject: OLD_WORDS })],
+      total: 1,
+    });
+    markCorrectedPost(
+      client,
+      correction("comment", POST, false, { anchor: { ...INSERT_ANCHOR, quote: deleted } })
+    );
+    return at(client.getQueryData(rows), "rows", 0);
+  };
+  const insert = rowAfter(OLD_WORDS, "");
+  const kept = rowAfter("the old wording", "the old wording");
+  expect({
+    insert: { deleted_at: at(insert, "deleted_at"), quote: at(insert, "anchor", "quote") },
+    kept: { deleted_at: at(kept, "deleted_at"), quote: at(kept, "anchor", "quote") },
+  }).toEqual({
+    insert: { deleted_at: DELETION.deleted_at, quote: "" },
+    kept: { deleted_at: DELETION.deleted_at, quote: "the old wording" },
+  });
+  expect(JSON.stringify(insert)).not.toContain(OLD_WORDS);
+});
+
+// The architect's ruling (c) of 2026-11-20 22:18Z on dispatch://INFRA-1523 (census class V, rows
+// V.23 and V.26-V.34): a pending insert suggestion's words are its document's text in every read
+// that gives that text as it stood before the delete, and such a read carries no mark that tells
+// them from the document's own words, so no writer can take them out of it. The delete of a
+// comment that emptied its anchor quote drops each such read of the document its anchor names
+// (`UNMARKED_TEXT_FAMILIES`), and keeps every other document's. Each family the drop lists has a
+// row here: a read that holds the insert's words, which the delete's correction drops, beside the
+// same family's read of another document, which it keeps.
+
+/** The words the pending insert put in doc-1, which its delete took out again. */
+const INSERTED = "Rotate the keys before the audit.";
+/** Another document's own words, which no delete of doc-1's insert touches. */
+const OTHER_TEXT = "Ship it in two steps.";
+
+/** The delete of the post as the pending insert suggestion it is in doc-1 (`notes`, a document
+ *  of CORE-1), whose event carries its anchor with the quote the delete emptied. */
+const INSERT_DELETE = correction("comment", POST, false, {
+  anchor: { ...INSERT_ANCHOR, quote: "" },
+  artifact_slug: "notes",
+});
+
+/** Deletes that take no word out of the document, so their events leave the quote: a replace
+ *  suggestion's or an anchored comment's, whose quote is the document's own text, and a delete of
+ *  a comment on no document. */
+const QUOTE_KEPT_DELETES = {
+  anchored: correction("comment", POST, false, {
+    anchor: { ...INSERT_ANCHOR, quote: "Friday" },
+    artifact_slug: "notes",
+  }),
+  unanchored: correction("comment", POST, false),
+};
+
+/** Block p1 of `document` as a graph read gives it, with `text` where the read gives the text. */
+function documentBlock(document: string, text?: string) {
+  return graphNode({
+    block_id: "p1",
+    id: `${document}#p1`,
+    kind: "block",
+    parent: { id: document, kind: "artifact" },
+    ...(text === undefined ? {} : { text }),
+  });
+}
+
+/** Version 3 of a document holding `text`, as the version read answers it. */
+const storedVersion = (text: string) => ({
+  authors: [],
+  created_at: "2026-11-19T00:00:00Z",
+  markdown: `${text}\n`,
+  markdown_tree: {
+    content: [{ content: [{ text, type: "text" }], type: "paragraph" }],
+    type: "doc",
+  },
+  named: false,
+  number: 3,
+  summary: null,
+});
+
+/** A document's live text holding `text`, as the text read answers it. */
+const liveText = (text: string) => ({
+  markdown: `${text}\n`,
+  markdown_tree: {
+    content: [{ content: [{ text, type: "text" }], type: "paragraph" }],
+    type: "doc",
+  },
+  token: "sha256:live",
+  version: 3,
+});
+
+/** A document's blocks: one table, whose one cell holds `text`. */
+const tableBlocks = (text: string) => [
+  {
+    from: 0,
+    id: "t1",
+    references: { asks: 0, comments: 0 },
+    table: {
+      rows: [{ cells: [{ column: 0, header: "Step", id: "c1", row: 0, text }], id: "r1" }],
+    },
+    to: 40,
+    token: "sha256:t1",
+    type: "table",
+  },
+];
+
+/** A read of block p1 of `document` by `ref`, which pins version 3: the block's text, and its
+ *  text there. */
+const blockRead = (document: string, ref: string, text: string) => ({
+  edges: [],
+  node: { ...documentBlock(document, text), pin: { ref, state: "changed", text, version: 3 } },
+});
+
+/** A document's `part_of` read: the document, and its block p1 with an excerpt of `text`. */
+const partOfRead = (document: string, text: string) => ({
+  edges: [
+    {
+      created_at: "2026-11-19T00:00:00Z",
+      direction: "in",
+      excerpt: { block_id: "p1", text },
+      kind: "part_of",
+      node: documentBlock(document),
+      source_seq: null,
+    },
+  ],
+  node: graphNode({ id: document, kind: "artifact" }),
+});
+
+/** Another node's Referenced by panel, with the mention block p1 of `document` makes of it and an
+ *  excerpt of `text`. */
+const mentionPanel = (issue: string, document: string, text: string) => ({
+  edges: [
+    {
+      created_at: "2026-11-19T00:00:00Z",
+      direction: "in",
+      excerpt: { block_id: "p1", text },
+      kind: "mentions",
+      node: documentBlock(document),
+      source_seq: 9,
+    },
+  ],
+  node: graphNode({ id: issue, kind: "issue" }),
+});
+
+/** A names read naming `ref`, a block, by `text`. */
+const namesRead = (ref: string, text: string) => ({
+  targets: [{ gone: false, kind: "block", name: text, ref, text_tree: WORDS_TREE }],
+});
+
+/** An issue's decisions read from the decisions document `document`, whose one decision says
+ *  `text` and links `to`, where given. */
+const decisionsRead = (document: string, text: string, to?: GraphNode) => ({
+  decisions: [
+    {
+      asks: [],
+      block_id: "d1",
+      changed_at: "2026-11-19T00:00:00Z",
+      changed_version: 2,
+      heading: "Key rotation",
+      kept: null,
+      kind: "agent",
+      links:
+        to === undefined
+          ? []
+          : [
+              {
+                created_at: "2026-11-19T00:00:00Z",
+                created_version: 1,
+                from_block: "d1-para",
+                stale: false,
+                to,
+              },
+            ],
+      ref: `${document}#b-d1`,
+      replaced: false,
+      text,
+      text_sha256: "sum-d1",
+      unsure: false,
+      waiting_review: false,
+    },
+  ],
+  document,
+  open_questions: [],
+});
+
+/** One read of a document's text that a pending insert's delete drops, beside the same family's
+ *  read of another document, which it keeps. */
+interface DropRow {
+  readonly family: string;
+  readonly key: QueryKey;
+  readonly answer: unknown;
+  readonly other: { readonly key: QueryKey; readonly answer: unknown };
+}
+
+const DROP_ROWS: readonly DropRow[] = [
+  // A stored version, read by the document page, the comparisons and the approval column.
+  {
+    answer: storedVersion(INSERTED),
+    family: "artifact",
+    key: ["artifact", "doc-1", "version", 3],
+    other: { answer: storedVersion(OTHER_TEXT), key: ["artifact", "doc-2", "version", 3] },
+  },
+  // A version a reference pins, read by its hover card and its unfurl.
+  {
+    answer: storedVersion(INSERTED),
+    family: "artifact",
+    key: ["artifact", "doc-1", 3],
+    other: { answer: storedVersion(OTHER_TEXT), key: ["artifact", "doc-2", 3] },
+  },
+  // The document's blocks.
+  {
+    answer: tableBlocks(INSERTED),
+    family: "artifact",
+    key: ["artifact", "doc-1", "blocks"],
+    other: { answer: tableBlocks(OTHER_TEXT), key: ["artifact", "doc-2", "blocks"] },
+  },
+  // The document's live text: the current side of Diff vs current, the card of a reference to
+  // the document that pins no version, an issue card's spec, and a draft's quote check.
+  {
+    answer: liveText(INSERTED),
+    family: "artifact",
+    key: ["artifact", "doc-1", "text"],
+    other: { answer: liveText(OTHER_TEXT), key: ["artifact", "doc-2", "text"] },
+  },
+  // A reference to a block of the document: its card and every link title to it.
+  {
+    answer: blockRead("doc-1", "dispatch://CORE-1/artifact/notes#b-p1@v3", INSERTED),
+    family: "references to",
+    key: ["references", "to", "dispatch://CORE-1/artifact/notes#b-p1@v3"],
+    other: {
+      answer: blockRead("doc-2", "dispatch://CORE-1/artifact/plan#b-p1@v3", OTHER_TEXT),
+      key: ["references", "to", "dispatch://CORE-1/artifact/plan#b-p1@v3"],
+    },
+  },
+  // The spec's `part_of` read, which the line "Changed since you last read" names sections from.
+  {
+    answer: partOfRead("doc-1", INSERTED),
+    family: "references to",
+    key: ["references", "to", "dispatch://CORE-1/spec", "part_of"],
+    other: {
+      answer: partOfRead("doc-2", OTHER_TEXT),
+      key: ["references", "to", "dispatch://CORE-2/spec", "part_of"],
+    },
+  },
+  // The panel of a node the document mentions, with the excerpt of the block that mentions it.
+  {
+    answer: mentionPanel("CORE-2", "doc-1", INSERTED),
+    family: "references to",
+    key: ["references", "to", "dispatch://CORE-2"],
+    other: {
+      answer: mentionPanel("CORE-3", "doc-2", OTHER_TEXT),
+      key: ["references", "to", "dispatch://CORE-3"],
+    },
+  },
+  {
+    answer: namesRead("dispatch://CORE-1/artifact/notes#b-p1", INSERTED),
+    family: "reference-targets",
+    key: referenceTargetsQuery(["dispatch://CORE-1/artifact/notes#b-p1"]).queryKey,
+    other: {
+      answer: namesRead("dispatch://CORE-1/artifact/plan#b-p1", OTHER_TEXT),
+      key: referenceTargetsQuery(["dispatch://CORE-1/artifact/plan#b-p1"]).queryKey,
+    },
+  },
+  // The issue's decisions where the document is its decisions document.
+  {
+    answer: decisionsRead("dispatch://CORE-1/artifact/notes", INSERTED),
+    family: "decisions",
+    key: ["decisions", "CORE-1"],
+    other: {
+      answer: decisionsRead("dispatch://CORE-2/artifact/decisions-md", OTHER_TEXT),
+      key: ["decisions", "CORE-2"],
+    },
+  },
+  // The issue's decisions where a decision links a block of the document, with its text.
+  {
+    answer: decisionsRead(
+      "dispatch://CORE-1/artifact/decisions-md",
+      OTHER_TEXT,
+      documentBlock("doc-1", INSERTED)
+    ),
+    family: "decisions",
+    key: ["decisions", "CORE-1"],
+    other: {
+      answer: decisionsRead(
+        "dispatch://CORE-2/artifact/decisions-md",
+        OTHER_TEXT,
+        documentBlock("doc-2", OTHER_TEXT)
+      ),
+      key: ["decisions", "CORE-2"],
+    },
+  },
+  {
+    answer: {
+      gaps: [],
+      has_plan: true,
+      issue: "CORE-1",
+      requirements: [
+        { block_id: "p1", checks: 0, gaps: [], plan_tasks: 0, ref: "r", text: INSERTED },
+      ],
+      spec_artifact_id: "doc-1",
+    },
+    family: "issue",
+    key: ["issue", "CORE-1", "coverage"],
+    other: {
+      answer: {
+        gaps: [],
+        has_plan: true,
+        issue: "CORE-2",
+        requirements: [
+          { block_id: "p1", checks: 0, gaps: [], plan_tasks: 0, ref: "r", text: OTHER_TEXT },
+        ],
+        spec_artifact_id: "doc-2",
+      },
+      key: ["issue", "CORE-2", "coverage"],
+    },
+  },
+  {
+    answer: {
+      checks: [{ artifact_id: "doc-1", block_id: "c1", issue_key: "CORE-1", text: INSERTED }],
+      issue: "CORE-1",
+      verification_artifact_id: "doc-1",
+    },
+    family: "issue",
+    key: ["issue", "CORE-1", "results"],
+    other: {
+      answer: {
+        checks: [{ artifact_id: "doc-2", block_id: "c1", issue_key: "CORE-2", text: OTHER_TEXT }],
+        issue: "CORE-2",
+        verification_artifact_id: "doc-2",
+      },
+      key: ["issue", "CORE-2", "results"],
+    },
+  },
+  {
+    answer: {
+      results: [{ href: "/d/1", id: "doc-1", kind: "document", rank: 1, snippet: INSERTED }],
+    },
+    family: "search",
+    key: ["search", "audit", {}],
+    other: {
+      answer: {
+        results: [{ href: "/d/2", id: "doc-2", kind: "document", rank: 1, snippet: OTHER_TEXT }],
+      },
+      key: ["search", "steps", {}],
+    },
+  },
+];
+
+test("every family a pending insert's delete drops has a row that proves the drop, and is a family of the source in one of the two lists", () => {
+  const here = new Set(DROP_ROWS.map((row) => row.family));
+  const dropped = Object.keys(UNMARKED_TEXT_FAMILIES);
+  expect(dropped.filter((family) => !here.has(family))).toEqual([]);
+  // A family taken out of the drop list leaves its row here naming it.
+  expect([...here].filter((family) => !Object.hasOwn(UNMARKED_TEXT_FAMILIES, family))).toEqual([]);
+  expect(
+    dropped.filter(
+      (family) =>
+        !SOURCE_FAMILIES.has(family) ||
+        !(Object.hasOwn(CORRECTED_POST_FAMILIES, family) || Object.hasOwn(NO_POST_FAMILIES, family))
+    )
+  ).toEqual([]);
+});
+
+for (const row of DROP_ROWS) {
+  test(`a pending insert's delete drops ${row.family} (${JSON.stringify(row.key)}), and keeps another document's`, () => {
+    const client = new QueryClient();
+    client.setQueryData(row.key, row.answer);
+    client.setQueryData(row.other.key, row.other.answer);
+    expect(JSON.stringify(client.getQueryData(row.key))).toContain(INSERTED);
+    markCorrectedPost(client, INSERT_DELETE);
+    expect(client.getQueryData(row.key)).toBeUndefined();
+    expect(cachedKeysHolding(client, INSERTED)).toEqual([]);
+    expect<unknown>(client.getQueryData(row.other.key)).toEqual(row.other.answer);
+  });
+
+  test(`a delete that leaves its quote drops nothing of ${row.family} (${JSON.stringify(row.key)})`, () => {
+    for (const [what, deleted] of Object.entries(QUOTE_KEPT_DELETES)) {
+      const client = new QueryClient();
+      client.setQueryData(row.key, row.answer);
+      markCorrectedPost(client, deleted);
+      expect<unknown>(client.getQueryData(row.key), what).toEqual(row.answer);
+    }
+  });
+}
+
+// A read still out at the delete holds no answer yet, so nothing in the cache says whether it
+// gives the document's text: here the spec's `part_of` read, asked before the delete reached the
+// page and answered by Dispatch before the delete committed, with the insert's words. The delete's
+// correction gives it up and asks it again, the way it asks a dropped read again; the answer the
+// first read lands afterwards lands nowhere, and the cache ends with the second answer, asked
+// after the delete, which holds none of the words.
+test("a part_of read out at a pending insert's delete is given up and asked again, and the cache ends with the answer asked after the delete", async () => {
+  const key = ["references", "to", "dispatch://CORE-1/spec", "part_of"];
+  const beforeDelete = Promise.withResolvers<unknown>();
+  const afterDelete = partOfRead("doc-1", "Hold the deploy until Monday.");
+  let asked = 0;
+  const client = new QueryClient();
+  // The spec page's read of the parts.
+  const page = new QueryObserver(client, {
+    queryFn: () => {
+      asked += 1;
+      return asked === 1 ? beforeDelete.promise : Promise.resolve(afterDelete);
+    },
+    queryKey: key,
+  });
+  const unsubscribe = page.subscribe(() => {});
+  try {
+    expect(client.getQueryState(key)?.fetchStatus).toBe("fetching");
+    markCorrectedPost(client, INSERT_DELETE);
+    beforeDelete.resolve(partOfRead("doc-1", INSERTED));
+    await beforeDelete.promise;
+    await waitFor(() => expect(client.getQueryState(key)?.fetchStatus).toBe("idle"));
+    expect({ answer: client.getQueryData(key), asked }).toEqual({ answer: afterDelete, asked: 2 });
+    expect(cachedKeysHolding(client, INSERTED)).toEqual([]);
+  } finally {
+    unsubscribe();
+    client.clear();
+  }
+});
+
+// The architect's ruling of 2026-11-21 03:47Z carried to the words a pending insert put in its
+// document. A refusal of a block written short lists each block the prefix names with its first
+// line, which holds the insert's words where the block held them, and carries no mark that tells
+// them from the document's own. The insert's delete takes the first line off each block of its
+// document the refusal lists, keeps the block listed and the refusal a refusal - not dropped, as a
+// read that gives the document's text is - and reads the prefix again with the refusal held beside
+// that read, for Dispatch to give each block's text as the delete left it. A block of another
+// document keeps its line. The list drawn from the refusal (`ItemMatchList`) names the document's
+// blocks by their ids then, and draws none of the insert's words.
+test("a pending insert's delete takes the first line off each block of its document a cached refusal lists, keeps the refusal and another document's line, and asks the prefix again", async () => {
+  const key = ["references", "to", "dispatch://CORE-1/artifact/notes#b-p"];
+  const block = (document: string, id: string, first_line: string): IDCandidate => ({
+    first_line,
+    id,
+    issue_key: "CORE-1",
+    kind: "block",
+    ref: `dispatch://CORE-1/artifact/${document}#b-${id}`,
+  });
+  const refusal = new ApiError(409, {
+    candidates: [
+      block("notes", "p1", INSERTED),
+      block("notes", "p2", "Hold the deploy."),
+      block("plan", "p3", OTHER_TEXT),
+    ],
+    code: ID_AMBIGUOUS,
+    error: 'the id prefix "p" names 3 items; write more of the id',
+  });
+  const afterDelete = Promise.withResolvers<never>();
+  let asked = 0;
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // The read of the prefix a surface draws the list from.
+  const page = new QueryObserver(client, {
+    queryFn: () => {
+      asked += 1;
+      return asked === 1 ? Promise.reject(refusal) : afterDelete.promise;
+    },
+    queryKey: key,
+  });
+  const unsubscribe = page.subscribe(() => {});
+  try {
+    await waitFor(() => expect(client.getQueryState(key)?.status).toBe("error"));
+    markCorrectedPost(client, INSERT_DELETE);
+    const state = client.getQueryState(key);
+    const items = ambiguousItems(state?.error);
+    const list = render(
+      createElement(
+        MemoryRouter,
+        null,
+        createElement(ItemMatchList, {
+          candidates: items ?? [],
+          route: { id: "p", key: "CORE-1", kind: "comment" },
+        })
+      )
+    );
+    try {
+      expect({
+        asked,
+        drawn: [INSERTED, "Hold the deploy.", OTHER_TEXT].filter((words) =>
+          list.container.textContent?.includes(words)
+        ),
+        fetching: state?.fetchStatus,
+        lines: items?.map((item) => [item.id, item.first_line]),
+      }).toEqual({
+        asked: 2,
+        drawn: [OTHER_TEXT],
+        fetching: "fetching",
+        lines: [
+          ["p1", undefined],
+          ["p2", undefined],
+          ["p3", OTHER_TEXT],
+        ],
+      });
+      expect(cachedKeysHolding(client, INSERTED)).toEqual([]);
+    } finally {
+      list.unmount();
+    }
+  } finally {
+    unsubscribe();
+    client.clear();
+  }
+});
+
+/** What the cache holds once the pending insert's delete (`INSERT_DELETE`) reaches a read keyed
+ *  `key` that holds `answer` beside `refusal`: a surface draws the read, which runs again on that
+ *  answer and is refused, as TanStack keeps an answer beside a later read's error; with `readOut`,
+ *  a read of it is out again as the delete arrives. Gives the keys whose answer holds the insert's
+ *  words, before the delete and after it, the read's answer, the items of its refusal and the
+ *  match list drawn from them (`ItemMatchList`), whether the read was asked again and is out, and
+ *  the keys whose answer holds the words once a later correction gives that read up, which puts
+ *  back the state TanStack held as it began. */
+async function deletedBesideRefusal(
+  key: QueryKey,
+  answer: unknown,
+  refusal: ApiError,
+  readOut = false
+) {
+  const later = Promise.withResolvers<never>();
+  let asked = 0;
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(key, answer);
+  const page = new QueryObserver(client, {
+    queryFn: () => {
+      asked += 1;
+      return asked === 1 ? Promise.reject(refusal) : later.promise;
+    },
+    queryKey: key,
+  });
+  const unsubscribe = page.subscribe(() => {});
+  try {
+    await waitFor(() => expect(client.getQueryState(key)?.status).toBe("error"));
+    if (readOut) {
+      void page.refetch();
+      await waitFor(() => expect(asked).toBe(2));
+    }
+    const before = cachedKeysHolding(client, INSERTED);
+    markCorrectedPost(client, INSERT_DELETE);
+    const state = client.getQueryState(key);
+    const items = ambiguousItems(state?.error);
+    const list = render(
+      createElement(
+        MemoryRouter,
+        null,
+        createElement(ItemMatchList, {
+          candidates: items ?? [],
+          route: { id: "p", key: "CORE-1", kind: "comment" },
+        })
+      )
+    );
+    try {
+      const after = {
+        answer: state?.data,
+        askedAgain: asked === (readOut ? 3 : 2) && state?.fetchStatus === "fetching",
+        before,
+        deletedLines: list.container.querySelectorAll("[data-post-deleted]").length,
+        drawn: list.container.textContent ?? "",
+        held: cachedKeysHolding(client, INSERTED),
+        items,
+      };
+      markCorrectedPost(client, correction("comment", OTHER, true));
+      return { ...after, heldOnceGivenUp: cachedKeysHolding(client, INSERTED) };
+    } finally {
+      list.unmount();
+    }
+  } finally {
+    unsubscribe();
+    client.clear();
+  }
+}
+
+// A prefix read can hold an answer beside a refusal: an id written short named one item once, and
+// a later read of it was refused (`ID_AMBIGUOUS`), which TanStack holds beside the answer it
+// keeps. Where that answer gives the text a pending insert's delete took words out of, the delete
+// takes the answer off and keeps the read, its refusal written as its error, asked again: no
+// answer the cache holds keeps the words, and the list drawn from the refusal stays. First a block
+// written short of the document, whose answer gives the block's text with the insert's words, and
+// whose refusal lists the document's blocks with their first lines.
+test("a pending insert's delete takes off a prefix read's answer that gives its document's text, and keeps the refusal the read holds", async () => {
+  const block = (id: string, first_line: string): IDCandidate => ({
+    first_line,
+    id,
+    issue_key: "CORE-1",
+    kind: "block",
+    ref: `dispatch://CORE-1/artifact/notes#b-${id}`,
+  });
+  const after = await deletedBesideRefusal(
+    ["references", "to", "dispatch://CORE-1/artifact/notes#b-p"],
+    blockRead("doc-1", "dispatch://CORE-1/artifact/notes#b-p1", INSERTED),
+    new ApiError(409, {
+      candidates: [block("p1", INSERTED), block("p2", "Hold the deploy.")],
+      code: ID_AMBIGUOUS,
+      error: 'the id prefix "p" names 2 items; write more of the id',
+    })
+  );
+  expect({ ...after, drawn: after.drawn.includes(INSERTED), items: after.items?.length }).toEqual({
+    answer: undefined,
+    askedAgain: true,
+    before: [["references", "to", "dispatch://CORE-1/artifact/notes#b-p"]],
+    deletedLines: 0,
+    drawn: false,
+    held: [],
+    heldOnceGivenUp: [],
+    items: 2,
+  });
+});
+
+// Then a comment written short (census rows 7.13 and 8.54): the prefix named one comment once,
+// and the answer that keeps it lists a mention from a block of the insert's document, with an
+// excerpt that holds the insert's words. Its refusal lists the insert's comment, which the delete
+// marks deleted. The answer goes, and the refusal stays the read's error, so the list drawn from
+// the cache - the outline reads the same one while the read is out (`useAddressFallback`) - draws
+// the deleted line in place of the comment's first line.
+test("a pending insert's delete takes off a comment prefix's answer that quotes its document, and keeps the refusal the read holds with the insert's comment marked deleted", async () => {
+  const answer = {
+    edges: [
+      {
+        created_at: "2026-11-19T00:00:00Z",
+        direction: "in",
+        excerpt: { block_id: "p1", text: INSERTED },
+        kind: "mentions",
+        node: documentBlock("doc-1"),
+        source_seq: 9,
+      },
+    ],
+    node: graphNode({ id: OTHER, kind: "comment" }),
+  };
+  const after = await deletedBesideRefusal(PREFIX_READ, answer, prefixRefusal());
+  expect({
+    ...after,
+    drawn: [INSERTED, OLD_WORDS, "Agreed."].filter((words) => after.drawn.includes(words)),
+    items: after.items?.map((item) => [item.id, item.first_line, item.deleted_at]),
+  }).toEqual({
+    answer: undefined,
+    askedAgain: true,
+    before: [PREFIX_READ],
+    deletedLines: 1,
+    drawn: ["Agreed."],
+    held: [],
+    heldOnceGivenUp: [],
+    items: [
+      [POST, undefined, DELETION.deleted_at],
+      [OTHER, "Agreed.", undefined],
+    ],
+  });
+});
+
+// Census row C.10: the refusal a prefix read holds beside its answer lists nothing the delete
+// changes - neither the insert's comment nor a block of its document - while the answer quotes
+// the insert's words in an excerpt of a block of its document, and a read of the prefix is out as
+// the delete arrives. The answer goes all the same, whether or not the delete also marks a copy
+// of the post in it, and the refusal stays the read's error, as the read is given up and asked
+// again: no answer the cache holds keeps the words, then or once a later correction gives the read
+// asked again up.
+test("a pending insert's delete takes off a prefix read's answer that quotes its document beside a refusal the delete leaves as it is, with a read out, and keeps the refusal", async () => {
+  const third = "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d";
+  const item = (id: string, first_line: string): IDCandidate => ({
+    first_line,
+    id,
+    issue_key: "CORE-1",
+    kind: "comment",
+    ref: `dispatch://CORE-1/comment/${id}`,
+  });
+  const refusal = new ApiError(409, {
+    candidates: [item(OTHER, "Agreed."), item(third, "Ship it.")],
+    code: ID_AMBIGUOUS,
+    error: 'the id prefix "5e6f7a8b" names 2 items; write more of the id',
+  });
+  const quoting = {
+    created_at: "2026-11-19T00:00:00Z",
+    direction: "in",
+    excerpt: { block_id: "p1", text: INSERTED },
+    kind: "mentions",
+    node: documentBlock("doc-1"),
+    source_seq: 9,
+  };
+  const kept = async (node: GraphNode) => {
+    const after = await deletedBesideRefusal(
+      PREFIX_READ,
+      { edges: [quoting], node },
+      refusal,
+      true
+    );
+    return {
+      answer: after.answer,
+      askedAgain: after.askedAgain,
+      before: after.before,
+      held: after.held,
+      heldOnceGivenUp: after.heldOnceGivenUp,
+      items: after.items?.map((listed) => [listed.id, listed.first_line]),
+    };
+  };
+  const expected = {
+    answer: undefined,
+    askedAgain: true,
+    before: [PREFIX_READ],
+    held: [],
+    heldOnceGivenUp: [],
+    items: [
+      [OTHER, "Agreed."],
+      [third, "Ship it."],
+    ],
+  };
+  expect({
+    namesAnother: await kept(graphNode({ id: OTHER, kind: "comment" })),
+    namesThePost: await kept(graphNode({ id: POST, kind: "comment", text: OLD_WORDS })),
+  }).toEqual({ namesAnother: expected, namesThePost: expected });
+});
+
+// The delete names its document by its id and its slug. A block of an issue's primary document is
+// written under the issue's spec as well (`dispatch://<KEY>/spec#b-…`), and the event does not say
+// that this document is that one: the issue's details say so where the page holds them. A names
+// read naming a block by the spec's address is dropped where the spec is the document, or where
+// the page holds no details of the issue to tell, and kept where the details name another
+// document the spec. A project document's blocks are written under its project instead.
+test("a names read naming a block by its spec address is dropped where the spec is the document, and a project document's by its project's", () => {
+  const projectDelete = {
+    ...correction("comment", POST, false, {
+      anchor: { ...INSERT_ANCHOR, quote: "" },
+      artifact_slug: "notes",
+      project_key: "CORE",
+    }),
+    issue_key: null,
+  } as DispatchEvent;
+  const keptAfter = (ref: string, deleted: DispatchEvent, primary?: string): boolean => {
+    const client = new QueryClient();
+    if (primary !== undefined) {
+      client.setQueryData(["issue", "CORE-1"], { key: "CORE-1", primary_artifact_id: primary });
+    }
+    const key = referenceTargetsQuery([ref]).queryKey;
+    client.setQueryData(key, namesRead(ref, INSERTED));
+    markCorrectedPost(client, deleted);
+    return client.getQueryData(key) !== undefined;
+  };
+  expect({
+    issueDocumentUnderItsProject: keptAfter("dispatch://CORE/artifact/notes#b-p1", INSERT_DELETE),
+    pinnedVersion: keptAfter("dispatch://CORE-1/artifact/notes#b-p1@v3", INSERT_DELETE),
+    projectDocument: keptAfter("dispatch://CORE/artifact/notes#b-p1", projectDelete),
+    specIsAnother: keptAfter("dispatch://CORE-1/spec#b-p1", INSERT_DELETE, "doc-2"),
+    specIsTheDocument: keptAfter("dispatch://CORE-1/spec#b-p1", INSERT_DELETE, "doc-1"),
+    specUnknown: keptAfter("dispatch://CORE-1/spec#b-p1", INSERT_DELETE),
+  }).toEqual({
+    issueDocumentUnderItsProject: true,
+    pinnedVersion: false,
+    projectDocument: false,
+    specIsAnother: true,
+    specIsTheDocument: false,
+    specUnknown: false,
+  });
+});

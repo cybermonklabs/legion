@@ -14,6 +14,8 @@ import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { isViewer } from "../refs/actor";
+import { EditedMark } from "../refs/PostBody";
+import { postDeletion } from "../refs/post-marks";
 import { buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { useMediaQuery } from "../shell/useDialog";
@@ -23,6 +25,7 @@ import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from ".
 import { pathToTarget } from "./issue-address";
 import { drawnLine, firstLineOf, lineWords, type TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
+import { DeletedLine } from "./NodeRow";
 import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
@@ -1204,7 +1207,7 @@ export function IssueTree({
               type="button"
               {...authorText}
             >
-              {crumbName(above, root.id)}
+              <CrumbLine issueId={root.id} node={above} />
             </button>
           ))}
           <span {...pageChrome}>/</span>
@@ -1281,6 +1284,25 @@ function crumbName(node: TreeNode, issueId: string): string {
   if (node.id === issueId) return node.id;
   const first = firstLineOf(lineWords(node));
   return first.line === "" ? NODE_TYPE_NAMES[node.type] : drawnLine(first);
+}
+
+/**
+ * What a crumb above a zoom draws for `node`: its name (`crumbName`), with the marks of a post
+ * its author corrected, since a crumb draws a node's one line where its own row is not drawn, as
+ * a filter's parent line does (`NodeRow.tsx`'s `ParentLink`, INFRA-1523 R2 and R3). A deleted
+ * comment or message is drawn as its deleted line, from the delete (`DeletedLine`) and never from
+ * the node's text, which names the actor as no registry knows it and the time as stored; an
+ * edited one says ` · edited` after its line (`EditedMark`).
+ */
+function CrumbLine({ issueId, node }: { issueId: string; node: TreeNode }): ReactNode {
+  const deleted = postDeletion({ deleted_at: node.deletedAt, deleted_by: node.deletedBy });
+  if (deleted !== null) return <DeletedLine deleted={deleted} />;
+  return (
+    <>
+      {crumbName(node, issueId)}
+      <EditedMark at={node.editedAt} marks={pageChrome} />
+    </>
+  );
 }
 
 /**

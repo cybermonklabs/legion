@@ -584,6 +584,19 @@ type server struct {
 	// the deployment builds leaves it, calls nothing. Only a test sets it, to send the rest of a
 	// body it held back once the repeat is waiting on it.
 	repeatFoundInFlight func()
+	// afterMentionCopyRule is called inside a comment mention's send once its copy rule answered
+	// that the send waits for no earlier event, before the re-check of its claim
+	// (deliverResolvedCommentMention); nil, which every server the deployment builds leaves it,
+	// calls nothing. Only a test sets it, to commit a delete of the comment while the copy rule runs.
+	afterMentionCopyRule func()
+	// deleteLeavesSettlement has the delete of a comment whose pending insert suggestion it
+	// rejects leave the document's next version to the settlement the reject arms, as the delete
+	// did before it wrote that version itself (deleteComment, docs.SettleVersion); false, which
+	// every server the deployment builds leaves it, settles in the delete. Only a test sets it:
+	// to time the delete without its settle beside the delete with it, and to reach a document
+	// whose latest version still holds a deleted insert's words, as one does where a build
+	// without the settle served the delete during a rollout, for the readers that mask them.
+	deleteLeavesSettlement bool
 	// slowWrites is the slow-write test hook's delay for each keyed method and path it was armed
 	// for (POST /api/v1/writes/_test/slow), by "METHOD path"; it holds nothing on a server without
 	// TestHooksEnabled, which mounts no hook.
@@ -1089,9 +1102,9 @@ type apiError struct {
 	message string
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
 	// that carries none. Only a refusal that knows when the caller may come back sets it:
-	// brokerTokenActor's 429, the results write's 409 CHECK_CONTENDED, and linkedReadRefusal's
-	// 502 for a linked repository's read GitHub rate-limited with a wait. writeHandlerError
-	// writes the header.
+	// brokerTokenActor's 429, the results write's 409 CHECK_CONTENDED, both deletes' 409
+	// DELETE_CONTENDED, and linkedReadRefusal's 502 for a linked repository's read GitHub
+	// rate-limited with a wait. writeHandlerError writes the header.
 	retryAfter int
 	// scope is the OAuth scope a missing-scope refusal names, and is empty for every other
 	// refusal. Only missingScopeError sets it; writeHandlerError writes the challenge header
@@ -1302,6 +1315,20 @@ func (s *server) actorFrom(r *http.Request, supplied *model.Actor) (model.Actor,
 	return actor.Recorded(), nil
 }
 
+// credentialProvesSession is whether the request's credential proved a session of its own - a
+// broker-issued token, which the broker binds to one session - rather than a caller that must
+// name its session in the body.
+func credentialProvesSession(authenticated model.Actor) bool {
+	return authenticated.Kind == "session" && authenticated.ID != ""
+}
+
+// actorNamesWriter is whether a request body names a writer at all: an actor carrying a kind or
+// an id, either of which is the caller saying who writes. A body that names neither leaves the
+// writer to the credential.
+func actorNamesWriter(supplied *model.Actor) bool {
+	return supplied != nil && (strings.TrimSpace(supplied.ID) != "" || strings.TrimSpace(supplied.Kind) != "")
+}
+
 // bearerSessionActor resolves the acting session for a bearer caller: the caller names its own
 // session in the request body, and what the token itself proved — a personal token's owner, a
 // service token's verified subject — stays attached for attribution. Neither is ever taken from
@@ -1316,10 +1343,10 @@ func (s *server) actorFrom(r *http.Request, supplied *model.Actor) (model.Actor,
 // session the caller merely asked for. Every credential that proves no session — a cookie, a
 // personal token, a Kubernetes service-account token — keeps the rule above exactly.
 func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *model.Actor) (model.Actor, error) {
-	if authenticated.Kind == "session" && authenticated.ID != "" {
+	if credentialProvesSession(authenticated) {
 		// A body that names no writer at all leaves the session to the credential; one that names
 		// anything else than that same session is the mismatch.
-		named := supplied != nil && (strings.TrimSpace(supplied.ID) != "" || strings.TrimSpace(supplied.Kind) != "")
+		named := actorNamesWriter(supplied)
 		if named && (supplied.Kind != "session" || strings.TrimSpace(supplied.ID) != authenticated.ID) {
 			return model.Actor{}, errorf(http.StatusForbidden, "ACTOR_SESSION_MISMATCH",
 				"this request's credential acts for session %s; its actor names another writer", authenticated.ID)
@@ -1947,17 +1974,22 @@ func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, ledger *docs.L
 
 // transactionVersionMarkdown is the markdown of version number of artifactID as tx sees it once its
 // queue has run: the ledger's, when it is the version this transaction queued
-// (docs.Ledger.PendingVersionMarkdown), else the stored row's. False when neither holds it.
+// (docs.Ledger.PendingVersionMarkdown), else the stored row's. False when neither holds it. Either
+// is the text every read of the version answers (docs.MaskedVersionText), so the diff a version's
+// event carries gives no word of a pending insert whose comment was deleted.
 func transactionVersionMarkdown(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, artifactID string, number int) (string, bool, error) {
-	if markdown, pending := ledger.PendingVersionMarkdown(artifactID, number); pending {
-		return markdown, true, nil
+	markdown, insertTree, pending := ledger.PendingVersionMarkdown(artifactID, number)
+	if !pending {
+		err := tx.QueryRow(ctx, `
+			select markdown, insert_tree from artifact_versions where artifact_id = $1 and number = $2
+		`, artifactID, number).Scan(&markdown, &insertTree)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, err
+		}
 	}
-	var markdown string
-	err := tx.QueryRow(ctx, `
-		select markdown from artifact_versions where artifact_id = $1 and number = $2
-	`, artifactID, number).Scan(&markdown)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false, nil
-	}
-	return markdown, err == nil, err
+	masked, err := docs.MaskedVersionText(ctx, tx, artifactID, markdown, insertTree)
+	return masked, err == nil, err
 }

@@ -200,7 +200,7 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
           Object.assign(editor.viewProps, next);
         },
         state: {
-          doc: { descendants() {} },
+          doc: { descendants() {}, nodesBetween() {} },
           selection: {
             get empty() {
               return editor.selectionEmpty;

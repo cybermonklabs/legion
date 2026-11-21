@@ -2516,7 +2516,8 @@ export function sharedRuns(runDir: string): SharedRun[] {
  *   when the person approved none (then no checkable judge runs);
  * - `asks`: agent-asks.json less the approval request and the seeded asks, oldest first at full
  *   precision (Dispatch writes `…:00.5Z` before `…:00.51Z`, which text order reverses);
- * - `texts`: agent-texts.json less the seeded asks;
+ * - `texts`: agent-texts.json less the seeded asks. agent-texts.json holds no post the run
+ *   deleted, because the capture (seed.ts's captureSpec) leaves each out (dispatch://INFRA-1523);
  * - `documents`: each file of documents/, as `documents/<file>`;
  * - `checks`: how many spec-only checks count for a spec write, from specWork, the one list of
  *   checks specRow's `checked` reads too: with none, no findings judge runs and findings.json has

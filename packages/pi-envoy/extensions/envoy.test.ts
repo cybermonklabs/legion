@@ -32,6 +32,7 @@ import { delimiter, dirname, join } from "node:path";
 import {
   canonicalTopic,
   type Envelope,
+  IDEMPOTENCY_KEY_COMMITTED,
   legacyDispatchIssueSubject,
   type SessionAnswer,
   uncapturedTopicRefusal,
@@ -13959,6 +13960,113 @@ console.log(JSON.stringify(args));
     ]);
   });
 
+  // A reply Dispatch made and gave no copy of its answer for (`409 KEY_COMMITTED`) is a reply
+  // posted: the attempt is answered with it. Each row boots a session whose reply route answers
+  // that, relays it one comment BTW and answers with what the session posted, what its log said
+  // and what it printed as a failure.
+  describe("a reply that landed with no answer", () => {
+    const REPLY = "/api/v1/comments/33333333-3333-4333-8333-333333333333/reply";
+    const LANDED = "envoy: a reply landed on Dispatch, which gave no copy of its answer";
+
+    async function btwLanded(
+      name: string,
+      runEphemeralTurn?: () => Promise<{ replyText: string }>
+    ): Promise<{ replies: unknown[]; warnings: string[]; failures: string[] }> {
+      process.env.DISPATCH_URL = "http://dispatch.test";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
+      const replies: unknown[] = [];
+      globalThis.fetch = async (input, init) => {
+        const path = new URL(input.toString()).pathname;
+        if (path === "/v1/interests/subscribe") {
+          return response({
+            session_id: "ses_delivery",
+            machine_id: "test",
+            dir: "/tmp",
+            topics: ["notifications.agent.ses_delivery"],
+            delivery: consumerDelivery("ses_delivery", { streamID: TEST_STREAM_ID }),
+          });
+        }
+        if (path === REPLY) {
+          replies.push(JSON.parse(init?.body?.toString() ?? "{}"));
+          return new Response(
+            JSON.stringify({ code: IDEMPOTENCY_KEY_COMMITTED, error: "this request already ran" }),
+            { status: 409, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        return response({});
+      };
+      const warnings: string[] = [];
+      const stopSink = logger.registerLogSink((entry) => {
+        if (entry.level === "warn") warnings.push(entry.message);
+      });
+      const printed = spyOn(console, "warn").mockImplementation(() => undefined);
+      const failures = () =>
+        printed.mock.calls
+          .map((call) => String(call[0]))
+          .filter((line) => line.includes("failed to deliver"));
+      try {
+        // Query-string isolation gives this stateful extension its own NATS subscription.
+        const { default: envoyExtension } = await import(`./envoy.ts?${name}`);
+        const fixture = createPi();
+        envoyExtension(fixture.pi);
+        await fixture.handlers.get("session_start")?.(
+          {},
+          {
+            ...sessionContext("ses_delivery"),
+            ...(runEphemeralTurn === undefined ? {} : { runEphemeralTurn }),
+          }
+        );
+        const agent = natsState.controls.get("notifications.agent.ses_delivery");
+        if (agent === undefined) throw new Error("agent subject was not subscribed");
+        agent.push(targetedCommentEnvelope("btw", name));
+        // Settled either way: the line that says the reply landed, or a second reply on the
+        // attempt, or the failure the delivery prints.
+        await until(
+          () => warnings.includes(LANDED) || replies.length > 1 || failures().length > 0,
+          "the reply's outcome"
+        );
+        await settle();
+        return { replies, warnings, failures: failures() };
+      } finally {
+        stopSink();
+        printed.mockRestore();
+      }
+    }
+
+    test("a BTW's reply is taken as posted, and no error reply follows it on the attempt", async () => {
+      const { replies, warnings, failures } = await btwLanded("btw-reply-landed", async () => ({
+        replyText: "Comment reply.",
+      }));
+
+      expect(replies).toEqual([
+        {
+          actor: { id: "ses_delivery", kind: "session" },
+          attempt: 1,
+          target: "session:ses_delivery",
+          body: "Comment reply.",
+        },
+      ]);
+      expect(warnings).toContain(LANDED);
+      expect(failures).toEqual([]);
+    });
+
+    test("an error reply that landed is no failure to deliver the frame", async () => {
+      // A host with no side turn refuses the BTW, and that refusal is the reply that lands.
+      const { replies, warnings, failures } = await btwLanded("btw-refusal-landed");
+
+      expect(replies).toEqual([
+        {
+          actor: { id: "ses_delivery", kind: "session" },
+          attempt: 1,
+          target: "session:ses_delivery",
+          error: "This OMP host does not support BTW delivery",
+        },
+      ]);
+      expect(warnings).toContain(LANDED);
+      expect(failures).toEqual([]);
+    });
+  });
+
   test("delivers a targeted Steer card and an Aside each as an aside, a turn running or not", async () => {
     let idle = false;
     const { agent, delivered, fixture } = await bootDirectSession("targeted-modes", {
@@ -14312,6 +14420,41 @@ console.log(JSON.stringify(args));
         expect(recordedWhenDelivered).toEqual([1]);
       });
     }
+
+    // An accept Dispatch recorded and gave no copy of its answer for (`409 KEY_COMMITTED`) spent
+    // the attempt as this session's, and the stored body a turn is made of is not in hand: the
+    // frame keeps its card, and the line says the accept was recorded and why no turn follows,
+    // never that Dispatch did not accept it.
+    test("stays a card, saying the accept was recorded, when the accept landed with no answer", async () => {
+      const warnings: string[] = [];
+      const stopSink = logger.registerLogSink((entry) => {
+        if (entry.level === "warn") warnings.push(entry.message);
+      });
+      try {
+        const { accepts, agent, delivered, fixture, posts } = await bootDirectSession(
+          "direct-accept-landed",
+          { accept: () => ({ code: IDEMPOTENCY_KEY_COMMITTED, status: 409 }) }
+        );
+
+        await onTestClock(() => {
+          agent.push(directDispatchEnvelope("steer", "direct-accept-landed"));
+          return delivered(1);
+        });
+
+        expect(accepts).toHaveLength(1);
+        expect(fixture.userMessages).toEqual([]);
+        expect(fixture.deliveries.map((delivery) => delivery.customType)).toEqual([
+          "envoy-message",
+        ]);
+        expect(posts).toEqual([]);
+        expect(warnings).toContain(
+          "envoy: Dispatch recorded this session's accept of a direct message and gave no copy of its answer, so no turn follows; it arrives as a card"
+        );
+        expect(warnings.filter((warning) => warning.includes("did not accept"))).toEqual([]);
+      } finally {
+        stopSink();
+      }
+    });
 
     // A failure that can clear is no answer: the accept asks again under its key, and Dispatch's
     // answer to the retry decides, so a Send whose first answer was lost is still the person's turn.
@@ -24243,6 +24386,55 @@ describe("consumer delivery", () => {
       expect(card).toContain(
         `this event carries no body: it was too large for the bus; read it whole with GET /api/v1/comments/${CUT_COMMENT}`
       );
+    });
+
+    // The comment changed after its event was written. The card re-reads it, so it prints the
+    // comment as it stands: the deleted line every read prints in place of the body a delete
+    // cleared, or the words an edit wrote with the edited mark beside them. The part the event
+    // carried is in neither, nor the note that the body was cut.
+    test("is prompted with the deleted line for a comment deleted since", async () => {
+      const card = await cardForCutComment("cut-comment-deleted", (path) =>
+        path === `/api/v1/comments/${CUT_COMMENT}`
+          ? response({
+              comment: {
+                id: CUT_COMMENT,
+                issue_key: "INFRA-370",
+                body: "",
+                deleted_at: "2026-11-03T00:00:00Z",
+                deleted_by: { kind: "user", id: "alice" },
+              },
+              replies: [],
+            })
+          : undefined
+      );
+
+      expect(card).toContain(
+        `body: ${JSON.stringify("Deleted by user alice at 2026-11-03T00:00:00Z")}`
+      );
+      expect(card).not.toContain(CARRIED);
+      expect(card).not.toContain("first part only");
+    });
+
+    test("is prompted with the words an edit wrote and the edited mark for a comment edited since", async () => {
+      const card = await cardForCutComment("cut-comment-edited", (path) =>
+        path === `/api/v1/comments/${CUT_COMMENT}`
+          ? response({
+              comment: {
+                id: CUT_COMMENT,
+                issue_key: "INFRA-370",
+                body: "The paragraph as edited.\n\nAnd a second one.",
+                edited_at: "2026-11-03T00:00:00Z",
+              },
+              replies: [],
+            })
+          : undefined
+      );
+
+      expect(card).toContain(
+        `body: ${JSON.stringify("The paragraph as edited.\n\nAnd a second one. · edited 2026-11-03T00:00:00Z")}`
+      );
+      expect(card).not.toContain(CARRIED);
+      expect(card).not.toContain("first part only");
     });
   });
 });

@@ -89,7 +89,7 @@
     },
     "/api/v1/agents/{session_id}/answers": {
       "get": {
-        "description": "What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays), each message, and each ask a person declined to answer, once however it arrived. It reads the ask.answered, comment.created, message.created, message.answered and ask.resolved events a person wrote whose published_destinations hold the session's own topic, the session's message deliveries the listener took (targeted and broadcast messages, handed to the running session or queued for it) and its comment deliveries (mentions) in those same two states; of an ask's resolutions it lists the decline alone, and it never lists an agent's or the system's words, a retraction, a withdrawal, another resolution, a hand-back, or a delivery to a role: route's topic. Each item names its relation to the session. A session owns an ask when it wrote the ask or follows it, and only an owner is told that an ask is its own: for a comment, replied_on_your_ask (a reply in the thread of an ask the session owns) over mentioned_you over replied_in_a_comment_thread over commented_on_a_document over commented_on_an_issue; for a message, replied_to_your_message over sent_you_a_message; for an answer, answered_your_ask for an owner and answered_an_ask for any other session; for a decline, declined_your_ask for an owner and declined_an_ask for any other session. A session that does not own the ask reads a reply in its thread by the reason that delivered it: the issue's route, its claim, a credit on its primary document, or a mention. Each item carries the ask and its whole question on an answer, on a decline and on a reply in an ask's thread, whoever asked it, and its owner, dispatch:// ref and href (null owner and ref, and /agents/\u003csession_id\u003e/live, for a direct message). A decline carries a kind of its own, declined, at the resolution's own time, its id the ask's, and its words in two parts: text, the person's own note, empty when they wrote none, and, on declined_your_ask alone, dispatch_words, the sentences Dispatch wrote for the asking agent; nobody chose an option, so it carries no selected. ?since= (RFC3339, default 72 hours ago; older than 7 days or in the future is 400 INVALID_QUERY) starts the window; ?max_chars= (1-100000, else 400 INVALID_QUERY) stops the list after the item whose words take the running sum past it, counting the UTF-16 units of text and, on a decline that carries them, of dispatch_words beside it, while total counts every item in the window; {session_id, since, total, items}. A session_id that is not a session id is 400 INVALID_SESSION_ID, as on the agent artifact routes. Not an authorization boundary: direct-message text already reaches every authenticated caller through GET /api/v1/events, and a person may read any session's list.",
+        "description": "What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays), each message at its current body (edited_at when edited), a deleted comment or message in its place with deleted_at and deleted_by and an empty text, and each ask a person declined to answer, once however it arrived. It reads the ask.answered, comment.created, message.created, message.answered and ask.resolved events a person wrote whose published_destinations hold the session's own topic, the session's message deliveries the listener took (targeted and broadcast messages, handed to the running session or queued for it) and its comment deliveries (mentions) in those same two states; of an ask's resolutions it lists the decline alone, and it never lists an agent's or the system's words, a retraction, a withdrawal, another resolution, a hand-back, or a delivery to a role: route's topic. Each item names its relation to the session. A session owns an ask when it wrote the ask or follows it, and only an owner is told that an ask is its own: for a comment, replied_on_your_ask (a reply in the thread of an ask the session owns) over mentioned_you over replied_in_a_comment_thread over commented_on_a_document over commented_on_an_issue; for a message, replied_to_your_message over sent_you_a_message; for an answer, answered_your_ask for an owner and answered_an_ask for any other session; for a decline, declined_your_ask for an owner and declined_an_ask for any other session. A session that does not own the ask reads a reply in its thread by the reason that delivered it: the issue's route, its claim, a credit on its primary document, or a mention. Each item carries the ask and its whole question on an answer, on a decline and on a reply in an ask's thread, whoever asked it, and its owner, dispatch:// ref and href (null owner and ref, and /agents/\u003csession_id\u003e/live, for a direct message). A decline carries a kind of its own, declined, at the resolution's own time, its id the ask's, and its words in two parts: text, the person's own note, empty when they wrote none, and, on declined_your_ask alone, dispatch_words, the sentences Dispatch wrote for the asking agent; nobody chose an option, so it carries no selected. ?since= (RFC3339, default 72 hours ago; older than 7 days or in the future is 400 INVALID_QUERY) starts the window; ?max_chars= (1-100000, else 400 INVALID_QUERY) stops the list after the item whose words take the running sum past it, counting the UTF-16 units of text and, on a decline that carries them, of dispatch_words beside it, while total counts every item in the window; {session_id, since, total, items}. A session_id that is not a session id is 400 INVALID_SESSION_ID, as on the agent artifact routes. Not an authorization boundary: direct-message text already reaches every authenticated caller through GET /api/v1/events, and a person may read any session's list.",
         "operationId": "getApiV1AgentsBySessionIdAnswers",
         "parameters": [
           {
@@ -1536,7 +1536,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Comment on a document or one of its quotes.",
+        "description": "Comment on a document or one of its quotes. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text.",
         "operationId": "postApiV1ArtifactsByIdComments",
         "parameters": [
           {
@@ -2274,7 +2274,7 @@
     },
     "/api/v1/artifacts/{id}/versions/{number}": {
       "get": {
-        "description": "One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. A version's author carries proven: true only when the credential of every write that author made to the version proved it.",
+        "description": "One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. A version's author carries proven: true only when the credential of every write that author made to the version proved it. A document version that holds the words of a pending insert suggestion whose comment its author deleted, and that no accept made document text, answers its Markdown without them, as JSON and as the download alike: the version still stores them, and its sha256 and size are the stored text's, so a masked answer's text no longer hashes to sha256, nor to the document_token the version was written with.",
         "operationId": "getApiV1ArtifactsByIdVersionsByNumber",
         "parameters": [
           {
@@ -3258,8 +3258,63 @@
         },
         "x-auth": "any"
       },
+      "delete": {
+        "description": "Delete a comment: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing. The comment keeps its row and its place in its thread, and every read of it gives deleted_at and deleted_by and no body; the body it held is kept, and GET /api/v1/comments/{id}/history reads the mark in its place. A suggestion of it still pending is rejected out of the document before the body goes, so an insert suggestion's text leaves the document with it; the suggestion's replacement text goes from the comment with the body, and the document version an accepted suggestion made, which the accept named after the comment's body, is renamed to the change it made (its artifact.version event keeps the name it carried); each block is removed with its excerpt cleared and the text every revision recorded of it cleared too, the margin mark is projected again with no text, and every mention attempt still pending is failed, 'ended by the post's delete', which says nothing of whether its frame had already reached the session. A mention attempt its own sender moves while the delete is being written is 409 DELETE_CONTENDED with Retry-After: 1 and nothing written: send the same delete again. A comment of a closed issue is deleted too; a second delete is 409 POST_DELETED.",
+        "operationId": "deleteApiV1CommentsById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActorInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Comment"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      },
       "patch": {
-        "description": "Edit a comment's body. The dashboard editor also sends blocks ([{id, from}], from in UTF-16 code units into the new body) and base_revision, the revision GET /api/v1/comments/{id}/blocks gave, so each block keeps its id; without them the ids follow the text.",
+        "description": "Edit a comment's body: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing. The body it replaces is kept and GET /api/v1/comments/{id}/history reads it. The dashboard editor also sends blocks ([{id, from}], from in UTF-16 code units into the new body) and base_revision, the revision GET /api/v1/comments/{id}/blocks gave, so each block keeps its id; without them the ids follow the text. A comment of a closed issue is edited too, and a deleted one is 409 POST_DELETED.",
         "operationId": "patchApiV1CommentsById",
         "parameters": [
           {
@@ -3312,9 +3367,6 @@
           }
         },
         "x-auth": "any",
-        "x-oauth-scopes": [
-          "person"
-        ],
         "x-write-scope": "project"
       }
     },
@@ -3481,6 +3533,60 @@
         },
         "x-auth": "any",
         "x-write-scope": "project"
+      }
+    },
+    "/api/v1/comments/{id}/history": {
+      "get": {
+        "description": "Every body an edit or a delete of this comment replaced, newest first, each with the actor that replaced it and the time: {deleted_at, deleted_by, entries: [{body, edited_by, edited_at}]}. Read by whoever reads the comment, which is any authenticated caller. At most 200 rows in one answer; ?before=\u003cRFC3339 time\u003e answers the page after, the rows written before it. A comment nobody edited or deleted answers an empty list; a delete writes an entry of its own, so a comment deleted with no edit lists one, and a deleted comment answers the mark with every body empty, since no read of a deleted post gives its text.",
+        "operationId": "getApiV1CommentsByIdHistory",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostHistoryRead"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
       }
     },
     "/api/v1/comments/{id}/reject": {
@@ -4872,7 +4978,7 @@
     },
     "/api/v1/going/catalogue": {
       "get": {
-        "description": "The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-seven tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The one it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
+        "description": "The catalogue of operations an agent may propose on Dispatch's graph: 24 of the 41 tool specs agents operate Dispatch with, every one that writes but dispatch_review, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. It leaves dispatch_review out on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. The catalogue is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
         "operationId": "getApiV1GoingCatalogue",
         "parameters": [
           {
@@ -4961,7 +5067,7 @@
     },
     "/api/v1/going/requests/{id}/stream": {
       "get": {
-        "description": "One run's answer as server-sent events: each frame is `id:` its sequence, `event:` its name (text, item, cut, changed, none, end, error) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on end or error. Last-Event-ID resumes after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows and not the memory of the process that took the POST: a run past its ends_at that stored no ending is ended by the reader itself, with the error ANSWER_DID_NOT_ARRIVE, which is how a stream ends when the pod that took the POST is gone. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, so an id tells a caller nothing it did not already know.",
+        "description": "One run's answer as server-sent events: each frame is `id:` its sequence, `event:` its name (text, item, cut, changed, none, end, error) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on end or error. Last-Event-ID resumes after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows and not the memory of the process that took the POST: a run past its ends_at that stored no ending is ended by the reader itself, with the error ANSWER_DID_NOT_ARRIVE, which is how a stream ends when the pod that took the POST is gone. Once a comment or an issue message whose text the run gave its model is deleted, every read of the stream gives none of the run's frames and only the error ANSWER_WITHDRAWN, under the id of the run's ending, and nothing to a reader that already holds that id. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, so an id tells a caller nothing it did not already know.",
         "operationId": "getApiV1GoingRequestsByIdStream",
         "parameters": [
           {
@@ -6005,7 +6111,7 @@
     },
     "/api/v1/issues/{key}/artifacts/{slug}/versions/{number}": {
       "get": {
-        "description": "One version of an issue's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown.",
+        "description": "One version of an issue's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown. A document version that holds the words of a pending insert suggestion whose comment its author deleted, and that no accept made document text, answers its Markdown without them: its sha256 and size are the stored text's, so a masked answer's text no longer hashes to sha256, nor to the document_token the version was written with.",
         "operationId": "getApiV1IssuesByKeyArtifactsBySlugVersionsByNumber",
         "parameters": [
           {
@@ -6448,7 +6554,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask.",
+        "description": "Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text.",
         "operationId": "postApiV1IssuesByKeyComments",
         "parameters": [
           {
@@ -6974,7 +7080,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Post an issue message; target and delivery address a session or role. A reply names the message it answers in in_reply_to, and one block of it in in_reply_to_block.",
+        "description": "Post an issue message; target and delivery address a session or role. A reply names the message it answers in in_reply_to, and one block of it in in_reply_to_block. A reply to a deleted message is 409 POST_DELETED: a withdrawn post takes no new text.",
         "operationId": "postApiV1IssuesByKeyMessages",
         "parameters": [
           {
@@ -9114,6 +9220,117 @@
           }
         },
         "x-auth": "any"
+      },
+      "delete": {
+        "description": "Delete an issue message: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing. The message keeps its row and its place in its thread, and every read of it gives deleted_at and deleted_by and no body; the body it held is kept, and GET /api/v1/messages/{id}/history reads the mark in its place. Each block is removed with its excerpt cleared, and every send still pending is failed, 'ended by the post's delete', which says nothing of whether its frame had already reached the session. A send its own sender moves while the delete is being written is 409 DELETE_CONTENDED with Retry-After: 1 and nothing written: send the same delete again. A message of a closed issue is deleted too. A message of a conversation with no issue is 409 NOT_AN_ISSUE_MESSAGE, and a second delete is 409 POST_DELETED.",
+        "operationId": "deleteApiV1MessagesById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActorInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Message"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      },
+      "patch": {
+        "description": "Edit an issue message's body: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing, as the comment edit reads it. The body it replaces is kept and GET /api/v1/messages/{id}/history reads it; the block ids follow the text, since no editor carries them through the edit. A message of a closed issue is edited too. A message of a conversation with no issue is 409 NOT_AN_ISSUE_MESSAGE, and a deleted message 409 POST_DELETED.",
+        "operationId": "patchApiV1MessagesById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EditMessageInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Message"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
       }
     },
     "/api/v1/messages/{id}/blocks": {
@@ -9285,6 +9502,60 @@
         },
         "x-auth": "bearer",
         "x-write-scope": "session"
+      }
+    },
+    "/api/v1/messages/{id}/history": {
+      "get": {
+        "description": "Every body an edit or a delete of this message replaced, newest first, each with the actor that replaced it and the time: {deleted_at, deleted_by, entries: [{body, edited_by, edited_at}]}. Read under GET /api/v1/messages/{id}'s rule: a credential without the person scope reading a direct message names its session in ?session= (400 SESSION_REQUIRED, 403 THREAD_FORBIDDEN). At most 200 rows in one answer; ?before=\u003cRFC3339 time\u003e answers the page after, the rows written before it. A message nobody edited or deleted answers an empty list; a delete writes an entry of its own, so a message deleted with no edit lists one, and a deleted message answers the mark with every body empty, since no read of a deleted post gives its text.",
+        "operationId": "getApiV1MessagesByIdHistory",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostHistoryRead"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
       }
     },
     "/api/v1/messages/{id}/reply": {
@@ -10844,7 +11115,7 @@
     },
     "/api/v1/projects/{key}/artifacts/{slug}/versions/{number}": {
       "get": {
-        "description": "One version of a project's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown.",
+        "description": "One version of a project's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown. A document version that holds the words of a pending insert suggestion whose comment its author deleted, and that no accept made document text, answers its Markdown without them: its sha256 and size are the stored text's, so a masked answer's text no longer hashes to sha256, nor to the document_token the version was written with.",
         "operationId": "getApiV1ProjectsByKeyArtifactsBySlugVersionsByNumber",
         "parameters": [
           {
@@ -11433,7 +11704,7 @@
     },
     "/api/v1/reference-targets": {
       "get": {
-        "description": "What many dispatch:// references point at, in one read: ?ref=\u003cdispatch ref\u003e once per reference, at most 256 of them (past that 400 CAP_EXCEEDED naming the cap). {targets}, one member per ?ref= in the request's order (a reference named twice answered twice), each {ref, kind, name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, a component's title, a block's text), and gone whether nothing answers to that reference now, once an id it writes short is resolved, which carries no name. A caller that sent Dispatch-Trees: 1 is also given text_tree on each member whose kind is block: the block's whole text as the tree a reader is shown, links and references kept and nothing cut, a typed block's being of what stands between its opening line and its closing one. The lines between a typed block's fences are read by the block's kind: a document's block has the closing fence's indentation taken out of each line, which a block in a list item or a footnote definition carries, and a block of a comment, a message or an ask, stored from the start of its line, has its opening line's indentation, up to three spaces, taken off before the directive is read and up to as many columns taken off each later line, as its own text's parse reads them, the indentation left on a line, and the spaces or tabs after a list marker or a quote marker, written as spaces with each tab counted to the next multiple of four from its own column. With its opening line at column 0, such a block keeps every line as written; an opening line four spaces or a tab in opens no typed block, so that text is given the tree of its whole stored text. A typed block in a quote is given the tree of its whole stored text, its opening line included, and so is a block of a comment, a message or an ask whose closing fence stands four spaces or a tab in, since that fence closes nothing in its text. A reference the grammar cannot read is 400 INVALID_REFERENCE naming it; one that reads but names nothing is answered gone, never refused. An item id or a block id written short (8 characters or more, never a whole uuid) is resolved in the scope the reference names, as GET /api/v1/references resolves its ?to=, and ref still echoes it as written: a prefix that nothing carries is answered gone, and a prefix that two or more items carry answers that member gone with ambiguous: true, which no other member carries, and every other member is answered; GET /api/v1/references refuses such a prefix with 409 ID_AMBIGUOUS, and this read refuses none. Under an ETag over the whole answer, each tree and each ambiguous included (If-None-Match answers 304). This answers no edges: GET /api/v1/references reads one node's edges.",
+        "description": "What many dispatch:// references point at, in one read: ?ref=\u003cdispatch ref\u003e once per reference, at most 256 of them (past that 400 CAP_EXCEEDED naming the cap). {targets}, one member per ?ref= in the request's order (a reference named twice answered twice), each {ref, kind, name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, a component's title, a block's text), and gone whether nothing answers to that reference now, once an id it writes short is resolved, which carries no name. A member naming a comment or a message, or a block of one, also carries edited_at where the post's author edited it, and deleted_at and deleted_by where its author deleted it: a deleted post's member is not gone and its name is \"\", and a member naming a block of it is gone, with no name and no text_tree. A caller that sent Dispatch-Trees: 1 is also given text_tree on each member whose kind is block: the block's whole text as the tree a reader is shown, links and references kept and nothing cut, a typed block's being of what stands between its opening line and its closing one. The lines between a typed block's fences are read by the block's kind: a document's block has the closing fence's indentation taken out of each line, which a block in a list item or a footnote definition carries, and a block of a comment, a message or an ask, stored from the start of its line, has its opening line's indentation, up to three spaces, taken off before the directive is read and up to as many columns taken off each later line, as its own text's parse reads them, the indentation left on a line, and the spaces or tabs after a list marker or a quote marker, written as spaces with each tab counted to the next multiple of four from its own column. With its opening line at column 0, such a block keeps every line as written; an opening line four spaces or a tab in opens no typed block, so that text is given the tree of its whole stored text. A typed block in a quote is given the tree of its whole stored text, its opening line included, and so is a block of a comment, a message or an ask whose closing fence stands four spaces or a tab in, since that fence closes nothing in its text. A reference the grammar cannot read is 400 INVALID_REFERENCE naming it; one that reads but names nothing is answered gone, never refused. An item id or a block id written short (8 characters or more, never a whole uuid) is resolved in the scope the reference names, as GET /api/v1/references resolves its ?to=, and ref still echoes it as written: a prefix that nothing carries is answered gone, and a prefix that two or more items carry answers that member gone with ambiguous: true, which no other member carries, and every other member is answered; GET /api/v1/references refuses such a prefix with 409 ID_AMBIGUOUS, and this read refuses none. Under an ETag over the whole answer, each tree and each ambiguous included (If-None-Match answers 304). This answers no edges: GET /api/v1/references reads one node's edges.",
         "operationId": "getApiV1ReferenceTargets",
         "parameters": [
           {
@@ -12707,6 +12978,23 @@
             "format": "date-time",
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deliveries": {
             "items": {
               "$ref": "#/components/schemas/CommentDelivery"
@@ -12813,6 +13101,8 @@
           "resolved_by",
           "resolved_at",
           "edited_at",
+          "deleted_at",
+          "deleted_by",
           "suggestion",
           "created_at",
           "mentions",
@@ -16621,6 +16911,23 @@
             "format": "date-time",
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deliveries": {
             "items": {
               "$ref": "#/components/schemas/CommentDelivery"
@@ -16721,6 +17028,8 @@
           "resolved_by",
           "resolved_at",
           "edited_at",
+          "deleted_at",
+          "deleted_by",
           "suggestion",
           "created_at",
           "mentions",
@@ -16947,6 +17256,23 @@
             "format": "date-time",
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deliveries": {
             "items": {
               "$ref": "#/components/schemas/CommentDelivery"
@@ -17047,6 +17373,8 @@
           "resolved_by",
           "resolved_at",
           "edited_at",
+          "deleted_at",
+          "deleted_by",
           "suggestion",
           "created_at",
           "mentions",
@@ -17117,6 +17445,23 @@
             "format": "date-time",
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deliveries": {
             "items": {
               "$ref": "#/components/schemas/CommentDelivery"
@@ -17217,6 +17562,8 @@
           "resolved_by",
           "resolved_at",
           "edited_at",
+          "deleted_at",
+          "deleted_by",
           "suggestion",
           "created_at",
           "mentions",
@@ -20214,6 +20561,16 @@
       },
       "EditCommentInput": {
         "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "base_revision": {
             "type": [
               "null",
@@ -20269,6 +20626,27 @@
           "code",
           "error",
           "participants"
+        ],
+        "type": "object"
+      },
+      "EditMessageInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "body": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "body"
         ],
         "type": "object"
       },
@@ -20756,7 +21134,18 @@
           "changed_version": {
             "type": "integer"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
           "document": {
+            "type": "string"
+          },
+          "edited_at": {
+            "format": "date-time",
             "type": "string"
           },
           "id": {
@@ -20867,7 +21256,18 @@
           "changed_version": {
             "type": "integer"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
           "document": {
+            "type": "string"
+          },
+          "edited_at": {
+            "format": "date-time",
             "type": "string"
           },
           "id": {
@@ -23830,6 +24230,106 @@
         ],
         "type": "object"
       },
+      "Message": {
+        "properties": {
+          "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "body": {
+            "type": "string"
+          },
+          "broadcast_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/MessageDelivery"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "edited_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "in_reply_to": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "issue_key": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "reply_block": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReplyBlock"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "target": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "issue_key",
+          "author",
+          "body",
+          "target",
+          "in_reply_to",
+          "broadcast_id",
+          "created_at",
+          "edited_at",
+          "deleted_at",
+          "deleted_by",
+          "deliveries",
+          "reply_block"
+        ],
+        "type": "object"
+      },
       "MessageDelivery": {
         "properties": {
           "accepted_as": {
@@ -24007,6 +24507,23 @@
             "format": "date-time",
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deliveries": {
             "items": {
               "$ref": "#/components/schemas/MessageDelivery"
@@ -24018,6 +24535,13 @@
           },
           "duplicate": {
             "type": "boolean"
+          },
+          "edited_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "id": {
             "type": "string"
@@ -24060,6 +24584,9 @@
           "in_reply_to",
           "broadcast_id",
           "created_at",
+          "edited_at",
+          "deleted_at",
+          "deleted_by",
           "deliveries",
           "reply_block"
         ],
@@ -24096,6 +24623,23 @@
             "format": "date-time",
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deliveries": {
             "items": {
               "$ref": "#/components/schemas/MessageDelivery"
@@ -24103,6 +24647,13 @@
             "type": [
               "array",
               "null"
+            ]
+          },
+          "edited_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
             ]
           },
           "id": {
@@ -24146,6 +24697,9 @@
           "in_reply_to",
           "broadcast_id",
           "created_at",
+          "edited_at",
+          "deleted_at",
+          "deleted_by",
           "deliveries",
           "reply_block"
         ],
@@ -24225,6 +24779,17 @@
               "type"
             ],
             "type": "object"
+          },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "edited_at": {
+            "format": "date-time",
+            "type": "string"
           },
           "id": {
             "type": "string"
@@ -24381,6 +24946,13 @@
             "format": "date-time",
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
           "first_line": {
             "type": "string"
           },
@@ -24405,12 +24977,23 @@
           "anchor": {
             "$ref": "#/components/schemas/Anchor"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
           "dismissed_at": {
             "format": "date-time",
             "type": "string"
           },
           "document": {
             "$ref": "#/components/schemas/OpenAskDocument"
+          },
+          "edited_at": {
+            "format": "date-time",
+            "type": "string"
           },
           "issue": {
             "$ref": "#/components/schemas/OpenAskIssue"
@@ -25279,6 +25862,62 @@
         ],
         "type": "object"
       },
+      "PostHistoryEntry": {
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "edited_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "edited_by": {
+            "$ref": "#/components/schemas/Actor"
+          }
+        },
+        "required": [
+          "body",
+          "edited_by",
+          "edited_at"
+        ],
+        "type": "object"
+      },
+      "PostHistoryRead": {
+        "properties": {
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/PostHistoryEntry"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "deleted_at",
+          "deleted_by",
+          "entries"
+        ],
+        "type": "object"
+      },
       "Priorities": {
         "properties": {
           "empty": {
@@ -26119,6 +26758,17 @@
           "ambiguous": {
             "type": "boolean"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "edited_at": {
+            "format": "date-time",
+            "type": "string"
+          },
           "gone": {
             "type": "boolean"
           },
@@ -26397,6 +27047,17 @@
           "block_id": {
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "edited_at": {
+            "format": "date-time",
+            "type": "string"
+          },
           "node": {
             "type": "string"
           },
@@ -26421,6 +27082,17 @@
       "ReplyBlockWithTrees": {
         "properties": {
           "block_id": {
+            "type": "string"
+          },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "edited_at": {
+            "format": "date-time",
             "type": "string"
           },
           "node": {
@@ -27013,6 +27685,17 @@
           "block_id": {
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "edited_at": {
+            "format": "date-time",
+            "type": "string"
+          },
           "href": {
             "type": "string"
           },
@@ -27069,6 +27752,13 @@
             "type": "string"
           },
           "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
             "$ref": "#/components/schemas/Actor"
           },
           "dispatch_words": {

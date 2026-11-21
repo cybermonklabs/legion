@@ -20,6 +20,8 @@ import { type IssueStatus, statusLabel } from "../project/board-model";
 import { AgentName } from "./AgentName";
 import { type BlockItemKind, itemOfBlock } from "./block-reference";
 import { MarkdownPreview } from "./MarkdownPreview";
+import { EditedMark, PostPreview } from "./PostBody";
+import { type PostDeletion, postDeletion } from "./post-marks";
 import * as previewCard from "./ref-preview-card";
 import { REF_PREVIEW_CARD_ID, refPreviewCardContains } from "./ref-preview-card";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
@@ -364,20 +366,36 @@ function Heading({ children }: { children: ReactNode }): ReactNode {
   return <span className={`block font-semibold ${linkText}`}>{children}</span>;
 }
 
-/** The card's body: three rendered lines of what the target says, formatted, then cut. A `#id`
- *  in it names a question block of `source`, the document the target's own text belongs to. */
+/** The ` · edited` a post's card carries after its heading's author, as the post's own byline
+ *  does: nothing for a post nobody edited, or one deleted (`EditedMark`). */
+function HeadingEdited({
+  at,
+  deleted,
+}: {
+  at: string | null | undefined;
+  deleted: PostDeletion | null;
+}): ReactNode {
+  return <EditedMark at={at} className={`font-normal ${textMutedOnSurface}`} deleted={deleted} />;
+}
+
+/** The card's body: three rendered lines of what the target says, formatted, then cut, or the
+ *  deleted line where the target is a post its author withdrew. A `#id` in it names a question
+ *  block of `source`, the document the target's own text belongs to. */
 function Body({
+  deleted = null,
   markdown,
   source,
   tree,
 }: {
+  deleted?: PostDeletion | null;
   markdown: string;
   source?: TextSource;
   tree: DisplayTree | undefined;
 }): ReactNode {
   return (
-    <MarkdownPreview
+    <PostPreview
       className={`mt-1 ${textSecondaryOnSurface}`}
+      deleted={deleted}
       lines={3}
       markdown={markdown}
       source={source}
@@ -387,7 +405,9 @@ function Body({
 }
 
 /** The issue's full read, not the summary its links share: the card shows priority, labels, open
- *  asks and the spec, and holds that read only while it is shown. */
+ *  asks and the spec, and holds that read only while it is shown. A spec whose text read failed
+ *  with no answer - a refetch after a pending insert's delete dropped the one the page held, among
+ *  others - is said to be unreadable in place of its text. */
 function IssuePreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
   const key = "key" in route ? route.key : undefined;
   const { data: issue } = useQuery({ ...issueQuery(key), enabled: key !== undefined });
@@ -432,7 +452,11 @@ function IssuePreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
           </span>
         )}
       </span>
-      {specMarkdown === undefined || specMarkdown.trim() === "" ? null : (
+      {specText.isLoadingError ? (
+        <span className={`mt-1 block text-xs ${textMutedOnSurface}`}>
+          Could not load this issue's spec.
+        </span>
+      ) : specMarkdown === undefined || specMarkdown.trim() === "" ? null : (
         <Body markdown={specMarkdown} source={textSourceOf("artifact", spec?.id)} tree={specTree} />
       )}
     </>
@@ -455,7 +479,7 @@ function documentOwner(route: DispatchReferenceRoute): ReactNode {
 }
 
 function DocumentPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
-  const { artifact, markdown, markdownTree } = useReferenceData(route, { text: true });
+  const { artifact, markdown, markdownTree, textFailed } = useReferenceData(route, { text: true });
   if (artifact === undefined) {
     return <Heading>{shortForm(route)}</Heading>;
   }
@@ -470,7 +494,11 @@ function DocumentPreview({ route }: { route: DispatchReferenceRoute }): ReactNod
       {latest === null ? null : (
         <span className={`mt-1 block text-xs ${textMutedOnSurface}`}>v{latest}</span>
       )}
-      {markdown === undefined || markdown.trim() === "" ? null : (
+      {textFailed ? (
+        <span className={`mt-1 block text-xs ${textMutedOnSurface}`}>
+          Could not load this document's text.
+        </span>
+      ) : markdown === undefined || markdown.trim() === "" ? null : (
         <Body
           markdown={markdown}
           source={textSourceOf("artifact", artifact.id)}
@@ -496,12 +524,26 @@ const BLOCK_HOLDER_LABELS: Record<BlockItemKind, string> = {
  *  message, heads with its item and author in place of the document, and reads no summary
  *  (`useBlockDocument`), a comment's pin naming a revision of the comment and an ask part's a
  *  revision of the ask's parts; its text is the one its graph node carries, as a document
- *  block's is. */
+ *  block's is. A block of a post its author edited carries the post's ` · edited`; a block of a
+ *  post its author deleted has no text left to show, and its card says the post is deleted
+ *  (`blockDeletion`): the block read answers 404 and the post's own read carries the mark, and
+ *  a node that carried the mark itself would read the same. */
 function BlockPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
-  const { block } = useReferenceData(route, { text: false });
+  const { block, blockDeletion } = useReferenceData(route, { text: false });
   const artifact = useBlockDocument(route);
   const item = itemOfBlock(route);
   const holder = item === undefined ? artifact?.name : BLOCK_HOLDER_LABELS[item.kind];
+  if (holder !== undefined && block === undefined && blockDeletion !== null) {
+    return (
+      <>
+        <Heading>
+          <span className={`font-normal ${textMutedOnSurface}`}>{documentOwner(route)} · </span>
+          {holder}
+        </Heading>
+        <Body deleted={blockDeletion} markdown="" tree={undefined} />
+      </>
+    );
+  }
   if (holder === undefined || block === undefined) {
     return <Heading>{shortForm(route)}</Heading>;
   }
@@ -522,6 +564,7 @@ function BlockPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
             <AgentName actor={author} kind="static" />
           </>
         )}
+        <HeadingEdited at={node.edited_at} deleted={blockDeletion} />
       </Heading>
       {pin === undefined ? null : (
         <span className={`mt-1 block text-xs ${textMutedOnSurface}`}>
@@ -537,7 +580,9 @@ function BlockPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
           </span>
         </span>
       )}
-      {text === undefined || text.trim() === "" ? null : (
+      {blockDeletion !== null ? (
+        <Body deleted={blockDeletion} markdown="" tree={undefined} />
+      ) : text === undefined || text.trim() === "" ? null : (
         <Body markdown={text} source={textSourceOf("artifact", artifact?.id)} tree={textTree} />
       )}
     </>
@@ -577,8 +622,10 @@ function CommentPreview({ route }: { route: DispatchReferenceRoute }): ReactNode
     <>
       <Heading>
         <AgentName actor={comment.comment.author} kind="static" />
+        <HeadingEdited at={comment.comment.edited_at} deleted={postDeletion(comment.comment)} />
       </Heading>
       <Body
+        deleted={postDeletion(comment.comment)}
         markdown={comment.comment.body}
         source={textSourceOf("comment", comment.comment.id)}
         tree={comment.comment.body_tree}
@@ -596,8 +643,10 @@ function MessagePreview({ route }: { route: DispatchReferenceRoute }): ReactNode
     <>
       <Heading>
         <AgentName actor={message.message.author} kind="static" />
+        <HeadingEdited at={message.message.edited_at} deleted={postDeletion(message.message)} />
       </Heading>
       <Body
+        deleted={postDeletion(message.message)}
         markdown={message.message.body}
         source={textSourceOf("message", message.message.id)}
         tree={message.message.body_tree}

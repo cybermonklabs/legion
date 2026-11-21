@@ -864,9 +864,11 @@ negative_no_repo() {
   project=$(issue_project "$key")
   daemon_actor="legion-daemon:$project"
   local none_note="Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project $project, in Dispatch, and move it to todo again."
+  # A message its author deleted reads with deleted_at set and no body (dispatch://INFRA-1523): it
+  # is no note, and its body is never read.
   local latest_is_none
   latest_is_none=$(jq --arg actor "$daemon_actor" --arg none "$none_note" '
-    [.[] | select(.type=="message.created" and .actor.kind=="session" and .actor.id==$actor
+    [.[] | select(.type=="message.created" and .actor.kind=="session" and .actor.id==$actor and .payload.deleted_at == null
       and ((.payload.body | startswith("Legion did not admit this issue:")) or (.payload.body | startswith("Legion keeps "))))]
     | sort_by(.seq) | last
     | if . == null then false else (.payload.body | startswith($none + "\n\n<!-- legion-outbox:")) end
@@ -947,8 +949,9 @@ negative_repo_edit() {
   # $dispatch_repo_now for the one it refused), never the operator's LEGION_E2E_REPO_X, which the
   # case-insensitive comparisons above tolerate differing from but a literal quote must not.
   note="Legion keeps $b_repo as this issue's repository; the change to $dispatch_repo_now in Dispatch is not applied — an issue's repository is fixed when Legion records it. Create a new issue for $dispatch_repo_now instead."
+  # A deleted message (deleted_at set, no body; dispatch://INFRA-1523) is no note.
   has_note=$(jq --arg actor "$daemon_actor" --arg note "$note" '
-    any(.[]; .type=="message.created" and .actor.kind=="session" and .actor.id==$actor
+    any(.[]; .type=="message.created" and .actor.kind=="session" and .actor.id==$actor and .payload.deleted_at == null
       and (.payload.body | startswith($note + "\n\n<!-- legion-outbox:")))
   ' "$events_file")
   [ "$has_note" = "true" ] || ok=0

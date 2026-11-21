@@ -93,11 +93,14 @@ var itemRowWriters = map[string]map[string]string{
 	},
 	"internal/dispatch/api/broadcasts.go": {
 		"writeBroadcast": "none, and none to take: each copy is a direct message, whose " +
-			"conversation is no owner (store.OwnerOf), and nothing rewrites a message's body",
+			"conversation is no owner (store.OwnerOf), and nothing rewrites a direct message's " +
+			"body: only an issue message is edited or deleted",
 	},
 	"internal/dispatch/api/comment_actions.go": {
 		"commentAction": "the comment's owner lock (lockedComment, lockOwnerOfComment)",
-		"editComment":   "the comment's owner lock (lockedComment, lockOwnerOfComment)",
+		"editComment":   "the comment's owner lock (lockedCommentForCorrection, lockOwnerOfComment)",
+		"recordOrphanedCommentAnchor": "the comment's owner lock, which both its callers hold " +
+			"(commentAction's lockedComment, deleteComment's lockedCommentForCorrection)",
 		"reopenComment": "the comment's owner lock (lockedComment, lockOwnerOfComment)",
 	},
 	"internal/dispatch/api/comment_create.go": {
@@ -105,7 +108,11 @@ var itemRowWriters = map[string]map[string]string{
 			"(lockCommentOwner)",
 	},
 	"internal/dispatch/api/comment_delivery.go": {
-		"replyComment": "the comment's owner lock (lockedCommentForDelivery, lockOwnerOfComment)",
+		"replyComment": "the comment's owner lock (lockedCommentAllowingClosed, lockOwnerOfComment)",
+	},
+	"internal/dispatch/api/message_corrections.go": {
+		"editMessage": "the issue's owner lock (lockedMessageForCorrection's lockIssue); a " +
+			"direct message is refused before anything is written",
 	},
 	"internal/dispatch/api/message_delivery.go": {
 		"insertSessionReply": "the issue's owner lock where the conversation names an issue " +
@@ -114,6 +121,13 @@ var itemRowWriters = map[string]map[string]string{
 	"internal/dispatch/api/messages.go": {
 		"createStoredMessage": "the issue's owner lock where the message names an issue " +
 			"(lockIssue); a direct message has no owner and needs none",
+	},
+	"internal/dispatch/api/post_history.go": {
+		"clearDeletedPostBody": "the post's owner lock, which both deletes hold before they plan " +
+			"it (deleteComment's lockedCommentForCorrection, deleteMessage's " +
+			"lockedMessageForCorrection)",
+		"queueDeletedPostSettlement": "the post's owner lock, which both deletes hold; its tables " +
+			"are comment_deliveries and message_deliveries, no item row",
 	},
 	"internal/dispatch/api/reviews.go": {
 		"handBackApprovalAsk": "the document's owner lock (requireOpenOwner)",
@@ -124,8 +138,11 @@ var itemRowWriters = map[string]map[string]string{
 			"the row is read (refs.LockItemOwner)",
 	},
 	"internal/dispatch/docs/anchor_refresh.go": {
-		"refreshAnchors": "the document's owner lock, which the version write that calls it " +
-			"holds (lockArtifactOwner, writeVersionTx)",
+		"writeChangedAnchors": "the document's owner lock, which the version write that refreshes " +
+			"the anchors holds (lockArtifactOwner, writeVersionTx), or which the comment delete " +
+			"that rewrites the anchors its reject took text from takes before it reads the comment " +
+			"(RewriteTakenAnchors; api's lockedCommentForCorrection, through lockOwnerOfComment): " +
+			"every comment and ask anchored on the document shares that owner",
 	},
 	"internal/dispatch/docs/approval_ask.go": {
 		"rewriteApprovalAsk": "the document's owner lock, held by the version write that moves " +
@@ -156,8 +173,9 @@ var itemRowWriters = map[string]map[string]string{
 			"(restoreDocumentDecidedWordings, lockArtifactOwner)",
 	},
 	"internal/dispatch/refs/item_blocks.go": {
-		"clearItemWindowsOwed": "the item's owner lock, which the window arm takes (LockItemOwner)",
-		"markItemBlocksOwed":   "the item's owner lock, which the window arm takes (LockItemOwner)",
+		"clearItemWindowsOwed": "the item's owner lock, which the window arm takes (LockItemOwner) " +
+			"and the post delete that queues TombstoneItem holds (api's clearDeletedPostBody)",
+		"markItemBlocksOwed": "the item's owner lock, which the window arm takes (LockItemOwner)",
 		"queueBlockRefs": "the item's owner lock, which the caller holds (LockItemOwner, " +
 			"readSourceUnderOwner, or the writing route's own); its tables are the item's block " +
 			"and block-ref tables, no item row",
@@ -168,6 +186,9 @@ var itemRowWriters = map[string]map[string]string{
 			"readSourceUnderOwner, or the writing route's own)",
 		"queueStateLock": "the item's owner lock, which the caller holds (LockItemOwner, " +
 			"readSourceUnderOwner, or the writing route's own)",
+		"TombstoneItem": "the post's owner lock, which the delete that queues it holds " +
+			"(api's clearDeletedPostBody); its tables are the item's block and block-text " +
+			"tables, no item row, and the state row it stamps is clearItemWindowsOwed's",
 	},
 	"internal/dispatch/refs/rebuild.go": {
 		"RebuildAll": "none, which is rebuild-refs' exception: it raises the owed markers " +
@@ -285,15 +306,15 @@ func TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus(t *testing.T) {
 			if located.function == "" {
 				return
 			}
-			file, function := censusEntry(path, located.function)
-			if file == "" {
+			file, _, listed := censusEntryIn(itemRowWriters, path, located.function)
+			if !listed {
 				unlisted = append(unlisted, fmt.Sprintf("%s %s: %s", path, located.function, located.statement))
 				return
 			}
 			if answered[file] == nil {
 				answered[file] = map[string]bool{}
 			}
-			answered[file][function] = true
+			answered[file][located.function] = true
 		}
 		for _, located := range sqlStatementsByFunction(source.file, constants) {
 			if writesAnItemRow(located.statement) {
@@ -347,7 +368,9 @@ const itemRowNoOwnerLock = "takes no owner lock at all, which is its census entr
 // it needs - and either way nobody has to read the table to find out which writers it left out.
 var itemRowLockNoRow = map[string]map[string]string{
 	// Writers whose statements run in a transaction some other writer opened and locked.
-	"internal/dispatch/docs/anchor_refresh.go": {"refreshAnchors": itemRowCallersTransaction},
+	"internal/dispatch/api/comment_actions.go": {"recordOrphanedCommentAnchor": itemRowCallersTransaction},
+	"internal/dispatch/api/post_history.go":    {"queueDeletedPostSettlement": itemRowCallersTransaction},
+	"internal/dispatch/docs/anchor_refresh.go": {"writeChangedAnchors": itemRowCallersTransaction},
 	"internal/dispatch/docs/approval_ask.go":   {"rewriteApprovalAsk": itemRowCallersTransaction},
 	"internal/dispatch/docs/approval_carry.go": {"answerApprovalAsk": itemRowCallersTransaction},
 	"internal/dispatch/docs/ask_blocks.go": {
@@ -366,6 +389,7 @@ var itemRowLockNoRow = map[string]map[string]string{
 		"queueBlocks":          itemRowCallersTransaction,
 		"queueRecordIndexed":   itemRowCallersTransaction,
 		"queueStateLock":       itemRowCallersTransaction,
+		"TombstoneItem":        itemRowCallersTransaction,
 	},
 	"internal/dispatch/refs/refs.go": {"queueStamp": itemRowCallersTransaction},
 
@@ -465,20 +489,21 @@ func writesAnItemRow(statement string) bool {
 	return itemRowWrite.MatchString(statement) || formattedTableWrite.MatchString(statement)
 }
 
-// censusEntry is the entry of itemRowWriters that covers function, declared in the file at path,
-// as the file and function keys that found it; the file is empty when no entry does. The census
-// is keyed by the path within the module, so a file is matched by its suffix, as the lock-level
-// guard's allowlist matches one (ownerRowLockSite).
-func censusEntry(path, function string) (string, string) {
-	for file, functions := range itemRowWriters {
+// censusEntryIn is the entry of census that covers function, declared in the file at path, with
+// the file key that found it; false when no entry does. A census (itemRowWriters,
+// versionRowWriters) is keyed by the path within the module, so a file is matched by its suffix,
+// as the lock-level guard's allowlist matches one (ownerRowLockSite).
+func censusEntryIn[E any](census map[string]map[string]E, path, function string) (string, E, bool) {
+	for file, functions := range census {
 		if !strings.HasSuffix(path, "/"+file) {
 			continue
 		}
-		if _, listed := functions[function]; listed {
-			return file, function
+		if entry, listed := functions[function]; listed {
+			return file, entry, true
 		}
 	}
-	return "", ""
+	var none E
+	return "", none, false
 }
 
 // unspelledTableWrites is every write of this file whose table a runtime value fills: a `+` chain

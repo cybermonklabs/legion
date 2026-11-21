@@ -2,10 +2,12 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -115,11 +117,12 @@ func (c itemRowLockCase) writer() string { return c.file + " " + c.function }
 
 // itemRowLockTable is the table: the serving writers of item rows this test holds behind an owner
 // lock. Every writer the census names that takes its owner lock in a transaction of its own is
-// here - the five comment routes, the four ask routes, the two approval-request writers, the two
-// message writers and the anchor-block backfill - and such a writer added to the census is added
-// here too, as a row of its own. Those that write inside a transaction their caller opened rest
-// on that caller's lock, which no row here drives; the gap map (itemRowLockNoRow) names each with
-// why, and TestTheLockTablePlacesEveryWriterTheCensusNames keeps the two lists one.
+// here - the five comment routes, the comment delete's clear, the four ask routes, the two
+// approval-request writers, the three message writers and the anchor-block backfill - and such a
+// writer added to the census is added here too, as a row of its own. Those that write inside a
+// transaction their caller opened rest on that caller's lock, which no row here drives; the gap
+// map (itemRowLockNoRow) names each with why, and TestTheLockTablePlacesEveryWriterTheCensusNames
+// keeps the two lists one.
 var itemRowLockTable = []itemRowLockCase{
 	{
 		name:     "the comment create route",
@@ -144,6 +147,12 @@ var itemRowLockTable = []itemRowLockCase{
 		file:     "internal/dispatch/api/comment_actions.go",
 		function: "reopenComment",
 		ready:    readyCommentReopen,
+	},
+	{
+		name:     "the comment delete route",
+		file:     "internal/dispatch/api/post_history.go",
+		function: "clearDeletedPostBody",
+		ready:    readyCommentDelete,
 	},
 	{
 		name:     "the mention reply route",
@@ -192,6 +201,12 @@ var itemRowLockTable = []itemRowLockCase{
 		file:     "internal/dispatch/api/messages.go",
 		function: "createStoredMessage",
 		ready:    readyIssueMessage,
+	},
+	{
+		name:     "the issue message edit route",
+		file:     "internal/dispatch/api/message_corrections.go",
+		function: "editMessage",
+		ready:    readyMessageEdit,
 	},
 	{
 		name:     "the session reply route",
@@ -453,34 +468,98 @@ func readyCommentReopen(t *testing.T) lockedItemWrite {
 		})
 }
 
-// itemRowSessionListener is an Envoy listener with one live session, s1, which takes every send
-// and answers it: the fixture a row whose writer answers a delivery needs, since the delivery it
-// answers is only made where a listener took it. capabilities are the session's, as the delivery
-// the row drives needs them - a mention is steered, a targeted message is a btw.
-func itemRowSessionListener(t *testing.T, capabilities ...string) *httptest.Server {
+// readyCommentDelete drives DELETE /api/v1/comments/{id}, which clears the comment row's body and
+// stamps its delete under its owner's lock (deleteComment, lockedCommentForCorrection) through
+// the clear both deletes plan (clearDeletedPostBody), the writer this row names: the message
+// delete plans the same clear under its issue's lock, which the message edit's row holds.
+func readyCommentDelete(t *testing.T) lockedItemWrite {
+	t.Helper()
+	fixture := newItemRowFixture(t, testServerOptions{}, "Comment delete", "A spec.\n")
+	comment := createThreadComment(t, fixture.handler, fixture.issueKey, map[string]any{"body": "Withdraw this."}, "alice")
+	return fixture.routeWrite(t, "the comment row it clears",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return dispatchRequest(t, handler, http.MethodDelete, "/api/v1/comments/"+comment.ID, nil, "alice")
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusOK {
+				t.Fatalf("delete the comment once the lock was released: status=%d body=%s",
+					answer.Code, answer.Body.String())
+			}
+			if stored := fixture.commentBody(t, comment.ID); stored != "" {
+				t.Fatalf("the deleted comment's stored body = %q, want it cleared", stored)
+			}
+		})
+}
+
+// listenedFrame is one send a session listener took: the body the send carries beside its frame,
+// and the body the frame's event carries.
+type listenedFrame struct {
+	message, eventBody string
+}
+
+// recordingSessionListener is an Envoy listener with one live session, s1, which takes every send,
+// answers it and keeps it, in the order the sends arrive; frames answers them. It is the fixture a
+// row whose writer answers a delivery needs, since the delivery it answers is only made where a
+// listener took it, and a row that asks what a send carried reads it from frames. capabilities are
+// the session's, as the delivery the row drives needs them - a mention is steered, a targeted
+// message is a btw.
+func recordingSessionListener(t *testing.T, capabilities ...string) (listener *httptest.Server, frames func() []listenedFrame) {
 	t.Helper()
 	sessions := `[{"session_id":"s1","title":"planner","capabilities":["` +
 		strings.Join(capabilities, `","`) + `"]}]`
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var mu sync.Mutex
+	var taken []listenedFrame
+	listener = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
 			writeSessionRecord(t, w, sessions, "s1")
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions":
 			_, _ = w.Write([]byte(sessions))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
+			var send struct {
+				Message string `json:"message"`
+				Payload string `json:"payload"`
+			}
+			var frame struct {
+				Event struct {
+					Payload struct {
+						Body string `json:"body"`
+					} `json:"payload"`
+				} `json:"event"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&send); err != nil {
+				t.Errorf("decode a send: %v", err)
+			} else if err := json.Unmarshal([]byte(send.Payload), &frame); err != nil {
+				t.Errorf("decode a send's frame %q: %v", send.Payload, err)
+			}
+			mu.Lock()
+			taken = append(taken, listenedFrame{message: send.Message, eventBody: frame.Event.Payload.Body})
+			mu.Unlock()
 			_, _ = w.Write([]byte(`{"event_id":"item-row-envelope","recipient":"s1"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	t.Cleanup(listener.Close)
+	return listener, func() []listenedFrame {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]listenedFrame(nil), taken...)
+	}
+}
+
+// itemRowSessionListener is recordingSessionListener for a row that reads none of the sends it
+// takes: its server alone.
+func itemRowSessionListener(t *testing.T, capabilities ...string) *httptest.Server {
+	t.Helper()
+	listener, _ := recordingSessionListener(t, capabilities...)
 	return listener
 }
 
 // readyCommentReply drives POST /api/v1/comments/{id}/reply, the mentioned agent's answer, which
 // stores a comment of its own under the mentioned comment's owner lock (replyComment,
-// lockedCommentForDelivery). The mention it answers needs a listener to resolve against, so this
-// row stands one up and lets the create's delivery settle before the reply takes its attempt.
+// lockedCommentAllowingClosed). The mention it answers needs a listener to resolve against, so
+// this row stands one up and lets the create's delivery settle before the reply takes its attempt.
 func readyCommentReply(t *testing.T) lockedItemWrite {
 	t.Helper()
 	listener := itemRowSessionListener(t, "steer")
@@ -706,12 +785,62 @@ func readyIssueMessage(t *testing.T) lockedItemWrite {
 		})
 }
 
+// readyMessageEdit drives PATCH /api/v1/messages/{id}, which rewrites the message row under its
+// issue's owner lock (editMessage, lockedMessageForCorrection's lockIssue).
+func readyMessageEdit(t *testing.T) lockedItemWrite {
+	t.Helper()
+	fixture := newItemRowFixture(t, testServerOptions{}, "Issue message edit", "A spec.\n")
+	message := createIssueMessage(t, fixture.handler, fixture.issueKey, map[string]any{"body": "The first wording."}, "alice")
+	const edited = "The wording the held lock delays."
+	return fixture.routeWrite(t, "the message row it rewrites",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return dispatchRequest(t, handler, http.MethodPatch,
+				"/api/v1/messages/"+message.ID, map[string]any{"body": edited}, "alice")
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusOK {
+				t.Fatalf("edit the message once the lock was released: status=%d body=%s",
+					answer.Code, answer.Body.String())
+			}
+			if stored := fixture.messageBody(t, message.ID); stored != edited {
+				t.Fatalf("the message's stored body = %q, want %q", stored, edited)
+			}
+		})
+}
+
 // readySessionReply drives POST /api/v1/messages/{id}/reply, the session's answer to a message
 // delivered to it, which inserts the reply message under the issue's owner lock the route takes
 // before it plans anything (insertSessionReply, replyMessage's lockIssue). The delivery it
 // answers needs a listener to take it, so this row stands one up and sends the message to that
 // session before the lock is held.
 func readySessionReply(t *testing.T) lockedItemWrite {
+	t.Helper()
+	return sessionReplyWrite(t,
+		func(t *testing.T, answer *httptest.ResponseRecorder, fixture itemRowFixture, messageID string) {
+			if answer.Code != http.StatusCreated {
+				t.Fatalf("reply to the message once the lock was released: status=%d body=%s",
+					answer.Code, answer.Body.String())
+			}
+			var replies int
+			if err := fixture.database.Pool.QueryRow(context.Background(),
+				`select count(*) from messages where in_reply_to = $1`, messageID).Scan(&replies); err != nil {
+				t.Fatalf("count the message's replies: %v", err)
+			}
+			if replies != 1 {
+				t.Fatalf("the message has %d replies, want the one the route answered with", replies)
+			}
+		}, nil)
+}
+
+// sessionReplyWrite is readySessionReply's write with what it must leave given by its caller:
+// answered checks the reply's answer once the lock is given back, and meanwhile, where it is not
+// nil, is the holder's write while the reply waits. Each is handed the fixture and the id of the
+// message the reply answers.
+func sessionReplyWrite(
+	t *testing.T,
+	answered func(t *testing.T, answer *httptest.ResponseRecorder, fixture itemRowFixture, messageID string),
+	meanwhile func(t *testing.T, holder pgx.Tx, fixture itemRowFixture, messageID string),
+) lockedItemWrite {
 	t.Helper()
 	listener := itemRowSessionListener(t, "btw")
 	fixture := newItemRowFixture(t, testServerOptions{envoyURL: listener.URL}, "Session reply", "A spec.\n")
@@ -722,7 +851,7 @@ func readySessionReply(t *testing.T) lockedItemWrite {
 		t.Fatalf("the message this row is answered = %#v, want one attempt sent to the listener's session",
 			message.Deliveries)
 	}
-	return fixture.routeWrite(t, "the reply message it inserts",
+	write := fixture.routeWrite(t, "the reply message it inserts",
 		func(handler http.Handler) *httptest.ResponseRecorder {
 			return bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/reply", map[string]any{
 				"actor":   map[string]any{"kind": "session", "id": "s1"},
@@ -730,20 +859,11 @@ func readySessionReply(t *testing.T) lockedItemWrite {
 				"body":    "The reply the held lock delays.",
 			})
 		},
-		func(t *testing.T, answer *httptest.ResponseRecorder) {
-			if answer.Code != http.StatusCreated {
-				t.Fatalf("reply to the message once the lock was released: status=%d body=%s",
-					answer.Code, answer.Body.String())
-			}
-			var replies int
-			if err := fixture.database.Pool.QueryRow(context.Background(),
-				`select count(*) from messages where in_reply_to = $1`, message.ID).Scan(&replies); err != nil {
-				t.Fatalf("count the message's replies: %v", err)
-			}
-			if replies != 1 {
-				t.Fatalf("the message has %d replies, want the one the route answered with", replies)
-			}
-		})
+		func(t *testing.T, answer *httptest.ResponseRecorder) { answered(t, answer, fixture, message.ID) })
+	if meanwhile != nil {
+		write.meanwhile = func(t *testing.T, holder pgx.Tx) { meanwhile(t, holder, fixture, message.ID) }
+	}
+	return write
 }
 
 // backfillAnchorQuote is the quote the backfilled comment is anchored to when the row is seeded,

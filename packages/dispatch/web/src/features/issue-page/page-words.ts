@@ -33,9 +33,11 @@
  * - from `../project/board-model`, the issue statuses and `statusLabel` and `statusText`, the
  *   board's word for a status, which `ISSUE_STATUS_WORDS` and `issueStatusWord` say;
  * - from `../refs/actor`, `ASK_RESOLUTION_WORDS`, the words a closed question is drawn in, and
- *   `isViewer`, whether an actor is the signed-in person.
+ *   `isViewer`, whether an actor is the signed-in person;
+ * - from `../refs/post-marks`, `POST_MARK_WORDS`, the words a deleted post's line and an edited
+ *   post's mark say on every surface.
  *
- * The last two are the module's links to files today's pages use.
+ * The last three are the module's links to files today's pages use.
  *
  * A test, a browser spec and a component therefore all read the same list.
  */
@@ -51,6 +53,7 @@ import {
 import type { Actor } from "../../api/types";
 import { issueStatuses, statusLabel, statusText } from "../project/board-model";
 import { ASK_RESOLUTION_WORDS, isViewer } from "../refs/actor";
+import { POST_MARK_WORDS } from "../refs/post-marks";
 import {
   freeze,
   HELP_LINES,
@@ -1004,6 +1007,14 @@ export const CONTROL_LABELS = freeze({
   /** The pin, as the issue's actions control holds it (R13, the Design's "Where each thing
    *  goes"): it reads what pressing it does, and carries `aria-pressed` for what is so. */
   pin_issue: "Pin issue",
+  /** A deleted post's line, where a row draws it in place of the post's words, and a chip names
+   *  the post by: `Deleted` for a delete that names nobody, else `Deleted by` and the actor, whose
+   *  name is the author's text (INFRA-1523, R3). The words every surface's deleted line says. */
+  post_deleted: POST_MARK_WORDS.deleted,
+  post_deleted_by: POST_MARK_WORDS.deleted_by,
+  /** What a row's byline, a parent line and a chip say after an edited post's time or words:
+   *  ` · edited` (INFRA-1523, R2), as every surface's byline says it. */
+  post_edited: POST_MARK_WORDS.edited,
   /** The row of five controls, Conversation and the four filters, as a reader hears it named
    *  (R2). */
   presets: "Filters",

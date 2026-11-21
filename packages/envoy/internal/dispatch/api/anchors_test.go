@@ -198,8 +198,16 @@ const malformedAsk = ":::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open
 // browserDocumentService is a document service a browser peer can connect to (writeBrowserDocument).
 func browserDocumentService(t *testing.T) (*docs.Service, http.Handler, *store.Store) {
 	t.Helper()
+	documentService, handler, database, _ := browserDocumentServer(t)
+	return documentService, handler, database
+}
+
+// browserDocumentServer is browserDocumentService, answering also the server it registered, for a
+// test that sets one of the fields only a test sets (server.deleteLeavesSettlement).
+func browserDocumentServer(t *testing.T) (*docs.Service, http.Handler, *store.Store, *server) {
+	t.Helper()
 	var documentService *docs.Service
-	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+	handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{
 			Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond,
 			Identity: headerIdentity(database),
@@ -207,7 +215,7 @@ func browserDocumentService(t *testing.T) (*docs.Service, http.Handler, *store.S
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		return documentService
 	})
-	return documentService, handler, database
+	return documentService, handler, database, served
 }
 
 // writeBrowserDocument stands in for a browser editor that turns the live document into

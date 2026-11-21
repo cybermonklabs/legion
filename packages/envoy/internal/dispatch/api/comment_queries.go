@@ -122,9 +122,8 @@ func (s *server) commentListWatermark(ctx context.Context, owner owner) (int64, 
 
 // commentListETag is a comment list answer's validator: the list it is of, the watermark every
 // write the list shows raises, and the owner's event sequence, closed with the lines both lists'
-// ETags carry (listETag). It is referencesETag's shape - one line per part, then the hash of them
-// - and, unlike the feed's, it names its owner, so two lists standing at one count never share a
-// validator.
+// ETags carry (listETag): one line per part, then the hash of them. Unlike the feed's, it names
+// its owner, so two lists standing at one count never share a validator.
 func (s *server) commentListETag(owner owner, artifactFilter string, watermark, lastSeq int64, trees bool) string {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "issue=%s\nartifact=%s\nfilter=%s\nwatermark=%d\nlast_seq=%d\n",
@@ -309,7 +308,7 @@ func (s *server) loadOwnedComment(
 }
 
 // commentColumns is the comments select list scanComment reads, in scan order.
-const commentColumns = `id::text, issue_key, artifact_id::text, author, body, anchor, reply_to::text, ask_id::text, turn, resolved, resolved_by, resolved_at, edited_at, suggestion, created_at, replies_to_block, answers::text`
+const commentColumns = `id::text, issue_key, artifact_id::text, author, body, anchor, reply_to::text, ask_id::text, turn, resolved, resolved_by, resolved_at, edited_at, suggestion, created_at, replies_to_block, answers::text, deleted_at, deleted_by`
 
 // commentThreadColumns is commentColumns without the ::text casts, qualified to the comments
 // alias `c`. A recursive walk joins c.reply_to to the visited row's id, so those columns have
@@ -317,15 +316,15 @@ const commentColumns = `id::text, issue_key, artifact_id::text, author, body, an
 // is a tsvector, which has no hash operator.
 const commentThreadColumns = `c.id, c.issue_key, c.artifact_id, c.author, c.body, c.anchor, c.reply_to,
 		c.ask_id, c.turn, c.resolved, c.resolved_by, c.resolved_at, c.edited_at, c.suggestion, c.created_at, c.replies_to_block,
-		c.answers`
+		c.answers, c.deleted_at, c.deleted_by`
 
 func scanComment(row pgx.Row, extra ...any) (model.Comment, error) {
 	var comment model.Comment
-	var author, anchor, resolvedBy, suggestion []byte
-	var resolvedAt, editedAt *time.Time
+	var author, anchor, resolvedBy, suggestion, deletedBy []byte
+	var resolvedAt, editedAt, deletedAt *time.Time
 	destinations := []any{
 		&comment.ID, &comment.IssueKey, &comment.ArtifactID, &author, &comment.Body, &anchor, &comment.ReplyTo, &comment.AskID, &comment.Turn, &comment.Resolved,
-		&resolvedBy, &resolvedAt, &editedAt, &suggestion, &comment.CreatedAt, &comment.RepliesToBlock, &comment.Answers,
+		&resolvedBy, &resolvedAt, &editedAt, &suggestion, &comment.CreatedAt, &comment.RepliesToBlock, &comment.Answers, &deletedAt, &deletedBy,
 	}
 	destinations = append(destinations, extra...)
 	if err := row.Scan(destinations...); err != nil {
@@ -347,6 +346,10 @@ func scanComment(row pgx.Row, extra ...any) (model.Comment, error) {
 			return model.Comment{}, fmt.Errorf("decode comment resolved_by: %w", err)
 		}
 		comment.ResolvedBy = &value
+	}
+	var err error
+	if comment.DeletedAt, comment.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+		return model.Comment{}, err
 	}
 	comment.ResolvedAt = timestampPtr(resolvedAt)
 	comment.EditedAt = timestampPtr(editedAt)
@@ -388,6 +391,66 @@ func (s *server) hydrateCommentSideTables(ctx context.Context, q queryer, commen
 		comments[index].Deliveries = deliveries[comments[index].ID]
 	}
 	return comments, nil
+}
+
+// hydrateWrittenComment is the comment a write answers, with the side tables
+// GET /api/v1/comments/{id} reads it with (hydrateCommentSideTables): its mentions, its delivery
+// attempts and the block it replies to. A write calls it on its own transaction, tx, in its read
+// phase, before Commit runs its queued writes, so a read that fails ends the request with nothing
+// written. The rows it reads are ones no write that answers this way queues a change to, but for
+// the delete's settle of the attempts still pending, which the delete sets in what this returns
+// as its settle leaves them (deleteComment). The anchor's position stays out: getComment computes
+// it from the document, and no side table holds it.
+func (s *server) hydrateWrittenComment(ctx context.Context, tx pgx.Tx, comment model.Comment) (model.Comment, error) {
+	comments, err := s.hydrateCommentSideTables(ctx, tx, []model.Comment{comment})
+	if err != nil {
+		return model.Comment{}, err
+	}
+	return comments[0], nil
+}
+
+// freshComment is one comment as GET /api/v1/comments/{id} reads it and a write of it answers
+// it (hydrateWrittenComment): the row with its mentions, its delivery attempts and the block it
+// replies to, read now from the pool.
+func (s *server) freshComment(ctx context.Context, id string) (model.Comment, error) {
+	comment, err := s.loadComment(ctx, s.deps.Store.Pool, id)
+	if err != nil {
+		return model.Comment{}, err
+	}
+	comments, err := s.hydrateCommentSideTables(ctx, s.deps.Store.Pool, []model.Comment{comment})
+	if err != nil {
+		return model.Comment{}, err
+	}
+	return comments[0], nil
+}
+
+// rereadComment is the keyedReread of each route that answers one comment shaped for the
+// dashboard - its edit, resolve, reopen, accept and reject: the comment as it stands now
+// (freshComment), shaped as those routes shape it, an accept's lost kept from the first answer.
+func (s *server) rereadComment(w http.ResponseWriter, r *http.Request, id string, status int, stored []byte) {
+	comment, err := s.freshComment(r.Context(), id)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	s.writeRefreshed(w, status, stored, newShapedComment(comment, wantsDisplayTrees(r)))
+}
+
+// rereadCommentReply is the keyedReread of POST /api/v1/comments/{id}/reply, whose answer is the
+// reply, not the comment the path names: a reply the session posted (201) as rereadComment answers
+// a comment, its ask_waiting_on kept, and the stored reply handed back for an attempt already
+// answered (200) unshaped, as replyComment answers it.
+func (s *server) rereadCommentReply(w http.ResponseWriter, r *http.Request, id string, status int, stored []byte) {
+	if status == http.StatusCreated {
+		s.rereadComment(w, r, id, status, stored)
+		return
+	}
+	reply, err := s.freshComment(r.Context(), id)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	s.writeRefreshed(w, status, stored, reply)
 }
 
 func (s *server) loadCommentMentions(ctx context.Context, q queryer, commentIDs []string) (map[string][]model.Mention, error) {

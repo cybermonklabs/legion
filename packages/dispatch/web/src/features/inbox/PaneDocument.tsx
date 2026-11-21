@@ -17,7 +17,8 @@ import type { Artifact, AuthenticatedUser } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { focusVisibleRing, quoteAccentBorder } from "../../theme/classes";
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
-import { liveTextQueryOptions, ProofDocument, type ProofDocumentProps } from "../doc/ProofDocument";
+import { liveTextQueryOptions } from "../doc/live-text-query";
+import { ProofDocument, type ProofDocumentProps } from "../doc/ProofDocument";
 import { cancelBlockScroll, scrollBlockToTop, scrollElementToTop } from "../doc/scroll-block";
 import { holdSection, type SectionHold } from "./pane-placement";
 

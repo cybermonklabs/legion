@@ -4,12 +4,13 @@
 //
 // No tag, because its callers are on both sides of one. The eight static guards, and
 // one_expression_guard_test.go beside them, carry `//go:build !race` for what that saves the
-// race job (lock_level_test.go's header says what), while two tests of this package use its
+// race job (lock_level_test.go's header says what), while three tests of this package use its
 // declarations untagged and run in the race job: ask_asked_of_test.go:480 normalises a
 // migration's SQL with sqlWhitespace, and item_writer_census_test.go's
-// TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus, which the text-check job does not run, walks
-// the module (moduleSources, sqlStatementsByFunction). A tagged toolkit drops both from the race
-// build and the package's test binary stops compiling.
+// TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus and version_writer_census_test.go's
+// TestEveryWriterOfADocumentVersionStoresItsInsertTree, which the text-check job does not run,
+// walk the module (moduleSources, sqlStatementsByFunction). A tagged toolkit drops them from the
+// race build and the package's test binary stops compiling.
 //
 // No test, because a test declared here would run wherever this file compiles - the race job
 // included - and the seventeen tests of those nine files are the text-check job's to run, once
@@ -52,9 +53,9 @@ const moduleRoot = "../../.."
 
 // sharedModuleSources is the module's parsed source, walked once per test binary: five of this
 // package's eight guards and one_expression_guard_test.go read the same files, and the text-check
-// job's step runs all six in one go test. In the race build its one caller is the item-writer
-// census, which carries no tag. A failed walk's error is kept and reported by each test that asks
-// for the sources, as the copy-lock guard's graph is.
+// job's step runs all six in one go test. In the race build its callers are the item-writer
+// census and the version-writer census, which carry no tag. A failed walk's error is kept and
+// reported by each test that asks for the sources, as the copy-lock guard's graph is.
 var sharedModuleSources = sync.OnceValues(func() ([]moduleSource, error) { return scanModuleSources(moduleRoot) })
 
 // moduleSources reads and parses every non-test Go file of the envoy module, not just the

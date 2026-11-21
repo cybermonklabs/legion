@@ -34,14 +34,16 @@ type versionWrite struct {
 	capture          *authorCapture
 	docUpdateVersion *int64
 	// closedIssue is set by a settlement of a closed issue's document (settlement.issueClosed),
+	// and by the version a joined transaction writes as that settlement would (SettleVersion),
 	// whose version moves no approval request and carries no approval (writeVersionTx): a move
 	// rewrites an open request and appends its ask.edited, a carry appends an artifact.approved in
 	// the reviewer's name, each an event that reaches a person, and such a settlement wakes nobody.
 	closedIssue bool
-	// settlement is set by a settlement's version alone (settlement.commitVersion), the one
-	// version write whose move of the open approval request may keep it waiting on the person
-	// (MoveApprovalAsk's bySettlement). A version a route writes - a named version, an edit, a
-	// summary edit - moves the request to its agent, whatever text it stores.
+	// settlement is set by a settlement's version alone (settlement.commitVersion, and
+	// SettleVersion, which writes the version that settlement would), the one version write whose
+	// move of the open approval request may keep it waiting on the person (MoveApprovalAsk's
+	// bySettlement). A version a route writes - a named version, an edit, a summary edit - moves
+	// the request to its agent, whatever text it stores.
 	settlement bool
 	// keptEditor is set by a settlement's version whose credit is only the editor a settlement on
 	// the document's closed issue kept (settlementVersionCredit.kept), to that editor; the
@@ -711,6 +713,10 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 	var canonical string
 	var read pmdoc.WrittenReadBack
 	var unchanged bool
+	// unchangedTree is the live tree a write that changes nothing found rendering as the
+	// replacement, the markdown its caller's version stores (unchangedStampOf), and nil for every
+	// other write.
+	var unchangedTree *pmdoc.Node
 	// The rendering of the replacement, which this write makes to tell whether the upload changes
 	// the document and answers its caller with: the write leaves that very tree in the fork,
 	// unless it has anchors to carry over, so applyLive takes this rendering for the fork it
@@ -784,7 +790,7 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 		}
 		written = renderedTree{tree: target, markdown: canonical, offsets: offsets, layout: layout}
 		if !repairing && currentMarkdown == canonical {
-			unchanged = true
+			unchanged, unchangedTree = true, current
 			return nil
 		}
 		type reanchor struct {
@@ -891,6 +897,13 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 	// markdown back as one the fragment took.
 	if err != nil && !(unchanged && errors.Is(err, websocket.ErrNoChanges)) {
 		return "", wrapUnlessTooLarge(err, "replace live document")
+	}
+	// A write that changed nothing recorded no operation, so this transaction holds no tree of the
+	// markdown its caller's version stores (writtenRendering, Ledger.QueueVersion). The live tree
+	// it found renders as that markdown, a pending insert's words included, so that version stores
+	// its insert tree (RenderStampOf).
+	if unchanged {
+		ledgerFrom(ctx).wroteUnchanged(artifactID, canonical, unchangedStampOf(artifactID, unchangedTree))
 	}
 	// The parse read its markdown back already, to refuse a document that reads back otherwise;
 	// the rest of the request reads the rendering through that parse rather than making a second
@@ -1466,6 +1479,41 @@ func (s *Service) JoinWrite(ctx context.Context, artifactID string) error {
 // live content has changed since the previous one. The version a comment's anchor is pinned to
 // under WithCommentMarks is taken on a closed issue's document too.
 func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor model.Actor) (VersionResult, error) {
+	return s.snapshotVersion(ctx, artifactID, actor, false)
+}
+
+// SettleVersion is SnapshotVersion written as the document's settlement writes its version
+// (settlement.commitVersion), inside the caller's joined transaction and under the owner lock it
+// holds: the version moves the open approval request as a settlement's does, keeping it with the
+// person where it stores byte for byte the text that person was asked about (MoveApprovalAsk's
+// bySettlement); on a closed issue it moves no request and carries no approval
+// (versionWrite.closedIssue); and it opens, moves or deletes the edit notice as a settlement's
+// version does (settledEditNotice). Under a context its caller marked as a comment's writes
+// (WithCommentMarks) it runs owner-verified, so a closed issue's document takes it. It writes the
+// version in the caller's transaction, after that transaction's own writes to the document, so
+// every store built from the latest version - the block index and its block texts, the mentions'
+// excerpts, and document_search and the issue's search vector, which the version's insert
+// triggers - holds the document as those writes leave it when the transaction commits, where the
+// settlement those writes arm would write the same version a settle delay later.
+//
+// It is that same version. The settlement versions the document when an update since the latest
+// version changed its content and the rendering differs from it; a snapshot when the rendering
+// differs and an update changed the content or the latest version does not read as it
+// (snapshotVersion). For a transaction that changed the content itself, both rules come to the
+// rendering differing. It names no version, and keeps no editor of a closed issue's
+// (versionWrite.keptEditor): the version credits this transaction's writer, whose change it holds,
+// so its credit is never only a kept editor (settlementVersionCredit.kept). Its approval move and
+// carry are the ones the settlement's version of the same text would make. The settlement
+// the transaction's writes armed still runs: it finds no content changed since this version
+// (contentChangedSinceVersion) and writes none, and it keeps what this leaves to it - the block-id
+// stamp, the ask blocks' repairs and the document's pending-settlement row, with the editor a
+// closed issue keeps past it (clearSettlementPending).
+func (s *Service) SettleVersion(ctx context.Context, artifactID string, actor model.Actor) (VersionResult, error) {
+	return s.snapshotVersion(ctx, artifactID, actor, true)
+}
+
+// snapshotVersion is SnapshotVersion, and SettleVersion where settles is set.
+func (s *Service) snapshotVersion(ctx context.Context, artifactID string, actor model.Actor, settles bool) (VersionResult, error) {
 	ctx = commentMarkOperation(ctx)
 	tx, joined := txFromContext(ctx)
 	if !joined {
@@ -1497,7 +1545,8 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 	mergeAuthor(capture.authors, actor)
 	// The owner's lock holds the issue's state under this write, and a closed issue refuses it -
 	// except the version a comment's anchor is pinned to, which a closed issue takes like the
-	// comment itself (WithCommentMarks, commentMarkOperation above).
+	// comment itself (WithCommentMarks, commentMarkOperation above), and the version a comment's
+	// delete settles, which a closed issue takes like the delete.
 	_, open, err := lockArtifactOwner(ctx, tx, artifactID)
 	if err != nil {
 		return VersionResult{}, err
@@ -1505,15 +1554,18 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 	if !open && !isOwnerVerified(ctx) {
 		return VersionResult{}, ErrIssueClosed
 	}
+	closedIssue := settles && !open
 	result, err := s.writeVersionTx(ctx, tx, artifactID, rendered, actor, &versionWrite{
 		authors:          actorSlice(capture.authors),
 		capture:          &capture,
 		docUpdateVersion: rendered.head,
+		closedIssue:      closedIssue,
+		settlement:       settles,
 	})
 	if err != nil {
 		return VersionResult{}, err
 	}
-	if err := s.recordEditNotice(ctx, tx, artifactID, result.version.Number, actorSlice(capture.authors), capture.latest); err != nil {
+	if err := s.settledEditNotice(ctx, tx, artifactID, closedIssue, result.version.Number, actorSlice(capture.authors), capture.latest); err != nil {
 		return VersionResult{}, err
 	}
 	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes}, nil
@@ -2515,7 +2567,7 @@ func queueVersionInsert(ctx context.Context, tx pgx.Tx, artifactID, markdown str
 		return model.Version{}, err
 	}
 	if ledger := queueFor(ctx, tx); ledger != nil {
-		ledger.queuedVersion(artifactID, pendingVersion{version: version, markdown: markdown, docUpdateVersion: cursor})
+		ledger.queuedVersion(artifactID, pendingVersion{version: version, markdown: markdown, insertTree: stamp.InsertTree, docUpdateVersion: cursor})
 	}
 	return version, nil
 }
@@ -2525,7 +2577,10 @@ func queueVersionInsert(ctx context.Context, tx pgx.Tx, artifactID, markdown str
 // what the markdown was rendered from, stored with the head this insert meets, so a text read of
 // a document still standing there serves the stored markdown rather than rendering the document
 // again (storedText): the head and the transaction standing at it are read in the insert itself,
-// which the write phase runs after the appends this transaction queued before it.
+// which the write phase runs after the appends this transaction queued before it. The same insert
+// stores the stamp's insert tree (artifact_versions.insert_tree, null where the tree holds no
+// insert suggestion's mark), which every read of the version's text masks it by
+// (MaskedVersionText).
 func versionInsert(artifactID, markdown string, authors []model.Actor, number int, createdAt time.Time, named bool, summary *string, docUpdateVersion int64, stamp RenderStamp) (model.Version, WriteStep, error) {
 	encodedAuthors, err := json.Marshal(authors)
 	if err != nil {
@@ -2537,9 +2592,9 @@ func versionInsert(artifactID, markdown string, authors []model.Actor, number in
 		return model.Version{}, nil, fmt.Errorf("decode document version authors: %w", err)
 	}
 	return version, execStep("write document version", RenderStampHead+`
-		insert into artifact_versions (artifact_id, number, markdown, authors, named, summary, doc_update_version, created_at, `+RenderStampColumns+`)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, `+RenderStampValues+`, $9, $10)
-	`, artifactID, number, markdown, encodedAuthors, named, summary, docUpdateVersion, createdAt, stamp.Token, stamp.Renderer), nil
+		insert into artifact_versions (artifact_id, number, markdown, authors, named, summary, doc_update_version, created_at, `+RenderStampColumns+`, insert_tree)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, `+RenderStampValues+`, $9, $10, $11)
+	`, artifactID, number, markdown, encodedAuthors, named, summary, docUpdateVersion, createdAt, stamp.Token, stamp.Renderer, stamp.InsertTree), nil
 }
 
 // versionSlot numbers and dates the next version of artifactID tx writes: through the ledger tx's

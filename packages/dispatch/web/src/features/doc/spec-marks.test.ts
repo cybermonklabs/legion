@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
+
+import { correction } from "../../__tests__/correction-feed";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { markCorrectedPost } from "../../api/corrected-post";
 import type {
   ArtifactBlock,
   Decision,
@@ -193,6 +197,79 @@ test("changed since a read: the blocks above its version, named by the heading o
 test("no read version, or nothing changed since it, shows no line and marks nothing", () => {
   expect(changedSinceRead(blocks, specBlockParts(references), null)).toBeUndefined();
   expect(changedSinceRead(blocks, specBlockParts(references), 5)).toBeUndefined();
+});
+
+// Census row V.32 of dispatch://INFRA-1523: the line of what changed since a read names no word a
+// deleted pending insert put in the spec. It names its sections from the spec's `part_of` read,
+// whose block texts are the ones the document's latest indexed version gave them
+// (`document_blocks`). A pending insert put the spec's first paragraph in, and its comment's
+// delete took it out of the document; the read the page holds from before the delete still gives
+// its words, with no mark to tell them by. The delete's correction drops that read whole
+// (`markCorrectedPost`), and the page, which draws the line from it, reads it again: Dispatch
+// answers it as the delete left the spec, with no such paragraph, and the line names none of the
+// words. The control: a delete that leaves its quote - a replace suggestion's, a plain comment's,
+// the document's own text - drops nothing, and the page reads nothing again.
+test("the line names none of a deleted insert's words once the delete's correction reaches the spec's part_of read", async () => {
+  const key = ["references", "to", "dispatch://CORE-1/spec", "part_of"];
+  const parent = { id: "artifact-1", kind: "artifact", ref: "dispatch://CORE-1/spec" };
+  const inserted = "Why we need notices at all, for the security review.";
+  const cached: GraphReferences = {
+    ...references,
+    edges: (references.edges ?? []).map((edge) =>
+      edge.node.kind !== "block"
+        ? edge
+        : {
+            ...edge,
+            excerpt:
+              edge.node.block_id === "p-intro"
+                ? { block_id: "p-intro", text: inserted }
+                : edge.excerpt,
+            node: { ...edge.node, parent },
+          }
+    ),
+  };
+  // The spec's parts as Dispatch reads them once the delete took the paragraph out.
+  const afterDelete: GraphReferences = {
+    ...references,
+    edges: (references.edges ?? []).filter((edge) => edge.node.block_id !== "p-intro"),
+  };
+  const lineAfter = async (quote: string): Promise<string | undefined> => {
+    const client = new QueryClient();
+    client.setQueryData(key, cached);
+    // The page's read of the parts, which it draws the line from.
+    const page = new QueryObserver(client, {
+      queryFn: () => Promise.resolve(afterDelete),
+      queryKey: key,
+      staleTime: Number.POSITIVE_INFINITY,
+    });
+    const unsubscribe = page.subscribe(() => {});
+    try {
+      markCorrectedPost(
+        client,
+        correction("comment", "comment-insert", false, {
+          anchor: {
+            artifact_id: "artifact-1",
+            block_id: "p-intro",
+            mark_id: "mark-insert",
+            orphaned: false,
+            quote,
+            version: 1,
+          },
+        })
+      );
+      await client.getQueryCache().find({ exact: true, queryKey: key })?.promise;
+      const read = client.getQueryData<GraphReferences>(key);
+      const changed =
+        read === undefined ? undefined : changedSinceRead(blocks, specBlockParts(read), 3);
+      return changed === undefined ? undefined : readLineText(changed);
+    } finally {
+      unsubscribe();
+    }
+  };
+  expect({ insert: await lineAfter(""), kept: await lineAfter("Why we need notices") }).toEqual({
+    insert: "Changed since you last read version 3: Plan",
+    kept: `Changed since you last read version 3: ${inserted}, Plan`,
+  });
 });
 
 test("the editor's block marks: stale blocks with their title, changed blocks with theirs", () => {

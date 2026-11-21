@@ -244,3 +244,23 @@ func hydrateThreadReplyBlocks(ctx context.Context, q queryer, roots []model.Mess
 	}
 	return hydrateMessageReplyBlocks(ctx, q, messages...)
 }
+
+// deleteEventReplyBlock is block, the block of its parent a reply names, as the reply's delete
+// event carries it: every field that routes the event and says which block it is - its node id,
+// which names the kind and the id of the item holding it, its reference, its id, whether it is
+// removed and the quoted post's marks - and no text. A delete event carries no text of another
+// post (dispatch://INFRA-1523, the architect's ruling of 2026-11-19): the reply's creation froze
+// a preview of its parent, which the event log keeps, and the delete is a new event written after
+// it, so it writes no new copy of that text. Both correction builders apply it on a delete
+// (commentCorrectionPayload, messageCorrectionEvent), and a message's delete leaves out
+// reply_body with it, the preview of the parent or of this block a message event carries beside
+// it. The block is copied, so the reply a route answers keeps the text its read serves. A reply
+// naming no block carries nil, which stays nil.
+func deleteEventReplyBlock(block *model.ReplyBlock) *model.ReplyBlock {
+	if block == nil {
+		return nil
+	}
+	carried := *block
+	carried.Text = ""
+	return &carried
+}

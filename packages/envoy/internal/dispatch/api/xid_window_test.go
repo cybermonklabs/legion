@@ -227,11 +227,14 @@ func TestXidWindowsOnTheLargeSpec(t *testing.T) {
 		{"ask create anchored", xidWindowAskCreateAnchored},
 		{"asked of", xidWindowAskedOf},
 		{"comment edit", xidWindowCommentEdit},
+		{"comment delete", xidWindowCommentDelete},
 		{"comment resolve", xidWindowCommentResolve},
 		{"comment reopen", xidWindowCommentReopen},
 		{"suggestion reject", xidWindowSuggestionReject},
 		{"issue patch", xidWindowIssuePatch},
 		{"message create", xidWindowMessageCreate},
+		{"message edit", xidWindowMessageEdit},
+		{"message delete", xidWindowMessageDelete},
 		{"user issue state", xidWindowUserIssueState},
 		{"user thread read", xidWindowUserThreadRead},
 		{"result recorded", xidWindowResultRecorded},
@@ -373,15 +376,24 @@ func xidWindowCommentReopen(t *testing.T, f *xidFixture) {
 }
 
 func xidWindowCommentEdit(t *testing.T, f *xidFixture) {
-	created := dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/comments", map[string]any{
+	comment := createThreadComment(t, f.handler, f.issueKey, map[string]any{
 		"body": "First wording.", "anchor": map[string]any{"artifact": "spec", "quote": f.takeSpare(t)},
 	}, "alice")
-	if created.Code != http.StatusCreated {
-		t.Fatalf("create alice's anchored comment: status=%d body=%s", created.Code, created.Body.String())
-	}
-	comment := decodeBody[model.Comment](t, created)
 	f.measure(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return dispatchRequest(t, h, http.MethodPatch, "/api/v1/comments/"+comment.ID, map[string]any{"body": "Second wording."}, "alice")
+	})
+}
+
+// xidWindowCommentDelete deletes an anchored comment of alice's own, as its author does: the
+// history row, the clear, the index of the empty body, the tombstone of its blocks, the margin
+// record its projection writes and the comment.deleted event are queued on the ledger in the
+// read phase and sent as its one batch (deleteComment).
+func xidWindowCommentDelete(t *testing.T, f *xidFixture) {
+	comment := createThreadComment(t, f.handler, f.issueKey, map[string]any{
+		"body": "A wording to withdraw.", "anchor": map[string]any{"artifact": "spec", "quote": f.takeSpare(t)},
+	}, "alice")
+	f.measure(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
+		return dispatchRequest(t, h, http.MethodDelete, "/api/v1/comments/"+comment.ID, nil, "alice")
 	})
 }
 
@@ -649,6 +661,26 @@ func xidWindowMessageCreate(t *testing.T, f *xidFixture) {
 	})
 }
 
+// xidWindowMessageEdit edits an issue message of alice's own: the history row, the update, the
+// index of the new body and the message.edited event go in the one batch the route runs itself
+// (editMessage).
+func xidWindowMessageEdit(t *testing.T, f *xidFixture) {
+	message := createIssueMessage(t, f.handler, f.issueKey, map[string]any{"body": "Status: the first wording."}, "alice")
+	f.measure(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
+		return dispatchRequest(t, h, http.MethodPatch, "/api/v1/messages/"+message.ID, map[string]any{"body": "Status: the second wording."}, "alice")
+	})
+}
+
+// xidWindowMessageDelete deletes an issue message of alice's own: the history row, the clear,
+// the index of the empty body, the tombstone of its blocks, the settle of its pending sends and
+// the message.deleted event go in the one batch the route runs itself (deleteMessage).
+func xidWindowMessageDelete(t *testing.T, f *xidFixture) {
+	message := createIssueMessage(t, f.handler, f.issueKey, map[string]any{"body": "Status: a wording to withdraw."}, "alice")
+	f.measure(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
+		return dispatchRequest(t, h, http.MethodDelete, "/api/v1/messages/"+message.ID, nil, "alice")
+	})
+}
+
 func xidWindowClaim(t *testing.T, f *xidFixture) {
 	f.measureAdvised(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return dispatchRequest(t, h, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/claim", map[string]any{}, "alice")
@@ -822,7 +854,7 @@ func xidCitingBody(text, issueKey string) string {
 // The route writes as it goes, so its window holds its statements rather than one batch, and
 // everything the reply is decided on comes before the first of them: the comment and its owner,
 // taken under the advisory lock that assigns no transaction id (store.LockOwner,
-// lockedCommentForDelivery); the climb from it to the head of its thread, the ask it hangs
+// lockedCommentAllowingClosed); the climb from it to the head of its thread, the ask it hangs
 // under (threadHeadOf); the block the reply names, with the index its comment may owe planned
 // there and the block itself addressed there, so the reply carries it instead of reading it
 // back; and the reply's own block index and references, planned for an id and a created_at

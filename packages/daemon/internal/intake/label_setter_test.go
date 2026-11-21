@@ -3,6 +3,7 @@ package intake
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -127,6 +128,41 @@ func TestLabelSetterIsTheActorOfTheEventThatAddedTheLabel(t *testing.T) {
 				t.Fatalf("LabelSetter = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// A deleted post's events are read from the log masked - its comment.created or message.created
+// carries deleted_at and deleted_by and no body (Dispatch's attachPostMarks) - and an author
+// corrects a post with comment.edited, comment.deleted, message.edited and message.deleted. None
+// of them is an issue event, so a log that holds them names the setter the same log without them
+// names: here the session that labelled the issue, though a person's posts and their corrections
+// stand before that label and between it and the person's later edit that keeps it.
+func TestLabelSetterPassesOverDeletedPostsAndCorrections(t *testing.T) {
+	const deleted = `"deleted_at":"2026-10-14T17:30:00Z","deleted_by":{"kind":"user","id":"user-1"}`
+	posts := func(seq int) []json.RawMessage {
+		return []json.RawMessage{
+			logEvent(seq, "comment.created", "user", `{"id":"c-1","issue_key":"LEGION-755",`+deleted+`}`),
+			logEvent(seq+1, "message.created", "user", `{"id":"m-1","issue_key":"LEGION-755",`+deleted+`}`),
+			logEvent(seq+2, "comment.edited", "user", `{"id":"c-2","issue_key":"LEGION-755","body":"Looks right now.","edited_at":"2026-10-14T17:30:00Z"}`),
+			logEvent(seq+3, "comment.deleted", "user", `{"id":"c-1","issue_key":"LEGION-755","body":"",`+deleted+`}`),
+			logEvent(seq+4, "message.edited", "user", `{"id":"m-2","issue_key":"LEGION-755","body":"Still green.","edited_at":"2026-10-14T17:30:00Z"}`),
+			logEvent(seq+5, "message.deleted", "user", `{"id":"m-1","issue_key":"LEGION-755","body":"",`+deleted+`}`),
+		}
+	}
+	created := issueLogEvent(1, "issue.created", "user")
+	labelled := issueLogEvent(8, "issue.updated", "session", "legion")
+	kept := issueLogEvent(15, "issue.updated", "user", "legion", "docs")
+	bare, err := LabelSetter([]json.RawMessage{created, labelled, kept})
+	if err != nil || bare != "session" {
+		t.Fatalf("LabelSetter of the issue's own events = %q, %v; want the session that labelled it", bare, err)
+	}
+	withPosts := slices.Concat([]json.RawMessage{created}, posts(2), []json.RawMessage{labelled}, posts(9), []json.RawMessage{kept})
+	got, err := LabelSetter(withPosts)
+	if err != nil {
+		t.Fatalf("LabelSetter of the log with the deleted posts and corrections: %v", err)
+	}
+	if got != bare {
+		t.Fatalf("LabelSetter of the log with the deleted posts and corrections = %q, want %q, as without them", got, bare)
 	}
 }
 

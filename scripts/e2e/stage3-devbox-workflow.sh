@@ -1216,7 +1216,9 @@ no_change_close() {
   send_agent "$nochange_issue" architect "Stage 3 no-change proof: the human reviewing your spec requested changes: \"$reason\" End your tree as your role says, and change nothing else."
   until_true 600 "the no-change root to be done in Dispatch" dispatch_status_is "$nochange_issue" "done"
   dispatch_events "$nochange_issue" >"$evidence/nochange-events.json"
-  jq -e '(map(select(.type == "message.created" and (.payload.body | contains("Closed by its architect before its first phase:")))) | first | .seq) as $message
+  # A message its author deleted reads with deleted_at set and no body (dispatch://INFRA-1523): it
+  # counts as not posted, and its body is never read.
+  jq -e '(map(select(.type == "message.created" and .payload.deleted_at == null and (.payload.body | contains("Closed by its architect before its first phase:")))) | first | .seq) as $message
     | (map(select(.type == "issue.closed")) | first | .seq) as $closed
     | $message != null and $closed != null and $message < $closed' "$evidence/nochange-events.json" >/dev/null ||
     fail "the architect's reason was not posted on $nochange_issue before its close; see $evidence/nochange-events.json"

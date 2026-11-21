@@ -3,6 +3,7 @@ import { notifyManager, type QueryKey, useQueryClient } from "@tanstack/react-qu
 import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
 import { useLocation } from "react-router-dom";
 
+import { ambiguousItems } from "../../api/client";
 import type { Ask, Comment, IssueDetails, MessageRead } from "../../api/types";
 import {
   type ItemLanding,
@@ -234,9 +235,11 @@ interface Following {
   readonly key: string;
   /** The landing the old page's landing settled on during this following, as last stored here,
    *  which the following draws again while the read runs again, and while the tree's reads are
-   *  out again (`readsHeld`). A new one is stored only when its kind changes (or another field
-   *  of the following does), so a later answer of the same kind - a second list of matches - is
-   *  not stored, and this can be an earlier answer than the last one drawn. */
+   *  out again (`readsHeld`). A new one is stored when its kind changes (or another field of the
+   *  following does), and a list of matches whenever the matches it lists do (`sameMatches`): a
+   *  later list, or the list the cache holds once a correction is written into it
+   *  (`markCorrectedPost`). So a list drawn while its read runs again is the refusal the cache
+   *  held last, with every correction since, where the cache holds none then. */
   readonly settled: Exclude<ItemLanding, { kind: "pending" }> | undefined;
 }
 
@@ -265,9 +268,12 @@ interface Following {
  * once a read draws it. A read that runs again holds no answer, so its landing is pending again
  * until that run ends - a Retry's, or window focus reading a read in error again - and the
  * following keeps drawing the kind of landing it last settled on meanwhile (`Following.settled`):
- * an item found missing keeps its line, and a failed read its line, busy, with its Retry and the
- * focus. The failures are counted from the following's start, so an item whose read failed
- * before the address was followed again draws no failure of its own until its read fails again.
+ * an item found missing keeps its line, a failed read its line, busy, with its Retry and the
+ * focus, and several items their list: the refusal the cache holds for the read, where a
+ * correction asked the read again (`correctRefusal` in `api/corrected-post.ts`), and else the one
+ * it held last, so a match deleted since is drawn deleted. The failures are counted from the
+ * following's start, so an item whose read failed before the address was followed again draws no
+ * failure of its own until its read fails again.
  * A block or the children is `absent`, as no read is left to draw it.
  *
  * The reads going out again after the following has settled on a landing - a document added to
@@ -356,7 +362,13 @@ export function useAddressFallback({
   const retrying = state?.fetchStatus === "fetching";
   const failures = state?.errorUpdateCount ?? 0;
   const failedBefore = before?.failedBefore ?? (readKey === undefined ? undefined : failures);
-  const settled = landing?.kind === "pending" ? before?.settled : landing;
+  const refused = landing?.kind === "pending" ? ambiguousItems(state?.error) : undefined;
+  const settled: Following["settled"] =
+    refused !== undefined
+      ? { candidates: refused, kind: "ambiguous" }
+      : landing?.kind === "pending"
+        ? before?.settled
+        : landing;
   const target = address.target;
   const named =
     address.document === undefined && (target?.kind === "block" || target?.kind === "children")
@@ -373,7 +385,8 @@ export function useAddressFallback({
     before.absent !== absent ||
     before.found !== found ||
     before.failedBefore !== failedBefore ||
-    before.settled?.kind !== settled?.kind
+    before.settled?.kind !== settled?.kind ||
+    !sameMatches(before.settled, settled)
   ) {
     setFollowed({ absent, failedBefore, found, key: following, settled });
   }
@@ -390,4 +403,17 @@ export function useAddressFallback({
     retrying,
     route: read,
   };
+}
+
+/** Whether the landing stored and the one settled on list the same matches, item for item as the
+ *  cache holds each: a correction written into the refusal they come from gives each item it marks
+ *  anew (`markCorrectedPost`), as a later read gives every item. Landings that list no matches are
+ *  the same here. */
+function sameMatches(stored: Following["settled"], settled: Following["settled"]): boolean {
+  if (stored?.kind !== "ambiguous" || settled?.kind !== "ambiguous") return true;
+  const { candidates } = settled;
+  return (
+    stored.candidates.length === candidates.length &&
+    stored.candidates.every((item, at) => item === candidates[at])
+  );
 }

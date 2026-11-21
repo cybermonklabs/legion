@@ -55,6 +55,70 @@ func rejectedInsert(tree *pmdoc.Node, id string) (*pmdoc.Node, error) {
 	return next, nil
 }
 
+// AnchorMark is one anchor mark of a document as an ask's or a comment's anchor names it: the
+// mark's type (MarkAsk, MarkComment, MarkSuggestion) and its id.
+type AnchorMark struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+}
+
+// TakenAnchorMarks is the anchor marks - an ask's, a comment's, another suggestion's - on the text
+// the reject of an insert suggestion took out of the document (rejectedInsert), as
+// takenAnchorMarks reads them off the tree before the removal and the tree it left. Removed is
+// each mark the removal took out whole: it lay wholly on the inserted words, so every row
+// anchored on it quotes those words alone. Cut is each mark that stands after the removal: it
+// wrapped document text too, and that text is all it wraps now. A reject that removes no text
+// takes no mark, and neither does an accept.
+type TakenAnchorMarks struct {
+	Removed []AnchorMark `json:"removed,omitempty"`
+	Cut     []AnchorMark `json:"cut,omitempty"`
+}
+
+// takenAnchorMarks is the anchor marks on the text the reject of insert suggestion id takes out of
+// tree, leaving next (rejectedInsert): every anchor mark but the insert's own that a text run
+// carrying the insert's mark carries - those runs are the text the removal takes, span by span
+// (pmdoc.MarkSpans) - each once, in tree order, Removed where next no longer holds it and Cut
+// where it does.
+func takenAnchorMarks(tree, next *pmdoc.Node, id string) TakenAnchorMarks {
+	own := pmdoc.MarkRef{Type: string(MarkSuggestion), ID: id}
+	var marks []pmdoc.MarkRef
+	seen := map[pmdoc.MarkRef]bool{}
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		if node.Type != "text" || !pmdoc.NodeHasMarkID(node, own.Type, own.ID) {
+			return true
+		}
+		for _, mark := range node.Marks {
+			markID, _ := mark.Attrs["id"].(string)
+			ref := pmdoc.MarkRef{Type: mark.Type, ID: markID}
+			if markID == "" || anchorKinds[mark.Type] == "" || ref == own || seen[ref] {
+				continue
+			}
+			seen[ref] = true
+			marks = append(marks, ref)
+		}
+		return true
+	})
+	var taken TakenAnchorMarks
+	stands := pmdoc.FindMarks(next, marks)
+	for _, ref := range marks {
+		if _, cut := stands[ref]; cut {
+			taken.Cut = append(taken.Cut, AnchorMark(ref))
+		} else {
+			taken.Removed = append(taken.Removed, AnchorMark(ref))
+		}
+	}
+	return taken
+}
+
+// markSet is marks as a set of mark identities.
+func markSet(marks []AnchorMark) map[pmdoc.MarkRef]bool {
+	set := make(map[pmdoc.MarkRef]bool, len(marks))
+	for _, mark := range marks {
+		set[pmdoc.MarkRef(mark)] = true
+	}
+	return set
+}
+
 // joinsTwo reports whether span runs from inside one node of nodeType into another: from one
 // table into the next, or, for "table_row", from one body row into another (a header row is a
 // table_header_row, so a range from it into the first body row is not one).

@@ -495,10 +495,11 @@ export function useMarginSheet(): MarginSheetModel {
       };
     }
     if (documentCompose?.open === undefined || owner === undefined) return undefined;
-    const { anchor, kind } = documentCompose.open;
+    const { anchor, kind, openedAt } = documentCompose.open;
     return {
       anchor,
       kind,
+      openedAt,
       owner: composerOwner(owner),
       seq: documentCompose.seq,
       turnedAway: false,

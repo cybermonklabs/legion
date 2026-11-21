@@ -77,7 +77,7 @@ import {
   dispatchFirstSkillFile,
   readDispatchFirstContext,
 } from "@legion/envoy-client/dispatch-first";
-import { DispatchServiceError } from "@legion/envoy-client/dispatch-http";
+import { DispatchServiceError, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http";
 import { forgetShownPictures, shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { pictureAddresses } from "@legion/envoy-client/dispatch-pictures";
 import {
@@ -1392,6 +1392,12 @@ export default function envoyExtension(hostApi: PiApi): void {
   // first text Dispatch refuses (`postTypedInputReply`) - since the broker may refuse a token
   // for a session this machine no longer runs and the refusal would otherwise read as a plain
   // reply failure.
+  //
+  // A reply Dispatch made and gave no copy of its answer for (`DispatchWriteLandedError`: `409
+  // KEY_COMMITTED`, or a replay of an answer it kept none of) is posted: the attempt is answered
+  // with it, so it resolves as any posted reply does, and its line says it landed. Every caller
+  // then goes on as after a post - a BTW's side turn is taken, a person's turn is settled - and
+  // none answers the same attempt again with an error, or says the delivery failed.
   const postDispatchReply = async (
     delivery: DispatchDelivery,
     result: { readonly body?: string; readonly error?: string },
@@ -1403,7 +1409,17 @@ export default function envoyExtension(hostApi: PiApi): void {
         open: sessionID,
       });
     }
-    await postDeliveryReply(dispatchConfigFor(replySessionID), replySessionID, delivery, result);
+    try {
+      await postDeliveryReply(dispatchConfigFor(replySessionID), replySessionID, delivery, result);
+    } catch (error) {
+      if (!(error instanceof DispatchWriteLandedError)) throw error;
+      logger.warn("envoy: a reply landed on Dispatch, which gave no copy of its answer", {
+        resource: delivery.resource,
+        id: delivery.id,
+        attempt: delivery.attempt,
+        error: error.message,
+      });
+    }
   };
 
   // A typed input's pictures, until the host's message carrying its Dispatch id starts
@@ -1962,6 +1978,13 @@ export default function envoyExtension(hostApi: PiApi): void {
           logger.warn(
             "envoy: Dispatch accepted a direct message without the stored body and mode to inject; it arrives as a card",
             fields
+          );
+          return;
+        }
+        if (refusal.reason === "landed") {
+          logger.warn(
+            "envoy: Dispatch recorded this session's accept of a direct message and gave no copy of its answer, so no turn follows; it arrives as a card",
+            { ...fields, error: refusal.error.message }
           );
           return;
         }

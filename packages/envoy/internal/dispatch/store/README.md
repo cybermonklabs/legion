@@ -45,7 +45,10 @@ The decoders that make this true are the listener's (`cmd/listener/delivery.go`)
 **The keyword table holds each past version of the searchable text.**
 Migration `20261120021308_search_text_versions` creates two tables, with no foreign key.
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask, with the vector of that text.
-A row is never updated: a new version is a new row.
+A new version is a new row, and a row is updated in one case alone.
+The delete of a comment whose insert suggestion's words a stored document version holds rewrites the vector of each issue row that names such a version, from the version's text as every read gives it once the delete commits (`QueueTextVersionsMask`, in the delete's own transaction).
+The fill makes the vector of a row it writes later from that masked text too.
+Each fill batch holds the advisory lock `search-text-versions-mask` exclusively (`LockTextVersionsMask`), and the delete takes it shared before its rewrite, so neither misses the other's write.
 `search_text_versions_fill` holds the one cursor row of the keyword fill (`internal/dispatch/textversions`): every event at or below its `event_id` has its rows.
 The fill writes both tables from the event log while Dispatch serves, under the hold `search-text-versions-fill`.
 It pauses while an answers read that its process serves takes longer than 800 ms (`../../../cmd/dispatch/README.md`, "Background loops").
@@ -56,7 +59,8 @@ A version holds at the cut when it started at or before the cut, and no later ve
 So an item has at most one version at a time, and none before its first version started.
 The SQL writes the cut as a literal in UTC to the microsecond, from the time value and never from the text of a request.
 It names each table with the schema `public`, so a common table expression of the statement that joins it cannot replace them.
-Its columns, in this order, are a contract (`TestTheKeywordRelationAnswersTheContractColumns`): `kind`, `id`, `issue_key`, `project_key`, `event_id`, `event_seq`, `started_at`, `body`, `spec_artifact_id`, `spec_version`, `search` and `deleted_at`, which is null in this build.
+Its columns, in this order, are a contract (`TestTheKeywordRelationAnswersTheContractColumns`): `kind`, `id`, `issue_key`, `project_key`, `event_id`, `event_seq`, `started_at`, `body`, `spec_artifact_id`, `spec_version`, `search` and `deleted_at`.
+`deleted_at` is the post's own delete mark as the post stands now, `comments.deleted_at` or `messages.deleted_at`, on every version of a deleted comment or message at every cut, and null on every other version, so a reader leaves out or marks every version of a deleted post.
 `Store.TextVersionsAt(ctx, cut)` answers the relation only for a cut at or before the reach.
 For a later cut it answers `*TextVersionsNotReachedError`, whose `Error()` names the reach and the cut.
 With no cursor row, the error has `Reached` false and says that the fill has reached no time yet.

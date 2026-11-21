@@ -26,8 +26,10 @@ import type {
   MessageRead,
   ReferenceQuestions,
 } from "../../api/types";
+import { useAgentText } from "./AgentName";
 import { itemOfBlock } from "./block-reference";
 import { useMarkdownHeadline } from "./markdown-engine";
+import { deletedLineText, editedName, type PostDeletion, postDeletion } from "./post-marks";
 import {
   buildDispatchReference,
   buildReferencePath,
@@ -71,9 +73,20 @@ export interface ReferenceTarget {
   /** What the target says, as its author wrote it (Markdown): a message's body, a document's
    *  text. `undefined` while loading or for a target with nothing to say. */
   readonly description: string | undefined;
+  /** The deletion of the comment or the issue message a reference names, or whose block it
+   *  names, once read; null for every other target and for a post nobody deleted. A deleted
+   *  post's body is cleared, so a card that drew `description` alone would say nothing at all. */
+  readonly deleted: PostDeletion | null;
+  /** When the author of that comment or issue message last replaced its body, once read; null
+   *  for every other target and for a post nobody edited. */
+  readonly edited: string | null;
   /** The reading Go made of `description`, which a card draws (`MarkdownPreview`); absent for a
    *  description Dispatch does not store, a GitHub body among them. */
   readonly descriptionTree: DisplayTree | undefined;
+  /** Whether the read of a document's text failed with no answer to draw - a refetch after a
+   *  pending insert's delete dropped the answer the page held (`dropUnmarkedText`), among others:
+   *  a card says so in place of `description`. False for every other target. */
+  readonly textFailed: boolean;
   /** The bytes route of the picture a reference to an image artifact names - the version it pins,
    *  else the latest - for a thumbnail beside the title; undefined for anything else. */
   readonly picture: string | undefined;
@@ -244,17 +257,26 @@ function blockReferenceOf(route: DispatchReferenceRoute | undefined): string | u
  * document's text at the referenced version, read only when the caller asked for it; `block` is a
  * block reference's graph read, whose node carries the block's whole text and, for a pinned
  * reference, its pin, undefined once the read answers that the block is gone. A block reference
- * reads that alone: its document's name is the hover card's own read (`useBlockDocument`). */
+ * reads that alone - its document's name is the hover card's own read (`useBlockDocument`) -
+ * save where the read answers that a block of a comment or message is gone: that post's own
+ * read is then `comment` or `message`, whose mark says whether its author deleted it. */
 export interface ReferenceData {
   readonly issue: IssueReferenceSummary | undefined;
   readonly artifact: ReferenceArtifact | undefined;
   readonly markdown: string | undefined;
   /** The reading Go made of `markdown`, which a card draws. */
   readonly markdownTree: DisplayTree | undefined;
+  /** Whether the read of the document's text into `markdown` failed with no answer to draw. */
+  readonly textFailed: boolean;
   readonly ask: AskRead | undefined;
   readonly comment: CommentRead | undefined;
   readonly message: MessageRead | undefined;
   readonly block: GraphReferences | undefined;
+  /** The deletion of the comment or message a block reference's block belongs to: its graph
+   *  node's mark, or - where the read answers that the block is gone, which leaves no node -
+   *  the post's own read's, once read. Null for a block of a post that stands, of an ask or of a
+   *  document, and for every other target. */
+  readonly blockDeletion: PostDeletion | null;
 }
 
 export interface ReferenceReadOptions {
@@ -404,9 +426,11 @@ export function useReferenceData(
 ): ReferenceData {
   const route = useWholeRouteRead(given).route;
   const blockReference = blockReferenceOf(route);
+  const blockItem = route === undefined ? undefined : itemOfBlock(route);
   // A block of a comment or message is read from its graph node alone, which carries its text:
-  // no issue, document, ask, comment or message read behind it.
-  const record = route !== undefined && itemOfBlock(route) !== undefined ? undefined : route;
+  // no issue, document, ask, comment or message read behind it, save the post's own read where
+  // the block read answers that the block is gone (below).
+  const record = blockItem !== undefined ? undefined : route;
   const issueRoute =
     route === undefined ||
     route.kind === "agent-artifact" ||
@@ -428,7 +452,30 @@ export function useReferenceData(
       ? route
       : undefined;
   const agentArtifact = route?.kind === "agent-artifact" ? route : undefined;
-  const message = record?.kind === "message" ? record : undefined;
+  const block = useQuery({
+    ...blockQuery(blockReference),
+    enabled: blockReference !== undefined,
+  });
+  // The answer that the block is gone: 404 `NOT_FOUND`, the code of every missing block, whatever
+  // took it.
+  const blockGone =
+    block.error instanceof ApiError &&
+    block.error.status === 404 &&
+    block.error.code === "NOT_FOUND";
+  // A delete clears every block its post held, so a block of a deleted comment or message is gone
+  // and its read carries no mark. The post's own read carries it (`deleted_at`, `deleted_by`), and
+  // that mark, not the refusal, says whether the post is deleted: a post that stands, or one that
+  // cannot be read, leaves the block merely gone. The post is read only on that 404, so a block
+  // whose read answers still reads its node alone, and never for a part of an ask, which no
+  // delete marks.
+  const goneBlockPost =
+    blockGone && blockItem !== undefined && blockItem.kind !== "ask" ? blockItem : undefined;
+  const message =
+    record?.kind === "message"
+      ? record
+      : goneBlockPost?.kind === "message" && route?.kind === "message"
+        ? route
+        : undefined;
   const version =
     route?.kind === "artifact" || route?.kind === "document" || route?.kind === "agent-artifact"
       ? route.version
@@ -444,7 +491,9 @@ export function useReferenceData(
       ? record.id
       : record?.kind === "document" && record.item?.kind === "comment"
         ? record.item.id
-        : undefined;
+        : goneBlockPost?.kind === "comment"
+          ? goneBlockPost.id
+          : undefined;
   const issue = useQuery({
     ...issueSummaryQuery(summaryKey),
     enabled: summaryKey !== undefined,
@@ -462,10 +511,6 @@ export function useReferenceData(
     enabled: agentArtifact !== undefined,
     select: agentReferenceArtifact,
   });
-  const block = useQuery({
-    ...blockQuery(blockReference),
-    enabled: blockReference !== undefined,
-  });
   const artifact: ReferenceArtifact | undefined =
     document !== undefined
       ? projectDocument.data
@@ -480,27 +525,32 @@ export function useReferenceData(
   });
   const ask = useQuery({ ...askQuery(askId), enabled: askId !== undefined });
   const comment = useQuery({ ...commentQuery(commentId), enabled: commentId !== undefined });
+  // TanStack keeps a query's last data through a failed refetch, so a link or card open when an
+  // edit deletes its block would go on showing text its document or item no longer holds. The
+  // read answers 404 `NOT_FOUND` for that block (`blockGone`), and the link and card then read as
+  // a freshly loaded page reads the same link. A pinned reference to a removed block answers 200
+  // with the pin's `removed` state and keeps its pinned text; any other failure (a dropped
+  // connection, a 5xx) leaves the last data shown.
+  const blockData = blockGone ? undefined : block.data;
   return {
     issue: issue.data,
     artifact,
     markdown: text.data !== undefined && "markdown" in text.data ? text.data.markdown : undefined,
     markdownTree:
       text.data !== undefined && "markdown_tree" in text.data ? text.data.markdown_tree : undefined,
+    textFailed: text.isLoadingError,
     ask: ask.data,
     comment: comment.data,
     message: messageQueryResult.data,
-    // TanStack keeps a query's last data through a failed refetch, so a link or card open when an
-    // edit deletes its block would go on showing text its document or item no longer holds. The
-    // read answers 404 `NOT_FOUND` for that block, and the link and card then read as a freshly
-    // loaded page reads the same link. A pinned reference to a removed block answers 200 with the
-    // pin's `removed` state and keeps its pinned text; any other failure (a dropped connection, a
-    // 5xx) leaves the last data shown.
-    block:
-      block.error instanceof ApiError &&
-      block.error.status === 404 &&
-      block.error.code === "NOT_FOUND"
-        ? undefined
-        : block.data,
+    block: blockData,
+    blockDeletion:
+      goneBlockPost === undefined
+        ? postDeletion(blockData?.node)
+        : postDeletion(
+            goneBlockPost.kind === "comment"
+              ? comment.data?.comment
+              : messageQueryResult.data?.message
+          ),
   };
 }
 
@@ -564,14 +614,26 @@ export function blockTextTree(node: GraphReferences["node"]): DisplayTree | unde
  * it loads or after. A block of a document resolves to the headline of its own text, as an ask or
  * comment does: the text the pinned version held for a pinned reference, its current text
  * otherwise. A reference to an image artifact, of an issue, a project or an agent's conversation,
- * also answers its picture: the bytes route of the version it pins, else of the latest.
+ * also answers its picture: the bytes route of the version it pins, else of the latest. A
+ * comment, an issue message and a block of either also answer the post's marks: its deletion and
+ * the time its author last edited it.
  */
 export function useReferenceTarget(
   route: DispatchReferenceRoute | undefined,
   options: ReferenceReadOptions
 ): ReferenceTarget {
-  const { artifact, ask, block, comment, issue, markdown, markdownTree, message } =
-    useReferenceData(route, options);
+  const {
+    artifact,
+    ask,
+    block,
+    blockDeletion,
+    comment,
+    issue,
+    markdown,
+    markdownTree,
+    message,
+    textFailed,
+  } = useReferenceData(route, options);
   const kind = route === undefined ? undefined : referenceTargetKind(route);
   let authored: string | undefined;
   let authoredTree: DisplayTree | undefined;
@@ -600,6 +662,10 @@ export function useReferenceTarget(
   // only where `tree` is undefined, so a stored text that came with its tree is still parsed
   // nowhere (`e2e/parse-count.e2e.ts`).
   const headline = useMarkdownHeadline(authoredTree, TITLE_HEADLINE_MAX, authored);
+  const post =
+    kind === "comment" ? comment?.comment : kind === "message" ? message?.message : undefined;
+  const deleted = kind === "block" ? blockDeletion : postDeletion(post);
+  const edited = (kind === "block" ? block?.node.edited_at : post?.edited_at) ?? null;
 
   if (kind === "message") {
     // A message reads as the head of what it says, the way a comment does; its own body is the
@@ -607,16 +673,22 @@ export function useReferenceTarget(
     return {
       title: headline?.text,
       description: message?.message.body,
+      deleted,
+      edited,
       descriptionTree: message?.message.body_tree,
       picture: undefined,
+      textFailed: false,
     };
   }
   if (kind === "ask" || kind === "comment" || kind === "block") {
     return {
       title: headline?.text,
       description: headline?.cut === true ? authored : undefined,
+      deleted,
+      edited,
       descriptionTree: headline?.cut === true ? authoredTree : undefined,
       picture: undefined,
+      textFailed: false,
     };
   }
   const text = markdown !== undefined && markdown.trim() !== "" ? markdown : undefined;
@@ -624,8 +696,56 @@ export function useReferenceTarget(
   return {
     title: artifact?.name ?? issue?.title,
     description: text ?? (artifact === undefined ? issue?.status : undefined),
+    deleted,
+    edited,
     descriptionTree: text === undefined ? undefined : markdownTree,
     picture: named === undefined ? undefined : picturePath(named, artifact),
+    textFailed,
+  };
+}
+
+/** What a link to a reference says in place of the words its author wrote, once the target is
+ *  read (`useReferenceLabel`). */
+export interface ReferenceLabel {
+  /** The words, or undefined where the written words stand: while the target loads, for a
+   *  target that never resolves, and for a block of a deleted post. An issue's text is its title
+   *  alone, which each surface prefixes with the key in its own way. */
+  readonly text: string | undefined;
+  /** Whether `text` is the deleted line, which a link drawn as markup writes in the deleted
+   *  line's italic (`DeletedBody`). */
+  readonly deleted: boolean;
+}
+
+/**
+ * The one rule for a reference link's words, which every link to a `dispatch://` reference reads
+ * its text through (`RefLink`, the document editor's titles, the Plan tab's pointers), so a link
+ * prints the post it names the way the post's own page does (INFRA-1523, R2 and R3):
+ *
+ * - a comment or an issue message its author deleted reads as the deleted line's words
+ *   (`deletedLineText`), never as the headline of its emptied body, which is no words at all;
+ * - a block of a deleted post keeps the words its author wrote: the block is gone with the
+ *   post's text, and the hover card says the post is deleted;
+ * - a comment, a message or a block of either that its author edited reads as its title then
+ *   ` · edited`, as the post's byline writes it (`EditedMark`): the title is cut first
+ *   (`TITLE_HEADLINE_MAX`), then marked (`editedName`), so no cut takes the mark;
+ * - anything else reads as its title, and an empty title is no title: the written words stand,
+ *   so a link never renders with no text.
+ */
+export function useReferenceLabel(
+  route: DispatchReferenceRoute | undefined,
+  target: Pick<ReferenceTarget, "deleted" | "edited" | "title">
+): ReferenceLabel {
+  const agentText = useAgentText();
+  const kind = route === undefined ? undefined : referenceTargetKind(route);
+  if (target.deleted !== null) {
+    return kind === "comment" || kind === "message"
+      ? { deleted: true, text: deletedLineText(target.deleted, agentText) }
+      : { deleted: false, text: undefined };
+  }
+  const title = target.title === "" ? undefined : target.title;
+  return {
+    deleted: false,
+    text: title === undefined ? undefined : editedName(title, target.edited !== null),
   };
 }
 
