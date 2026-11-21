@@ -1450,7 +1450,9 @@ What the edge does that the API's port does not:
 - **Its health check pings Postgres at most once a second.** `GET /healthz` at the edge answers
   from one ping for a second, so a caller on the internet who asks at any rate costs the database
   at most one ping a second per pod. A check that asks while a ping runs waits for it and leaves
-  when its own request ends. A draining pod still fails it at once.
+  when its own request ends. A failing ping writes one `broker: ping Postgres failed` line at
+  ERROR, naming `port=edge`, and no caller writes one, so the edge logs a failing database at most
+  once a second per pod. A draining pod still fails it at once.
 - **A person of the Workspace cannot be named there.** A device authorization whose `login_hint`
   is an address on `BROKER_SIGNIN_DOMAIN` or a `BROKER_SIGNIN_WORKSPACE_DOMAINS` domain, or on a
   subdomain of one, in any case, with a trailing dot or written in characters IDNA maps onto one,

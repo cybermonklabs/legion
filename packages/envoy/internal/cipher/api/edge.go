@@ -10,6 +10,7 @@ import (
 
 	"authelia.com/provider/oauth2"
 
+	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -100,8 +101,8 @@ func RegisterEdge(mux *http.ServeMux, deps Deps, edge Edge) {
 	edgeDeps.TokenHooks = edgeTokenHooks(deps.TokenHooks, edge.WorkspaceDomains)
 	// The edge's GET /healthz is public, so it answers from the database ping through a
 	// one-second cache (cachedPing): a caller on the internet costs the database at most one
-	// ping a second per pod however often it asks.
-	edgeDeps.DatabasePing = (&cachedPing{ping: deps.pingDatabase, now: time.Now}).result
+	// ping a second per pod however often it asks, and a failing database writes one line a ping.
+	edgeDeps.DatabasePing = (&cachedPing{ping: deps.pingDatabase, now: time.Now, port: answer.PortEdge}).result
 	limits := DefaultLauncherLimits
 	if deps.LauncherLimits != nil {
 		limits = *deps.LauncherLimits
@@ -127,6 +128,7 @@ func RegisterEdge(mux *http.ServeMux, deps Deps, edge Edge) {
 		loginKeyPrefix:    edgeLoginKeyPrefix,
 		loginKeyByAddress: true,
 		verificationURI:   edge.VerificationURL,
+		port:              answer.PortEdge,
 	}
 	for _, route := range routes() {
 		pattern := route.Method + " " + route.Pattern

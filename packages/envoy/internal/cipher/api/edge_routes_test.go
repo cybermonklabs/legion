@@ -5,6 +5,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,12 +17,14 @@ import (
 
 	"authelia.com/provider/oauth2"
 
+	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // pathParameter is a wildcard of a route's pattern, which a request for the route names some
@@ -87,6 +90,63 @@ func TestTheEdgesHealthIsServedFromItsCachedPing(t *testing.T) {
 	}
 	if got := pings.Load(); got != 1 {
 		t.Fatalf("fifty checks of the edge's GET /healthz pinged the database %d times, want 1", got)
+	}
+}
+
+// TestTheEdgesHealthWritesOneLineAPingAndNoneForACallerWhoLeft: anyone on the internet can call
+// the edge's GET /healthz, so no caller writes a log line of its own. While the database stalls,
+// five callers that give up each get their answer and write no line; once the database fails,
+// fifty callers within a second all get 503 DATABASE_UNAVAILABLE and the one ping they share
+// writes one ERROR line, naming port=edge.
+//
+// The named reverts: log every failed check through writeUnavailable at the edge too, and the
+// stalled callers write five lines and the failing ones fifty, none naming a port.
+func TestTheEdgesHealthWritesOneLineAPingAndNoneForACallerWhoLeft(t *testing.T) {
+	log := &logtest.Recorder{}
+	logtest.SetDefault(t, log)
+	failing := fmt.Errorf("database away")
+	var stall atomic.Bool
+	stall.Store(true)
+	mux := newTestEdgeMuxPinging(t, func(ctx context.Context) error {
+		if stall.Load() {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return failing
+	})
+	for i := range 5 {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil).WithContext(ctx))
+		cancel()
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("stalled check %d of the edge's GET /healthz = %d %s, want 503", i+1, w.Code, w.Body)
+		}
+	}
+	if records := log.Records(); len(records) != 0 {
+		t.Fatalf("five edge health checks that gave up while the database stalled wrote %d log lines, want none: %v", len(records), records)
+	}
+	stall.Store(false)
+	for i := range 50 {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), `"code":"DATABASE_UNAVAILABLE"`) {
+			t.Fatalf("check %d of the edge's GET /healthz with the database failing = %d %s, want 503 DATABASE_UNAVAILABLE", i+1, w.Code, w.Body)
+		}
+	}
+	records := log.Records()
+	if len(records) != 1 {
+		t.Fatalf("fifty edge health checks within a second of a failing database wrote %d log lines, want 1: %v", len(records), records)
+	}
+	var port string
+	records[0].Attrs(func(a slog.Attr) bool {
+		if a.Key == "port" {
+			port = a.Value.String()
+		}
+		return true
+	})
+	if records[0].Level != slog.LevelError || port != answer.PortEdge {
+		t.Fatalf("the failed ping's line is %v at %v naming port %q, want an ERROR naming port=%s", records[0].Message, records[0].Level, port, answer.PortEdge)
 	}
 }
 

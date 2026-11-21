@@ -209,6 +209,10 @@ type server struct {
 	// BROKER_MACHINE_LOGIN_URL on the broker's own address (oauth.Provider.VerificationURL), and
 	// BROKER_EDGE_MACHINE_LOGIN_URL at its edge.
 	verificationURI string
+	// port is answer.PortEdge at the edge and "" on the broker's own address. At the edge, GET
+	// /healthz writes no line of its own for a failed ping: its cached ping writes one per ping,
+	// naming this port (cachedPing).
+	port string
 }
 
 func Register(mux *http.ServeMux, deps Deps) {
@@ -767,6 +771,13 @@ func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.deps.pingDatabase(r.Context()); err != nil {
+		if s.port != "" {
+			// The edge's ping writes its own line, once a ping and naming its port
+			// (cachedPing), so a caller here, anyone on the internet, writes none: not while the
+			// database stalls and the caller gives up, and not once a second ping has failed.
+			writeError(w, http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "ping Postgres failed: a dependency the broker needs is unavailable")
+			return
+		}
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "ping Postgres", err)
 		return
 	}
@@ -781,10 +792,14 @@ const healthCacheFor = time.Second
 // cachedPing is a Postgres ping whose result is kept for healthCacheFor: the edge's
 // Deps.DatabasePing (RegisterEdge). At most one ping runs at a time: a caller that asks while one
 // runs waits for it, and leaves as soon as its own request ends, so a database that hangs keeps
-// no waiter past its own deadline.
+// no waiter past its own deadline. A ping that fails while its caller's request still runs writes
+// one ERROR line naming port (answer.PortEdge), so a failing database is logged at most once a
+// healthCacheFor per pod, whatever the number of callers; a ping its caller left writes none.
 type cachedPing struct {
 	ping func(context.Context) error
 	now  func() time.Time
+	// port is the value of the port field the line of a failed ping names.
+	port string
 
 	mu  sync.Mutex
 	at  time.Time
@@ -822,6 +837,9 @@ func (c *cachedPing) result(ctx context.Context) error {
 		c.mu.Lock()
 		if ctx.Err() == nil {
 			c.at, c.err = c.now(), err
+			if err != nil {
+				slog.Error("broker: ping Postgres failed", "error", err, "port", c.port)
+			}
 		}
 		c.running = nil
 		close(done)
