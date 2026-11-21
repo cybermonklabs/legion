@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,7 +33,7 @@ const theTag = "leak-check-v15"
 // outside that directory is in the tarball too, to show that the rest of the repository is left
 // where it is.
 const (
-	theNeighbour = "public_leak_check.py"
+	theNeighbour = leakguardtest.ProgramName
 	theFixture   = "must-pass-lines.txt"
 	theNested    = "revert-gate/run.py"
 )
@@ -58,14 +59,16 @@ echo "LEAK CHECK ERROR: /usr/bin/python3 is missing or not executable, so the ch
 exit 2
 `
 
-// theCheck is the members of a check that runs: the launcher, its python file, its fixture and a
-// nested directory.
+// theCheck is the members of a check that runs: the launcher, its python file, its README, its
+// fixture and a nested directory — every file of its manifest (ManifestFiles) and two it does not
+// cover.
 func theCheck(launcher string) map[string]leakguardtest.Member {
 	return map[string]leakguardtest.Member{
-		checkName:    {Body: launcher, Mode: 0o755},
-		theNeighbour: {Body: "# the check itself\n", Mode: 0o644},
-		theFixture:   {Body: "a line the self-test must pass\n", Mode: 0o600},
-		theNested:    {Body: "# the revert gate\n", Mode: 0o644},
+		checkName:                {Body: launcher, Mode: 0o755},
+		theNeighbour:             {Body: leakguardtest.Program, Mode: 0o644},
+		leakguardtest.ReadmeName: {Body: leakguardtest.Readme, Mode: 0o644},
+		theFixture:               {Body: "a line the self-test must pass\n", Mode: 0o600},
+		theNested:                {Body: "# the revert gate\n", Mode: 0o644},
 	}
 }
 
@@ -75,10 +78,11 @@ func wholeCheck(t *testing.T, launcher string) []byte {
 	return leakguardtest.GitHubTarball(t, theCheck(launcher))
 }
 
-// served is what the daemon serves of a tarball: its leak-check directory, packed.
+// served is what the daemon serves of a tarball: its leak-check directory, packed. The manifest
+// digest the pack answers beside it is the source's to read (TestTheServedBodyIsTheDirectoryAloneWithItsDigest).
 func served(t *testing.T, raw []byte) []byte {
 	t.Helper()
-	body, err := PackTarball(bytes.NewReader(raw))
+	body, _, err := PackTarballManifest(bytes.NewReader(raw))
 	if err != nil {
 		t.Fatalf("pack: %v", err)
 	}
@@ -173,7 +177,7 @@ func membersOf(t *testing.T, body []byte) map[string]packedMember {
 // paths, with their bytes and modes, and nothing of the rest of the repository nor its prefix.
 func TestThePackHoldsTheDirectoryAlone(t *testing.T) {
 	files := theCheck(answersItsHelp)
-	body, err := PackTarball(bytes.NewReader(leakguardtest.GitHubTarball(t, files)))
+	body, _, err := PackTarballManifest(bytes.NewReader(leakguardtest.GitHubTarball(t, files)))
 	if err != nil {
 		t.Fatalf("pack: %v", err)
 	}
@@ -183,7 +187,7 @@ func TestThePackHoldsTheDirectoryAlone(t *testing.T) {
 		names = append(names, name)
 	}
 	slices.Sort(names)
-	want := []string{checkName, theFixture, theNeighbour, theNested}
+	want := []string{checkName, theFixture, theNeighbour, theNested, leakguardtest.ReadmeName}
 	slices.Sort(want)
 	if !slices.Equal(names, want) {
 		t.Fatalf("the pack holds %q, want the directory's own files alone, %q", names, want)
@@ -198,8 +202,11 @@ func TestThePackHoldsTheDirectoryAlone(t *testing.T) {
 }
 
 // A member of the directory that is neither a directory nor a regular file, one whose path leaves
-// the directory, a tarball that holds no such directory and one whose directory holds no file
-// are each refused by name.
+// the directory, a tarball that holds no such directory, one whose directory holds no file, one
+// whose directory misses a file of the manifest, one whose manifest file is past the read limit and
+// one that holds a manifest file twice are each refused by name, with no body and no digest. A
+// missing manifest file is refused rather than hashed as a digest with a gap, and a second copy of
+// one rather than hashed as whichever copy came last.
 func TestThePackRefusesWhatIsNotTheCheck(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -241,14 +248,65 @@ func TestThePackRefusesWhatIsNotTheCheck(t *testing.T) {
 			},
 			want: "holds a leak-check directory with no file",
 		},
+		{
+			name: "a missing manifest file",
+			raw: func(t *testing.T) []byte {
+				files := theCheck(answersItsHelp)
+				delete(files, leakguardtest.ReadmeName)
+				return leakguardtest.GitHubTarball(t, files)
+			},
+			want: "holds a leak-check directory without a file of its manifest: " + leakguardtest.ReadmeName + ": file does not exist",
+		},
+		{
+			name: "a manifest file past the read limit",
+			raw: func(t *testing.T) []byte {
+				files := theCheck(answersItsHelp)
+				files[leakguardtest.ReadmeName] = leakguardtest.Member{Body: strings.Repeat("r", manifestFileLimit+1), Mode: 0o644}
+				return leakguardtest.GitHubTarball(t, files)
+			},
+			want: `holds the manifest file "` + leakguardtest.ReadmeName + `", which is over the 8 MiB read limit`,
+		},
+		{
+			name: "a manifest file held twice",
+			raw: func(t *testing.T) []byte {
+				// A raw tar, since GitHubTarball's map holds each name once: every file of the
+				// check under its directory, then a second README.md of other bytes.
+				var raw bytes.Buffer
+				zipped := gzip.NewWriter(&raw)
+				archive := tar.NewWriter(zipped)
+				add := func(name, body string) {
+					t.Helper()
+					if err := archive.WriteHeader(&tar.Header{Name: leakguardtest.TarballPrefix + "leak-check/" + name, Typeflag: tar.TypeReg,
+						Mode: 0o644, Size: int64(len(body))}); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := archive.Write([]byte(body)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				files := theCheck(answersItsHelp)
+				for _, name := range slices.Sorted(maps.Keys(files)) {
+					add(name, files[name].Body)
+				}
+				add(leakguardtest.ReadmeName, "a second README of other bytes\n")
+				if err := archive.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if err := zipped.Close(); err != nil {
+					t.Fatal(err)
+				}
+				return raw.Bytes()
+			},
+			want: `holds the manifest file "` + leakguardtest.ReadmeName + `" more than once`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			body, err := PackTarball(bytes.NewReader(tc.raw(t)))
+			body, manifest, err := PackTarballManifest(bytes.NewReader(tc.raw(t)))
 			if err == nil || err.Error() != tc.want {
 				t.Fatalf("pack = %v, want %q", err, tc.want)
 			}
-			if body != nil {
-				t.Errorf("a refused pack answered %d bytes, want none", len(body))
+			if body != nil || manifest != "" {
+				t.Errorf("a refused pack answered %d bytes and the digest %q, want neither", len(body), manifest)
 			}
 		})
 	}
@@ -278,8 +336,8 @@ func TestTheServedInstallLandsTheCheckAndReplacesWhatWasThere(t *testing.T) {
 			t.Errorf("the install holds %s with mode %o, want %o", name, got, m.Mode)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(dir, "README.md")); !os.IsNotExist(err) {
-		t.Errorf("stat the repository's own README in the install = %v, want nothing of the repository outside %s", err, checkDirectory)
+	if _, err := os.Stat(filepath.Join(dir, "CONTRIBUTING.md")); !os.IsNotExist(err) {
+		t.Errorf("stat the repository's own CONTRIBUTING.md in the install = %v, want nothing of the repository outside %s", err, checkDirectory)
 	}
 	if got := recordedTag(t, dir); got != theTag+"\n" {
 		t.Errorf("the install recorded %q, want %q", got, theTag+"\n")
@@ -488,11 +546,14 @@ func TestAHelpRunThatEndsWithNoExitIsRefusedNamingWhy(t *testing.T) {
 	}
 }
 
-// A role's shim reads the install and starts no agent unless it is the pin's: an absent check, an
-// install that records no tag and one of another tag are each refused naming the pin and what is
-// there. With no pin, which is every tmux pane, nothing is read and nothing refused.
+// A role's shim reads the install and starts no agent unless it is the pin's and its manifest
+// digest is the deployment's: an absent check, an install that records no tag, one of another
+// tag, one whose program is another, one whose launcher is edited beside an untouched program,
+// and one missing a file of the manifest are each refused naming the pin and what is there. With
+// no pin, which is every tmux pane, nothing is read and nothing refused; and with the pin but no
+// deployment digest (CheckerVar), which is every role of a deployment that runs no shared leak
+// check, nothing is read either, even where there is no install at all.
 func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
-	pinned := []string{"PATH=/usr/bin:/bin", TagVariable + "=" + theTag}
 	installedAt := func(t *testing.T) string {
 		t.Helper()
 		dir := filepath.Join(t.TempDir(), "leak-check")
@@ -501,6 +562,11 @@ func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
 		}
 		return dir
 	}
+	deployments, err := manifestSHA256(filepath.Join(installedAt(t), checkName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned := []string{"PATH=/usr/bin:/bin", TagVariable + "=" + theTag, CheckerVar + "=" + deployments}
 
 	t.Run("the install of the pin", func(t *testing.T) {
 		dir := installedAt(t)
@@ -515,6 +581,24 @@ func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
 			t.Fatalf("Installed = %q, %v; want no check and no refusal", check, err)
 		}
 	})
+	t.Run("the pin and no checker", func(t *testing.T) {
+		check, err := Installed([]string{"PATH=/usr/bin:/bin", TagVariable + "=" + theTag}, filepath.Join(t.TempDir(), "absent"))
+		if err != nil || check != "" {
+			t.Fatalf("Installed = %q, %v; want no check and no refusal", check, err)
+		}
+	})
+	edit := func(name, body string, mode os.FileMode) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			path := filepath.Join(dir, name)
+			if err := os.Chmod(path, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(body), mode); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	differs := []string{TagVariable + "=" + theTag, "has the manifest digest ", "not the deployment's " + CheckerVar + "=" + deployments}
 	for _, tc := range []struct {
 		name  string
 		spoil func(t *testing.T, dir string)
@@ -539,11 +623,95 @@ func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
 			},
 			want: []string{TagVariable + "=" + theTag, "is of leak-check-v14"},
 		},
+		{
+			name:  "a program of another version",
+			spoil: edit(theNeighbour, "# a check of another version\n", 0o644),
+			want:  differs,
+		},
+		{
+			name:  "a launcher edited to exit 0 beside an untouched program",
+			spoil: edit(checkName, "#!/bin/sh\nexit 0\n", 0o755),
+			want:  differs,
+		},
+		{
+			name:  "no program beside the check",
+			spoil: func(t *testing.T, dir string) { remove(t, filepath.Join(dir, theNeighbour)) },
+			want:  []string{TagVariable + "=" + theTag, "the manifest of the install at ", "cannot be read to compare with " + CheckerVar},
+		},
+		{
+			name:  "no must-pass lines beside the check",
+			spoil: func(t *testing.T, dir string) { remove(t, filepath.Join(dir, theFixture)) },
+			want:  []string{TagVariable + "=" + theTag, "cannot be read to compare with " + CheckerVar, theFixture},
+		},
+		{
+			// A role swaps the shared install's launcher for a link to a pass.sh it wrote beside
+			// copies of the four real files: the file that runs is not the one the manifest holds.
+			name: "a launcher linked out beside copies",
+			spoil: func(t *testing.T, dir string) {
+				copies := t.TempDir()
+				for _, name := range ManifestFiles {
+					body, err := os.ReadFile(filepath.Join(dir, name))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(copies, name), body, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				pass := filepath.Join(copies, "pass.sh")
+				if err := os.WriteFile(pass, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				remove(t, filepath.Join(dir, checkName))
+				if err := os.Symlink(pass, filepath.Join(dir, checkName)); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: []string{TagVariable + "=" + theTag, "cannot be read to compare with " + CheckerVar, "which is not the " + checkName + " its manifest covers"},
+		},
+		{
+			// A file the manifest covers that is a link is not followed, even to the real bytes.
+			name: "a program that is a link to the real one",
+			spoil: func(t *testing.T, dir string) {
+				real := filepath.Join(t.TempDir(), theNeighbour)
+				body, err := os.ReadFile(filepath.Join(dir, theNeighbour))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(real, body, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				remove(t, filepath.Join(dir, theNeighbour))
+				if err := os.Symlink(real, filepath.Join(dir, theNeighbour)); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: []string{TagVariable + "=" + theTag, "cannot be read to compare with " + CheckerVar, "is a symlink"},
+		},
+		{
+			// A fifo nobody writes, where a plain read would wait for ever, holding the role's start.
+			name: "a README that is a fifo",
+			spoil: func(t *testing.T, dir string) {
+				remove(t, filepath.Join(dir, leakguardtest.ReadmeName))
+				if err := syscall.Mkfifo(filepath.Join(dir, leakguardtest.ReadmeName), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: []string{TagVariable + "=" + theTag, "cannot be read to compare with " + CheckerVar, "is a fifo"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := installedAt(t)
 			tc.spoil(t, dir)
-			check, err := Installed(pinned, dir)
+			done := make(chan struct{})
+			var check string
+			var err error
+			go func() { check, err = Installed(pinned, dir); close(done) }()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatalf("Installed was still reading %s after 5s", dir)
+			}
 			failed := setupFailure(t, err)
 			for _, want := range tc.want {
 				if !strings.Contains(failed.Error(), want) {
@@ -552,6 +720,159 @@ func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
 			}
 			if check != "" {
 				t.Errorf("a refused read answered %q, want no check", check)
+			}
+		})
+	}
+}
+
+// The tag file is under the issue's scratch, which every role writes, and the pod's launcher,
+// its container's PID 1, reads it as it replaces an install. So what a role leaves there is read
+// without following a link and without waiting on a fifo, and bounded: a symlink to /dev/zero, a
+// symlink to a file that holds the pin, a fifo nobody writes and a file past the bound each answer
+// at once as no install, the shim's read (Installed) refuses naming why, and a new install
+// replaces it. A read that followed the link to /dev/zero would read it to the end, one that
+// followed the link to the pin would take it for an install, and one that opened the fifo plainly
+// would wait for ever.
+func TestTheInstalledTagIsReadWithoutFollowingASymlinkOrWaitingOnAFifo(t *testing.T) {
+	// A role of a deployment that runs a shared leak check, which is told a manifest digest; the
+	// tag file's refusal comes before any digest is compared, so any digest serves.
+	pinned := []string{"PATH=/usr/bin:/bin", TagVariable + "=" + theTag, CheckerVar + "=" + strings.Repeat("5e", 32)}
+	// Each plant makes path one hostile file and answers what releases a read it holds, which the
+	// test calls when the read did not return in time, so its goroutine ends.
+	nothingHeld := func() {}
+	for _, tc := range []struct {
+		name    string
+		plant   func(t *testing.T, path string) (release func())
+		refusal string
+	}{
+		{"a symlink to /dev/zero", func(t *testing.T, path string) func() {
+			if err := os.Symlink("/dev/zero", path); err != nil {
+				t.Fatal(err)
+			}
+			return nothingHeld
+		}, "is a symlink"},
+		{"a symlink to a file that holds the pin", func(t *testing.T, path string) func() {
+			pin := filepath.Join(t.TempDir(), "pin")
+			if err := os.WriteFile(pin, []byte(theTag+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(pin, path); err != nil {
+				t.Fatal(err)
+			}
+			return nothingHeld
+		}, "is a symlink"},
+		{"a fifo", func(t *testing.T, path string) func() {
+			if err := syscall.Mkfifo(path, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// Opening the fifo for writing lets a plain open of it for reading return.
+			return func() {
+				if writer, err := os.OpenFile(path, os.O_WRONLY, 0); err == nil {
+					_ = writer.Close()
+				}
+			}
+		}, "is a fifo"},
+		{"a file past the bound", func(t *testing.T, path string) func() {
+			if err := os.WriteFile(path, bytes.Repeat([]byte("x"), tagLimit+1), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return nothingHeld
+		}, "is larger than 256 bytes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "leak-check")
+			if _, err := install(t, dir, theTag, served(t, wholeCheck(t, answersItsHelp))); err != nil {
+				t.Fatalf("install: %v", err)
+			}
+			tag := filepath.Join(dir, tagFile)
+			remove(t, tag)
+			release := tc.plant(t, tag)
+			type read struct {
+				tag     string
+				there   bool
+				refused error
+			}
+			done := make(chan read, 1)
+			go func() {
+				got, there, refused := installedTag(dir)
+				done <- read{got, there, refused}
+			}()
+			select {
+			case got := <-done:
+				if got.there || got.tag != "" || got.refused == nil || got.refused.Error() != tag+" "+tc.refusal {
+					t.Fatalf("installedTag = %q, %v, %v; want no install, refused as %q", got.tag, got.there, got.refused, tag+" "+tc.refusal)
+				}
+			case <-time.After(5 * time.Second):
+				release()
+				t.Fatalf("installedTag was still reading %s after 5s", tag)
+			}
+			failed := setupFailure(t, func() error { _, err := Installed(pinned, dir); return err }())
+			if !strings.Contains(failed.Error(), "its tag file is refused ("+tag+" "+tc.refusal+")") {
+				t.Errorf("Installed = %q, want it to name the refusal", failed)
+			}
+			if _, err := install(t, dir, theTag, served(t, wholeCheck(t, answersItsHelp))); err != nil {
+				t.Fatalf("the install over %s: %v", tc.name, err)
+			}
+			if got := recordedTag(t, dir); got != theTag+"\n" {
+				t.Errorf("the install over %s records %q, want %q", tc.name, got, theTag+"\n")
+			}
+		})
+	}
+}
+
+// The install writes its tag into a staging directory under the scratch every role writes, while
+// the body unpacks, so a role can plant a file at the tag's path first. The tag is written as
+// every member is (writeMember): a fifo there fails the write at once rather than holding it until
+// a reader comes, and a symlink there fails it rather than sending the write to the link's target.
+// Through the install, a file already at the staged tag's path refuses the install rather than
+// being opened and written over: a served body that carries the tag file stands in for the file a
+// role planted, since it puts one there every time.
+func TestAMemberIsNeverWrittenThroughWhatARoleLeftAtItsPath(t *testing.T) {
+	t.Run("the staged tag, through the install", func(t *testing.T) {
+		members := theCheck(answersItsHelp)
+		members[tagFile] = leakguardtest.Member{Body: "leak-check-v1\n", Mode: 0o644}
+		dir := filepath.Join(t.TempDir(), "leak-check")
+		_, err := install(t, dir, theTag, served(t, leakguardtest.GitHubTarball(t, members)))
+		if !errors.Is(err, fs.ErrExist) || !strings.HasPrefix(err.Error(), "the installed tag could not be recorded: ") {
+			t.Fatalf("install with a file already at the staged tag's path = %v, want it refused as existing", err)
+		}
+		if _, err := os.Lstat(dir); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("the refused install left %s (%v), want nothing there", dir, err)
+		}
+	})
+	for _, tc := range []struct {
+		name  string
+		plant func(t *testing.T, path string)
+	}{
+		{"a fifo", func(t *testing.T, path string) {
+			if err := syscall.Mkfifo(path, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a symlink", func(t *testing.T, path string) {
+			if err := os.Symlink(filepath.Join(filepath.Dir(path), "target"), path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), tagFile)
+			tc.plant(t, path)
+			done := make(chan error, 1)
+			go func() { done <- writeMember(path, strings.NewReader(theTag+"\n"), 0o644) }()
+			select {
+			case err := <-done:
+				if !errors.Is(err, fs.ErrExist) {
+					t.Fatalf("writeMember over %s = %v, want it refused as existing", tc.name, err)
+				}
+			case <-time.After(5 * time.Second):
+				if reader, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0); err == nil {
+					_ = reader.Close()
+				}
+				t.Fatalf("writeMember was still opening %s after 5s", path)
+			}
+			if _, err := os.Lstat(filepath.Join(filepath.Dir(path), "target")); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("writeMember wrote through the symlink to its target (%v)", err)
 			}
 		})
 	}

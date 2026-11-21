@@ -399,7 +399,8 @@ func writeEarlierGeneration(task *strings.Builder, start ArchitectStart) {
 // writeGateAsk writes what the architect does about the design gate once the spec is written: a
 // request for approval of each document the deployment gates and a registration of each of their
 // steps, or, where it gates none, the one registration that opens the gate with no approval
-// (skills/legion-architect/references/design-gate.md, "The steps"). again is " again" for a tree
+// (skills/legion-architect/references/design-gate.md, "Which steps are gated" and "The armed
+// gate"). again is " again" for a tree
 // whose earlier generation's gate re-admission cleared, and empty for a tree registering a first
 // time.
 func writeGateAsk(task *strings.Builder, steps []record.DesignStep, again string) {

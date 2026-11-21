@@ -121,6 +121,10 @@
       "types": "./src/jj-attribution.ts",
       "bun": "./src/jj-attribution.ts"
     },
+    "./test/daemon-state": {
+      "types": "./test/daemon-state.ts",
+      "bun": "./test/daemon-state.ts"
+    },
     "./test/cross-imports": {
       "types": "./test/cross-imports.ts",
       "bun": "./test/cross-imports.ts"
@@ -128,6 +132,10 @@
     "./test/host-registry": {
       "types": "./test/host-registry.ts",
       "bun": "./test/host-registry.ts"
+    },
+    "./test/image-manifest": {
+      "types": "./test/image-manifest.ts",
+      "bun": "./test/image-manifest.ts"
     },
     "./test/omp-harness": {
       "types": "./test/omp-harness.ts",

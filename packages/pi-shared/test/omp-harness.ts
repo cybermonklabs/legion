@@ -16,6 +16,7 @@ import {
 } from "@legion/envoy-client/consumer-delivery";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { Terminal } from "@xterm/headless";
 import { linkOmpNatives } from "./omp-natives";
 
@@ -117,12 +118,15 @@ export function deliveryFor(
   };
 }
 
-/** What a relay frame needs of a NATS connection; `nats`'s `NatsConnection` is one. */
+/** What a relay frame needs of a NATS connection; `nats`'s `NatsConnection` is one. Its options,
+ * and their `headers`, are optional as `nats`'s own `request` declares them, which is what lets
+ * that connection, whose options take a fuller header set, be one; `sendRelayFrame` always
+ * sends both. */
 export interface RelayConnection {
   request(
     subject: string,
     payload: Uint8Array,
-    options: { readonly timeout: number; readonly headers: RelayFrameHeaders }
+    options?: { readonly timeout: number; readonly headers?: RelayFrameHeaders }
   ): Promise<{ readonly data: Uint8Array }>;
 }
 
@@ -291,15 +295,21 @@ export const DEFAULT_STANDIN_PROVIDERS: readonly StandinProvider[] = [
  * Writes the profile under `home`: the stand-in at `base` as its providers, each keyed by a
  * literal like a plain API-key caller, every model role on the first model of the first provider,
  * and every provider a devbox or runner could answer from without it disabled, so no turn reaches
- * a real model. `config` lines are appended to config.yml. `providers` names what the case's own
- * models are — a fallback chain needs a second model to step to — and defaults to the single
- * `standin/standin-model` every other case runs on.
+ * a real model. `config` lines are appended to config.yml. The option `providers` names what the
+ * case's own models are — a fallback chain needs a second model to step to — and defaults to the
+ * single `standin/standin-model` every other case runs on. The option `registered` names the
+ * providers a case's own extension registers at runtime (`pi.registerProvider`): models.yml
+ * carries none of them, but `enabledModels` must still name each, or the session lists none of its
+ * models and `set_model` answers "Model not found".
  */
 export async function writeStandinProfile(
   home: string,
   base: string,
   config: readonly string[] = [],
-  providers: readonly StandinProvider[] = DEFAULT_STANDIN_PROVIDERS
+  {
+    providers = DEFAULT_STANDIN_PROVIDERS,
+    registered = [],
+  }: { providers?: readonly StandinProvider[]; registered?: readonly string[] } = {}
 ): Promise<void> {
   const agent = path.join(home, ".omp", "agent");
   const first = providers[0];
@@ -338,6 +348,7 @@ export async function writeStandinProfile(
     [
       "enabledModels:",
       ...providers.map(({ provider }) => `  - ${provider}/*`),
+      ...registered.map((provider) => `  - ${provider}/*`),
       "disabledProviders: [amazon-bedrock, bedrock-mantle, google, google-vertex, ollama, llama.cpp, lm-studio]",
       "modelRoles:",
       ...["default", "smol", "slow", "plan", "task", "commit", "tiny", "vision", "advisor"].map(
@@ -648,7 +659,7 @@ export interface Refusal {
   readonly explanation?: string;
   /** Text the model streamed before the refusal, committed by the time it came. The host walks
    * its own fallback chain for a refusal that follows no output and ends the turn where it is for
-   * one that follows text (`coding-agent/src/session/turn-recovery.ts:1625-1653` and `:2693-2703`
+   * one that follows text (`coding-agent/src/session/turn-recovery.ts:1782-1816` and `:3153-3163`
    * at the pinned tag: committed text is replay-unsafe), so this is the one thing that decides
    * which of the two walks a case proves. */
   readonly text?: string;
@@ -657,7 +668,7 @@ export interface Refusal {
 /**
  * The Anthropic Messages stream of one refused turn: a `message_delta` whose `stop_reason` is
  * `refusal` and whose `stop_details` names the category
- * (`packages/ai/src/providers/anthropic.ts:3117-3126` at the pinned tag). The host reads it as an
+ * (`packages/ai/src/providers/anthropic.ts:3185-3193` at the pinned tag). The host reads it as an
  * assistant message with `stopReason: "error"`, `stopDetails.type: "refusal"` and an
  * `errorMessage` of `Refusal (<category>): <explanation>`, which is what
  * `classifyProviderTurn` (`@legion/pi-shared/provider-refusal`) calls a content filter. It
@@ -894,6 +905,15 @@ export interface LegionPaneOptions {
   readonly quietMs?: number;
   /** The one word the gateway answers the run-end self-check with; `PROCEEDING` by default. */
   readonly selfCheck?: string;
+  /** Gets each RPC frame omp prints, in order, in every life of the pane, for a case that waits on
+   * a frame of its own (a model change, a run's end that the host marks as not terminal). */
+  readonly onFrame?: (frame: object) => void;
+  /**
+   * Runs in the first life once every prompt's run has settled, before that life ends, with its
+   * RPC: a case that starts a run some other way than a prompt (an Envoy card, a background job's
+   * result) or that sends a prompt whose run the host does not settle as terminal does it here.
+   */
+  readonly whileUp?: (rpc: Rpc) => Promise<void>;
 }
 
 /** What a settled Legion pane left behind. */
@@ -939,6 +959,11 @@ export async function runLegionPane(
 ): Promise<LegionPane> {
   const { name, role, tree, issue } = options;
   const claimToken = `legion-${name}-${issue.toLowerCase()}-${role}`;
+  // The pane's secrets: the boot token its registration spends, the secret the stand-in daemon
+  // answers it with, and its Dispatch bearer.
+  const bootToken = fixtureSecret("boot");
+  const claimSecret = fixtureSecret("claim");
+  const dispatchToken = fixtureSecret("dsp");
   // The daemon's golden registration answer (`packages/daemon/internal/api`), so a field the
   // daemon adds to it reaches the stand-in's `claims/register`.
   const registered: Record<string, unknown> = JSON.parse(
@@ -1006,7 +1031,7 @@ export async function runLegionPane(
         issue,
         role,
         generation: 1,
-        secret: `${name}-secret`,
+        secret: claimSecret,
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
@@ -1020,10 +1045,15 @@ export async function runLegionPane(
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }
-    // The Envoy listener: registration, the role claim, and any read answer with an interest.
-    // A session takes its messages from its own consumer, relayed on its own deliver subject: a
-    // registration answered without one leaves the session deaf, which the plugin refuses rather
-    // than accept, and with it every claim the pane makes (INFRA-771).
+    // The Envoy listener, which serves `/v1/` and nothing else: registration, the role claim, and
+    // any other `/v1/` read answer with an interest. A path outside it is a route this stand-in
+    // does not serve, and it is refused. A case that needs another route, Dispatch's among them,
+    // serves it from `answer`. A session takes its messages from its own consumer, relayed on its
+    // own deliver subject: a registration answered without one leaves the session deaf, which the
+    // plugin refuses rather than accept, and with it every claim the pane makes (INFRA-771).
+    if (!url.pathname.startsWith("/v1/")) {
+      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
+    }
     const sessionID = typeof body.session_id === "string" ? body.session_id : "";
     return Response.json({
       session_id: sessionID,
@@ -1033,7 +1063,7 @@ export async function runLegionPane(
       ...deliveryFor(url.pathname, body, sessionID),
     });
   });
-  await writeStandinProfile(home, base, options.config ?? [], options.providers);
+  await writeStandinProfile(home, base, options.config ?? [], { providers: options.providers });
 
   /**
    * One life of the pane: omp started with `args` on its command line, given each prompt of
@@ -1043,7 +1073,11 @@ export async function runLegionPane(
    * the extension sends from `agent_end` instead starts its continuation after that frame, so
    * `quietMs` waits for the gateway to fall silent rather than for the frame.
    */
-  const live = async (prompts: readonly string[], args: readonly string[]): Promise<void> => {
+  const live = async (
+    prompts: readonly string[],
+    args: readonly string[],
+    whileUp?: (rpc: Rpc) => Promise<void>
+  ): Promise<void> => {
     let settled = Promise.withResolvers<void>();
     const rpc = spawnRpc(
       binary,
@@ -1062,9 +1096,7 @@ export async function runLegionPane(
         env: {
           ENVOY_URL: base,
           ENVOY_NATS_URL: options.nats,
-          ...(options.dispatch
-            ? { DISPATCH_URL: base, DISPATCH_TOKEN: `${name}-dispatch-token` }
-            : {}),
+          ...(options.dispatch ? { DISPATCH_URL: base, DISPATCH_TOKEN: dispatchToken } : {}),
           ...((options.legion ?? true)
             ? {
                 LEGION_DAEMON_URL: base,
@@ -1072,7 +1104,7 @@ export async function runLegionPane(
                 LEGION_TREE: tree,
                 LEGION_ISSUE: issue,
                 LEGION_GENERATION: "1",
-                LEGION_BOOT_TOKEN: `${name}-boot`,
+                LEGION_BOOT_TOKEN: bootToken,
                 LEGION_STATE_DIR: state,
                 LEGION_WORKSPACE: workspace,
               }
@@ -1080,6 +1112,7 @@ export async function runLegionPane(
           ...options.env,
         },
         onFrame: (frame) => {
+          options.onFrame?.(frame);
           if (
             "type" in frame &&
             frame.type === "agent_end" &&
@@ -1116,10 +1149,11 @@ export async function runLegionPane(
         ]);
       }
     }
+    if (whileUp !== undefined) await Promise.race([whileUp(rpc), rpc.closed]);
     await rpc.end();
   };
   const prompts = typeof options.prompt === "string" ? [options.prompt] : options.prompt;
-  await live(prompts, []);
+  await live(prompts, [], options.whileUp);
 
   const turns = (): Request[] =>
     requests.filter(

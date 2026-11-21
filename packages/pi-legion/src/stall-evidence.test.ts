@@ -18,6 +18,7 @@ import {
   type StallWatchdog,
   type StallWatchdogTeller,
 } from "@legion/pi-shared/stall-watchdog";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 // The import above is this file's merge-base check: on the merge base there is no
 // `./stall-evidence`, so every test here fails to resolve rather than passing vacuously.
 import type { LegionSessionKind } from "./classify";
@@ -63,7 +64,10 @@ async function child(environment: Record<string, string>): Promise<number> {
   spawned.push(running);
   // The pid is live the moment `spawn` returns, but the kernel carries the process and its
   // environment a moment later. What is awaited is that reading, not a guessed delay: this case
-  // is about a real process tree, so there is no clock to fake.
+  // is about a real process tree, so there is no clock to fake. The command awaited is the one
+  // `exec` leaves, `sleep 300` exactly: the shell's own line, `sh -c exec sleep 300`, names it
+  // too and is read first (252 of 300 spawns, measured), and a reading taken while `exec` runs
+  // has no argv at all, so the case would read the process as `[sh]`.
   await until(async () => {
     const scan = await readStallProcesses();
     if (!scan.read) return false;
@@ -71,7 +75,7 @@ async function child(environment: Record<string, string>): Promise<number> {
     return (
       found !== undefined &&
       found.environment.PI_TOOL_CALL_ID === environment.PI_TOOL_CALL_ID &&
-      found.command.includes("sleep 300")
+      found.command === "sleep 300"
     );
   });
   return running.pid;
@@ -87,11 +91,12 @@ async function until(ready: () => Promise<boolean>): Promise<void> {
 }
 
 test("the tree names every process of the agent, read from this pod's own /proc", async () => {
+  const claimSecret = fixtureSecret("claim");
   const pid = await child({
     PI_TOOL_CALL_ID: "toolu_stuck",
     // A credential of the kind an environment routinely holds: the reader keeps two names and
     // this is not one of them, so nothing downstream can write it anywhere.
-    LEGION_CLAIM_SECRET: "a-secret-nothing-may-record",
+    LEGION_CLAIM_SECRET: claimSecret,
   });
 
   const scan = await readStallProcesses();
@@ -123,7 +128,7 @@ test("the tree names every process of the agent, read from this pod's own /proc"
   // What the evidence carries: the same processes, with no environment and no parent.
   const tree = stallProcessTree(scan);
   if (!tree.read) throw new Error("the tree was read and then reported unread");
-  expect(JSON.stringify(tree)).not.toContain("a-secret-nothing-may-record");
+  expect(JSON.stringify(tree)).not.toContain(claimSecret);
   expect(tree.processes.find((candidate) => candidate.pid === pid)).toEqual({
     pid,
     command: found?.command as string,
@@ -185,6 +190,9 @@ function evidenceOf(over: Partial<StallEvidence> = {}): StallEvidence {
   };
 }
 
+/** The claim's registration secret: random, as the daemon's is, since the pane holds it. */
+const CLAIM_SECRET = fixtureSecret("claim");
+
 function claimOf(over: Partial<ClaimCapability> = {}): ClaimCapability {
   return {
     sessionID: "ses_worker",
@@ -193,7 +201,7 @@ function claimOf(over: Partial<ClaimCapability> = {}): ClaimCapability {
     tree: "INFRA-1000",
     issue: "INFRA-1274",
     role: "implementer",
-    secret: "claim-secret",
+    secret: CLAIM_SECRET,
     ...over,
   };
 }
@@ -325,9 +333,9 @@ function tellerRig(
       },
     claim: () => ("claim" in options ? options.claim : claimOf()),
     project: options.project ?? "legion",
-    readState: async () => {
+    readRecord: async (issue) => {
       if (typeof state.state === "string") throw new Error(state.state);
-      return state.state;
+      return state.state.issues[issue];
     },
     publisher: () => (state.envoy ? publish : undefined),
     appendEntry: (customType, data) => {

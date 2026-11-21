@@ -175,6 +175,34 @@ func TestTheLauncherCommandRefusesAServiceAccountWithoutItsSessionDatabase(t *te
 	}
 }
 
+// A writer audience needs the roles-dir form: the single-role form runs its agent in the
+// container's own namespaces, where the writer token would be in the agent's view. So the
+// single-role form told the four other session flags and a writer audience of the right form
+// refuses before it dials anything, and names the roles-dir form. A launcher that did not know
+// the flag would exit 2 on its usage, and one that parsed it and dropped it would dial the
+// unreachable daemon until its context ends.
+func TestTheLauncherCommandRefusesAWriterAudienceInTheSingleRoleForm(t *testing.T) {
+	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
+	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	code := run(ctx, []string{
+		"legion", "launcher", "--connect", "tcp://127.0.0.1:1", "--sandbox", "s", "--pod-uid", "p",
+		"--token-file", token, "--role", "controller", "--private-dir", t.TempDir(),
+		"--session-instance", "example-project:us-central1:example-instance", "--session-database", "legion_sessions",
+		"--session-user", "legion-sessions@example-project.iam",
+		"--session-impersonate-service-account", "legion-sessions@example-project.iam.gserviceaccount.com",
+		"--session-writer-audience", "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/example-pool/providers/example-provider",
+	}, &stdout, &stderr)
+	const want = "launcher: --session-writer-audience needs the roles-dir form (--roles-dir)"
+	if code != 1 || !strings.Contains(stderr.String(), want) {
+		t.Fatalf("exit %d, stderr %q; want 1 naming %q", code, stderr.String(), want)
+	}
+}
+
 // The metadata endpoint is a microVM issue pod's alone and named whole: both of its flags, with
 // --microvm and --roles-dir. Each other mixture is refused before anything is dialled or listened
 // on, naming what it lacks, which proves each flag reaches the launcher: one it did not know would
@@ -218,13 +246,14 @@ func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMIssuePod(t *
 
 // `legion launcher role-init` is the launcher's own, hidden from its usage, and refuses to run
 // anywhere but as the init of a role's new namespaces: run by hand it would otherwise mount a
-// role's private view over the caller's own. Every refusal, its usage's included, is a failure
-// before the shim started, so it exits launcher.RoleInitSetupFailedExit, the one status the
-// launcher reports as a setup failure, never the 2 a panic exits with.
+// role's private view over the caller's own. Its help is read on stdout, where cobra prints it
+// (newRoot), and on stderr. Every refusal, its usage's included, is a failure before the shim
+// started, so it exits launcher.RoleInitSetupFailedExit, the one status the launcher reports as a
+// setup failure, never the 2 a panic exits with.
 func TestRoleInitIsHiddenAndRefusesToRunOutsideARolesNamespaces(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if code := run(context.Background(), []string{"legion", "launcher", "--help"}, &stdout, &stderr); code != 0 || strings.Contains(stderr.String(), "role-init") {
-		t.Fatalf("launcher --help: exit %d, %q; want its usage without the hidden role-init", code, stderr.String())
+	if code := run(context.Background(), []string{"legion", "launcher", "--help"}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "Usage:") || strings.Contains(stdout.String()+stderr.String(), "role-init") {
+		t.Fatalf("launcher --help: exit %d, stdout %q, stderr %q; want its usage on stdout without the hidden role-init", code, stdout.String(), stderr.String())
 	}
 	stderr.Reset()
 	if code := run(context.Background(), []string{"legion", "launcher", "role-init", "--roles-dir", "/r", "--role", "a", "--status-fd", "3"}, &stdout, &stderr); code != launcher.RoleInitSetupFailedExit {
@@ -239,4 +268,235 @@ func TestRoleInitIsHiddenAndRefusesToRunOutsideARolesNamespaces(t *testing.T) {
 	if code != launcher.RoleInitSetupFailedExit || !strings.Contains(stderr.String(), "role-init: not the init of a PID namespace of its own") {
 		t.Fatalf("role-init outside a role's namespaces: exit %d, %q; want a refusal with exit %d", code, stderr.String(), launcher.RoleInitSetupFailedExit)
 	}
+}
+
+// `legion launcher volume-trim-delete` is the launcher's second hidden subcommand, the deleter
+// one sweep of the pod's cache trimmer makes its removals through. It takes every directory it
+// covers — the roles directory, the directory the container mounts the home's volumes under and
+// the home, which the trimmer passes it as role-init is given them — and it refuses to run
+// anywhere but as the init of a PID namespace of its own: run by hand it holds no descriptor of
+// the volume, and a flag it does not know would end it with its usage and exit 2 instead of the
+// refusal below. Its help is read on stdout, where cobra prints it (newRoot), and on stderr. The
+// command line the launcher itself writes, with all four directories of the cover, is the case
+// after this one.
+func TestVolumeTrimDeleteIsHiddenAndTakesEveryDirectoryItCovers(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"legion", "launcher", "--help"}, &stdout, &stderr)
+	if code != 0 || !strings.Contains(stdout.String(), "Usage:") || strings.Contains(stdout.String()+stderr.String(), "volume-trim-delete") {
+		t.Fatalf("launcher --help: exit %d, stdout %q, stderr %q; want its usage on stdout without the hidden volume-trim-delete", code, stdout.String(), stderr.String())
+	}
+	stderr.Reset()
+	code = run(context.Background(), []string{
+		"legion", "launcher", "volume-trim-delete",
+		"--roles-dir", "/var/run/legion/roles", "--home-mounts", "/var/run/legion/home", "--home", "/home/legion",
+	}, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "volume-trim-delete: not the init of a PID namespace of its own") {
+		t.Fatalf("volume-trim-delete outside its own namespaces: exit %d, %q; want exit 1 and that refusal, with every directory it covers taken as a flag", code, stderr.String())
+	}
+}
+
+// The command line the launcher runs its deleter with is read by `legion launcher
+// volume-trim-delete` whole: every flag the trimmer writes for the pod's cover
+// (launcher.VolumeTrimDeleteArgv, which answers what trimDeleteLaunch builds) is one cobra reads
+// for that command, so the words after `launcher volume-trim-delete` reach the refusal of a
+// process that is not the init of a PID namespace of its own, exit 1. A flag the command does not
+// register would end it with its usage and exit 2, and every sweep of the pod would then delete
+// nothing. The launcher package reads the same command line back with RoleCoverFlags on a
+// flag.FlagSet (TestTheDeletersCommandLineNamesEveryDirectoryItCovers); this case reads it
+// through the command itself.
+func TestTheLaunchersCommandLineForItsDeleterIsOneVolumeTrimDeleteReads(t *testing.T) {
+	cover := launcher.RoleCover{
+		RolesDir: "/var/run/legion/roles", Home: "/home/legion",
+		HomeMounts: "/var/run/legion/home", FixedRoot: "/var/run/legion",
+	}
+	argv, err := launcher.VolumeTrimDeleteArgv(cover)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(argv) < 3 || argv[1] != "launcher" || argv[2] != launcher.VolumeTrimDeleteSubcommand {
+		t.Fatalf("the launcher runs its deleter as %q, want this binary's launcher %s", argv, launcher.VolumeTrimDeleteSubcommand)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), append([]string{"legion", "launcher", launcher.VolumeTrimDeleteSubcommand}, argv[3:]...), &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "volume-trim-delete: not the init of a PID namespace of its own") {
+		t.Fatalf("legion launcher volume-trim-delete %q, the launcher's own command line: exit %d, %q; want exit 1 and the refusal of a process that is not the init of a PID namespace of its own, every flag read", argv[3:], code, stderr.String())
+	}
+}
+
+// Every line the launcher writes passes the URL rule. A far side at --connect that is no daemon
+// answers the hello with a line that is no frame, which the launcher quotes in the line that says
+// the connection failed: in the controller pod's container on the launcher's own stderr, in an
+// issue pod's behind the role's name. There the test database's script also writes a DSN with a
+// user name and a query, which the launcher copies into the container's log behind the script's
+// name. And a --token-file the launcher cannot read is quoted in its refusal. Each line keeps the
+// URL's host and path, and no user name or query reaches the container's log.
+func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
+	connect := notADaemon(t, "moved to https://legion-reader@d.example/launch?token=planted-query-token-4")
+	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
+	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	rolesDir := t.TempDir()
+	for _, name := range []string{"launcher", "private"} {
+		if err := os.MkdirAll(filepath.Join(rolesDir, "tester", name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(rolesDir, "tester", "launcher", "LAUNCHER_TOKEN"), []byte("token-tester\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	// The test database's script, first on PATH: it names a server that does not answer, by a DSN
+	// with a user name and a query, and fails.
+	bin := t.TempDir()
+	script := "#!/bin/sh\necho 'the test database at postgresql://legion-reader@127.0.0.1:5433/legion_test?token=planted-query-token-5 does not answer'\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "legion-testpg"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, tc := range []struct {
+		name string
+		args []string
+		// until is what stderr holds once every line under test is written, after which the
+		// container is stopped; "" for a refusal, which ends the command by itself.
+		until string
+		code  int
+		// shown is each line as the log must show it; planted is each query's token.
+		shown, planted []string
+	}{
+		{
+			name:    "the controller pod's container",
+			args:    []string{"--connect", connect, "--token-file", token, "--role", "controller", "--private-dir", t.TempDir()},
+			until:   "launcher: daemon connection:",
+			shown:   []string{`launcher: daemon connection: hello acknowledgement: shimwire: line is not a JSON object: "moved to https://d.example/launch"`},
+			planted: []string{"planted-query-token-4"},
+		},
+		{
+			name:  "an issue pod's container",
+			args:  []string{"--connect", connect, "--roles-dir", rolesDir, "--role", "tester", "--test-postgres"},
+			until: "tester: launcher: daemon connection:",
+			shown: []string{
+				`tester: launcher: daemon connection: hello acknowledgement: shimwire: line is not a JSON object: "moved to https://d.example/launch"`,
+				"legion-testpg: the test database at postgresql://127.0.0.1:5433/legion_test does not answer",
+			},
+			planted: []string{"planted-query-token-4", "planted-query-token-5"},
+		},
+		{
+			name: "a token file it cannot read",
+			args: []string{"--connect", connect, "--token-file", "https://legion-reader@d.example/token?token=planted-query-token-6", "--role", "controller", "--private-dir", t.TempDir()},
+			code: 1,
+			// The query runs to the white space after it, so the ":" the line writes there goes
+			// with it.
+			shown:   []string{"launcher: token file https://d.example/token open https://d.example/token no such file"},
+			planted: []string{"planted-query-token-6"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var stdout, stderr syncBuffer
+			exited := make(chan int, 1)
+			go func() {
+				exited <- run(ctx, append([]string{"legion", "launcher", "--sandbox", "s", "--pod-uid", "p", "--stop-grace", "2s"}, tc.args...), &stdout, &stderr)
+			}()
+			if tc.until != "" {
+				deadline := time.Now().Add(10 * time.Second)
+				for !strings.Contains(stderr.String(), tc.until) {
+					if time.Now().After(deadline) {
+						t.Fatalf("the launcher logged %q, want %q", stderr.String(), tc.until)
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				cancel()
+			}
+			var code int
+			select {
+			case code = <-exited:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the launcher did not exit")
+			}
+			logged := stdout.String() + stderr.String()
+			if code != tc.code {
+				t.Fatalf("exit %d, want %d; the launcher wrote %q", code, tc.code, logged)
+			}
+			for _, want := range tc.shown {
+				if !strings.Contains(logged, want) {
+					t.Errorf("the launcher wrote %q, want %q", logged, want)
+				}
+			}
+			for _, credential := range append([]string{"legion-reader"}, tc.planted...) {
+				if strings.Contains(logged, credential) {
+					t.Errorf("the launcher wrote %q, which holds %q", logged, credential)
+				}
+			}
+		})
+	}
+}
+
+// A line the launcher quotes is cut to 80 runes (shimwire.Decode's refusal of a line that is no
+// frame). A cut made before the URL rule would stop inside a URL's userinfo, before its "@", where
+// the rule finds no userinfo in what is left and keeps the start of the user name and the password
+// as the URL's host. The launcher writes no part of either.
+func TestTheLauncherCommandWritesNoPartOfAUserinfoCutBeforeItsAt(t *testing.T) {
+	// The user name and the password go into the URL as the other tests of this package build one,
+	// so the pre-push leak check reads no credential in the source. The line's first 80 runes end
+	// inside the password, before the "@".
+	const user, pass = "legion-reader", "demopass-not-a-secret-48c1-48c1-48c1-48c1-48c1-48c1"
+	connect := notADaemon(t, strings.Replace("moved to https://d.example/launch", "://", "://"+user+":"+pass+"@", 1))
+	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
+	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var stdout, stderr syncBuffer
+	exited := make(chan int, 1)
+	go func() {
+		exited <- run(ctx, []string{"legion", "launcher", "--sandbox", "s", "--pod-uid", "p", "--stop-grace", "2s",
+			"--connect", connect, "--token-file", token, "--role", "controller", "--private-dir", t.TempDir()}, &stdout, &stderr)
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(stderr.String(), "launcher: daemon connection:") {
+		if time.Now().After(deadline) {
+			t.Fatalf("the launcher logged %q, want its failed daemon connection", stderr.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-exited:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the launcher did not exit")
+	}
+	logged := stdout.String() + stderr.String()
+	for _, credential := range []string{user, pass[:12]} {
+		if strings.Contains(logged, credential) {
+			t.Errorf("the launcher wrote %q, which holds %q", logged, credential)
+		}
+	}
+}
+
+// notADaemon is a far side at a launcher's --connect that is no daemon: it answers every hello
+// with answer, a line that is no frame, and hangs up. It answers the tcp:// address to dial.
+func notADaemon(t *testing.T, answer string) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				if _, err := bufio.NewReader(conn).ReadBytes('\n'); err == nil {
+					_, _ = conn.Write([]byte(answer + "\n"))
+				}
+			}()
+		}
+	}()
+	return "tcp://" + listener.Addr().String()
 }

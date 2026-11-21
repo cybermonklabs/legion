@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
@@ -42,14 +43,14 @@ import (
 const controllerSecretVariable = "LEGION_CONTROLLER_SECRET"
 
 // controllerPersonTradeVar is the TypeScript broker client's setting that turns its person trade
-// off (PERSON_TRADE_VAR, packages/broker-client/src/signins.ts), which controllerEnvironment sets
+// off (PERSON_TRADE_VAR, packages/cipher-client/src/signins.ts), which controllerEnvironment sets
 // to "off" under every configuration. That client trades the controller's own Dispatch credential
 // under `dispatch_token_broker`, and its Envoy credential wherever no bearer names one, and on a
 // machine where the operator ran `agent-secrets login` it would trade that person's sign-in, which
 // the controller finds under the operator's HOME, the HOME it keeps: the controller would write
 // Dispatch and speak on Envoy in its operator's name. agent-secrets neither reads this variable
 // nor strips it (its name lies outside the AGENT_SECRETS_ prefix that the exec form drops from
-// its child: sessionIdentityVars and buildChildEnv, packages/envoy/cmd/agent-secrets/main.go), so
+// its child: sessionIdentityVars and buildChildEnv, packages/envoy/cmd/cipher/main.go), so
 // the controller's own agent-secrets reads are signed exactly as they are without it, and a
 // `dispatch` command it runs under `agent-secrets NAME --` keeps the setting.
 const controllerPersonTradeVar = "PERSON_SIGNIN_TRADE"
@@ -207,9 +208,12 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	// controller carrying one for a controller the daemon launched (`controller: daemon`). So are
 	// the Slack channels the daemon tells its own controller (LEGION_SLACK_CHANNELS): only that
 	// controller hears a project's mentions, and an inherited list is no project's word for this
-	// one. A machine that holds its Dispatch credential at the broker drops the operator's own
-	// Dispatch bearer and pointer as well: either would be presented in place of the traded token
-	// as a bearer Dispatch refuses (controllerDispatchBroker). The drop is not the whole of it — the
+	// one. So is OMP_SESSION_EXCLUSIVE (runtime.SessionExclusiveVariable), which a resumed pane is
+	// told: this controller resumes no recorded session, and an inherited value would stop it where
+	// Oh My Pi would otherwise move a held session to a new id. A machine that holds its Dispatch
+	// credential at the broker drops the operator's own Dispatch bearer and pointer as well: either
+	// would be presented in place of the traded token as a bearer Dispatch refuses
+	// (controllerDispatchBroker). The drop is not the whole of it — the
 	// operator's HOME is the controller's, and the envoy.json there holds that person's
 	// `dispatch.token`, which no delete here reaches — so the controller's set carries
 	// DISPATCH_TOKEN_BROKER, the session's word that its Dispatch credential is this machine's
@@ -228,6 +232,7 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	delete(env, "LEGION_BOOT_TOKEN")
 	delete(env, "LEGION_BOOT_TOKEN_FILE")
 	delete(env, "LEGION_SLACK_CHANNELS")
+	delete(env, runtime.SessionExclusiveVariable)
 	if cfg.DispatchTokenBroker {
 		delete(env, "DISPATCH_TOKEN")
 		delete(env, "DISPATCH_TOKEN_FILE")
@@ -251,7 +256,7 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 		omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation), controllerDir)
 	secret, designSteps, err := probeAndMint(ctx, cfg.DaemonURL, daemon.ControllerProbe{
 		Omp: invocation, Prefix: cfg.OmpLaunchPrefix, Env: env, WorkDir: controllerDir, Stdin: os.Stdin, Stderr: stderr,
-		Contract: api.DaemonAPIVersion, Log: slog.New(slog.NewTextHandler(stderr, nil)),
+		Contract: api.DaemonAPIVersion, Log: slog.New(slog.NewTextHandler(stderr, redact.HandlerOptions(nil))),
 	}, operatorToken)
 	if err != nil {
 		removeDirs(created)
@@ -486,7 +491,8 @@ func probeAndMint(ctx context.Context, daemonURL string, probe daemon.Controller
 // An empty or all-refused mapping is never a refusal: this route cannot tell a daemon with no
 // workflow (which always serves that shape) from a workflow whose mapping a refresh emptied, and
 // refusing either would block the operator action that recovers the project (admitting work,
-// AGENTS.md "Handover"). It refuses only an unusable read: a body without a `repositories` object
+// docs/site/src/content/docs/legion/concepts.md, "Admission and the `legion` label"). It refuses
+// only an unusable read: a body without a `repositories` object
 // (absent or null, a shape no conforming daemon serves) and a mapped entry that is not
 // `owner/name`.
 func checkControllerRepositories(ctx context.Context, daemonURL string) error {

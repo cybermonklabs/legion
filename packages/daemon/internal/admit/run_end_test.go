@@ -250,7 +250,9 @@ func (wayOut) Apply(ctx context.Context, tx pgx.Tx, _ intake.Fact) (intake.Resul
 // issues each run a step, no run is left open where its issue no longer stands, nor in a tree whose
 // run is over, but for a merge that can still land there. Each row that takes an issue out says
 // which, and the row fails when the fact did not take it out, so a row cannot quietly stop testing
-// its way out. A kind of fact the table has no row for fails by name.
+// its way out. A row whose fact is no way out, though it acts on an issue standing in a step, says
+// which issue it keeps there, and fails when that issue's step moved or its run ended. A kind of
+// fact the table has no row for fails by name.
 func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 	type row struct {
 		name   string
@@ -259,7 +261,12 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 		arrange func(t *testing.T, pool *pgxpool.Pool, admission *Admission, engine intake.Handler)
 		fact    intake.Fact
 		// leaves is the issue the fact takes out of the step it stands in, "" for none.
-		leaves       string
+		leaves string
+		// keeps is the issue the fact acts on and leaves in the step it stands in, its run still
+		// open, "" for none, and then what the fact must have written on that issue's pull request,
+		// nil for nothing to check.
+		keeps        string
+		then         func(t *testing.T, pr record.PullRequest)
 		lingerClosed bool
 	}
 	none := func(*testing.T, *pgxpool.Pool, *Admission, intake.Handler) {}
@@ -288,6 +295,26 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 		}, source: "github", fact: intake.PullRequestMerged{Repo: "acme/widgets", Number: 5, MergeSHA: "merge-5", HeadSHA: "head-5"}, leaves: awaiting}},
 		"LingerExpired": {{name: "the linger's close stops a merge that can no longer land", arrange: parked, source: "timer",
 			fact: intake.LingerExpired{Issue: finishedRoot, Generation: lingerOfRoot}, lingerClosed: true}},
+		// A head that conflicts with its base moves no issue (dispatch://INFRA-4374): the second
+		// read that confirms the conflict asks the implementer to merge the base forward while the
+		// merger keeps merging's step (workflow's mergeForward, which writes no transition), and
+		// the one that answers no state releases the first read (workflow's conflictConfirmDone).
+		// Neither ends the step's run.
+		"PullRequestMergeability": {{name: "a confirmed conflict asks the merge forward and keeps the step", arrange: conflictReadOfAwaiting,
+			source: "github", fact: intake.PullRequestMergeability{Repo: "acme/widgets", Number: 5, Base: "main", HeadSHA: "head-5",
+				Mergeable: record.MergeabilityConflicting, MergeState: record.MergeStateDirty, ReadAt: fixedNow,
+				Rules: &record.BaseRules{Required: []string{"ci"}}}, keeps: awaiting, then: func(t *testing.T, pr record.PullRequest) {
+				if pr.MergeForward == nil || pr.MergeForward.Head != "head-5" || pr.MergeForward.Phase != phase.Merging {
+					t.Fatalf("the merge forward of %s = %+v, want one asked of head-5 in merging", awaiting, pr.MergeForward)
+				}
+			}}},
+		"ConflictConfirmDone": {{name: "a second read that answers no state releases the first and keeps the step", arrange: conflictReadOfAwaiting,
+			source: "outbox", fact: intake.ConflictConfirmDone{Issue: awaiting, Number: 5, Head: "head-5", FirstReadAt: awaitingFirstRead}, keeps: awaiting,
+			then: func(t *testing.T, pr record.PullRequest) {
+				if pr.ConflictRead != nil || pr.MergeForward != nil {
+					t.Fatalf("%s's pull request holds first read %+v and merge forward %+v, want the first read released and nothing asked", awaiting, pr.ConflictRead, pr.MergeForward)
+				}
+			}}},
 	}
 	kinds := appliedFactKinds(t)
 	for _, kind := range kinds {
@@ -305,9 +332,12 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 			t.Run(kind+"/"+tc.name, func(t *testing.T) {
 				pool, admission, engine := runningFinishingTree(t)
 				tc.arrange(t, pool, admission, engine)
-				var before record.Issue
+				var before, kept record.Issue
 				if tc.leaves != "" {
 					before = issue(t, pool, tc.leaves)
+				}
+				if tc.keeps != "" {
+					kept = issue(t, pool, tc.keeps)
 				}
 				source := tc.source
 				if source == "" {
@@ -320,6 +350,29 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 					after := issue(t, pool, tc.leaves)
 					if stepPlaces[record.StandsAt(after)] == stepPlaces[record.StandsAt(before)] && after.Generation == before.Generation {
 						t.Fatalf("%s left %s in %s at generation %d, want it out of the step it stood in", kind, tc.leaves, record.StandsAt(after), after.Generation)
+					}
+				}
+				if tc.keeps != "" {
+					after := issue(t, pool, tc.keeps)
+					if record.StandsAt(after) != record.StandsAt(kept) || after.Generation != kept.Generation {
+						t.Fatalf("%s moved %s from %s to %s, want it kept in the step it stood in", kind, tc.keeps, record.StandsAt(kept), record.StandsAt(after))
+					}
+					var open int
+					if err := pool.QueryRow(context.Background(), `select count(*) from step_starts where issue = $1 and run = 'open'`, tc.keeps).Scan(&open); err != nil {
+						t.Fatalf("read the open runs of %s: %v", tc.keeps, err)
+					}
+					if open != 1 {
+						t.Fatalf("%s left %s with %d open runs, want the run of the step it stands in still open", kind, tc.keeps, open)
+					}
+					t.Logf("%s kept %s in %s with its run open", kind, tc.keeps, record.StandsAt(after))
+					if tc.then != nil {
+						inTx(t, pool, func(tx pgx.Tx) {
+							pr, err := record.NewStore().PullRequest(context.Background(), tx, tc.keeps)
+							if err != nil || pr == nil {
+								t.Fatalf("read the pull request of %s = %v, %v", tc.keeps, pr, err)
+							}
+							tc.then(t, *pr)
+						})
 					}
 				}
 				assertNoRunOpenWhereItsIssueNoLongerStands(t, pool, kind+"/"+tc.name, fixedNow, tc.lingerClosed)
@@ -349,7 +402,7 @@ func zeroFact(t *testing.T, kind string) intake.Fact {
 		intake.PullRequestSynchronized{}, intake.Push{}, intake.BasePush{}, intake.PullRequestChecks{},
 		intake.PullRequestMergeability{}, intake.PullRequestReview{}, intake.PullRequestClosed{}, intake.PullRequestDequeued{},
 		intake.MergeQueueReadDone{}, intake.PullRequestMissing{}, intake.ClaimReady{}, intake.ClaimFailed{},
-		intake.SessionLost{}, intake.SessionStoreFault{}, intake.MemoryGuardKill{}, intake.RetryOrEscalate{},
+		intake.SessionLost{}, intake.SessionStoreFault{}, intake.MemoryGuardKill{}, intake.VolumeNearFull{}, intake.RetryOrEscalate{},
 		intake.RestartPhase{}, intake.SignOff{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{},
 		intake.CheckReport{}, intake.CheckLookEnded{}, intake.CheckWakeDue{}, intake.CheckBound{},
 		intake.ListenerWake{}, intake.PodBackstopDue{}, intake.WorkerSilent{}, intake.WorkerBackgroundStalled{},

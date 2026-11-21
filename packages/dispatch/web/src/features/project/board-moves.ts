@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import { ApiError, issuePatchRequest } from "../../api/client";
 import { boardMoveMutationKey } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { type IssueStatus, moveIssue, moveIssueToLane, type PriorityLane } from "./board-model";
 import { projectIssuesQueryKey } from "./issue-filters";
@@ -17,6 +18,21 @@ const everyIssue = () => true;
 export interface BoardMoveVariables {
   readonly input: UpdateIssueInput;
   readonly key: string;
+}
+
+/** What the board says of the move of `key` that did not land. One the reader stopped may have
+ *  been made: the card goes back to where the page last read it, and the read that follows shows
+ *  where Dispatch holds it. */
+function moveFailure(cause: unknown, key: string): string {
+  if (cause instanceof SendStoppedError) {
+    return stoppedWriteNote(`the move of ${key}`, "made", {
+      anew: "The board is read again from Dispatch, and moving the card again sends a new move.",
+    });
+  }
+  if (cause instanceof ApiError) {
+    return cause.code === "RANK_INPUT" ? staleBoardMessage : cause.message;
+  }
+  return "Could not move the card.";
 }
 
 /**
@@ -91,13 +107,7 @@ export function useBoardMoves(
         }
       } catch (cause) {
         queryClient.setQueryData(queryKey, previous);
-        setError(
-          cause instanceof ApiError
-            ? cause.code === "RANK_INPUT"
-              ? staleBoardMessage
-              : cause.message
-            : "Could not move the card."
-        );
+        setError(moveFailure(cause, key));
       } finally {
         await queryClient.invalidateQueries({ queryKey });
       }

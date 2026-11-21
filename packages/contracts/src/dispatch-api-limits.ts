@@ -341,16 +341,38 @@ export const DELIVERY_DUPLICATE_WINDOW_HOURS = DELIVERY_DUPLICATE_WINDOW_MS / 3_
 
 /**
  * The cause a delivery attempt records when the listener never answered its send. The listener
- * publishes before it answers, so this is the one failure that may already have reached the
- * recipient — which is what makes re-sending in another mode a genuine second delivery, and what
- * the dashboard keys that wording on. Generated into Go as `contracts.ReceiptTimeoutCause`, so
- * the string the server writes and the string the dashboard recognises are one literal.
+ * publishes before it answers, so a send whose answer missed the window may already have reached
+ * the recipient — which is what makes re-sending in another mode a genuine second delivery, and
+ * what the dashboard keys that wording on (`POSSIBLY_DELIVERED_CAUSES`). Generated into Go as
+ * `contracts.ReceiptTimeoutCause`, so the string the server writes and the string the dashboard
+ * recognises are one literal.
  *
  * It is the CAUSE only: the advice that follows from it expires with
  * `DELIVERY_DUPLICATE_WINDOW_MS`, so it is composed at render time and never stored.
  */
 export const RECEIPT_TIMEOUT_CAUSE =
   "The listener didn't answer within the send window; the message may already have been delivered.";
+
+/**
+ * The cause a delivery attempt records when the listener answered its send 503 with the code that
+ * says the message may be stored (`maybe_stored`): the listener published it and the message bus
+ * never acknowledged the publish, so it may already have reached the recipient, as a receipt
+ * timeout may. It is a cause of its own so the attempt's record names what happened - the listener
+ * answered, and could not confirm the store - and the dashboard words it as such while giving it
+ * the receipt timeout's possible-second-delivery warning (`POSSIBLY_DELIVERED_CAUSES`). Generated
+ * into Go as `contracts.StoreUnconfirmedCause`.
+ *
+ * It is the CAUSE only, as `RECEIPT_TIMEOUT_CAUSE` is.
+ */
+export const STORE_UNCONFIRMED_CAUSE =
+  "The listener sent the message but could not confirm it was stored; the message may already have been delivered.";
+
+/** The causes whose send may already have reached the recipient, so that re-sending it in another
+ * mode delivers it a second time: the one list the dashboard keys that warning on. */
+export const POSSIBLY_DELIVERED_CAUSES: readonly string[] = [
+  RECEIPT_TIMEOUT_CAUSE,
+  STORE_UNCONFIRMED_CAUSE,
+];
 
 /** `SearchResponse.degraded`'s one value today: meaning search could not run for this request (no
  * embedder configured, the query's own embedding timed out, or the model service answered an
@@ -374,16 +396,24 @@ export const SEARCH_OPERATORS = [
 export type SearchOperator = (typeof SEARCH_OPERATORS)[number];
 
 /** What a `SessionAnswer` is to the session Dispatch delivered it to, one snake_case wire value per
- *  relation, each spelling the phrase a reader prints: a person answered the session's ask,
- *  declined to answer it, replied in its ask's thread, replied in a comment thread it wrote in,
- *  commented on a document it wrote, commented on an issue routed to it, mentioned it, sent it a
- *  message (direct, on an issue, or a broadcast's copy), or replied to its message. A decline is
- *  the item of the new kind `declined`, whose `text` is the person's own note and whose
- *  `dispatch_words` is what Dispatch wrote beside it, so a reader draws the two apart. Mirrored in
- *  Go as the `model.SessionAnswerRelation*` constants, in this order. */
+ *  relation, each spelling the phrase a reader prints. A session owns an ask when it asked it or
+ *  follows it, and only an owner reads `answered_your_ask`, `declined_your_ask` or
+ *  `replied_on_your_ask`. In order: a person answered the session's ask; answered an ask the
+ *  session does not own, which reached it for another reason (the issue's route or its claim);
+ *  declined to answer the session's ask; declined to answer an ask the session does not own;
+ *  replied in the thread of the session's ask; replied in a comment thread it wrote in; commented
+ *  on a document it wrote; commented on an issue that reaches it (its route, its claim, or a
+ *  credit on its primary document); mentioned it; sent it a message (direct, on an issue, or a
+ *  broadcast's copy); or replied to its message. A reply in the thread of an ask the session does
+ *  not own carries the relation of the reason that delivered it. A decline is the item of the
+ *  kind `declined`, whose `text` is the person's own note; on `declined_your_ask` alone,
+ *  `dispatch_words` is what Dispatch wrote beside it for the asking agent, so a reader draws the
+ *  two apart. Mirrored in Go as the `model.SessionAnswerRelation*` constants, in this order. */
 export const SESSION_ANSWER_RELATIONS = [
   "answered_your_ask",
+  "answered_an_ask",
   "declined_your_ask",
+  "declined_an_ask",
   "replied_on_your_ask",
   "replied_in_a_comment_thread",
   "commented_on_a_document",

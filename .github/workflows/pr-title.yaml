@@ -54,8 +54,8 @@ name: PR Title
 # queue took the pull request only once it passed. Of the 40 pull requests merged from
 # 2026-11-17T11:00Z to 2026-11-18T11:00Z, 17 had a green ci-ok before their approval and were
 # enqueued within 5 minutes of the approval's review run passing, a median of 29.9 minutes after
-# the approval. Legion's leak guard refuses a private name before a review is posted (AGENTS.md,
-# "The guard runs before the write").
+# the approval. Legion's leak guard refuses a private name before a review is posted (the package
+# doc of packages/daemon/internal/leakguard).
 #
 # A newer run that replaces an older one still waiting loses nothing, since it repeats every check
 # on the title and body as they now are, and no run in progress is cancelled (the concurrency
@@ -115,8 +115,14 @@ jobs:
       # the run's own payload, GITHUB_EVENT_PATH as Actions writes it, since the event here carries
       # the pull request; find-pr-payload.sh, which ci.yaml's `pr-title` job hands it instead, is
       # for the one event that does not, a merge group. It reads that file rather than the step's
-      # environment, which the runner prints in the job log.
+      # environment, which the runner prints in the job log. PRIVATE_NAME_TERMS, a secret the
+      # runner masks there, is the deployment's own list, which check-private-names.sh's fifth rule
+      # reads; a fork's pull request runs without it, and the script warns that it did.
+      # check-pr-text.sh runs by the checkout's own path, the form every job that holds the list
+      # runs the check by, and runs check-private-names.sh from its own directory.
       - name: Check the title, body, branch name, commits, comments and reviews
         env:
           GH_TOKEN: ${{ github.token }}
-        run: .github/scripts/check-pr-text.sh
+          PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/check-pr-text.sh"

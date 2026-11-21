@@ -4,7 +4,7 @@
  *
  *  None of them writes and reads that write back: a bulk snooze whose answer this layer would
  *  have to invent, and the thread walk whose `e` dismisses a row, stayed in `keyboard-inbox.e2e.ts`
- *  with the rest (packages/dispatch/AGENTS.md, "The stubbed layer"). Every refusal below is the
+ *  with the rest (packages/dispatch/README.md, "The stubbed layer"). Every refusal below is the
  *  row's own `page.route`, which replays as readily as it ran.
  */
 import { expect } from "@playwright/test";

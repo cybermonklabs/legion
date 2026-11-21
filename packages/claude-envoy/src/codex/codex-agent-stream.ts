@@ -1,12 +1,11 @@
 import {
   type AgentStreamControlMessage,
-  agentStreamControlSubject,
   agentStreamFramesSubject,
   comparableLines,
 } from "@legion/contracts"
-import { messageFor } from "@legion/envoy-client/errors"
 import { AgentStreamPublisher } from "@legion/pi-shared/agent-stream"
-import type { ChannelConnection, ChannelTopicSubscription } from "../channel-topics"
+import type { ChannelConnection } from "../channel-topics"
+import { controlSubscription } from "../control-subscription"
 import type { CodexTranscriptEvent } from "./codex-transcript"
 
 /**
@@ -32,6 +31,10 @@ export interface CodexAgentStream {
   expect(text: string, dispatchMessageId: string): void
   /** Moves the stream to another session id (`/new`): the conversation starts empty. */
   rebind(sessionId: string): void
+  /** The session's NATS connection closed for good and the server opened `connection` in its
+   *  place (`channelReopener`): frames go out on it from now on, and the control subject is taken
+   *  on it again once the connection is admitted as the session (`admitted`). */
+  useConnection(connection: ChannelConnection): void
   stop(): void
 }
 
@@ -40,29 +43,39 @@ export interface CodexAgentStreamOptions {
   readonly sessionId: string
   readonly now?: () => number
   readonly warn?: (text: string) => void
+  /**
+   * Settles once the session's NATS connection is admitted as `session`, where the connection is
+   * admitted as one session at a time: under its broker token a `/new`'s new id is the
+   * connection's only once the move lands (`followSession`), and a subscribe before then is
+   * refused and closed by the server. Where this is absent the connection may take every id's
+   * subjects, and the new control subject is taken at once (`AgentStreamOptions.admitted`, the
+   * Claude Code live view's).
+   */
+  readonly admitted?: (session: string) => Promise<void>
 }
 
-const encoder = new TextEncoder()
-const decoder = new TextDecoder()
-/** How long a control subscription that ended waits before it is taken again. */
-const RESUBSCRIBE_MS = 1_000
 /** How many expected person messages are kept for tagging. */
 const EXPECTED_MAX = 16
 /** Codex's models, as the page names a model: `provider/id`. */
 const CODEX_PROVIDER = "openai"
 
 export function startCodexAgentStream(options: CodexAgentStreamOptions): CodexAgentStream {
-  const { connection } = options
   const now = options.now ?? Date.now
   const warn =
     options.warn ?? ((text: string): void => void process.stderr.write(`envoy-channel: ${text}\n`))
+  let session = options.sessionId
+  /** The viewer's control subject, on the session's connection now (`../control-subscription`). */
+  const control = controlSubscription({
+    connection: options.connection,
+    session: () => session,
+    ...(options.admitted === undefined ? {} : { admitted: options.admitted }),
+    warn,
+    answer: answerControl,
+  })
   const publisher = new AgentStreamPublisher({
     now,
-    publish: (subject, payload) => connection.publish(subject, encoder.encode(payload)),
+    publish: (subject, payload) => control.publish(subject, payload),
   })
-  let session = options.sessionId
-  let subscription: ChannelTopicSubscription | undefined
-  let stopped = false
   let model: string | undefined
   /** The last timestamp handed to a message: each gets one strictly past it, since the publisher
    *  keys an assistant message by its timestamp. */
@@ -100,51 +113,29 @@ export function startCodexAgentStream(options: CodexAgentStreamOptions): CodexAg
     })
   }
 
-  const pump = async (taken: ChannelTopicSubscription, forSession: string): Promise<void> => {
-    try {
-      for await (const message of taken) {
-        try {
-          const parsed: unknown = JSON.parse(decoder.decode(message.data))
-          if (typeof parsed !== "object" || parsed === null) continue
-          const request = parsed as AgentStreamControlMessage
-          if (request.type !== "replay" && request.type !== "watch") continue
-          const reply = message.reply
-          const answer =
-            request.type === "replay" && reply !== undefined
-              ? JSON.stringify(publisher.replay(forSession))
-              : undefined
-          const arming = !publisher.watched
-          publisher.noteViewer()
-          if (arming) publisher.publishState(agentStreamFramesSubject(forSession))
-          if (answer === undefined || reply === undefined) continue
-          connection.publish(reply, encoder.encode(answer))
-        } catch (error) {
-          warn(`a live view control message failed — ${messageFor(error)}`)
-        }
-      }
-    } catch {
-      // A dead iterator is a dropped connection, taken again below.
-    }
-    if (subscription === taken) subscription = undefined
-    if (stopped || session !== forSession) return
-    setTimeout(() => {
-      if (!stopped && session === forSession) subscribe()
-    }, RESUBSCRIBE_MS).unref?.()
+  /** Answers one `replay` or `watch` message on the control subject of `forSession`
+   *  (`ControlSubscriptionOptions.answer`). A declaration: the control subscription is made before
+   *  it. */
+  function answerControl(
+    request: AgentStreamControlMessage,
+    replying: boolean,
+    forSession: string,
+  ): string | undefined {
+    const answer =
+      request.type === "replay" && replying
+        ? JSON.stringify(publisher.replay(forSession))
+        : undefined
+    const arming = !publisher.watched
+    publisher.noteViewer()
+    if (arming) publisher.publishState(agentStreamFramesSubject(forSession))
+    return answer
   }
-
-  function subscribe(): void {
-    if (stopped) return
-    subscription?.unsubscribe()
-    const taken = connection.subscribe(agentStreamControlSubject(session))
-    subscription = taken
-    void pump(taken, session)
-  }
-  subscribe()
+  control.start()
   publishSettings()
 
   return {
     event(event) {
-      if (stopped) return
+      if (control.stopped) return
       switch (event.kind) {
         case "settings":
           if (event.model !== model) {
@@ -207,7 +198,7 @@ export function startCodexAgentStream(options: CodexAgentStreamOptions): CodexAg
       }
     },
     delivered(text, dispatchMessageId) {
-      if (stopped) return
+      if (control.stopped) return
       // A person's message the hook took never becomes a user row of the transcript, so the
       // tag kept for that row is dropped rather than left for a later message with the same words.
       if (dispatchMessageId !== undefined) {
@@ -224,17 +215,23 @@ export function startCodexAgentStream(options: CodexAgentStreamOptions): CodexAg
       while (expected.length > EXPECTED_MAX) expected.shift()
     },
     rebind(next) {
-      if (stopped || next === session) return
+      if (control.stopped || next === session) return
       session = next
       publisher.reset()
       expected.length = 0
       toolNames.clear()
       publishSettings()
-      subscribe()
+      // The old id's control subject goes at once, and the new id's is taken once the connection
+      // may take it (`CodexAgentStreamOptions.admitted`): a later `/new` before then takes its own.
+      control.moved()
+    },
+    useConnection(next) {
+      // A `/new` whose move had not landed when the connection closed is still not admitted, so
+      // the subject is taken on the new connection through the gate.
+      control.useConnection(next)
     },
     stop() {
-      stopped = true
-      subscription?.unsubscribe()
+      control.stop()
     },
   }
 }

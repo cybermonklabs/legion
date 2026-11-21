@@ -123,6 +123,12 @@ spec:
                 secretKeyRef:
                   name: listener-credentials
                   key: ENVOY_API_TOKEN
+            # Dispatch's identity at the listener, the one it takes a send's role mark from: the
+            # namespace's default ServiceAccount's token for the listener's audience, which the
+            # kubelet mints below and rewrites before it expires. Without it Dispatch refuses every
+            # send for a role route, which the replay's role-routed issues make.
+            - name: ENVOY_ACCOUNT_TOKEN_FILE
+              value: /var/run/secrets/envoy-listener/token
           ports:
             - name: http
               containerPort: 8766
@@ -149,6 +155,9 @@ spec:
           volumeMounts:
             - name: home
               mountPath: /home/envoy
+            - name: envoy-listener-token
+              mountPath: /var/run/secrets/envoy-listener
+              readOnly: true
         - name: pprof
           image: __SOCAT_IMAGE__
           args: ["TCP-LISTEN:6061,fork,reuseaddr", "TCP:127.0.0.1:6060"]
@@ -168,3 +177,10 @@ spec:
         - name: home
           emptyDir:
             sizeLimit: 1Gi
+        - name: envoy-listener-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: envoy-listener-loadtest
+                  expirationSeconds: 3600
+                  path: token

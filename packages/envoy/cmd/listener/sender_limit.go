@@ -5,7 +5,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -205,8 +204,8 @@ func (c *senderCharge) forgive() {
 
 // published marks the charge by the stream's answer to the route's publish of the message
 // (bus.Client.PublishAckWithin), the one rule the send route and the topic publish share. A
-// publish that failed after a send nothing answered (bus.ErrUnacknowledged) may have stored the
-// message, so it costs one whatever the route answers. Any other failure stored nothing and marks
+// publish that may have stored the message (mayHaveStored) costs one whatever the route answers.
+// Any other failure stored nothing and marks
 // nothing: a refusal of the server's, and a failure before anything was sent, such as a wait for
 // NATS to reconnect that outlasted the route's deadline. A duplicate verdict names a copy the
 // stream already held, which costs nothing, also after a wake report, unless it answers the bus's
@@ -214,7 +213,7 @@ func (c *senderCharge) forgive() {
 // copy. Every other answer stored the message.
 func (c *senderCharge) published(ack bus.StoredAck, err error) {
 	switch {
-	case errors.Is(err, bus.ErrUnacknowledged):
+	case mayHaveStored(err):
 		c.stored()
 	case err != nil:
 		// A refusal, or a failure before any send: the stream holds nothing of this publish.

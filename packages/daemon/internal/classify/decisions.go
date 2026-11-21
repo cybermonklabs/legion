@@ -1166,8 +1166,9 @@ func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
 // pull request's head: the issue is in reviewing, its pull request is open, its reviewer's review
 // approved the head the pull request now stands at (ApprovalStands, which is the whole of that
 // test: a review of another head approves nothing, and a push on its way takes an approval of this
-// head back), and the merge state the record holds for that head is not one the issue may advance
-// on (record.MergeState.Mergeable), the unread state among them.
+// head back), the merge state the record holds for that head is not one the issue may advance on
+// (record.MergeState.Mergeable), the unread state among them, and the record does not hold that
+// head in a confirmed conflict with its base (ConflictRound).
 //
 // Two readers ask it, and they must answer alike, which is the whole reason the rule is here
 // rather than in either of them: the engine asks it to decide whether this round is one the
@@ -1183,7 +1184,15 @@ func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
 // waiting on GitHub's next answer about the same head: the state a head is in changes under it, a
 // base push clearing `behind` and a required check that runs clearing `blocked`, and a read is the
 // only thing that would ever say so. What tells those apart is read by the caller that needs them
-// apart (ChecksConcludedOnHead), never here.
+// apart (ChecksConcludedOnHead), never here. A head GitHub answered `dirty` for while its first
+// conflicting read waits for the second (record.PullRequest.ConflictRead) waits the same way: the
+// second read decides whether the conflict stands (dispatch://INFRA-4374 R2).
+//
+// It does not hold for a head the record holds in a confirmed conflict: that approval ends the
+// round whatever the merge state (workflow's reviewRound), since nothing GitHub answers about the
+// head will change until the implementer merges the base forward, and the issue's move into
+// accepting is what asks for that merge (dispatch://INFRA-4374 R0, record.ConflictMergeNext). Read
+// here, the state build shows no mergeWait for the round the engine has just ended.
 //
 // It holds only for an open pull request. A merged one has nothing left to merge. GitHub answers
 // `unknown` for it for good, and the daemon never reads its state after the merge: workflow's
@@ -1196,29 +1205,158 @@ func RoundWaitsOnMergeState(issue record.Issue, reviewer record.PhaseRow, pr *re
 		return false
 	}
 	return pr.State == record.PullRequestOpen && reviewer.Decision.State == "approved" &&
-		ApprovalStands(*pr, reviewer.Decision.Head) && !pr.MergeState.Mergeable()
+		ApprovalStands(*pr, reviewer.Decision.Head) && !pr.MergeState.Mergeable() && !ConflictRound(*pr)
 }
 
-// HeadConflicts says whether an open pull request's head has started conflicting with its base:
-// the daemon's last read of GitHub's mergeability found MergeabilityConflicting. The read stands
-// for whatever head GitHub last computed it on, and the daemon's own read is the only path to it,
-// so there is no older read to prefer. GitHub runs no checks at all on a conflicting head - there
-// is no merge ref to run them against - and no CI result moves an issue in any case
-// (dispatch://INFRA-714/spec R1), so a conflict is the one thing a pull request's own state still
-// moves an issue for (workflow's mergeability handler).
-func HeadConflicts(pr record.PullRequest) bool {
-	return pr.State == record.PullRequestOpen && pr.Mergeability == record.MergeabilityConflicting
+// MergeStateFact is the kind of fact that asks whether GitHub's merge state is read for a pull
+// request (MergeStateReadOwed). Workflow's askMergeState names it from the fact it applied, and
+// workflow's basePush names MergeStateFactBasePush for each pull request its walk recorded the
+// push on.
+type MergeStateFact int
+
+const (
+	// MergeStateFactOther is a fact that moves neither the head nor the base: a review, a CI
+	// settlement, a push to the pull request's branch, whose synchronize is the fact that moves
+	// the head.
+	MergeStateFactOther MergeStateFact = iota
+	// MergeStateFactHeadMove is a fact that moves the pull request's head or opens it at one: the
+	// pull request opened or reopened, a synchronize.
+	MergeStateFactHeadMove
+	// MergeStateFactBasePush is a push to the base branch the pull request sits on.
+	MergeStateFactBasePush
+)
+
+// MergeStateReadOwed is the gate of the read of GitHub's merge state for an issue's open pull
+// request (workflow's askMergeStateFor, which queues the ladder behind daemon's readMergeState):
+// whether a fact of kind fact asks for it. Each of two reasons asks, and one is enough:
+//
+//   - The fact moves the head, and the issue stands in a phase a merge forward is asked in,
+//     implementing through merging (record.MergeForwardPhases, dispatch://INFRA-4374 R0). GitHub
+//     runs no checks on a head that conflicts with its base, so without a read a conflicting push
+//     stands with no CI and nobody is told; the read that finds the head CONFLICTING is the first
+//     of the two reads that confirm a conflict (R2).
+//   - The fact is a push to the base, and the issue stands in testing, reviewing, accepting, retro
+//     or merging. GitHub sends no event of the pull request while it computes whether the head
+//     still merges into the moved base. Past the review the merge is next
+//     (record.ConflictMergeNext), so a conflict there is acted on at once (R0). In testing and
+//     reviewing the record otherwise keeps the state the read before the push left: a record read
+//     `blocked` while GitHub answered DIRTY, because no read followed the base push (INFRA-4315,
+//     dispatch://INFRA-4374/spec#b-r4). A base push reads nothing for an issue in implementing or
+//     before it: there the head the implementer pushes next is read, by the reason above.
+//
+// Every other fact asks nothing here, and so does a head move or a base push of an issue outside
+// those phases. The third reason a read is owed is not the gate's: the issue's review round
+// waiting on GitHub's answer about the head, whatever the fact - an approval that stands on a head
+// GitHub has answered nothing for, or a state it would not merge from (RoundWaitsOnMergeState),
+// or a head whose first conflicting read waits for its second (workflow's reviewRound,
+// round.waitsOnMergeState). Only the engine works out the round, so askMergeStateFor adds that
+// reason, and works the round out only for a fact the gate owes no read for.
+func MergeStateReadOwed(issue record.Issue, fact MergeStateFact) bool {
+	switch fact {
+	case MergeStateFactHeadMove:
+		return record.StandsIn(issue, record.MergeForwardPhases...)
+	case MergeStateFactBasePush:
+		return record.StandsIn(issue, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging)
+	}
+	return false
+}
+
+// ConflictNeedsMerge is R0's decision on a confirmed conflict (dispatch://INFRA-4374 R0): why the
+// head that conflicts with its base must be merged forward now, or "" when nothing needs that yet,
+// and the conflict is recorded and nothing else is done. The reasons are read in this order, and
+// the first that holds is the answer:
+//
+//   - record.ConflictMergeNext: the issue stands past its review, in accepting, retro or merging,
+//     or is held from one of them (record.PastReview). Its next step is the merge, and GitHub
+//     merges no head that conflicts with its base.
+//   - record.ConflictRulesUnread: the daemon could not read the base's rules (rules nil, or
+//     rules.Unread set). It cannot tell whether every check the base requires passed, so it acts
+//     at once, which is never later than a daemon that acted on every conflicting read. GitHub's
+//     refusal of rulesets to a plan that has none is no failed read: it reads as no rules
+//     (record.BaseRules).
+//   - record.ConflictRequiresCurrent: a ruleset of the base requires a pull request to be current
+//     with it (rules.Strict), so the head cannot merge whatever its checks say until the base is
+//     merged into it.
+//   - record.ConflictCheckNotGreen: a context the base requires (rules.Required) is not green on
+//     the head (green, which is GreenContexts of the pull request). GitHub runs no checks on a
+//     head that conflicts with its base, so a required check that has not passed there never
+//     will: only a merge forward gives it a head to run on. A check still running reads as not
+//     green too, since the record holds a run only once the head's CI settles, and R0 acts at
+//     once rather than wait for it.
+//
+// Otherwise every check the base requires is green on the head and no rule requires the head to
+// be current: the tester and the reviewer go on at that head, and the merge forward waits for the
+// step that needs it, the issue's move past its review, where record.ConflictMergeNext holds.
+//
+// It is pure, so the engine, which acts on the answer (workflow's mergeability and mergeForward),
+// and any reader of the record decide alike. green is the caller's, so the engine, which logs the
+// contexts green on the head when nothing needs a merge yet, reads them once.
+func ConflictNeedsMerge(issue record.Issue, rules *record.BaseRules, green []string) record.ConflictWhy {
+	switch {
+	case record.PastReview(issue):
+		return record.ConflictMergeNext
+	case rules == nil || rules.Unread != "":
+		return record.ConflictRulesUnread
+	case rules.Strict:
+		return record.ConflictRequiresCurrent
+	}
+	for _, required := range rules.Required {
+		if at := sort.SearchStrings(green, required); at == len(green) || green[at] != required {
+			return record.ConflictCheckNotGreen
+		}
+	}
+	return ""
+}
+
+// GreenContexts is every context green on the pull request's current head, each once and sorted:
+// the name of each check run GitHub reported on that head that concluded succeeded or skipped
+// (HeadRuns, record.RunSucceeded, record.RunSkipped), and, while a settlement stands for the head
+// (Settled), the context of each commit status the record keeps for the head
+// (record.CommitStatus.StampedWith) whose state is success. A required context is matched by its
+// name alone, as a check run's name or a status's context; GitHub's integration id is not
+// compared. A status counts only on a settled head, since the record keeps the statuses of its
+// checked head, and a status kept for another head says nothing of this one.
+//
+// A skipped run is green as a succeeded one is, since GitHub's branch protection takes a skipped
+// required check as passing: so ConflictNeedsMerge answers for a skipped run exactly as for a
+// succeeded one (dispatch://INFRA-4135 R2), and a required check whose run skipped does not by
+// itself make the daemon merge the base forward at once (record.ConflictCheckNotGreen).
+func GreenContexts(pr record.PullRequest) []string {
+	var green []string
+	for _, run := range HeadRuns(pr) {
+		if run.Conclusion == record.RunSucceeded || run.Conclusion == record.RunSkipped {
+			green = append(green, run.Name)
+		}
+	}
+	if Settled(pr) {
+		for _, status := range pr.Statuses {
+			if status.StampedWith(pr.HeadSHA) && status.State == record.CommitStatusSuccess {
+				green = append(green, status.Context)
+			}
+		}
+	}
+	sort.Strings(green)
+	once := green[:0]
+	for _, name := range green {
+		if len(once) == 0 || once[len(once)-1] != name {
+			once = append(once, name)
+		}
+	}
+	return once
 }
 
 // ConflictRound says whether a backward move made now is a round a conflict with the base caused:
-// the record holds the pull request's own recorded head as conflicting
-// (record.PullRequest.ConflictingHead), whichever read judged it so and whatever fact is making
-// the move. The exemption keys on that mark rather than on the cause, because every way back out
-// of a conflicting head is the same round of work - the move the daemon makes on its own for the
-// conflict (workflow's TriggerConflict), a reviewer's request for changes, a worker's backward
-// move, a tester's fail - and the implementer answers each of them with one forward merge. That
-// merge moves the recorded head, the mark no longer equals it, and the next rejection counts,
-// which is how the exemption ends without a write of its own.
+// the record holds the pull request's own recorded head in a confirmed conflict
+// (record.PullRequest.ConflictingHead, which only the second CONFLICTING read of that head writes,
+// workflow's mergeability), whatever fact is making the move. The exemption keys on that mark
+// rather than on the cause, because every way back out of a conflicting head is the same round of
+// work - a reviewer's request for changes, a worker's backward move, a tester's fail - and the
+// implementer answers each of them with the one forward merge the conflict needs. That merge moves
+// the recorded head, the mark no longer equals it, and the next rejection counts, which is how the
+// exemption ends without a write of its own. The same mark is what says a head needs merging
+// forward before it can merge at all: an approval of it ends its review round (workflow's
+// reviewRound), and a move into accepting, retro or merging at it asks for the merge forward
+// (workflow's mergeForwardOnEntry).
 func ConflictRound(pr record.PullRequest) bool {
 	return pr.ConflictingHead != "" && pr.ConflictingHead == pr.HeadSHA
 }

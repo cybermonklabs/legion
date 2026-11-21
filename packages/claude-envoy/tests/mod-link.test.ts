@@ -2,7 +2,6 @@ import { afterEach, expect, test } from "bun:test"
 import { chmod, mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises"
 import { request as httpRequest } from "node:http"
 import { createServer, type Server } from "node:net"
-import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import {
   MOD_HEALTH_MARKER,
@@ -21,6 +20,12 @@ import {
 import { type ModLink, startModLink } from "../src/mod-link"
 import { type ModSession, modSession } from "../src/mod-session"
 
+/** Where the socket homes are made. A mod socket is `<home>/claude-envoy/ce-<hash>.sock`, and that
+ *  whole path has 100 bytes to fit in (`MOD_SOCKET_PATH_MAX_BYTES`): under `tmpdir()` a deep
+ *  `TMPDIR` (a dev box's `/mnt/scratch/...`, a Legion pod's) leaves none, so the homes go under
+ *  `/tmp`, whatever `TMPDIR` is, as channel-fatal-exit.test.ts's do. */
+const SOCKET_ROOT = "/tmp"
+
 const scratch: string[] = []
 const links: ModLink[] = []
 afterEach(async () => {
@@ -28,9 +33,10 @@ afterEach(async () => {
   for (const dir of scratch.splice(0)) await rm(dir, { recursive: true, force: true })
 })
 
-/** A scratch directory to put sockets in, short enough that the path stays under the bound. */
+/** A scratch directory to put sockets in, under {@link SOCKET_ROOT} so the path stays under the
+ *  bound. */
 async function directory(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "mod-"))
+  const dir = await mkdtemp(join(SOCKET_ROOT, "mod-"))
   scratch.push(dir)
   return dir
 }

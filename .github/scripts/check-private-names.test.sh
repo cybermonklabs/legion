@@ -2,63 +2,25 @@
 # Tests for `check-private-names.sh` and `check-pr-text.sh`: every spelling the guard refuses, the
 # identifiers and the English word it must pass, what it skips, its two modes (the repository, and
 # named paths such as the built site), file names, and a pull request's title, body, branch name,
-# commits (message, author and committer), issue comments, reviews and review comments.
+# commits (message, author and committer), issue comments, reviews and review comments. The
+# deployment's own term list, the script's fifth rule, has a harness of its own,
+# check-private-names-terms.test.sh, and so does the issue-key rule,
+# check-private-names-keys.test.sh; the fixtures, the name pieces and the stand-in GitHub API they
+# read are check-private-names-test-lib.sh's.
 #
-# Each case builds a miniature git repository under a temporary directory and symlinks the real
-# script into it, so the script under test is the file CI runs: it resolves its root from its own
-# path, which the symlink puts at the fixture root. The names it hunts are assembled from pieces
-# below, so this file holds none of them and the check scans it like any other. Every case names
-# itself by an index or a neutral label, never the assembled form, since `check`'s PASS/FAIL line
-# is this script's own stdout — the CI log; the last case runs the guard over that captured log.
+# Every case names itself by an index or a neutral label, never the assembled form, since
+# `check`'s PASS/FAIL line is this script's own stdout — the CI log; the last case runs the guard
+# over that captured log.
 #
 # Run from anywhere: .github/scripts/check-private-names.test.sh
 # CI runs it in ci.yaml's test job.
 set -euo pipefail
 shopt -s inherit_errexit
+# No tracing: a traced run would print the placeholder terms the library sets.
+set +x
 
-script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-check_script="$script_dir/check-private-names.sh"
-pr_text_script="$script_dir/check-pr-text.sh"
-work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
-
-# Every case's stdout below (echoed "case:" lines and `check`'s PASS/FAIL lines) is this script's
-# own output — the log of ci.yaml's test job — so it is also teed to self_log and, as the last
-# case, scanned with the guard itself: a future case that prints an assembled form turns red
-# here, in the suite, before it ever reaches a real job log. `exec 3>&1 4>&2` keeps the real
-# terminal fds reachable so the redirection can be undone before reading the file: a process
-# substitution's write end must close (and its process be waited on) before its output is
-# guaranteed to be flushed to disk.
-self_log="$work/suite-output.log"
-exec 3>&1 4>&2
-exec > >(tee "$self_log") 2>&1
-tee_pid=$!
-
-# shellcheck source=.github/scripts/test-lib.sh
-source "$script_dir/test-lib.sh"
-
-command -v git > /dev/null || { echo "  FAIL: git is required" >&2; exit 1; }
-
-repo="agent""-c"
-repo_snake="agent""_c"
-repo_joined="agent""c"
-repo_spaced="agent"" c"
-repo_en_dash="agent""–c"
-repo_nonbreaking_hyphen="agent""‑c"
-repo_percent_hyphen="agent""%2Dc"
-nbsp=$'\xc2\xa0'
-en_dash=$'\xe2\x80\x93'
-key="AGENT""C"
-company="traj""ectory"
-company_proper="T""rajectory"
-labs="labs"
-internal="internal"
-private_host_suffix="private.example"
-example_host_suffix="example"
-vendored_nats="packages/claude-envoy/dist/envoy-channel.js"
-tailnet_suffix="ts.net"
-tailnet_label="realtailnet"
-tailnet_example="example-tailnet"
+# shellcheck source=.github/scripts/check-private-names-test-lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-private-names-test-lib.sh"
 
 # assert_each_refused <fixture-prefix> <label> <array-name> [line]: writes each line of the named
 # array into its own fixture, on the given line (1 by default; 2 is preceded by a filler line), and
@@ -80,31 +42,6 @@ assert_each_refused() {
     check "$prefix-$index is named at its file and line" \
       "$(contains "$out" "docs/notes.md:$line: $label")"
   done
-}
-
-# fixture <name>: a clean repository with one tracked file. Echoes its root.
-fixture() {
-  local root="$work/$1"
-  if [ -e "$root" ]; then
-    echo "  FAIL: the fixture name '$1' is already taken by an earlier case" >&2
-    return 1
-  fi
-  mkdir -p "$root/.github/scripts" "$root/docs"
-  ln -s "$check_script" "$root/.github/scripts/check-private-names.sh"
-  printf '# Notes\n\nNothing private here.\n' > "$root/docs/notes.md"
-  git -C "$root" init -q
-  git -C "$root" add docs/notes.md
-  echo "$root"
-}
-
-# run_check <root> [path...]: sets `out` to the combined output and `status` to the exit code.
-run_check() {
-  local root=$1
-  shift
-  set +e
-  out=$(cd "$root" && .github/scripts/check-private-names.sh "$@" 2>&1)
-  status=$?
-  set -e
 }
 
 echo "case: a clean repository"
@@ -169,19 +106,53 @@ hosts=(
   "https://listener.$internal.$example_host_suffix.$private_host_suffix"
   "https://a.$internal.$example_host_suffix and https://b.${internal^^}.$private_host_suffix"
   "this.$internal.push(value)"
+  "https://LISTENER.${internal^^}.${private_host_suffix^^}"
+  "https://listener.$internal.${private_host_suffix^}"
+  "listener.$internal.$private_host_suffix"
+  "see _listener.$internal.${private_host_suffix}_ in italics"
+  "NATS_URLS=a.$internal.$example_host_suffix,b.$internal.$private_host_suffix"
+  "Listener.$internal.$private_host_suffix answers on 443."
+  "LISTENER.$internal.$private_host_suffix"
+  "fooBar.$internal.$private_host_suffix"
+  "Listener.${internal^^}.$private_host_suffix"
+  "Lean.$internal.otherName"
+  "Lean.$internal.cmdlineSnapshotsX.get opts"
+  "xLean.$internal.cmdlineSnapshots"
+  "Lean.$internal.cmdlineSnapshots.get.listener"
 )
 assert_each_refused host "names a private internal host" hosts
 
-echo "case: a reserved example host passes, and the vendored NATS client's property in its own file"
+echo "case: a reserved example host passes, the vendored NATS client's property in its own file, and" \
+  "Lean and OCaml names"
 root=$(fixture public-host)
 printf 'https://listener.%s.%s\n' "$internal" "$example_host_suffix" > "$root/docs/notes.md"
 printf 'nats://nats.%s.%s.com:4222\n' "$internal" "$example_host_suffix" >> "$root/docs/notes.md"
 printf 'Point it at api.%s.%s.\n' "$internal" "$example_host_suffix" >> "$root/docs/notes.md"
+printf 'listener.%s.%s at the start of a line\n' "$internal" "$example_host_suffix" >> "$root/docs/notes.md"
+printf 'now https://ENVOY.%s.%s\n' "${internal^^}" "${example_host_suffix^^}" >> "$root/docs/notes.md"
 mkdir -p "$root/$(dirname "$vendored_nats")"
 printf '        this.%s.push(sv);\n' "$internal" > "$root/$vendored_nats"
 git -C "$root" add "$vendored_nats"
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
+# A Lean namespace, OCaml value paths, a Lean function's namespace and Lean's own option of the
+# cmdline snapshots, each in its own file: none of them names a host.
+namespaces=(
+  "import Std.${internal^}.UV.System"
+  "  if Environ.${internal^}.is_above_prop env q then"
+  "  (Environ.${internal^}.View.view answer_env).Environ.${internal^}.View.env_modtypes"
+  "      Classes.${internal^}.add_instance ~locality inst"
+  "This module proves the one-step unfolding lemma \`repeatM.${internal^}.eq_of_monadTail\`,"
+  "  rw [repeatM.${internal^}.eq_of_monadTail]; unfold repeatM.body; rw [bind_assoc]"
+  "    rw [_root_.repeatM.${internal^}.eq_of_monadTail (f := f) a]"
+  "  let opts := Lean.$internal.cmdlineSnapshots.setIfNotSet opts incrSaveFileName?.isNone"
+)
+for index in "${!namespaces[@]}"; do
+  root=$(fixture "namespace-$index")
+  printf '%s\n' "${namespaces[index]}" > "$root/docs/notes.md"
+  run_check "$root"
+  check "namespace-$index passes" "$(is "$status" 0)"
+done
 
 echo "case: a Tailscale MagicDNS host is refused, whatever its case"
 # shellcheck disable=SC2034 # read by name through assert_each_refused's nameref
@@ -455,102 +426,6 @@ run_check "$root" docs/notes.md
 check "exits 0" "$(is "$status" 0)"
 check "scans the file" "$(contains "$out" '(1 files under docs/notes\.md)')"
 
-# write_pr_text <title> <body> <commit message> [branch] [author email] [committer email]: writes
-# the fixture check-pr-text.sh reads as CI runs it. A pull_request event payload carries the head
-# the run checks (its base and head sha, and its one commit); the stand-in `gh` answers the pull
-# request route with the title, body and branch name the pull request has now (`$work/pull`, the
-# event's own unless a case rewrites it); and it answers the compare route for exactly that
-# base...head with that commit (message, author and committer) in the route's own JSON shape, so
-# the real `.commits[] | .commit.message, …`
-# filter that feeds the required check runs for real, rather than a filter the stub fakes. It
-# matches that URL whole and refuses a call without --paginate, so losing either paging token
-# fails every case below instead of passing on a list GitHub cut short at 250 commits. It answers
-# the pull request's three comment routes (issue comments, reviews and review comments), which
-# report no total, one page of 100 at a time: page N of each is `$work/<route>.N` (`comments`,
-# `reviews` or `review-comments`), and a page no case wrote is an empty list, as GitHub answers past
-# the last. The stub also answers the pull request's own commits route, which reads whatever head
-# the pull request has by then: the same commit, until the mid-run-push case appends a later one
-# that names a private thing. A case rewrites `$work/compare` (one JSON object per page, as
-# `gh api --paginate` prints them), `$work/pr-commits` or a comment route's pages, then calls
-# run_pr_text, which runs the script and sets `out` and `status`; the stub logs each call it
-# answers to `$work/calls`.
-mkdir -p "$work/bin"
-cat > "$work/bin/gh" <<'GH'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$PR_TEXT_TEST_DIR/calls"
-# page <route> <url>: the page of a comment route the url's `page=N` asks for.
-page() {
-  local file="$PR_TEXT_TEST_DIR/$1.${2##*&page=}"
-  if [ -e "$file" ]; then cat "$file"; else echo '[]'; fi
-}
-case "$1 $2" in
-  "api repos/example/repo/compare/base-sha...event-head-sha?per_page=100")
-    [[ " $* " == *" --paginate "* ]] || { echo "compare route read without --paginate: $*" >&2; exit 3; }
-    cat "$PR_TEXT_TEST_DIR/compare" ;;
-  "api repos/example/repo/issues/7/comments?per_page=100&page="[1-9]*) page comments "$2" ;;
-  "api repos/example/repo/pulls/7/reviews?per_page=100&page="[1-9]*) page reviews "$2" ;;
-  "api repos/example/repo/pulls/7/comments?per_page=100&page="[1-9]*) page review-comments "$2" ;;
-  "api repos/example/repo/pulls/7/commits") cat "$PR_TEXT_TEST_DIR/pr-commits" ;;
-  "api repos/example/repo/pulls/7") cat "$PR_TEXT_TEST_DIR/pull" ;;
-  *) echo "unexpected gh call: $*" >&2; exit 3 ;;
-esac
-GH
-chmod +x "$work/bin/gh"
-# pr_commit <message> [author email] [committer email]: one commit as both routes list it.
-pr_commit() {
-  jq -nc --arg msg "$1" --arg author_email "${2:-dev@example.com}" \
-    --arg committer_email "${3:-dev@example.com}" \
-    '{commit: {message: $msg, author: {name: "Dev", email: $author_email},
-               committer: {name: "Dev", email: $committer_email}}}'
-}
-write_pr_text() {
-  local title=$1 body=$2 message=$3 branch=${4:-fix/keep-the-order} commit
-  commit=$(pr_commit "$message" "${5:-}" "${6:-}")
-  jq -nc --argjson commit "$commit" '{total_commits: 1, commits: [$commit]}' > "$work/compare"
-  jq -nc --argjson commit "$commit" '[$commit]' > "$work/pr-commits"
-  printf '%s' "$body" > "$work/pr-body"
-  jq -n --arg title "$title" --arg branch "$branch" --rawfile body "$work/pr-body" \
-    '{pull_request: {number: 7, title: $title, commits: 1,
-                      head: {ref: $branch, sha: "event-head-sha"}, base: {sha: "base-sha"},
-                      body: (if $body == "" then null else $body end)}}' \
-    > "$work/event.json"
-  jq '.pull_request' "$work/event.json" > "$work/pull"
-  rm -f "$work"/comments.* "$work"/reviews.* "$work"/review-comments.*
-}
-run_pr_text() {
-  if [ $# -gt 0 ]; then write_pr_text "$@"; fi
-  : > "$work/calls"
-  set +e
-  out=$(GITHUB_EVENT_PATH="$work/event.json" GITHUB_REPOSITORY=example/repo \
-    PR_TEXT_TEST_DIR="$work" PATH="$work/bin:$PATH" "$pr_text_script" 2>&1)
-  status=$?
-  set -e
-}
-# app: who posted an item a case writes, unless the case says otherwise: an App installed on the
-# repository, which posts as a Bot, with the association every Legion App's comments carry here.
-app='{"user": {"login": "dev-app[bot]", "type": "Bot"}, "author_association": "CONTRIBUTOR"}'
-# items <id> <body> [<id> <body>...]: one page of a comment route, each item its id, body and
-# author (app) in the route's own JSON shape.
-items() {
-  local list='[]'
-  while [ $# -gt 0 ]; do
-    list=$(jq -c --argjson id "$1" --arg body "$2" --argjson author "$app" \
-      '. + [{id: $id, body: $body} + $author]' <<< "$list")
-    shift 2
-  done
-  printf '%s\n' "$list"
-}
-# by <login> <type> <association> <page> [index]: rewrites a page's items (only the one at index,
-# when given) as posted by that author.
-by() {
-  local filter='map(author)'
-  if [ $# -gt 4 ]; then filter=".[$5] |= author"; fi
-  jq -c --arg login "$1" --arg type "$2" --arg association "$3" \
-    "def author: .user = {login: \$login, type: \$type} | .author_association = \$association; $filter" \
-    "$4" > "$4.next"
-  mv "$4.next" "$4"
-}
-
 echo "case: a pull request's title, body, branch name and commits, which reach main and its release notes"
 run_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 check "a clean title, body and commits pass" "$(is "$status" 0)"
@@ -674,7 +549,6 @@ run_pr_text "fix(dispatch): keep the inbox order" "$long_body" "fix: keep the or
 check "a body larger than one environment variable may hold is read" "$(is "$status" 0)"
 
 echo "case: a pull request's issue comments, reviews and review comments, public on its page"
-clean_pr() { write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"; }
 clean_pr
 items 101 "Looks good." 102 "$(printf 'Two lines.\nThe second is clean too.')" > "$work/comments.1"
 items 201 "Approved." 202 "" > "$work/reviews.1"
@@ -774,11 +648,12 @@ by drive-by User NONE "$work/reviews.1"
 by drive-by User CONTRIBUTOR "$work/review-comments.1"
 run_pr_text
 check "a stranger's comment, review and review comment naming private things pass" "$(is "$status" 0)"
-check "names the skipped comment and its author" \
-  "$(contains "$out" '^skipped comment:401: author drive-by (NONE) is not trusted$')"
-check "names the skipped review" "$(contains "$out" '^skipped review:402: author drive-by (NONE) is not trusted$')"
+check "names the skipped comment and its author's association" \
+  "$(contains "$out" '^skipped comment:401: its author (NONE) is not trusted$')"
+check "names the skipped review" "$(contains "$out" '^skipped review:402: its author (NONE) is not trusted$')"
 check "names the skipped review comment, whose author contributed before" \
-  "$(contains "$out" '^skipped review-comment:403: author drive-by (CONTRIBUTOR) is not trusted$')"
+  "$(contains "$out" '^skipped review-comment:403: its author (CONTRIBUTOR) is not trusted$')"
+check "does not print the stranger's login" "$(is "$(contains "$out" 'drive-by')" false)"
 check "does not print the company" "$(is "$(contains "$out" "$company_proper")" false)"
 check "does not print the key" "$(is "$(contains "$out" "$key")" false)"
 check "does not print the repository" "$(is "$(contains "$out" "$repo")" false)"
@@ -789,7 +664,7 @@ jq -c '.[0].user = null | .[0].author_association = "NONE"' "$work/comments.1" >
 mv "$work/comments.next" "$work/comments.1"
 run_pr_text
 check "a comment GitHub names no author for is skipped" \
-  "$(contains "$out" '^skipped comment:404: author <none> (NONE) is not trusted$')"
+  "$(contains "$out" '^skipped comment:404: its author (NONE) is not trusted$')"
 
 for author in "dev-app[bot] Bot CONTRIBUTOR" "new-app[bot] Bot NONE" "owner User OWNER" \
   "member User MEMBER" "collaborator User COLLABORATOR"; do
@@ -811,13 +686,7 @@ by drive-by User NONE "$work/comments.1" 1
 run_pr_text
 check "a stranger's clean comment after an App's red one still fails, so it clears nothing" "$(is "$status" 1)"
 check "names the App's comment" "$(contains "$out" 'comment:405:1: names the company')"
-check "skips the stranger's" "$(contains "$out" '^skipped comment:406: author drive-by (NONE) is not trusted$')"
+check "skips the stranger's" "$(contains "$out" '^skipped comment:406: its author (NONE) is not trusted$')"
 
-echo "case: the suite's own output never names a private thing"
-exec 1>&3 2>&4
-wait "$tee_pid" 2> /dev/null || true
-suite_status=0
-"$check_script" "$self_log" > /dev/null 2>&1 || suite_status=$?
-check "the suite's own PASS/FAIL log passes the guard" "$(is "$suite_status" 0)"
-
+finish_self_log
 summary "check-private-names.sh"

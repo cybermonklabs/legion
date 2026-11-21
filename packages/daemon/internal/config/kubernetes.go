@@ -80,9 +80,10 @@ type Kubernetes struct {
 	// `session_dsn_secret` holds under `postgres`; the Cloud SQL database `session_database` names,
 	// which no password reaches, under `cloudsql-iam`: each pod signs in to it as itself, or, when
 	// the block's optional `impersonate_service_account` names a Google service account, as that
-	// account, which the pod impersonates. The key is required under `runtime: kubernetes` and `pvc`
-	// is refused (readSessionStore), so the settled store always keeps sessions in a database
-	// (InDatabase): no issue disk holds a session.
+	// account, which the pod impersonates with its own credentials or, when the block's optional
+	// `writer_audience` is set too, with a token only its launcher reads. The key is required
+	// under `runtime: kubernetes` and `pvc` is refused (readSessionStore), so the settled store
+	// always keeps sessions in a database (InDatabase): no issue disk holds a session.
 	SessionStore ompsessions.Store
 	// Plugins is `runtime.kubernetes.plugins`: the exact pi-legion/pi-envoy pair a stale-plugin
 	// relaunch installs into a kept pod, when the file names one. Nil when the file sets none and
@@ -119,6 +120,13 @@ type Kubernetes struct {
 	// `issue_pods.enabled: false` turns it off, and an issue pod's launcher is then handed no
 	// settings at all (sandbox.Options.MemoryGuard nil).
 	MemoryGuard MemoryGuardConfig
+	// VolumeTrim is `runtime.kubernetes.volume_trim`, settled: what the cache trimmer in each
+	// issue pod's launcher process runs by, deleting the oldest entries of the four cache roots
+	// when the volume reaches a size mark. Every default applies when the file sets no block, so
+	// the trimmer is on for every Kubernetes deployment, as idle release is; `enabled: false`
+	// turns it off, and the pod's launcher is then handed no settings at all
+	// (sandbox.Options.VolumeTrim nil), on which its trimmer reads and deletes nothing.
+	VolumeTrim VolumeTrimConfig
 }
 
 // RepositoryCacheConfig is `runtime.kubernetes.repository_cache`: the volume each repository's
@@ -220,6 +228,31 @@ func DefaultMemoryGuard() MemoryGuardConfig {
 	}}
 }
 
+// VolumeTrimConfig is `runtime.kubernetes.volume_trim`: what the cache trimmer in each issue
+// pod's launcher process runs by. The trimmer reads the pod's volume every IntervalSeconds,
+// sweeps the four cache roots once the used fraction reaches HighPercent, deletes only entries in
+// which nothing was modified for MinAgeMinutes, and stops deleting at the first reading at or
+// below LowPercent, if nothing stops it sooner (shimwire.LauncherVolumeTrim, which the launcher
+// is handed on the answer to its hello). Enabled false hands the launcher no settings, on which
+// its trimmer reads and deletes nothing, and an issue volume then fills as it did before this
+// work.
+type VolumeTrimConfig struct {
+	Enabled         bool
+	HighPercent     int
+	LowPercent      int
+	MinAgeMinutes   int
+	IntervalSeconds int
+}
+
+// defaultVolumeTrim is the trimmer when the file sets none of it: a sweep at 85% of the issue
+// volume down to 70%, deleting nothing modified inside the last quarter hour, looking every
+// minute. Every deployment's issue volume is a fixed size whose caches grow with the issue's
+// work, so the defaults are on, as idle release's are (defaultIdleRelease).
+var defaultVolumeTrim = VolumeTrimConfig{Enabled: true, HighPercent: 85, LowPercent: 70, MinAgeMinutes: 15, IntervalSeconds: 60}
+
+// DefaultVolumeTrim is the cache trimmer's settled configuration when the file sets none.
+func DefaultVolumeTrim() VolumeTrimConfig { return defaultVolumeTrim }
+
 // PluginsConfig is `runtime.kubernetes.plugins`: the pi-legion and pi-envoy sources a
 // stale-plugin relaunch installs, each an exact semver version, an absolute tarball path, or an
 // http(s) URL the pod can read — never an npm dist-tag or a range, since the pair must be one
@@ -271,6 +304,11 @@ type MicroVMConfig struct {
 	// StorageClass is the class of a microVM pod's workspace volume: the file's
 	// `microvm.storage_class`, else Kubernetes.StorageClass, which the loader fills in.
 	StorageClass string
+	// KeepVolume is `microvm.keep_volume`: when true, each microVM issue pod's workspace volume is
+	// a claim that the issue's Sandbox owns. The claim stays through the pod's ends and the
+	// issue's idle releases, and Kubernetes deletes it with the Sandbox. False when the file sets
+	// none. It applies to a microVM issue pod alone: a gVisor pod and the controller's pod ignore it.
+	KeepVolume bool
 	// Metadata is the metadata endpoint a microVM pod's launcher serves on the pod itself; nil
 	// when the file names none.
 	Metadata *MetadataConfig
@@ -604,9 +642,11 @@ func readAdvertiseHost(value *yaml.Node, key string) (*string, error) {
 // refusal names what replaced it, which is what `legion config check` shows the operator to edit;
 // skills_repository is refused whatever its value, a null one included (namesKey). The sandbox's
 // rules that read the block's scheduling, pod and agent_secrets too are checked once all four are
-// read (checkSandboxAgainstTheBlock). What depends on keys outside the block is checked once the
-// whole file is read (checkKubernetesKeys), and the reservations the file leaves out are filled
-// when the block is settled (resolveKubernetes).
+// read (checkSandboxAgainstTheBlock), and so is the session database's writer audience against the
+// audience of every token a role of a pod reads (checkWriterAudienceAgainstRoleTokens). What
+// depends on keys outside the block is checked once the whole file is read (checkKubernetesKeys),
+// and the reservations the file leaves out are filled when the block is settled
+// (resolveKubernetes).
 func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, errors.New("runtime.kubernetes must be a mapping")
@@ -690,10 +730,16 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	if block.MemoryGuard, err = readMemoryGuard(fields["memory_guard"]); err != nil {
 		return nil, err
 	}
+	if block.VolumeTrim, err = readVolumeTrim(fields["volume_trim"]); err != nil {
+		return nil, err
+	}
 	if block.Sandbox, err = readSandbox(fields["sandbox"], block.StorageClass); err != nil {
 		return nil, err
 	}
 	if err := checkSandboxAgainstTheBlock(block); err != nil {
+		return nil, err
+	}
+	if err := checkWriterAudienceAgainstRoleTokens(block); err != nil {
 		return nil, err
 	}
 	return block, nil
@@ -923,7 +969,8 @@ func readSandbox(value *yaml.Node, storageClass string) (SandboxConfig, error) {
 
 // readMicroVM reads `runtime.kubernetes.sandbox.microvm`: its compute_class, which readSandbox
 // requires while an issue pod runs in a microVM; its storage_class, storageClass when the block
-// names none; and its metadata block, nil when absent.
+// names none; its keep_volume, false when absent and otherwise only true or false, as
+// readTestPostgres reads test_postgres; and its metadata block, nil when absent.
 func readMicroVM(value *yaml.Node, storageClass string) (*MicroVMConfig, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", microVMKey)
@@ -940,6 +987,11 @@ func readMicroVM(value *yaml.Node, storageClass string) (*MicroVMConfig, error) 
 		return nil, err
 	}
 	block.StorageClass = cmp.Or(block.StorageClass, storageClass)
+	if keep := fields["keep_volume"]; keep != nil {
+		if keep.Tag != "!!bool" || keep.Decode(&block.KeepVolume) != nil {
+			return nil, fmt.Errorf("%s.keep_volume must be true or false", microVMKey)
+		}
+	}
 	if block.Metadata, err = readMetadata(fields["metadata"]); err != nil {
 		return nil, err
 	}
@@ -1025,6 +1077,61 @@ func checkSandboxAgainstTheBlock(block *Kubernetes) error {
 	return nil
 }
 
+// checkWriterAudienceAgainstRoleTokens refuses a session database writer audience
+// (session_database.writer_audience) that a token a pod carries for its roles also carries: the
+// broker's two (agent_secrets.audience and exchange_audience), which a pod that enrolls with the
+// broker mounts where every role of the pod reads them (podTokenMounts in
+// internal/runtime/sandbox), and each projected service_account_token of the operator's
+// pod.volumes, mounted or not: every pod carries the operator's pod volumes, and a volume_mounts
+// entry shows one to every role of the pod. All these tokens and the writer token have one subject,
+// the pod's ServiceAccount. So with a shared audience, a role's process that reads such a token (a
+// broker's token at once, a pod volume's once a volume_mounts entry shows it to every role) could
+// exchange it as the writer token and sign in as the session database's service account, past the
+// socket's peer check, and the writer token must be the launcher's alone. A token of the writer
+// audience's https: form is refused too: a provider whose allowed audiences are left empty takes a
+// token whose audience is its full resource name "with or without the HTTPS prefix" (gcloud iam
+// workload-identity-pools providers create-oidc, --allowed-audiences). The broker's tokens are
+// checked first, then the volumes in order, and each refusal names both keys and the audience.
+func checkWriterAudienceAgainstRoleTokens(block *Kubernetes) error {
+	writer := block.SessionStore.Database.WriterAudience
+	if writer == "" {
+		return nil
+	}
+	// A writer audience never starts with https: (ompsessions.ValidWriterAudience), so trimming the
+	// prefix leaves the writer audience exactly when the audience is it or its https: form.
+	carries := func(audience string) bool { return strings.TrimPrefix(audience, "https:") == writer }
+	refusal := func(key, audience, reason string) error {
+		if audience == writer {
+			return fmt.Errorf("%s.writer_audience must differ from %s (both %s): %s, and the writer token is the launcher's alone",
+				sessionDatabaseKey, key, writer, reason)
+		}
+		return fmt.Errorf("%s.writer_audience must differ from %s (%s), which a provider whose allowed audiences are empty takes as the same audience, its full resource name with the https: prefix: %s, and the writer token is the launcher's alone",
+			sessionDatabaseKey, key, audience, reason)
+	}
+	if secrets := block.AgentSecrets; secrets != nil {
+		for _, member := range []struct{ key, audience string }{
+			{agentSecretsKey + ".audience", secrets.Audience}, {agentSecretsKey + ".exchange_audience", secrets.ExchangeAudience},
+		} {
+			if carries(member.audience) {
+				return refusal(member.key, member.audience, "the broker's tokens are mounted where every role of a pod reads them")
+			}
+		}
+	}
+	for i := range block.Pod.Volumes {
+		projected := block.Pod.Volumes[i].Projected
+		if projected == nil {
+			continue
+		}
+		for j := range projected.Sources {
+			if token := projected.Sources[j].ServiceAccountToken; token != nil && carries(token.Audience) {
+				return refusal(fmt.Sprintf("%s.volumes[%d].projected.sources[%d].service_account_token.audience", podKey, i, j),
+					token.Audience, "every pod carries the operator's pod volumes, and a volume_mounts entry shows one to every role of the pod")
+			}
+		}
+	}
+	return nil
+}
+
 // readMemoryGuard reads `runtime.kubernetes.memory_guard`, settled: a mapping by pod kind, of which
 // this release knows `issue_pods` alone (readMemoryGuardPod), and the default (DefaultMemoryGuard)
 // for every member the file leaves out, so the guard runs wherever the file says nothing. Any
@@ -1102,6 +1209,80 @@ func readMemoryGuardPod(value *yaml.Node, key string, settled MemoryGuardPodConf
 			return MemoryGuardPodConfig{}, fmt.Errorf("%s.%s must be between %d and %d", key, number.field, number.min, number.max)
 		}
 		*number.into = *read
+	}
+	return settled, nil
+}
+
+// readVolumeTrim reads `runtime.kubernetes.volume_trim`, settled: each member the file sets and
+// the default (DefaultVolumeTrim) for each it leaves out, so the trimmer runs wherever the file
+// says nothing. `enabled` is read from the settled default rather than from the key's presence,
+// as every number of the block is and unlike `test_postgres` (readTestPostgres), because this
+// block's default is on: an operator writing `enabled: true` back must get the trimmer, and a
+// value that is no YAML boolean — `off` and `yes` among them, which this loader's reader tags
+// as strings, as `production_check`'s `off` reaches readProject as one — is refused rather than
+// read as a word nobody meant. Each mark is a whole percentage of the volume from 1 to
+// shimwire.VolumeMarkMax, and the low mark must be strictly below the high one, refused naming
+// both: marks that met would leave the sweep no fraction to stop at. min_age_minutes is bounded
+// at shimwire.VolumeMinAgeMax and interval_seconds at shimwire.VolumeIntervalMax, and neither
+// may be 0: the trimmer arms a time.Ticker with the interval, which panics on a non-positive
+// period. An interval of 0 that reached the launcher would be refused there too, before any clock
+// is armed, logged, and the pod's trimmer would stay off with no fault counted (launcher's
+// refusedTrimSettings); armed with it, the trimmer would fault each time its interval loop
+// started, and three of those in a row would switch it off for the life of its launcher process
+// (launcher's trimmer.run).
+//
+// The maximum of a mark, of the age and of the interval are the wire's own
+// (shimwire.VolumeMarkMax, shimwire.VolumeMinAgeMax, shimwire.VolumeIntervalMax), which the
+// launcher's trimmer checks the settings against a second time on its side of the connection: a
+// maximum widened here alone would load cleanly and then be refused by every pod's trimmer,
+// which then sweeps nothing until a daemon sends settings inside the launcher's ranges.
+func readVolumeTrim(value *yaml.Node) (VolumeTrimConfig, error) {
+	const key = kubernetesKey + ".volume_trim"
+	settled := defaultVolumeTrim
+	if value == nil || value.Tag == "!!null" {
+		return settled, nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return VolumeTrimConfig{}, fmt.Errorf("%s must be a mapping", key)
+	}
+	fields, err := describedMembers(value, key, kubernetesKey+".volume_trim")
+	if err != nil {
+		return VolumeTrimConfig{}, err
+	}
+	if enabled := fields["enabled"]; enabled != nil {
+		var on bool
+		if enabled.Tag != "!!bool" || enabled.Decode(&on) != nil {
+			return VolumeTrimConfig{}, fmt.Errorf("%s.enabled must be true or false", key)
+		}
+		settled.Enabled = on
+	}
+	for _, number := range []struct {
+		field string
+		max   int
+		into  *int
+	}{
+		{"high_percent", shimwire.VolumeMarkMax, &settled.HighPercent},
+		{"low_percent", shimwire.VolumeMarkMax, &settled.LowPercent},
+		// The age is bounded because an unbounded one is not the trimmer switched off but the
+		// trimmer deleting everything: the sweep's cutoff is its start less min_age_minutes of
+		// time.Duration, which is int64 nanoseconds, so a large age wraps the cutoff past the
+		// sweep's own start and every entry of every root is then eligible however recently it
+		// was written (launcher's sweep, shimwire.VolumeMinAgeMax). `enabled: false` is how an
+		// operator switches the trimmer off.
+		{"min_age_minutes", shimwire.VolumeMinAgeMax, &settled.MinAgeMinutes},
+		{"interval_seconds", shimwire.VolumeIntervalMax, &settled.IntervalSeconds},
+	} {
+		read, err := readPositiveInteger(fields[number.field], key+"."+number.field, number.max)
+		if err != nil {
+			return VolumeTrimConfig{}, err
+		}
+		if read != nil {
+			*number.into = *read
+		}
+	}
+	if settled.LowPercent >= settled.HighPercent {
+		return VolumeTrimConfig{}, fmt.Errorf("%s.low_percent (%d) is not below %s.high_percent (%d): the sweep stops at the low mark, so marks that meet leave it nothing to stop at",
+			key, settled.LowPercent, key, settled.HighPercent)
 	}
 	return settled, nil
 }
@@ -1805,13 +1986,19 @@ func inertSessionKey(key string, kind ompsessions.StoreKind) error {
 // readSessionDatabase reads `session_database` under `cloudsql-iam`: the instance's connection
 // name, project:region:instance or domain:project:region:instance, which the pod's proxy dials
 // (internal/sessionproxy) and which must pass ompsessions.ValidInstance, the connector's own rule;
-// the database in it; the IAM login the pod signs in as; and `impersonate_service_account`, the
+// the database in it; the IAM login the pod signs in as; `impersonate_service_account`, the
 // Google service account the pod's proxy impersonates with the pod's own credentials and signs in
-// as. The first three are required, since no pod can reach the database without them; the fourth
-// is optional, and without it each pod signs in as itself. A named account must be a service
-// account's email by ompsessions.ServiceAccountLogin, the rule the proxy holds to as well, and
-// `user` must then be that account's login: the proxy signs in as the account it impersonates, so
-// any other login, let through here, would fail every generation's first dial instead.
+// as; and `writer_audience`, the audience of the projected ServiceAccount token only the pod's
+// launcher reads, which the proxy exchanges at Google's security token service to impersonate
+// that account in place of the pod's own credentials. The first three are required, since no pod
+// can reach the database without them; the last two are optional, and without them each pod
+// signs in as itself. A named account must be a service account's email by
+// ompsessions.ServiceAccountLogin, the rule the proxy holds to as well, and `user` must then be
+// that account's login: the proxy signs in as the account it impersonates, so any other login,
+// let through here, would fail every generation's first dial instead. A named audience must be a
+// workload identity provider's full resource name by ompsessions.ValidWriterAudience, the rule the
+// launcher and the proxy hold to as well, and needs `impersonate_service_account`: the writer
+// token signs in only by impersonating that account, so without one it would sign in as nobody.
 func readSessionDatabase(value *yaml.Node) (ompsessions.Database, error) {
 	if value == nil {
 		return ompsessions.Database{}, errors.New(sessionDatabaseKey +
@@ -1841,8 +2028,22 @@ func readSessionDatabase(value *yaml.Node) (ompsessions.Database, error) {
 		sessionDatabaseKey+".impersonate_service_account"); err != nil {
 		return ompsessions.Database{}, err
 	}
+	if database.WriterAudience, err = optionalString(fields["writer_audience"],
+		sessionDatabaseKey+".writer_audience"); err != nil {
+		return ompsessions.Database{}, err
+	}
 	if !ompsessions.ValidInstance(database.Instance) {
 		return ompsessions.Database{}, fmt.Errorf("%s.instance %q must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project", sessionDatabaseKey, database.Instance)
+	}
+	if database.WriterAudience != "" {
+		if !ompsessions.ValidWriterAudience(database.WriterAudience) {
+			return ompsessions.Database{}, fmt.Errorf("%s.writer_audience %q must be a workload identity provider's full resource name, %s",
+				sessionDatabaseKey, database.WriterAudience, ompsessions.WriterAudienceForm)
+		}
+		if database.ImpersonateServiceAccount == "" {
+			return ompsessions.Database{}, fmt.Errorf("%s.writer_audience needs %s.impersonate_service_account:"+
+				" the writer token signs in to Cloud SQL only by impersonating that service account", sessionDatabaseKey, sessionDatabaseKey)
+		}
 	}
 	if database.ImpersonateServiceAccount == "" {
 		return database, nil

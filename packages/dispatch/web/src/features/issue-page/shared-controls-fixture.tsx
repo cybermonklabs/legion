@@ -396,11 +396,14 @@ export function proofDocument(): ReactNode {
   );
 }
 
-/** The header's priority write, which no case presses. */
+/** The header's priority write, which no case presses. It draws no priority; a case that draws
+ *  one spreads it with its own `shown`. */
 export const idlePriorityWrite: IssuePriorityWrite = {
   failed: false,
   pending: false,
   retry: () => undefined,
+  shown: null,
+  stopped: undefined,
   submit: () => undefined,
 };
 

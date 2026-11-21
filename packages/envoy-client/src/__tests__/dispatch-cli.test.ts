@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
 import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
@@ -17,6 +18,9 @@ interface Recorded {
 
 const makeDirectory = temporaryDirectories("dispatch-cli");
 
+/** The Dispatch bearer each command is handed. */
+const TOKEN = fixtureSecret("dsp");
+
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
 const requests: Recorded[] = [];
 let triage = false;
@@ -24,6 +28,9 @@ let triage = false;
 let replyLength = 1;
 const LONG_THREAD = "11111111-1111-4111-8111-111111111111";
 const human = { kind: "human", id: "h" };
+/** The line the fake Dispatch answers a result's dry run with. */
+const RESULT_DRY_RUN_LINE =
+  "- Check k1 (before_merge): pass at 1111111111111111111111111111111111111111, recorded by implementer. open-items v14 lists every row.";
 
 /** How the Dispatch server refuses a body whose block `block`, a paragraph, is `units` UTF-16
  *  units long, past the bound it holds each block to, worded as `itemblocks.CapExceeded` words
@@ -359,6 +366,9 @@ const server = Bun.serve({
         },
       });
     }
+    if (pathname === "/api/v1/issues/DSP-1/results/dry-run" && request.method === "POST") {
+      return Response.json({ line: RESULT_DRY_RUN_LINE });
+    }
     if (pathname === "/api/v1/issues/DSP-1/comments" && request.method === "POST") {
       const refusal = bodyRefusal(body.body as string);
       if (refusal !== undefined) return Response.json(refusal, { status: 400 });
@@ -538,7 +548,7 @@ function environment(
   return {
     HOME: stateDir,
     DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-    DISPATCH_TOKEN: "test-token",
+    DISPATCH_TOKEN: TOKEN,
     DISPATCH_STATE_DIR: stateDir,
     ...extra,
   };
@@ -618,6 +628,19 @@ function ledger(sessionId: string): { tool: string; error?: string }[] {
 }
 
 const omp = { DISPATCH_HOST: "omp", DISPATCH_SESSION_ID: "ses-1" };
+
+/** A `dispatch result` record of check k1 of DSP-1, its arguments as the command parses them. */
+const RESULT_ARGS = {
+  issue: "DSP-1",
+  check: "k1",
+  role: "implementer",
+  verdict: "pass",
+  commit: "1111111111111111111111111111111111111111",
+};
+const RESULT_ARGV = [
+  "result",
+  ...Object.entries(RESULT_ARGS).flatMap(([field, value]) => [`--${field}`, value]),
+];
 
 describe("the dispatch CLI", () => {
   test("refuses without DISPATCH_HOST, naming it, and sends nothing", async () => {
@@ -860,6 +883,48 @@ describe("the dispatch CLI", () => {
         rule,
       ]);
     }
+    expect(requests).toEqual([]);
+  });
+
+  // A record's dry run asks Dispatch, on a path of its own, for the pull-request body line the
+  // record would print, and prints it after the arguments: the line is Dispatch's to write, so
+  // the CLI prints the one Dispatch answered and builds none. Nothing is recorded, and this
+  // session's ledger keeps no entry, as for every dry run that passed.
+  test("dispatch result --dry-run prints the pull-request body line Dispatch answers and records nothing", async () => {
+    const observed = "DSP-1's open-items v14 lists every row.";
+    const { code, stdout } = await run([...RESULT_ARGV, "--observed", observed, "--dry-run"], omp);
+    expect(code, stdout).toBe(0);
+    const args = { ...RESULT_ARGS, observed };
+    expect(stdout).toBe(
+      `${JSON.stringify(args, null, 2)}\n\nNothing was recorded: this is a dry run.\n\nPull request body line:\n${RESULT_DRY_RUN_LINE}\n`
+    );
+    expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
+      "POST /api/v1/issues/DSP-1/results/dry-run",
+    ]);
+    const { issue: _, ...body } = args;
+    expect(requests[0]?.body).toMatchObject(body);
+    expect(existsSync(join(stateDir, "sessions", "ses-1", "results.jsonl"))).toBe(false);
+  });
+
+  // The dry run needs Dispatch as the record does, so with Dispatch off it is refused in the
+  // record's own words and exit code, and sends nothing.
+  test("dispatch result --dry-run with Dispatch off is refused as the record is", async () => {
+    const off = { ...omp, DISPATCH_URL: undefined, DISPATCH_TOKEN: undefined };
+    const record = await run(RESULT_ARGV, off);
+    const dry = await run([...RESULT_ARGV, "--dry-run"], off);
+    expect(record.code).toBe(2);
+    expect(record.stdout).toStartWith("dispatch: ");
+    expect(dry).toEqual(record);
+    expect(requests).toEqual([]);
+  });
+
+  test("dispatch result --retract --dry-run prints the arguments and sends nothing", async () => {
+    const { code, stdout } = await run(
+      ["result", "--retract", "res-2", "--reason", "The run was wrong.", "--dry-run"],
+      omp
+    );
+    expect(code, stdout).toBe(0);
+    expect(JSON.parse(stdout)).toEqual({ retract: "res-2", reason: "The run was wrong." });
     expect(requests).toEqual([]);
   });
 
@@ -1643,7 +1708,7 @@ describe("the dispatch entry as its own process", () => {
         DISPATCH_HOST: "omp",
         DISPATCH_SESSION_ID: "ses-1",
         DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-        DISPATCH_TOKEN: "test-token",
+        DISPATCH_TOKEN: TOKEN,
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -1746,7 +1811,7 @@ describe("the dispatch CLI's envoy.json", () => {
         dispatch: {
           enabled: true,
           serverUrl: `http://127.0.0.1:${server.port}`,
-          token: "test-token",
+          token: TOKEN,
         },
       })
     );
@@ -2029,7 +2094,7 @@ describe("the dispatch CLI's envoy.json", () => {
     writeFileSync(
       old,
       JSON.stringify({
-        dispatch: { enabled: true, serverUrl: "http://127.0.0.1:1", token: "checkout-token" },
+        dispatch: { enabled: true, serverUrl: "http://127.0.0.1:1", token: fixtureSecret("file") },
       })
     );
 
@@ -2090,7 +2155,7 @@ describe("the dispatch CLI's envoy.json", () => {
     const file = join(dir, "envoy.json");
     for (const contents of [
       { envoy: { enabled: true, natsUrls: ["nats://nats.internal.example:4222"] } },
-      { dispatch: { token: "file-token" } },
+      { dispatch: { token: fixtureSecret("file") } },
     ]) {
       writeFileSync(file, JSON.stringify(contents));
       const { code, stdout } = await run(["projects"], { ...fromFile, ENVOY_CONFIG_FILE: file });
@@ -2106,7 +2171,7 @@ describe("the dispatch CLI's envoy.json", () => {
   // the session's one long-lived shell keeps until a command unsets or empties DISPATCH_URL.
   test("DISPATCH_TOKEN_FILE with no DISPATCH_URL says the shell lost it, not that envoy.json is missing, and exits 2, sending nothing", async () => {
     const tokenFile = join(stateDir, "DISPATCH_TOKEN");
-    writeFileSync(tokenFile, "test-token\n");
+    writeFileSync(tokenFile, `${TOKEN}\n`);
     const chosen = join(stateDir, "profile", "envoy.json");
     for (const variables of [
       { DISPATCH_TOKEN_FILE: tokenFile },

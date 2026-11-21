@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
@@ -952,10 +953,10 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 	if runErr := procgroup.Err(err); runErr != nil && !timedOut && end.Signal == "" {
 		return ran{}, runErr
 	}
-	tail := strings.TrimSpace(stderr.String())
-	if len(tail) > maxProbeStderr {
-		tail = tail[len(tail)-maxProbeStderr:]
-	}
+	// The tail of the probe's stderr is cut by redact.Tail, which reads it whole through the URL
+	// rule first: Oh My Pi and a plugin can quote a URL with a token, and a tail cut first could
+	// start inside its userinfo or its query, where the rule no longer finds either.
+	tail, _ := redact.Tail(strings.TrimSpace(stderr.String()), maxProbeStderr)
 	return ran{
 		exit:     cmd.ProcessState.ExitCode(),
 		end:      end,

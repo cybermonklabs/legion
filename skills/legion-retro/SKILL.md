@@ -5,83 +5,56 @@ description: "Use when the Legion daemon starts you, the implementer, on `Phase:
 
 # Legion retro
 
-If this skill disagrees with the code, a command's output or its `--help`, follow those and say which line of this skill is wrong.
+Retro runs on the reviewed head, between the architect's acceptance and the merger's merge.
+`<issue>` is your `LEGION_ISSUE`. Run every step, even on a mechanical change.
 
-Retro runs on the reviewed head, after the architect's acceptance and before the merger merges it
-(`skill://legion-worker/references/merge-gate.md` has the whole order).
-`<issue>` is your `LEGION_ISSUE`.
-Run steps 1-6 even when the change looks mechanical; each gives its reason.
-
-Retro commits nothing and pushes nothing: every handoff is a record on the Dispatch issue, no
-commit carries one, and what the work taught is a `dispatch comment` on the issue, for the skill
-librarian to read. `docs/solutions/` stays as history, and no role writes there.
-The head the merger names is the head the reviewer approved.
-
-## What sends the issue back here
-
-Nothing does.
-No Legion check compares the head that merges with the one the review approved, so whether a push
-made after the approval must be reviewed again is the repository's own rule, and no handoff is a
-commit, so no head carries one for a retro to remove.
-
-Work on the existing issue branch: never rebase it onto another base, never make another branch or
-bookmark, and push nothing, because the merger merges this branch's head and a push of yours
-would put a commit above the head the reviewer approved.
+Retro commits nothing and pushes nothing: the merger merges the branch's head, and a push would put
+a commit above the head the reviewer approved. No Legion check compares the head that merges with
+the one the review approved, so whether a push after the approval needs a new review is the
+repository's own rule. Never rebase the branch or make another branch or bookmark.
+Retro writes no handoff. In the workspace it changes nothing; outside it, it writes only step 4's
+`mktemp -d` directory, the PR body and the Dispatch comment and message. It sets no GitHub or
+Dispatch label: Legion keeps phase state in the daemon.
+What the work taught is a `dispatch comment` for the skill librarian; no role writes to
+`docs/solutions/`.
 
 ## When retro stops
 
 When a step fails (the body cannot be computed, read or written, or Dispatch refuses a write), do
-not call `handoff_complete`. Report it with `envoy_publish` to the architect's
-topic in the `Legion addressing` line of your system prompt, with the command and its output. A
-check with no pass standing at the head goes back as step 1 says. A defect you find in the work at
-any other step goes to the architect with its evidence, and you hold your completion until the
-architect answers: while retro holds the phase, `request_backward_move` is yours to make, and your
-`handoff_complete` moves the issue to `merging`, which takes that move from you. End each turn of
-that hold with a WAITING line naming the defect and the architect's answer you wait on. The
-Dispatch message (step 5) is for a finished retro only.
+not call `handoff_complete`: send the command and its output to the architect's topic on your
+`Legion addressing` line. A defect you find in the work goes to the architect with its evidence,
+and you hold your completion until it answers: while retro holds the phase,
+`request_backward_move` is yours, and `handoff_complete` takes it away. End each turn of that hold
+with a WAITING line naming the defect and the answer you wait on.
 
 ## Steps
 
-1. **Read the evidence:** the issue, its checks (`dispatch results --issue <issue>`), the pull
-   request, and the tester's and reviewer's handoffs
-   (`dispatch handoff-read --issue <issue> --phase test`, then the review
-   at the version your task's `Handoff:` line names, `--phase review --version <n>`, the command
-   that line quotes). A pass stands for every `before_merge` check of the issue at the approved
-   head, from the implementer and from the tester alike, and the pull request
-   body's `Checks` block carries each of those lines. A check carrying `ci_check` is CI's: the
-   result that `dispatch results` derives is the pass it needs, and its CI job is its evidence
-   (`skill://legion-worker/references/ci-checks.md`). In
-   cybermonklabs/legion a surface may also be the daemon's real-process tests, a live proof under
-   `scripts/e2e/`, or a live check at the operator's next daemon restart recorded on the pull
-   request. A `ci_check` check has no pass standing at that head when its derived result is a
-   fail, or its run concluded `skipped`, `neutral` or `cancelled`. Wait for a run that has not
-   concluded, and read again where GitHub could not be read. Send a name that no run answers
-   (`absent`) to the architect as a finding, because the words of the check are wrong. Neither
-   wait nor that finding moves the issue back. A check whose `run` is a whole test suite has wrong
-   words too: send it to the architect the same way, and it moves the issue back no more than that
-   finding does. When any other check has no pass standing at that head, or
-   a check with no `ci_check` has a unit suite as its only evidence, call the `legion` tool's
-   `request_backward_move` with `to: implementing` for the implementer's result or a `ci_check`
-   check, or `to: testing` for the tester's result, its `reason` naming the check by its block
-   id. When
-   retro runs again, that gap is your first learning.
-2. **Get a second reading**, because a reader without your context sees what you stopped seeing.
-   First list, in your session, the constraints the issue did not state, choices between two
-   working options, approaches you abandoned, and code another issue could reuse, so the second
-   answer does not set your list. Then run `task(agent="oracle")` (read-only) with the issue, the
-   pull request body and the diff in its brief, asking for reusable learnings, and `wait` for its
-   answer, since it runs as a job of its own. You decide which points to keep. Drop a point that
-   cites no file, symbol, quoted text or commit of this pull request.
-3. **Record the learnings.** Write each kept point you can state as a rule a worker on another
-   issue could follow as one `dispatch comment` on the issue, per
-   `skill://legion-retro/references/learnings.md`, which says what a point must carry for the
-   skill librarian to use it. When none qualifies, say so in that comment's place in step 5's
-   message and write no comment.
-4. **Update the PR body**, per `skill://legion-retro/references/pr-body-content.md`,
-   when the repository derives body lines from changed paths.
-5. **Post one Dispatch message on the issue**, the record of the retro that the architect reads.
-   No `gh issue` write: Legion issues live on Dispatch. The body is at most 32,000 characters,
-   Dispatch's message limit, and ends with your attribution footer:
+1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request, the
+   tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) and the review at the
+   version your task's `Handoff:` line names (`--phase review --version <n>`). A pass must stand at
+   the approved head for every `before_merge` check, and the body's `Checks` block carries each.
+   - A check carrying `ci_check` is CI's: its derived result is the pass it needs
+     (`skill://legion-worker/references/ci-checks.md`). A `ci_check` check has no pass standing at
+     that head when its derived result is a fail, or its run concluded `skipped`, `neutral` or
+     `cancelled`. Wait for a run that has not concluded, and read again where GitHub could not be
+     read. Send a name that no run answers (`absent`) to the architect as a finding, since the
+     check's words are wrong, and the same for a check whose `run` is a whole test suite. Neither
+     wait nor that finding moves the issue back.
+   - Any other check with no pass standing, or a check with no `ci_check` whose only evidence is a
+     unit suite: `request_backward_move` with `to: implementing` for the implementer's result or a
+     `ci_check` check, or `to: testing` for the tester's, its `reason` naming the check's block id.
+2. **Get a second reading.** First list in your session the constraints the issue did not state,
+   choices between two working options, abandoned approaches and reusable code. Then run
+   `task(agent="oracle")` with the issue, the pull request body and the diff, asking for reusable
+   learnings, and `wait` for its answer. Drop a point that cites no file, symbol, quoted text or
+   commit of this pull request.
+3. **Record the learnings** as one `dispatch comment` on the issue, per
+   `skill://legion-retro/references/learnings.md`. When no point qualifies, write no comment and
+   say so in step 5's message.
+4. **Update the PR body**, per `skill://legion-retro/references/pr-body-content.md`, when the
+   repository derives body lines from changed paths.
+5. **Post one Dispatch message on the issue**, at most 32,000 characters (never a `gh issue`
+   write):
 
    ```bash
    dispatch message --issue '<KEY>' --body-file - <<'EOF'
@@ -97,27 +70,25 @@ Dispatch message (step 5) is for a finished retro only.
    **Production check:** <the command or user action that will show the change working in production>
    **Carried by:** <the deploy or restart that carries the merge there>
    **Run by:** <the agent or role your system prompt's deployment instructions name; when none, the person to ask>
-
-   <!-- legion: {"session":"<session-id>","phase":"retro"} -->
    EOF
    ```
 
-   The merge's close hands the production check's first look to the role the project's
-   `production_check` setting names — the tester, unless the setting is `off`, where the close
-   opens no check at all — so it reaches that role's session, not yours, and the look after it is
-   the one that look's own `wake_at` names
-   (`skill://legion-worker/references/merge-gate.md#the-production-check-after-the-close`).
+   A Dispatch comment or message never carries the `<!-- legion: … -->` footer. Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
+
 6. **Complete** with the `legion` tool's `handoff_complete`, its summary two sentences for the
-   architect. It reports the commit your workspace stands on, which is the head you found: retro
-   writes no handoff and makes no commit. In the workspace retro changes nothing; outside it, it
-   writes only step 4's `mktemp -d` directory, the PR body and the Dispatch comment and message.
-   It sets no GitHub or Dispatch label: Legion keeps phase state in the daemon, not in labels.
+   architect. In the same call, rate the plan the issue ran (its steps and the role that worked
+   each, not the planner's `plan.md`): send both `plan_rating`, a whole number from 1 (the plan
+   cost the work) to 5 (the plan fit the work), and `plan_reason`, one sentence of why from step
+   1's evidence, or neither where your `legion` tool's `handoff_complete` takes neither field. The
+   daemon refuses a completion without them (`PLAN_RATING_REQUIRED`), with one alone, a rating off
+   that scale or a reason blank or over 2,000 characters (`PLAN_RATING_INPUT`), and with both on
+   any other completion (`PLAN_RATING_UNEXPECTED`). A refusal records nothing: complete again.
 
 ## Before you complete
 
 - `jj -R "$LEGION_WORKSPACE" diff --from "legion/${LEGION_ISSUE:?}@origin" --to @ --name-only`
-  lists nothing: retro leaves the workspace as it found it, and the merger merges the head the
-  reviewer approved.
+  lists nothing.
 - Each body line you added or changed that says work was done names work this pull request did.
-- The Dispatch comment and the Dispatch message are posted, and the pull request's head is the
-  head you found.
+- The comment and the message are posted, and the pull request's head is the head you found.
+- Your `handoff_complete` carries `plan_rating` and `plan_reason`, or neither where your `legion`
+  tool's `handoff_complete` takes neither.

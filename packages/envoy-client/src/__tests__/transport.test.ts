@@ -1,10 +1,28 @@
 import { describe, expect, test } from "bun:test";
-import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS, MINTED_DEDUPE_KEY_PATTERN } from "@legion/contracts";
+import { readFileSync } from "node:fs";
+import {
+  type Envelope,
+  EnvelopeSchema,
+  ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
+  MINTED_DEDUPE_KEY_PATTERN,
+} from "@legion/contracts";
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import envelopeWithoutRole from "../../../contracts/fixtures/envelope-without-role.json";
 import noInterestsFixture from "../../../contracts/fixtures/envoy-session-no-interests.json";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import { bearerCredential, type RequestCredential } from "../bearer";
+import { createConsumerDelivery, RelayHeader, type RelayReply } from "../consumer-delivery";
+import { DedupeIdentitySchema, renderInbound } from "../delivery";
+import { createDeliveryLedger, type FailureNotice } from "../delivery-ledger";
+import { subscriptionRemovedTopics } from "../dispatch-subscribe";
 import { machineID } from "../machine";
 import type { TmuxPlace } from "../tmux-place";
+import {
+  publishConfirmationText,
+  publishResultDetails,
+  sendConfirmationText,
+} from "../tool-contract";
 import {
   createEnvoyClient,
   type DeliveryAnswer,
@@ -1543,9 +1561,12 @@ describe("EnvoyClient", () => {
       attempts: 2,
       resendSafe: true,
     });
+    // The attempt that got no answer is named by the request and the failure's class: the
+    // runtime's own message can repeat the host it dialed.
     expect((error as Error).message).toBe(
       "The send to ses_target is not confirmed delivered: the listener did not answer " +
-        "(The operation timed out.) on the last of 2 attempts. It may or may not have arrived. " +
+        "(POST http://listener/v1/messages/send got no answer: TimeoutError (message withheld)) " +
+        "on the last of 2 attempts. It may or may not have arrived. " +
         `Sending it again with idempotency_key ${key} within 72 hours is the safe resend: ` +
         "Envoy drops it as a repeat if the first copy arrived (a recipient that restarted in " +
         "between can rarely see it twice)."
@@ -1575,6 +1596,175 @@ describe("EnvoyClient", () => {
     expect((error as EnvoySendUnconfirmedError).message).toStartWith(
       "The send to ses_target is not confirmed delivered: the listener answered 404 " +
         "(no live session ses_target) on the last of 2 attempts. It may or may not have arrived."
+    );
+  });
+
+  // A redirect in front of the listener is never followed (A1 of the review of 87105ed7e8): a 301,
+  // 302 or 303 would turn the send's POST into a GET, and a 307 or 308 would send it again to
+  // another origin. The 3xx is the answer: it says nothing reached the listener, so the send is
+  // refused, never "may or may not have arrived".
+  test.each([
+    301, 302, 303, 307, 308,
+  ])("a send a %i answers is refused, and the redirect is not followed", async (status) => {
+    let followed = 0;
+    let sent = 0;
+    const client = createEnvoyClient({
+      baseUrl: "http://listener",
+      fetch: (async (_url: RequestInfo | URL, init?: RequestInit) => {
+        sent += 1;
+        if (init?.redirect !== "manual") {
+          // What fetch does where it follows: the request goes to the other origin.
+          followed += 1;
+          return Response.json(
+            { event_id: "evt-elsewhere", recipient: "ses_target", recipient_state: "live" },
+            { status: 202 }
+          );
+        }
+        return new Response("moved", {
+          status,
+          headers: { Location: "http://elsewhere.test/v1/messages/send" },
+        });
+      }) as unknown as typeof fetch,
+    });
+    const error = await client
+      .send({ sourceSessionID: "ses_source", targetSessionID: "ses_target", message: "hello" })
+      .catch((caught: unknown) => caught);
+    expect(followed).toBe(0);
+    expect(sent).toBe(1);
+    expect(error).not.toBeInstanceOf(EnvoySendUnconfirmedError);
+    expect(error).toBeInstanceOf(EnvoyApiError);
+    expect((error as EnvoyApiError).details.status).toBe(status);
+  });
+
+  // F6 (the review of 81d860a8f7): whatever answered a redirect in the listener's place chose its
+  // body, and a misconfigured proxy echoes the request back, the bearer with it. The error prints
+  // that body as the Dispatch client prints a gateway's page, one line with the bearer redacted, and
+  // names the origin the redirect pointed at; never the body whole.
+  test("a send a redirect answers prints its body as one redacted line, with the redirect's origin", async () => {
+    const listenerToken = fixtureSecret("listener");
+    const echoed = `<html><body><h1>Moved</h1>\n<p>Authorization: Bearer ${listenerToken}</p>\n${"<p>filler</p>\n".repeat(400)}</body></html>`;
+    const client = createEnvoyClient({
+      baseUrl: "http://listener",
+      credential: bearerCredential(listenerToken),
+      fetch: (async () =>
+        new Response(echoed, {
+          status: 308,
+          headers: {
+            "Content-Type": "text/html",
+            Location: "https://user:pass@elsewhere.test/v1/messages/send?token=abc",
+          },
+        })) as unknown as typeof fetch,
+    });
+    const error = await client
+      .send({ sourceSessionID: "ses_source", targetSessionID: "ses_target", message: "hello" })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(EnvoyApiError);
+    const message = (error as EnvoyApiError).message;
+    expect(message).toStartWith(
+      "POST http://listener/v1/messages/send failed with 308 (a redirect to https://elsewhere.test, " +
+        "which this client does not follow): a body that is not the listener's error JSON " +
+        '("Moved Authorization: Bearer [redacted]'
+    );
+    expect(message).not.toContain(listenerToken);
+    expect(message).not.toContain("\n");
+    expect(message).not.toContain("pass@");
+    expect(message.length).toBeLessThan(400);
+  });
+
+  // F6's class (the coordinator's ruling on the review of 81d860a8f7): any answer whose body is not
+  // the listener's error JSON was written by something in its place, a proxy's or a load
+  // balancer's page, which can echo the request back, the bearer with it. The error names that
+  // body as the Dispatch client names a gateway's page: one line, the bearer and any
+  // `Authorization` or `Bearer` value redacted, never the page whole.
+  test.each([
+    [403, "Forbidden"],
+    [502, "Bad Gateway"],
+  ] as const)("a %i page a proxy answers in the listener's place prints as one redacted line", async (status, phrase) => {
+    const listenerToken = fixtureSecret("listener");
+    const page =
+      `<html><head><title>${status} ${phrase}</title><style>body{margin:0}</style></head>\n` +
+      `<body><h1>${status} ${phrase}</h1>\n<pre>GET /v1/interests/ses_sender\n` +
+      `Authorization: Bearer ${listenerToken}</pre>\n${"<p>filler</p>\n".repeat(400)}</body></html>`;
+    const client = createEnvoyClient({
+      baseUrl: "http://listener",
+      credential: bearerCredential(listenerToken),
+      retry: false,
+      fetch: (async () =>
+        new Response(page, {
+          status,
+          headers: { "Content-Type": "text/html" },
+        })) as unknown as typeof fetch,
+    });
+    const error = await client.getInterest("ses_sender").catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(EnvoyApiError);
+    const message = (error as EnvoyApiError).message;
+    expect(message).toStartWith(
+      `GET http://listener/v1/interests/ses_sender failed with ${status}: a body that is not the ` +
+        `listener's error JSON ("${status} ${phrase} ${status} ${phrase} GET /v1/interests/ses_sender ` +
+        "Authorization: Bearer [redacted]"
+    );
+    expect(message).not.toContain(listenerToken);
+    expect(message).not.toContain("\n");
+    expect(message).not.toContain("<");
+    expect(message.length).toBeLessThan(400);
+  });
+
+  // M4 (the review of 99b1e438db): a page that echoes the request's `Authorization: DPoP` back is
+  // redacted as a bearer's is, and so is the token the request was sent with when the credential
+  // names another by the time the answer comes (a renewal between the two).
+  test("a page that echoes a DPoP token sent before a renewal prints none of it", async () => {
+    const sent = fixtureSecret("sent");
+    const renewed = fixtureSecret("renewed");
+    let presentations = 0;
+    const credential: RequestCredential = {
+      scheme: "DPoP",
+      headers: () => {
+        presentations += 1;
+        return { Authorization: `DPoP ${sent}`, DPoP: "proof" };
+      },
+      secret: () => (presentations === 0 ? sent : renewed),
+    };
+    const page =
+      `<html><body><h1>502 Bad Gateway</h1><pre>Authorization: DPoP ${sent}\n` +
+      `X-Echo: DPoP ${sent.slice(2)}\nX-Raw: ${sent}</pre></body></html>`;
+    const client = createEnvoyClient({
+      baseUrl: "http://listener",
+      credential,
+      retry: false,
+      fetch: (async () =>
+        new Response(page, {
+          status: 502,
+          headers: { "Content-Type": "text/html" },
+        })) as unknown as typeof fetch,
+    });
+    const error = await client.getInterest("ses_sender").catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(EnvoyApiError);
+    const message = (error as EnvoyApiError).message;
+    expect(message).toContain(
+      '("502 Bad Gateway Authorization: DPoP [redacted] X-Echo: DPoP [redacted] X-Raw: [redacted]")'
+    );
+    expect(message).not.toContain(sent.slice(-12));
+  });
+
+  // A refused connection, or a name that does not resolve, reached no listener, so nothing was
+  // stored: the send is refused, in the transport's own words, never "may or may not have
+  // arrived" with a resend to make.
+  test("a send to a listener that refuses its connection on every attempt is refused, not unconfirmed", async () => {
+    let calls = 0;
+    const client = createEnvoyClient({
+      baseUrl: "http://listener",
+      fetch: (async () => {
+        calls += 1;
+        throw Object.assign(new TypeError("Unable to connect"), { code: "ECONNREFUSED" });
+      }) as unknown as typeof fetch,
+    });
+    const error = await client
+      .send({ sourceSessionID: "ses_source", targetSessionID: "ses_target", message: "hello" })
+      .catch((caught: unknown) => caught);
+    expect(calls).toBe(2);
+    expect(error).not.toBeInstanceOf(EnvoySendUnconfirmedError);
+    expect((error as Error).message).toBe(
+      "POST http://listener/v1/messages/send got no answer: ECONNREFUSED"
     );
   });
 
@@ -1942,20 +2132,22 @@ describe("EnvoyClient", () => {
   });
   test("sends the token it is given as a bearer token to the listener", async () => {
     const recorded = recordFetch([new Response(null, { status: 200 })]);
+    const listenerToken = fixtureSecret("listener");
     const client = createEnvoyClient({
       baseUrl: "http://listener",
       fetch: recorded.fetch,
-      credential: bearerCredential("listener-token"),
+      credential: bearerCredential(listenerToken),
     });
 
     await client.unregisterSession({ sessionID: "ses_closed" });
 
-    expect(recorded.requests[0]?.headers.get("Authorization")).toBe("Bearer listener-token");
+    expect(recorded.requests[0]?.headers.get("Authorization")).toBe(`Bearer ${listenerToken}`);
   });
 
   test("sends no Authorization header without a token, whatever ENVOY_TOKEN says", async () => {
     const previous = process.env.ENVOY_TOKEN;
-    process.env.ENVOY_TOKEN = "environment-token";
+    const environmentToken = fixtureSecret("envoy");
+    process.env.ENVOY_TOKEN = environmentToken;
     try {
       const recorded = recordFetch([new Response(null, { status: 200 })]);
       const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
@@ -2002,12 +2194,16 @@ describe("EnvoyClient", () => {
     ).rejects.toThrow("the secrets broker did not answer");
   });
 
-  // A listener URL may carry a user and a password. The request goes to it as configured, and
-  // the error a refused or unauthorised call throws names it without them.
-  test("names the listener URL without its user and password in the errors it throws", async () => {
-    const user = "user-7f2a";
-    const secret = "pw-4c7e19";
-    const baseUrl = `http://${user}:${secret}@listener`;
+  // A listener URL may carry a user and a password. The request goes to it as configured, and the
+  // error a refused, unauthorised or unanswered call throws names the URL by its fixed phrase
+  // alone, since the URL parser can split such a URL otherwise than its writer meant: a password
+  // holding an '@' and no host reads as a host of its tail, which a resolver's error repeats.
+  const user = "user-7f2a";
+  const pw = "pw-4c7e19";
+  test.each([
+    ["a user and a password", `http://${user}:${pw}@listener`, pw],
+    ["a password holding an '@' and no host", `http://${user}:p@ssw0rdTAIL7c`, "ssw0rdtail7c"],
+  ])("names a listener URL that carries %s by its fixed phrase in the errors it throws", async (_, baseUrl, secret) => {
     const unmintable: RequestCredential = {
       scheme: "DPoP",
       headers: () => Promise.reject(new Error("the secrets broker did not answer")),
@@ -2015,10 +2211,22 @@ describe("EnvoyClient", () => {
     };
     const refused = recordFetch([new Response("no such route", { status: 404 })]);
     const closed = recordFetch([new Response(null, { status: 401 })]);
+    const lost = (async () => {
+      throw Object.assign(new TypeError(`getaddrinfo ENOTFOUND ${secret}`), {
+        code: "ENOTFOUND",
+        syscall: "getaddrinfo",
+      });
+    }) as unknown as typeof fetch;
+    // Each error's message and the messages of its cause chain: what a log of it prints, without
+    // the source lines Bun.inspect quotes from this file beside a stack.
     const failure = (call: Promise<unknown>) =>
       call.then(
         () => "",
-        (error: Error) => error.message
+        (error: unknown) => {
+          const texts: string[] = [];
+          for (let at: unknown = error; at instanceof Error; at = at.cause) texts.push(at.message);
+          return texts.join(" <- ");
+        }
       );
 
     const messages = [
@@ -2033,17 +2241,26 @@ describe("EnvoyClient", () => {
           retry: false,
         }).getInterest("ses_sender")
       ),
+      await failure(
+        createEnvoyClient({ baseUrl, fetch: lost, retry: false }).getInterest("ses_sender")
+      ),
     ];
 
-    expect(refused.requests[0]?.url).toBe(`${baseUrl}/v1/interests/ses_sender`);
-    expect(messages).toEqual([
-      "GET http://listener/v1/interests/ses_sender failed with 404: no such route",
-      "GET http://listener/v1/interests/ses_sender answered 401, and this machine's Envoy " +
-        "credential could not be minted: the secrets broker did not answer",
-    ]);
+    const shown = `the configured Envoy URL ${URL_NOT_PRINTED}`;
+    expect(refused.requests[0]?.url.toLowerCase()).toBe(
+      `${baseUrl}/v1/interests/ses_sender`.toLowerCase()
+    );
+    expect(messages[0]).toContain(
+      `GET ${shown} failed with 404: a body that is not the listener's error JSON ("no such route")`
+    );
+    expect(messages[1]).toContain(
+      `GET ${shown} answered 401, and this machine's Envoy credential could not be minted: ` +
+        "the secrets broker did not answer"
+    );
+    expect(messages[2]).toContain(`GET ${shown} got no answer: getaddrinfo ENOTFOUND`);
     for (const message of messages) {
-      expect(message).not.toContain(user);
-      expect(message).not.toContain(secret);
+      expect(message).not.toContain("user-7f2a");
+      expect(message.toLowerCase()).not.toContain(secret.toLowerCase());
     }
   });
 
@@ -2157,5 +2374,284 @@ describe("mayActOnRoleRecord", () => {
     expect(mayActOnRoleRecord("another-process", undefined, true)).toBe(false);
     expect(mayActOnRoleRecord("another-process", "", true)).toBe(false);
     expect(mayActOnRoleRecord("", "", true)).toBe(true);
+  });
+});
+
+/**
+ * Every reader of an envelope a listener delivers in this package, given one that carries `role`:
+ * the field the listener stores on a message Dispatch's API sent to a role's holder for a route to
+ * that role, and echoes in the answer to that send. Each row reads one envelope with the field and
+ * without it, and checks that the reader reads every other field as before. A reader that parses
+ * with `EnvelopeSchema` knows the field now, and the builds released before it did not: the row
+ * named "released builds" reads the envelope with the schema those builds parse with. A reader
+ * with a schema of its own (`InboundEnvelopeSchema`, `DedupeIdentitySchema`) or with none names no
+ * `role` in this build either, so its row is also how a released build reads the field.
+ */
+describe("an envelope that carries the role field", () => {
+  const ROLE = "legion-legion-legion-1-architect";
+  const ROLE_TOPIC = `notifications.role.${ROLE}`;
+  const SESSION = "ses_target";
+  const AGENT = `notifications.agent.${SESSION}`;
+  /** Every field `EnvelopeSchema` names except `role`, each one set, on `SESSION`'s own subject. */
+  const withoutRole = {
+    ...(envelopeWithoutRole as Omit<Envelope, "role">),
+    topic: AGENT,
+    dedupe_key: `agent.${SESSION}.0123456789abcdef0123456789abcdef`,
+  } satisfies Omit<Envelope, "role">;
+  const withRole = { ...withoutRole, role: ROLE };
+
+  /**
+   * Checks that `read`, one reader's read of `withRole`, carries the field on its envelope and is
+   * otherwise `expected`, the same reader's read of `withoutRole`.
+   */
+  function expectReadAsWithout(read: { readonly envelope?: object }, expected: unknown): void {
+    const { role, ...envelope } = (read.envelope ?? {}) as Record<string, unknown>;
+    expect(role).toBe(ROLE);
+    const rest: unknown = { ...read, envelope };
+    expect(rest).toEqual(expected);
+  }
+
+  const targetedDispatchPayload = readFileSync(
+    new URL("../../../contracts/fixtures/dispatch-targeted-delivery.json", import.meta.url),
+    "utf8"
+  );
+
+  test("the envelope these rows read names every field of the contract, and the contract reads it whole", () => {
+    expect(Object.keys(withRole).sort()).toEqual(Object.keys(EnvelopeSchema.shape).sort());
+    expect(EnvelopeSchema.parse(withRole)).toEqual(withRole);
+  });
+
+  // Commit 9d258a95ea added `role` to `EnvelopeSchema` and changed nothing else in it, so the
+  // schema without that key is the one every build released before it parses with, and the one a
+  // send's and a publish's answer extend there (`EnvelopeResponseSchema`, `PublishResponseSchema`).
+  // `z.object` strips a key it does not name, and `.extend` keeps that.
+  test("released builds (EnvelopeSchema before the field): the field is dropped, and every other field reads as before", () => {
+    const released = EnvelopeSchema.omit({ role: true });
+    const read = released.parse(withRole);
+
+    expect("role" in read).toBe(false);
+    expect(read).toEqual(released.parse(withoutRole));
+    expect(read).toEqual(withoutRole);
+  });
+
+  /** What a send's answer adds to the envelope it echoes (`sendResponse`, `cmd/listener/api.go`). */
+  const sendAnswer = {
+    recipient: SESSION,
+    recipient_state: "unresponsive",
+    state: "connected",
+    last_seen: Date.parse("2026-11-18T08:58:00Z"),
+    duplicate: false,
+  } as const;
+
+  async function sendAnswered(envelope: object) {
+    const recorded = recordFetch([jsonResponse({ ...envelope, ...sendAnswer })]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+    return client.send({
+      sourceSessionID: "ses_sender",
+      targetSessionID: SESSION,
+      message: "Review the plan",
+    });
+  }
+
+  test("send (transport.ts, EnvelopeResponseSchema): an answer with the field reads as the answer without it, and its tool line is the same", async () => {
+    const before = await sendAnswered(withoutRole);
+    const after = await sendAnswered(withRole);
+
+    expectReadAsWithout(after, before);
+    expect(before.envelope).toEqual({ ...withoutRole, ...sendAnswer });
+    expect(before).toMatchObject({
+      recipient: SESSION,
+      confirmed: true,
+      recipientState: "unresponsive",
+      state: "connected",
+      lastSeen: sendAnswer.last_seen,
+      duplicate: false,
+    });
+    expect(sendConfirmationText(after)).toBe(sendConfirmationText(before));
+  });
+
+  for (const [label, status, answer] of [
+    ["stored for the role's live holder", 200, { holder: "ses_holder", holder_state: "live" }],
+    [
+      "kept for the role's next holder",
+      202,
+      {
+        holder: "ses_holder",
+        holder_state: "unresponsive",
+        last_seen: Date.parse("2026-11-18T08:50:00Z"),
+        kept: true,
+        kept_reason: "holder_lapsed",
+        kept_until: Date.parse("2026-11-18T10:00:00Z"),
+      },
+    ],
+  ] as const) {
+    test(`publish (transport.ts, PublishResponseSchema): an answer ${label} with the field reads as the answer without it, and its tool line and details are the same`, async () => {
+      const published = async (envelope: object) => {
+        const recorded = recordFetch([
+          Response.json({ ...envelope, topic: ROLE_TOPIC, ...answer }, { status }),
+        ]);
+        const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+        return client.publish({
+          sourceSessionID: "ses_sender",
+          topic: ROLE_TOPIC,
+          message: "Review the plan",
+        });
+      };
+      const before = await published(withoutRole);
+      const after = await published(withRole);
+
+      expectReadAsWithout(after, before);
+      expect(before.envelope).toEqual({ ...withoutRole, topic: ROLE_TOPIC, ...answer });
+      expect(before.holder).toBe("ses_holder");
+      expect(publishConfirmationText(after, { senderNamed: true })).toBe(
+        publishConfirmationText(before, { senderNamed: true })
+      );
+      expect(publishResultDetails(after)).toEqual(publishResultDetails(before));
+    });
+  }
+
+  test("renderInbound (delivery.ts, InboundEnvelopeSchema): a frame with the field renders the card it renders without it, and keeps the field on the envelope it hands on", () => {
+    const before = renderInbound(JSON.stringify(withoutRole), SESSION, AGENT);
+    const after = renderInbound(JSON.stringify(withRole), SESSION, AGENT);
+
+    expectReadAsWithout(after, before);
+    expect(before.envelope).toEqual(withoutRole);
+    expect(before.content).toContain("id: evt-role-field");
+    expect(before.content).not.toContain("unrecognised");
+  });
+
+  test("renderInbound (delivery.ts): a Dispatch delivery with the field, as Dispatch's API sends one for a route to a role, reads its delivery, actor and card as without it", () => {
+    const dispatchFrame = (envelope: object) =>
+      JSON.stringify({ ...envelope, source: "dispatch", payload: targetedDispatchPayload });
+    const before = renderInbound(dispatchFrame(withoutRole), SESSION, AGENT);
+    const after = renderInbound(dispatchFrame(withRole), SESSION, AGENT);
+
+    expectReadAsWithout(after, before);
+    expect(before.delivery).toMatchObject({ resource: "message", mode: "btw" });
+    expect(before.dispatchActor).toEqual({ kind: "user", id: "alice" });
+  });
+
+  test("renderInbound's tolerant read (TolerantInboundEnvelopeSchema): a frame with the field and a member it cannot read renders as without the field", () => {
+    const unreadable = { issued_at: "not a time" };
+    const before = renderInbound(JSON.stringify({ ...withoutRole, ...unreadable }), SESSION, AGENT);
+    const after = renderInbound(JSON.stringify({ ...withRole, ...unreadable }), SESSION, AGENT);
+
+    expectReadAsWithout(after, before);
+    expect(before.content).toContain("unrecognised: issued_at");
+    expect(before.content).toContain("id: evt-role-field");
+  });
+
+  test("the relay's repeat check (consumer-delivery.ts parseIdentity, DedupeIdentitySchema): a frame with the field is looked up under the identity it has without it", () => {
+    const lookedUp = (envelope: object) => {
+      const asked: unknown[] = [];
+      const replies: RelayReply[] = [];
+      const delivery = createConsumerDelivery({
+        sessionID: SESSION,
+        host: { deliver: () => undefined, gap: () => undefined, log: () => undefined },
+        publish: (_reply, body) => {
+          replies.push(body);
+        },
+        ledger: {
+          // Written already: the relay answers the frame done and hands the host nothing.
+          delivered: (identity) => {
+            asked.push(identity);
+            return true;
+          },
+          liveFailed: async () => true,
+        },
+        persist: () => true,
+        every: () => () => undefined,
+      });
+      const headers: Record<string, string> = {
+        [RelayHeader.subject]: AGENT,
+        [RelayHeader.streamSeq]: "7",
+        [RelayHeader.streamID]: "stream-1",
+        [RelayHeader.delivered]: "1",
+        [RelayHeader.storedAt]: "2026-11-18T09:00:01Z",
+      };
+      delivery.receive({
+        data: new TextEncoder().encode(JSON.stringify(envelope)),
+        headers: { get: (name) => headers[name] ?? "" },
+        reply: "_INBOX.7",
+      });
+      delivery.close();
+      return { asked, replies };
+    };
+    const before = lookedUp(withoutRole);
+
+    expect(lookedUp(withRole)).toEqual(before);
+    expect(before).toEqual({
+      asked: [
+        {
+          event_id: withoutRole.event_id,
+          dedupe_key: withoutRole.dedupe_key,
+          source: "agent",
+          source_event_id: withoutRole.source_event_id,
+        },
+      ],
+      replies: ["received", "done"],
+    });
+    expect(DedupeIdentitySchema.parse(withRole)).toEqual(DedupeIdentitySchema.parse(withoutRole));
+  });
+
+  test("the failure notice (delivery-ledger.ts liveFailed): a frame with the field that the relay gives up on is named as without it", async () => {
+    const shown = async (envelope: object) => {
+      const notices: FailureNotice[] = [];
+      const ledger = createDeliveryLedger({
+        host: {
+          sessionID: () => SESSION,
+          followedSubjects: () => [AGENT],
+          showFailureNotice: async (_session, notice) => {
+            notices.push(notice);
+          },
+          failureNoticeFailed: () => undefined,
+          log: () => undefined,
+          write: () => undefined,
+        },
+        now: () => Date.parse("2026-11-18T09:10:00Z"),
+      });
+      const rendered = renderInbound(JSON.stringify(envelope), SESSION, AGENT).envelope;
+      if (rendered === undefined) throw new Error("the frame rendered no envelope");
+      expect(
+        await ledger.liveFailed(SESSION, rendered, new Error("the host refused the card"))
+      ).toBe(true);
+      return notices;
+    };
+    const before = await shown(withoutRole);
+    const after = await shown(withRole);
+
+    expect(after).toHaveLength(1);
+    expect(before).toHaveLength(1);
+    expectReadAsWithout(after[0] ?? {}, before[0]);
+    expect(before[0]).toMatchObject({
+      eventId: withoutRole.event_id,
+      sender: "ses_sender (Planner)",
+      summary: "Review the plan",
+      publishedAt: "2026-11-18T09:00:00Z",
+      readWith: "envoy_inbox",
+    });
+  });
+
+  test("subscriptionRemovedTopics (dispatch-subscribe.ts): a removal frame with the field names the topics it names without it", () => {
+    const removal = {
+      ...withoutRole,
+      source: "dispatch",
+      payload: JSON.stringify({
+        issue_key: "DSP-1",
+        type: "subscription.removed",
+        actor: { kind: "user", id: "alice" },
+        payload: {
+          session_id: SESSION,
+          by: { kind: "user", id: "alice" },
+          topics: ["notifications.dispatch.issue.DSP-1.>"],
+        },
+      }),
+    };
+    const before = subscriptionRemovedTopics(JSON.stringify(removal), SESSION);
+
+    expect(before).toEqual(["notifications.dispatch.issue.DSP-1.>"]);
+    expect(subscriptionRemovedTopics(JSON.stringify({ ...removal, role: ROLE }), SESSION)).toEqual(
+      before
+    );
   });
 });

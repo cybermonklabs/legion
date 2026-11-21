@@ -120,6 +120,7 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 	controller := "the controller's grant notes no requester (redeem): the controller runs no step"
 	table := map[string]agentRoute{
 		"GET /legion/v1/state":                         {none: "a read of the daemon's state; " + noFact},
+		"GET /legion/v1/issues/{key}/record":           {none: "a read of one issue's record; " + noFact},
 		"GET /healthz":                                 {none: "the liveness answer; " + noFact},
 		"GET /readyz":                                  {none: "the readiness answer; " + noFact},
 		"POST /legion/v1/claims/register":              {none: "a launch's registration of its session; " + noFact},
@@ -135,6 +136,8 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 		"POST /legion/v1/issues/status":                {none: controller},
 		"POST /legion/v1/claims/fresh-session":         {none: controller},
 		"POST /legion/v1/claims/compact":               {none: controller},
+		"POST /legion/v1/project/pause":                {none: controller},
+		"POST /legion/v1/project/resume":               {none: controller},
 		"POST /legion/v1/waves/release": {none: "its own status writes name children not in the workflow yet, which no run is on, so they wait for nothing; " +
 			"its adoption of children recorded in other trees names no one issue (intake.IssueOf), so apply asks RunsAStep, the read TestTheRecordNamesTheAgentOfARunThatIsNotEnded holds, and this table drives no adoption"},
 		"POST /legion/v1/roots/close":    {none: "its root has started no phase: admitted and awaiting a person run no step (workflow's stepOf)"},
@@ -217,7 +220,10 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 		"POST /legion/v1/operator/claims/{token}/retry":          {none: noRequester},
 		"POST /legion/v1/operator/claims/{token}/compact":        {none: noRequester},
 		"POST /legion/v1/operator/claims/{token}/forget-session": {none: noRequester},
+		"POST /legion/v1/operator/claims/{token}/release-names":  {none: noRequester},
 		"POST /legion/v1/operator/claims/{token}/close":          {none: noRequester},
+		"POST /legion/v1/operator/project/pause":                 {none: noRequester},
+		"POST /legion/v1/operator/project/resume":                {none: noRequester},
 		"/": {none: "the catch-all answers no route; " + noFact},
 	}
 
@@ -301,11 +307,11 @@ func TestAFactNoAgentRequestedWaitsForNothing(t *testing.T) {
 	tester := newLiveClaim(t, r.h, "LEGION-208", claim.RoleTester)
 	r.runs(t, "LEGION-208", testingPlace, tester.token)
 	written := tester.writeHandoff("test", 1)
-	assertFailure(t, r.h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "ran the suite", HandoffID: written, HandoffVersion: 1}),
+	refused(t, r.h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "ran the suite", HandoffID: written, HandoffVersion: 1}),
 		http.StatusBadRequest, "TESTER_VERDICT_REQUIRED")
 	seedIssueAt(t, r.h, "LEGION-400", phase.Implementing)
 	other := newLiveClaim(t, r.h, "LEGION-400", claim.RoleArchitect)
-	assertFailure(t, r.h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{
+	refused(t, r.h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{
 		"grantId": other.grant(t), "issue": "LEGION-301", "to": "implementing", "reason": "not this architect's tree",
 	}, nil), http.StatusForbidden, "ISSUE_OUTSIDE_TREE")
 

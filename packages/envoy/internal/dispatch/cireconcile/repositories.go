@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -81,7 +81,12 @@ func (repository reconciled) head(number int64, sha string) pullHead {
 // gives it. It answers the stop a rate limit ended the pass at, and counts and names at WARN
 // each repository it skips, every one of which is a repository nothing within this pass can
 // mend. A repository the App is not installed on is counted and named by its own rule, which
-// mapped decides (appAbsent).
+// mapped decides (appAbsent). A repository skipped on GitHub's answer -- no token, no answer
+// about it, a name that is not owner/name, and a mapped repository the App is not installed on
+// -- is a GitHub read the pass gave up, which it notes on its attempt (githubreads); a name that
+// is not owner/name is the database's, and asks GitHub nothing, and a repository only an issue
+// names that the App is not on is no fault. A mapped name that is not owner/name is named with
+// the requests that mend it (Reconciler.MappingRepairs).
 //
 // read is the repositories this pass has read the heads of already, by the id GitHub gives
 // them, which is this pass's own: two rows naming one repository are read once within a pass,
@@ -91,14 +96,18 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 	owner, name, ok := splitRepo(row)
 	if !ok {
 		c.mappingsSkipped++
-		r.Logger.Warn("ci reconcile skipped a repository whose name is not owner/name", "repository", row)
+		fields := []any{"repository", row}
+		if mapped && r.MappingRepairs != nil {
+			fields = append(fields, r.MappingRepairs(ctx, row)...)
+		}
+		r.Logger.Warn("ci reconcile skipped a repository whose name is not an owner/name GitHub allows", fields...)
 		return reconciled{}, nil
 	}
 	see(&r.seenRows, row)
 	if held, absent := r.absent[row]; absent && r.clock().Before(held.until) {
 		// GitHub said the App is not installed here less than AbsentAppRecheck ago, so this
 		// pass asks it nothing about the repository.
-		r.appAbsent(row, mapped, held.err, false, c)
+		r.appAbsent(ctx, row, mapped, held.err, false, c)
 		return reconciled{}, nil
 	}
 	// Whether the pass reads this repository's commit statuses is decided by the permissions of
@@ -122,7 +131,7 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 			// without it every pass would ask GitHub again, with the App's own JWT, about a
 			// repository whose answer changes only when a person installs the App.
 			remember(&r.absent, row, absentApp{err: err, until: r.clock().Add(AbsentAppRecheck)})
-			r.appAbsent(row, mapped, err, true, c)
+			r.appAbsent(ctx, row, mapped, err, true, c)
 			return reconciled{}, nil
 		}
 		// Its token could not be minted, or GitHub did not answer about its installation:
@@ -132,6 +141,7 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 		// (TestALookupGitHubFailedToAnswerIsAskedAgainAtTheNextPass).
 		c.mappingsSkipped++
 		r.Logger.Warn("ci reconcile skipped a repository it holds no token for", "repository", row, "error", err)
+		githubreads.NoteFailure(ctx, err)
 		return reconciled{}, nil
 	}
 	// The App is installed on it, so an answer an earlier pass held to the contrary is over.
@@ -150,6 +160,7 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 		}
 		c.mappingsSkipped++
 		r.Logger.Warn("ci reconcile skipped a repository GitHub did not answer for", "repository", row, "error", err)
+		githubreads.NoteFailure(ctx, err)
 		delete(r.rows, row)
 		return reconciled{}, nil
 	}
@@ -169,6 +180,7 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 	if !ok {
 		c.mappingsSkipped++
 		r.Logger.Warn("ci reconcile skipped a repository GitHub named oddly", "repository", row, "full_name", state.fullName)
+		githubreads.NoteFailure(ctx, fmt.Errorf("ci reconcile skipped %s: GitHub named it %q, which is not owner/name", row, state.fullName))
 		return reconciled{}, nil
 	}
 	headScopes := scopes(scope)
@@ -206,10 +218,17 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 // and the token mint 403, which is no ErrNoInstallation, so resolve skips it at WARN as a
 // repository it holds no token for and counts it in mappings_skipped at every pass, exactly as
 // it does a mapping the App is missing from.
-func (r *Reconciler) appAbsent(row string, mapped bool, err error, asked bool, c *counts) {
+//
+// The App missing from a mapping is also a GitHub read the pass gave up, so it is noted on the
+// pass's attempt (githubreads) on every pass the fault stands for, whether this pass asked GitHub
+// or read the answer an earlier pass held, so the attempt does not read succeeded for the passes
+// that only held it. The App missing from a repository only an issue names is no fault, and is
+// not noted.
+func (r *Reconciler) appAbsent(ctx context.Context, row string, mapped bool, err error, asked bool, c *counts) {
 	if mapped {
 		c.mappingsSkipped++
 		r.Logger.Warn("ci reconcile skipped a repository it holds no token for", "repository", row, "error", err)
+		githubreads.NoteFailure(ctx, err)
 		return
 	}
 	c.withoutApp++
@@ -221,7 +240,7 @@ func (r *Reconciler) appAbsent(row string, mapped bool, err error, asked bool, c
 // covered is every repository a pass covers, each named as the repository is called today: every
 // repository repo_projects maps to a project, and every repository an issue names as its own.
 // A name is the row's or the issue's own `owner/name`, lower-cased with any `.git` stripped as
-// both are stored (api's canonicalRepo), or, where a mapping names a rename, what its
+// both are stored (refs.ExternalRepo), or, where a mapping names a rename, what its
 // renamed_to names. The two halves are read as one statement, which answers each distinct name
 // once -- a repository a mapping names and an issue names too is one repository to read, as
 // are two issues naming one repository -- and the answer is ordered, so two passes read GitHub
@@ -373,11 +392,13 @@ func (r *Reconciler) openPullRequests(ctx context.Context, id int64, owner, name
 }
 
 // splitRepo is the owner and the name of an `owner/name`, and false for anything that is not
-// one: no slash, or a side of it empty.
+// one GitHub allows (refs.SplitGitHubRepo, the one rule every place that builds a GitHub path
+// reads): no slash, a side of it empty, a character GitHub's names do not take, a name past 100
+// characters, or a name of `.` or `..` before or after a trailing `.git` is trimmed. A mapping or
+// a renamed_to stored before the settings route held it to that rule is such a name, and `..` in
+// a path would ask GitHub about the one above the repository's, so the pass skips it before it
+// asks GitHub anything.
 func splitRepo(full string) (owner, name string, ok bool) {
-	owner, name, found := strings.Cut(full, "/")
-	if !found || owner == "" || name == "" {
-		return "", "", false
-	}
-	return owner, name, true
+	owner, name, err := refs.SplitGitHubRepo(full)
+	return owner, name, err == nil
 }

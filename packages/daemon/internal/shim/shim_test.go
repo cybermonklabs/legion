@@ -106,6 +106,10 @@ func fakeOMP() int {
 	if message := os.Getenv("FAKE_OMP_EXTENSION_ERROR"); message != "" {
 		emit(fmt.Sprintf(`{"type":"extension_error","extensionPath":"/opt/legion/pi-legion/dist/legion.js","event":"session_start","error":%q}`, message))
 	}
+	// FAKE_OMP_TOOL_ARGS is the JSON arguments of a tool call the fake starts once it is ready.
+	if args := os.Getenv("FAKE_OMP_TOOL_ARGS"); args != "" {
+		emit(`{"type":"tool_execution_start","toolCallId":"toolu_1","toolName":"bash","args":` + args + `}`)
+	}
 	if os.Getenv("FAKE_OMP_HUGE_LINE") == "1" {
 		emit(`{"type":"fake_huge","pad":"` + strings.Repeat("x", 2<<20) + `"}`)
 	}
@@ -584,19 +588,44 @@ func TestOMPIsSpawnedOnlyAfterTheHelloAck(t *testing.T) {
 	}
 }
 
-// theTag is the pin a pod's worker image carries, as these tests spell one.
+// theTag is the pin a pod's worker image carries, as these tests spell one, and theChecker the
+// deployment's manifest digest the runtime tells a role of a deployment that runs a shared leak
+// check (leakguard.CheckerVar): the digest (leakguard.Manifest) of the stand-in check every install
+// here holds (installedFiles), which the shim compares before it starts an agent.
 const theTag = "leak-check-v15"
 
+// installedFiles are the files of the stand-in check every install here holds: a launcher whose
+// --help names both shapes, and the other files of its manifest.
+var installedFiles = map[string]string{
+	leakguardtest.CheckName:    "#!/bin/sh\n" + leakguardtest.AnswersHelp(os.DevNull),
+	leakguardtest.ProgramName:  leakguardtest.Program,
+	leakguardtest.ReadmeName:   leakguardtest.Readme,
+	leakguardtest.MustPassName: leakguardtest.MustPass,
+}
+
+var theChecker = leakguard.CheckerVar + "=" + func() string {
+	digest, err := leakguard.Manifest(func(name string) ([]byte, error) { return []byte(installedFiles[name]), nil })
+	if err != nil {
+		panic(err)
+	}
+	return digest
+}()
+
 // installedCheck is the directory the pod's launcher installs the check the daemon served into,
-// made the way the launcher makes it: a GitHub-shaped tarball of a stand-in check whose --help
-// names both shapes (leakguardtest.AnswersHelp), packed (leakguard.PackTarball) and installed at
-// tag (leakguard.InstallServed).
+// made the way the launcher makes it: a GitHub-shaped tarball of installedFiles, packed
+// (leakguard.PackTarballManifest) and installed at tag (leakguard.InstallServed).
 func installedCheck(t *testing.T, tag string) string {
 	t.Helper()
-	raw := leakguardtest.GitHubTarball(t, map[string]leakguardtest.Member{
-		leakguardtest.CheckName: {Body: "#!/bin/sh\n" + leakguardtest.AnswersHelp(filepath.Join(t.TempDir(), "help-runs")), Mode: 0o755},
-	})
-	body, err := leakguard.PackTarball(bytes.NewReader(raw))
+	members := map[string]leakguardtest.Member{}
+	for name, body := range installedFiles {
+		mode := int64(0o644)
+		if name == leakguardtest.CheckName {
+			mode = 0o755
+		}
+		members[name] = leakguardtest.Member{Body: body, Mode: mode}
+	}
+	raw := leakguardtest.GitHubTarball(t, members)
+	body, _, err := leakguard.PackTarballManifest(bytes.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -627,7 +656,7 @@ func TestAnInstallOfThePinStartsTheAgent(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := socketPath(t)
 			daemon := listen(t, path)
-			extra := []string{leakguard.TagVariable + "=" + theTag}
+			extra := []string{leakguard.TagVariable + "=" + theTag, theChecker}
 			if tc.already != "" {
 				extra = append(extra, leakguard.CheckVar+"="+tc.already)
 			}
@@ -649,9 +678,9 @@ func TestAnInstallOfThePinStartsTheAgent(t *testing.T) {
 	}
 }
 
-// A role whose environment carries the pin and whose pod holds no install of it runs no agent at
-// all: the shim ends with exit 1 and the read's own refusal. Every write path of such a role would
-// refuse anyway.
+// A role whose environment carries the pin and the deployment's checker and whose pod holds no
+// install of the pin runs no agent at all: the shim ends with exit 1 and the read's own refusal.
+// Every write path of such a role would refuse anyway.
 func TestAnInstallThatIsNotThePinsStartsNoAgent(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -666,7 +695,7 @@ func TestAnInstallThatIsNotThePinsStartsNoAgent(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := socketPath(t)
 			daemon := listen(t, path)
-			child := newOMP(t, leakguard.TagVariable+"="+theTag)
+			child := newOMP(t, leakguard.TagVariable+"="+theTag, theChecker)
 			cfg := config(t, path, child)
 			cfg.LeakCheckDir = tc.dir(t)
 			sh := run(t, cfg, newClock())
@@ -692,22 +721,34 @@ func TestAnInstallThatIsNotThePinsStartsNoAgent(t *testing.T) {
 	}
 }
 
-// A tmux pane's environment carries no pin, and its shim reads no install at all: the agent
-// starts where no install exists, and the shim names no check of its own for it.
-func TestWithNoPinTheAgentStartsWithNoInstall(t *testing.T) {
-	path := socketPath(t)
-	daemon := listen(t, path)
-	child := newOMP(t)
-	cfg := config(t, path, child)
-	cfg.LeakCheckDir = filepath.Join(t.TempDir(), "leak-check")
-	sh := run(t, cfg, newClock())
+// A tmux pane's environment carries no pin, and a role of a deployment that runs no shared leak
+// check carries the image's pin and no checker (leakguard.CheckerVar): the shim of either reads no
+// install at all, the agent starts where no install exists, and the shim names no check of its
+// own for it.
+func TestWithNoPinOrNoCheckerTheAgentStartsWithNoInstall(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  []string
+	}{
+		{"no pin", nil},
+		{"the pin and no checker", []string{leakguard.TagVariable + "=" + theTag}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := socketPath(t)
+			daemon := listen(t, path)
+			child := newOMP(t, tc.env...)
+			cfg := config(t, path, child)
+			cfg.LeakCheckDir = filepath.Join(t.TempDir(), "leak-check")
+			sh := run(t, cfg, newClock())
 
-	daemon.accept(t).open(t)
-	if got, ok := child.environment(t)[leakguard.CheckVar]; ok {
-		t.Errorf("the child was told %s=%q, want no check named by the shim; log:\n%s", leakguard.CheckVar, got, sh.log)
-	}
-	if sh.log.count("the shared public leak check") != 0 {
-		t.Errorf("the shim logged an install with no pin; log:\n%s", sh.log)
+			daemon.accept(t).open(t)
+			if got, ok := child.environment(t)[leakguard.CheckVar]; ok {
+				t.Errorf("the child was told %s=%q, want no check named by the shim; log:\n%s", leakguard.CheckVar, got, sh.log)
+			}
+			if sh.log.count("the shared public leak check") != 0 {
+				t.Errorf("the shim logged an install it should not have read; log:\n%s", sh.log)
+			}
+		})
 	}
 }
 
@@ -1639,4 +1680,43 @@ func TestTheShimLogsAnExtensionError(t *testing.T) {
 	daemon.accept(t).open(t)
 
 	sh.log.awaitLine(t, "extension_error /opt/legion/pi-legion/dist/legion.js session_start: LEGION_DAEMON_URL is required for Legion", 1)
+}
+
+// A tool call's summary is its arguments cut to 80 runes, the last of them "…" where the cut took
+// any (redact.Runes), and the URL rule runs on them before the cut: a cut inside a userinfo, before
+// its "@", would leave a start of the user name that no rule after it reads as a userinfo. Wherever
+// the cut of the arguments as written falls, inside the userinfo or inside the query, the summary
+// holds no part of either: it is the cut of the arguments the rule left.
+func TestAToolCallSummaryCutsTheArgumentsAfterTheURLRule(t *testing.T) {
+	const url = "https://legion-reader@github.com/o/r.git?token=planted-query-token-4463"
+	for _, tc := range []struct {
+		name string
+		cut  string // what the 80-rune cut of the arguments as written leaves of url
+	}{
+		{"the cut inside the userinfo", "https://legion"},
+		{"the cut inside the query", "https://legion-reader@github.com/o/r.git?token=planted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The command before the URL is padded so that the arguments' first 80 runes end in tc.cut.
+			head := `{"command":"` + strings.Repeat("x", 80-len(`{"command":" `)-len(tc.cut)) + " "
+			path := socketPath(t)
+			daemon := listen(t, path)
+			child := newOMP(t, "FAKE_OMP_TOOL_ARGS="+head+url+`"}`)
+			sh := run(t, config(t, path, child), newClock())
+			daemon.accept(t).open(t)
+
+			sh.log.await(t, shimwire.TypeToolExecutionStart+" ", 1)
+			for line := range strings.Lines(sh.log.String()) {
+				if strings.HasPrefix(line, shimwire.TypeToolExecutionStart+" ") && (strings.Contains(line, "legion") || strings.Contains(line, "planted")) {
+					t.Fatalf("the summary %q holds a part of the URL's user name or of its query", line)
+				}
+			}
+			left := []rune(head + `https://github.com/o/r.git"}`)
+			summary := string(left)
+			if len(left) > 80 {
+				summary = string(left[:79]) + "…"
+			}
+			sh.log.awaitLine(t, shimwire.TypeToolExecutionStart+" bash "+summary, 1)
+		})
+	}
 }

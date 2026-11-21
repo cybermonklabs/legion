@@ -13,14 +13,22 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
 
-// stepRecordsWayBack is the way back the roll forward's header carries (migrations.WayBack): the
-// statements an operator runs (docs/kubernetes.md carries the same block, and internal/textcheck
-// holds the two to one text).
-func stepRecordsWayBack(t *testing.T) string {
+// stepRecordsRelease names the release whose way back the roll forward's header
+// (migrations.StepRecordsRollForward) carries, as a failure to read that block names it.
+const stepRecordsRelease = "the roll forward of the release that records each step"
+
+// wayBackOf is the block the header of the migration version carries, read by the one reader of a
+// migration's way back (migrations.WayBack) from the embedded migration, which is that file's
+// bytes as the binary ships them; what names the release a failure to read it is about. A header
+// with no way back stops the test by name: a block this cannot find is a block it would pass
+// while running nothing. docs/kubernetes.md carries each of these blocks too, and for every block
+// but the one migrations.WayBack names as held by no textcheck, internal/textcheck holds the two
+// texts equal, so the block an operator runs is the one these tests run.
+func wayBackOf(t *testing.T, version int, what string) string {
 	t.Helper()
-	block, err := migrations.WayBack(migrations.StepRecordsRollForward)
+	block, err := migrations.WayBack(version)
 	if err != nil {
-		t.Fatalf("read the way back of the roll forward: %v", err)
+		t.Fatalf("read the way back of %s: %v", what, err)
 	}
 	return block
 }
@@ -132,7 +140,7 @@ func (s rollBackStore) recordID(place string) string {
 // wayBack runs the way back an operator runs with the daemon stopped.
 func (s rollBackStore) wayBack() {
 	s.t.Helper()
-	s.exec(stepRecordsWayBack(s.t))
+	s.exec(wayBackOf(s.t, migrations.StepRecordsRollForward, stepRecordsRelease))
 }
 
 // rollForward is the newer image's Migrate, which applies the roll forward the way back re-armed.
@@ -602,7 +610,7 @@ func TestTheWayBackOfTheStepRecordsKeepsEveryOtherRow(t *testing.T) {
 		t.Fatalf("seeded %d outbox rows and %d step_starts rows, want 3 and 2", len(outboxBefore), len(startsBefore))
 	}
 	for run := 1; run <= 2; run++ {
-		if _, err := store.Pool().Exec(ctx, stepRecordsWayBack(t)); err != nil {
+		if _, err := store.Pool().Exec(ctx, wayBackOf(t, migrations.StepRecordsRollForward, stepRecordsRelease)); err != nil {
 			t.Fatalf("run %d of the way back: %v", run, err)
 		}
 		if got := read(outbox); !reflect.DeepEqual(got, outboxBefore) {

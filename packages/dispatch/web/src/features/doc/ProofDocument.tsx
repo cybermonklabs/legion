@@ -19,6 +19,7 @@ import {
   isDocumentUnloadable,
 } from "../../api/client";
 import { artifactBlocksQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, AuthenticatedUser, Version } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
@@ -59,6 +60,7 @@ import {
 import { textSourceOf, uniquePrefixMatch } from "../refs/text-references";
 import { importWhenOnline } from "../shell/DeploymentResilience";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AskBlockCard } from "./AskBlockCard";
@@ -344,8 +346,8 @@ export function ProofDocument({
   const readmitRef = useRef<(() => void) | undefined>(undefined);
   /** Has this document admitted again, the one way in: a blocked admission has no connection to
    *  readmit, so it re-reads the text and connects (`readmitRef`, set only while it is blocked);
-   *  a live one closes its socket, which the provider reconnects, and the server decides that
-   *  socket's admission afresh - which is what a reopened issue needs, since the admission of the
+   *  a live one asks its connection to be admitted again (`DocumentConnection.readmit` says which
+   *  sockets that closes) - which is what a reopened issue needs, since the admission of the
    *  socket it has is the closed issue's. The new admission reaches `onAdmission` and the pending
    *  sync alike, so the rows the read-only admission kept are restored and sent. */
   const readmit = useCallback(() => {
@@ -416,6 +418,7 @@ export function ProofDocument({
   const nameVersion = useKeyedWrite({
     // `write` comes first: `onSuccess` reads its answer.
     write: (summary: string, bounds) => api.createArtifactVersion(artifact.id, { summary }, bounds),
+    method: "POST",
     inline: true,
     label: () => `New version of ${artifact.name}`,
     onSuccess: (created) => {
@@ -423,7 +426,9 @@ export function ProofDocument({
       // answer to give, the store has read the document again.
       setIsNameDialogOpen(false);
       if (created === null) return;
-      queryClient.setQueryData<Artifact>(["artifact", artifact.id], (current) => {
+      // Over any read of the document still out: asked before the version was made, it would
+      // take the version back off the list (`replaceQueryData`).
+      replaceQueryData<Artifact>(queryClient, ["artifact", artifact.id], (current) => {
         const source = current ?? artifact;
         return {
           ...source,
@@ -448,6 +453,7 @@ export function ProofDocument({
       if (tooltips) return;
       return reread;
     },
+    method: "POST",
     write: (_variables, bounds) => api.rebuildArtifact(artifact.id, undefined, bounds),
   });
   const liveMarkdown = liveTextQuery.data?.markdown ?? "";
@@ -1048,11 +1054,10 @@ export function ProofDocument({
   // The server admits every socket on a closed issue's document read-only, and decides a socket's
   // admission once, as it connects. A reopened issue's document takes edits again, so the page has
   // its connection admitted again: until the new admission (`onAdmission`) replaces the closed
-  // one's, the socket is still read-only, and so is the editor. The reopen closes the issue's
-  // rooms itself, which readmits every browser on them, but only on the process that served the
-  // PATCH (`SetIssueClosed`); this covers the two sockets that close never reaches: one whose
-  // room another process holds, and one whose room the close could not close, each of which
-  // keeps the read-only admission it was given.
+  // one's, the socket is still read-only, and so is the editor. The reopen's commit closes the
+  // issue's rooms on every process that hears it (`issueOpenChanged`), which readmits every
+  // browser on them; this covers the sockets that close never reaches, each of which keeps the
+  // read-only admission it was given.
   useEffect(() => {
     setQuoteRefusal(undefined);
     editorRef.current?.setAccess(editorAccess(page, isClosed, schemaReadOnlyRef.current));
@@ -1078,7 +1083,7 @@ export function ProofDocument({
   return (
     <section aria-label="Document editor" className="space-y-4">
       <NameVersionDialog
-        error={nameVersion.isError}
+        error={nameVersion.error}
         onClose={() => {
           nameVersion.reset();
           setIsNameDialogOpen(false);
@@ -1137,9 +1142,15 @@ export function ProofDocument({
           </button>
           {rebuild.isError ? (
             <p className={failedText}>
-              {rebuild.error instanceof Error
-                ? rebuild.error.message
-                : "Could not rebuild this document."}
+              {/* A rebuild the reader stopped may have been made, and the button above is a
+                  press of its own, under a key of its own. */}
+              {rebuild.error instanceof SendStoppedError
+                ? stoppedWriteNote(`the rebuild of ${artifact.name}`, "made", {
+                    anew: "Rebuilding again sends a new rebuild.",
+                  })
+                : rebuild.error instanceof Error
+                  ? rebuild.error.message
+                  : "Could not rebuild this document."}
             </p>
           ) : null}
         </div>

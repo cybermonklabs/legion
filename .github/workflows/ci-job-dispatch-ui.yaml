@@ -75,6 +75,11 @@ jobs:
       # which is how a developer and an issue pod run them (`bun run test` in packages/dispatch;
       # psql-session makes a database of its own there), and the stack contract they guard is also
       # covered end to end by every multi-worker run of the browser suite itself.
+      #
+      # This step runs both lanes in random order, which packages/dispatch/bunfig.toml sets. Each
+      # lane prints its own ` --seed=<n>` in its summary. A red row that failed from the order is
+      # reproduced with its file alone and that seed, as docs/testing.md ("A Dispatch unit test runs
+      # in random order") says; it also says what a row that failed from the lane's load needs.
       - name: Test dispatch dashboard
         run: bun run test
         working-directory: packages/dispatch

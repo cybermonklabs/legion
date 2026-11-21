@@ -77,6 +77,7 @@ const (
 	resolutionReason  = "Answered in [the thread](https://example.test/thread)."
 	versionMarkdown   = "## The plan\n\n1. Migrate the table.\n2. Deploy the readers.\n"
 	reviewReason      = "The migration needs a `down` of its own."
+	resultObserved    = "Ran `go test ./...`: **ok**, 0 failed."
 	componentProse    = "The **front door** terminates TLS and routes by host."
 )
 
@@ -107,6 +108,10 @@ func seedOneOfEveryKind(t *testing.T, database *store.Store) []string {
 			values ('`+artifactID+`', 1, '`+versionMarkdown+`')`,
 		`insert into artifact_reviews (artifact_id, version, state, actor, reason)
 			values ('`+artifactID+`', 1, 'changes_requested', `+author+`, '`+reviewReason+`')`,
+		`insert into check_results (issue_key, check_issue_key, check_artifact_id, check_block_id,
+			check_version, check_sha256, role, observed, commit_sha, verdict, actor)
+			values ('TEST-1', 'TEST-1', '`+artifactID+`', 'k1', 1, 'sum', 'tester', '`+resultObserved+`',
+			'`+strings.Repeat("a", 40)+`', 'pass', `+author+`)`,
 		`insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
 			values ('TEST', 'acme/repo', 'main', 1, `+author+`)`,
 		`insert into architecture_snapshots (project_key, commit, files)
@@ -120,7 +125,7 @@ func seedOneOfEveryKind(t *testing.T, database *store.Store) []string {
 		commentBody, messageBody, broadcastBody,
 		askQuestion, askOptionLabel, askOptionDetail, askAnswerText,
 		withdrawnQuestion, resolutionReason,
-		versionMarkdown, reviewReason, componentProse,
+		versionMarkdown, reviewReason, resultObserved, componentProse,
 	}
 }
 

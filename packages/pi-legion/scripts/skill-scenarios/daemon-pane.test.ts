@@ -1,6 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { DAEMON_MODULE, RIG_GH_TOKEN, workerPane } from "./daemon-pane";
@@ -32,17 +33,22 @@ beforeAll(() => {
   mkdirSync(scriptBin);
   writeFileSync(path.join(scriptBin, "gh"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
 });
+/** The caller's model keys: random, as real ones are. Two reach the worker, one must not. */
+const ANTHROPIC_KEY = fixtureSecret("anthro");
+const GEMINI_KEY = fixtureSecret("gemini");
+const OPENAI_KEY = fixtureSecret("openai");
 const inherited = {
   HOME: home,
-  ANTHROPIC_API_KEY: "personal-key-must-not-reach-worker",
-  GEMINI_API_KEY: "gemini-key",
-  OPENAI_API_KEY: "openai-key",
+  ANTHROPIC_API_KEY: ANTHROPIC_KEY,
+  GEMINI_API_KEY: GEMINI_KEY,
+  OPENAI_API_KEY: OPENAI_KEY,
   LEGION_GRANT: "outer-grant",
-  DISPATCH_TOKEN: "outer-dispatch-token",
-  GH_TOKEN: "outer-github-token",
+  DISPATCH_TOKEN: fixtureSecret("dsp"),
+  GH_TOKEN: fixtureSecret("gh"),
   GH_CONFIG_DIR: "/outer/gh",
   LEGION_GH_PATH: "/outer/gh-binary",
   PATH: `${outerBin}:/usr/bin`,
+  OMP_SESSION_EXCLUSIVE: "1",
 };
 
 // The pane environment comes from the daemon's own functions, compiled and run by `go run`, which
@@ -65,11 +71,12 @@ test.skipIf(skip)(
     expect(workerEnv).not.toHaveProperty("LEGION_GRANT_FILE");
     expect(workerEnv).not.toHaveProperty("LEGION_GIT_PATH");
     expect(workerEnv).not.toHaveProperty("LEGION_JJ_PATH");
+    expect(workerEnv).not.toHaveProperty("OMP_SESSION_EXCLUSIVE");
     const ghRoot = `${rig}/state/secrets/legion-skillsrig-lweval-1-tester-gh`;
     const ghConfigDir = `${ghRoot}/skills-rig`;
     expect(workerEnv).toMatchObject({
-      GEMINI_API_KEY: "gemini-key",
-      OPENAI_API_KEY: "openai-key",
+      GEMINI_API_KEY: GEMINI_KEY,
+      OPENAI_API_KEY: OPENAI_KEY,
       PATH: `${rig}/state/bin:${outerBin}:/usr/bin`,
       // The caller's own token and directory never reach the pane: the daemon's pane sets the
       // three token variables empty beside the claim's gh bundle, so gh reads the files and

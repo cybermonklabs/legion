@@ -134,19 +134,31 @@ until you add it in the App's settings on GitHub and each account that installed
 approves it. The controller, which works no repository, holds a read lease of the review App on
 each account instead: read access to contents, metadata, pull requests, issues, Actions, checks,
 commit statuses and attestations (`appauth.readPermissions`), cut down the same way. The daemon
-itself reads GitHub with the implement App too, at two moments and at no other: as the workflow runtime starts, which covers
-what arrived while the daemon was down, and once an agent's handoff has been recorded, the moment
-the daemon next decides on that pull request's state. It runs on no timer, and it reads one issue's
-own pull request rather than a listing of every open one, so a handoff costs the reads of its own
-pull request alone. It reads no repository ruleset, no branch protection, no check run and no
+itself reads GitHub with the implement App too, at these moments and at no other: as the workflow
+runtime starts, which covers what arrived while the daemon was down, and a start read that finds
+GitHub's merge state `unknown` asks for the ladder below; once an agent's handoff has
+been recorded, the moment the daemon next decides on that pull request's state; in the merge-state
+ladder, five reads half a minute apart, which a review round whose approval waits on GitHub asks
+for, a push to the head of an issue in `implementing` through `merging` asks for, and a push to
+the base asks for each issue standing in `testing` through `merging`; after a ladder whose five
+reads all answered `unknown`, or a second read of a conflict whose five attempts answered no
+state, again and again with waits of one, two, four and eight minutes and then ten, until GitHub
+answers a state, the head moves or the pull request is no longer open, each
+read logged with its wait; a minute after a read found the head conflicting with its base, to
+read it once more before it acts on the conflict; and once after GitHub reports the pull request
+out of the merge queue. Nothing else runs on a timer, and it reads one issue's own pull request
+rather than a listing of every open one. A read that finds the head
+conflicting also reads the base branch's rules, its rulesets and its classic branch protection,
+for the checks the base requires and whether it requires a current branch, since that decides
+whether the conflict needs the implementer's merge forward now. It reads no check run and no
 commit status: whether CI is red at a head reaches the daemon as Envoy's settled observation of
-that head's check runs and commit statuses, and the checks a base branch requires the daemon never
-reads at all, so it names no required check that has never run. Dispatch's CI reconcile reads the
+that head's check runs and commit statuses, which is also where it reads whether a required check
+is green on a conflicting head. Dispatch's CI reconcile reads the
 commit statuses of each open head from GitHub where the Envoy App's token holds the Commit statuses
 permission, and the settlement names each one with its state.
 Whether the merge happens is GitHub's to decide, under the rules that repository sets.
 
-Each of those two reads is the backstop for a webhook that never arrived — GitHub can fail to
+The read as the workflow runtime starts and the read after a handoff are each the backstop for a webhook that never arrived — GitHub can fail to
 deliver one, and Dispatch's redelivery sweep gives up after five attempts — so what a GitHub event
 lost, or that still waits behind the daemon's GitHub consumer, leaves the record behind only until
 the next of them:
@@ -336,7 +348,11 @@ Dispatch read them, delete the files, then install every App from
   deletes it when the pod goes, so an issue's clone, workspace and caches live as long as its pod
   and no longer. What outlives a pod is what was pushed to the issue's branch and each agent's
   conversation, which the session database holds. The daemon-launched controller's pod has a
-  volume of its own, which its Sandbox owns and which does outlive its pods.
+  volume of its own, which its Sandbox owns and which does outlive its pods. A microVM issue pod
+  under `runtime.kubernetes.sandbox.microvm.keep_volume: true` is the exception: its volume is a
+  claim that the issue's Sandbox owns, so it outlives the pod, and it goes when the issue leaves
+  the workflow or when the daemon resets it after a failed init container (`docs/kubernetes.md`
+  in the repository, "A kept volume on a microVM pod").
 - **Pod Security.** Pods run under the `restricted` profile: user 1000, no privilege escalation, all
   capabilities dropped, the `RuntimeDefault` seccomp profile, and no automounted API token.
 - **A ServiceAccount for the agents' pods**, named in `runtime.kubernetes.pod.service_account`
@@ -646,15 +662,15 @@ What each part is for:
   each role's own are added after; under tmux `PI_CONFIG_FILES` is the runtime's own and refused
   in `pane_env` — the overlays there are `runtime.tmux.pi_config_files` — so the attributes are
   the one composed name. Set the OpenTelemetry resource attributes your deployment's spend is
-  billed under (`theorem.project=widgets`), and each launch carries them with its own
+  billed under (`acme.project=widgets`), and each launch carries them with its own
   `legion.issue` and `legion.role` after them, so each launch's attributes name the issue it
   serves. A launch in an arm of one of the project's experiments carries `legion.arms` after
   those: one `<experiment>:<variant>` for each arm it runs with all the overlays of
   (`legion.arms=memory:memory` once decoded), and none for an arm the pod it keeps holds only
   some or none of the overlays of, so each model call says which arm's files it ran with. The agent
   takes the last value a key is given, which is why Legion's pairs come last. A spend row names an
-  issue, a role or an arm only where your spend collector keeps that key: a collector that keeps
-  a list of `theorem.*` attributes alone drops all three (dispatch://INFRA-1835).
+  issue, a role or an arm only where your spend collector keeps that key. A deployment's collector
+  may keep a fixed list of attributes; include all three in that list to group spend by them.
   The project controller serves no issue and carries the role alone. The image probe's container
   runs no role and keeps your value exactly as you wrote it; the tmux boot gate's probe runs no
   role either and keeps it with its trailing commas and whitespace dropped and nothing added.
@@ -665,7 +681,7 @@ What each part is for:
   Legion writes itself. The refusal names that one member and what is wrong with it, never the
   rest of your value, and `legion config check` gives boot's verdict before a restart.
   One such member would cost a launch every attribute of the variable, your own
-  `theorem.project` among them, because the detector's caller catches the throw with an empty
+  `acme.project` among them, because the detector's caller catches the throw with an empty
   hand. Like every other variable here, the attributes reach a role with the start command of its
   next launch and travel in no pod specification, so no pod is replaced and a role already
   running keeps what it started with.
@@ -682,12 +698,18 @@ What each part is for:
   needs this member, because its identity has no email address and so no Cloud SQL login. The
   paragraph "What a pod signs in as, and what a deployment grants for it" in
   [Selecting the store](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md#selecting-the-store)
-  says when to set the member and lists what it needs. Each kind refuses the other's key. An
-  omitted `session_store` and `pvc`, the file store of earlier releases, are refused with the same
-  line and its reason: an issue pod's disk is deleted with the pod, so a conversation kept as a
-  file on it dies with the pod and the next launch's resume fails on the missing file, retiring the
-  claim after three failures. Name the store and its key, and have the database reachable from the
-  pods, before the daemon boots.
+  says when to set the member and lists what it needs. Its optional member `writer_audience`,
+  which needs `impersonate_service_account`, is a workload identity provider's full resource
+  name. With it, each pod's proxy impersonates the account with a token that only the pod's
+  launcher reads, in place of the pod's own credentials, and the proxy's socket admits only the
+  launcher and the role's Oh My Pi process. The paragraph "A token that only the launcher reads"
+  in the same section lists what a deployment makes true for it, and the order to turn it on.
+  Each kind refuses the other's key. An omitted `session_store` and `pvc`, the file store of
+  earlier releases, are refused with the same line and its reason: an issue pod's disk is deleted
+  with the pod, so a conversation kept as a file on it dies with the pod and the next launch's
+  resume fails on the missing file, retiring the claim after three failures. A kept volume does
+  not change this: a reset or a suspension of the issue deletes that volume. Name the store and
+  its key, and have the database reachable from the pods, before the daemon boots.
 - **`nats_nkey_seed_file`** and **`nats_daemon_nkey_seed_file`** (optional) are the NATS nkey user
   seeds for the agents and for the daemon's own connection, each in a file only its owner can read.
 - **`runtime.kubernetes.agent_secrets`** (optional) enrolls every pod with the
@@ -824,9 +846,9 @@ What each part is for:
   under tmux, can read every role's overlay file, so never put a secret in one. Adding the mount
   to a running deployment replaces every affected issue pod at the restart: each of its running
   roles, named or not, loses its turn and resumes its session uncharged in a new pod, and the old
-  pod's disk goes with it, unpushed work included (a pod with no role running is replaced at the
-  first launch into it). Add it when no role of an affected issue is mid-turn and every role has
-  pushed. The repository's `docs/kubernetes.md` ("Operator
+  pod's disk goes with it, unpushed work included, unless the disk is a kept volume (a pod with no
+  role running is replaced at the first launch into it). Add it when no role of an affected issue
+  is mid-turn and every role has pushed. The repository's `docs/kubernetes.md` ("Operator
   configuration") shows the overlay and its mount.
 - **`worker_stall_backstop_hours`** (optional) is the daemon's own backstop under a worker whose
   turn has stopped: how long after a role's last recorded step the daemon ends the turn that step

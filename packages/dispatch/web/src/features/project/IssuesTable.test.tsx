@@ -11,7 +11,7 @@ import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
-import { SendStoppedError } from "../writes/keyed-write";
+import { SendExpiredError, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
 import type { IssueListing } from "./issues-table-data";
@@ -845,6 +845,133 @@ test("Start next stops at a refused predecessor and names every issue that did n
   expect(writesOf(client).rows()).toHaveLength(1);
 });
 
+/** What the table says of a step to `key` the reader stopped in Pending changes: Dispatch may
+ *  have saved it, and its Retry there asks again under its key. */
+const stoppedStep = (key: string) =>
+  stoppedWriteNote(`the change to ${key}`, "saved", {
+    method: "PATCH",
+    stopped: new SendStoppedError(),
+  });
+
+// A step the reader stopped may have moved its issue up: the table does not list it among those
+// that did not, and says of it what a stopped write is, rather than the stopped write's own
+// words, which are a composer's, of a message.
+test("Start next names a stopped step as unconfirmed, not as an issue that did not move up", async () => {
+  const user = userEvent.setup();
+  const send = spyOn(api, "send").mockRejectedValue(new SendStoppedError());
+  restores.push(() => send.mockRestore());
+  table([
+    issue("CORE-1", { labels: ["legion"], rank: "A" }),
+    issue("CORE-2", { labels: ["legion"], rank: "B" }),
+    issue("CORE-3", { labels: ["legion"], rank: "C" }),
+  ]);
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
+  await user.click(screen.getByRole("checkbox", { name: "Select CORE-3" }));
+  await user.click(within(screen.getByRole("toolbar")).getByRole("button", { name: "Start next" }));
+  const said = (await screen.findByRole("alert")).textContent;
+  expect(said).toContain(
+    `Did not move up: CORE-2. 0 of 1 changes saved. ${stoppedStep("CORE-3")} Retry each failed change in Pending changes.`
+  );
+  expect(said).not.toContain("CORE-3, CORE-2");
+});
+
+// A move of a merge the reader stopped may have been made: the table says so of it, and that the
+// source stays open, rather than the stopped write's own words.
+test("a merge with a stopped move says the move may have been made and the source stays open", async () => {
+  const user = userEvent.setup();
+  const send = spyOn(api, "send").mockImplementation(async (request) => {
+    if (request.path.endsWith("CORE-3")) throw new SendStoppedError();
+    return savedIssue("CORE-4") as never;
+  });
+  restores.push(() => send.mockRestore());
+  table(
+    [
+      issue("CORE-1", { labels: ["epic"], title: "Source" }),
+      issue("CORE-2", { labels: ["epic"], title: "Target" }),
+      issue("CORE-3", { parent: "CORE-1" }),
+      issue("CORE-4", { parent: "CORE-1" }),
+    ],
+    "?group=epic"
+  );
+  const source = (await screen.findByRole("link", { name: "CORE-1 · Source" })).closest("tr");
+  if (!source) throw new Error("The source epic has no heading row");
+  await user.click(within(source).getByRole("button", { name: "Epic actions ▾" }));
+  await user.selectOptions(
+    screen.getByRole("combobox", { name: "Merge into another epic" }),
+    "CORE-2"
+  );
+  await user.click(screen.getByRole("button", { name: "Merge…" }));
+  await user.click(
+    within(await screen.findByRole("dialog", { name: "Merge this epic?" })).getByRole("button", {
+      name: /^Merge$/,
+    })
+  );
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    `The source epic CORE-1 remains open. 1 of 2 changes saved. ${stoppedStep("CORE-3")} Retry each failed change in Pending changes.`
+  );
+});
+
+// A batch whose stopped changes promise different Retries: one key Dispatch still holds, so its
+// Retry asks again under it, and one that ran out, so its Retry is a new write. Each is said with
+// its own promise, never both with the first one's.
+test("a merge with a stopped move and one whose key ran out says each move's own Retry", async () => {
+  const user = userEvent.setup();
+  const send = spyOn(api, "send").mockImplementation(async (request) => {
+    throw request.path.endsWith("CORE-3") ? new SendStoppedError() : new SendExpiredError();
+  });
+  restores.push(() => send.mockRestore());
+  table(
+    [
+      issue("CORE-1", { labels: ["epic"], title: "Source" }),
+      issue("CORE-2", { labels: ["epic"], title: "Target" }),
+      issue("CORE-3", { parent: "CORE-1" }),
+      issue("CORE-4", { parent: "CORE-1" }),
+    ],
+    "?group=epic"
+  );
+  const source = (await screen.findByRole("link", { name: "CORE-1 · Source" })).closest("tr");
+  if (!source) throw new Error("The source epic has no heading row");
+  await user.click(within(source).getByRole("button", { name: "Epic actions ▾" }));
+  await user.selectOptions(
+    screen.getByRole("combobox", { name: "Merge into another epic" }),
+    "CORE-2"
+  );
+  await user.click(screen.getByRole("button", { name: "Merge…" }));
+  await user.click(
+    within(await screen.findByRole("dialog", { name: "Merge this epic?" })).getByRole("button", {
+      name: /^Merge$/,
+    })
+  );
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    "The source epic CORE-1 remains open. 0 of 2 changes saved. Dispatch has not confirmed the " +
+      "change to CORE-3: it may have been saved. Retry asks again under the same key, so it is " +
+      "saved at most once if you retry within 24 hours of the first try. After that Dispatch no " +
+      "longer knows the key: a Retry is a new write and may be saved twice. Dispatch has not " +
+      "confirmed the change to CORE-4: it may have been saved. Its key is 24 hours old or more, " +
+      "so Dispatch no longer holds it: a Retry is a new write, which can be saved a second time " +
+      "if the first one was. Retry each failed change in Pending changes."
+  );
+});
+
+// An epic's create the reader stopped may have made the epic: the table says so, and that its
+// Retry in Pending changes asks again under its key, rather than the stopped write's own words.
+test("a stopped epic creation says the epic may have been made, not a message's words", async () => {
+  const user = userEvent.setup();
+  const create = spyOn(api, "createIssue").mockRejectedValue(new SendStoppedError());
+  const named = nameTheEpic(user, "Committed once");
+  restores.push(() => create.mockRestore());
+  table([issue("CORE-1")]);
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
+  await user.click(screen.getByRole("button", { name: "New epic from these" }));
+  await named;
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    `${stoppedWriteNote("the epic “Committed once”", "made", {
+      method: "POST",
+      stopped: new SendStoppedError(),
+    })} Retry it in Pending changes.`
+  );
+});
+
 test("x selects the focused issue and the bar is told, in the order the table lists them", async () => {
   const user = userEvent.setup();
   table([issue("CORE-1"), issue("CORE-2")]);
@@ -983,6 +1110,24 @@ test("a bulk action keeps at most eight writes in flight", async () => {
   expect(peak).toBeLessThanOrEqual(8);
 });
 
+/** Puts what `replacement` makes of the page storage's own `name` method in place of that
+ *  method, and returns what puts the real one back. `replacement` is handed the real method, so
+ *  it never reads `localStorage[name]` itself, which would find the replacement and call itself.
+ *  happy-dom's `localStorage` is a Proxy that copies each method of `Storage.prototype` onto
+ *  itself, bound, the first time anything reads it: a spy on the prototype reaches the storage
+ *  only when nothing in the process has read that method yet, and then stays its method after
+ *  `mockRestore`, a mock that no longer reaches the real method. `Object.defineProperty` passes
+ *  the Proxy's trap onto the storage itself, where every later read finds it. */
+function onLocalStorage<Name extends "getItem" | "setItem">(
+  name: Name,
+  replacement: (real: Storage[Name]) => Storage[Name]
+): () => void {
+  const real = localStorage[name];
+  const descriptor = { configurable: true, writable: true };
+  Object.defineProperty(localStorage, name, { ...descriptor, value: replacement(real) });
+  return () => Object.defineProperty(localStorage, name, { ...descriptor, value: real });
+}
+
 // A browser that refuses local storage loses the saved layout and the interrupted-action
 // record, and nothing else: no click may throw out of the table.
 test("a browser that refuses storage still renders the table and runs an action", async () => {
@@ -990,27 +1135,18 @@ test("a browser that refuses storage still renders the table and runs an action"
   const refuse = (key: string) => {
     if (key.startsWith("dispatch.project-table.")) throw new Error("Storage refused");
   };
-  const read = Storage.prototype.getItem;
-  const write = Storage.prototype.setItem;
-  const getItem = spyOn(Storage.prototype, "getItem").mockImplementation(function (
-    this: Storage,
-    key: string
-  ) {
+  const restoreRead = onLocalStorage("getItem", (read) => (key) => {
     refuse(key);
-    return read.call(this, key);
+    return read(key);
   });
-  const setItem = spyOn(Storage.prototype, "setItem").mockImplementation(function (
-    this: Storage,
-    key: string,
-    value: string
-  ) {
+  const restoreWrite = onLocalStorage("setItem", (write) => (key, value) => {
     refuse(key);
-    write.call(this, key, value);
+    write(key, value);
   });
   const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-2"));
   restores.push(() => {
-    getItem.mockRestore();
-    setItem.mockRestore();
+    restoreRead();
+    restoreWrite();
     send.mockRestore();
   });
   table([
@@ -1323,12 +1459,7 @@ test("resizing a column on a phone leaves the saved key and title widths alone",
     "dispatch.project-table.CORE",
     JSON.stringify({ sizing: { key: 200, title: 500 } })
   );
-  const rect = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
-  ) {
-    return new DOMRect(0, 0, this.dataset.testid === "issues-table-scroll" ? 390 : 100, 40);
-  });
-  restores.push(() => rect.mockRestore());
+  stubScrollBoxWidth(390);
   table([issue("CORE-1")]);
   const header = await screen.findByRole("columnheader", { name: /Status/ });
   const handle = header.querySelector(".cursor-col-resize");
@@ -1383,15 +1514,23 @@ test("a stored width under an inherited name such as toString is dropped", () =>
   expect(readLayout("CORE", ISSUE_TABLE_COLUMNS).sizing).toEqual({ title: 360 });
 });
 
+/** Makes `getBoundingClientRect` report the List's scroll box `width` pixels wide and every other
+ *  element 100, each 40 high, until the row ends. The spy is on `Element.prototype`, which owns the
+ *  method: one on `HTMLElement` would leave an own copy behind that shadows every later spy. */
+function stubScrollBoxWidth(width: number): void {
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const box = this.getAttribute("data-testid") === "issues-table-scroll";
+    return new DOMRect(0, 0, box ? width : 100, 40);
+  });
+  restores.push(() => rect.mockRestore());
+}
+
 /** Each header cell of the List, left to right, as `<its column's words> <width> <the offset a
  *  pinned cell is held at, or ->`, drawn with the scroll box `width` pixels wide. */
 async function headerLayout(width: number): Promise<string[]> {
-  const rect = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
-  ) {
-    return new DOMRect(0, 0, this.dataset.testid === "issues-table-scroll" ? width : 100, 40);
-  });
-  restores.push(() => rect.mockRestore());
+  stubScrollBoxWidth(width);
   table([issue("CORE-1")]);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   const head = screen.getByRole("table", { name: "Project issues table" }).querySelector("thead");
@@ -1811,6 +1950,7 @@ test.each([
 });
 
 // F7: the steps of a start-next are known before the first write, so the store is written once.
+// Three issues move up, because with one a record written once per issue is the same two writes.
 test("Start next writes the store once for the whole batch", async () => {
   const user = userEvent.setup();
   const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1") as never);
@@ -1820,18 +1960,29 @@ test("Start next writes the store once for the whole batch", async () => {
   );
   table(rows);
   await screen.findByRole("row", { name: "CORE-10 Work CORE-10" });
-  await user.click(screen.getByRole("checkbox", { name: "Select CORE-10" }));
-  const setItem = spyOn(Storage.prototype, "setItem");
-  restores.push(() => setItem.mockRestore());
+  for (const key of ["CORE-8", "CORE-9", "CORE-10"])
+    await user.click(screen.getByRole("checkbox", { name: `Select ${key}` }));
+  const written: string[] = [];
+  restores.push(
+    onLocalStorage("setItem", (write) => (key, value) => {
+      written.push(value);
+      write(key, value);
+    })
+  );
   await user.click(
     within(screen.getByRole("toolbar")).getByRole("button", { name: /^Start next$/ })
   );
-  await waitFor(() => expect(send).toHaveBeenCalled());
-  const records = setItem.mock.calls.filter(([, value]) =>
-    String(value).includes('"kind":"startNext"')
+  // The notice follows the last rank write and the record's dismissal, so no write of the
+  // action lands after it.
+  await waitFor(() =>
+    expect(
+      within(screen.getByRole("region", { name: "Project issues" })).getByRole("status").textContent
+    ).toContain("3 issues now start next")
   );
+  expect(send).toHaveBeenCalledTimes(3);
+  const records = written.filter((value) => value.includes('"kind":"startNext"'));
   // One write to begin the action and one for its whole batch of keys, not one per issue.
-  expect(records.length).toBeLessThanOrEqual(2);
+  expect(records.length).toBe(2);
 });
 
 // O8: a record a tab left behind a day ago is not this reader's unfinished work.

@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // driftOf is why loc's pod has drifted from the configuration r would build one from now
@@ -80,8 +81,9 @@ func shapedOptions(o *Options) {
 // The shapes an issue pod built under shapedOptions records. shapedGVisorShape is a gVisor pod's,
 // byte for byte what every release before the sandbox setting recorded for that configuration, so a
 // pod those releases left running is read against it
-// (TestAGVisorPodRecordedBeforeThisReleaseReadsNoDrift). The two others are a microVM pod's under
-// testMicroVM's block, and under that block naming no metadata endpoint.
+// (TestAGVisorPodRecordedBeforeThisReleaseReadsNoDrift). The others are a microVM pod's under
+// testMicroVM's block, under that block naming no metadata endpoint, and under that block with
+// keep_volume on (keptMicroVM), the one shape that records the setting.
 const (
 	shapedGVisorShape = `{"image":"` + testImage + `",` +
 		`"resources":{"limits":{"cpu":"2","ephemeral-storage":"80Gi","memory":"8Gi"},"requests":{"cpu":"2","ephemeral-storage":"6Gi","memory":"8Gi"}},` +
@@ -102,6 +104,14 @@ const (
 		`"mounts":[{"name":"operator-extra","readOnly":true,"mountPath":"/etc/legion-operator-extra"}],` +
 		`"disk":"200Gi",` +
 		`"sandbox":{"runtime_class":"microvm","compute_class":"example-microvm","storage_class":"example-microvm-rwo"}}`
+	shapedKeptMicroVMShape = `{"image":"` + testImage + `",` +
+		`"resources":{"limits":{"cpu":"2","ephemeral-storage":"80Gi","memory":"8Gi"},"requests":{"cpu":"2","ephemeral-storage":"6Gi","memory":"8Gi"}},` +
+		`"volumes":[{"name":"operator-extra","configMap":{"name":"legion-operator-extra"}}],` +
+		`"mounts":[{"name":"operator-extra","readOnly":true,"mountPath":"/etc/legion-operator-extra"}],` +
+		`"disk":"200Gi",` +
+		`"sandbox":{"runtime_class":"microvm","compute_class":"example-microvm","storage_class":"example-microvm-rwo","keep_volume":true,` +
+		`"metadata":{"workload_pool":"example-project.svc.id.goog",` +
+		`"identity_provider":"https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster"}}}`
 )
 
 // testMicroVMSandboxShape is the sandbox member a microVM pod under testMicroVM's block records,
@@ -129,11 +139,11 @@ func sandboxBlock(kind SandboxType, canaries ...string) func(*Options) {
 // A pod's recorded shape is the configuration it was built from, in a fixed field order, each
 // value as the operator wrote it: the image, the kind's own reservation, the operator's volumes and
 // mounts, the disk, and, for a microVM pod alone, where it runs — the microVM RuntimeClass and the
-// microvm block's ComputeClass, StorageClass and metadata endpoint, which a block naming none
-// leaves out. A gVisor pod records no sandbox at all, beside a microvm block or without one, so its
-// shape is the one every release before the sandbox setting recorded. It is pinned whole because it
-// is what every later daemon compares a running pod against: a change of spelling here reads as
-// drift on every pod of the fleet at once.
+// microvm block's ComputeClass, StorageClass, keep_volume where it is on, and metadata endpoint,
+// which a block naming none leaves out. A gVisor pod records no sandbox at all, beside a microvm
+// block or without one, keep_volume on or off, so its shape is the one every release before the
+// sandbox setting recorded. It is pinned whole because it is what every later daemon compares a
+// running pod against: a change of spelling here reads as drift on every pod of the fleet at once.
 func TestPodShapeRecordsTheConfigurationAPodIsBuiltFrom(t *testing.T) {
 	withoutMetadata := testMicroVM()
 	withoutMetadata.Metadata = nil
@@ -151,6 +161,12 @@ func TestPodShapeRecordsTheConfigurationAPodIsBuiltFrom(t *testing.T) {
 		},
 		"a microVM issue pod whose block names no metadata endpoint": {
 			SandboxConfig{Type: SandboxMicroVM, MicroVM: withoutMetadata}, issueInMicroVM, shapedMicroVMShapeWithoutMetadata,
+		},
+		"a microVM issue pod whose block keeps its volume": {
+			SandboxConfig{Type: SandboxMicroVM, MicroVM: keptMicroVM()}, issueInMicroVM, shapedKeptMicroVMShape,
+		},
+		"a gVisor issue pod beside a microvm block that keeps its volume": {
+			SandboxConfig{CanaryIssues: []string{"LEGION-209"}, MicroVM: keptMicroVM()}, issueInGVisor, shapedGVisorShape,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -223,6 +239,44 @@ func TestPodShapeEncodesEqualConfigurationsIdentically(t *testing.T) {
 	}}}
 	if drifted := podShapeDrift(built, podShape(otherwise, issuePod{}, nil)); len(drifted) > 0 {
 		t.Errorf("podShapeDrift = %q, want nothing: the same amounts spelled otherwise are the same configuration", drifted)
+	}
+}
+
+// The cache trimmer's settings are no part of a pod's recorded shape: no running pod is built from
+// them — its launcher is told them afresh on the answer to every hello, a reconnect after a daemon
+// restart included (LauncherResolver) — so a pod whose annotation was written before any were
+// configured has drifted from nothing. Were they recorded, the deploy that configured them would
+// read every pod of the fleet as drifted at once and replace it.
+func TestPodShapeIgnoresTheCacheTrimmersSettings(t *testing.T) {
+	shaped := func(trim *shimwire.LauncherVolumeTrim) *Runtime {
+		t.Helper()
+		opts := testOptions()
+		opts.Pod = Pod{Volumes: []corev1.Volume{operatorVolume}, VolumeMounts: []corev1.VolumeMount{operatorMount}}
+		opts.VolumeTrim = trim
+		r, err := configure(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	none := shaped(nil)
+	trimming := shaped(&shimwire.LauncherVolumeTrim{HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60})
+	// Each shape a pod is built from: either kind in gVisor, and an issue pod in a microVM.
+	for _, shape := range []struct {
+		kind    podKind
+		microVM *MicroVM
+	}{{issuePod{}, nil}, {controllerPod{}, nil}, {issuePod{}, testMicroVM()}} {
+		if podShape(none, shape.kind, shape.microVM) != podShape(trimming, shape.kind, shape.microVM) {
+			t.Fatalf("%T (microvm %v) encodes differently once the trimmer is configured:\n%s\n%s", shape.kind, shape.microVM != nil,
+				podShape(none, shape.kind, shape.microVM), podShape(trimming, shape.kind, shape.microVM))
+		}
+	}
+	// The fixture pod's annotation predates this change, read by a daemon that has settings now.
+	built := &sandbox{Spec: sandboxSpec{PodTemplate: podTemplate{
+		Metadata: podMetadata{Annotations: map[string]string{podShapeAnnotation: podShape(none, issuePod{}, nil)}},
+	}}}
+	if drifted := podShapeDrift(built, podShape(trimming, issuePod{}, nil)); len(drifted) > 0 {
+		t.Errorf("podShapeDrift = %q, want nothing: the trimmer's settings are no part of a pod's shape", drifted)
 	}
 }
 
@@ -483,6 +537,54 @@ func TestAMicroVMStorageClassChangeDriftsMicroVMPodsAlone(t *testing.T) {
 	}
 }
 
+// keep_volume is in a microVM issue pod's shape, as where its disk comes from, so turning it on or
+// off opens a round over every microVM pod and the round's next pod is on the disk the setting
+// now gives it. The gVisor pods of the same project read nothing: the setting keeps none of their
+// volumes. The setting off is written nowhere, so a microVM pod's shape with it off is the one the
+// release before the setting recorded, byte for byte, and the setting's arrival opens no round.
+func TestAKeepVolumeChangeDriftsMicroVMPodsAlone(t *testing.T) {
+	kept := strings.Replace(testMicroVMSandboxShape, `"storage_class":"example-microvm-rwo"`, `"storage_class":"example-microvm-rwo","keep_volume":true`, 1)
+	keeping := func(on bool) func(*Options) {
+		return func(o *Options) {
+			sandboxBlock(SandboxGVisor, testTree)(o)
+			o.Sandbox.MicroVM.KeepVolume = on
+		}
+	}
+	for name, tc := range map[string]struct {
+		before, now bool
+		held, want  string
+	}{
+		"turned on":  {false, true, testMicroVMSandboxShape, kept},
+		"turned off": {true, false, kept, testMicroVMSandboxShape},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newRig(t, nil, withOptions(keeping(tc.before)))
+			microVM, gVisor := g.spawn(workerSpec(t)), g.spawn(childSpec(t))
+			r2 := secondRuntime(t, g, keeping(tc.now))()
+			if drifted, want := driftOf(t, g.ctx, r2, microVM), "sandbox "+tc.held+", now "+tc.want; !slices.Equal(drifted, []string{want}) {
+				t.Errorf("PodDrift of the microVM pod = %q, want %q and nothing beside it", drifted, want)
+			}
+			if drifted := driftOf(t, g.ctx, r2, gVisor); len(drifted) > 0 {
+				t.Errorf("PodDrift of LEGION-209's gVisor pod = %q, want nothing: keep_volume keeps no gVisor pod's volume", drifted)
+			}
+		})
+	}
+	t.Run("off encodes the bytes of the release before it", func(t *testing.T) {
+		opts := testOptions()
+		shapedOptions(&opts)
+		block := testMicroVM()
+		block.KeepVolume = false
+		opts.Sandbox = SandboxConfig{Type: SandboxMicroVM, MicroVM: block}
+		r, err := configure(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := r.podShapes[issueInMicroVM]; got != shapedMicroVMShape {
+			t.Errorf("podShape with keep_volume off =\n%s\nwant\n%s", got, shapedMicroVMShape)
+		}
+	})
+}
+
 // The three facets a round's workers can be asked about — the operator's volume and mount holding a
 // named role's overlays, the secrets broker's enrollment, and the session store — are read by
 // PodDrift, and no observation of the pod names one any more: a role whose pod holds one keeps
@@ -533,8 +635,8 @@ func TestPodDriftReadsTheFacetsThatAreNoLongerStaleAddresses(t *testing.T) {
 // A pod runs as the ServiceAccount it was created with for its whole life, so an operator's
 // change of runtime.kubernetes.pod.service_account is drift of every issue pod created under the
 // account before it, and PodDrift is what names it: the round that reason opens asks every worker
-// in the pod to push, and only then replaces the pod
-// (accountDrift). The reason carries both accounts, the one the pod runs as and the one
+// in the pod to do the steps of its update message (supervise.UpdateTask), and only then replaces
+// the pod (accountDrift). The reason carries both accounts, the one the pod runs as and the one
 // configured now, each read through serviceAccountOr — so a pod already on the configured
 // account has drifted from nothing, and so has one on `default` under a configuration naming no
 // account, which is that same account spelled the other way, while a pod on a named account
@@ -690,7 +792,7 @@ func TestIssuePodIsThePodTheIssuesSandboxHoldsNow(t *testing.T) {
 // A pod under a suspended Sandbox is on its way out, and the round over it decides nothing true
 // — unless the suspension is that round's own replacement. ReplacePod suspends the Sandbox and
 // names the displaced pod on it under the round's own mark in one write (roundDisplacedAnnotation,
-// suspendDisplacing) and then waits the pod out, so between those two the Sandbox is suspended,
+// displacing) and then waits the pod out, so between those two the Sandbox is suspended,
 // names this very pod for the round, and the pod is still there: that is the round's own
 // replacement in flight, and it reads as a pod that is there and has not drifted, which is what
 // ends the round as the replacement it is. The same Sandbox suspended by anything else — an
@@ -736,7 +838,7 @@ func TestPodDriftReadsASuspendedSandboxAsItsOwnReplacementOrAsAGonePod(t *testin
 	suspended("it suspended naming no replaced pod", func(s *sandbox) bool { return s.Annotations[displacedAnnotation] == "" })
 	gone("a suspended sandbox naming no replaced pod")
 
-	if _, err := g.r.suspendDisplacing(g.ctx, g.sandbox(name), types.UID(loc.Sandbox.PodUID), launchReplacement); err != nil {
+	if _, err := g.r.suspendAnnotating(g.ctx, g.sandbox(name), displacing(types.UID(loc.Sandbox.PodUID), launchReplacement)); err != nil {
 		t.Fatalf("name the locator's own pod as the one a launch replaced: %v", err)
 	}
 	suspended("a launch's replacement of the locator's own pod", func(s *sandbox) bool {
@@ -745,7 +847,7 @@ func TestPodDriftReadsASuspendedSandboxAsItsOwnReplacementOrAsAGonePod(t *testin
 	})
 	gone("a pod a launch's replacement suspended the sandbox over")
 
-	if _, err := g.r.suspendDisplacing(g.ctx, g.sandbox(name), "uid-pod-earlier", roundReplacement); err != nil {
+	if _, err := g.r.suspendAnnotating(g.ctx, g.sandbox(name), displacing("uid-pod-earlier", roundReplacement)); err != nil {
 		t.Fatalf("name an earlier pod as the one the daemon replaced: %v", err)
 	}
 	suspended("it naming an earlier replaced pod", func(s *sandbox) bool {
@@ -753,7 +855,7 @@ func TestPodDriftReadsASuspendedSandboxAsItsOwnReplacementOrAsAGonePod(t *testin
 	})
 	gone("a suspended sandbox naming another pod as the one its round replaced")
 
-	if _, err := g.r.suspendDisplacing(g.ctx, g.sandbox(name), types.UID(loc.Sandbox.PodUID), roundReplacement); err != nil {
+	if _, err := g.r.suspendAnnotating(g.ctx, g.sandbox(name), displacing(types.UID(loc.Sandbox.PodUID), roundReplacement)); err != nil {
 		t.Fatalf("name the locator's own pod as the one this round replaced: %v", err)
 	}
 	suspended("it naming the locator's own pod for its round", func(s *sandbox) bool {
@@ -773,7 +875,7 @@ func TestPodDriftReadsASuspendedSandboxAsItsOwnReplacementOrAsAGonePod(t *testin
 // pushed, and a round that ended as its own replacement would report nothing lost.
 //
 // Both are driven through the callers themselves, never by writing the annotations here: a future
-// caller of suspendDisplacing that forgets which kind of replacement it is making fails this.
+// caller of displacing that forgets which kind of replacement it is making fails this.
 // The launch is a Resume into a pod whose launcher dials the stream the daemon has left, the kind
 // of drift no round answers — its workers cannot be reached to be asked anything — and so the one
 // that makes a launch replace an issue pod where it stands (movedInPod). The operator's volume

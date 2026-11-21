@@ -41,6 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
+	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/session"
@@ -132,6 +133,36 @@ func TestSettingValuesRefuseAVariableTheTableDoesNotList(t *testing.T) {
 // of "" leaves the variable empty. It is a production cookie server: signInEnvironment's.
 func bootEnvironment(overrides map[string]string) settingValues {
 	return envGetter(signInEnvironment(overrides))
+}
+
+// listenerBearers serves GET /api/v1/agents with Dispatch resolved from overrides against a listener
+// stand-in that answers 401 to every bearer but taken, and returns every Authorization it received.
+func listenerBearers(t *testing.T, overrides map[string]string, taken string) []string {
+	t.Helper()
+	authorizations := make(chan string, 8)
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorizations <- r.Header.Get("Authorization")
+		if r.Header.Get("Authorization") != taken {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+			return
+		}
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer listener.Close()
+	overrides["ENVOY_URL"] = listener.URL
+	request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/agents", nil), "alice")
+	response := httptest.NewRecorder()
+	routerFor(t, resolveWith(t, overrides), routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/agents: %d %s", response.Code, response.Body.String())
+	}
+	close(authorizations)
+	var got []string
+	for authorization := range authorizations {
+		got = append(got, authorization)
+	}
+	return got
 }
 
 func resolveWith(t *testing.T, overrides map[string]string) bootConfig {
@@ -924,12 +955,36 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("NATS_NKEY_SEED_FILE set but empty: err = %v, want it refused", err)
 			}
 		},
+		"NATS_SERVICE_TOKEN_FILE": func(t *testing.T) {
+			missing := filepath.Join(t.TempDir(), "missing")
+			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": missing}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE names "+missing) {
+				t.Errorf("NATS_SERVICE_TOKEN_FILE: err = %v, want the missing token file refused", err)
+			}
+			token := writeFile(t, "token", "a.b.c\n")
+			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": token, "NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE and NATS_NKEY_SEED are both set") {
+				t.Errorf("beside a seed: err = %v, want both named", err)
+			}
+		},
+		"NATS_SERVICE_GOOGLE_AUDIENCE": func(t *testing.T) {
+			if err := natsConnect(map[string]string{"NATS_SERVICE_GOOGLE_AUDIENCE": " "}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_GOOGLE_AUDIENCE is set but empty") {
+				t.Errorf("NATS_SERVICE_GOOGLE_AUDIENCE: err = %v, want the empty audience refused", err)
+			}
+		},
 		"DISPATCH_NATS_DISABLED": func(t *testing.T) {
-			if boot := resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "1"}); !boot.NATSDisabled {
+			boot := resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "1"})
+			if !boot.NATSDisabled {
 				t.Error("DISPATCH_NATS_DISABLED=1: NATS on")
 			}
-			if boot := resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "true"}); boot.NATSDisabled {
+			// No outbox runs without NATS, so no mention's send waits on events nothing will send.
+			if options := appContextOptions(boot, routes.AppContextOptions{}); options.OutboxPublishes {
+				t.Error("DISPATCH_NATS_DISABLED=1: the router is handed OutboxPublishes = true, want false")
+			}
+			boot = resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "true"})
+			if boot.NATSDisabled {
 				t.Error("DISPATCH_NATS_DISABLED=true: NATS off, want only 1 to turn it off")
+			}
+			if options := appContextOptions(boot, routes.AppContextOptions{}); !options.OutboxPublishes {
+				t.Error("NATS on: the router is handed OutboxPublishes = false, want true: the outbox publishes, and a mention's send keeps its order behind the events it still owes")
 			}
 		},
 		"ENVOY_URL": func(t *testing.T) {
@@ -1002,6 +1057,48 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if got := sent(map[string]string{}); got != "" {
 				t.Errorf("unset: the listener received Authorization %q, want none", got)
 			}
+		},
+		"ENVOY_ACCOUNT_TOKEN_FILE": func(t *testing.T) {
+			// The bearer the Envoy listener receives on GET /api/v1/agents's read of its sessions:
+			// what the file holds when the call is made, trimmed, in ENVOY_TOKEN's place; beside
+			// ENVOY_TOKEN, the file's token, again after the listener's 401 (the file read once
+			// more), and the shared token only once the listener has refused it twice, as a
+			// listener of the release before refuses it.
+			tokenFile := writeFile(t, "listener-account-token", "account-token\n")
+			if got := listenerBearers(t, map[string]string{"ENVOY_ACCOUNT_TOKEN_FILE": " " + tokenFile + " "}, "Bearer account-token"); strings.Join(got, ",") != "Bearer account-token" {
+				t.Errorf("ENVOY_ACCOUNT_TOKEN_FILE: the listener received Authorization %q, want the file's token alone", got)
+			}
+			if got := listenerBearers(t, map[string]string{"ENVOY_ACCOUNT_TOKEN_FILE": tokenFile, "ENVOY_TOKEN": "listener-token"}, "Bearer listener-token"); strings.Join(got, ",") != "Bearer account-token,Bearer account-token,Bearer listener-token" {
+				t.Errorf("both set: the listener received Authorization %q, want the file's token twice, then on its second 401 the shared token", got)
+			}
+		},
+		"ENVOY_ACCOUNT_GOOGLE_AUDIENCE": func(t *testing.T) {
+			// The bearer the Envoy listener receives is the identity token the metadata server
+			// minted for the audience, trimmed; set with ENVOY_ACCOUNT_TOKEN_FILE, startup is
+			// refused, naming both.
+			const minted = "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.c2ln"
+			audiences := make(chan string, 1)
+			metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Metadata-Flavor", "Google")
+				if r.URL.Path == "/computeMetadata/v1/instance/service-accounts/default/identity" {
+					select {
+					case audiences <- r.URL.Query().Get("audience"):
+					default:
+					}
+					_, _ = w.Write([]byte(minted))
+					return
+				}
+				http.NotFound(w, r)
+			}))
+			defer metadata.Close()
+			t.Setenv(googleidentity.MetadataHostVar, strings.TrimPrefix(metadata.URL, "http://"))
+			if got := listenerBearers(t, map[string]string{"ENVOY_ACCOUNT_GOOGLE_AUDIENCE": " envoy-listener "}, "Bearer "+minted); strings.Join(got, ",") != "Bearer "+minted {
+				t.Errorf("ENVOY_ACCOUNT_GOOGLE_AUDIENCE: the listener received Authorization %q, want the minted token alone", got)
+			}
+			if got := <-audiences; got != "envoy-listener" {
+				t.Errorf("the metadata server was asked for audience %q, want envoy-listener", got)
+			}
+			refusedWith(t, map[string]string{"ENVOY_ACCOUNT_GOOGLE_AUDIENCE": "envoy-listener", "ENVOY_ACCOUNT_TOKEN_FILE": "/run/token"}, "ENVOY_ACCOUNT_GOOGLE_AUDIENCE")
 		},
 		"DISPATCH_REPO_PROJECTS": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_REPO_PROJECTS": " acme/widgets=WID "}); boot.RepoProjects != "acme/widgets=WID" {
@@ -1883,6 +1980,18 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_RECONCILE_AT_START": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.ArchitectureImportAtStart {
+				t.Error("DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START unset: ArchitectureImportAtStart true")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": "1"}); !boot.ArchitectureImportAtStart {
+				t.Error("DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1: ArchitectureImportAtStart false")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": "true"}); boot.ArchitectureImportAtStart {
+				t.Error("DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=true: ArchitectureImportAtStart true, want only 1 to set it")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_CI_RECONCILE_INTERVAL": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.CIReconcileInterval != 0 {
 				t.Errorf("DISPATCH_TEST_CI_RECONCILE_INTERVAL unset: CIReconcileInterval = %v, want 0 (cireconcile.Interval's five minutes)", boot.CIReconcileInterval)
@@ -1900,6 +2009,24 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					fmt.Sprintf("DISPATCH_TEST_CI_RECONCILE_INTERVAL=%q (expected a positive Go duration)", invalid))
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_CI_RECONCILE_INTERVAL": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_REDELIVERY_INTERVAL": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.RedeliveryInterval != 0 {
+				t.Errorf("DISPATCH_TEST_REDELIVERY_INTERVAL unset: RedeliveryInterval = %v, want 0 (redeliver.Interval's two minutes)", boot.RedeliveryInterval)
+			}
+			const quick = 2 * time.Second
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":               "1",
+				"DISPATCH_TEST_REDELIVERY_INTERVAL": quick.String(),
+			})
+			if boot.RedeliveryInterval != quick {
+				t.Errorf("DISPATCH_TEST_REDELIVERY_INTERVAL: RedeliveryInterval = %v, want %v", boot.RedeliveryInterval, quick)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_REDELIVERY_INTERVAL": invalid},
+					fmt.Sprintf("DISPATCH_TEST_REDELIVERY_INTERVAL=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_REDELIVERY_INTERVAL": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.DeliveryReconcileInterval != 0 {

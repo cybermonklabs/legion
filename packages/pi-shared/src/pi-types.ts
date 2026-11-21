@@ -12,8 +12,8 @@ import type { Component } from "@oh-my-pi/pi-tui";
  */
 
 /** A model as the host names it: the provider and the id a model selector resolves to
- * (`ExtensionModelQuery`, `packages/coding-agent/src/extensibility/extensions/types.ts:541-560` in
- * Oh My Pi at tag `v18.16.0-sami.20261104-021732`, read on that build). */
+ * (`ExtensionModelQuery`, `packages/coding-agent/src/extensibility/extensions/types.ts:579-597` in
+ * Oh My Pi at tag `v18.18.6-sami.20261118-101239`, read on that build). */
 export interface HostModel {
   readonly provider: string;
   readonly id: string;
@@ -22,10 +22,11 @@ export interface HostModel {
 /** The host's `ModelRegistry`, as far as this package reads it: the two members a retry fallback
  * chain's resolution needs as its `RetryFallbackModelLookup`
  * (`packages/coding-agent/src/session/retry-fallback-chains.ts:37-41` at the pinned tag), and the
- * suppression the host's own turn recovery reads before it picks a fallback
- * (`session/turn-recovery.ts:2026`), so an extension stepping down the same chain skips what the
- * host already skips. Each is a method of the live registry, which reads private state of its
- * own, so a caller calls it on the registry rather than handing it over detached. */
+ * suppression the host's own turn recovery reads before it picks a fallback, by the entry's own
+ * selector and by the key of the model it resolves to (`isRetryFallbackEntrySuppressed`,
+ * `session/turn-recovery.ts:2194-2199` at the pinned tag), so an extension stepping down the same
+ * chain can skip what the host skips. Each is a method of the live registry, which reads private
+ * state of its own, so a caller calls it on the registry rather than handing it over detached. */
 export interface HostModelRegistry {
   /** The model one provider and id name, or undefined when this deployment disables the provider
    * or holds no such model. */
@@ -49,7 +50,7 @@ export interface SessionContext {
   readonly taskDepth?: number;
   /** Which runner the event belongs to: the top-level session's is `main`, a `task` subagent's
    * `sub`. `id` is the host's agent registry id for that runner (`ExtensionAgentIdentity`,
-   * `extensibility/extensions/types.ts:585-600` at the pinned tag). */
+   * `extensibility/extensions/types.ts:608-625` at the pinned tag). */
   readonly agent?: { readonly kind: "main" | "sub"; readonly id?: string };
   readonly sessionManager: {
     readonly getSessionId: () => string;
@@ -135,7 +136,7 @@ export interface SessionContext {
   readonly hasPendingMessages?: () => boolean;
   /** The models the host holds, the one the session runs now, and what one selector such as
    * `anthropic/claude-opus-4-5` resolves to (`ExtensionModelQuery`,
-   * `extensibility/extensions/types.ts:541-560` at the pinned tag). */
+   * `extensibility/extensions/types.ts:579-597` at the pinned tag). */
   readonly models?: {
     readonly list: () => readonly HostModel[];
     readonly current: () => HostModel | undefined;
@@ -154,10 +155,11 @@ export interface SessionContext {
   readonly getAsyncJobSnapshot?: () => AsyncJobSnapshot | null;
   /**
    * The host's `ctx.getContextUsage()`: how much of the current model's context window this
-   * session's conversation fills now, or undefined when the host holds no breakdown to answer
-   * with. It takes no argument on the extension surface, and it is read live from a context
-   * kept since `session_start`. Absent on a host that predates it, so a call site asks
-   * `typeof ctx.getContextUsage === "function"` first, as the host's own callers do
+   * session's conversation fills now, or undefined when the host has no reading to answer with
+   * (at the pin, only before its runner is initialised; see `ContextUsage`). It takes no argument
+   * on the extension surface, and it is read live from a context kept since `session_start`.
+   * Absent on a host that predates it, so a call site asks `typeof ctx.getContextUsage ===
+   * "function"` first, as the host's own callers do
    * (`typeof this.session.getContextUsage === "function"`).
    */
   readonly getContextUsage?: () => ContextUsage | undefined;
@@ -173,7 +175,7 @@ export interface SessionContext {
 }
 
 /** The branch entry a model change leaves, as `sessionManager.getBranch()` hands it
- * (`packages/coding-agent/src/session/session-entries.ts:132-152` at the pinned tag).
+ * (`packages/coding-agent/src/session/session-entries.ts:153-161` at the pinned tag).
  * `resolvedModelIsFallback` marks a change the host's own fallback walk made. */
 export interface ModelChangeEntry {
   readonly type: "model_change";
@@ -184,7 +186,7 @@ export interface ModelChangeEntry {
   readonly resolvedModelIsFallback?: boolean;
 }
 
-/** The branch entry a thinking-level change leaves (`session/session-entries.ts:132-152` at the
+/** The branch entry a thinking-level change leaves (`session/session-entries.ts:142-151` at the
  * pinned tag). */
 export interface ThinkingLevelChangeEntry {
   readonly type: "thinking_level_change";
@@ -251,9 +253,10 @@ export interface AsyncJobDelivery {
  *
  * Read out of Oh My Pi 18.16.0-sami.20261105-032528 (the fork's build of 2026-11-05), which builds
  * the extension context with `getContextUsage: () => this.#d()` over a session method answering
- * `{tokens: usedTokens, contextWindow, percent: usedTokens / contextWindow * 100}`, and nothing
- * at all when it holds no context breakdown. `percent` is nullable because the same build
- * carries a second wiring of this shape, the status line's startup session, which answers
+ * `{tokens: usedTokens, contextWindow, percent: usedTokens / contextWindow * 100}`. The pinned
+ * build (18.18.6-sami.20261119-162325, `.omp-pin`) answers undefined only before its runner is
+ * initialised, and `contextWindow: 0` for a model with no window or for no model at all.
+ * `percent` is nullable because the older build's status-line startup wiring answered
  * `{tokens: 0, contextWindow, percent: null}`: a reader of these figures handles a host that
  * reports a window and no percentage.
  */
@@ -319,15 +322,15 @@ export interface AgentEndMessage {
    * provider failure, `length` a truncation. */
   readonly stopReason?: string;
   /** What the provider said about an `error` stop, when it said anything: Oh My Pi carries
-   * Anthropic's `stop_details` on its `AssistantMessage` (`packages/ai/src/types.ts:1463-1471`,
-   * `StopDetails` at `packages/ai/src/providers/anthropic-wire.ts:472-478`, at the pinned tag). */
+   * Anthropic's `stop_details` on its `AssistantMessage` (`packages/ai/src/types.ts:1492-1500`,
+   * `StopDetails` at `packages/ai/src/providers/anthropic-wire.ts:481-487`, at the pinned tag). */
   readonly stopDetails?: {
     readonly type?: string | null;
     readonly category?: string | null;
     readonly explanation?: string | null;
   } | null;
   /** The error text of an `error` stop, which each provider writes its own way (`AssistantMessage`,
-   * `packages/ai/src/types.ts:1463-1471` at the pinned tag). `classifyProviderTurn`
+   * `packages/ai/src/types.ts:1492-1500` at the pinned tag). `classifyProviderTurn`
    * (`./provider-refusal`) reads it to tell a content filter from any other provider failure. */
   readonly errorMessage?: string;
 }
@@ -344,6 +347,10 @@ export interface AgentEndEvent {
    * background job's follow-up sets it, with `awaitingAsyncWork`; a steered run's non-terminal
    * end does not, and reads instead as `ctx.hasPendingMessages()` true (measured 2026-11-08). */
   readonly willContinue?: boolean;
+  /** Set with `willContinue` when the turn ends while a background job runs or its result waits to
+   * be delivered (`agent-session.ts:5936-5943` at the pinned tag): the pane is idle until the
+   * job's result starts the next run. */
+  readonly awaitingAsyncWork?: boolean;
   /** The run's messages; the last assistant entry says how the run ended. */
   readonly messages?: readonly AgentEndMessage[];
 }
@@ -740,7 +747,7 @@ export interface PiApi {
   readonly setActiveTools: (tools: string[]) => Promise<void>;
   /**
    * Switches the session's model, as `/model` does; false when no API key for that model is
-   * available (`ExtensionAPI`, `extensibility/extensions/types.ts:2168-2177` at the pinned tag).
+   * available (`ExtensionAPI`, `extensibility/extensions/types.ts:2253-2260` at the pinned tag).
    */
   readonly setModel?: (model: HostModel) => Promise<boolean>;
   /** The session's thinking level, and a setter for it (same `ExtensionAPI` block at the pinned

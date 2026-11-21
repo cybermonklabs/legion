@@ -28,6 +28,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // The probe Sandbox testImage gets in testProject: the project, then the digest's first 12 hex.
@@ -743,6 +744,108 @@ func TestProbeImageRetriesAPodTheKubeletFailed(t *testing.T) {
 			wantContains(t, err, "never completed within its retry budget (2 attempts)", "pod "+probeSandboxName+" Failed", testCase.want)
 			if n := g.creates.Load(); n != 2 {
 				t.Errorf("ran the probe %d times, want the retry's 2", n)
+			}
+			g.eventually("the probe Sandbox to be deleted", func() bool { return g.sandbox(probeSandboxName) == nil })
+		})
+	}
+}
+
+// A probe pod whose `legion probe-image` exited 75 with its no-verdict line ran checks its limits
+// or its deadline stopped short of an answer, and none that failed: that says nothing of the
+// image, so the attempt is transient, logged naming what had no verdict, and the next attempt's
+// pod, which passes, passes the probe. The exit code and the line are written out, not read from
+// bootprobe, so the test also runs on a daemon that predates them, which refuses the first pod.
+func TestProbeImageRunsAnotherAttemptAfterAProbeThatExits75(t *testing.T) {
+	const run = "its 40s limit ended it after 40.0s: signal: killed"
+	logged := &lockedLog{}
+	g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
+	var pods atomic.Int32
+	g.finishes(func(p *corev1.Pod) {
+		if pods.Add(1) == 1 {
+			g.with(func() {
+				g.log = "probe-image: TLS client aws emSign: no verdict (" + run + ")\n" +
+					"legion probe-image: worker probe has no verdict: aws emSign: " + run + "\n"
+			})
+			p.Status = corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{{
+				Name: probeContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 75, Reason: "Error"}},
+			}}}
+			return
+		}
+		g.with(func() { g.log = okLine(3) + "\n" })
+		p.Status = corev1.PodStatus{Phase: corev1.PodSucceeded, ContainerStatuses: []corev1.ContainerStatus{{
+			Name: probeContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"}},
+		}}}
+	})
+
+	err := g.probe(probeOptions(t))
+
+	if err != nil {
+		t.Fatalf("ProbeImage = %v, want the pass of the attempt after the one with no verdict", err)
+	}
+	if n := g.creates.Load(); n != 2 {
+		t.Errorf("ran the probe %d times, want the attempt with no verdict and the one that passed", n)
+	}
+	want := "pod " + probeSandboxName + " exited 75 with no verdict: aws emSign: " + run
+	if !strings.Contains(logged.String(), "boot probe failed transiently") || !strings.Contains(logged.String(), want) {
+		t.Errorf("the attempt with no verdict was not logged as a transient failure saying %q:\n%s", want, logged.String())
+	}
+	g.eventually("the probe Sandbox to be deleted", func() bool { return g.sandbox(probeSandboxName) == nil })
+}
+
+// Attempts that each exit 75 (bootprobe.NoVerdictExit) spend the daemon's six (bootprobe.Image),
+// and the probe then ends naming the last attempt's pod and every TLS run and step its no-verdict
+// line names, with the log after them: what the operator reads of a probe that never reached a
+// verdict.
+func TestProbeImageEndsAfterSixAttemptsThatEachExit75NamingEachRunWithNoVerdict(t *testing.T) {
+	const noVerdict = "aws emSign: its 40s limit ended it after 40.0s: signal: killed; " +
+		"chromium AAA: the probe's deadline ended it after 12.3s: signal: terminated; " +
+		"role overlays: implementer: signal: terminated"
+	g := newProbeRig(t, nil)
+	g.with(func() {
+		g.log = "probe-image: TLS client aws emSign: no verdict (its 20s limit ended it after 20.0s: signal: killed)\n" +
+			"probe-image: TLS client aws emSign: no verdict (its 40s limit ended it after 40.0s: signal: killed)\n" +
+			bootprobe.NoVerdictPrefix + noVerdict + "\n"
+	})
+	g.finishes(func(p *corev1.Pod) {
+		p.Status = corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{{
+			Name: probeContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: bootprobe.NoVerdictExit, Reason: "Error"}},
+		}}}
+	})
+	p := probeOptions(t)
+	p.Retry.Attempts = bootprobe.Image.Attempts
+
+	err := g.probe(p)
+
+	wantContains(t, err, "the worker image probe never completed within its retry budget (6 attempts): pod "+probeSandboxName+
+		" exited 75 with no verdict: "+noVerdict+" — log tail: probe-image: TLS client aws emSign: no verdict")
+	if n := g.creates.Load(); n != 6 {
+		t.Errorf("ran the probe %d times, want the retry's 6", n)
+	}
+	g.eventually("the probe Sandbox to be deleted", func() bool { return g.sandbox(probeSandboxName) == nil })
+}
+
+// A probe pod whose `legion probe-image` exited 1 found a failure: the image's refusal, after one
+// attempt. The exit code decides, not the log: a no-verdict line beside the failure leaves it a
+// refusal.
+func TestProbeImageRefusesAProbeThatExits1AfterOneAttempt(t *testing.T) {
+	const failed = "legion probe-image: worker TLS probe failed: aws accepts the emSign chain: exit 0"
+	for _, testCase := range []struct {
+		name string
+		log  string
+	}{
+		{"a failure", failed},
+		{"a failure beside a no-verdict line", bootprobe.NoVerdictPrefix + "chromium AAA: the probe's deadline ended it after 12.3s: signal: terminated\n" + failed},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			g := newProbeRig(t, nil)
+			g.fails(testCase.log)
+
+			err := g.probe(probeOptions(t))
+
+			wantContains(t, err, "worker image sha256:"+testDigestHex+" failed its probe: pod "+probeSandboxName+
+				" Failed (container probe terminated: Error, exit code 1) — log tail: ", failed)
+			if n := g.creates.Load(); n != 1 {
+				t.Errorf("ran the probe %d times for a refusal, want once", n)
 			}
 			g.eventually("the probe Sandbox to be deleted", func() bool { return g.sandbox(probeSandboxName) == nil })
 		})
@@ -1804,6 +1907,72 @@ func TestLastBytesKeepsTheEndOfTheTail(t *testing.T) {
 			t.Fatalf("lastBytes of an exactly-keep stream was not returned unchanged (len %d, want %d)", len(got), keep)
 		}
 	})
+}
+
+// A tail whose cut falls inside a URL of one long line, with no newline after the cut, keeps no
+// part of that URL's user name or query: lastBytes starts the tail after the first byte that ends
+// a URL, where the line it cut holds no newline to start from. A tail started at the cut leaves
+// the user name or the query's tail with no "://" or "?" before it, where the URL rule probeLog
+// gives the tail through (redact.Read) finds neither.
+func TestLastBytesKeepsNoPartOfAURLItsCutFallsInside(t *testing.T) {
+	const keep = 4 << 10
+	const user, query = "legion-reader", "token=planted-query-token-9"
+	rest := " the image said more " + strings.Repeat("z", keep)
+	for _, tc := range []struct {
+		name string
+		// head is the line up to the cut, and after the part of the URL the tail starts with.
+		head, after, planted string
+	}{
+		{"a cut inside the user name", strings.Repeat("w", 100) + " https://legion-", "reader@h.example/p?" + query, user},
+		{"a cut inside the query", strings.Repeat("w", 100) + " https://" + user + "@h.example/p?token=planted-", "query-token-9", query},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line := tc.head + tc.after + rest
+			line = line[:len(tc.head)+keep]
+			got, err := lastBytes(strings.NewReader(line), keep)
+			if err != nil {
+				t.Fatalf("lastBytes = %v", err)
+			}
+			if !strings.HasPrefix(got, "…\n") || !strings.Contains(got, "the image said more") {
+				t.Fatalf("lastBytes = %q, want the … line and the words after the URL", got[:min(len(got), 80)])
+			}
+			ruled := redact.Read(got, false)
+			for _, part := range []string{tc.planted[len(tc.planted)-6:], "@h.example"} {
+				if strings.Contains(ruled, part) {
+					t.Fatalf("lastBytes, through the URL rule, starts %q, which holds %q of the URL", ruled[:min(len(ruled), 80)], part)
+				}
+			}
+		})
+	}
+}
+
+// A container's log tail whose byte cut falls inside a URL's user name, in a log of one line with
+// no newline, keeps no part of that user name: readLog drops the head of a read whose older bytes
+// it cut as lastBytes does (dropCutHead), after the first byte that ends a URL where the tail
+// holds no newline to start from. A tail kept whole from the cut leaves the user name's end with
+// no "://" before it, where the URL rule a death cause is kept under (storetext.FarSideText) finds
+// no userinfo.
+func TestALogTailWithNoNewlineKeepsNoPartOfAURLItsCutFallsInside(t *testing.T) {
+	g := newRig(t, nil, withoutController())
+	head := strings.Repeat("w", 100) + " https://legion-"
+	log := head + "reader@h.example/p?token=planted-query-token-9 the fetch said more " + strings.Repeat("z", logTailBytes)
+	log = log[:len(head)+logTailBytes]
+	g.kube.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
+		if action.GetSubresource() != "log" {
+			return false, nil, nil
+		}
+		return true, &k8sruntime.Unknown{Raw: []byte(log)}, nil
+	})
+	got := g.r.logTail(g.ctx, "legion-pod", fetchContainer)
+	ruled := redact.Read(got, false)
+	for _, part := range []string{"reader", "@h.example", "planted-query-token-9"} {
+		if strings.Contains(ruled, part) {
+			t.Fatalf("logTail, through the URL rule, starts %q, which holds %q of the URL", ruled[:min(len(ruled), 80)], part)
+		}
+	}
+	if !strings.HasPrefix(got, "the fetch said more") {
+		t.Fatalf("logTail = %q, want the words after the URL first", got[:min(len(got), 80)])
+	}
 }
 
 // tailBytes holds a log's newest keep bytes and no more, however long the log: a log of a hundred

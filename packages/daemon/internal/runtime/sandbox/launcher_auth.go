@@ -95,25 +95,48 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 			return nil, shimwire.LauncherHelloAck{}, "launcher credential does not name this pod's role"
 		}
 		// The pod the connection is accepted for carries the instant the API server created it,
-		// which decides whether a release's saved work is this pod's to restore
-		// (launchers.restoreWorkspace).
-		return r.launchers.accept(token, credential.issue, view.pod.CreationTimestamp.Time, hello), r.launcherHelloAck(kind), ""
+		// and the instant the API server created its Sandbox, where that Sandbox owns the issue's
+		// kept volume. The two decide whether a release's saved work is this pod's to restore, or
+		// is on its volume already (launchers.restoreWorkspace). Both come from the informer's
+		// objects, so neither costs a request.
+		return r.launchers.accept(token, credential.issue, view.pod.CreationTimestamp.Time, keptVolumeSince(view.sandbox), hello), r.launcherHelloAck(kind), ""
 	}
+}
+
+// keptVolumeSince is when the API server created s, where s owns an issue's kept volume
+// (ownsKeptVolume), and the zero time otherwise: a Sandbox whose pod's volume is the pod's own,
+// and the project controller's Sandbox. A kept volume is as old as the Sandbox that owns it,
+// since Agent Sandbox makes the claim from the Sandbox's template, and the claim goes only with
+// the Sandbox.
+func keptVolumeSince(s *sandbox) time.Time {
+	if !ownsKeptVolume(s) {
+		return time.Time{}
+	}
+	return s.CreationTimestamp.Time
 }
 
 // launcherHelloAck is the acknowledgement an accepted launcher on a pod of kind is answered with,
 // the one place each of its members is decided. An issue pod's launcher is handed the memory
-// guard's settings (Options.MemoryGuard), none when the deployment turned the guard off; the
-// controller's pod is handed none here, since its guard's settings are a block of their own
-// that this runtime does not carry, and an absent member is what its launcher reads as "run no
-// guard". Every issue pod's launcher is also told that this daemon knows the pod's kernel's kill
-// (KernelKills), whatever the guard's settings, since a microVM pod's launcher sends those reports
-// only where it is told so and its roles are owed the note however the guard is set; the
-// controller's pod runs no watch whose reports it would carry.
+// guard's settings (Options.MemoryGuard), none when the deployment turned the guard off, and what
+// its cache trimmer runs by (Options.VolumeTrim), none when the deployment configured none. The
+// controller's pod is handed neither here: its guard's settings are a block of their own that
+// this runtime does not carry, and the volume it works on is its Sandbox's own and no issue's
+// cache. In its single-role form its launcher returns before the background block that runs the
+// guard, the trimmer and the git lock sweep. Where the session database names a writer audience,
+// its launcher runs the roles-dir form and reaches that block, and this answer keeps the guard and
+// the trimmer from acting there: the guard runs at its defaults only until this answer turns it
+// off, and the trimmer waits for settings that never come. The sweep there finds no clone, since
+// the pod's working directory is no jj workspace and no start of the controller names one. An
+// absent member is what a launcher reads as "run none". Every issue pod's launcher is also told
+// that this daemon knows the pod's kernel's kill (KernelKills), whatever the guard's settings,
+// since a microVM pod's launcher sends those reports only where it is told so and its roles are
+// owed the note however the guard is set. The controller's pod is never a microVM's, and its
+// launcher carries the reports of no watch, since this answer carries no guard settings.
 func (r *Runtime) launcherHelloAck(kind podKind) shimwire.LauncherHelloAck {
 	var ack shimwire.LauncherHelloAck
 	if _, issue := kind.(issuePod); issue {
 		ack.MemoryGuard = r.memoryGuard
+		ack.VolumeTrim = r.volumeTrim
 		ack.KernelKills = true
 	}
 	return ack

@@ -74,8 +74,8 @@ const (
 // another way (readWithoutREST). A gh read that failed on its connection to GitHub, with no answer
 // from GitHub (ghTransportFailure), is read without gh (readWithoutGh). A read `legion gh` refuses
 // because the project's gh bundle holds no directory for the repository's owner
-// (Guard.unservedOwner) is read with no credential (readUnservedOwner). The answer is kept as gh's
-// is.
+// (Guard.unservedOwner) is read with no credential (readUnservedOwner). A read GitHub answered 404
+// (notFoundError) is read no other way. The answer is kept as gh's is.
 //
 // The header-bearing read is:
 //
@@ -203,15 +203,17 @@ func (g *Guard) readWithoutREST(ctx context.Context, slug string, limited *rateL
 }
 
 // readUnservedOwner reads slug's visibility after `legion gh` refused the REST read because the
-// project's gh bundle holds no directory for slug's owner (unserved): the pod holds no token for
-// that owner's repositories, so no read through gh can answer, GraphQL's no more than REST's. An
-// unauthenticated REST read is no way round that either: GitHub allows 60 of those an hour to an
-// address, shared by everything that reads GitHub from it. The read is git's ls-remote with no
-// credential (Guard.lsRemote), which makes no API request and answers public and nothing else:
-// its exit 0 is the evidence that anyone can read the repository (an empty repository lists no
-// ref and exits 0 all the same). Every other outcome, the 401 GitHub answers an anonymous read of
-// a private repository and of a name no repository has with included, refuses the call, naming
-// the refusal of `legion gh` and what git said.
+// project's gh bundle holds no directory for slug's owner (unserved): `legion gh` refuses every
+// call naming that owner, so no read through gh can answer, GraphQL's no more than REST's. The
+// pod's git credential helper can hold a token for such a repository, the token of the served
+// repository a fork was made from (cmd/legion's forkUpstreamDir), but it answers git alone and
+// never this read. An unauthenticated REST read is no way round that either: GitHub allows 60 of
+// those an hour to an address, shared by everything that reads GitHub from it. The read is git's
+// ls-remote with no credential (Guard.lsRemote), which makes no API request and answers public
+// and nothing else: its exit 0 is the evidence that anyone can read the repository (an empty
+// repository lists no ref and exits 0 all the same). Every other outcome, the 401 GitHub answers
+// an anonymous read of a private repository and of a name no repository has with included,
+// refuses the call, naming the refusal of `legion gh` and what git said.
 func (g *Guard) readUnservedOwner(ctx context.Context, slug string, unserved *unservedOwnerError) (Visibility, VisibilitySource, error) {
 	visibility, err := g.lsRemote(ctx, githubOrigin, slug)
 	if err != nil {
@@ -388,7 +390,8 @@ func ghReadEnv(slug string) []string {
 // bound to the read through curl. A rate limit is a *rateLimitError. A failure on gh's connection
 // to GitHub with no answer from GitHub is a *transportError: one gh reports (ghTransportFailure),
 // or a stop by the guard's own bound before GitHub sent a status line (ghStoppedByItsBound). A gh
-// that the caller's bound stopped is the *stoppedError run answers, since no bound is left for
+// that exited non-zero after GitHub's status line 404, and was no rate limit, is a *notFoundError.
+// A gh that the caller's bound stopped is the *stoppedError run answers, since no bound is left for
 // another read.
 func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, error) {
 	bounded, cancel := ghReadContext(ctx)
@@ -413,6 +416,9 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 		if unserved := g.unservedOwner(status, printed, slug); unserved != nil {
 			return "", unserved
 		}
+		if httpStatus, _ := responseHeaders(printed); httpStatus == http.StatusNotFound {
+			return "", &notFoundError{slug: slug}
+		}
 		return "", fmt.Errorf("gh api repos/%s exited %d: %s", maskPath(slug), status, strings.TrimSpace(printed))
 	}
 	switch visibility := Visibility(strings.ToLower(strings.TrimSpace(visibilityBody(printed)))); visibility {
@@ -425,8 +431,8 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 
 // OwnerNotServedError is the refusal `legion gh` makes of a call naming a repository of Owner, an
 // owner the project's gh bundle under OwnersDir holds no directory for (cmd/legion's
-// ownerGHConfigDir): the role's GitHub App is not installed on Owner, so the pod holds no token
-// for its repositories. `legion gh` prints it after `legion gh: `, alone, and exits 2. It is
+// ownerGHConfigDir): the role's GitHub App is not installed on Owner, so no directory of the
+// bundle is Owner's own. `legion gh` prints it after `legion gh: `, alone, and exits 2. It is
 // exported because the guard reads exactly that answer to its REST read as such an owner
 // (Guard.unservedOwner), and reads the repository's visibility with no credential instead: words
 // written from a second copy could part from the ones `legion gh` prints, and a write to another
@@ -485,6 +491,18 @@ type unservedOwnerError struct {
 
 func (e *unservedOwnerError) Error() string {
 	return fmt.Sprintf("gh api repos/%s exited 2: %s", maskPath(e.slug), ownerNotServedLine(maskPath(e.owner), e.ownersDir))
+}
+
+// notFoundError is the guard's REST read of slug that GitHub answered 404, through gh
+// (Guard.ghVisibility) or through curl (curlAnswer): no repository of that name exists, or the
+// read's credential cannot see it. GitHub answered, so no other read follows it, and a write it
+// refuses is a *NotFound (Guard.scanThrough). It says what GitHub answered, the repository masked.
+type notFoundError struct {
+	slug string
+}
+
+func (e *notFoundError) Error() string {
+	return notFoundText(maskPath(e.slug))
 }
 
 // graphQLVisibility reads slug's visibility from GitHub's GraphQL API through gh, as the same

@@ -1,13 +1,15 @@
 // Package pgmigrate holds what Envoy's two Postgres migration runners share: Dispatch's
-// (internal/dispatch/store) and the secrets broker's (internal/broker/store). Both record an
-// applied migration by its version alone and apply every version they have not recorded, so both
-// trust the set they embed to give each version one file, and both run a migration's statements
-// under locks that production's reads and writes queue behind. Load refuses a set either runner
-// would apply other than as written, before the runner opens a transaction; Exec applies each
-// migration with its lock waits bounded by LockTimeout, and names the lock a migration gave up on
-// and the sessions that held it; Census reads, before a deployment applies the migrations a
-// database has not, what they would lock and the rows their own censuses count, and writes
-// nothing.
+// (internal/dispatch/store) and the secrets broker's (internal/cipher/store). Both record an
+// applied migration by its version and its file's identity, its name and the sha256 of its text
+// (Identity), and apply every version they have not recorded, so both trust the set they embed to
+// give each version one file, and both run a migration's statements under locks that production's
+// reads and writes queue behind. Load refuses a set either runner would apply other than as
+// written, before the runner opens a transaction; Reconcile refuses, before the runner applies
+// anything, a database whose version table records a version under an identity other than the
+// file's own and other than one the file replaces; Exec applies each migration with its lock waits
+// bounded by LockTimeout, and names the lock a migration gave up on and the sessions that held
+// it; Census reads, before a deployment applies the migrations a database has not, what they
+// would lock and the rows their own censuses count, and writes nothing.
 package pgmigrate
 
 import (
@@ -28,6 +30,14 @@ type Migration struct {
 	Version int
 	Name    string
 	SQL     string
+	// Checksum is the sha256 of the file's whole text in lower-case hex. With Name it is the
+	// identity a runner records of the file (Identity), and judges what its version table records
+	// of the version against (Reconcile).
+	Checksum string
+	// Replaces is each identity the file declares, in a -- replaces: <name> sha256:<hex> line, as
+	// one an earlier text or name of this version had: a database that records one of them is
+	// accepted, and its row left as it is, so the release that recorded it still boots (Reconcile).
+	Replaces []Identity
 	// NonTransactional selects a single idempotent, non-unique CREATE INDEX CONCURRENTLY outside
 	// a transaction, declared by -- pgmigrate:non-transactional on the file's first line.
 	// Runners without that execution mode must refuse it before applying anything.
@@ -56,11 +66,15 @@ type Migration struct {
 //   - an entry is named any other way: a runner reading only *.up.sql would never see it, while
 //     whoever wrote it believes it runs;
 //   - a -- pgmigrate:non-transactional first-line marker does not hold exactly one
-//     non-unique CREATE INDEX CONCURRENTLY IF NOT EXISTS statement (concurrentIndex);
+//     non-unique CREATE INDEX CONCURRENTLY IF NOT EXISTS statement (concurrentIndex), or the
+//     marker stands, as a comment of its own, on any other line (misplacedMarker);
 //   - a rollback script or a census has no forward migration of its name;
 //   - a census is not one select, holds a Unicode escape, or names pg_terminate_backend,
 //     pg_cancel_backend, pg_sleep, an advisory-lock function or a function that runs a query
 //     given as text (checkCensus);
+//   - a -- replaces: line is not written as `-- replaces: <version>_<name>.up.sql sha256:<hex>`,
+//     alone on its line with 64 lower-case hex digits, names a file of another version, or stands
+//     where Postgres reads it as part of a literal rather than as a comment (readReplaces);
 //   - a forward migration or a census cannot be read.
 //
 // It reports every problem it finds and returns no migration when it finds one, so a runner that
@@ -130,7 +144,15 @@ func Load(fsys fs.FS, dir string) ([]Migration, error) {
 			problems = append(problems, fmt.Errorf("read migration %s: %w", name, err))
 			continue
 		}
-		migration := Migration{Version: version, Name: name, SQL: string(sql)}
+		migration := Migration{Version: version, Name: name, SQL: string(sql), Checksum: Checksum(sql)}
+		if migration.Replaces, err = readReplaces(name, version, migration.SQL); err != nil {
+			problems = append(problems, err)
+			continue
+		}
+		if err := misplacedMarker(name, migration.SQL); err != nil {
+			problems = append(problems, err)
+			continue
+		}
 		migration.NonTransactional = nonTransactionalHeader(migration.SQL)
 		if migration.NonTransactional {
 			if _, err := concurrentIndex(migration.SQL); err != nil {

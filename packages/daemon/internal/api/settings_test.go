@@ -124,6 +124,7 @@ var settingsEmitted = map[string]string{
 	"SandboxConfig.MicroVM":                          "runtime.kubernetes.sandbox.microvm",
 	"MicroVMConfig.ComputeClass":                     "runtime.kubernetes.sandbox.microvm.compute_class",
 	"MicroVMConfig.StorageClass":                     "runtime.kubernetes.sandbox.microvm.storage_class (runtime.kubernetes.storage_class when the block names none)",
+	"MicroVMConfig.KeepVolume":                       "runtime.kubernetes.sandbox.microvm.keep_volume",
 	"MicroVMConfig.Metadata":                         "runtime.kubernetes.sandbox.microvm.metadata",
 	"MetadataConfig.WorkloadPool":                    "runtime.kubernetes.sandbox.microvm.metadata.workload_pool",
 	"MetadataConfig.IdentityProvider":                "runtime.kubernetes.sandbox.microvm.metadata.identity_provider",
@@ -134,6 +135,12 @@ var settingsEmitted = map[string]string{
 	"MemoryGuardPodConfig.FloorPercent":              "runtime.kubernetes.memory_guard.issue_pods.floor_percent",
 	"MemoryGuardPodConfig.WaitSeconds":               "runtime.kubernetes.memory_guard.issue_pods.wait_seconds",
 	"MemoryGuardPodConfig.IntervalMilliseconds":      "runtime.kubernetes.memory_guard.issue_pods.interval_milliseconds",
+	"Kubernetes.VolumeTrim":                          "runtime.kubernetes.volume_trim",
+	"VolumeTrimConfig.Enabled":                       "runtime.kubernetes.volume_trim.enabled",
+	"VolumeTrimConfig.HighPercent":                   "runtime.kubernetes.volume_trim.high_percent",
+	"VolumeTrimConfig.LowPercent":                    "runtime.kubernetes.volume_trim.low_percent",
+	"VolumeTrimConfig.MinAgeMinutes":                 "runtime.kubernetes.volume_trim.min_age_minutes",
+	"VolumeTrimConfig.IntervalSeconds":               "runtime.kubernetes.volume_trim.interval_seconds",
 	"RepositoryCacheConfig.Volume":                   "runtime.kubernetes.repository_cache.volume",
 	"RepositoryCacheConfig.RefreshMinutes":           "runtime.kubernetes.repository_cache.refresh_minutes",
 	"RepositoryCacheConfig.RetainHours":              "runtime.kubernetes.repository_cache.retain_hours",
@@ -219,6 +226,7 @@ var settingsExcluded = map[string]string{
 	"Kubernetes.PluginsFromBinary":    "derived: where the settled plugins pair came from, not a setting",
 	"Config.Warnings":                 "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, the warned keys among them (config.warnedKeys), which `legion start` logs and `legion config check` prints",
 	"Project.CommitIssueTrailerRepos": "a deployment's own repositories, named by a route that authenticates nobody (GET /legion/v1/state)",
+	"Config.LeakCheck":                "a deployment's own repository, the one its shared leak check is published from, named by a route that authenticates nobody (GET /legion/v1/state); every role is told the checker beside it by the runtime, and needs no route for it",
 	"Config.StallLimits":              "derived: the three LEGION_STALL_* numbers this daemon's own environment sets, which it passes to every session; no legion.yaml key names them",
 	"StallLimits.CallBound":           "derived: LEGION_STALL_CALL_BOUND_MS in the daemon's environment, not a legion.yaml key",
 	"StallLimits.CallGrace":           "derived: LEGION_STALL_CALL_GRACE_MS in the daemon's environment, not a legion.yaml key",
@@ -354,7 +362,10 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	assertKeys(t, "settings.runtime.kubernetes", kubernetesKeys, []string{
 		"namespace", "image", "storage_class", "issue_volume", "scheduling", "resources", "session_store",
 		"agent_secrets", "plugins", "setup", "test_postgres", "repository_cache", "idle_release",
-		"memory_guard", "sandbox",
+		"memory_guard", "volume_trim", "sandbox",
+	})
+	assertKeys(t, "settings.runtime.kubernetes.volume_trim", keysOf(t, kubernetesKeys["volume_trim"]), []string{
+		"enabled", "high_percent", "low_percent", "min_age_minutes", "interval_seconds",
 	})
 	assertKeys(t, "settings.runtime.kubernetes.idle_release", keysOf(t, kubernetesKeys["idle_release"]), []string{
 		"idle_minutes", "backstop_minutes",
@@ -479,8 +490,9 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 
 // The sandbox rides the settings as the loader settles it. The maximal file names no block, so it
 // shows gVisor, `canary_issues` as `[]` and no `microvm`. A block shows each member the file
-// names. An inert microvm block, which no issue pod uses, shows no compute class, and its storage
-// class is runtime.kubernetes.storage_class. None of it is a credential (settingsEmitted).
+// names, and `keep_volume` as false where it names none. An inert microvm block, which no issue pod
+// uses, shows no compute class, and its storage class is runtime.kubernetes.storage_class. None of
+// it is a credential (settingsEmitted).
 func TestSettingsOfTheSandboxShowsEachMember(t *testing.T) {
 	const pool = "example-project.svc.id.goog"
 	const provider = "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster"
@@ -506,14 +518,14 @@ func TestSettingsOfTheSandboxShowsEachMember(t *testing.T) {
 				ComputeClass: "example-microvm", StorageClass: "example-microvm-disk",
 				Metadata: &MetadataSettings{WorkloadPool: pool, IdentityProvider: provider},
 			}},
-			wire: `{"type":"gvisor","canary_issues":["LEGION-208","LEGION-209"],"microvm":{"compute_class":"example-microvm","storage_class":"example-microvm-disk",` +
+			wire: `{"type":"gvisor","canary_issues":["LEGION-208","LEGION-209"],"microvm":{"compute_class":"example-microvm","storage_class":"example-microvm-disk","keep_volume":false,` +
 				`"metadata":{"workload_pool":"` + pool + `","identity_provider":"` + provider + `"}}}`,
 		},
 		{
 			name:  "a microVM project",
-			block: "    sandbox:\n      type: microvm\n      microvm: {compute_class: example-microvm}\n",
-			want:  SandboxSettings{Type: "microvm", CanaryIssues: []string{}, MicroVM: &MicroVMSettings{ComputeClass: "example-microvm", StorageClass: "gp3"}},
-			wire:  `{"type":"microvm","canary_issues":[],"microvm":{"compute_class":"example-microvm","storage_class":"gp3"}}`,
+			block: "    sandbox:\n      type: microvm\n      microvm: {compute_class: example-microvm, keep_volume: true}\n",
+			want:  SandboxSettings{Type: "microvm", CanaryIssues: []string{}, MicroVM: &MicroVMSettings{ComputeClass: "example-microvm", StorageClass: "gp3", KeepVolume: true}},
+			wire:  `{"type":"microvm","canary_issues":[],"microvm":{"compute_class":"example-microvm","storage_class":"gp3","keep_volume":true}}`,
 		},
 		{
 			name:  "an inert microvm block",
@@ -521,7 +533,7 @@ func TestSettingsOfTheSandboxShowsEachMember(t *testing.T) {
 			want: SandboxSettings{Type: "gvisor", CanaryIssues: []string{}, MicroVM: &MicroVMSettings{
 				StorageClass: "gp3", Metadata: &MetadataSettings{WorkloadPool: pool, IdentityProvider: provider},
 			}},
-			wire: `{"type":"gvisor","canary_issues":[],"microvm":{"storage_class":"gp3","metadata":{"workload_pool":"` + pool + `","identity_provider":"` + provider + `"}}}`,
+			wire: `{"type":"gvisor","canary_issues":[],"microvm":{"storage_class":"gp3","keep_volume":false,"metadata":{"workload_pool":"` + pool + `","identity_provider":"` + provider + `"}}}`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -9,6 +9,9 @@ import {
   agentStreamFramesSubject,
   DELIVERY_CAPABILITIES,
   type DeliveryCapability,
+  LISTENER_CALL_ATTEMPTS,
+  LISTENER_CALL_RETRY_DELAY_MS,
+  LISTENER_CALL_TIMEOUT_MS,
   legacyAgentSubject,
   type OpenAsk,
   type OpenAsksResponse,
@@ -16,6 +19,7 @@ import {
   slackTopicChannel,
   zodSchemaApi,
 } from "@legion/contracts";
+import { goBlankPattern } from "@legion/contracts/go-blank";
 import {
   type AskgateOwner,
   closeStore,
@@ -36,8 +40,10 @@ import {
   type ConsumerGapNotice,
   createConsumerDelivery,
   gapNoticeText,
+  inboundRestoredNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
+  NoRelaySubjectError,
   registerWithRelay,
 } from "@legion/envoy-client/consumer-delivery";
 import {
@@ -69,7 +75,6 @@ import {
   dispatchSettings,
 } from "@legion/envoy-client/dispatch-config";
 import { defaultExec } from "@legion/envoy-client/dispatch-cwd";
-import { goBlankPattern } from "@legion/envoy-client/dispatch-execute";
 import {
   dispatchFirstSkillFile,
   readDispatchFirstContext,
@@ -94,9 +99,20 @@ import {
   REGISTRATION_SETTLE_MS,
   SHUTDOWN_SETTLE_MS,
 } from "@legion/envoy-client/envoy-settings";
-import { messageFor } from "@legion/envoy-client/errors";
+import { LoggableError, messageFor, natsFailureReason } from "@legion/envoy-client/errors";
 import { machineID } from "@legion/envoy-client/machine";
-import { natsConnectionOptions } from "@legion/envoy-client/nats-connection";
+import {
+  connectNats,
+  NATS_DIAL_PLAN,
+  type NatsDialPlan,
+  natsConnectionOptions,
+  natsDialBudget,
+} from "@legion/envoy-client/nats-connection";
+import {
+  type BrokerNatsCredential,
+  followNatsCredential,
+  keepNatsCredential,
+} from "@legion/envoy-client/nats-credential";
 import {
   readSessionAnswers,
   sessionAnswersFailureLine,
@@ -177,7 +193,7 @@ import {
 import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
 import * as host from "@oh-my-pi/pi-coding-agent";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
-import { logger, procmgr, VERSION } from "@oh-my-pi/pi-utils";
+import { logger as hostLogger, procmgr, VERSION } from "@oh-my-pi/pi-utils";
 import { encode } from "@toon-format/toon";
 import { connect, Events, type NatsConnection, StringCodec, type Subscription } from "nats";
 import { name as packageName, version as packageVersion } from "../package.json" with {
@@ -201,11 +217,14 @@ import {
 import { opensAsk } from "../src/opens-ask";
 import {
   createRegistrationState,
+  type DialLimit,
   type RegistrationInput,
   type RoleSnapshot,
+  stepWasRefused,
   type TaskHandle,
   taskWasAbandoned,
 } from "../src/registration-state";
+import { scrubbedConsole, scrubbedHost, scrubbedLogger } from "../src/scrubbed-host";
 import { ServerClock } from "../src/server-clock";
 import {
   ANSWERS_SENT_ENTRY,
@@ -214,6 +233,7 @@ import {
   withSessionAnswers,
 } from "../src/session-answers-context";
 import { sideTurn } from "../src/side-turn";
+import { followBoundMs, startTradeBoundMs } from "../src/start-bound";
 import { TypedPictures } from "../src/typed-pictures";
 import {
   MOVED_SESSION_REASON,
@@ -296,8 +316,9 @@ function liveSessionSettings(live: LiveAgentSession | undefined): AgentStreamSet
 const codec = StringCodec();
 
 /**
- * The dial `dialNats` opens this session's NATS connection with: nats.js's own `connect`, unless
- * a test put a stand-in in its place. Production never sets one.
+ * The dial `dialNats` opens this session's NATS connection with: nats.js's own `connect` with the
+ * redials every plugin makes (`NATS_DIAL_PLAN`), unless a test put a stand-in in its place, which
+ * dials once unless the test gives it a plan of its own. Production never sets one.
  *
  * The stand-in lives on `globalThis` under a process-wide symbol rather than in a binding of this
  * module, because a suite loads this entry many times over — each `import("./envoy.ts?<row>")` is
@@ -307,14 +328,23 @@ const codec = StringCodec();
  */
 const NATS_CONNECT = Symbol.for("legion.pi-envoy.nats-connect");
 
+interface NatsDialStandIn {
+  readonly connect: typeof connect;
+  readonly plan: NatsDialPlan;
+}
+
 interface GlobalNatsConnect {
-  [key: symbol]: typeof connect | undefined;
+  [key: symbol]: NatsDialStandIn | undefined;
 }
 
 const natsConnectStore = globalThis as unknown as GlobalNatsConnect;
 
-export function setNatsConnectForTests(dial: typeof connect): void {
-  natsConnectStore[NATS_CONNECT] = dial;
+/** A stand-in's plan unless its test gives one: one dial, so a row that holds NATS down fails
+ *  each pass's dial at once. */
+const DIAL_ONCE: NatsDialPlan = { firstDelayMs: 0, maxDelayMs: 0, budgetMs: 0 };
+
+export function setNatsConnectForTests(dial: typeof connect, plan: NatsDialPlan = DIAL_ONCE): void {
+  natsConnectStore[NATS_CONNECT] = { connect: dial, plan };
 }
 
 // The slot outlives every instance of this entry in the process, so a file that set a stand-in
@@ -360,6 +390,8 @@ function listenerRoleName(role: string): string {
 }
 
 const NATS_RETRY_INTERVAL_MS = 15_000;
+/** Why the session's relay subject went when nats.js closed its connection and named no error. */
+const RELAY_CONNECTION_CLOSED = "the NATS connection closed";
 /** How long a delivery waits for the pictures it embeds before it goes out as text alone. */
 const DELIVERY_PICTURES_TIMEOUT_MS = 20_000;
 /** How long a delivery waits on the whole body of an item an event carried only in part before
@@ -620,7 +652,7 @@ class RegistrationError extends Error {}
 // opens the subject.
 class InboundError extends Error {
   readonly decided: boolean;
-  constructor(message: string, decided: boolean, options: ErrorOptions) {
+  constructor(message: string, decided: boolean, options?: ErrorOptions) {
     super(message, options);
     this.decided = decided;
   }
@@ -700,9 +732,16 @@ if (CONFIG_FILE.path !== null) process.env.ENVOY_CONFIG_FILE = CONFIG_FILE.path;
  * is on by the time the request goes out.
  */
 const timedDispatchClient = (ms: number, session: () => string = currentSessionID) =>
-  sessionDispatchClient(CONFIG_FILE, process.cwd(), AbortSignal.timeout(ms), session)?.client;
+  sessionDispatchClient(CONFIG_FILE, process.cwd(), { deadlineMs: ms }, session)?.client;
 
-export default function envoyExtension(pi: PiApi): void {
+/** The host's logger, every message and field it is handed passing the scrub of the secrets this
+ *  process holds (`../src/scrubbed-host`). */
+const logger = scrubbedLogger(hostLogger);
+
+export default function envoyExtension(hostApi: PiApi): void {
+  // Every notice, tool answer and tool error this extension gives the host passes the scrub of
+  // the secrets this process holds, the backstop under the rules that name no peer's text.
+  const pi = scrubbedHost(hostApi);
   logger.debug("extension instance loaded", { extension: import.meta.url });
   // The interface the Legion plugin reads (`@legion/pi-shared/interface`). `undefined` when an
   // Envoy entry at another interface version published first: that entry's object stays the one
@@ -824,6 +863,9 @@ export default function envoyExtension(pi: PiApi): void {
   const passDeadlineMs = (): number => active?.settings.passDeadlineMs ?? MIN_PASS_DEADLINE_MS;
   const delivered = createDeliveryDedupe();
   let connection: NatsConnection | undefined;
+  // Stops the keeper of `connection`'s broker token (`keepNatsCredential`): one per connection,
+  // replaced with the connection and stopped at shutdown.
+  let stopNatsKeeper = (): void => {};
   let sessionDirectory = "";
   let sessionID = "";
   // The key this instance last published its session under, so a switch that changes the id or
@@ -1157,7 +1199,7 @@ export default function envoyExtension(pi: PiApi): void {
   const requireInbound = () => {
     const { inbound } = requireEnvoy().settings;
     if ("off" in inbound) {
-      throw new Error(`inbound messages are off for this session: ${inbound.off}`);
+      throw new LoggableError(`inbound messages are off for this session: ${inbound.off}`);
     }
     return inbound;
   };
@@ -1165,16 +1207,56 @@ export default function envoyExtension(pi: PiApi): void {
   // Opens a NATS connection for this session and stores nothing: `ensureConnection` keeps the one
   // this session uses, and a queued task dials through its handle, which closes a connection the
   // task was refused while the dial was in flight rather than leave it dangling.
-  const dialNats = async (): Promise<NatsConnection> => {
-    const { natsUrls, natsSeed } = requireInbound();
+  //
+  // A dial that fails is dialed again (`connectNats`): the hub closes a dial whose CONNECT the
+  // host's busy start delayed past its 2 s authentication timeout, and answers the next one. A
+  // queued task's dial (`limit`) redials only while the task can still confirm a subscription and
+  // register after it (`PASS_AFTER_DIAL_MS`), and stops once the task stops acting.
+  const dialNats = async (limit?: DialLimit): Promise<NatsConnection> => {
+    const { natsUrls, natsCredential } = requireInbound();
+    // A broker token is signed into the CONNECT itself, so a live one is taken before the dial.
+    // The start has nothing to do until it holds one, so it waits for ready within its bound
+    // (`TRADE_DEADLINE_MS`, or the pass deadline less the 10 s the rest of the pass needs where
+    // that is shorter, or half a pass shorter than 20 s, `startTradeBoundMs`): a first trade's
+    // prompt 503 is traded again inside it rather than costing the session its registration until
+    // the next heartbeat, and a broker that never grants fails the start naming the trade's cause.
+    if (natsCredential.kind === "broker") {
+      await natsCredential.broker.ready({
+        waitForReady: true,
+        boundMs: startTradeBoundMs(passDeadlineMs()),
+      });
+    }
+    const standIn = natsConnectStore[NATS_CONNECT];
+    const plan = standIn?.plan ?? NATS_DIAL_PLAN;
+    // What the task has left once the token is held, which the wait for it spent from.
+    const left = limit === undefined ? Infinity : limit.deadlineAt - performance.now();
     // nats.js re-subscribes existing subscriptions on its own once reconnected.
-    return (natsConnectStore[NATS_CONNECT] ?? connect)(
+    return connectNats(
+      standIn?.connect ?? connect,
       natsConnectionOptions({
         servers: natsUrls,
         name: `omp-${sessionID || "unknown"}`,
-        seed: natsSeed,
-      })
+        credential: natsCredential,
+      }),
+      { ...plan, budgetMs: natsDialBudget(left, PASS_AFTER_DIAL_MS, plan) },
+      {
+        firstBoundMs: left,
+        stopped: () => shuttingDown || limit?.stopped() === true,
+        // Said before the wait: a pass that stops, or runs out of time, during it dials no more,
+        // so the line says the next dial waits on that.
+        onRetry: (error, delayMs, attempt) =>
+          logger.warn(
+            `envoy: NATS dial ${attempt} failed (${natsFailureReason(error)}); dialing again in ${delayMs} ms, unless the pass stops or runs out of time first`
+          ),
+      }
     );
+  };
+
+  // The session's broker token, where its NATS connection presents one (`NATS_AUTH=broker`).
+  const brokerNatsCredentialOf = (): BrokerNatsCredential | undefined => {
+    const inbound = active?.settings.inbound;
+    if (inbound === undefined || "off" in inbound) return undefined;
+    return inbound.natsCredential.kind === "broker" ? inbound.natsCredential.broker : undefined;
   };
 
   // The session's one NATS connection, dialled if it has none. A queued task reaches it through
@@ -1193,12 +1275,23 @@ export default function envoyExtension(pi: PiApi): void {
     if (shuttingDown || connection?.isClosed() === false) {
       await dialled.close().catch(() => {});
       if (!shuttingDown && connection?.isClosed() === false) return connection;
-      throw new Error(
+      throw new LoggableError(
         "the session shut down while its NATS dial was in flight; the connection it opened was closed"
       );
     }
     connection = dialled;
     void watchReconnects(dialled);
+    const broker = brokerNatsCredentialOf();
+    if (broker !== undefined) {
+      stopNatsKeeper();
+      // Told as every other inbound outage is, in the log and as a notice: a token that cannot be
+      // renewed, or that the server refuses, is a session that stops receiving. The keeper says
+      // each cause once and again every 30 minutes while it lasts, so the notice does too.
+      stopNatsKeeper = keepNatsCredential(dialled, broker, (text) => {
+        logger.warn(`envoy: ${text}`);
+        activeSessionContext?.ui.notify(`envoy: ${text}`, "warning");
+      });
+    }
     return connection;
   };
 
@@ -1219,7 +1312,7 @@ export default function envoyExtension(pi: PiApi): void {
       }
     } catch (error) {
       logger.warn("envoy: the NATS connection's status reader failed", {
-        error: messageFor(error),
+        error: natsFailureReason(error),
       });
     }
   };
@@ -1594,7 +1687,7 @@ export default function envoyExtension(pi: PiApi): void {
         // The frame carries the Dispatch message id, so the live view re-keys it over the
         // person's Dispatch turn instead of drawing the line twice.
         if (session !== "") {
-          agentStream.record(
+          agentStreamOf(session).record(
             agentStreamFramesSubject(session),
             {
               content: [{ text: report, type: "text" }],
@@ -1726,7 +1819,7 @@ export default function envoyExtension(pi: PiApi): void {
       .then(async (reply) => {
         // A `/model` or `/effort` has run by now: the viewer's header shows its result before the
         // reply that names it reaches the page.
-        refreshAgentStreamSettings(sessionID);
+        refreshAgentStreamSettings(hostSessionID());
         if (reply === undefined) return;
         await postTypedInputReply(delivery, replySessionID, reply);
       })
@@ -1766,7 +1859,7 @@ export default function envoyExtension(pi: PiApi): void {
   // run as its `addressedSessionOpen()` check. An entry that lands in another conversation all
   // the same, where that session's next start will not read it, is logged. A forged
   // frame can name an attempt before Dispatch's frame does and so spend it; what that costs is
-  // `packages/pi-envoy/AGENTS.md`'s (the record's limit).
+  // the record's limit (`packages/pi-envoy/README.md`, "A person's message from Dispatch").
   const acceptedUserTurn = (
     rendered: RenderInboundResult,
     acceptedSessionID: string
@@ -1971,7 +2064,7 @@ export default function envoyExtension(pi: PiApi): void {
       relayed.release();
       void work().catch((error: unknown) => {
         held.release();
-        console.warn(
+        scrubbedConsole.warn(
           `[envoy] failed to deliver envelope ${envelope?.event_id ?? "unknown"}`,
           error
         );
@@ -1980,13 +2073,13 @@ export default function envoyExtension(pi: PiApi): void {
     };
     try {
       if (rendered.rejectedDelivery !== undefined) {
-        console.warn(
+        scrubbedConsole.warn(
           `[envoy] rejecting malformed Dispatch targeted delivery ${rendered.rejectedDelivery.id}`
         );
         const rejected = rendered.rejectedDelivery;
         offWorker(() => refuse(rejected, "Invalid Dispatch targeted delivery frame"));
       } else if (rendered.malformedDelivery === true) {
-        console.warn(
+        scrubbedConsole.warn(
           "[envoy] dropping malformed Dispatch targeted delivery without a reply address"
         );
         claim.settle();
@@ -2176,7 +2269,10 @@ export default function envoyExtension(pi: PiApi): void {
     } catch (error) {
       handing = false;
       held.release();
-      console.warn(`[envoy] failed to deliver envelope ${envelope?.event_id ?? "unknown"}`, error);
+      scrubbedConsole.warn(
+        `[envoy] failed to deliver envelope ${envelope?.event_id ?? "unknown"}`,
+        error
+      );
       // The failure is the relay's to count: the frame comes again, or, from its third delivery
       // on, the relay shows its failure notice (`createConsumerDelivery`).
       throw error;
@@ -2222,6 +2318,15 @@ export default function envoyExtension(pi: PiApi): void {
   const SUBSCRIBE_FLUSH_TIMEOUT_MS =
     Number(process.env.ENVOY_SUBSCRIBE_FLUSH_TIMEOUT_MS ?? "") || 10_000;
 
+  // The time a pass may still need once its NATS dial answers: the first subscription's
+  // confirmation, then one listener call for the registration with its retry. A dial's redials end
+  // this long before the pass's deadline (`dialNats`), so a connection that answers late still
+  // leaves the pass time to register. 10 + 2 x 5 + 0.25 = 20.25 s at the defaults.
+  const PASS_AFTER_DIAL_MS =
+    SUBSCRIBE_FLUSH_TIMEOUT_MS +
+    LISTENER_CALL_ATTEMPTS * LISTENER_CALL_TIMEOUT_MS +
+    (LISTENER_CALL_ATTEMPTS - 1) * LISTENER_CALL_RETRY_DELAY_MS;
+
   // The connections that have not answered a round trip since they last did. A background
   // confirmation asks each of them for that answer and clears the mark however it ends - on the
   // answer, on a connection closed for good, on a shutdown, or at its cap; a reconnect
@@ -2232,11 +2337,12 @@ export default function envoyExtension(pi: PiApi): void {
   // would hold the session's registration for ten seconds times the subjects it opened.
   const unanswered = new Set<NatsConnection>();
 
-  // `promise`, or a rejection naming `what`, once `ms` pass.
+  // `promise`, or a rejection naming `what`, once `ms` pass. Its text is this plugin's own, so a
+  // NATS failure notice prints it whole (`LoggableError`).
   const within = async <T>(promise: Promise<T>, ms: number, what: string): Promise<T> => {
     const expired = Promise.withResolvers<never>();
     const timer = setTimeout(
-      () => expired.reject(new Error(`${what} timed out after ${ms} ms`)),
+      () => expired.reject(new LoggableError(`${what} timed out after ${ms} ms`)),
       ms
     );
     try {
@@ -2457,8 +2563,15 @@ export default function envoyExtension(pi: PiApi): void {
     readonly sessionID: string;
     readonly delivery: ConsumerDelivery;
     subscription: Subscription | undefined;
+    /** Why the last open of the relay subject failed, or why its subscription ended, in words a
+     *  notice may hold (`natsFailureReason`): a registration sent while the subject is missing
+     *  names it, whoever sends it. */
+    missing: string | undefined;
   }
   let relay: Relay | undefined;
+  /** Why the last pass could not open its session's inbound, for a registration sent outside a
+   *  pass while that session has no relay yet (the start's dial failed before one existed). */
+  let passFailure: { readonly sessionID: string; readonly text: string } | undefined;
 
   // A relay frame for a session the host is no longer on (a switch, before the next pass closes
   // its relay), or one that drains in while the session shuts down, is one the session cannot
@@ -2514,7 +2627,7 @@ export default function envoyExtension(pi: PiApi): void {
     const restored = consumerSnapshot(entries, id);
     if (restored !== undefined) delivery.restore(restored);
     persistedFollows = JSON.stringify(delivery.snapshot().follows);
-    return { sessionID: id, delivery, subscription: undefined };
+    return { sessionID: id, delivery, subscription: undefined, missing: undefined };
   };
 
   // Subscribes the relay subject, unless it is open: a subscription on a connection the listener
@@ -2526,12 +2639,23 @@ export default function envoyExtension(pi: PiApi): void {
     connect: () => Promise<NatsConnection> = ensureConnection
   ): Promise<void> => {
     if (owner.subscription !== undefined) return;
-    const connected = await connect();
+    let connected: NatsConnection;
+    try {
+      connected = await connect();
+    } catch (error) {
+      // A step the task refused (its pass was abandoned, or its session moved) is no reason the
+      // subject is missing: the reason recorded before it stands.
+      if (relay === owner && !stepWasRefused(error) && !taskWasAbandoned(error)) {
+        owner.missing = natsFailureReason(error);
+      }
+      throw error;
+    }
     if (relay !== owner || owner.subscription !== undefined) return;
     const subscription = connected.subscribe(owner.delivery.subject);
     owner.subscription = subscription;
+    owner.missing = undefined;
     owner.delivery.beginEpoch();
-    void pumpRelay(owner, subscription);
+    void pumpRelay(owner, subscription, connected);
     // The relay's own registration names this session's delivery subject the moment this returns,
     // and the listener publishes to it at once, so a SUB still in the out buffer costs the first
     // frames. A round trip this connection can still answer later does not fail the open, so only
@@ -2543,7 +2667,10 @@ export default function envoyExtension(pi: PiApi): void {
     try {
       await confirmSubscribed(connected, `the relay subscription for ${owner.sessionID}`);
     } catch (error) {
-      if (owner.subscription === subscription) owner.subscription = undefined;
+      if (owner.subscription === subscription) {
+        owner.subscription = undefined;
+        owner.missing = natsFailureReason(error);
+      }
       subscription.unsubscribe();
       throw error;
     }
@@ -2579,16 +2706,35 @@ export default function envoyExtension(pi: PiApi): void {
   // and queues the frame in stream order. A subscription that ends under the session (its
   // connection closed) is opened again after the resubscribe delay, on a new epoch, and
   // registered, so the listener restarts the relay at its ack floor.
-  const pumpRelay = async (owner: Relay, subscription: Subscription): Promise<void> => {
+  const pumpRelay = async (
+    owner: Relay,
+    subscription: Subscription,
+    connected: NatsConnection
+  ): Promise<void> => {
+    let failure: unknown;
     try {
       for await (const message of subscription) {
         owner.delivery.receive(message);
       }
-    } catch {
+    } catch (error) {
       // Iterator failure falls through to the resubscribe path below.
+      failure = error;
     }
     if (owner.subscription !== subscription) return;
     owner.subscription = undefined;
+    if (failure !== undefined) owner.missing = natsFailureReason(failure);
+    else if (connected.isClosed()) {
+      // nats.js ends each subscription of a connection it closes with no error of its own, so the
+      // close is why the subject went: in the plugin's own words at once, then in the close's own
+      // error where it had one.
+      owner.missing = RELAY_CONNECTION_CLOSED;
+      void connected.closed().then((closedWith) => {
+        if (!(closedWith instanceof Error) || relay !== owner) return;
+        if (owner.subscription === undefined && owner.missing === RELAY_CONNECTION_CLOSED) {
+          owner.missing = natsFailureReason(closedWith);
+        }
+      });
+    }
     if (!shuttingDown && relay === owner) retryRelay(owner, RESUBSCRIBE_DELAY_MS);
   };
 
@@ -2632,10 +2778,35 @@ export default function envoyExtension(pi: PiApi): void {
   // capture, so nothing is retained by the bus; the Dispatch relay forwards them to a human
   // watching the session and writes none of it down. The publisher stays silent unless a viewer
   // is attached, so a session nobody has open puts no conversation on the wire at all.
-  const agentStream = new AgentStreamPublisher({
-    now: () => Date.now(),
-    publish: (subject, payload) => connection?.publish(subject, codec.encode(payload)),
-  });
+  //
+  // Each session has a ring of its own, so a replay answers its session's turns alone, however
+  // the host's moves and this process's passes interleave: a turn is kept in the ring of the
+  // session the host records it under (`recordAgentStreamMessage`), and a control subject replays
+  // and arms its own session's ring alone. A ring whose viewer still watches is kept after the
+  // host moves on, so what that session still records (a person's shell command it ran) reaches
+  // that viewer on its own subject; every other ring of a session this process no longer serves
+  // is dropped (`pruneAgentStreams`) when a ring is made and when the control subject moves. So at
+  // most the served session's, the host's live one and the rings still watched are held, and a
+  // watch lapses within AGENT_STREAM_WATCH_TTL_MS of its viewer's last ping.
+  const agentStreams = new Map<string, AgentStreamPublisher>();
+  /** Forgets the ring of every session but the `kept` ones, and those a viewer still watches. */
+  const pruneAgentStreams = (...kept: string[]): void => {
+    for (const [session, ring] of agentStreams) {
+      if (!kept.includes(session) && !ring.watched) agentStreams.delete(session);
+    }
+  };
+  const agentStreamOf = (session: string): AgentStreamPublisher => {
+    let ring = agentStreams.get(session);
+    if (ring === undefined) {
+      pruneAgentStreams(agentStreamControlSession);
+      ring = new AgentStreamPublisher({
+        now: () => Date.now(),
+        publish: (subject, payload) => connection?.publish(subject, codec.encode(payload)),
+      });
+      agentStreams.set(session, ring);
+    }
+    return ring;
+  };
   // The control subscription this session currently holds, and the id it was opened for.
   let agentStreamControl: Subscription | undefined;
   let agentStreamControlSession = "";
@@ -2688,7 +2859,7 @@ export default function envoyExtension(pi: PiApi): void {
         ...description,
       });
     }
-    agentStream.setCommands(agentStreamFramesSubject(session), commands);
+    agentStreamOf(session).setCommands(agentStreamFramesSubject(session), commands);
   };
 
   // The model and thinking level a viewer's header shows (`liveSessionSettings`). The host fires no
@@ -2700,7 +2871,7 @@ export default function envoyExtension(pi: PiApi): void {
   const refreshAgentStreamSettings = (session: string): void => {
     if (session === "") return;
     try {
-      agentStream.setSettings(
+      agentStreamOf(session).setSettings(
         agentStreamFramesSubject(session),
         liveSessionSettings(liveAgentSession(session))
       );
@@ -2734,7 +2905,7 @@ export default function envoyExtension(pi: PiApi): void {
   const publishAgentStreamContext = (session: string, usage: ContextUsage | undefined): void => {
     agentStreamContextRefreshedAt = Date.now();
     try {
-      agentStream.setContext(agentStreamFramesSubject(session), usage);
+      agentStreamOf(session).setContext(agentStreamFramesSubject(session), usage);
     } catch (error) {
       logger.warn("envoy: could not publish the agent stream's context frame", {
         error: messageFor(error),
@@ -2805,6 +2976,9 @@ export default function envoyExtension(pi: PiApi): void {
           if (typeof parsed !== "object" || parsed === null) continue;
           const request = parsed as AgentStreamControlMessage;
           if (request.type !== "replay" && request.type !== "watch") continue;
+          // A message already queued when the control subject moved belongs to a session whose
+          // ring was dropped: answered, it would make that ring again and arm it.
+          if (agentStreamControlSession !== session) continue;
           refreshAgentStreamSettings(session);
           const attached = agentStreamViewerAttached;
           if (
@@ -2827,19 +3001,21 @@ export default function envoyExtension(pi: PiApi): void {
             }
           }
           // The answer is taken before this message arms anything, so a bare replay request
-          // from a client that never attached a viewer gets an empty history, not the ring.
+          // from a client that never attached a viewer gets an empty history, not the ring. It is
+          // this session's own ring, which holds this session's turns alone.
+          const ring = agentStreamOf(session);
           const reply = message.reply;
           const answer =
             request.type === "replay" && reply !== undefined
-              ? JSON.stringify(agentStream.replay(session))
+              ? JSON.stringify(ring.replay(session))
               : undefined;
           // A viewer arming a session nobody was watching is sent the settings and commands as
           // they stand: what was read before it arrived was kept unpublished, and a page held open
           // while this session was relaunched gets no replay from this process (`publishState`).
-          const arming = !agentStream.watched;
-          agentStream.noteViewer();
+          const arming = !ring.watched;
+          ring.noteViewer();
           agentStreamViewerAttached = true;
-          if (arming) agentStream.publishState(agentStreamFramesSubject(session));
+          if (arming) ring.publishState(agentStreamFramesSubject(session));
           if (answer === undefined || reply === undefined) continue;
           connection?.publish(reply, codec.encode(answer));
         } catch (error) {
@@ -2867,10 +3043,11 @@ export default function envoyExtension(pi: PiApi): void {
     if (agentStreamControlSession === session && agentStreamControl !== undefined) return;
     agentStreamControl?.unsubscribe();
     agentStreamControl = undefined;
-    // A different session under the same extension instance is a different conversation: the
-    // ring still holds the previous one, and a viewer opening the new id must not be served it.
+    // A different session under the same extension instance is a different conversation: its
+    // ring is its own, and of the sessions this process served before only a ring a viewer still
+    // watches is kept, so a viewer opening the new id is served the new conversation alone.
     if (agentStreamControlSession !== session) {
-      agentStream.reset();
+      pruneAgentStreams(session);
       agentStreamViewerAttached = false;
       agentStreamCommandsRefreshedOnWatchAt = -Infinity;
       forgetAgentStreamContext();
@@ -2880,6 +3057,10 @@ export default function envoyExtension(pi: PiApi): void {
     // and the task ends, so a newer pass's control subscription is never overwritten behind its
     // back.
     const connected = await connect();
+    // Another open of this subject - the pass's, or the pump's own resubscribe - may have landed
+    // while this one dialed, or the host may have moved to another session: either way this
+    // open takes nothing, so one subscription answers each viewer.
+    if (agentStreamControlSession !== session || agentStreamControl !== undefined) return;
     const subscription = connected.subscribe(agentStreamControlSubject(session));
     agentStreamControl = subscription;
     void pumpAgentStreamControl(subscription, session);
@@ -2902,25 +3083,31 @@ export default function envoyExtension(pi: PiApi): void {
   /** One of this session's messages, on its way to whoever has the session open, tagged with the
    *  Dispatch message a user message delivered when it matches a person's turn this extension sent
    *  in. Only the top-level instance publishes: a `task` subagent's instance never learns a session
-   *  id, and its work reaches the viewer as the parent's tool call anyway. */
-  const recordAgentStreamMessage = (message: unknown, streaming: boolean): void => {
-    if (sessionID === "") return;
-    agentStream.record(
-      agentStreamFramesSubject(sessionID),
+   *  id, and its work reaches the viewer as the parent's tool call anyway. `host` is the session
+   *  the host records the message under, read from the event's own context: this instance's
+   *  `sessionID` trails a move with no event (a rollback) until the next pass, and a message kept
+   *  under it would be replayed to a viewer of a session it is not part of. */
+  const recordAgentStreamMessage = (message: unknown, streaming: boolean, host: string): void => {
+    if (sessionID === "" || host === "") return;
+    agentStreamOf(host).record(
+      agentStreamFramesSubject(host),
       message,
       streaming,
-      matchInjectedUserTurn(sessionID, message)
+      matchInjectedUserTurn(host, message)
     );
   };
+  /** The session the host is on as an event reports it, else as this instance last saw it. */
+  const eventSessionID = (context: SessionContext | undefined): string =>
+    context?.sessionManager.getSessionId() ?? hostSessionID();
 
-  pi.on("message_start", async (event) => {
+  pi.on("message_start", async (event, context) => {
     // A tagged message starts in the live session's transcript, so its pictures join that set.
     const shown = typedPictures.started(event.message);
     if (shown !== undefined) markPicturesShown(shownPictures(sessionID), shown);
-    recordAgentStreamMessage(event.message, true);
+    recordAgentStreamMessage(event.message, true, eventSessionID(context));
   });
-  pi.on("message_update", async (event) => {
-    recordAgentStreamMessage(event.message, true);
+  pi.on("message_update", async (event, context) => {
+    recordAgentStreamMessage(event.message, true, eventSessionID(context));
   });
 
   // The host writes a message to the transcript as it ends it: a card or a person's turn handed to
@@ -2933,10 +3120,11 @@ export default function envoyExtension(pi: PiApi): void {
   pi.on("message_end", async (event, context) => {
     const { message } = event;
     if (!shuttingDown) cardWake.messageEnd(message, context);
-    recordAgentStreamMessage(message, false);
+    const host = eventSessionID(context);
+    recordAgentStreamMessage(message, false, host);
     // Every message of a turn moves the context window's filling, and this is where the host has
     // finished one.
-    refreshAgentStreamContext(sessionID);
+    refreshAgentStreamContext(host);
     cardAges.written(
       message,
       context.sessionManager.getSessionId(),
@@ -2949,23 +3137,25 @@ export default function envoyExtension(pi: PiApi): void {
   // compaction is the one moment the figures fall rather than climb, so both refresh the ring.
   pi.on("session_compact", async (_event, context) => {
     cardWake.noteIfIdle(context);
-    refreshAgentStreamContext(sessionID);
+    refreshAgentStreamContext(eventSessionID(context));
   });
-  pi.on("auto_compaction_end", async (event) => {
+  pi.on("auto_compaction_end", async (event, context) => {
     cardWake.autoCompactionEnd(event);
-    refreshAgentStreamContext(sessionID);
+    refreshAgentStreamContext(eventSessionID(context));
   });
   pi.on("auto_retry_end", async (event) => cardWake.autoRetryEnd(event));
 
   // A turn runs on the model and level set when it starts, and a retry's fallback moves the session
   // onto another model: either can follow a change no event announced. A subagent's instance knows
-  // no session id and publishes nothing.
-  pi.on("turn_start", async () => {
-    refreshAgentStreamSettings(sessionID);
-    refreshAgentStreamContext(sessionID);
+  // no session id and publishes nothing. Each frame goes to the ring of the session the host is on,
+  // which this instance's `sessionID` trails after a move with no event.
+  pi.on("turn_start", async (_event, context) => {
+    const host = eventSessionID(context);
+    refreshAgentStreamSettings(host);
+    refreshAgentStreamContext(host);
   });
-  pi.on("retry_fallback_applied", async () => {
-    refreshAgentStreamSettings(sessionID);
+  pi.on("retry_fallback_applied", async (_event, context) => {
+    refreshAgentStreamSettings(eventSessionID(context));
   });
 
   // The host's own session id. Oh My Pi moves its one session manager before it dispatches the
@@ -3156,10 +3346,13 @@ export default function envoyExtension(pi: PiApi): void {
    *  it left at a `/new`, a fork or a branch — once that session's registration has settled or
    *  `settleMs` have passed. The DELETE carries this client instance's id
    *  (`registrationState.deregister`), so it removes only a record this instance's registration
-   *  wrote. */
+   *  wrote. Where the caller must be done by `endsAt` (a shutdown), the DELETE gets what is left
+   *  until then: its credential waits on that less the request's reserve, so a broker credential
+   *  still waiting on a trade leaves the DELETE time to go without it. */
   const deregisterSession = async (
     id: string,
-    settleMs: number = REGISTRATION_SETTLE_MS
+    settleMs: number = REGISTRATION_SETTLE_MS,
+    endsAt?: number
   ): Promise<void> => {
     if (id === "" || active === undefined) return;
     const registering = registrationsInFlight.get(id);
@@ -3172,7 +3365,7 @@ export default function envoyExtension(pi: PiApi): void {
         clearTimeout(timer);
       }
     }
-    await registrationState.deregister(id);
+    await registrationState.deregister(id, endsAt === undefined ? undefined : endsAt - Date.now());
   };
 
   // Said once per outage: the listener refused this session's registration, so no consumer
@@ -3180,15 +3373,27 @@ export default function envoyExtension(pi: PiApi): void {
   // reason is the listener's own, one of those `ErrorWireSchema.reason` lists
   // (`@legion/envoy-client`'s `transport.ts`), carried in the error's message, which
   // `inboundUnavailableNoticeText` words for every host, and the heartbeat registers again
-  // every tick until one is accepted.
-  const inboundOutage = inboundUnavailable((why) => {
-    logger.warn(`envoy: this session receives nothing: ${why}`);
-    activeSessionContext?.ui.notify(
-      `envoy: inbound messages are unavailable (${why}); registering again every heartbeat`,
-      "warning"
-    );
-    unwritten.sendNotice(inboundUnavailableNoticeText(why));
-  });
+  // every tick until one is accepted. That accepted registration is said too, in the same three
+  // places: without it the outage notice is the last word, and a session that recovered seconds
+  // later (the claim pass after a first dial the hub closed) reads itself as deaf for its life.
+  const inboundOutage = inboundUnavailable(
+    (why) => {
+      logger.warn(`envoy: this session receives nothing: ${why}`);
+      activeSessionContext?.ui.notify(
+        `envoy: inbound messages are unavailable (${why}); registering again every heartbeat`,
+        "warning"
+      );
+      unwritten.sendNotice(inboundUnavailableNoticeText(why));
+    },
+    () => {
+      logger.warn("envoy: this session receives again: its registration was accepted");
+      activeSessionContext?.ui.notify(
+        "envoy: inbound messages reach this session again: its registration was accepted",
+        "warning"
+      );
+      unwritten.sendNotice(inboundRestoredNoticeText());
+    }
+  );
 
   // Where this session's pane sits in tmux, so Dispatch can draw the machine's layout from what
   // the sessions themselves report. The reading runs between registrations, never inside one: a
@@ -3217,8 +3422,12 @@ export default function envoyExtension(pi: PiApi): void {
   // decides for every host: every subject the session follows, a role-bound one included, since
   // a notice lane reaches this session from its own consumer and from nowhere else (INFRA-771),
   // but one the listener would not store for it. They are read afresh at every registration.
+  // `relayMissing` is why the pass could not open the relay, which the refusal of a registration
+  // with none, and so the outage notice, names. A registration sent outside a pass while the
+  // session's relay subject is missing names why it went (`Relay.missing`) instead.
   const sendRegistration = (
-    send: (input: RegistrationInput) => Promise<SubscribeResult>
+    send: (input: RegistrationInput) => Promise<SubscribeResult>,
+    relayMissing?: string
   ): Promise<SubscribeResult> => {
     // Taken in the turn this call starts, with no await ahead of it, so the whole body is built
     // and posted without a tmux call in between: the session the deregistration at shutdown
@@ -3232,6 +3441,15 @@ export default function envoyExtension(pi: PiApi): void {
     const role = registrationState.heldRole();
     return registerWithRelay({
       relay: asking?.delivery,
+      relayMissing:
+        relayMissing ??
+        (asking !== undefined
+          ? undefined
+          : relay?.sessionID === registeringFor && relay.missing !== undefined
+            ? relay.missing
+            : passFailure?.sessionID === registeringFor
+              ? passFailure.text
+              : undefined),
       ownAgentSubject: legacyAgentSubject(registeringFor),
       followed,
       roles: role === undefined ? [] : [role],
@@ -3715,6 +3933,19 @@ export default function envoyExtension(pi: PiApi): void {
     }
     // Another session's relay: its unsettled frames go back to the listener (`nak`).
     if (relay !== undefined && relay.sessionID !== host) closeRelay();
+    // Another session's agent-stream control subject, closed here: a viewer of that session is
+    // answered nothing more, which a failed move to this one never reaches `watchAgentStream` to
+    // do. Its ring is kept only while that viewer still watches; this session's ring holds what
+    // the host recorded under it.
+    if (agentStreamControlSession !== "" && agentStreamControlSession !== host) {
+      agentStreamControl?.unsubscribe();
+      agentStreamControl = undefined;
+      pruneAgentStreams(host);
+      agentStreamControlSession = "";
+      agentStreamViewerAttached = false;
+      agentStreamCommandsRefreshedOnWatchAt = -Infinity;
+      forgetAgentStreamContext();
+    }
     if (host === "") {
       handle.markEstablished(host);
       ensureHeartbeat(context);
@@ -3727,21 +3958,46 @@ export default function envoyExtension(pi: PiApi): void {
     // first (a Legion claim through the bridge included); the pass reports it, and the next pass
     // opens the relay and registers again. A steady pass touches no NATS.
     let inboundFailure: unknown;
-    if (inbound && registrationState.inboundOpenSession() !== host) {
+    // A session whose inbound this pass opens, and one a subject of whose inbound went after it
+    // opened - its connection closed for good, or its subscription ended - while its own
+    // resubscribe has not opened it again: the relay's waits NATS_RETRY_INTERVAL_MS after a dial
+    // that failed, and the agent stream's gives up. Both take the one path below, so every
+    // heartbeat restores what is missing, and a refused registration below names why it could not.
+    const opening = inbound && registrationState.inboundOpenSession() !== host;
+    if (
+      opening ||
+      (inbound &&
+        ((relay?.sessionID === host && relay.subscription === undefined) ||
+          (agentStreamControlSession === host && agentStreamControl === undefined)))
+    ) {
       try {
-        handle.markAgentSessionOpen(host);
-        await handle.connect();
-        await handle.subscribe(legacyAgentSubject(host));
-        // The relay subject opens before any registration asks for consumer delivery, so the
-        // listener's first relayed frame has a subscriber.
-        await openRelay(context, host, handle.connect);
-        // A viewer's replay request and its watch pings reach the session here. Opening it costs
-        // one core subscription and publishes nothing: a session nobody opens stays silent.
-        await watchAgentStream(host, handle.connect);
-        if ((context.sessionManager.getBranch?.() ?? []).length > 0) {
-          await recoverRegisteredInterests(handle);
+        if (opening) {
+          handle.markAgentSessionOpen(host);
+          const connected = await handle.connect();
+          // The auth service grants a session's token that session's subjects alone, so a session
+          // the connection was not admitted as - one the host switched to - subscribes nothing
+          // until the connection is back, admitted with its token (`followNatsCredential`).
+          // Bounded by the pass, as the start's trade is (`followBoundMs`): a follow that outlasted
+          // a short pass deadline would run on beside the pass after it.
+          const broker = brokerNatsCredentialOf();
+          if (broker !== undefined) {
+            await followNatsCredential(connected, broker, followBoundMs(passDeadlineMs()));
+          }
+          await handle.subscribe(legacyAgentSubject(host));
         }
-        handle.markInboundOpen(host);
+        // The relay subject opens before any registration asks for consumer delivery, so the
+        // listener's first relayed frame has a subscriber. A viewer's replay request and its watch
+        // pings reach the session on the agent-stream control subject; opening it costs one core
+        // subscription and publishes nothing, so a session nobody opens stays silent. Each opens
+        // only what is not open already.
+        await openRelay(context, host, handle.connect);
+        await watchAgentStream(host, handle.connect);
+        if (opening) {
+          if ((context.sessionManager.getBranch?.() ?? []).length > 0) {
+            await recoverRegisteredInterests(handle);
+          }
+          handle.markInboundOpen(host);
+        }
       } catch (error) {
         inboundFailure = error;
       }
@@ -3749,10 +4005,22 @@ export default function envoyExtension(pi: PiApi): void {
     // A step this pass was refused ends it here: what it was refused is no NATS outage to
     // report, and the pass the move queued opens the subject.
     handle.check();
+    // nats.js's own error can carry what the servers were set to (a resolver's error names the
+    // host it looked up, a socket's the port, a password's digits included), so a notice carries
+    // its code, the server's own text, or this plugin's own message (`natsFailureReason`).
+    const failureText =
+      inboundFailure === undefined ? undefined : natsFailureReason(inboundFailure);
+    passFailure = failureText === undefined ? undefined : { sessionID: host, text: failureText };
     // Every session subscribes to its own agent subject, so every session is registered;
     // envoy_send treats an unregistered id as dead. The listener rejects a claim from a session it
-    // does not currently know, so this comes before the role.
-    const registration = await trackRegistration(host, sendRegistration(handle.register)).then(
+    // does not currently know, so this comes before the role. A registration refused for want of
+    // the relay names why the relay did not open, in the refusal and in the outage notice: it is
+    // the cause a person can act on (a hub with no auth service under NATS_AUTH=broker says so and
+    // what to unset), which the refusal alone hides.
+    const registration = await trackRegistration(
+      host,
+      sendRegistration(handle.register, failureText)
+    ).then(
       () => undefined,
       (error: unknown) => ({ error })
     );
@@ -3786,10 +4054,19 @@ export default function envoyExtension(pi: PiApi): void {
     for (const other of leftSessions) forgetBrokerSession(other);
     leftSessions.clear();
     if (registration !== undefined) {
-      throw new RegistrationError(messageFor(registration.error), { cause: registration.error });
+      // A registration the listener refused while the open failed too names that failure here;
+      // the client's own refusal of a session with no relay already names it.
+      const refused = messageFor(registration.error);
+      throw new RegistrationError(
+        failureText === undefined || registration.error instanceof NoRelaySubjectError
+          ? refused
+          : `${refused}, because its relay subject could not be opened: ${failureText}`,
+        { cause: registration.error }
+      );
     }
-    if (inboundFailure !== undefined) {
-      throw new InboundError(messageFor(inboundFailure), decided, { cause: inboundFailure });
+    if (failureText !== undefined) {
+      // No cause: nats.js's own error still carries what the text leaves out.
+      throw new InboundError(failureText, decided);
     }
     return decided;
   };
@@ -4229,7 +4506,11 @@ export default function envoyExtension(pi: PiApi): void {
       askgateBeat = undefined;
       closeStore(askgateOwner.store);
     }
+    // The token keeper stops before the drain: a renewal it ran on a draining connection would be
+    // refused and warned about as a failure, at a stop nobody asked to be warned of.
+    stopNatsKeeper();
     const deadline = Promise.withResolvers<void>();
+    const endsAt = Date.now() + SHUTDOWN_DEADLINE_MS;
     const timer = setTimeout(deadline.resolve, SHUTDOWN_DEADLINE_MS);
     try {
       // The heartbeat has stopped (`shuttingDown`), so no new registration starts; one already on
@@ -4240,7 +4521,7 @@ export default function envoyExtension(pi: PiApi): void {
       // record left behind outlives the process by the gone horizon. The drain runs beside the
       // wait: it needs no listener call, and both share that deadline, which is what the host's
       // own limit on a shutdown handler leaves them.
-      const deregistration = deregisterSession(sessionID, SHUTDOWN_SETTLE_MS).catch(
+      const deregistration = deregisterSession(sessionID, SHUTDOWN_SETTLE_MS, endsAt).catch(
         () => undefined
       );
       const draining = connection?.drain().catch(() => undefined) ?? Promise.resolve();
@@ -4261,6 +4542,7 @@ export default function envoyExtension(pi: PiApi): void {
       // (its instance never ran restoreLocalSessionState, so its `sessionID` stayed empty).
       const liveSessionID = context.sessionManager.getSessionId();
       forgetAgentStreamContext();
+      agentStreams.clear();
       forgetShownPictures(sessionID);
       if (liveSessionID !== sessionID) forgetShownPictures(liveSessionID);
     }
@@ -5032,8 +5314,9 @@ export default function envoyExtension(pi: PiApi): void {
           // subagent's source is its parent, so a publish to a role that parent holds is
           // accepted, answers with that holder, and reaches nobody. Only the role case is
           // visible here: a plain topic's answer counts its subscribers and names none, since
-          // the stream stores one copy each session's own consumer delivers. AGENTS.md and the
-          // envoy skill carry the general rule. A direct envoy_send is unaffected: the
+          // the stream stores one copy each session's own consumer delivers. The listener's drop
+          // of a role message whose holder is its source is the general rule
+          // (skills/envoy/references/deliveries.md). A direct envoy_send is unaffected: the
           // agent-subject lane has no such skip.
           // A kept answer reached no session at all, so the echo rule cannot apply to it: the
           // holder it names is the session the resolution read, which never received the message.
