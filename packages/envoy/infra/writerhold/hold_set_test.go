@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/infra/writerhold/holdtest"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/holdrecord"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -40,6 +41,54 @@ func (h *heldStack) seedProtectedStreams() {
 	nc.Close()
 	code, _, _ := h.run(actionRelease, "--hold", id, "--reason", "the streams are made")
 	require.Zero(h.t, code)
+}
+
+// jszStreams is the part of a server's /jsz?accounts=true&streams=true the rows read: each stream it
+// holds, with the leader of its group as that server sees it.
+type jszStreams struct {
+	AccountDetails []struct {
+		Streams []struct {
+			Name    string `json:"name"`
+			Cluster struct {
+				Leader string `json:"leader"`
+			} `json:"cluster"`
+		} `json:"stream_detail"`
+	} `json:"account_details"`
+}
+
+// awaitStreamLeaders waits until every declared server sees a leader for every protected stream:
+// after a hold's restarts, R3 groups elect their leaders again, and a hold whose preflight reads a
+// stream with none yet is UNKNOWN, as it must be, so a row waits before its next hold.
+func (h *heldStack) awaitStreamLeaders() {
+	h.t.Helper()
+	ctx := context.Background()
+	want := ProtectedStreams()
+	testwait.Eventually(h.t, "every protected stream has a leader on every server", func() bool {
+		for i := range h.s.Cluster.Servers {
+			monitor, stop, err := h.op.Hub.Monitor(ctx, holdtest.Pod(i))
+			if err != nil {
+				return false
+			}
+			var jsz jszStreams
+			err = monitor.Get(ctx, "/jsz?accounts=true&streams=true", &jsz)
+			stop()
+			if err != nil {
+				return false
+			}
+			led := map[string]bool{}
+			for _, account := range jsz.AccountDetails {
+				for _, stream := range account.Streams {
+					led[stream.Name] = stream.Cluster.Leader != ""
+				}
+			}
+			for _, name := range want {
+				if !led[name] {
+					return false
+				}
+			}
+		}
+		return true
+	})
 }
 
 // listener connects a listener entry of machine, reconnecting as a listener does, and returns it

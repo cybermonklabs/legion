@@ -95,7 +95,12 @@ func (m *memoryKeys) Current(_ context.Context, name string) (string, []byte, er
 
 func newHeldStack(t *testing.T) *heldStack {
 	t.Helper()
-	s := holdtest.Start(t)
+	return newHeldStackWith(t, holdtest.Options{})
+}
+
+func newHeldStackWith(t *testing.T, opts holdtest.Options) *heldStack {
+	t.Helper()
+	s := holdtest.StartWith(t, opts)
 	disks := &rigDisks{ids: map[string]uint64{}}
 	for i := range s.Cluster.Servers {
 		disks.ids["pvc-"+holdtest.Pod(i)] = uint64(7000000000000000000 + i)

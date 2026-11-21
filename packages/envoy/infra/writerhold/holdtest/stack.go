@@ -84,8 +84,22 @@ const probeToken = "holdtest-probe-token"
 
 func listenerToken(machine string) string { return "holdtest-listener-" + machine + "-token" }
 
+// Options change what Start runs.
+type Options struct {
+	// NoHoldRead starts the auth service as a broker whose BROKER_NATS_HOLD_READ is false: it reads
+	// no hold row and decides every client as if the row held released, the control that shows
+	// what the hold rule refuses.
+	NoHoldRead bool
+}
+
 // Start runs the stack, stopped when t ends.
 func Start(t testing.TB) *Stack {
+	t.Helper()
+	return StartWith(t, Options{})
+}
+
+// StartWith runs the stack with opts, stopped when t ends.
+func StartWith(t testing.TB, opts Options) *Stack {
 	t.Helper()
 	broker := holdrecordtest.Start(t)
 	var schema string
@@ -118,6 +132,12 @@ func Start(t testing.TB) *Stack {
 		return path
 	}
 	pool := broker.Pool
+	holdRead := func(ctx context.Context) (natshold.Reading, bool, error) {
+		return natshold.Read(ctx, pool, schema)
+	}
+	if opts.NoHoldRead {
+		holdRead = nil
+	}
 	auth, err := natscallout.Start(context.Background(), natscallout.Settings{
 		URLs:           cluster.URLs(),
 		SeedFile:       write("service.seed", keys.ServiceSeed),
@@ -126,10 +146,8 @@ func Start(t testing.TB) *Stack {
 		Services:       services,
 	}, natscallout.Deps{
 		ServiceToken: tokens.verify,
-		HoldRead: func(ctx context.Context) (natshold.Reading, bool, error) {
-			return natshold.Read(ctx, pool, schema)
-		},
-		HoldKeys: []ed25519.PublicKey{broker.VerifyKey},
+		HoldRead:     holdRead,
+		HoldKeys:     []ed25519.PublicKey{broker.VerifyKey},
 	})
 	if err != nil {
 		t.Fatalf("holdtest: start the auth service: %v", err)
