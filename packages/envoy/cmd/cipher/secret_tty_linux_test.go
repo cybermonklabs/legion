@@ -98,8 +98,9 @@ func typeAtPrompt(t *testing.T, typed string) (*os.File, int, promptRead) {
 // everything before it and waits for more, and each read the reader bounds in time is held for
 // input until the last write has gone (holdBoundedReads), so every write lands in the wait it was
 // sent for however late this test runs, never in one read with the write before it. It answers
-// the bound, in milliseconds, of each read so held, which a row reads to see the reader asked for
-// the window it should have.
+// the bound, in milliseconds, of each read held between the first write and the last, which a
+// row reads to see the reader asked for the window it should have; the reads after the last write
+// are the reader's own business, and how many of them start before the hold ends is the machine's.
 func typeAtPromptInWrites(t *testing.T, writes ...string) (*os.File, int, promptRead, []int) {
 	t.Helper()
 	controller, terminal := openPTY(t)
@@ -111,9 +112,11 @@ func typeAtPromptInWrites(t *testing.T, writes ...string) (*os.File, int, prompt
 	}()
 	awaitEchoOff(t, terminal)
 	written := 0
+	var between []int
 	for i, w := range writes {
 		if i > 0 {
 			held.awaitReading(t, written)
+			between = held.asked()
 		}
 		if _, err := controller.Write([]byte(w)); err != nil {
 			t.Fatal(err)
@@ -122,7 +125,7 @@ func typeAtPromptInWrites(t *testing.T, writes ...string) (*os.File, int, prompt
 	}
 	held.release()
 	got := receive(t, answer, fmt.Sprintf("answer of the reader once %q was typed", writes))
-	return controller, terminal, got, held.asked()
+	return controller, terminal, got, between
 }
 
 // heldReads is the prompt's readTerminal as holdBoundedReads wraps it: the bounds it held, how
