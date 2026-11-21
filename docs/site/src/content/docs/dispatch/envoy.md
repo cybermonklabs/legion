@@ -468,6 +468,14 @@ consumer per project for each: `legion-go-<project>-dispatch` (filtering
 It sends its own notices to roles and to the
 controller through the listener's HTTP API, not over NATS.
 
+A daemon started with `ENVOY_CONSUMER_NAMES=fresh` keeps those three names as logical names
+only: each creation of a durable is a consumer named `<logical name>~<id>`, never made twice,
+carrying the metadata `envoy.logical=<logical name>`, and the logical name's row in the daemon's
+own `intake_consumers` table selects the one it reads. The grant below covers those names as it
+covers the fixed ones. The daemon deletes no consumer: a name it retired is the operator's
+`envoy-infra consumer-names cleanup` to delete. Unset, or `fixed`, is the fixed names above, and
+any other value stops the daemon at its start.
+
 So the NATS user the daemon connects as needs these permissions:
 
 When `envoy-infra:gcp:NatsHub` renders this user, set its `daemon` field to `true`; that selects

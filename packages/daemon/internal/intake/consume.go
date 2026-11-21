@@ -14,6 +14,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/natsversion"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -209,6 +210,12 @@ type ConsumerSpec struct {
 	// retried after NakDelay rather than applied without it. No preparer (a test) applies the fact
 	// as decoded, with no view, which queues nothing.
 	PrepareArtifact func(ctx context.Context, artifact DispatchArtifact) (DispatchArtifact, error)
+	// Names is how the three durables are named (config.Config.ConsumerNames, which the daemon
+	// reads from ENVOY_CONSUMER_NAMES once at its start): "" and consumernames.ModeFixed are the
+	// fixed names legion-go-<project>-<kind> this package has always used, opened exactly as before
+	// (openConsumer), and consumernames.ModeFresh a fresh physical name at each creation behind the
+	// selection record of intake_consumers (durable_names.go). Any other value is refused.
+	Names consumernames.Mode
 }
 
 // RetryLater is an error ConsumerSpec.ReviewPermission returns when its read must not be made again
@@ -241,6 +248,9 @@ type Consumers struct {
 	// not know which daemon owns a session, so each reads every report and acts only on a
 	// released claim of its own.
 	wake jetstream.Consumer
+	// names is the durables' selection records on fresh names (ConsumerSpec.Names), nil on fixed
+	// names.
+	names *durableNames
 
 	progress struct{ dispatch, github, wake *consumerProgress }
 
@@ -257,6 +267,12 @@ type Consumers struct {
 // it, and takes the rest of this boot's configuration. A consumer that applied messages before and
 // is now missing starts at the last one it applied (openConsumer). pool is required: it is where
 // facts are applied and positions kept.
+//
+// On fresh names (ConsumerSpec.Names) each durable is the consumer its selection record selects,
+// opened the same way but never under its fixed name: one the record does not select yet is
+// created at a fresh name, at the next message for a new project, and one the record selects and
+// the stream no longer holds is created again at the start the record proves, never by time
+// (durable_names.go). Each boot writes each consumer's floor into its record.
 //
 // A NATS server that can skip a message on a consumer filtering on a wildcard and a literal at the
 // same token is refused before any consumer is opened, naming its version and the fixed releases
@@ -281,8 +297,12 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", notificationStream, err)
 	}
+	consumers := &Consumers{spec: spec, pool: pool, stream: stream, repos: slices.Clone(spec.Repositories)}
+	if spec.Names == consumernames.ModeFresh {
+		consumers.names = newDurableNames(stream, pool, spec)
+	}
 
-	dispatch, err := openConsumer(ctx, stream, pool, spec.Logger, jetstream.ConsumerConfig{
+	consumers.dispatch, err = consumers.open(ctx, jetstream.ConsumerConfig{
 		Durable:        dispatchConsumerName(spec.Project),
 		FilterSubjects: []string{"notifications.dispatch.issue.>", mappingSubject(spec.Project)},
 		AckPolicy:      jetstream.AckExplicitPolicy,
@@ -291,11 +311,11 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 	if err != nil {
 		return nil, fmt.Errorf("open the Dispatch durable consumer: %w", err)
 	}
-	github, err := openConsumer(ctx, stream, pool, spec.Logger, githubConsumerConfig(spec, spec.Repositories))
+	consumers.github, err = consumers.open(ctx, githubConsumerConfig(spec, spec.Repositories))
 	if err != nil {
 		return nil, fmt.Errorf("open the GitHub durable consumer: %w", err)
 	}
-	wake, err := openConsumer(ctx, stream, pool, spec.Logger, jetstream.ConsumerConfig{
+	consumers.wake, err = consumers.open(ctx, jetstream.ConsumerConfig{
 		Durable:       wakeConsumerName(spec.Project),
 		FilterSubject: legionWakeSubject,
 		AckPolicy:     jetstream.AckExplicitPolicy,
@@ -304,13 +324,34 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 	if err != nil {
 		return nil, fmt.Errorf("open the listener wake durable consumer: %w", err)
 	}
-	consumers := &Consumers{spec: spec, pool: pool, stream: stream, dispatch: dispatch, github: github, wake: wake,
-		repos: slices.Clone(spec.Repositories)}
 	opened := spec.Now()
 	consumers.progress.dispatch = &consumerProgress{name: dispatchConsumerName(spec.Project), opened: opened}
 	consumers.progress.github = &consumerProgress{name: githubConsumerName(spec.Project), opened: opened}
 	consumers.progress.wake = &consumerProgress{name: wakeConsumerName(spec.Project), opened: opened}
 	return consumers, nil
+}
+
+// open opens config's durable, whose Durable is its fixed name: as main always has on fixed names
+// (openConsumer), and through its selection record on fresh ones (durableNames.open).
+func (c *Consumers) open(ctx context.Context, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+	if c.names == nil {
+		return openConsumer(ctx, c.stream, c.pool, c.spec.Logger, config)
+	}
+	return c.names.open(ctx, config)
+}
+
+// consumerInfo is the info of the durable whose fixed name is name, read fresh through a handle of
+// its own: the fixed name itself on fixed names, and the consumer its selection record selects on
+// fresh ones (durableNames.info).
+func (c *Consumers) consumerInfo(ctx context.Context, name string) (*jetstream.ConsumerInfo, error) {
+	if c.names != nil {
+		return c.names.info(ctx, name)
+	}
+	consumer, err := c.stream.Consumer(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return consumer.CachedInfo(), nil
 }
 
 func githubConsumerConfig(spec ConsumerSpec, repositories []ghrepo.Repository) jetstream.ConsumerConfig {
@@ -335,7 +376,7 @@ func (c *Consumers) SetRepositories(ctx context.Context, repositories []ghrepo.R
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	github, err := openConsumer(ctx, c.stream, c.pool, c.spec.Logger, githubConsumerConfig(c.spec, repositories))
+	github, err := c.open(ctx, githubConsumerConfig(c.spec, repositories))
 	if err != nil {
 		return fmt.Errorf("update the GitHub durable consumer's repositories: %w", err)
 	}
@@ -429,11 +470,11 @@ func (c *Consumers) DispatchTarget(ctx context.Context) (int64, error) {
 // fresh handle shares nothing with the one Run consumes. Nothing here may wait for Run instead:
 // the boot's reconcile reads the position before Run starts, and pollHoldRelease beside it.
 func (c *Consumers) DispatchPosition(ctx context.Context) (DispatchConsumerPosition, error) {
-	consumer, err := c.stream.Consumer(ctx, dispatchConsumerName(c.spec.Project))
+	info, err := c.consumerInfo(ctx, dispatchConsumerName(c.spec.Project))
 	if err != nil {
 		return DispatchConsumerPosition{}, fmt.Errorf("read Dispatch consumer info: %w", err)
 	}
-	return positionOf(consumer.CachedInfo()), nil
+	return positionOf(info), nil
 }
 
 func positionOf(info *jetstream.ConsumerInfo) DispatchConsumerPosition {
@@ -538,12 +579,11 @@ func (c *Consumers) lagOf(ctx context.Context, progress *consumerProgress) Consu
 	defer cancel()
 	handled := progress.lastHandled()
 	lag := ConsumerLag{Name: progress.name, LastHandledAt: handled}
-	consumer, err := c.stream.Consumer(ctx, progress.name)
+	info, err := c.consumerInfo(ctx, progress.name)
 	if err != nil {
 		lag.Unavailable = "read the consumer's info: " + err.Error()
 		return lag
 	}
-	info := consumer.CachedInfo()
 	lag.Waiting = info.NumPending + uint64(info.NumAckPending)
 	if lag.Waiting == 0 {
 		return lag
@@ -627,7 +667,7 @@ func (c *Consumers) Run(ctx context.Context, handlers ...Handler) error {
 // message's acknowledgement window to that message's own work; the constant says why. Each
 // message handled is recorded in progress at spec.Now.
 func (c *Consumers) consumeConsumer(ctx context.Context, consumer jetstream.Consumer, progress *consumerProgress, handlers []Handler) error {
-	lag := &lagWatch{consumer: consumer.CachedInfo().Name, logger: c.spec.Logger, now: time.Now}
+	lag := &lagWatch{consumer: progress.name, logger: c.spec.Logger, now: time.Now}
 	names := &issueNames{}
 	dropped := newDroppedSettlements()
 	consuming, err := consumer.Consume(func(message jetstream.Msg) {
@@ -1252,6 +1292,11 @@ func normalizedSpec(spec ConsumerSpec) (ConsumerSpec, error) {
 	}
 	if spec.Now == nil {
 		spec.Now = time.Now
+	}
+	switch spec.Names {
+	case "", consumernames.ModeFixed, consumernames.ModeFresh:
+	default:
+		return ConsumerSpec{}, fmt.Errorf("intake consumer naming mode %q is neither %q nor %q", spec.Names, consumernames.ModeFixed, consumernames.ModeFresh)
 	}
 	return spec, nil
 }

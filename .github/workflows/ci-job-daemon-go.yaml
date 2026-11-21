@@ -254,7 +254,7 @@ jobs:
       # no v2.10.29 run here. The step sets no environment variable: check-ci-filters.sh reduces no
       # go command of a job one of whose steps sets a GO* name.
       - name: Forced-order tests of the daemon on the hooked nats-server the module links
-        run: packages/envoy/scripts/forced-order.sh -C packages/daemon ./internal/testnats/
+        run: packages/envoy/scripts/forced-order.sh -C packages/daemon ./internal/testnats/ ./internal/intake/
 
       # The proof builds the daemon's ./cmd/legion and boots it against the Postgres above, so it
       # belongs with the Go steps rather than with the script harnesses: it is the daemon's own

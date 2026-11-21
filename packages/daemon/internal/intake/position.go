@@ -8,10 +8,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/sjawhar/envoy/consumernames"
 )
 
 // streamPosition is where a durable consumer's message sits on the notification stream: the
-// consumer that delivered it, its stream sequence and the time JetStream stored it.
+// consumer that delivered it, by its logical name, its stream sequence and the time JetStream
+// stored it.
 type streamPosition struct {
 	consumer string
 	seq      uint64
@@ -22,12 +25,16 @@ type streamPositionKey struct{}
 
 // withStreamPosition is ctx carrying message's stream position, for ApplyFact to record in the
 // fact's transaction (recordStreamPosition). A message whose metadata does not parse carries none.
+// The consumer is kept by its logical name, the physical name cut at its last '~'
+// (consumernames.LogicalOf): on fresh names each creation of a durable is a name of its own, and
+// its checkpoint is the durable's, whichever creation applied the message; a fixed name is its own
+// logical name, so a checkpoint written on fixed names is the same row.
 func withStreamPosition(ctx context.Context, message jetstream.Msg) context.Context {
 	metadata, err := message.Metadata()
 	if err != nil {
 		return ctx
 	}
-	return context.WithValue(ctx, streamPositionKey{}, streamPosition{consumer: metadata.Consumer, seq: metadata.Sequence.Stream, time: metadata.Timestamp})
+	return context.WithValue(ctx, streamPositionKey{}, streamPosition{consumer: consumernames.LogicalOf(metadata.Consumer), seq: metadata.Sequence.Stream, time: metadata.Timestamp})
 }
 
 // recordStreamPosition writes the stream position ctx carries (withStreamPosition) as its

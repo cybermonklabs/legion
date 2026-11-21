@@ -19,6 +19,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
 
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/natsgrant"
 	"github.com/sjawhar/envoy/testnatsimages"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -164,6 +165,79 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 				}
 				t.Logf("observed daemon refusal: %s", daemonLine)
 				t.Logf("observed server refusal: %s", serverLine)
+			})
+
+			t.Run("on fresh names the same grant creates, makes again, reads and acknowledges the daemon's fresh consumers, and the daemon sends no delete", func(t *testing.T) {
+				grant := natsgrant.Daemon()
+				daemonSeed, admin, js, server, uri := startDaemonGrantServer(t, image.Ref, grant)
+				defer admin.Close()
+				stream := createDaemonNotificationStream(t, js)
+				cfg := daemonGrantConfig(uri)
+				cfg.ConsumerNames = consumernames.ModeFresh
+				logs := &syncBuffer{}
+
+				first := grantWorkflow(t, logs)
+				store := consumernames.NewPGStore(first.pool)
+				if _, err := store.WriteSentinel(t.Context(), consumernames.StoreState{Cutover: consumernames.CutoverDone}, 0); err != nil {
+					t.Fatalf("write the sentinel as the operator's convert does: %v", err)
+				}
+				if err := first.connect(t.Context(), cfg, natsConnection{seed: daemonSeed}); err != nil {
+					t.Fatalf("connect the daemon on fresh names: %v", err)
+				}
+				current := func(logical string) string {
+					t.Helper()
+					rec, _, err := store.Read(t.Context(), logical)
+					if err != nil || !strings.HasPrefix(rec.Current, logical+"~") {
+						t.Fatalf("the selection record of %s = %+v, %v; want a fresh name of it selected", logical, rec, err)
+					}
+					return rec.Current
+				}
+				gone := current(githubGrantConsumer)
+				first.closeNATS()
+				// Deleted outside the daemon, by the operator's credential: the next boot makes it
+				// again under another fresh name, with the daemon's own grant.
+				if err := stream.DeleteConsumer(t.Context(), gone); err != nil {
+					t.Fatalf("delete %s as the operator: %v", gone, err)
+				}
+
+				restarted := grantWorkflow(t, logs)
+				restarted.pool = first.pool
+				if err := restarted.connect(t.Context(), cfg, natsConnection{seed: daemonSeed}); err != nil {
+					t.Fatalf("connect the restarted daemon on fresh names: %v", err)
+				}
+				defer restarted.closeNATS()
+				currents := []string{current(dispatchGrantConsumer), current(githubGrantConsumer), current(wakeGrantConsumer)}
+				if currents[1] == gone {
+					t.Fatalf("the restarted daemon selected %s, the consumer deleted outside it, want another fresh name", gone)
+				}
+				for _, name := range []string{dispatchGrantConsumer, githubGrantConsumer, wakeGrantConsumer} {
+					if _, err := stream.Consumer(t.Context(), name); !errors.Is(err, jetstream.ErrConsumerNotFound) {
+						t.Fatalf("the fixed name %s on fresh names: %v, want no such consumer", name, err)
+					}
+				}
+
+				publishDaemonGrantFixture(t, js, "../intake/testdata/dispatch/issue-updated.json")
+				publishDaemonGrantFixture(t, js, "../intake/testdata/github/pr-opened.json")
+				publishDaemonGrantEnvelope(t, js, wakeGrantSubject, "envoy", "listener-wake-fresh-grant",
+					fmt.Sprintf(`{"kind":"listener_ready","at":%d}`, time.Now().UnixMilli()))
+				for _, lag := range restarted.consumers.Lag(t.Context()) {
+					if lag.Waiting != 1 || lag.OldestAt.IsZero() || lag.Unavailable != "" {
+						t.Fatalf("lag of %s on fresh names under the daemon grant = %+v, want its one event waiting with its time and nothing unavailable", lag.Name, lag)
+					}
+				}
+				handler := &failFirstDaemonGrantHandler{}
+				stop := runDaemonGrantConsumers(t, restarted, handler)
+				defer stop()
+				testwait.Eventually(t, "the daemon applying every event kind on fresh names", func() bool { return handler.calls.Load() >= 4 })
+				requireDaemonGrantAcknowledged(t, stream, currents...)
+				if strings.Contains(logs.String(), "NATS refused the daemon a permission") {
+					t.Fatalf("the daemon logged a permission refusal on fresh names:\n%s", logs.String())
+				}
+				serverLog := daemonGrantServerLogs(t, server)
+				if strings.Contains(serverLog, "Permissions Violation") {
+					t.Fatalf("the server logged a permissions violation on fresh names:\n%s", serverLog)
+				}
+				t.Logf("two boots on fresh names created %v and made %s again as %s under the daemon grant, with no refusal", currents, gone, currents[1])
 			})
 		})
 	}

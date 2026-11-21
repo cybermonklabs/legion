@@ -34,6 +34,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/sjawhar/envoy/consumernames"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -259,6 +261,13 @@ type Config struct {
 	// (leakguard.Manifest). The zero Setting is a deployment that runs no shared leak check of its
 	// own (resolveLeakCheck).
 	LeakCheck leakguard.Setting
+	// ConsumerNames is how the daemon names its durable consumers, ENVOY_CONSUMER_NAMES in its
+	// environment (consumernames.ModeEnvVar), read once, at the load `legion start` makes: unset or
+	// "fixed" is the fixed names legion-go-<project>-<kind> the daemon has always used, and "fresh"
+	// a fresh physical name at each creation behind the selection record of intake_consumers
+	// (intake.ConsumerSpec.Names). Any other value refuses the load, naming it. It is no
+	// legion.yaml key: the mode is the deployment's, set beside every other creator's.
+	ConsumerNames consumernames.Mode
 	// Hooks is `hooks`: the deployment's own prompts, each put in front of named roles every
 	// Every moves back of the moves it selects. DefaultHooks() while the file names no key, and
 	// empty where it writes `hooks: []`, which runs none. A `prompt_file` is resolved against
@@ -1119,6 +1128,11 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if err := resolveLeakCheck(file, env, &cfg); err != nil {
 		return Config{}, err
 	}
+	mode, err := consumernames.ParseMode(env(consumernames.ModeEnvVar))
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.ConsumerNames = mode
 	if err := checkCommitIssueTrailerRenames(&cfg); err != nil {
 		return Config{}, err
 	}

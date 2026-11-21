@@ -1893,12 +1893,14 @@ notice comes once per handoff commit, from whichever read finds it first.
   GitHub failing; `this Dispatch does not answer the webhook App check` is a Dispatch older than
   the check: upgrade it. None of these leaves the repository out or stops the daemon.
 - **`intake: a missing durable consumer is created at the last message it applied`** (an info line
-  with `consumer` and `start`). One of the daemon's durable consumers was gone when the daemon
-  opened it, at boot or when the project's repositories changed (deleted by hand, or its stream
-  recreated), and the daemon created it again starting at the stream time of the last message it
-  applied, so the messages published while it was missing are delivered; the one at `start`,
-  applied already, is dropped as a duplicate. Nothing to do. A consumer the daemon has no applied
-  message recorded for starts at the next message instead, with no line.
+  with `consumer` and `start`), on the fixed names, the default. One of the daemon's durable
+  consumers was gone when the daemon opened it, at boot or when the project's repositories changed
+  (deleted by hand, or its stream recreated), and the daemon created it again starting at the
+  stream time of the last message it applied, so the messages published while it was missing are
+  delivered; the one at `start`, applied already, is dropped as a duplicate. Nothing to do. A
+  consumer the daemon has no applied message recorded for starts at the next message instead, with
+  no line. On fresh names (`ENVOY_CONSUMER_NAMES=fresh`) a missing consumer is made again under a
+  new name at the start its `intake_consumers` row proves, never by time, with no line.
 - **`intake: a missing durable consumer's last applied message is older than the stream's first
   message; …`** (a warning with `consumer`, `start` and `stream_first`). The stream keeps 72 hours
   of messages, and the last message the consumer applied is older than the oldest it still holds.
@@ -1907,6 +1909,35 @@ notice comes once per handoff commit, from whichever read finds it first.
   before it went missing. Any it had not reached may have been missed: the daemon applied none of
   them, and nothing replays them, so an issue one of them would have moved waits for its next
   event, or for the daemon's own read of its pull request at that issue's next handoff.
+- **`intake: a durable consumer's physical name could not be settled`** (an error line with
+  `consumer`, `physical`, `op` and `error`). The daemon runs with `ENVOY_CONSUMER_NAMES=fresh`, so
+  each of its durable consumers, the logical names `legion-go-<project>-dispatch`, `-github` and
+  `-wake` (`consumer`), is a physical consumer of its own at each creation,
+  `<logical>~<id>` (`physical`, empty when none was read), which the logical name's row of the
+  daemon's `intake_consumers` table selects. One step of settling that name failed (`op`): `select`
+  refuses before anything is made, `create` and `missing_current` are a create, `recover` settles a
+  create another boot left open, `update` is the boot's update of the selected consumer, and
+  `last_floor` records its floor. The boot stops on every step but `last_floor`, whose record only
+  narrows a later restart. The `error` says why:
+  - `consumer names: the cutover has not run`: the database's sentinel row (`envoy.sentinel`) does
+    not say `done`, or says `rolled_back`. The operator's `envoy-infra consumer-names convert`
+    writes it in the maintenance window; until then run the daemon with the fixed names (unset
+    `ENVOY_CONSUMER_NAMES`).
+  - `the selection store is missing` or `the selection store's sentinel is missing`: the table or
+    its sentinel row is gone. The daemon never falls back to the fixed names; the operator restores
+    the row.
+  - `a durable consumer has a checkpoint and no selection record`: `consumer_positions` holds a
+    position for the logical name and `intake_consumers` no row, so the record was lost; a new
+    consumer at the next message would skip what the daemon had not applied. The operator gives it
+    a start with `envoy-infra consumer-names replay`.
+  - `no safe start is known`: the row selects a consumer the stream no longer holds, and proves no
+    start for one made again (no saved start, no floor read from that consumer on this stream).
+    The daemon never creates it by time or at the next message; the operator's `replay` gives it
+    a start.
+
+  A name the daemon retired after a create nobody answered stays on the server, since the daemon's
+  grant has no consumer delete: `envoy-infra consumer-names status` lists it and `cleanup` deletes
+  it.
 - **`agent-secrets: the token login failed; retrying`** (an error line with the cause, the class
   it was sorted into and the retry schedule that class takes).
   With `runtime.kubernetes.agent_secrets` set, the daemon logs in to the

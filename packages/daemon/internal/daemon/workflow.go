@@ -929,6 +929,7 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 		AckWait: cfg.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
 		ReviewPermission: w.reviewerCanWrite, ReviewBody: w.reviewBody,
 		RepositoryMapping: w.mappingChange, PrepareRepository: w.prepareRepository, PrepareArtifact: w.prepareArtifact,
+		Names: cfg.ConsumerNames,
 	})
 	if err != nil {
 		conn.Close()
