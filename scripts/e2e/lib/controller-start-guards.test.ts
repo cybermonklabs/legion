@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "./own-group";
+import { rowWaits } from "./row-waits";
 import { scriptFunctions } from "./script-functions";
 
 // The controller start proof's lookup of the controller's Oh My Pi (controller-start-tmux.sh's
@@ -39,8 +40,9 @@ beforeAll(() => {
 // run runs BODY after controller_omp, with the rig's globals and lib/rig.sh, and one helper:
 // start_cli EXE VAR=VALUE… starts the legion stand-in, whose `sh -c` child runs EXE under env with
 // VAR=VALUE… appended to its environment, sets cli to the stand-in's pid and omp to EXE's once EXE
-// runs, and fails the run when it never does. Each stand-in is stopped with everything under it when
-// BODY ends, its start failed or not (stop_tree, lib/process-tree.sh).
+// runs, and fails the run when it does not by until_true_deadline, the end of the row's waits
+// (lib/row-waits.ts): how soon it runs is a loaded host's. Each stand-in is stopped with everything
+// under it when BODY ends, its start failed or not (stop_tree, lib/process-tree.sh).
 function run(body: string) {
   const script = `set -Eeuo pipefail
 trap 'echo "ERR trap: $BASH_COMMAND" >&2' ERR
@@ -49,19 +51,20 @@ work=$WORK evidence=$WORK timeout_hook=
 note() { :; }
 fail() { echo "fail: $*" >&2; exit 1; }
 . ${JSON.stringify(rig)}
+until_true_deadline=$((SECONDS + ${waits.secondsLeft()}))
 ${controllerOmp}
 started=()
 # The shell's own "Killed" notice of each job the trap stops goes nowhere: it is no output of a row.
 trap '{ for p in \${started[@]+"\${started[@]}"}; do stop_tree "$p"; done; } 2>/dev/null' EXIT
 start_cli() {
-  local exe=$1 i kid want
+  local exe=$1 kid want
   want=$(realpath -e -- "$1")
   shift
   env -i PATH="$PATH" "$work/legion" -c 'sh -c "env \\"\\$@\\"; :" sh "$@"; :' legion "$@" "$exe" 600 </dev/null >/dev/null 2>&1 &
   cli=$!
   started+=("$cli")
   omp=
-  for i in $(seq 1 200); do
+  while :; do
     kid=$(cat /proc/"$cli"/task/*/children 2>/dev/null || :)
     kid=\${kid%% *}
     if [ -n "$kid" ]; then
@@ -70,9 +73,10 @@ start_cli() {
       [ -n "$omp" ] && [ "$(readlink "/proc/$omp/exe" 2>/dev/null || :)" = "$want" ] && break
       omp=
     fi
+    [ "$SECONDS" -lt "$until_true_deadline" ] || break
     sleep 0.05
   done
-  [ -n "$omp" ] || { echo "the stand-in $cli never ran $exe" >&2; exit 1; }
+  [ -n "$omp" ] || { echo "the stand-in $cli never ran $exe by the end of the row's waits" >&2; exit 1; }
 }
 # padding prints COUNT variables of a hundred bytes, which sort after LEGION_STATE_DIR as mise x
 # leaves Oh My Pi's environment sorted.
@@ -101,6 +105,7 @@ done
 echo "found $found of 20"`;
 
 const slow = 120_000;
+const waits = rowWaits(slow);
 
 describe.skipIf(skip)("controller_omp", () => {
   test(

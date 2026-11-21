@@ -4,6 +4,7 @@ import { isAbsolute, join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "./own-group";
+import { rowWaits } from "./row-waits";
 import { scriptFunctions } from "./script-functions";
 
 // The Claude Code backend proof's process guards (claude-backend-tmux.sh), taken from the script by
@@ -99,13 +100,16 @@ beforeAll(() => {
 // carries its parent's command line until it execs, and a guard asked about it then answers for the
 // parent. Every process spawn started goes, with everything below it, when BODY ends (stop_tree,
 // lib/process-tree.sh, which signals a process only while its parent is the one it was started
-// under).
+// under). Each wait of BODY ends on its event, and gives up at until_true_deadline, the end of the
+// row's waits (lib/row-waits.ts): how soon a process the row started runs its program is a loaded
+// host's.
 function run(body: string, vars: Record<string, string> = {}) {
   const prelude = `set -Eeuo pipefail
 root=${JSON.stringify(root)} evidence=$SCRATCH timeout_hook=
 note() { :; }
 fail() { echo "fail: $*" >&2; exit 1; }
 . ${JSON.stringify(rig)}
+until_true_deadline=$((SECONDS + ${waits.secondsLeft()}))
 ${guards}
 work=$WORK claude_bin=$CLAUDE claude_exe=$(realpath -e -- "$CLAUDE") port_dispatch=1 port_listener=2 port_nats=3 state=/rig
 scratch=$(mktemp -d "$SCRATCH/run.XXXXXX")
@@ -118,29 +122,30 @@ spawn() {
   started+=("$pid")
 }
 await_child() {
-  local want seen= i
+  local want seen=
   want=$(realpath -e -- "$1")
   child=
-  for i in $(seq 1 200); do
+  while :; do
     child=$(cat "/proc/$pid/task/$pid/children" 2>/dev/null) || true
     child=\${child%% *}
     if [ -n "$child" ]; then
       seen=$(readlink "/proc/$child/exe" 2>/dev/null) || seen=
       [ "$seen" != "$want" ] || break
     fi
+    [ "$SECONDS" -lt "$until_true_deadline" ] || break
     sleep 0.05
   done
   [ -z "$child" ] || started+=("$child")
   [ -n "$child" ] && [ "$seen" = "$want" ] ||
-    { echo "no child of $pid running $want within 10 s (child \${child:-none}, running \${seen:-nothing})" >&2; exit 1; }
+    { echo "no child of $pid running $want by the end of the row's waits (child \${child:-none}, running \${seen:-nothing})" >&2; exit 1; }
 }
 # await_below EXE sets below to the process anywhere below pid that runs EXE once one does, read
 # through every process's children and the kernel's record of what each runs, never a name.
 await_below() {
-  local want i p queue
+  local want p queue
   want=$(realpath -e -- "$1")
   below=
-  for i in $(seq 1 200); do
+  while :; do
     queue=("$pid")
     while [ "\${#queue[@]}" -gt 0 ] && [ -z "$below" ]; do
       for p in $(cat /proc/"\${queue[0]}"/task/*/children 2>/dev/null || :); do
@@ -149,9 +154,10 @@ await_below() {
       queue=("\${queue[@]:1}")
     done
     [ -z "$below" ] || return 0
+    [ "$SECONDS" -lt "$until_true_deadline" ] || break
     sleep 0.05
   done
-  echo "no process below $pid running $want within 10 s" >&2
+  echo "no process below $pid running $want by the end of the row's waits" >&2
   exit 1
 }
 `;
@@ -166,6 +172,7 @@ await_below() {
 }
 
 const slow = 60_000;
+const waits = rowWaits(slow);
 
 describe.skipIf(skip)("bridged", () => {
   test(
@@ -259,14 +266,14 @@ claude_bin=${JSON.stringify(wrapper)} claude_exe=$(realpath -e -- ${JSON.stringi
 spawn bash -c '"$@"; :' pane "$work/legion" pane-shim -- "$work/legion" claude-bridge -- "$claude_bin"
 : >"$scratch/stages"
 found=
-SECONDS=0
-while [ "$SECONDS" -lt 60 ]; do
+while :; do
   if found=$(claude_pid "$pid"); then break; fi
   case $found in *"does not run Claude Code yet: it runs "*) printf '%s\\n' "\${found##*it runs }" >>"$scratch/stages" ;; esac
   found=
+  [ "$SECONDS" -lt "$until_true_deadline" ] || break
   sleep 0.02
 done
-[ -n "$found" ] || { echo "no Claude Code within 60 s" >&2; exit 1; }
+[ -n "$found" ] || { echo "no Claude Code by the end of the row's waits" >&2; exit 1; }
 [ "$(readlink "/proc/$found/exe")" = "$claude_exe" ] && echo "first answer: the program the chain ends in" || echo "first answer: $found, running $(readlink "/proc/$found/exe")"
 for stage in "the bridge's fork:$(realpath -e -- "$work/legion")" "the first wrapper:$(realpath -e -- "$(command -v bash)")" "the second wrapper:$(realpath -e -- "$(command -v sh)")"; do
   if grep -qxF -- "\${stage#*:}" "$scratch/stages"; then echo "refused while it was \${stage%%:*}"; else echo "never saw \${stage%%:*}"; fi
@@ -314,7 +321,7 @@ describe.skipIf(skip)("endpoint_mismatch", () => {
   const agent = (env: string[]) => `
 spawn env -i ${env.join(" ")} "$(command -v sleep)" 600
 ready=
-for i in $(seq 1 200); do grep -qz '^ENVOY_NATS_URL=' "/proc/$pid/environ" 2>/dev/null && { ready=1; break; }; sleep 0.05; done
+while :; do grep -qz '^ENVOY_NATS_URL=' "/proc/$pid/environ" 2>/dev/null && { ready=1; break; }; [ "$SECONDS" -lt "$until_true_deadline" ] || break; sleep 0.05; done
 [ -n "$ready" ] || { echo "the agent stand-in $pid never carried its environment" >&2; exit 1; }
 ${check}`;
   const check = `status=0
@@ -380,9 +387,10 @@ time.sleep(600)
 pid=$!
 started+=("$pid")
 state() { local s; s=$(cat "/proc/$1/stat" 2>/dev/null) || { echo gone; return; }; s=\${s##*) }; echo "\${s%% *}"; }
-for i in $(seq 1 200); do
+while :; do
   [ ! -s "$ready" ] || break
   case $(state "$pid") in Z | X | gone) break ;; esac
+  [ "$SECONDS" -lt "$until_true_deadline" ] || break
   sleep 0.05
 done
 [ -s "$ready" ] || { echo "the stand-in $pid did not start (state $(state "$pid")): $(cat "$err")" >&2; exit 1; }

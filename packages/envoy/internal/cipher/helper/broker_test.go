@@ -496,7 +496,10 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		f.retired = append(f.retired, r.PathValue("id"))
 		w.WriteHeader(http.StatusNoContent)
 	})
-	f.srv = httptest.NewServer(mux)
+	// The handlers read f.srv on the server's goroutines, so it is set before the server serves:
+	// built unstarted, assigned, then started.
+	f.srv = httptest.NewUnstartedServer(mux)
+	f.srv.Start()
 	t.Cleanup(f.srv.Close)
 	return f
 }

@@ -6,6 +6,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { argMaxForceHolds } from "./arg-max-force";
 import { ownGroup, untilRunning } from "./own-group";
 import { procRootOf } from "./proc-root";
+import { libRowBoundMs, rowWaits, stateOf, untilGone } from "./row-waits";
 
 // run_processes (lib/rig.sh) names the processes of a run still alive, and stop_marked_processes
 // (lib/process-tree.sh) ends them: each that carries the run's mark, LEGION_E2E_RUN=$work, which the
@@ -22,6 +23,8 @@ const dir = temporaryDirectory("run-processes-test");
 const skip = skipWithout("perl");
 // python3: the newline-name row renames its process through prctl (ctypes).
 const withoutPython = skipWithout("python3");
+// A row's waits on what its processes do (untilRunning, untilGone) end 20 s before its bound.
+const waits = rowWaits(libRowBoundMs);
 const bin = join(dir, "bin");
 const calls = join(dir, "calls");
 beforeAll(() => {
@@ -84,24 +87,6 @@ function spawn(argv: string[], options: { cwd: string; env?: Record<string, stri
   });
   started.push(child.pid);
   return child.pid;
-}
-// state is PID's state letter (stat field 3), or "gone".
-function state(pid: number): string {
-  try {
-    return readFileSync(`/proc/${pid}/stat`, "utf8")
-      .replace(/^[\s\S]*\) /, "")
-      .slice(0, 1);
-  } catch {
-    return "gone";
-  }
-}
-// gone says whether PID has ended, a zombie counting as ended, within five seconds.
-async function gone(pid: number): Promise<boolean> {
-  for (let i = 0; i < 100; i++) {
-    if (["gone", "Z", "X"].includes(state(pid))) return true;
-    await Bun.sleep(50);
-  }
-  return false;
 }
 
 // harness runs BODY in a bash with lib/rig.sh and lib/arg-max-force.sh sourced for the run
@@ -380,7 +365,7 @@ test.skipIf(skip)(
     mkdirSync(work);
     writeFileSync(join(work, "transcript.log"), "");
     const marked = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
-    await untilRunning(marked, "sleep");
+    await untilRunning(marked, "sleep", waits.end());
     const pidFile = join(dir, "sweep-escaped.pid");
     Bun.spawnSync(
       ownGroup([
@@ -399,10 +384,10 @@ test.skipIf(skip)(
     const r = harness(work, `stop_marked_processes "$work"; echo "status $?"`);
     expect(r.err).toBe("");
     expect(r.out).toBe("status 0\n");
-    expect(await gone(marked)).toBe(true);
-    expect(await gone(escaped)).toBe(true);
+    await untilGone(marked, "the marked process", waits.end());
+    await untilGone(escaped, "the escaped marked process", waits.end());
     // Running, and not left stopped either.
-    expect({ shell: state(shell), tail: state(tail) }).toEqual({ shell: "S", tail: "S" });
+    expect({ shell: stateOf(shell), tail: stateOf(tail) }).toEqual({ shell: "S", tail: "S" });
   }
 );
 
@@ -455,16 +440,27 @@ test.skipIf(skip)(
     const work = join(dir, "reused");
     mkdirSync(work);
     const pid = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
-    await untilRunning(pid, "sleep");
+    await untilRunning(pid, "sleep", waits.end());
+    // Every signal the sweep sends goes through `kill`, here a function that records it and sends
+    // it, so what reached the pid is read from the record rather than from a state that a signal
+    // still in flight has not changed yet. A sweep given the pid's own start must then fill the
+    // record, so an empty one before it is a record that could see a signal.
     const r = harness(
       work,
-      `marked_processes() { printf '%s %s\\n' ${pid} 1; }
-stop_marked_processes "$work"; echo "status $?"`
+      `kill() { printf '%s\\n' "$*" >>"$work/kills"; builtin kill "$@"; }
+marked_processes() { printf '%s %s\\n' ${pid} 1; }
+stop_marked_processes "$work"; echo "status $?"
+sent=$(grep -cw -- ${pid} "$work/kills" 2>/dev/null || :)
+echo "sent to the pid: \${sent:-0}"
+read -r s </proc/${pid}/stat; s=\${s##*) }; echo "state \${s%% *}"
+marked_processes() { printf '%s %s\\n' ${pid} "$(proc_start ${pid})"; }
+stop_marked_processes "$work" >/dev/null 2>&1 || :
+grep -qw -- ${pid} "$work/kills" && echo "its own start: the record holds its stop" || echo "its own start: nothing in the record"`
     );
     expect(r.err).toBe("");
-    expect(r.out).toBe("status 0\n");
-    await Bun.sleep(200);
-    expect(state(pid)).toBe("S");
+    expect(r.out).toBe(
+      "status 0\nsent to the pid: 0\nstate S\nits own start: the record holds its stop\n"
+    );
   }
 );
 
@@ -497,8 +493,8 @@ test.skipIf(skip)(
     const r = harness(work, `stop_marked_processes "$work"; echo "status $?"`);
     expect(r.err).toBe("");
     expect(r.out).toBe("status 0\n");
-    expect(await gone(parent.pid)).toBe(true);
-    expect(await gone(child)).toBe(true);
+    await untilGone(parent.pid, "the marked process", waits.end());
+    await untilGone(child, "the child it started under env -i", waits.end());
   }
 );
 
@@ -528,7 +524,7 @@ test.skipIf(skip)(
     expect(r.err).toBe("");
     expect(r.out).toBe("status 0\n");
     expect(await parent.exited).toBe(0);
-    expect(await gone(child)).toBe(true);
+    await untilGone(child, "the child the marked process started under env -i", waits.end());
   }
 );
 
@@ -541,7 +537,7 @@ test.skipIf(skip)(
     const work = join(dir, "reparented");
     mkdirSync(work);
     const pid = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
-    await untilRunning(pid, "sleep");
+    await untilRunning(pid, "sleep", waits.end());
     const r = harness(
       work,
       `eval "real_$(declare -f proc_parent)"
@@ -552,7 +548,7 @@ stop_marked_processes "$work"; echo "status $?"`
     );
     expect(r.err).toBe("");
     expect(r.out).toBe("status 0\n");
-    expect(await gone(pid)).toBe(true);
+    await untilGone(pid, "the marked process the sweep froze", waits.end());
   }
 );
 
@@ -565,7 +561,7 @@ test.skipIf(skip)(
     const work = join(dir, "reused-below");
     mkdirSync(work);
     const stranger = spawn(["sleep", "60"], { cwd: dir });
-    await untilRunning(stranger, "sleep");
+    await untilRunning(stranger, "sleep", waits.end());
     const parent = Bun.spawn(
       ownGroup(["bash", "-c", "sleep 300 </dev/null >/dev/null 2>&1 & echo $!; wait"]),
       { cwd: dir, env: { PATH: process.env.PATH ?? "", LEGION_E2E_RUN: work }, stdout: "pipe" }
@@ -582,9 +578,9 @@ stop_marked_processes "$work" 1; echo "status $?"`
     );
     expect(r.err).toBe("");
     expect(r.out).toBe("status 0\n");
-    expect(await gone(parent.pid)).toBe(true);
-    expect(await gone(child)).toBe(true);
-    expect(state(stranger)).toBe("S");
+    await untilGone(parent.pid, "the marked process", waits.end());
+    await untilGone(child, "its child", waits.end());
+    expect(stateOf(stranger)).toBe("S");
   }
 );
 
@@ -599,7 +595,7 @@ test.skipIf(skip)(
     const work = join(dir, "reused-parent");
     mkdirSync(work);
     const strangers = spawn(["sleep", "60"], { cwd: dir });
-    await untilRunning(strangers, "sleep");
+    await untilRunning(strangers, "sleep", waits.end());
     const marked = Bun.spawn(
       ownGroup([
         "bash",
@@ -624,8 +620,8 @@ stop_marked_processes "$work" 1; echo "status $?"`
     );
     expect(r.err).toBe("");
     expect(r.out).toBe("status 0\n");
-    expect(await gone(marked.pid)).toBe(true);
-    expect(state(strangers)).toBe("S");
+    await untilGone(marked.pid, "the marked process", waits.end());
+    expect(stateOf(strangers)).toBe("S");
   }
 );
 
@@ -660,6 +656,6 @@ test.skipIf(skip || withoutPython)(
     const r = harness(work, `stop_marked_processes "$work"; echo "status $?"`);
     expect(r.err).toBe("");
     expect(r.out).toBe("status 0\n");
-    expect(await gone(pid)).toBe(true);
+    await untilGone(pid, "the renamed marked process", waits.end());
   }
 );

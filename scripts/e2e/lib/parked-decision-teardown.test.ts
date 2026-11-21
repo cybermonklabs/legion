@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { procRootOf } from "./proc-root";
+import { libRowBoundMs, rowWaits, untilTrue } from "./row-waits";
 import { scriptFunctions } from "./script-functions";
 
 // stop_agent_daemons (parked-decision-devbox.sh), the teardown of what the run's Oh My Pi sessions
@@ -17,9 +18,9 @@ import { scriptFunctions } from "./script-functions";
 // the pane and leaves all three alive, as the brokers outlived cleanup-is-complete in the devbox
 // run at 6512c7fc. The pane the stand-in broker starts is a real tmux pane, and the teardown this
 // test is about is tmux kill-server's, so a host with no tmux runs nothing here and says what is
-// missing. CI is not such a host: its `test` job runs `bun test scripts/e2e/lib` before its
-// `Install tmux` step (.github/workflows/ci.yaml), and the row runs there anyway, because the
-// ubuntu-24.04 image the job runs on already carries tmux.
+// missing. CI is not such a host: its `test` job runs `bun run test:e2e-lib` before its `Install
+// tmux` step (.github/workflows/ci.yaml), and the row runs there anyway, because the ubuntu-24.04
+// image the job runs on already carries tmux.
 const e2e = join(import.meta.dir, "..");
 const root = join(e2e, "..", "..");
 const scriptPath = join(e2e, "parked-decision-devbox.sh");
@@ -98,13 +99,12 @@ const killSession = (sid: number) => {
     } catch {}
   }
 };
-// until polls real processes, which no fake clock moves, for the condition it names.
+// until polls real processes, which no fake clock moves, for the condition it names, until 20 s
+// before the row's bound (lib/row-waits.ts): how soon a process starts, writes or ends is the
+// kernel's, and a loaded host's.
+const waits = rowWaits(libRowBoundMs);
 async function until(what: string, ok: () => boolean) {
-  for (let i = 0; i < 100; i++) {
-    if (ok()) return;
-    await Bun.sleep(100);
-  }
-  throw new Error(`timed out waiting for ${what}`);
+  await untilTrue(what, waits.end(), () => ok() || "it does not hold yet");
 }
 
 // harness runs BODY with the script's `set` line, lib/rig.sh sourced as the script sources it (for
@@ -259,8 +259,7 @@ wait
       .filter(Boolean)
       .map(Number);
     expect(after).toEqual([bystander.pid]);
-  },
-  30_000
+  }
 );
 
 // The walk reads every process's session from its whole /proc/<pid>/stat: a process names itself,
@@ -298,6 +297,5 @@ test.skipIf(skipWithout("python3"))(
     const stopped = harness(work, "stop_agent_daemons", procRootOf(dir, [broker.pid]));
     expect({ code: stopped.code, stderr: stopped.stderr }).toEqual({ code: 0, stderr: "" });
     await until("the broker to end", () => !alive(broker.pid));
-  },
-  30_000
+  }
 );

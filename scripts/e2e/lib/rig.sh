@@ -68,9 +68,15 @@ real_bin_path() {
 # so a healthy wait and a stall read differently to anyone watching a run's output. A poll that
 # never returns would hold the wait past its bound, so a caller's remote calls carry their own
 # timeouts.
+#
+# A caller that sets until_true_deadline (a value of $SECONDS) bounds every wait by the time left
+# until it instead of by SECONDS: a test row of this lib waits on a kernel event (an exit, a zombie)
+# that a loaded host can take longer than a proof's seconds to deliver, and its one bound on a hang
+# is the row's own. No proof sets it.
 until_true() {
   local limit=$1 what=$2 polls=0 started=$SECONDS beat=$SECONDS
   shift 2
+  if [ -n "${until_true_deadline:-}" ]; then limit=$((until_true_deadline - SECONDS)); fi
   note "waiting up to ${limit}s for $what"
   while ((SECONDS - started < limit)); do
     [ ! -s "$evidence/pane-endpoint-violation.txt" ] || fail "ABORT: $(cat "$evidence/pane-endpoint-violation.txt")"
@@ -82,6 +88,10 @@ until_true() {
     fi
     sleep 0.5
   done
+  # One poll at the bound itself, so a wait whose condition holds when the time is up, or whose
+  # deadline had passed before it began, still succeeds rather than failing unread.
+  polls=$((polls + 1))
+  if "$@" >/dev/null 2>&1; then return 0; fi
   if [ -n "$timeout_hook" ]; then "$timeout_hook" || true; fi
   fail "timed out after ${limit}s ($polls polls) waiting for $what"
 }

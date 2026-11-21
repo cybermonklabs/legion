@@ -117,9 +117,13 @@ func newWaitBroker(t *testing.T, key *proofKey, honoursWait, afterFirstHold bool
 	mux.HandleFunc("GET /v1/settings", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, fakeSettings)
 	})
-	b.Server = httptest.NewServer(mux)
+	// The handlers read publicURL on the server's goroutines, and the request that reaches them
+	// comes from another process, which orders nothing in this one. So the URL is written before
+	// the server starts: the listener is bound unstarted, its address read, and only then served.
+	b.Server = httptest.NewUnstartedServer(mux)
+	publicURL = "http://" + b.Listener.Addr().String()
+	b.Start()
 	t.Cleanup(b.Close)
-	publicURL = b.URL
 	return b
 }
 

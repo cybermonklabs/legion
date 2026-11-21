@@ -5,7 +5,16 @@ import { join } from "node:path";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup, untilRunning } from "./own-group";
+import { libRowBoundMs, rowWaits } from "./row-waits";
 import { scriptFunctions } from "./script-functions";
+
+// Each wait of a row, its shell's (until_true) and the TypeScript side's (untilRunning), ends on the
+// event it waits for, and is bounded only by the row's bound, 20 s before it (lib/row-waits.ts),
+// never by the wait's own seconds: on a loaded host the kernel's end of a signalled process can
+// take longer than a proof's bound. The file sets its rows' bound itself (rowWaits), first, so
+// every row and every runner reads it, whatever its command line; Bun ends a row at its bound and
+// kills what the row's shell left running, so a wait must give up first to name what it waited for.
+const waits = rowWaits(libRowBoundMs);
 
 // Every walk of the rig helpers that cannot read the processes it walks must say why and fail, so
 // no caller reads a walk that saw nothing as one that found nothing: a proc root that lists no
@@ -196,16 +205,18 @@ walk stop_tree stop_tree 4242`,
 // A pid recorded with its start (record_start) is signalled only while the start reads the same: a
 // recorded start that is not the process's own stands in for a daemon that ended and whose pid
 // another process took since. stop_pid and signal_group send that process nothing. The shell sources
-// lib/rig.sh as a proof does, so the row reads the stop_pid a proof calls.
-const rigPrelude = `root=${JSON.stringify(root)} work=$(mktemp -d) timeout_hook=
+// lib/rig.sh as a proof does, so the row reads the stop_pid a proof calls, and its waits end with
+// the row's (rowWaits), read as the shell starts.
+const rigPrelude = () => `root=${JSON.stringify(root)} work=$(mktemp -d) timeout_hook=
 evidence=$work
 note() { :; }
 fail() { echo "fail: $*" >&2; exit 1; }
-. "$root/scripts/e2e/lib/rig.sh"`;
+. "$root/scripts/e2e/lib/rig.sh"
+until_true_deadline=$((SECONDS + ${waits.secondsLeft()}))`;
 test("stop_pid and signal_group leave alone a process whose start is not the one recorded for its pid", async () => {
   const stranger = Bun.spawn(ownGroup(["sleep", "60"]), { stdout: "ignore", stderr: "ignore" });
   killed.push(stranger.pid);
-  await untilRunning(stranger.pid, "sleep");
+  await untilRunning(stranger.pid, "sleep", waits.end());
   const start = readFileSync(`/proc/${stranger.pid}/stat`, "utf8")
     .replace(/^[\s\S]*\) /, "")
     .split(" ")[19];
@@ -214,7 +225,7 @@ test("stop_pid and signal_group leave alone a process whose start is not the one
       "bash",
       "-c",
       `set -u
-${rigPrelude}
+${rigPrelude()}
 started_at[${stranger.pid}]=$((${start} + 1))
 stop_pid ${stranger.pid}; echo "stop_pid $?"
 signal_group ${stranger.pid} KILL; echo "signal_group $?"
@@ -226,7 +237,11 @@ read -r s </proc/${stranger.pid}/stat; s=\${s##*) }; echo "state \${s%% *}"`,
   expect(ran.stdout.toString()).toBe("stop_pid 0\nsignal_group 0\nstate S\n");
   // The control: given its own start, stop_pid ends it.
   const own = Bun.spawnSync(
-    ["bash", "-c", `${rigPrelude}\nstarted_at[${stranger.pid}]=${start}\nstop_pid ${stranger.pid}`],
+    [
+      "bash",
+      "-c",
+      `${rigPrelude()}\nstarted_at[${stranger.pid}]=${start}\nstop_pid ${stranger.pid}`,
+    ],
     { env: { PATH: process.env.PATH ?? "", TMPDIR: dir } }
   );
   expect(own.exitCode).toBe(0);
@@ -392,13 +407,13 @@ unspawn "$daemon_pid"`;
     expect(stderr).toBe("");
     expect(stdout).toBe("stranger alive\n");
   },
-  120_000
+  libRowBoundMs
 );
 
 // run runs BODY in a bash with lib/rig.sh sourced as a proof sources it (rigPrelude), its $work
 // holding the logs directory start_process writes to, and answers its status and both streams.
 function run(body: string) {
-  const ran = Bun.spawnSync(["bash", "-c", `${rigPrelude}\nmkdir -p "$work/logs"\n${body}`], {
+  const ran = Bun.spawnSync(["bash", "-c", `${rigPrelude()}\nmkdir -p "$work/logs"\n${body}`], {
     env: { PATH: process.env.PATH ?? "", TMPDIR: dir },
   });
   return { code: ran.exitCode, out: ran.stdout.toString(), err: ran.stderr.toString() };
@@ -413,7 +428,9 @@ state() { if gone "$1"; then echo gone; else echo running; fi; }`;
 // leads its group: the recorded pid is a setsid that exits at once, and the stop reaches neither the
 // service nor its child. Whether that setsid has exited when start_process reads its start is the
 // machine's (on a loaded gVisor pod it often has): start_process records its start or `gone`, and
-// either way the stop reaches neither and says nothing. The next row forces the second.
+// either way the stop reaches neither and says nothing. Each row also waits for the recorded setsid
+// to end and says so, so a pid the stop leaves alone is a process that is gone, never one still
+// running unsignalled. The next row forces the second.
 test("start_process starts a service that leads its own group, and signal_group then stop_pid end it with its child; with setsid in front they reach neither", async () => {
   const r = run(`${goneOrRunning}
 start_process svc bash -c 'sleep 300 & echo $! >"$0"; wait' "$work/child"
@@ -432,18 +449,19 @@ echo "setsid's pids $leader2 $child2"
 [ "$svc2_pid" != "$leader2" ] && echo "with setsid the recorded pid is not the service's"
 signal_group "$svc2_pid" TERM
 stop_pid "$svc2_pid"
-echo "with setsid: service $(state "$leader2"), child $(state "$child2")"`);
+until_true 10 "the recorded setsid to end" gone "$svc2_pid"
+echo "with setsid: recorded $(state "$svc2_pid"), service $(state "$leader2"), child $(state "$child2")"`);
   killed.push(...pidsIn(/^setsid's pids (.*)$/m.exec(r.out)?.[1] ?? ""));
   expect(r.err).toBe("");
   expect(r.out.replace(/^setsid's pids .*\n/m, "")).toBe(
-    "start 0\nleads its group\nservice gone, child gone\nwith setsid the recorded pid is not the service's\nwith setsid: service running, child running\n"
+    "start 0\nleads its group\nservice gone, child gone\nwith setsid the recorded pid is not the service's\nwith setsid: recorded gone, service running, child running\n"
   );
 });
 
 // The same setsid start, forced to the shape a loaded machine gives at random: the setsid has exited
 // before start_process reads its start (proc_start answers nothing for that one read). It is
 // recorded `gone`, and signal_group and stop_pid of it send nothing and say nothing, while the
-// service and its child run on.
+// service and its child run on; the setsid recorded `gone` has in fact ended.
 test("with setsid in front and the setsid gone when start_process reads its start, signal_group then stop_pid reach neither and say nothing", async () => {
   const r = run(`${goneOrRunning}
 eval "real_$(declare -f proc_start)"
@@ -456,12 +474,13 @@ echo "setsid's pids $leader3 $child3"
 echo "recorded: \${started_at[$svc3_pid]-none}"
 signal_group "$svc3_pid" TERM
 stop_pid "$svc3_pid"
-echo "with setsid gone at the read: service $(state "$leader3"), child $(state "$child3")"`);
+until_true 10 "the setsid recorded gone to have ended" gone "$svc3_pid"
+echo "with setsid gone at the read: recorded $(state "$svc3_pid"), service $(state "$leader3"), child $(state "$child3")"`);
   killed.push(...pidsIn(/^setsid's pids (.*)$/m.exec(r.out)?.[1] ?? ""));
-  expect(r.out.replace(/^setsid's pids .*\n/m, "")).toBe(
-    "recorded: gone\nwith setsid gone at the read: service running, child running\n"
-  );
   expect(r.err).toBe("");
+  expect(r.out.replace(/^setsid's pids .*\n/m, "")).toBe(
+    "recorded: gone\nwith setsid gone at the read: recorded gone, service running, child running\n"
+  );
 });
 
 // A service that has exited before start_process reads its start is recorded `gone`. start_process
@@ -498,7 +517,7 @@ const broker = scriptFunctions(join(root, "docs/site/media/broker/rig.sh"));
 test("the broker rig holds a helper pid it reads late to the start the helper wrote, so a stranger given that pid is left running", async () => {
   const stranger = Bun.spawn(ownGroup(["sleep", "60"]), { stdout: "ignore", stderr: "ignore" });
   killed.push(stranger.pid);
-  await untilRunning(stranger.pid, "sleep");
+  await untilRunning(stranger.pid, "sleep", waits.end());
   const start = readFileSync(`/proc/${stranger.pid}/stat`, "utf8")
     .replace(/^[\s\S]*\) /, "")
     .split(" ")[19];
@@ -514,10 +533,11 @@ printf '%s %s\\n' ${stranger.pid} ${start} >"$work/agent/helper.pid"
 (cleanup)
 until_true 10 "the helper to end" gone ${stranger.pid}
 echo "cleanup, the helper itself: $(state ${stranger.pid})"`);
+  // stderr first: a wait that gave up names what it waited for there.
+  expect(r.err).toBe("");
   expect(r.out).toBe(
     "cleanup, a stranger given the helper's pid: running\ncleanup, the helper itself: gone\n"
   );
-  expect(r.err).toBe("");
   const rig = readFileSync(join(root, "docs/site/media/broker/rig.sh"), "utf8");
   expect(rig).toMatch(/"\$record_pid_sh" "\$work\/agent\/helper\.pid"/);
   expect(rig).toMatch(
@@ -565,8 +585,8 @@ echo "after stop_agent: member $(state "$member")"`
     )
   );
   killed.push(...pidsIn(/^pids (.*)$/m.exec(r.out)?.[1] ?? ""));
-  expect(r.out.replace(/^pids .*\n/m, "")).toBe("after stop_agent: member gone\n");
   expect(r.err).toBe("");
+  expect(r.out.replace(/^pids .*\n/m, "")).toBe("after stop_agent: member gone\n");
 });
 test("the clean-session-stop stop_agent leaves an agent's member that outlives its TERM to the cleanup sweep, and both agents' cleanups run the sweep", () => {
   const r = run(
@@ -580,10 +600,10 @@ echo "after the sweep: member $(state "$member")"`
     )
   );
   killed.push(...pidsIn(/^pids (.*)$/m.exec(r.out)?.[1] ?? ""));
+  expect(r.err).toBe("");
   expect(r.out.replace(/^pids .*\n/m, "")).toBe(
     "after stop_agent: member running\nsweep 0\nafter the sweep: member gone\n"
   );
-  expect(r.err).toBe("");
   for (const cleanup of [states("cleanup"), cleanStop("cleanup")]) {
     expect(cleanup).toMatch(/^\s+stop_marked_processes "\$work"/m);
   }

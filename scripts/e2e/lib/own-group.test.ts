@@ -2,8 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import { realpathSync } from "node:fs";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { ownGroup, untilRunning } from "./own-group";
+import { libRowBoundMs, rowWaits } from "./row-waits";
 
 const skip = skipWithout("perl", "bash", "sleep", "true");
+const waits = rowWaits(libRowBoundMs);
 
 const started: number[] = [];
 afterEach(() => {
@@ -61,26 +63,37 @@ test.skipIf(skip)(
 test.skipIf(skip)("untilRunning resolves once the pid runs the program", async () => {
   const child = Bun.spawn(ownGroup(["sleep", "60"]), { stdout: "ignore", stderr: "ignore" });
   started.push(child.pid);
-  await untilRunning(child.pid, "sleep");
+  await untilRunning(child.pid, "sleep", waits.end());
   expect(realpathSync(`/proc/${child.pid}/exe`)).toBe(realpathSync(hostTool("sleep") ?? "sleep"));
 });
 
+// The end a row gives it is the only bound: a short one here, so the row reads the failure soon.
 test.skipIf(skip)(
-  "untilRunning fails at its bound, naming the pid, the program and what the pid runs, when the pid never runs the program",
+  "untilRunning fails at the end it is given, not before, naming the pid, the program and what the pid runs, when the pid never runs the program",
   async () => {
     const child = Bun.spawn(ownGroup(["sleep", "60"]), { stdout: "ignore", stderr: "ignore" });
     started.push(child.pid);
+    await untilRunning(child.pid, "sleep", waits.end());
     const want = realpathSync(hostTool("true") ?? "true");
     const sleep = realpathSync(hostTool("sleep") ?? "sleep");
-    const began = Date.now();
+    const end = performance.now() + 1_000;
     let failure = "";
     try {
-      await untilRunning(child.pid, "true");
+      await untilRunning(child.pid, "true", end);
     } catch (error) {
       failure = (error as Error).message;
     }
-    expect(failure).toBe(`pid ${child.pid} did not run ${want} within 10 s (running ${sleep})`);
-    expect(Date.now() - began).toBeGreaterThanOrEqual(10_000);
-  },
-  60_000
+    expect(performance.now()).toBeGreaterThanOrEqual(end);
+    expect(failure.replace(/^waited \d+\.\d s,/, "waited N s,")).toBe(
+      `waited N s, to the end of the row's waits, for pid ${child.pid} to run ${want}: it runs ${sleep}`
+    );
+  }
 );
+
+// An end that has passed before the wait begins still gets one look, as until_true's does.
+test.skipIf(skip)("untilRunning looks once even at an end that has passed", async () => {
+  const child = Bun.spawn(ownGroup(["sleep", "60"]), { stdout: "ignore", stderr: "ignore" });
+  started.push(child.pid);
+  await untilRunning(child.pid, "sleep", waits.end());
+  await untilRunning(child.pid, "sleep", performance.now() - 1);
+});

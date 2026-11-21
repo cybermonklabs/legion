@@ -5,6 +5,7 @@ import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup, untilRunning } from "./own-group";
 import { procRootOf } from "./proc-root";
+import { libRowBoundMs, rowWaits } from "./row-waits";
 
 // refuse_leftovers (lib/leftovers.sh) is a stage driver's check that no earlier run of its stage left
 // a process running whose driver is gone: a process names its run by /tmp/<PREFIX>.<driver pid>. in
@@ -15,6 +16,8 @@ const leftovers = join(import.meta.dir, "leftovers.sh");
 const dir = temporaryDirectory("leftovers-test");
 const skip = skipWithout("perl", "sleep", "find");
 const prefix = "legion-e2e-leftovers-test";
+// sleeper waits for what it started to run its program, a wait that ends 20 s before the row's bound.
+const waits = rowWaits(libRowBoundMs);
 
 const started: number[] = [];
 afterEach(() => {
@@ -34,7 +37,7 @@ async function sleeper(
     stderr: "ignore",
   });
   started.push(child.pid);
-  await untilRunning(child.pid, options.argv?.[0] ?? "sleep");
+  await untilRunning(child.pid, options.argv?.[0] ?? "sleep", waits.end());
   return child.pid;
 }
 // A pid no process holds now: a process this row started and reaped, the driver of a run that is
