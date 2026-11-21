@@ -229,7 +229,7 @@ func (s *Store) ClaimStatesIn(ctx context.Context, project, issue string) (Claim
 		for rows.Next() {
 			var role, state string
 			if err := rows.Scan(&role, &state); err != nil {
-				return fmt.Errorf("read the claim states of %s: %w", issue, err)
+				return err
 			}
 			states = append(states, ClaimRoleState{Role: claim.Role(role), State: supervise.ClaimState(state)})
 		}
