@@ -258,8 +258,10 @@ func asMethod(method string) func(*http.Request) {
 // TestEveryRouteNeedsACredentialButTheNamedOnes (c-no-route-trusts-the-network): every route the
 // processes serve, but the ones noCredentialNeeded names, sent with no cookie and no Authorization
 // at each origin of the walk, is refused for the credential it does not carry
-// (refusedForNoCredential), with the same refusal at every origin. Sent as HEAD and as OPTIONS, it
-// is refused for the credential too, or answered 404 or 405, and never served.
+// (refusedForNoCredential), with the same refusal at every origin. The one difference allowed is
+// the outside origin's GET /auth/whoami naming its sign-in page's way in, "sign_in":"passkey"
+// (whoamiSignIn), which no other route or origin carries. Sent as HEAD and as OPTIONS, it is
+// refused for the credential too, or answered 404 or 405, and never served.
 func TestEveryRouteNeedsACredentialButTheNamedOnes(t *testing.T) {
 	walk := newProcessWalk(t)
 	first := walk.at[0]
@@ -270,11 +272,16 @@ func TestEveryRouteNeedsACredentialButTheNamedOnes(t *testing.T) {
 		want := first.send(t, route, nil)
 		for _, at := range walk.at {
 			response := at.send(t, route, nil)
+			answer, signIn := withoutSignIn(answerOf(response))
+			wantSignIn := ""
+			if at.host == outsideHost && route == "GET /auth/whoami" {
+				wantSignIn = "passkey"
+			}
 			if !refusedForNoCredential(response) {
 				t.Errorf("%s %s answers a caller with no credential %d %s, want it refused for the credential it does not carry", route, at.name, response.Code, firstLine(response.Body.String()))
-			} else if response.Code != want.Code || answerOf(response) != answerOf(want) {
-				t.Errorf("%s %s answers a caller with no credential %d %s, and %s %d %s: want one refusal at every origin",
-					route, at.name, response.Code, firstLine(answerOf(response)), first.name, want.Code, firstLine(answerOf(want)))
+			} else if response.Code != want.Code || answer != answerOf(want) || signIn != wantSignIn {
+				t.Errorf("%s %s answers a caller with no credential %d %s, and %s %d %s: want one refusal at every origin, naming sign-in %q",
+					route, at.name, response.Code, firstLine(answerOf(response)), first.name, want.Code, firstLine(answerOf(want)), wantSignIn)
 			}
 			for _, method := range []string{http.MethodHead, http.MethodOptions} {
 				response := at.send(t, route, asMethod(method))
@@ -404,6 +411,26 @@ func answerOf(response *httptest.ResponseRecorder) string {
 		return "Location: " + target.String()
 	}
 	return response.Body.String()
+}
+
+// withoutSignIn is answer with a JSON object's "sign_in" key removed, and that key's value: the
+// sign-in page's way in a 401 of GET /auth/whoami names at the outside origin (whoamiSignIn).
+// Any other answer is returned as it is, with "".
+func withoutSignIn(answer string) (string, string) {
+	var body map[string]any
+	if json.Unmarshal([]byte(answer), &body) != nil {
+		return answer, ""
+	}
+	signIn, ok := body["sign_in"].(string)
+	if !ok {
+		return answer, ""
+	}
+	delete(body, "sign_in")
+	rest, err := json.Marshal(body)
+	if err != nil {
+		return answer, signIn
+	}
+	return string(rest) + "\n", signIn
 }
 
 // firstLine is text's first line, which is what a failure quotes of an answer.
