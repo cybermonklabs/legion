@@ -145,29 +145,46 @@ func TestAMissingGitHubConsumerStartsAtItsLastAppliedPosition(t *testing.T) {
 // first message, so a boot that stops after OpenConsumers, before Run, has already logged it: here
 // the stream was made again after the GitHub consumer applied a message a moment ago, so its first
 // message now is one stored after that position, and OpenConsumers alone warns that what was
-// published between may have been missed. Nothing runs the consumers, and the message the check
-// fetched is handed back: it is still pending. A check at the first delivery instead would log
-// nothing here, since nothing delivers.
+// published between may have been missed. Nothing runs the consumers. The message the check
+// fetched is handed back (a nak): with an acknowledgement window of a minute, a fetch right after
+// the boot is given it again at once, where a message the check had only fetched would wait out
+// the window. A check at the first delivery instead would log nothing here, since nothing
+// delivers.
 func TestAStoredPositionTheStreamNoLongerHoldsWarnsAtTheConsumersCreation(t *testing.T) {
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	logs := &lockedBuffer{}
 	spec := consumerSpec(logs)
+	spec.AckWait = time.Minute
 	github := githubConsumerName(spec.Project)
 	if _, err := pool.Exec(context.Background(), `insert into consumer_positions (consumer, stream_seq, stream_time) values ($1, 9000, $2)`,
 		github, time.Now().Add(-time.Minute)); err != nil {
 		t.Fatalf("store the position: %v", err)
 	}
-	publish(t, js, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
+	published := publish(t, js, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
 	if _, err := OpenConsumers(context.Background(), js, pool, spec); err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
 	if line := logLine(logs.String(), "level=WARN", "consumer="+github, "no longer in the stream", "may have been missed"); line == "" {
 		t.Fatalf("a boot that stopped after OpenConsumers logged no warning of the missed events; logs:\n%s", logs)
 	}
-	testwait.Eventually(t, "the checked message handed back, none held unacknowledged", func() bool {
-		return consumerInfo(t, stream, github).NumAckPending == 0
-	})
+	consumer, err := stream.Consumer(context.Background(), github)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := consumer.Fetch(1, jetstream.FetchMaxWait(5*time.Second))
+	if err != nil {
+		t.Fatalf("fetch after the boot: %v", err)
+	}
+	var again uint64
+	for message := range batch.Messages() {
+		if metadata, err := message.Metadata(); err == nil {
+			again = metadata.Sequence.Stream
+		}
+	}
+	if again != published.Sequence {
+		t.Fatalf("a fetch right after the boot was given stream sequence %d, want %d at once: the message the check fetched was not handed back", again, published.Sequence)
+	}
 }
 
 // A consumer created at a stored position whose stream holds no message at or after it — nothing
