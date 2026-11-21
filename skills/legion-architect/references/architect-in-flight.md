@@ -7,7 +7,9 @@ Read this before you set a child's `--blocked-by` links or end or rerun a child,
 
 - Set a child's dependencies in one call: `dispatch issue-update --issue <child> --blocked-by <a>
   --blocked-by <b>`. It replaces the whole list, so read the existing links first (`dispatch read`).
-- On each `child-closed`, read the child's handoff, edit the specs of open children it changes.
+- On each `child-closed`, read the child's handoff, edit the specs of open children it changes,
+  and end each child it makes unneeded with `done` and its `--reason`, by your role prompt's rules
+  for ending a child.
 - A child moved to `backlog` or `icebox` is not `done`: its dependents stay held until it is `done`
   or off their `--blocked-by` lists (`--clear-blocked-by` where it was the only one).
 - A restart (`backlog`, then `rerun_child`) keeps its dependents' links: they wait through the

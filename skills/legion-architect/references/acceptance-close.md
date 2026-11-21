@@ -41,7 +41,9 @@ The merge closes the issue (`done`). The production check after the close is not
 
 ## Hand-over at a root's linger
 
-A child that had its own architect keeps that architect's session: the root's architect start
+If the root stays `done` through its linger, the daemon hands every child of the tree that is still
+in the workflow to Legion as a root of its own (`todo` with the `legion` label). A child that had
+its own architect keeps that architect's session: the root's architect start
 resumes the same claim, and its next launch gives it the root architect's prompt. A child that ran
 without one gets a new architect session. The hand-over runs by itself and needs no action from
 you. Ask the person whether a child's work must end with the root.
