@@ -1,5 +1,5 @@
 {
-  "about": "Domains Dispatch's boot takes and refuses, which envoy-infra's gcp:Dispatch holds its own inputs to so a preview refuses what the pod's boot would. signInDomain is DISPATCH_SIGNIN_DOMAIN (checkDomainShape here; dispatchDomainName in packages/envoy/infra/gcp). workspaceDomains is one entry of DISPATCH_SIGNIN_WORKSPACE_DOMAINS (workspaceDomainRule in packages/envoy/infra/gcp). Read by packages/envoy/cmd/dispatch/signin_domain_vectors_test.go and packages/envoy/infra/gcp/dispatch_signin_domain_vectors_test.go.",
+  "about": "Domains Dispatch's boot takes and refuses, which envoy-infra's gcp:Dispatch holds its own inputs to so a preview refuses what the pod's boot would. The boot trims each value of surrounding whitespace (strings.TrimSpace) before its rule judges it, so a padded value is taken when its trimmed text is; the component trims the same way and renders the trimmed text. signInDomain is DISPATCH_SIGNIN_DOMAIN (resolveBootConfig's trim, then checkDomainShape, here; dispatchDomainName in packages/envoy/infra/gcp). workspaceDomains is one entry of DISPATCH_SIGNIN_WORKSPACE_DOMAINS (commaList's trim of each entry, then the entry rule, where Dispatch reads that setting; workspaceDomainRule in packages/envoy/infra/gcp). Read by packages/envoy/cmd/dispatch/signin_domain_vectors_test.go and packages/envoy/infra/gcp/dispatch_signin_domain_vectors_test.go.",
   "signInDomain": {
     "accepted": [
       "example.com",
@@ -17,16 +17,19 @@
       "example.123",
       "123.123",
       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example.net",
+      " example.net",
+      "example.net ",
+      "\texample.net\n",
       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example"
     ],
     "refused": [
       "",
+      " ",
+      " Example.net ",
       "Example.net",
       "example",
       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example.net",
       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example",
-      " example.net",
-      "example.net ",
       "b\u00fccher.example",
       "\uff45xample.net",
       "example.net,example.org",
@@ -68,18 +71,20 @@
       "example.\uff4eet",
       "\ufeffexample.net",
       "example.net\u200b",
+      " example.net",
+      "example.net ",
+      "\texample.net\n",
       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example"
     ],
     "refused": [
       "",
       "Example.net",
+      " Example.net ",
       "example",
       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example.net",
       "xn--a.example.net",
       "a\u200db.example.net",
       "B\u00fccher.example",
-      " example.net",
-      "example.net ",
       "example.net,example.org",
       "person@example.net",
       "https://example.net",

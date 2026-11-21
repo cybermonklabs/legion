@@ -1355,26 +1355,31 @@ var dispatchDomainShape = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z
 const maxDispatchDomainLength = 253
 
 // dispatchDomainName reports whether domain is one Dispatch takes as DISPATCH_SIGNIN_DOMAIN, under
-// Google sign-in and under IAP alike: in ASCII, of dispatchDomainShape and at most
-// maxDispatchDomainLength characters.
+// Google sign-in and under IAP alike: once trimmed of surrounding whitespace (strings.TrimSpace),
+// as Dispatch's boot trims the setting before it checks it, in ASCII, of dispatchDomainShape and
+// at most maxDispatchDomainLength characters. The component renders the trimmed value.
 func dispatchDomainName(domain string) bool {
+	domain = strings.TrimSpace(domain)
 	return len(domain) <= maxDispatchDomainLength && dispatchDomainShape.MatchString(domain)
 }
 
 // workspaceDomainRule reports whether entry is one Dispatch takes in DISPATCH_SIGNIN_WORKSPACE_DOMAINS:
-// lowercase, taken by IDNA lookup (idna.Lookup.ToASCII), and then, as its A-labels, a
-// dispatchDomainName. An internationalized domain may be written in Unicode (bücher.example) or as
-// its A-labels (xn--bcher-kva.example); a label such as xn--a, which decodes to nothing, is
-// refused. dispatchDomainShape admits no comma, so no entry splits into two when the list is
-// comma-joined.
+// once trimmed of surrounding whitespace, as Dispatch trims each entry of the list, lowercase,
+// taken by IDNA lookup (idna.Lookup.ToASCII), and then, as its A-labels, a dispatchDomainName. An
+// internationalized domain may be written in Unicode (bücher.example) or as its A-labels
+// (xn--bcher-kva.example); a label such as xn--a, which decodes to nothing, is refused.
+// dispatchDomainShape admits no comma, so no entry splits into two when the list is comma-joined.
+// The component renders each entry trimmed.
 func workspaceDomainRule(entry string) bool {
+	entry = strings.TrimSpace(entry)
 	ascii, err := idna.Lookup.ToASCII(entry)
 	return err == nil && entry == strings.ToLower(entry) && dispatchDomainName(ascii)
 }
 
 // refuseDispatchWorkspaceDomains judges signInWorkspaceDomains where the sign-in inputs are set,
 // the one place it may be, so a bad entry fails the resolver rather than the pod's boot: each entry
-// must be one workspaceDomainRule takes, and an empty one is refused on its own. Each refusal is a
+// must be one workspaceDomainRule takes, and an empty one is refused on its own; one of whitespace
+// alone, which Dispatch trims to nothing, is refused by that rule. Each refusal is a
 // core.InputError naming signInWorkspaceDomains, as the schema names the input, whose message names
 // the entry by its index. dispatchSeededInput has refused a seed in any entry already, so a
 // refusal may quote it.
@@ -1807,11 +1812,18 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.images.proxy = args.CloudSqlProxyImage
 	s.images.tools = args.FrontDoorToolsImage
 	s.signIn.clientID = args.SignInClientId
-	s.signIn.domain = args.SignInDomain
+	// The domain and each Workspace domain render trimmed, which is what Dispatch reads of them
+	// (dispatchDomainName, workspaceDomainRule).
+	s.signIn.domain = strings.TrimSpace(args.SignInDomain)
 	s.signInOutside = args.SignInOutside
 	s.outsideOrigin = outsideOrigin
 	s.signInPasskey = args.SignInPasskey
-	s.signInWorkspaceDomains = args.SignInWorkspaceDomains
+	if len(args.SignInWorkspaceDomains) > 0 {
+		s.signInWorkspaceDomains = make([]string, len(args.SignInWorkspaceDomains))
+		for i, domain := range args.SignInWorkspaceDomains {
+			s.signInWorkspaceDomains[i] = strings.TrimSpace(domain)
+		}
+	}
 	s.publicOrigin = publicOrigin
 	s.iap = args.IapAudience != nil
 	s.agentSecretsURL = agentSecretsURL
@@ -2075,7 +2087,8 @@ type dispatchAppResources struct {
 // which Autopilot would not run the app pod as rendered: the two containers' total below
 // autopilotPodMinCPU or autopilotPodMinMemory or outside the memory-per-CPU ratio (Autopilot
 // raises it), or above autopilotPodMaxCPU or autopilotPodMaxMemory (Autopilot rejects it). Each
-// refusal names the inputs whose sum it judges.
+// refusal's message names the inputs whose sum it judges, and its core.InputError the one to
+// correct (podSizeInput).
 func newDispatchAppResources(args *DispatchArgs) (dispatchAppResources, error) {
 	cpu, appCPU, err := appQuantity("appCpu", args.AppCpu, defaultDispatchAppCPU, "1, 1500m or 2")
 	if err != nil {
@@ -2095,30 +2108,32 @@ func newDispatchAppResources(args *DispatchArgs) (dispatchAppResources, error) {
 	}
 	podCPU := new(big.Rat).Add(appCPU, proxyCPUValue)
 	podMemory := new(big.Rat).Add(appMemory, proxyMemoryValue)
+	cpuInput := podSizeInput("appCpu", "proxyCpu", args.AppCpu != nil, args.ProxyCpu != nil)
+	memoryInput := podSizeInput("appMemory", "proxyMemory", args.AppMemory != nil, args.ProxyMemory != nil)
 	if podCPU.Cmp(autopilotPodMinCPU) < 0 {
-		return dispatchAppResources{}, core.InputErrorf("appCpu", "appCpu %q and proxyCpu %q must make at least %s together: below it Autopilot raises the app pod's request, since the pod carries pod anti-affinity (and safe-to-evict when no budget covers it)",
+		return dispatchAppResources{}, core.InputErrorf(cpuInput, "appCpu %q and proxyCpu %q must make at least %s together: below it Autopilot raises the app pod's request, since the pod carries pod anti-affinity (and safe-to-evict when no budget covers it)",
 			cpu, proxyCPU, milliCPU(autopilotPodMinCPU))
 	}
 	if podCPU.Cmp(autopilotPodMaxCPU) > 0 {
-		return dispatchAppResources{}, core.InputErrorf("appCpu", "appCpu %q and proxyCpu %q must make at most %s CPU together: Autopilot rejects an app pod that requests more",
+		return dispatchAppResources{}, core.InputErrorf(cpuInput, "appCpu %q and proxyCpu %q must make at most %s CPU together: Autopilot rejects an app pod that requests more",
 			cpu, proxyCPU, autopilotPodMaxCPU.RatString())
 	}
 	if podMemory.Cmp(autopilotPodMinMemory) < 0 {
-		return dispatchAppResources{}, core.InputErrorf("appMemory", "appMemory %q and proxyMemory %q must make at least %s together: below it Autopilot raises the app pod's request, since the pod carries pod anti-affinity (and safe-to-evict when no budget covers it)",
+		return dispatchAppResources{}, core.InputErrorf(memoryInput, "appMemory %q and proxyMemory %q must make at least %s together: below it Autopilot raises the app pod's request, since the pod carries pod anti-affinity (and safe-to-evict when no budget covers it)",
 			memory, proxyMemory, mebibytes(autopilotPodMinMemory))
 	}
 	if podMemory.Cmp(autopilotPodMaxMemory) > 0 {
-		return dispatchAppResources{}, core.InputErrorf("appMemory", "appMemory %q and proxyMemory %q must make at most 110Gi together: Autopilot rejects an app pod that requests more",
+		return dispatchAppResources{}, core.InputErrorf(memoryInput, "appMemory %q and proxyMemory %q must make at most 110Gi together: Autopilot rejects an app pod that requests more",
 			memory, proxyMemory)
 	}
 	gibPerCPU := new(big.Rat).Quo(podMemory, podCPU)
 	gibPerCPU.Quo(gibPerCPU, new(big.Rat).SetInt64(1<<30))
 	if gibPerCPU.Cmp(autopilotMinGiBPerCPU) < 0 || gibPerCPU.Cmp(autopilotMaxGiBPerCPU) > 0 {
-		// Autopilot raises the smaller of the two, so the refusal names that one's input, as
+		// Autopilot raises the smaller of the two, so the refusal names an input of that one, as
 		// autopilotPodSize's does: too little memory per CPU raises the memory.
-		smaller := "appCpu"
+		smaller := cpuInput
 		if gibPerCPU.Cmp(autopilotMinGiBPerCPU) < 0 {
-			smaller = "appMemory"
+			smaller = memoryInput
 		}
 		return dispatchAppResources{}, core.InputErrorf(smaller, "appCpu %q, appMemory %q, proxyCpu %q and proxyMemory %q: the app pod must hold between 1 and 6.5 GiB of memory per CPU, or Autopilot raises the smaller of the two",
 			cpu, memory, proxyCPU, proxyMemory)
@@ -2131,11 +2146,22 @@ func newDispatchAppResources(args *DispatchArgs) (dispatchAppResources, error) {
 		appEphemeralStorage: appEphemeral, proxyEphemeralStorage: proxyEphemeral}, nil
 }
 
+// podSizeInput is the input a refusal of the app pod's summed size names as the one to correct:
+// app, the envoy-dispatch container's, unless the consumer set only proxy, the cloud-sql-proxy
+// sidecar's, which is then the value that took the sum out of Autopilot's bounds.
+func podSizeInput(app, proxy string, appSet, proxySet bool) string {
+	if proxySet && !appSet {
+		return proxy
+	}
+	return app
+}
+
 // newDispatchEphemeralStorage resolves appEphemeralStorage and proxyEphemeralStorage, each "" when
 // unset, and refuses a pair at which Autopilot would not run the app pod as rendered: their sum,
 // an unset container counted at the autopilotDefaultEphemeralStorage Autopilot gives it, below
 // autopilotPodMinEphemeralStorage (Autopilot raises it) or above autopilotPodMaxEphemeralStorage
-// (Autopilot rejects it). The refusal names both inputs, an unset one as Autopilot's default.
+// (Autopilot rejects it). The refusal's message names both inputs, an unset one as Autopilot's
+// default, and its core.InputError the one to correct (podSizeInput).
 func newDispatchEphemeralStorage(args *DispatchArgs) (app, proxy string, err error) {
 	resolve := func(input string, value *string) (rendered, named string, quantity *big.Rat, err error) {
 		if value == nil {
@@ -2154,12 +2180,13 @@ func newDispatchEphemeralStorage(args *DispatchArgs) (app, proxy string, err err
 		return "", "", err
 	}
 	pod := new(big.Rat).Add(appValue, proxyValue)
+	input := podSizeInput("appEphemeralStorage", "proxyEphemeralStorage", args.AppEphemeralStorage != nil, args.ProxyEphemeralStorage != nil)
 	if pod.Cmp(autopilotPodMinEphemeralStorage) < 0 {
-		return "", "", core.InputErrorf("appEphemeralStorage", "%s and %s must make at least %s together: below it Autopilot raises the app pod's ephemeral storage, and each container's logs count against its own",
+		return "", "", core.InputErrorf(input, "%s and %s must make at least %s together: below it Autopilot raises the app pod's ephemeral storage, and each container's logs count against its own",
 			appNamed, proxyNamed, mebibytes(autopilotPodMinEphemeralStorage))
 	}
 	if pod.Cmp(autopilotPodMaxEphemeralStorage) > 0 {
-		return "", "", core.InputErrorf("appEphemeralStorage", "%s and %s must make at most 10Gi together: Autopilot rejects an app pod with more ephemeral storage; a larger working set belongs in a generic ephemeral volume",
+		return "", "", core.InputErrorf(input, "%s and %s must make at most 10Gi together: Autopilot rejects an app pod with more ephemeral storage; a larger working set belongs in a generic ephemeral volume",
 			appNamed, proxyNamed)
 	}
 	return app, proxy, nil

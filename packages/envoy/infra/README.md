@@ -1137,10 +1137,11 @@ on one of these domains, or on a subdomain of either as a Workspace address, whi
 or outside sign-in may use, so list every domain the Workspace owns. Dispatch reads the setting
 only with Google sign-in, so the input needs the sign-in group, though it is not in that group. It
 is refused without that group, with the clause naming each sign-in input still unset; the sandbox
-and `iapAudience` refuse it by name. Each entry must be one Dispatch takes: lowercase, taken by
-IDNA lookup, written in Unicode (`bücher.example`) or as its A-labels (`xn--bcher-kva.example`),
-and then a DNS name of two labels or more, each of at most 63 characters, at most 253 characters
-in all. An empty entry, or any other, is refused naming its index. With it unset the component
+and `iapAudience` refuse it by name. Each entry must be one Dispatch takes once it trims the
+entry's surrounding whitespace, as it does: lowercase, taken by IDNA lookup, written in Unicode
+(`bücher.example`) or as its A-labels (`xn--bcher-kva.example`), and then a DNS name of two labels
+or more, each of at most 63 characters, at most 253 characters in all. The entries render trimmed.
+An empty entry, or any other, is refused naming its index. With it unset the component
 renders exactly what it rendered before it existed. An `envoyImage` whose `envoy-dispatch`
 predates the setting ignores it.
 
@@ -1555,9 +1556,10 @@ paragraph above states for each label of that origin's host, since the front doo
 `<hostname>.<tailnetDnsName>` on a certificate. It refuses a hostname that breaks that rule in
 every mode, so a stack in the cluster-only mode or the sandbox keeps a hostname a front door can
 later serve, and before any resource registers. The component also refuses invalid tailnet DNS
-names, tags, image references, a `signInDomain` Dispatch would refuse at its boot (any but a
-lowercase DNS name in ASCII of two labels or more, each of at most 63 characters, at most 253 in
-all, the rule `signInWorkspaceDomains` entries are held to once IDNA lookup has made them ASCII), a
+names, tags, image references, a `signInDomain` Dispatch would refuse at its boot (any whose text,
+trimmed of surrounding whitespace as Dispatch trims it, is not a lowercase DNS name in ASCII of two
+labels or more, each of at most 63 characters, at most 253 in all, the rule `signInWorkspaceDomains`
+entries are held to once IDNA lookup has made them ASCII; the domain renders trimmed), a
 `signInClientId` of whitespace alone, which Dispatch trims to nothing and refuses to boot without,
 namespaces, allowed namespaces, an `appCpu`, `appMemory`, `proxyCpu`, `proxyMemory`,
 `appEphemeralStorage` or `proxyEphemeralStorage` outside

@@ -616,17 +616,22 @@ func TestDispatchResolverRefusesInvalidInputs(t *testing.T) {
 			a.ProxyCpu = pulumi.StringRef("200m")
 			a.ProxyMemory = pulumi.StringRef("255Mi")
 		}, err: []string{`appMemory "256Mi" and proxyMemory "255Mi"`, "at least 512Mi together", "Autopilot raises"}},
-		{name: "a proxy CPU above Autopilot's pod ceiling with the app's", input: "appCpu", edit: func(a *gcp.DispatchArgs) {
+		// Where the consumer set only the proxy's size, the refusal's input is the proxy's.
+		{name: "a proxy CPU above Autopilot's pod ceiling with the app's", input: "proxyCpu", edit: func(a *gcp.DispatchArgs) {
 			a.ProxyCpu = pulumi.StringRef("29001m")
 			a.ProxyMemory = pulumi.StringRef("60Gi")
 		}, err: []string{`appCpu "1" and proxyCpu "29001m"`, "at most 30 CPU together", "rejects"}},
-		{name: "a proxy memory above Autopilot's pod ceiling with the app's", input: "appMemory", edit: func(a *gcp.DispatchArgs) {
+		{name: "a proxy memory above Autopilot's pod ceiling with the app's", input: "proxyMemory", edit: func(a *gcp.DispatchArgs) {
 			a.AppCpu = pulumi.StringRef("10")
 			a.ProxyCpu = pulumi.StringRef("10")
 			a.ProxyMemory = pulumi.StringRef("107Gi")
 		}, err: []string{`appMemory "4Gi" and proxyMemory "107Gi"`, "at most 110Gi together", "rejects"}},
 		{name: "proxy CPU raised without memory to match", input: "appMemory", edit: func(a *gcp.DispatchArgs) { a.ProxyCpu = pulumi.StringRef("8") }, err: []string{`appCpu "1", appMemory "4Gi", proxyCpu "8" and proxyMemory "2Gi"`, "between 1 and 6.5 GiB of memory per CPU"}},
 		{name: "proxy memory raised without CPU to match", input: "appCpu", edit: func(a *gcp.DispatchArgs) { a.ProxyMemory = pulumi.StringRef("10Gi") }, err: []string{`appCpu "1", appMemory "4Gi", proxyCpu "1" and proxyMemory "10Gi"`, "between 1 and 6.5 GiB of memory per CPU"}},
+		{name: "too little memory per CPU with only the proxy's memory set", input: "proxyMemory", edit: func(a *gcp.DispatchArgs) {
+			a.ProxyCpu = pulumi.StringRef("5")
+			a.ProxyMemory = pulumi.StringRef("512Mi")
+		}, err: []string{`appCpu "1", appMemory "4Gi", proxyCpu "5" and proxyMemory "512Mi"`, "between 1 and 6.5 GiB of memory per CPU"}},
 		{name: "an app ephemeral storage that is not a quantity", input: "appEphemeralStorage", edit: func(a *gcp.DispatchArgs) { a.AppEphemeralStorage = pulumi.StringRef("4 GiB") }, err: []string{`appEphemeralStorage "4 GiB"`, "Kubernetes quantity"}},
 		{name: "a proxy ephemeral storage with trailing whitespace", input: "proxyEphemeralStorage", edit: func(a *gcp.DispatchArgs) { a.ProxyEphemeralStorage = pulumi.StringRef("1Gi ") }, err: []string{`proxyEphemeralStorage "1Gi "`, "Kubernetes quantity"}},
 		{name: "an empty app ephemeral storage", input: "appEphemeralStorage", edit: func(a *gcp.DispatchArgs) { a.AppEphemeralStorage = pulumi.StringRef("") }, err: []string{"appEphemeralStorage is empty", "leave it unset for Autopilot's default of 1Gi"}},
@@ -640,7 +645,7 @@ func TestDispatchResolverRefusesInvalidInputs(t *testing.T) {
 			a.ProxyEphemeralStorage = pulumi.StringRef("4Mi")
 		}, err: []string{`appEphemeralStorage "5Mi" and proxyEphemeralStorage "4Mi"`, "at least 10Mi together", "Autopilot raises"}},
 		{name: "an app ephemeral storage above Autopilot's pod ceiling beside the proxy's default", input: "appEphemeralStorage", edit: func(a *gcp.DispatchArgs) { a.AppEphemeralStorage = pulumi.StringRef("9217Mi") }, err: []string{`appEphemeralStorage "9217Mi" and proxyEphemeralStorage unset (Autopilot's 1Gi)`, "at most 10Gi together", "rejects"}},
-		{name: "a proxy ephemeral storage above Autopilot's pod ceiling beside the app's default", input: "appEphemeralStorage", edit: func(a *gcp.DispatchArgs) { a.ProxyEphemeralStorage = pulumi.StringRef("10Gi") }, err: []string{`appEphemeralStorage unset (Autopilot's 1Gi) and proxyEphemeralStorage "10Gi"`, "at most 10Gi together", "rejects"}},
+		{name: "a proxy ephemeral storage above Autopilot's pod ceiling beside the app's default", input: "proxyEphemeralStorage", edit: func(a *gcp.DispatchArgs) { a.ProxyEphemeralStorage = pulumi.StringRef("10Gi") }, err: []string{`appEphemeralStorage unset (Autopilot's 1Gi) and proxyEphemeralStorage "10Gi"`, "at most 10Gi together", "rejects"}},
 		{name: "an Azure endpoint without its quota", input: "azureEmbedTokensPerMinute", edit: func(a *gcp.DispatchArgs) {
 			setAzureKey(a)
 			a.AzureEmbedTokensPerMinute = nil
@@ -2468,6 +2473,7 @@ func TestDispatchRefusesABlankSecretOnceItResolves(t *testing.T) {
 				_, err := runDispatch(t, args, true)
 				require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: "+input.name+
 					" is blank, which no credential is")
+				requireInputError(t, err, input.name)
 			})
 		}
 	}

@@ -43,6 +43,9 @@ func TestDispatchSignInWorkspaceDomainsRenderWithSignIn(t *testing.T) {
 		{"one entry", "DISPATCH_SIGNIN_DOMAIN", "example.net", withWorkspaceDomains(dispatchArgs, "example.net")},
 		{"internationalized entries", "DISPATCH_SIGNIN_DOMAIN", "bücher.example,xn--bcher-kva.example.net",
 			withWorkspaceDomains(dispatchArgs, "bücher.example", "xn--bcher-kva.example.net")},
+		// Dispatch trims each entry, so the component takes a padded one and renders it trimmed.
+		{"entries with surrounding whitespace", "DISPATCH_SIGNIN_DOMAIN", "example.net,example.org",
+			withWorkspaceDomains(dispatchArgs, " example.net", "example.org\t")},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			m, err := runDispatch(t, row.args(), true)

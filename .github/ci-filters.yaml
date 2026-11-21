@@ -1584,6 +1584,7 @@ envoy_infra_go:
   - 'packages/envoy/infra/**'
   - '.github/scripts/go_build_tags.py'
   - *dispatch_server
+  - 'packages/envoy/cmd/dispatch/testdata/signin-domain-vectors.json'
   - *listener_command
   - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/internal/cmdtest/*'
