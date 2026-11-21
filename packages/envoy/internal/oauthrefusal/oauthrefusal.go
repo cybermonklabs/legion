@@ -1,15 +1,18 @@
-// Package oauthrefusal holds the rules this module reads an OAuth token endpoint's answer by. The
-// status alone decides whether the endpoint answered: a 5xx, a 408 and a 429 are a server that
-// could not answer now (Outage), as no answer at all is, and every other answer is the endpoint
-// answering, whatever its body says; among those, a refusal is a 4xx (Refuses), and its
-// OAuth error code (RFC 6749 section 5.2) only names the refusal's reason (Refusal). Ending a grant
-// is narrower still (EndsGrant). Every reader of a token endpoint's answer that decides something
-// on it - a sign-in refused, a client rejected, a login denied or ended - reads it through these,
-// so each rule has one definition, but one: the broker client's device flow
-// (internal/cipherclient/device.go, DeviceFlow.Refresh) still ends a sign-in on invalid_grant at
-// any status, until the pull request stacked on this one moves it to EndsGrant. The broker's
-// minters read GitHub's and Google's statuses by Refuses too (internal/cipher/secrets,
-// mintStatusError), beside their own rate-limit reading. It imports only the standard library and
+// Package oauthrefusal holds the rules this module reads an OAuth token endpoint's answer by, and
+// the one transport that records the answer for them (Recorder). The status alone decides whether
+// the endpoint answered, once the answer arrived whole: a 5xx, a 408 and a 429 are a server that
+// could not answer now (Outage), as an answer cut off before its body read whole and no answer at
+// all are, and every other answer is the endpoint answering, whatever its body says; among those,
+// a refusal is a 4xx (Refuses), and its OAuth error code (RFC 6749 section 5.2) only names the
+// refusal's reason (Refusal). Ending a grant is narrower still (EndsGrant). Every reader of a token
+// endpoint's answer that decides something on it - a sign-in refused, a client rejected, a login
+// denied or ended - reads it through these, so each rule has one definition, but two readers that
+// still end a person's sign-in on invalid_grant at any status, a 5xx included, until the pull
+// request stacked on this one moves both to the 400/401 rule: the broker client's device flow
+// (internal/cipherclient/device.go, DeviceFlow.Refresh) and the TypeScript broker client
+// (packages/cipher-client/src/person-identity.ts). The broker's minters read GitHub's and Google's
+// statuses by Refuses and Outage too (internal/cipher/secrets, mintStatusError and classify),
+// beside their own rate-limit reading. It imports only the standard library and
 // golang.org/x/oauth2, so a command that links no OpenID Connect verifier can use it.
 package oauthrefusal
 
