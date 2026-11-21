@@ -41,7 +41,10 @@ func xidSoftirqsOf(counts map[string]int64) XidSoftirqs {
 // a gap, a gap of the code's own network sends - hundreds counted - is still held to 7.4 ms, and a
 // gap the code slept past the bound breaks it whatever its CPU ran. A gap uncounted, one whose CPU
 // ran only the tick's softirqs, and one on a kernel that accounts interrupt time apart keep the
-// 5 ms bound. Rule 2 holds the gaps to the statements and the same time.
+// 5 ms bound. Rule 2 holds the gaps to the statements and the time all the window's gaps' softirqs
+// may hold, which is at most 2.4 ms for the window, however many of its gaps counted one: with
+// that cap planted out two gaps of the code's own sends hold 4.8 ms, and with each gap's hold
+// counted twice a 0.6 ms excess passes on a 0.5 ms hold.
 func TestAGapsDeviceSoftirqsHoldOnlyTheirMeasuredTime(t *testing.T) {
 	RequireXidGapJudgment(t)
 	charged := true
@@ -85,6 +88,12 @@ func TestAGapsDeviceSoftirqsHoldOnlyTheirMeasuredTime(t *testing.T) {
 		{"gaps 0.6 ms over their statements, the counted gap holding 0.2 ms",
 			xidJudgedWindow(ms(2), cpuGap(2.4, nil), cpuGap(0.2, map[string]int64{"NET_RX": 1})), ms(0.2),
 			"its gaps take 2.600 ms, more than its statements' 2.000 ms and the 0.200 ms their CPU's device softirqs may hold", true},
+		{"gaps 0.6 ms over their statements, a counted gap holding 0.5 ms",
+			xidJudgedWindow(ms(2), cpuGap(2.1, nil), cpuGap(0.5, map[string]int64{"NET_RX": 1})), ms(0.5),
+			"its gaps take 2.600 ms, more than its statements' 2.000 ms and the 0.500 ms their CPU's device softirqs may hold", true},
+		{"two gaps of the code's own sends, each holding 2.4 ms, the window 2.4 ms",
+			xidJudgedWindow(ms(2), cpuGap(3, own), cpuGap(3, own)), ms(4.8),
+			"its gaps take 6.000 ms, more than its statements' 2.000 ms and the 2.400 ms their CPU's device softirqs may hold", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			charged = test.charged
@@ -103,5 +112,19 @@ func TestAGapsDeviceSoftirqsHoldOnlyTheirMeasuredTime(t *testing.T) {
 				t.Errorf("the window breaks %q, want %q\n%s", broken, test.broken, test.window.Detail())
 			}
 		})
+	}
+}
+
+// The kernel keeps each softirq count in 32 bits and prints it unsigned, so a count that wrapped
+// inside a gap reads less after the gap than before it. The gap still counts the runs between:
+// 4294967290 before and 5 after is 11 runs, not a negative count that would hold no time.
+func TestASoftirqCountThatWrappedInAGapReadsItsRuns(t *testing.T) {
+	var before, after XidStatement
+	before.endedIRQ = xidSoftirqReading{counts: xidSoftirqsOf(map[string]int64{"NET_RX": 4294967290, "TIMER": 7}), cpu: 3, ok: true}
+	after.startedIRQ = xidSoftirqReading{counts: xidSoftirqsOf(map[string]int64{"NET_RX": 5, "TIMER": 9}), cpu: 3, ok: true}
+	gap := XidGap{Read: true}
+	countGap(&gap, before, after)
+	if want := xidSoftirqsOf(map[string]int64{"NET_RX": 11, "TIMER": 2}); !gap.Counted || gap.Softirqs != want {
+		t.Fatalf("a NET_RX count that wrapped from 4294967290 to 5 read %s (counted: %t), want %s", gap.Softirqs, gap.Counted, want)
 	}
 }

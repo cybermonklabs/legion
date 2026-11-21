@@ -3,6 +3,7 @@ package storetest
 import (
 	"fmt"
 	"strings"
+	"testing"
 	"time"
 )
 
@@ -102,8 +103,19 @@ func (s XidSoftirqs) String() string {
 
 // xidInterruptTimeCharged reports whether this kernel charges a CPU's interrupt time to the
 // thread the interrupt lands on (xidReadInterruptTimeCharged). Only there can a gap's softirqs
-// hold any of its time. A variable so that the test of the widened bound can name either kernel.
+// hold any of its time. A variable so that a test can name either kernel (XidChargeInterruptTime).
 var xidInterruptTimeCharged = xidReadInterruptTimeCharged
+
+// XidChargeInterruptTime makes the rig judge t's windows as on a kernel that charges interrupt
+// time to the thread it lands on, whatever this kernel does, until t ends. A test of the widened
+// bound calls it, so that the bound it holds is the one it tests on every kernel, one that
+// accounts interrupt time apart included. Tests in this repository do not run window tests in
+// parallel.
+func XidChargeInterruptTime(t testing.TB) {
+	t.Helper()
+	xidInterruptTimeCharged = func() bool { return true }
+	t.Cleanup(func() { xidInterruptTimeCharged = xidReadInterruptTimeCharged })
+}
 
 // xidSoftirqReading is one reading of the softirq counts of the CPU a held thread is pinned to
 // (readXidSoftirqs): the counts, the CPU, and the thread's CPU time the read took, which is the
@@ -117,7 +129,9 @@ type xidSoftirqReading struct {
 }
 
 // countGap fills in gap's softirq counts from before's end reading to after's start reading, where
-// both were taken on one CPU of a gap read off its thread's clocks.
+// both were taken on one CPU of a gap read off its thread's clocks. The kernel keeps each count in
+// 32 bits (kstat's softirqs, an unsigned int) and prints it unsigned, so a count that wrapped in
+// the gap reads less after than before; the difference is taken in 32 bits, which reads it right.
 func countGap(gap *XidGap, before, after XidStatement) {
 	from, to := before.endedIRQ, after.startedIRQ
 	if !gap.Read || !from.ok || !to.ok || from.cpu != to.cpu {
@@ -126,7 +140,7 @@ func countGap(gap *XidGap, before, after XidStatement) {
 	gap.Counted = true
 	gap.SoftirqCPU = from.cpu
 	for i := range gap.Softirqs {
-		gap.Softirqs[i] = to.counts[i] - from.counts[i]
+		gap.Softirqs[i] = int64(uint32(to.counts[i] - from.counts[i]))
 	}
 }
 

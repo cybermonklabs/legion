@@ -40,8 +40,12 @@ import (
 // no xid to judge (MayHoldNoXid). Inside the window the rig checks two things. Its shape, in
 // every build: the window holds at most the statements the measurement declared (XidShape), and
 // nothing else. And, where the build judges a window's time at all (XidJudgesGaps), D6 of the
-// INFRA-636 plan: every statement-free gap is at most XidMaxGap, and the gaps together take no
-// longer than the statements do.
+// INFRA-636 plan: every statement-free gap is at most its bound (XidGap.Bound), and the gaps
+// together take no longer than the statements do and the time their CPUs' device softirqs may
+// hold. A gap's bound is XidMaxGap, widened, on a kernel that charges interrupt time to the thread
+// it lands on, by the time the device softirqs its CPU ran may have put on its thread
+// (XidGap.SoftirqHold); a window's gaps hold at most XidSoftirqGapHold together for rule 2. Both
+// widenings come from one measurement (xidwindow_softirq.go).
 //
 // A gap is judged by the time the code made in it (XidGap.Made), not by the time it took on the
 // clock. On a loaded machine the clock reads the machine: a thread kept waiting for a CPU, or a
@@ -65,7 +69,9 @@ import (
 // machine's, and the rest - the time the thread ran, and the time the goroutine waited on
 // something it asked for or sat in a blocking system call - is the code's. A sleep, a lock, a
 // channel or a document call in the window is in that rest, and a machine that is merely busy is
-// not.
+// not; on a kernel that charges interrupt time to the thread it lands on, up to
+// XidSoftirqGapHold of a gap's CPU time beside a counted device softirq is not counted against
+// the code (XidGap.SoftirqHold).
 //
 // Which transactions are judged is decided by context, not guessed from timing: the caller marks
 // the context its operation runs under (MarkXid) and the tracer marks every statement whose
@@ -76,7 +82,8 @@ import (
 // but never the verdict.
 
 // XidMaxGap is the longest statement-free gap D6 allows the code to make inside an xid window
-// (XidGap.Made), in a build that judges a window's time at all (XidJudgesGaps).
+// (XidGap.Made), in a build that judges a window's time at all (XidJudgesGaps), beside the time a
+// gap's CPU's device softirqs may hold (XidGap.Bound).
 const XidMaxGap = 5 * time.Millisecond
 
 // XidFaultGap is the statement-free gap the rig's deliberate-fault self-tests inject behind the
@@ -89,11 +96,10 @@ const XidFaultGap = 20 * time.Millisecond
 // XidJudgesGaps reports whether this build judges how long a window's statement-free gaps are.
 // A plain build judges them only when its thread-clock probe can read the calling thread's clocks.
 // That probe is read once at run time (xidThreadClocksUnavailable): Linux kernels do not all expose
-// schedstat. It holds the process's memory once to learn whether it can (xidHoldMemory), and on a
-// machine NUMA balancing runs on that hold's MPOL_LOCAL policy on every private writable mapping
-// lasts for the rest of the process's life: nothing puts it back. A build with the race detector
-// does not judge gaps, and the build tag is the only thing that says so (raceDetector); where
-// either makes gap judgment unavailable, the rig holds window shape alone, as the race build does.
+// schedstat. The probe holds the process's memory once, and that hold lasts (xidHoldMemory). A
+// build with the race detector does not judge gaps, and the build tag is the only thing that says
+// so (raceDetector); where either makes gap judgment unavailable, the rig holds window shape alone,
+// as the race build does.
 //
 // The reason for the race build is that under the race detector no bound can tell what it is
 // meant to tell. The detector's instrumentation and the scheduling it forces leave a goroutine off
@@ -312,8 +318,7 @@ func (x *XidTracer) end(ctx context.Context, tag pgconn.CommandTag) {
 // of NUMA balancing meanwhile (xidHoldThread), opens the thread's clock for the transaction's
 // readings and pins the thread to the CPU it is on, with that CPU's softirq counts open beside its
 // clock (xidWatchThreadClock), and holds the process's memory still (xidHoldMemory): out of NUMA
-// balancing, with the execution tracer's pages present. The memory's NUMA policy is never put
-// back: it lasts for the rest of the process's life, as the thread-clock probe's own hold does.
+// balancing, with the execution tracer's pages present, a hold that lasts (xidHoldMemory says how).
 // All of it runs inside the BEGIN, which no window holds. A build that judges no gap does none of
 // that hold, since it reads no gap's clocks. A thread locked to a goroutine runs that goroutine
 // and no other, so every gap between two statements the goroutine sends from it is read off
@@ -459,7 +464,10 @@ func (w XidWindow) Length() time.Duration { return w.End.Sub(w.Start) }
 // asserts of its own window. Rule 1 holds each gap to its own bound (XidGap.Bound): XidMaxGap,
 // and beside it, where the gap's CPU ran a device softirq on a kernel that charges that time to
 // the thread it lands on, the time those softirqs may have put on the thread (XidGap.SoftirqHold).
-// Rule 2 holds the gaps to the statements and the same softirq time.
+// Rule 2 holds the gaps to the statements and the time all the window's gaps' softirqs may hold,
+// at most XidSoftirqGapHold for the window: the measurement that sets that value is of one 5 ms
+// stretch of one CPU, and a sum of each gap's own p99.99 would be far looser than the p99.99 of
+// the gaps' sum.
 func (w XidWindow) Violations() []string {
 	if !XidJudgesGaps() {
 		return nil
@@ -479,6 +487,7 @@ func (w XidWindow) Violations() []string {
 		broken = append(broken, fmt.Sprintf("a statement-free gap of %s (over %s) follows statement %d: %s",
 			XidMillis(gap.Made()), over, i, xidSQL(w.Statements[i].SQL)))
 	}
+	held = min(held, XidSoftirqGapHold)
 	if w.GapTime > w.StatementTime+held {
 		also := ""
 		if held > 0 {
