@@ -126,7 +126,7 @@ const (
 	maxHostName = 253
 	// citationReach is the most of a body before an issue path that citesGitHubIssue reads: up to
 	// maxHostName digits of a port, the colon before them, and up to maxHostName bytes of the run
-	// before that (authorityBefore). readCitedIssues hands each decision no more of the body than
+	// before that (authorityBefore). citedIssues hands each decision no more of the body than
 	// that and the path itself, so citesGitHubIssue, as it is or as a later change makes it, reads
 	// no more than citationReach bytes before a path however long the body is.
 	citationReach = 2*maxHostName + 1
@@ -134,7 +134,7 @@ const (
 
 // citesGitHubIssue says whether the issue path running from pathAt to the end of text belongs
 // to a URL whose host is github.com. text is the part of a body that ends where the path does and
-// starts at most citationReach bytes before the path (readCitedIssues). It asks one question, and
+// starts at most citationReach bytes before the path (citedIssues). It asks one question, and
 // it is the question the alert this file was changed for asks: what is the host of the URL this
 // path hangs off?
 //
@@ -196,7 +196,7 @@ func isHostByte(b byte) bool {
 func attributionInputsFrom(facts attributionFacts) AttributionInputs {
 	return AttributionInputs{
 		TitleKeys:   uniqueKeys(facts.Title + "\n" + facts.Body),
-		CitedIssues: citedIssues(facts.Repo, facts.Body),
+		CitedIssues: citedIssues(facts.Repo, citebody.New(facts.Body, nil)),
 		BranchKeys:  uniqueKeys(strings.ToUpper(facts.HeadRef)),
 		CommitKeys:  uniqueKeys(strings.Join(facts.CommitMessages, "\n")),
 	}
@@ -216,16 +216,12 @@ func appendUnique(list []string, values ...string) []string {
 }
 
 // citedIssues is every GitHub issue body cites, as https://github.com/<owner>/<repo>/issues/<n>,
-// in the order the citations appear; a bare #N names an issue of repo.
-func citedIssues(repo, body string) []string {
-	return readCitedIssues(repo, citebody.New(body, nil))
-}
-
-// readCitedIssues is citedIssues over a body it reaches only through citebody's counted reads, so
-// the cost tests can count every byte it reads (citebody.Reads); citedIssues counts nothing. Each
-// path's decision gets the body from citationReach bytes before the path to the path's end, the
-// most it reads, so its cost is bounded per path whatever the body holds before it.
-func readCitedIssues(repo string, body citebody.Body) []string {
+// in the order the citations appear; a bare #N names an issue of repo. It reaches the body only
+// through citebody's counted reads, so the cost tests can count every byte it reads
+// (citebody.Reads); its production caller wraps the body with no counter, which counts nothing.
+// Each path's decision gets the body from citationReach bytes before the path to the path's end,
+// the most it reads, so its cost is bounded per path whatever the body holds before it.
+func citedIssues(repo string, body citebody.Body) []string {
 	type citation struct {
 		at  int
 		url string

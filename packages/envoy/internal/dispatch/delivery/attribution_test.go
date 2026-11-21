@@ -234,7 +234,7 @@ func TestCitedIssuesCreditsTheURLsOwnPath(t *testing.T) {
 		{"a host-byte run longer than a host name", strings.Repeat("a", 300) + ".github.com/acme/widgets/issues/7", nil},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			if got := citedIssues("acme/widgets", row.body); !slices.Equal(got, row.want) {
+			if got := citedIssues("acme/widgets", citebody.New(row.body, nil)); !slices.Equal(got, row.want) {
 				t.Errorf("citedIssues(%q) = %v, want %v", row.body, got, row.want)
 			}
 		})
@@ -252,7 +252,7 @@ func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
 	const cited = "https://github.com/acme/widgets/issues/7"
 	body := strings.Repeat("/a/b/issues/1", 1<<20/13) + ",github.com/acme/widgets/issues/7"
 	var reads citebody.Reads
-	got := readCitedIssues("acme/widgets", citebody.New(body, &reads))
+	got := citedIssues("acme/widgets", citebody.New(body, &reads))
 	t.Logf("a body of %d bytes: %+v", len(body), reads)
 	for _, problem := range holdToTheReader("a body of "+strconv.Itoa(len(body))+" bytes", body, reads) {
 		t.Error(problem)
@@ -261,7 +261,7 @@ func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
 		t.Fatalf("a body of %d bytes cites %v, want %s and nothing else", len(body), got, cited)
 	}
 	whole := "https://github.com/acme/widgets/issues/7" + strings.Repeat("x", 4096)
-	if got := citedIssues("acme/widgets", whole); len(got) != 0 {
+	if got := citedIssues("acme/widgets", citebody.New(whole, nil)); len(got) != 0 {
 		t.Fatalf("a path running past the issue number cites %v, want nothing", got)
 	}
 }

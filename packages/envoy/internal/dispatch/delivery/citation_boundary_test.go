@@ -127,7 +127,7 @@ func TestCitedIssuesReadsAURLAsAURL(t *testing.T) {
 		{name: "inside CJK text with no space in it", body: "参照https://github.com/acme/widgets/issues/7です。", credit: true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			urls := citedIssues(repo, row.body)
+			urls := citedIssues(repo, citebody.New(row.body, nil))
 			if row.credit {
 				if len(urls) != 1 || urls[0] != cited {
 					t.Errorf("citedIssues(%q, %q) = %v, want %s and nothing else", repo, row.body, urls, cited)
@@ -194,7 +194,7 @@ func TestCitedIssuesCreditsEveryCitationItsWordEnds(t *testing.T) {
 		{name: "another host's path, plain", body: "See https://example.test/github.com/acme/widgets/issues/7 here.", want: []string{seven}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			if urls := citedIssues(repo, row.body); !slices.Equal(urls, row.want) {
+			if urls := citedIssues(repo, citebody.New(row.body, nil)); !slices.Equal(urls, row.want) {
 				t.Errorf("citedIssues(%q, %q) = %v, want %v", repo, row.body, urls, row.want)
 			}
 		})
@@ -214,8 +214,8 @@ func TestCitedIssuesCostsNoMoreForACitationFarFromASpace(t *testing.T) {
 	const repo = "acme/widgets"
 	bySpace, byComma := citationsFarFromASpace()
 	var space, comma citebody.Reads
-	readCitedIssues(repo, citebody.New(bySpace, &space))
-	readCitedIssues(repo, citebody.New(byComma, &comma))
+	citedIssues(repo, citebody.New(bySpace, &space))
+	citedIssues(repo, citebody.New(byComma, &comma))
 	t.Logf("separated by spaces %+v, by commas %+v", space, comma)
 	for _, problem := range append(holdToTheReader("the citations separated by spaces", bySpace, space), holdToTheReader("the citations separated by commas", byComma, comma)...) {
 		t.Error(problem)
@@ -235,7 +235,7 @@ func citationsFarFromASpace() (bySpace, byComma string) {
 }
 
 // TestTheReaderCountsAScanBackFromEachPath is the cost rows' control. A reading that scans back
-// from each issue path to the nearest whitespace, as a change to readCitedIssues could, can reach
+// from each issue path to the nearest whitespace, as a change to citedIssues could, can reach
 // the bytes before the path only by asking the Body for them, so holdToTheReader names it: here
 // over the comma body, where the scan needs the body back to its start at every path.
 func TestTheReaderCountsAScanBackFromEachPath(t *testing.T) {
@@ -245,7 +245,7 @@ func TestTheReaderCountsAScanBackFromEachPath(t *testing.T) {
 	for _, match := range body.Find(githubIssuePath) {
 		strings.LastIndexAny(body.Span(0, match[0]), " \t\r\n")
 	}
-	readCitedIssues("acme/widgets", body)
+	citedIssues("acme/widgets", body)
 	problems := holdToTheReader("the comma body read back from each path", byComma, reads)
 	t.Logf("%+v: %q", reads, problems)
 	if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, "one span handed") }) {
@@ -292,19 +292,19 @@ func TestCitedIssuesReadsAHostNameOfAHostNamesLength(t *testing.T) {
 	const cited = "https://github.com/acme/widgets/issues/7"
 	t.Run("a citation after a word of 65,533 bytes", func(t *testing.T) {
 		body := strings.Repeat("a", 65533) + " https://github.com/acme/widgets/issues/7"
-		if urls := citedIssues(repo, body); len(urls) != 1 || urls[0] != cited {
+		if urls := citedIssues(repo, citebody.New(body, nil)); len(urls) != 1 || urls[0] != cited {
 			t.Errorf("citedIssues over a 65,533-byte word = %v, want %s and nothing else", urls, cited)
 		}
 	})
 	t.Run("a host name of 65,533 bytes is no host name", func(t *testing.T) {
 		body := strings.Repeat("a", 65533) + "github.com/acme/widgets/issues/7"
-		if urls := citedIssues(repo, body); len(urls) != 0 {
+		if urls := citedIssues(repo, citebody.New(body, nil)); len(urls) != 0 {
 			t.Errorf("citedIssues over a 65,533-byte host name = %v, want none", urls)
 		}
 	})
 	t.Run("more digits after the colon than a host name is long leaves no host", func(t *testing.T) {
 		body := "See https://github.com:" + strings.Repeat("4", 300) + "/acme/widgets/issues/7 here."
-		if urls := citedIssues(repo, body); len(urls) != 0 {
+		if urls := citedIssues(repo, citebody.New(body, nil)); len(urls) != 0 {
 			t.Errorf("citedIssues over 300 digits after the colon = %v, want none: past a host name's length there is no host left to read", urls)
 		}
 	})

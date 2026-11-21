@@ -11,7 +11,7 @@ import (
 )
 
 // TestEveryCitationIsDecidedWithinItsReachAsOverTheWholeBody is the differential of
-// citationReach. readCitedIssues hands each path's decision the body from citationReach bytes
+// citationReach. citedIssues hands each path's decision the body from citationReach bytes
 // before the path; before, it handed the whole body up to the path's end. Over a generated corpus
 // (reachCorpus) the row holds, for every issue path the finder answers:
 //
@@ -37,7 +37,7 @@ func TestEveryCitationIsDecidedWithinItsReachAsOverTheWholeBody(t *testing.T) {
 	for i, body := range reachCorpus() {
 		bodies++
 		var reads citebody.Reads
-		got := readCitedIssues(repo, citebody.New(body, &reads))
+		got := citedIssues(repo, citebody.New(body, &reads))
 		if want := citedIssuesOverTheWholeBody(repo, body); !slices.Equal(got, want) {
 			fail("body %d (%d bytes) cites %v within the reach and %v over the whole body: %.300q", i, len(body), got, want, body)
 		}
@@ -79,7 +79,7 @@ func TestEveryCitationIsDecidedWithinItsReachAsOverTheWholeBody(t *testing.T) {
 			span(match[3] - match[2])
 		}
 		if reads != want {
-			fail("body %d: readCitedIssues read %+v, want %+v: the reach before each path or the body before it where that is shorter, the path, and each credited citation's parts", i, reads, want)
+			fail("body %d: citedIssues read %+v, want %+v: the reach before each path or the body before it where that is shorter, the path, and each credited citation's parts", i, reads, want)
 		}
 	}
 	t.Logf("%d bodies, %d paths: %d decided over a reach that cut the body, %d of those found another authority over a reach one byte shorter; %d credited, %d refused", bodies, paths, cut, shorterDiffers, credited, refused)

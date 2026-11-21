@@ -1,8 +1,9 @@
 // Package citebody holds a pull request body that delivery's citation reading reaches only
-// through Body's methods, each of which counts what it reads. The text is unexported, so no code
-// outside this package can read a byte of it without a count: a scan back from an issue path has
-// to ask Span for the bytes it scans, and delivery's cost rows hold the counts to a bound that
-// such a scan cannot meet.
+// through Body's methods, each of which counts the bytes it hands out. The text is unexported, so
+// no code outside this package can read a byte of it without a count, short of reflect or unsafe:
+// a scan back from an issue path has to ask Span for the bytes it scans, and delivery's cost rows
+// hold the counts to a bound that such a scan cannot meet. What a reader does with bytes it was
+// handed is not counted.
 package citebody
 
 import "regexp"
