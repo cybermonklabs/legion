@@ -32,8 +32,8 @@
       A reload fires beforeunload itself, so that handler does not spend the budget again for the
       same failure. Storage that cannot be read or written reloads nothing, since nothing would
       bound the reloads.
-      Dispatch's one Content-Security-Policy, frame-ancestors 'none' at its outside origin, limits
-      no script; a policy that did would have to allow this script by its hash.
+      Dispatch's one Content-Security-Policy, at its outside origin, names no script source, so
+      it limits no script; a policy that did would have to allow this script by its hash.
     -->
     <script>
       (() => {

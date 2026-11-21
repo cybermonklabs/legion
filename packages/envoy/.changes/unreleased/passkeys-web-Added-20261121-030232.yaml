@@ -4,10 +4,11 @@ body: |-
   takes, `invitation`: `{project, made_by}`, the key of the project the link is for and the login
   of the owner who made it, which the enrollment page names before the person makes a passkey.
   At `DISPATCH_OUTSIDE_ORIGIN` every dashboard answer carries `Content-Security-Policy:
-  frame-ancestors 'none'` and `X-Frame-Options: DENY`, so no page of another site frames the
-  enrollment page or the passkey sign-in. `GET /auth/whoami`'s `401 NO_IDENTITY` at
-  `DISPATCH_OUTSIDE_ORIGIN` carries `"sign_in":"passkey"` with passkey sign-in off too, so the
-  outside origin's sign-in page never offers a Google sign-in.
+  frame-ancestors 'none'; object-src 'none'; base-uri 'none'` and `X-Frame-Options: DENY`, so no
+  page of another site frames the enrollment page or the passkey sign-in. `GET /auth/whoami`'s
+  `401 NO_IDENTITY` at `DISPATCH_OUTSIDE_ORIGIN` carries `"sign_in":"passkey"` with passkey
+  sign-in off too, so the outside origin's sign-in page never offers a Google sign-in, unless
+  `DISPATCH_SIGNIN_OUTSIDE=1` signs people from outside in with Google there.
 time: 2026-11-21T03:02:32Z
 custom:
     Issue: passkeys-web

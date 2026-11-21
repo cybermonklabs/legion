@@ -787,9 +787,10 @@ const (
 	// assetCacheControl lets a browser keep a hashed asset for a year without asking.
 	assetCacheControl = "public, max-age=31536000, immutable"
 	// outsideContentSecurityPolicy is the outside origin's dashboard answers' policy: no page
-	// frames them. It limits nothing else, so the page's inline script runs as it does at the
-	// canonical origin, which sends no policy.
-	outsideContentSecurityPolicy = "frame-ancestors 'none'"
+	// frames them, they load no plugin object, and no <base> element moves where their relative
+	// URLs point. It names no script or style source, so the page's inline script runs as it does
+	// at the canonical origin, which sends no policy.
+	outsideContentSecurityPolicy = "frame-ancestors 'none'; object-src 'none'; base-uri 'none'"
 )
 
 func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {

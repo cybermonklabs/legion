@@ -4372,7 +4372,7 @@ Every server process publishes its dashboard build's assets into the database at
 it never reads `index.html` or a non-asset path from there.
 A path no build published remains `404 {"error":"not found"}` and any other read failure is a 502 with no cache header.
 The dashboard's pages (`index.html` and the shell served for a browser route) carry `Cache-Control: no-cache` and an `ETag` of their bytes, no `Last-Modified`, and its hashed `/assets` files `public, max-age=31536000, immutable`, so a browser keeps no page from another build.
-At `DISPATCH_OUTSIDE_ORIGIN` every dashboard answer also carries `Content-Security-Policy: frame-ancestors 'none'` and `X-Frame-Options: DENY`, so no page of another site frames the enrollment page an owner's link opens or the passkey sign-in; the canonical origin's answers carry neither.
+At `DISPATCH_OUTSIDE_ORIGIN` every dashboard answer also carries `Content-Security-Policy: frame-ancestors 'none'; object-src 'none'; base-uri 'none'` and `X-Frame-Options: DENY`, so no page of another site frames the enrollment page an owner's link opens or the passkey sign-in, and the pages load no plugin object and take no `<base>`; the policy names no script source, so the page's inline script runs. The canonical origin's answers carry neither header.
 
 
 In this list, header identity means only the test/local harness mode described above.
@@ -4441,7 +4441,7 @@ Each item below names a path with its method and identity, then its purpose.
   The page starts its events subscription from that id.
   The sign-in check comes first: a caller who is not signed in is `401 NO_IDENTITY` and the head is never read.
   That 401 is `{"code":"NO_IDENTITY","error":"unauthorized"}`, except for a person from outside the domain whose sign-in the hourly confirmation ended, whose 401 here and on every route adds `reason` (`NOT_LISTED`, `OUTSIDE_SIGNIN_OFF` or `WORKSPACE_ADDRESS`) and `login`, their address, and says why in `error` (Identity, above).
-  At `DISPATCH_OUTSIDE_ORIGIN` that 401 also carries `"sign_in":"passkey"`, with `DISPATCH_SIGNIN_PASSKEY` on or off, so the outside origin's sign-in page offers the passkey and never a Google sign-in.
+  At `DISPATCH_OUTSIDE_ORIGIN` that 401 also carries `"sign_in":"passkey"`, with `DISPATCH_SIGNIN_PASSKEY` on or off, so the outside origin's sign-in page offers the passkey and never a Google sign-in, unless `DISPATCH_SIGNIN_OUTSIDE=1` signs people from outside in with Google there, where the 401 names no sign-in and the page offers that Google sign-in.
   A signed-in caller is `503 EVENT_HEAD_UNAVAILABLE` while no event id is proven final yet, which ends on its own and which the page asks again for, and `503 EVENT_HEAD_READ_FAILED` when the head cannot be read, which the page retries twice and then shows as an error.
 
 - `/auth/_dev/signin` (GET; none; `DISPATCH_DEV_SIGNIN=1` only; loopback peer, no forwarding header)

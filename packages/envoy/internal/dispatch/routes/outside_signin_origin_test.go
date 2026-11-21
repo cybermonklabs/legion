@@ -149,9 +149,10 @@ func TestOutsideSignInWhoamiAnswersBothOrigins(t *testing.T) {
 }
 
 // The outside origin's pages - the enrollment page an owner's link opens, the passkey sign-in at
-// its root - say no page may frame them, in both headers a browser reads that from. The canonical
-// origin's same pages carry neither, as before: the control that the reading tells the two origins
-// apart.
+// its root - say no page may frame them, in both headers a browser reads that from, and that they
+// load no plugin object and take no <base>. The policy is written out here rather than read from
+// the constant, so a change to it fails this row. The canonical origin's same pages carry neither
+// header, as before: the control that the reading tells the two origins apart.
 func TestTheOutsideOriginsPagesRefuseEveryFrame(t *testing.T) {
 	rig := newOriginRig(t, outsideRuleListingEveryone(), outsideOrigin)
 	webDist := t.TempDir()
@@ -161,7 +162,7 @@ func TestTheOutsideOriginsPagesRefuseEveryFrame(t *testing.T) {
 	rig.ctx.WebDistDir = webDist
 	for _, path := range []string{"/enroll", "/", "/projects/PRIV"} {
 		for origin, want := range map[string]struct{ policy, frameOptions string }{
-			outsideOrigin:   {policy: "frame-ancestors 'none'", frameOptions: "DENY"},
+			outsideOrigin:   {policy: "frame-ancestors 'none'; object-src 'none'; base-uri 'none'", frameOptions: "DENY"},
 			canonicalOrigin: {},
 		} {
 			response := httptest.NewRecorder()

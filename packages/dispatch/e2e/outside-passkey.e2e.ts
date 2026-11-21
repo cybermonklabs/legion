@@ -259,6 +259,14 @@ test.describe("outside passkey sign-in", () => {
         await expect.poll(() => sidebarProjects(outsiderPage)).toEqual(["PRIV"]);
       });
 
+      await test.step("alice's row, left open while the outsider enrolled, shows the passkey and no longer offers the used link", async () => {
+        const row = personRow(alicePage, outsider);
+        await expect(row.getByTestId("access-passkey")).toHaveCount(1);
+        await expect(
+          row.getByRole("textbox", { name: `Enrollment link for ${outsider}` })
+        ).toHaveCount(0);
+      });
+
       await test.step("the same link a second time is refused on the page, which links to the passkey sign-in", async () => {
         const alert = await refusedLink(strangerContext, link);
         await expect(alert).toHaveText(
@@ -312,7 +320,7 @@ test.describe("outside passkey sign-in", () => {
         await expect(outsiderPage.getByText(`Signed in as ${outsider}`)).toBeVisible();
       });
 
-      await test.step("a link past its 24 hours is refused on the page", async () => {
+      await test.step("a link past its 24 hours is refused on the page, and a reload says to open the link again", async () => {
         const expiring = await invite(alicePage, later);
         // The link as if alice had made it 25 hours ago: both of its times move, since the table
         // holds every link to expire after it was made.
@@ -322,6 +330,12 @@ test.describe("outside passkey sign-in", () => {
         const alert = await refusedLink(strangerContext, expiring);
         await expect(alert).toHaveText(
           "This link has expired. Ask the project's owner for a new one."
+        );
+        // The page took the token out of the address, so a reload has none: it says so, and does
+        // not call the link incomplete.
+        await reload(alert.page());
+        await expect(alert).toHaveText(
+          "This page no longer holds the link. Open it again from the project owner's message."
         );
       });
 
@@ -361,10 +375,10 @@ test.describe("outside passkey sign-in", () => {
           const answer = await request.get(`${outside}${path}`, { maxRedirects: 0 });
           expect(answer.status(), `GET ${outside}${path}`).toBe(404);
         }
-        // The outside origin's pages refuse every frame; the canonical origin's same page is the
-        // control, which sends neither header.
+        // The outside origin's pages refuse every frame, plugin object and <base>; the canonical
+        // origin's same page is the control, which sends neither header.
         for (const [origin, policy, frameOptions] of [
-          [outside, "frame-ancestors 'none'", "DENY"],
+          [outside, "frame-ancestors 'none'; object-src 'none'; base-uri 'none'", "DENY"],
           [canonical, undefined, undefined],
         ] as const) {
           const page = await request.get(`${origin}/enroll`);
@@ -372,6 +386,44 @@ test.describe("outside passkey sign-in", () => {
           expect(page.headers()["content-security-policy"], `GET ${origin}/enroll`).toBe(policy);
           expect(page.headers()["x-frame-options"], `GET ${origin}/enroll`).toBe(frameOptions);
         }
+        // The policy limits no script: under it the page's inline script runs, so an asset of
+        // the build that fails to load reloads the page once (web/index.html), and the browser
+        // reports no violation of the policy on either load. Each violation is written to the
+        // tab's sessionStorage, which the reload keeps.
+        const policed = await strangerContext.newPage();
+        await policed.addInitScript(() => {
+          document.addEventListener("securitypolicyviolation", (event) => {
+            const seen = window.sessionStorage.getItem("policy-violations") ?? "";
+            window.sessionStorage.setItem(
+              "policy-violations",
+              `${seen}${event.violatedDirective};`
+            );
+          });
+        });
+        await open(policed, `${outside}/enroll`);
+        await expect(policed.getByRole("heading", { name: "Enroll a passkey" })).toBeVisible();
+        expect(
+          await policed.evaluate(() => window.sessionStorage.getItem("policy-violations") ?? ""),
+          "the policy's violations on the first load"
+        ).toBe("");
+        const reloaded = policed.waitForEvent("load");
+        await policed.evaluate(() => {
+          const script = document.createElement("script");
+          script.src = `${window.location.origin}/assets/never-built-${Date.now()}.js`;
+          document.head.append(script);
+        });
+        await reloaded;
+        expect(
+          await policed.evaluate(
+            () => JSON.parse(window.sessionStorage.getItem("dispatch.chunk-reloads") ?? "[]").length
+          ),
+          "reloads the page's inline script made"
+        ).toBe(1);
+        expect(
+          await policed.evaluate(() => window.sessionStorage.getItem("policy-violations") ?? ""),
+          "the policy's violations on both loads"
+        ).toBe("");
+        await policed.close();
         for (const path of [
           "/auth/passkey/register/begin",
           "/auth/passkey/register/finish",
