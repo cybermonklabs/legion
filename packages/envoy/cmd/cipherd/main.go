@@ -454,11 +454,11 @@ func main() {
 
 	lease, sweep := time.Duration(cfg.LeaseSeconds)*time.Second, time.Duration(cfg.SweepSeconds)*time.Second
 	// The broker's one client of Dispatch's project access, nil where BROKER_PROJECT_ACCESS_URL
-	// is unset: the token exchange, an enrollment and a secret request each ask through it, so
-	// one cache of Dispatch's answers serves all three. It presents the broker's own projected
-	// ServiceAccount token for Dispatch's audience, read at call time through the reader every
-	// projected token here goes through, so a rotation needs no restart. config.Load holds the
-	// two settings to both or neither.
+	// is unset: the token exchange, an enrollment, a secret request, an approval, a release and
+	// every airlock connection ask through it, so one cache of Dispatch's answers serves them
+	// all. It presents the broker's own projected ServiceAccount token for Dispatch's audience,
+	// read at call time through the reader every projected token here goes through, so a
+	// rotation needs no restart. config.Load holds the two settings to both or neither.
 	var projects projectaccess.Access
 	if cfg.ProjectAccessURL != "" {
 		projects = projectaccess.New(cfg.ProjectAccessURL, ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)

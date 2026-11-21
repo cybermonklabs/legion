@@ -1362,8 +1362,8 @@ The judge's reads of Dispatch are the issue a reason names and the text of its s
 the ask it cites, with the broker's own projected ServiceAccount token, read again from its file
 once the copy it holds is 30 seconds old. Another, with the same token, is one GET of the issue a
 Legion worker pod's claim names, for its assignee alone ([Approvals](#approvals)); the reads of a
-person's project access and member kind, by the token exchange, an enrollment and a secret request,
-are the last, at `BROKER_PROJECT_ACCESS_URL`
+person's project access and member kind, by the token exchange, an enrollment, a secret request,
+an approval, a release and every airlock connection, are the last, at `BROKER_PROJECT_ACCESS_URL`
 ([Operating the broker](/legion/broker/operate/)). The broker writes nothing there — no
 ask, no comment, no status — and reads nothing that belongs to a person. It reaches its model at
 the endpoint its settings name, presenting the broker machine's own Google identity token for the
