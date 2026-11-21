@@ -5,23 +5,20 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/fixtureenv"
 	"github.com/sjawhar/envoy/internal/ghrename"
 )
 
 // clearEnvoyEnvironment unsets, for the rest of the test, every ENVOY_ variable the test process
 // holds, so a row's result depends on the variables the row sets and not on the shell that runs
 // the test. Every variable LoadWebhookConfig reads starts with ENVOY_, so this clears each of
-// them, and any the loader starts reading under that prefix. t.Setenv records the shell's value
-// for the test's cleanup to restore; os.Unsetenv then removes the variable, so each row starts
-// with it unset in every shell, not set to empty in some.
+// them, and any the loader starts reading under that prefix. fixtureenv.Unset puts the shell's
+// values back when the test ends.
 func clearEnvoyEnvironment(t *testing.T) {
 	t.Helper()
 	for _, entry := range os.Environ() {
 		if name, _, _ := strings.Cut(entry, "="); strings.HasPrefix(name, "ENVOY_") {
-			t.Setenv(name, "")
-			if err := os.Unsetenv(name); err != nil {
-				t.Fatal(err)
-			}
+			fixtureenv.Unset(t, name)
 		}
 	}
 }
