@@ -1,0 +1,17 @@
+#!/bin/sh
+# The dispatch CLI, bundled into this plugin's dist/ by its build, for a terminal: the plugin's
+# `dispatch` tool ends a command after 120 s, which `dispatch login --device` outlasts while it
+# waits for a person's approval. It is the package's npm `bin` too, which npm runs through a link
+# in node_modules/.bin, so each link is followed to the package's own directory first.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+here=$(cd -P "$(dirname "$self")" && pwd -P)
+cli="$here/../dist/dispatch.js"
+[ -f "$cli" ] || { echo "dispatch: $cli is missing; the published @sjawhar/codex-envoy carries it, or build a copy with bun scripts/build.ts --codex-out <dir>" >&2; exit 2; }
+exec bun "$cli" "$@"

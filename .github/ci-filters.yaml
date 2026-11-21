@@ -577,6 +577,7 @@ claude_envoy:
   - '.github/actions/private-names-packed-plugin/**'
   - '.github/scripts/check-private-names.sh'
   - '.github/scripts/release-claude-envoy-check-packed.sh'
+  - '.github/scripts/release-codex-envoy-check-packed.sh'
   - '.github/scripts/release-claude-envoy-manifest-repository.sh'
   - '.github/scripts/release-claude-envoy-version.sh'
   - '.github/scripts/repo-paths.sh'
