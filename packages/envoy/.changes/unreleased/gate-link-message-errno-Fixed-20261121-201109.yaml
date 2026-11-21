@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  `scripts/daemon-release-gate.sh --clients` names the real error when the dotfiles' pi-envoy is a
+  link whose target it cannot reach through a directory it may not search, or through a loop
+  part-way along the path: `…, a link to <target>, which does not resolve: Permission denied`, or
+  `…: Too many levels of symbolic links`. It printed `…, which does not exist` for both, though
+  the target can be there. The verdict was `UNKNOWN` (exit 3) before and is now too.
+time: 2026-11-21T20:11:09Z
+custom:
+    Issue: gate-link-message-errno
