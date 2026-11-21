@@ -110,6 +110,11 @@ func (d *stepRecordDispatch) SetStatusAt(ctx context.Context, issue dispatch.Iss
 	return d.SetStatus(ctx, issue.Key, status)
 }
 
+// SetAcceptanceStatus is this stand-in's own SetStatus too, for the same reason SetStatusAt is.
+func (d *stepRecordDispatch) SetAcceptanceStatus(ctx context.Context, key, status string) (dispatch.Issue, error) {
+	return d.SetStatus(ctx, key, status)
+}
+
 func (d *stepRecordDispatch) received() []stepPut {
 	d.mu.Lock()
 	defer d.mu.Unlock()

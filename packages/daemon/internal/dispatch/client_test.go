@@ -289,6 +289,61 @@ func TestSetStatusSendsDaemonActorAndAnswersTheWrittenIssue(t *testing.T) {
 	}
 }
 
+// SetAcceptanceStatus is SetStatus with refuse_open_foreign_children set, and SetStatus sends no
+// such field. Dispatch's 409 FOREIGN_CHILD_OPEN comes back as an *Error naming each open child of
+// another project, which ForeignChildrenOpen reads; another refusal's issues list, of a shape of
+// its own, is not read as children and leaves its code and message standing.
+func TestSetAcceptanceStatusAsksForTheOpenChildCheckAndReadsItsRefusal(t *testing.T) {
+	var refuse, foreignShape bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]json.RawMessage
+		decodeJSON(t, r, &body)
+		field, sent := body["refuse_open_foreign_children"]
+		switch {
+		case string(body["status"]) == `"testing"`:
+			if sent {
+				t.Fatalf("SetStatus sent refuse_open_foreign_children %s, want no such field", field)
+			}
+		case string(field) != "true" || string(body["status"]) != `"retro"`:
+			t.Fatalf("acceptance write = %v, want status retro with refuse_open_foreign_children true", body)
+		}
+		switch {
+		case refuse:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"code":"FOREIGN_CHILD_OPEN","error":"LEGION-4 has an open child of another project","issues":[{"key":"OTHR-5","project":"OTHR","status":"triage"}]}`))
+		case foreignShape:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"code":"ISSUE_DUPLICATE","error":"a near duplicate","issues":"LEGION-9"}`))
+		default:
+			writeJSON(t, w, map[string]any{"key": "LEGION-4", "status": "retro", "last_seq": 13})
+		}
+	}))
+	defer server.Close()
+	client := New(server.URL, dispatchToken)
+
+	if _, err := client.SetStatus(context.Background(), "LEGION-4", "testing"); err != nil {
+		t.Fatalf("set status: %v", err)
+	}
+	written, err := client.SetAcceptanceStatus(context.Background(), "LEGION-4", "retro")
+	if err != nil || written.Status != "retro" || written.LastSeq != 13 {
+		t.Fatalf("acceptance write = %#v, %v; want retro at sequence 13", written, err)
+	}
+	refuse = true
+	_, err = client.SetAcceptanceStatus(context.Background(), "LEGION-4", "retro")
+	children, open := ForeignChildrenOpen(err)
+	if !open || len(children) != 1 || children[0] != (ForeignChild{Key: "OTHR-5", Project: "OTHR", Status: "triage"}) {
+		t.Fatalf("the refused acceptance write = %v, children %#v, want FOREIGN_CHILD_OPEN naming OTHR-5 (OTHR, triage)", err, children)
+	}
+	refuse, foreignShape = false, true
+	_, err = client.SetAcceptanceStatus(context.Background(), "LEGION-4", "retro")
+	var refusal *Error
+	if _, open := ForeignChildrenOpen(err); open || !errors.As(err, &refusal) || refusal.Code != "ISSUE_DUPLICATE" || refusal.Message != "a near duplicate" || len(refusal.Issues) != 0 {
+		t.Fatalf("another refusal carrying an issues list = %#v, want ISSUE_DUPLICATE with its message and no children", err)
+	}
+}
+
 // A claim release is a DELETE on the issue's claim, under the daemon's own session. It sends a
 // body carrying that actor and nothing else: Dispatch's route decodes the request, so a release
 // with no JSON body would be refused before it reached the claim. A claim this caller may not

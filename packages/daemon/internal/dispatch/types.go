@@ -25,6 +25,12 @@ type Client interface {
 	// (the outbox's status row) go through it, while a route that writes a status on a person's or
 	// an architect's command takes SetStatus, having read nothing to be overtaken.
 	SetStatusAt(ctx context.Context, issue Issue, status string) (Issue, error)
+	// SetAcceptanceStatus is SetStatus for the daemon's own acceptance of an issue, retro or done,
+	// sent with refuse_open_foreign_children: Dispatch refuses it while a child of another project
+	// is open under the issue (409 ForeignChildOpen, an *Error naming each in its Issues). sign_off
+	// and close_root write their status with it, before the daemon records the acceptance or the
+	// close.
+	SetAcceptanceStatus(ctx context.Context, key, status string) (Issue, error)
 	// ReleaseClaim clears the issue's Dispatch claim through DELETE
 	// /api/v1/issues/{key}/claim, as the daemon's own session. Dispatch answers 409
 	// ISSUE_CLAIMED when this caller may not release the holder, and 409 CLAIM_CONTENDED when
@@ -410,11 +416,38 @@ type HandoffAuthor struct {
 func (a HandoffAuthor) IsSession(id string) bool { return a.Kind == "session" && a.ID == id }
 
 // Error is a non-success response from Dispatch. Code is empty only when the response did not
-// carry Dispatch's normal error body.
+// carry Dispatch's normal error body. Issues is the open children a ForeignChildOpen refusal
+// names, and empty for every other refusal.
 type Error struct {
 	Status  int
 	Code    string
 	Message string
+	Issues  []ForeignChild
+}
+
+// ForeignChild is one open child of another project that Dispatch names in a ForeignChildOpen
+// refusal: its key, its project and the status it shows.
+type ForeignChild struct {
+	Key     string `json:"key"`
+	Project string `json:"project"`
+	Status  string `json:"status"`
+}
+
+// ForeignChildOpen is Dispatch's own spelling of its refusal of an acceptance write
+// (HTTPClient.SetAcceptanceStatus) while a child of another project is open: any status but done
+// and icebox, as record.ChildOpen reads a child the daemon does not record
+// (packages/envoy/internal/dispatch/api/issue_parent.go, refuseOpenForeignChildren). No mechanism
+// shares a value between this module and Dispatch's, so the spellings change together.
+const ForeignChildOpen = "FOREIGN_CHILD_OPEN"
+
+// ForeignChildrenOpen is the open children of another project that err, Dispatch's refusal of an
+// acceptance write, names, and whether err is that refusal.
+func ForeignChildrenOpen(err error) ([]ForeignChild, bool) {
+	var refusal *Error
+	if !errors.As(err, &refusal) || refusal.Status != http.StatusConflict || refusal.Code != ForeignChildOpen {
+		return nil, false
+	}
+	return refusal.Issues, true
 }
 
 // Missing says whether a Dispatch call failed because what it asked for is not there, as against

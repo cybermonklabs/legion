@@ -186,6 +186,11 @@ type overrides struct {
 	// controllerFirstWake is how soon after the workflow runtime starts it applies its first
 	// controller tick (workflowRuntime.controllerFirstWake); zero is firstControllerTick.
 	controllerFirstWake time.Duration
+	// controllerTicks, when not nil, is the moments the workflow runtime applies a controller tick
+	// at, in place of its first wake and its interval's ticker (workflowRuntime.tickController): a
+	// whole-daemon test sends one to run one real tick when it chooses, and none runs otherwise.
+	// nil, in production, is the timers.
+	controllerTicks <-chan time.Time
 	// idleTick is how often the daemon decides every pod of its project and fires the backstops
 	// that came due (workflowRuntime.idleTick, both ticks); zero is the production minute. A test
 	// of release and wake shortens it, so it waits out its own period rather than the daemon's.
@@ -255,6 +260,16 @@ type overrides struct {
 	// so a test can act on Dispatch between the two and release the call by returning. nil, in
 	// production, tells no one.
 	gateRegistrationRead func(ctx context.Context, issue string)
+	// afterSignOffStatusWrite is api.Options.AfterSignOffStatusWrite: told of each sign_off once
+	// its status write in Dispatch has landed and before its fact is applied, on the route's
+	// goroutine, so a test can act while Dispatch shows the issue accepted and this daemon does not
+	// record it so, and release the call by returning. nil, in production, tells no one.
+	afterSignOffStatusWrite func(ctx context.Context, issue string)
+	// beforeOutboxStatusWrite is the workflow's outbox's beforeStatusWrite: told of each Dispatch
+	// status row, once the fact that queued it has committed and before the outbox executes it, on
+	// the lane's goroutine, so a test can act while the daemon records a move that Dispatch may not
+	// show yet, and release the row by returning. nil, in production, tells no one.
+	beforeOutboxStatusWrite func(record.OutboxRow)
 	// dropConsumedEvent answers whether the workflow's handlers skip a fact the intake consumers
 	// delivered (workflowRuntime.consumerHandlers): the event is acknowledged and recorded as
 	// applied (processed_events), as every delivered event is, and nothing of the workflow acts
@@ -475,6 +490,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		boot, cancelAfterMint = bootBudget(ctx)
 		defer cancelAfterMint()
 		workflow.controllerFirstWake, workflow.idleTick, workflow.mergeStateRetry, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.mergeStateRetry, o.entrySweep
+		workflow.controllerTicks = o.controllerTicks
 		plan.identity = workflow.identity
 		plan.repository, plan.launchRepository = workflow.issueRepository, workflow.launchRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
@@ -1015,11 +1031,13 @@ type plan struct {
 	// checkLaunch is overrides.checkLaunch; nil wraps the store with nothing, so every launch
 	// reaches the real store's own CheckLaunch.
 	checkLaunch func(context.Context, supervise.Claim) error
-	// holdOutbox, gateRegistrationRead and dropConsumedEvent are the overrides of those names;
-	// nil holds, tells and drops nothing.
-	holdOutbox           func(record.OutboxRow) bool
-	gateRegistrationRead func(ctx context.Context, issue string)
-	dropConsumedEvent    func(intake.Fact) bool
+	// holdOutbox, gateRegistrationRead, afterSignOffStatusWrite, beforeOutboxStatusWrite and
+	// dropConsumedEvent are the overrides of those names; nil holds, tells and drops nothing.
+	holdOutbox              func(record.OutboxRow) bool
+	gateRegistrationRead    func(ctx context.Context, issue string)
+	afterSignOffStatusWrite func(ctx context.Context, issue string)
+	beforeOutboxStatusWrite func(record.OutboxRow)
+	dropConsumedEvent       func(intake.Fact) bool
 	// streamWaitBegan is overrides.streamWaitBegan; nil runs nothing.
 	streamWaitBegan func(claim.Token)
 	// beforeDecision is overrides.beforeDecision; nil runs nothing.
@@ -1161,6 +1179,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
 		holdOutbox: o.holdOutbox, gateRegistrationRead: o.gateRegistrationRead, dropConsumedEvent: o.dropConsumedEvent,
+		afterSignOffStatusWrite: o.afterSignOffStatusWrite, beforeOutboxStatusWrite: o.beforeOutboxStatusWrite,
 		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
@@ -2796,6 +2815,9 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// daemon without one leaves pauses the nil interface, which the API reads as no pause service
 	// and answers every pause and resume PAUSE_UNAVAILABLE.
 	var pauses api.PauseService
+	// The workflow's engine judges sign_off and close_root before either writes its status in
+	// Dispatch; a daemon without one leaves it the nil interface, which judges nothing.
+	var acceptance api.AcceptanceJudge
 	if workflow != nil {
 		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.apps, workflow.grants
 		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
@@ -2805,6 +2827,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		consumerLag = workflow.consumers.Lag
 		pauses = workflow.pauses.service
 		architectStalls = workflow.admission.ArchitectStallArms
+		acceptance = workflow.engine
 	}
 	// Under `controller: daemon` the keeper launches and keeps the project's controller, and takes
 	// its ready. The liveness sweep runs beside it under either mode, never behind it.
@@ -2886,9 +2909,12 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		RoleHoldersChanged: roleHoldersChanged,
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
-		// A test's seam alone (overrides.gateRegistrationRead); nil in production.
-		GateRegistrationRead: p.gateRegistrationRead,
-		Pause:                pauses,
+		// Two test seams alone (overrides.gateRegistrationRead, overrides.afterSignOffStatusWrite);
+		// nil in production.
+		GateRegistrationRead:    p.gateRegistrationRead,
+		AfterSignOffStatusWrite: p.afterSignOffStatusWrite,
+		Acceptance:              acceptance,
+		Pause:                   pauses,
 	})
 
 	group, serving := errgroup.WithContext(ctx)

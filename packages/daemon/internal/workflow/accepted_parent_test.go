@@ -72,6 +72,51 @@ func TestSignOffIsRefusedWhileAnIssueBeneathIsInTheWorkflow(t *testing.T) {
 	assertPhase(t, pool, phase.Retro)
 }
 
+// The sign_off and close_root routes judge an act in a read-only transaction before they write its
+// status in Dispatch: SignOffRefusal and CloseRootRefusal read every hold their facts read, write
+// nothing, and answer the refusal the fact itself would, nil where it would take the act and for
+// an issue the daemon does not record.
+func TestTheSignOffAndCloseJudgementsReadTheirFactsRefusalsReadOnly(t *testing.T) {
+	pool := migratedPool(t)
+	seedAccepting(t, pool)
+	seedBeneath(t, pool, "LEGION-209", "LEGION-208", "LEGION-208", phase.Implementing, "in_progress")
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	judge := func(act func(context.Context, pgx.Tx, string) (*intake.Refusal, error), key string) *intake.Refusal {
+		t.Helper()
+		var refusal *intake.Refusal
+		if err := pgx.BeginTxFunc(context.Background(), pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+			var err error
+			refusal, err = act(context.Background(), tx, key)
+			return err
+		}); err != nil {
+			t.Fatalf("judge %s read-only: %v", key, err)
+		}
+		return refusal
+	}
+
+	if refusal := judge(engine.SignOffRefusal, "LEGION-208"); refusal == nil || refusal.Code != "SIGNOFF_CHILD_IN_WORKFLOW" || !strings.Contains(refusal.Message, "LEGION-209") {
+		t.Fatalf("the sign-off judgement with LEGION-209 beneath = %+v, want SIGNOFF_CHILD_IN_WORKFLOW naming it", refusal)
+	}
+	if refusal := judge(engine.CloseRootRefusal, "LEGION-208"); refusal == nil || refusal.Code != "CLOSE_AFTER_PHASE_STARTED" {
+		t.Fatalf("the close judgement of a root in accepting = %+v, want CLOSE_AFTER_PHASE_STARTED", refusal)
+	}
+	if refusal := judge(engine.SignOffRefusal, "LEGION-209"); refusal == nil || refusal.Code != "SIGNOFF_OUTSIDE_ACCEPTING" {
+		t.Fatalf("the sign-off judgement of an issue in implementing = %+v, want SIGNOFF_OUTSIDE_ACCEPTING", refusal)
+	}
+	if refusal := judge(engine.SignOffRefusal, "LEGION-999"); refusal != nil {
+		t.Fatalf("the sign-off judgement of an issue the daemon does not record = %+v, want none", refusal)
+	}
+	assertPhase(t, pool, phase.Accepting)
+	leave(t, pool, "LEGION-209", phase.Done, "done")
+	if refusal := judge(engine.SignOffRefusal, "LEGION-208"); refusal != nil {
+		t.Fatalf("the sign-off judgement once the issue beneath left = %+v, want none", refusal)
+	}
+	if result := signOffNow(t, pool, "signoff-judged", "LEGION-208"); result.Refusal != nil {
+		t.Fatalf("the sign-off the judgement takes = %+v, want it taken", result.Refusal)
+	}
+	assertPhase(t, pool, phase.Retro)
+}
+
 // leave moves key to at with the Dispatch status it leaves on, as a close or a person's park
 // leaves it.
 func leave(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, status string) {

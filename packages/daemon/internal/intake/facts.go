@@ -1221,9 +1221,13 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 
 // CloseRoot is a tree root's architect ending its tree before the tree's first phase starts, with
 // the reason it gives: a human decided no change at the design gate, or the issue is moot.
+// Written is the sequence Dispatch answered the close_root route's own done write with, which the
+// route makes before it applies this fact, and 0 for a close no route wrote first: the event of
+// that write can reach the record before the fact does.
 type CloseRoot struct {
-	Issue  string
-	Reason string
+	Issue   string
+	Reason  string
+	Written int64
 }
 
 func (f CloseRoot) namedIssue() (string, bool) { return f.Issue, true }

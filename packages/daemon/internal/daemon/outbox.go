@@ -173,6 +173,12 @@ type outbox struct {
 	// later (runRow): a test's seam alone (overrides.holdOutbox), nil in production and in every
 	// outbox a test builds by hand, which holds nothing.
 	hold func(record.OutboxRow) bool
+	// beforeStatusWrite is told of each Dispatch status row this outbox executes, before it reads
+	// or writes anything of Dispatch for it: the fact that queued the row has committed, so the
+	// daemon records the move while Dispatch may not show it yet. A test's seam alone
+	// (overrides.beforeOutboxStatusWrite), on the lane's goroutine, so the row waits for it to
+	// return; nil in production and in every outbox a test builds by hand, which tells no one.
+	beforeStatusWrite func(record.OutboxRow)
 	// refreshPause reads the project's open pause into the daemon's flag
 	// (internal/pause's Service.Refresh) at each sweep (decision 18 of dispatch://INFRA-3759), so a
 	// pause made or ended through another daemon of a rolling restart holds this daemon's launches
@@ -987,6 +993,9 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 func (r *outbox) status(ctx context.Context, row record.OutboxRow, payload record.StatusWrite) error {
 	if r.dispatch == nil {
 		return errors.New("dispatch status executor has no Dispatch client")
+	}
+	if r.beforeStatusWrite != nil {
+		r.beforeStatusWrite(row)
 	}
 	rule, err := ruleFor(payload.Kind)
 	if err != nil {

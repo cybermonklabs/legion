@@ -154,6 +154,24 @@ func (c *HTTPClient) SetStatusAt(ctx context.Context, issue Issue, status string
 	return response.issue(), nil
 }
 
+// SetAcceptanceStatus is SetStatus for the daemon's own acceptance of an issue — retro, which
+// sign_off writes, or done, which close_root writes — sent with refuse_open_foreign_children, so
+// Dispatch refuses it while a child of another project is open under the issue. That refusal is
+// a 409 FOREIGN_CHILD_OPEN *Error whose Issues name each such child with its project and status.
+// Dispatch takes the field beside retro or done alone, and holds the lock every parent write takes
+// across its check and its write, so no child is filed under the issue between the two.
+func (c *HTTPClient) SetAcceptanceStatus(ctx context.Context, key, status string) (Issue, error) {
+	var response issueResponse
+	if err := c.request(ctx, http.MethodPatch, "/api/v1/issues/"+url.PathEscape(key), daemonWrite{
+		Status:                    status,
+		RefuseOpenForeignChildren: true,
+		Actor:                     daemonActor(key),
+	}, &response); err != nil {
+		return Issue{}, err
+	}
+	return response.issue(), nil
+}
+
 // ReleaseClaim clears the issue's Dispatch claim through DELETE /api/v1/issues/{key}/claim, as
 // the daemon's own session. The actor body is required, not an extra: Dispatch's route decodes
 // the request and refuses one that carries no Content-Type: application/json, which request sets
@@ -631,8 +649,9 @@ func daemonActor(key string) actor {
 
 func dispatchError(status int, statusText string, payload []byte) *Error {
 	var response struct {
-		Code  string `json:"code"`
-		Error string `json:"error"`
+		Code   string          `json:"code"`
+		Error  string          `json:"error"`
+		Issues json.RawMessage `json:"issues"`
 	}
 	if err := json.Unmarshal(payload, &response); err != nil {
 		response.Error = strings.TrimSpace(string(payload))
@@ -640,7 +659,13 @@ func dispatchError(status int, statusText string, payload []byte) *Error {
 	if response.Error == "" {
 		response.Error = statusText
 	}
-	return &Error{Status: status, Code: response.Code, Message: response.Error}
+	refusal := &Error{Status: status, Code: response.Code, Message: response.Error}
+	// Only FOREIGN_CHILD_OPEN's issues are read: another refusal's list has a shape of its own. A
+	// list that does not decode leaves Issues empty, and the code and the message stand.
+	if response.Code == ForeignChildOpen && len(response.Issues) > 0 {
+		_ = json.Unmarshal(response.Issues, &refusal.Issues)
+	}
+	return refusal
 }
 
 type issueSummaryResponse struct {
@@ -801,12 +826,13 @@ type actor struct {
 }
 
 type daemonWrite struct {
-	Status           string   `json:"status,omitempty"`
-	Labels           []string `json:"labels,omitempty"`
-	LabelsAdd        []string `json:"labels_add,omitempty"`
-	ExpectedSequence int64    `json:"expected_sequence,omitempty"`
-	Body             string   `json:"body,omitempty"`
-	Actor            actor    `json:"actor"`
+	Status                    string   `json:"status,omitempty"`
+	Labels                    []string `json:"labels,omitempty"`
+	LabelsAdd                 []string `json:"labels_add,omitempty"`
+	ExpectedSequence          int64    `json:"expected_sequence,omitempty"`
+	RefuseOpenForeignChildren bool     `json:"refuse_open_foreign_children,omitempty"`
+	Body                      string   `json:"body,omitempty"`
+	Actor                     actor    `json:"actor"`
 }
 
 // artifactUpload is the body of a document upload: its name, its markdown and the daemon's actor,

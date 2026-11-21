@@ -15,11 +15,14 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -1198,4 +1201,319 @@ func TestBasisGateRefusals(t *testing.T) {
 		GitHubRepo: "acme/widgets", Tree: parent.Key, Project: r.cfg.Project, Title: parent.Key, Phase: phase.Merging, Generation: 1,
 		Status: "in_progress", DispatchStatus: "in_progress", HandedOver: true, Rank: "U"})
 	cases.refused("P recorded by the daemon in merging", call(), http.StatusConflict, "BASIS_ACCEPTED", "the daemon records "+parent.Key+" in merging")
+}
+
+// crossProjectRigs are two projects' daemons on one scratch Dispatch and one NATS server, each
+// with a database of its own on the test server, as a deployment runs one daemon for each of its
+// projects: legion of LEGION, the root's own project, and other of OTHR, another project. Neither
+// is booted.
+func crossProjectRigs(t *testing.T, admissionCap int) (legion, other *personHandoverRig) {
+	t.Helper()
+	natsURL := testnats.URL(t)
+	scratch := startScratchDispatchOn(t, scratchDispatchOptions{natsURL: natsURL})
+	return newProjectRigOn(t, scratch, natsURL, "LEGION", "acme/widgets", admissionCap),
+		newProjectRigOn(t, scratch, natsURL, "OTHR", "acme/gadgets", admissionCap)
+}
+
+// linkAcross writes child's Dispatch parent as parent, "" for none, straight into the scratch
+// Dispatch's database: this checkout's Dispatch refuses a parent of another project on every route
+// (validateIssueParent), so a link across projects is a row the proof writes there itself. It
+// makes no event, so the daemon of neither project hears of the link. It answers an error rather
+// than failing the test, so a seam the daemon runs on a goroutine of its own can call it.
+func (r *personHandoverRig) linkAcross(ctx context.Context, child, parent string) error {
+	conn, err := pgx.Connect(ctx, r.scratch.database)
+	if err != nil {
+		return fmt.Errorf("open the scratch Dispatch's database: %w", err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	var link *string
+	if parent != "" {
+		link = &parent
+	}
+	tag, err := conn.Exec(ctx, `update issues set parent_key = $2 where key = $1`, child, link)
+	if err != nil {
+		return fmt.Errorf("set the parent of %s to %q: %w", child, parent, err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("set the parent of %s to %q: %d rows changed, want 1", child, parent, tag.RowsAffected())
+	}
+	return nil
+}
+
+// mustLinkAcross is linkAcross on the test's own goroutine, failing the test on an error.
+func (r *personHandoverRig) mustLinkAcross(child, parent string) {
+	r.t.Helper()
+	if err := r.linkAcross(r.t.Context(), child, parent); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// controllerTick has the daemon apply one controller tick now, through the moments the rig hands
+// its runtime (overrides.controllerTicks), and waits until the daemon has applied it.
+func (r *personHandoverRig) controllerTick(ticks chan<- time.Time) {
+	r.t.Helper()
+	before := controllerTicks(r.t, r.pool)
+	ticks <- time.Now()
+	testwait.Eventually(r.t, "the daemon to apply the controller tick", func() bool {
+		return controllerTicks(r.t, r.pool) > before
+	})
+}
+
+// architectCall sends body to path as an architect's plugin does and answers its status and, for
+// a refusal, the code and the message it names.
+func (r *personHandoverRig) architectCall(path string, body map[string]any) (int, api.Failure) {
+	r.t.Helper()
+	status, answer := r.d.request(http.MethodPost, path, body, false)
+	var failure api.Failure
+	if status != http.StatusOK {
+		if err := json.Unmarshal(answer, &failure); err != nil {
+			r.t.Fatalf("decode the refusal %d %s: %v", status, answer, err)
+		}
+	}
+	return status, failure
+}
+
+// seamAnswer is what a proof's act inside a seam of the daemon came to: the registration it made,
+// or why it could not make it.
+type seamAnswer struct {
+	gate gateAnswer
+	err  error
+}
+
+// seamAct is a proof's act that a seam of the daemon runs once, for the issue it is armed for,
+// on whatever goroutine the seam runs on: a route's or an outbox lane's.
+type seamAct struct {
+	mu     sync.Mutex
+	issue  string
+	act    func() seamAnswer
+	ran    bool
+	answer seamAnswer
+}
+
+// arm sets act to run at the next seam that names issue.
+func (s *seamAct) arm(issue string, act func() seamAnswer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issue, s.act = issue, act
+}
+
+// run is the seam's call: it runs the armed act once, for its issue, and holds the seam until the
+// act is done.
+func (s *seamAct) run(issue string) {
+	s.mu.Lock()
+	if s.act == nil || s.issue != issue {
+		s.mu.Unlock()
+		return
+	}
+	act := s.act
+	s.act = nil
+	s.mu.Unlock()
+	answer := act()
+	s.mu.Lock()
+	s.ran, s.answer = true, answer
+	s.mu.Unlock()
+}
+
+// result is whether the act has run, and what it came to.
+func (s *seamAct) result() (bool, seamAnswer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ran, s.answer
+}
+
+// statusWriteOf is the Dispatch status write row carries, and false for a row of another kind.
+func statusWriteOf(row record.OutboxRow) (record.StatusWrite, bool) {
+	if row.Kind != record.OutboxKindDispatchStatus {
+		return record.StatusWrite{}, false
+	}
+	payload, err := record.DecodeOutboxPayload(row)
+	if err != nil {
+		return record.StatusWrite{}, false
+	}
+	write, ok := payload.(record.StatusWrite)
+	return write, ok
+}
+
+// c5's first half (R1 across projects): a registration is refused once another project's daemon
+// accepts the ancestor, at both moments that follow the ancestor's sign_off. OTHR-1 carries legion,
+// marks two requirement blocks, holds the person's approval of its latest spec and stands in
+// accepting in OTHR's daemon, with no child. LEGION-1, labelled and admitted in LEGION's daemon,
+// has a spec that is a view on OTHR-1 and a Verification document whose one check serves OTHR-1's
+// first block, written while LEGION-1 stood under OTHR-1, since Dispatch takes a check's pointer
+// only at a block of an issue above it; LEGION-1 then has no parent, so OTHR-1's retro write meets
+// no open child. OTHR's architect signs OTHR-1 off, and at the subtest's seam of OTHR's daemon the
+// proof puts LEGION-1 under OTHR-1 and LEGION's architect registers LEGION-1's spec step on OTHR-1's
+// approved version: (a) after the sign-off's Dispatch status write and before its fact
+// (afterSignOffStatusWrite), and (b) after the fact and before the outbox's retro row
+// (beforeOutboxStatusWrite). Each asserts that its seam ran, that the registration answers 409
+// BASIS_ACCEPTED, and that LEGION-1's gate records nothing.
+//
+// In (b) OTHR's daemon drops the event of OTHR-1's own retro write: applied before the fact, that
+// event would record the retro Dispatch shows, and the fact would then queue no retro row at all,
+// which is no window but no seam either. Dropped, the fact always queues the row the seam holds.
+func TestRegistrationIsRefusedOnceAnotherProjectsDaemonAcceptsTheAncestor(t *testing.T) {
+	for _, seam := range []string{"afterSignOffStatusWrite", "beforeOutboxStatusWrite"} {
+		t.Run(seam, func(t *testing.T) {
+			legion, other := crossProjectRigs(t, 2)
+			act, drop := &seamAct{}, &consumerDrop{}
+			switch seam {
+			case "afterSignOffStatusWrite":
+				other.tune = func(o *overrides) {
+					o.afterSignOffStatusWrite = func(_ context.Context, issue string) { act.run(issue) }
+				}
+			case "beforeOutboxStatusWrite":
+				other.tune = func(o *overrides) {
+					o.dropConsumedEvent = drop.drops
+					o.beforeOutboxStatusWrite = func(row record.OutboxRow) {
+						if write, ok := statusWriteOf(row); ok && write.Status == "retro" {
+							act.run(row.Issue)
+						}
+					}
+				}
+			}
+			legion.boot()
+			other.boot()
+
+			// OTHR-1, approved by the person at its latest version, admitted in OTHR's daemon and
+			// standing in accepting there.
+			parent := other.create(asSession, "Quarterly billing overhaul",
+				map[string]any{"labels": []string{"legion"}, "spec": requirementsMarkdown("Billing", "o1", "o2")})
+			approval := other.approve(parent.PrimaryArtifactID)
+			parentGrant := other.admit(parent.Key)
+			other.moveRecord(parent.Key, phase.Accepting)
+
+			// LEGION-1, a view on OTHR-1 whose one check serves OTHR-1's first block, with no
+			// parent.
+			root := legion.create(asSession, "Ledger export rewrite", map[string]any{"labels": []string{"legion"}})
+			rootGrant := legion.admit(root.Key)
+			legion.mustLinkAcross(root.Key, parent.Key)
+			legion.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(parent.Key, "o1")}}))
+			legion.mustLinkAcross(root.Key, "")
+			if shown := legion.issue(root.Key); shown.Parent != nil {
+				t.Fatalf("%s stands under %s in Dispatch, want no parent before the sign-off", root.Key, *shown.Parent)
+			}
+
+			grant := rootGrant()
+			act.arm(parent.Key, func() seamAnswer {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+				defer cancel()
+				if err := legion.linkAcross(ctx, root.Key, parent.Key); err != nil {
+					return seamAnswer{err: err}
+				}
+				return seamAnswer{gate: <-legion.gateCallAsync(basisCall(grant, root, 1, parent.PrimaryArtifactID, approval.Version, basisReasonOf(400)))}
+			})
+			drop.arm(func(fact intake.Fact) bool {
+				issue, ok := fact.(intake.DispatchIssue)
+				return ok && issue.Key == parent.Key && issue.Status == "retro"
+			})
+			status, refusal := other.architectCall("/legion/v1/signoff", map[string]any{"grantId": parentGrant(), "issue": parent.Key})
+			if seam == "afterSignOffStatusWrite" {
+				if ran, _ := act.result(); !ran {
+					t.Fatalf("the sign-off of %s answered %d %+v and the seam %s never ran", parent.Key, status, refusal, seam)
+				}
+			} else {
+				testwait.Eventually(t, "the seam "+seam+" to run for "+parent.Key+"'s retro row", func() bool {
+					ran, _ := act.result()
+					return ran
+				})
+			}
+			_, answer := act.result()
+			if answer.err != nil || answer.gate.err != nil {
+				t.Fatalf("the act in the seam %s failed: %v, %v", seam, answer.err, answer.gate.err)
+			}
+			var failure api.Failure
+			if answer.gate.status != http.StatusOK {
+				if err := json.Unmarshal(answer.gate.body, &failure); err != nil {
+					t.Fatalf("decode the refusal %d %s: %v", answer.gate.status, answer.gate.body, err)
+				}
+			}
+			if answer.gate.status != http.StatusConflict || failure.Code != "BASIS_ACCEPTED" || !strings.Contains(failure.Error, parent.Key) {
+				t.Fatalf("%s's registration on %s at the seam %s = %d %s, want 409 BASIS_ACCEPTED naming %s",
+					root.Key, parent.Key, seam, answer.gate.status, answer.gate.body, parent.Key)
+			}
+			if status != http.StatusOK {
+				t.Fatalf("the sign-off of %s = %d %+v, want 200", parent.Key, status, refusal)
+			}
+			if facts, gates := legion.gateFacts(root.Key), legion.gates(root.Key); facts != 0 || len(gates) != 0 {
+				t.Fatalf("the refused registration left %d gate facts and the gate rows %+v on %s, want none", facts, gates, root.Key)
+			}
+			testwait.Eventually(t, "OTHR's daemon to record "+parent.Key+" in retro", func() bool {
+				return other.record(parent.Key).Phase == phase.Retro
+			})
+			t.Logf("at the seam %s, %s's registration on %s was refused %s: %s", seam, root.Key, parent.Key, failure.Code, failure.Error)
+		})
+	}
+}
+
+// c5's second half (R1 across projects): sign_off and close_root refuse an open child of another
+// project filed after the last controller tick, naming it, and sign_off takes the issue once that
+// child is in icebox. LEGION-1 stands in accepting after a tick, Dispatch showing needs_review;
+// OTHR-5, in triage, is then put under it and no tick runs. LEGION-2 stands at admitted, and
+// OTHR-6, in triage, is put under it after the tick. Only LEGION's daemon runs: OTHR is a project
+// of the same Dispatch whose daemon this proof needs no part of.
+func TestSignOffAndCloseRootRefuseAChildOfAnotherProjectFiledAfterTheTick(t *testing.T) {
+	ticks := make(chan time.Time)
+	natsURL := testnats.URL(t)
+	r := newProjectRigOn(t, startScratchDispatchOn(t, scratchDispatchOptions{natsURL: natsURL}), natsURL, "LEGION", "acme/widgets", 2)
+	r.tune = func(o *overrides) { o.controllerTicks = ticks }
+	r.boot()
+	scratchProject(t, r.baseURL, "OTHR", "acme/gadgets")
+	labelled := map[string]any{"labels": []string{"legion"}}
+	inOther := func(title string) scratchIssue {
+		return r.create(asSession, title, map[string]any{"project": "OTHR"})
+	}
+
+	accepting := r.create(asSession, "Ledger export rewrite", labelled)
+	acceptingGrant := r.admit(accepting.Key)
+	r.setStatus(accepting.Key, "needs_review")
+	r.moveRecord(accepting.Key, phase.Accepting)
+	admitted := r.create(asSession, "Harbor crane scheduler", labelled)
+	admittedGrant := r.admit(admitted.Key)
+	r.controllerTick(ticks)
+	if standing := r.record(accepting.Key).Phase; standing != phase.Accepting {
+		t.Fatalf("%s stands at %s after the tick, want accepting", accepting.Key, standing)
+	}
+
+	// OTHR-5 filed under the issue in accepting after the tick; no tick runs.
+	filed := inOther("Tidal gauge calibration")
+	r.mustLinkAcross(filed.Key, accepting.Key)
+	status, refusal := r.architectCall("/legion/v1/signoff", map[string]any{"grantId": acceptingGrant(), "issue": accepting.Key})
+	if status != http.StatusConflict || refusal.Code != "SIGNOFF_CHILD_OPEN" || !strings.Contains(refusal.Error, filed.Key) {
+		t.Fatalf("the sign-off of %s with %s open under it = %d %+v, want 409 SIGNOFF_CHILD_OPEN naming %s", accepting.Key, filed.Key, status, refusal, filed.Key)
+	}
+	if standing := r.record(accepting.Key).Phase; standing != phase.Accepting {
+		t.Fatalf("%s stands at %s after its refused sign-off, want accepting", accepting.Key, standing)
+	}
+	if shown := r.issue(accepting.Key).Status; shown != "needs_review" {
+		t.Fatalf("Dispatch shows %s %s after its refused sign-off, want needs_review", accepting.Key, shown)
+	}
+	t.Logf("the sign-off of %s was refused: %s", accepting.Key, refusal.Error)
+
+	// OTHR-5 in icebox: the sign-off takes the issue.
+	r.setStatus(filed.Key, "icebox")
+	if status, refusal := r.architectCall("/legion/v1/signoff", map[string]any{"grantId": acceptingGrant(), "issue": accepting.Key}); status != http.StatusOK {
+		t.Fatalf("the sign-off of %s with %s in icebox = %d %+v, want 200", accepting.Key, filed.Key, status, refusal)
+	}
+	testwait.Eventually(t, "the daemon to record "+accepting.Key+" in retro", func() bool {
+		return r.record(accepting.Key).Phase == phase.Retro
+	})
+	if shown := r.issue(accepting.Key).Status; shown != "retro" {
+		t.Fatalf("Dispatch shows %s %s after its sign-off, want retro", accepting.Key, shown)
+	}
+
+	// OTHR-6 filed under the admitted root after the tick.
+	under := inOther("Buoy maintenance roster")
+	r.mustLinkAcross(under.Key, admitted.Key)
+	status, refusal = r.architectCall("/legion/v1/roots/close", map[string]any{"grantId": admittedGrant(), "issue": admitted.Key,
+		"reason": "The human decided no change is needed."})
+	if status != http.StatusConflict || refusal.Code != "SIGNOFF_CHILD_OPEN" || !strings.Contains(refusal.Error, under.Key) {
+		t.Fatalf("the close of %s with %s open under it = %d %+v, want 409 SIGNOFF_CHILD_OPEN naming %s", admitted.Key, under.Key, status, refusal, under.Key)
+	}
+	if standing := r.record(admitted.Key).Phase; standing != phase.Admitted {
+		t.Fatalf("%s stands at %s after its refused close, want admitted", admitted.Key, standing)
+	}
+	if shown := r.issue(admitted.Key).Status; shown != "in_progress" {
+		t.Fatalf("Dispatch shows %s %s after its refused close, want in_progress", admitted.Key, shown)
+	}
+	t.Logf("the close of %s was refused: %s", admitted.Key, refusal.Error)
 }
