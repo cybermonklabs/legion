@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
@@ -167,6 +167,29 @@ test("a link Dispatch made whose answer was lost says so, and Invite makes a new
   }
 });
 
+// The lost answer's words reach a screen reader as the new link's do: through a status region that
+// was in the row before the press, since a region that mounts with its words already in it is not
+// announced by every reader (the row's own rule for the link, AccessPersonRow's doc comment).
+test("a lost answer is announced through a status region there before the press", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel({ answer: withPasskeys() });
+  const invite = spyOn(api, "createProjectInvitation").mockRejectedValue(
+    new ApiError(409, { code: "KEY_COMMITTED", error: "the write was made" })
+  );
+  try {
+    await screen.findByRole("button", { name: `Invite ${ana}` });
+    const before = within(personRow(ana)).getAllByRole("status");
+    await user.click(screen.getByRole("button", { name: `Invite ${ana}` }));
+    const note = await within(personRow(ana)).findByText(
+      "Dispatch made a link, but its answer was lost on the way. Press Invite again: a new link ends that one."
+    );
+    expect(before).toContain(note.closest('[role="status"]') as HTMLElement);
+  } finally {
+    panel.restore();
+    invite.mockRestore();
+  }
+});
+
 // The link appears beside the Invite button the owner just pressed, where the focus stays, so a
 // screen reader hears of it through the row's status region: the region is there before the press
 // and empty, and the press fills it with the address and when the link stops, not the link itself.
@@ -271,5 +294,37 @@ test("Reset takes away the link an earlier Invite showed, since Dispatch deletes
     invite.mockRestore();
     confirm.mockRestore();
     reset.mockRestore();
+  }
+});
+
+// The person used the link while the owner's row showed it: the link stops at its first use, so
+// once the access answer lists the passkey it made (enrolled after the link was made, 24 hours
+// before it stops), the row stops offering it as a link that works once.
+test("a link the person used is taken out of the row once the answer lists the passkey it made", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel({ answer: withPasskeys({ passkeys: [] }) });
+  const invite = spyOn(api, "createProjectInvitation").mockResolvedValue({
+    expires_at: "2026-11-21T10:00:00Z",
+    url: `https://dispatch.example/enroll#${"a".repeat(43)}`,
+  });
+  try {
+    await user.click(await screen.findByRole("button", { name: `Invite ${ana}` }));
+    const link = { name: `Enrollment link for ${ana}` };
+    expect(await within(personRow(ana)).findByRole("textbox", link)).toBeInTheDocument();
+
+    await panel.lands(
+      withPasskeys({ passkeys: [{ email: ana, enrolled_at: "2026-11-20T10:05:00Z" }] })
+    )();
+    await act(() => panel.queryClient.invalidateQueries());
+    await waitFor(() =>
+      expect(within(personRow(ana)).getByTestId("access-passkey")).toBeInTheDocument()
+    );
+    expect(within(personRow(ana)).queryByRole("textbox", link)).not.toBeInTheDocument();
+    expect(
+      within(personRow(ana)).queryByTestId("access-invitation-expiry")
+    ).not.toBeInTheDocument();
+  } finally {
+    panel.restore();
+    invite.mockRestore();
   }
 });

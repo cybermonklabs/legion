@@ -1,6 +1,8 @@
+import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useId, useState } from "react";
 
 import { ApiError, api, apiErrorMessage } from "../../api/client";
+import { projectAccessQuery } from "../../api/queries";
 import type { ProjectAccess } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
@@ -23,6 +25,15 @@ interface Invitation {
   readonly url: string;
   readonly expires_at: string;
 }
+
+/** How long a link works: it lapses 24 hours after it was made (store.InvitationLifetime), so it
+ *  was made this long before its `expires_at`, on Dispatch's clock, which a passkey's
+ *  `enrolled_at` is read on too. */
+const INVITATION_LIFETIME_MS = 24 * 60 * 60 * 1000;
+
+/** How often the owner's page reads the access list again while a row shows a link nobody has
+ *  used: no Dispatch event tells the page that the person enrolled with it, which uses it. */
+const SHOWN_LINK_POLL_MS = 5_000;
 
 /** What the owner reads when Dispatch would not make `email` a link, by its code. */
 function invitationRefusal(email: string, error: Error): string {
@@ -56,9 +67,12 @@ const linkFieldClass = `min-h-11 w-full min-w-0 rounded-md px-3 py-2 font-mono t
  *
  * The link is shown only in this row, once: its token is in the answer alone, which Dispatch keeps
  * under no write key, so a later Invite makes a new link, which ends this one. A Reset deletes it,
- * so the row stops showing it once the owner confirms the Reset. A new link and when it stops are
- * announced to a screen reader through a status region the row holds while Invite can be pressed,
- * since a region that mounts with its words already in it is not announced by every reader.
+ * so the row stops showing it once the owner confirms the Reset; and the person's enrollment uses
+ * it, so the row stops showing it once the access list, which the row reads again every few
+ * seconds while it shows a link, names a passkey enrolled after the link was made. A new link and
+ * when it stops, and a link made whose answer was lost, are announced to a screen reader through
+ * status regions the row holds while Invite can be pressed, since a region that mounts with its
+ * words already in it is not announced by every reader.
  */
 export function AccessPersonRow({
   email,
@@ -118,6 +132,25 @@ export function AccessPersonRow({
   };
   const shown = passkeys !== undefined;
   const enrolled = passkeys ?? [];
+  // A passkey enrolled after the link was made used it, since a link enrolls once: the row stops
+  // offering it. A passkey enrolled before the link (the person's first device, when the link is
+  // for a second one) leaves it shown.
+  const link =
+    invitation !== undefined &&
+    enrolled.some(
+      (passkey) =>
+        Date.parse(passkey.enrolled_at) > Date.parse(invitation.expires_at) - INVITATION_LIFETIME_MS
+    )
+      ? undefined
+      : invitation;
+  // While the row shows a link, the access list is read again now and then, so the passkey the
+  // person enrolls with it shows here, and the used link goes, with no reload.
+  useQuery({
+    ...projectAccessQuery(project),
+    enabled: link !== undefined,
+    refetchInterval: link !== undefined ? SHOWN_LINK_POLL_MS : false,
+  });
+  const lostAnswer = invite.unanswered !== undefined && !invite.isPending;
 
   return (
     <li className={rowClass}>
@@ -160,12 +193,12 @@ export function AccessPersonRow({
           Remove<span className="sr-only"> {email}</span>
         </RefusableButton>
       </div>
-      {shown && (invitable || enrolled.length > 0 || invitation !== undefined) ? (
+      {shown && (invitable || enrolled.length > 0 || link !== undefined) ? (
         <div className="grid basis-full gap-2">
           <p className="sr-only" data-testid="access-invitation-announcement" role="status">
-            {invitation === undefined
+            {link === undefined
               ? ""
-              : `Made a link for ${email}. It works once, until ${exactTimeLabel(new Date(invitation.expires_at))}.`}
+              : `Made a link for ${email}. It works once, until ${exactTimeLabel(new Date(link.expires_at))}.`}
           </p>
           {enrolled.length === 0 ? (
             <p className={`text-sm ${textMutedOnSurface}`}>No passkey yet</p>
@@ -181,7 +214,7 @@ export function AccessPersonRow({
               </p>
             ))
           )}
-          {invitation === undefined ? null : (
+          {link === undefined ? null : (
             <div className="grid gap-1">
               <label className={`text-sm font-medium ${textSecondaryOnSurface}`} htmlFor={linkId}>
                 Enrollment link<span className="sr-only"> for {email}</span>
@@ -192,7 +225,7 @@ export function AccessPersonRow({
                   id={linkId}
                   onFocus={(event) => event.currentTarget.select()}
                   readOnly
-                  value={invitation.url}
+                  value={link.url}
                 />
                 {/* A page outside a secure context has no clipboard; the field still selects. */}
                 {typeof navigator.clipboard?.writeText === "function" ? (
@@ -200,7 +233,7 @@ export function AccessPersonRow({
                     className="shrink-0"
                     look="secondary-compact"
                     onPress={() =>
-                      void navigator.clipboard.writeText(invitation.url).then(
+                      void navigator.clipboard.writeText(link.url).then(
                         () => setCopied(true),
                         () => setCopied(false)
                       )
@@ -216,17 +249,19 @@ export function AccessPersonRow({
                 className={`text-sm ${textSecondaryOnSurface}`}
                 data-testid="access-invitation-expiry"
               >
-                Works once, until {exactTimeLabel(new Date(invitation.expires_at))}. Dispatch shows
-                it only here, once: send it to {email} yourself.
+                Works once, until {exactTimeLabel(new Date(link.expires_at))}. Dispatch shows it
+                only here, once: send it to {email} yourself.
               </p>
             </div>
           )}
-          {invite.unanswered === undefined || invite.isPending ? null : (
-            <p className={`text-sm ${textSecondaryOnSurface}`} role="status">
-              Dispatch made a link, but its answer was lost on the way. Press Invite again: a new
-              link ends that one.
-            </p>
-          )}
+          {/* Present, empty, before the press, so a screen reader announces the words it is filled
+              with: a status region that mounts with its words already in it is not announced by
+              every reader. */}
+          <p className={lostAnswer ? `text-sm ${textSecondaryOnSurface}` : "sr-only"} role="status">
+            {lostAnswer
+              ? "Dispatch made a link, but its answer was lost on the way. Press Invite again: a new link ends that one."
+              : ""}
+          </p>
           {invite.error === null ? null : (
             <QueryError message={invitationRefusal(email, invite.error)} />
           )}
