@@ -717,6 +717,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		},
 		"DISPATCH_OUTSIDE_ORIGIN":           outsideOriginReachesItsReaders,
 		"DISPATCH_SIGNIN_WORKSPACE_DOMAINS": workspaceDomainsReachTheirReader,
+		"DISPATCH_SIGNIN_PASSKEY":           passkeySettingReachesItsReaders,
 		"DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER": func(t *testing.T) {
 			domain := map[string]string{"DISPATCH_SIGNIN_ISSUER": "http://127.0.0.1:9", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com", "DISPATCH_TEST_HOOKS": "1"}
 			refusedWith(t, domain, "DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com")

@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 )
 
 // Boot refuses DISPATCH_SIGNIN_WORKSPACE_DOMAINS without the sign-in domain it lists the
@@ -62,16 +66,38 @@ func TestOutsideSignInWorkspaceDomainsSettingRefusals(t *testing.T) {
 }
 
 // workspaceDomainsReachTheirReader hands DISPATCH_SIGNIN_WORKSPACE_DOMAINS, through the settings
-// read alone, to boot, which holds each entry trimmed and judges it in the A-label form the
-// Workspace-address check compares in (workspaceDomainALabel), and refuses it without the sign-in
-// domain.
+// read alone, to boot, which holds each entry trimmed, and to the rule passkey sign-in builds from
+// boot (signInRule), which reads each entry as its A-label (workspaceDomainALabels): an address on a
+// listed domain, written either way, or on a subdomain of one, is a Workspace address, which the
+// rule refuses without reading the lists, and an address on no listed domain is left to the lists.
+// Boot refuses the setting without the sign-in domain.
+//
+// Control: hand the rule the entries as written (no workspaceDomainALabels), and
+// bob@xn--bcher-kva.example is no Workspace address and the reader fails naming it.
 func workspaceDomainsReachTheirReader(t *testing.T) {
-	boot := resolveWith(t, map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com", "DISPATCH_SIGNIN_WORKSPACE_DOMAINS": " second.example , bücher.example "})
+	boot := resolveWith(t, map[string]string{
+		"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com",
+		"DISPATCH_SIGNIN_WORKSPACE_DOMAINS": " second.example , bücher.example ",
+		"DISPATCH_SIGNIN_PASSKEY":           "1", "DISPATCH_OUTSIDE_ORIGIN": "https://outside.example.com",
+	})
 	if !slices.Equal(boot.SignInWorkspaceDomains, []string{"second.example", "bücher.example"}) {
 		t.Errorf("SignInWorkspaceDomains = %q, want [second.example bücher.example]", boot.SignInWorkspaceDomains)
 	}
-	if label, ok := workspaceDomainALabel(boot.SignInWorkspaceDomains[1]); !ok || label != "xn--bcher-kva.example" {
-		t.Errorf("workspaceDomainALabel(bücher.example) = %q, %t; want xn--bcher-kva.example", label, ok)
+	rule, err := signInRule(boot, identity.ListerFunc(func(context.Context, string) (bool, error) { return true, nil }))
+	passkey, ok := rule.(identity.PasskeyRule)
+	if err != nil || !ok {
+		t.Fatalf("signInRule with passkey sign-in = %T, %v; want an identity.PasskeyRule", rule, err)
+	}
+	for _, address := range []string{"bob@bücher.example", "bob@xn--bcher-kva.example", "bob@eu.second.example", "bob@example.com"} {
+		if !passkey.WorkspaceAddress(address) {
+			t.Errorf("the rule boot built reads %s as no Workspace address, want one", address)
+		}
+		if err := passkey.AdmitsRestricted(context.Background(), address); !errors.Is(err, identity.ErrWorkspaceAddress) {
+			t.Errorf("the rule boot built admits %s as %v, want ErrWorkspaceAddress", address, err)
+		}
+	}
+	if passkey.WorkspaceAddress("bob@outside.example") || passkey.AdmitsRestricted(context.Background(), "bob@outside.example") != nil {
+		t.Error("the rule boot built refuses bob@outside.example, on no listed domain, whom the lists name")
 	}
 	refusedWith(t, map[string]string{"DISPATCH_SIGNIN_WORKSPACE_DOMAINS": "second.example"}, "DISPATCH_SIGNIN_WORKSPACE_DOMAINS needs DISPATCH_SIGNIN_DOMAIN")
 }
