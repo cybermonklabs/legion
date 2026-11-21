@@ -191,7 +191,8 @@ func TestWarmCodegraphIndexNeverFailsWhenTheCliIsMissing(t *testing.T) {
 // TestWarmCodegraphIndexGivesCodegraphNoSecretLikeVariable proves the correctness/security finding
 // directly: a provisioning caller's own process environment may hold a one-shot GitHub token or
 // other secret (GH_TOKEN here, standing in for any of them), and codegraph must never see it —
-// only the minimal PATH/HOME/DO_NOT_TRACK set codegraphEnvironment names.
+// only the minimal PATH/HOME/DO_NOT_TRACK set codegraphEnvironment names, and on its command line
+// only its subcommand's arguments: any local user can read a process's argv in /proc/<pid>/cmdline.
 func TestWarmCodegraphIndexGivesCodegraphNoSecretLikeVariable(t *testing.T) {
 	// The call log sits under a directory whose name holds a glob character, as a machine's
 	// temporary directory can, so the recorded environments must be read without a pattern.
@@ -214,6 +215,13 @@ func TestWarmCodegraphIndexGivesCodegraphNoSecretLikeVariable(t *testing.T) {
 	}
 	if len(calls) == 0 {
 		t.Fatal("codegraph was never invoked")
+	}
+	// The call log holds each call's arguments alone ("$*"), no path of the machine's, and the
+	// planted values are Unique, so a plain search of it finds only a value that reached argv.
+	for _, planted := range []string{token, grant} {
+		if strings.Contains(string(calls), planted) {
+			t.Fatalf("codegraph's argv carried a secret: %q", calls)
+		}
 	}
 	envs := codegraphEnvironments(t, callLog)
 	if len(envs) != len(strings.Split(strings.TrimSpace(string(calls)), "\n")) {
