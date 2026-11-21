@@ -82,8 +82,9 @@ fi
 # outranks every configuration file, and a read without those arguments would answer for a push
 # nobody is making and pass this one through to an unwrapped git. They are selected by rebuilding
 # the positional parameters inside the command substitution, whose subshell has a copy of its
-# own, so the arguments the exec at the end hands jj are the caller's untouched. jj prints `git`
-# and exits 0 when nothing sets the value, which is the usual case and means the bare `git`
+# own, so the caller's arguments are still whole for the block at the end, which hands the push
+# these same configuration arguments, in this same order, after its other arguments. jj prints
+# `git` and exits 0 when nothing sets the value, which is the usual case and means the bare `git`
 # above, so a read that fails answers for no git at all and is refused rather than taken for
 # that one.
 configured=$(
@@ -124,4 +125,89 @@ case "$configured" in
     ;;
 esac
 
+# The read above cannot see a value that only the push itself would use: a `[[--scope]]` whose
+# `--when.commands` names `git push` or `gerrit upload` sets git.executable-path for that command
+# alone, in a configuration file or in the caller's own `--config '"--scope"=[…]'`, so the `jj
+# config get` above answers `git` while the push runs the scope's git. So the push runs with
+# git.executable-path set to this wrapper's git on its own command line, which outranks every
+# configuration file, as a TOML string, quoted, so jj reads it as the path whatever its spelling.
+# Where it goes rests on two rules of jj's, each measured with jj 0.45.1 and 0.46.0-sami on
+# 2026-11-21:
+#
+# - A: a `--config` written after the subcommand makes jj drop every `--config` written before
+#   the subcommand, and a `--config-file` after it every `--config-file` before it; each is
+#   dropped only by a later one of its own option. A forced value appended after a `jj --config
+#   <value> git push` would take <value> off the push but not off the read, which passes every
+#   one of them to `jj config get`: with `git.push="<remote>"` the push would go to origin, and
+#   with `git.private-commits="all()"` a push jj refuses would go ahead.
+# - B: consecutive `--config` arguments form one layer, in which a `--scope` value wins over a
+#   plain value whatever their order, and a `--config-file` between two of them ends the layer.
+#   A forced value appended after a caller's `--config '"--scope"=[…]'` would land in its layer
+#   and lose to the scope.
+#
+# So the push's arguments are the caller's with every `--config` and `--config-file` taken out,
+# in both spellings and each with its value; then those, in the order written; then
+# `--config-file /dev/null`, an empty file, which sets nothing and ends the caller's last layer;
+# then the forced value, in a layer of its own after every one of the caller's. All of it goes
+# before the first `--`, after which jj refuses a `--config` as an unexpected argument, and what
+# follows that `--` stays after it as written. With every configuration argument after the
+# subcommand, jj has none before it to drop, and it reads them in the order the read above passed
+# them to `jj config get`, so the push uses the configuration that read checked, with
+# git.executable-path forced over it. A caller's own unscoped value was read and refused above,
+# with its name in the error.
+#
+# POSIX sh has one list, the positional parameters, so they are doubled: the first pass takes the
+# first copy off the front and appends each argument before the first `--` that is no
+# configuration argument, and the second takes the second copy off and appends the configuration
+# arguments, then the two forced ones, then the `--` and everything after it.
+forced="git.executable-path=\"$wrapper\""
+count=$#
+set -- "$@" "$@"
+left=$count
+takes=
+while [ "$left" -gt 0 ]; do
+  arg=$1
+  shift
+  left=$((left - 1))
+  if [ -n "$takes" ]; then
+    takes=
+    continue
+  fi
+  case "$arg" in
+    --)
+      shift "$left"
+      left=0
+      ;;
+    --config | --config-file) takes=1 ;;
+    --config=* | --config-file=*) ;;
+    *) set -- "$@" "$arg" ;;
+  esac
+done
+left=$count
+takes=
+ended=
+while [ "$left" -gt 0 ]; do
+  arg=$1
+  shift
+  left=$((left - 1))
+  if [ -n "$takes$ended" ]; then
+    takes=
+    set -- "$@" "$arg"
+    continue
+  fi
+  case "$arg" in
+    --)
+      ended=1
+      set -- "$@" --config-file /dev/null --config "$forced" --
+      ;;
+    --config | --config-file)
+      takes=1
+      set -- "$@" "$arg"
+      ;;
+    --config=* | --config-file=*) set -- "$@" "$arg" ;;
+  esac
+done
+if [ -z "$ended" ]; then
+  set -- "$@" --config-file /dev/null --config "$forced"
+fi
 exec "$real" "$@"

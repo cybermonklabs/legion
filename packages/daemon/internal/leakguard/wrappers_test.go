@@ -552,3 +552,98 @@ func TestTheJJWrapperKeepsACommandScopedGitOffThePush(t *testing.T) {
 		})
 	}
 }
+
+// The caller's own configuration arguments reach the push whole, and the jj wrapper's own
+// git.executable-path still outranks every one of them. The wrapper forces that value on the
+// push's command line, and two rules of jj's, measured with jj 0.45.1 and 0.46.0-sami, decide
+// where it may go. Consecutive `--config` arguments form one layer, in which a `--scope` value
+// wins over a plain one whatever their order, so the value appended after a caller's `jj git push
+// --config '"--scope"=[…]'` landed in that layer and lost to the scope: the push ran the scope's
+// git, with no git wrapper and so no leak check. And a `--config` written after the subcommand
+// makes jj drop every `--config` written before it, so the same appended value took a caller's
+// `jj --config <value> git push` off the push but not off the wrapper's read, and the push ran
+// with a configuration other than the one the read checked: to origin rather than the remote
+// git.push names, and past jj's own refusal of a commit git.private-commits makes private. What
+// jj says to those two is plain jj's, which each of their cases runs first: a case whose plain jj
+// no longer says it fails as a stale expectation, not as the wrapper's fault.
+func TestTheJJWrapperKeepsTheCallersConfigurationOnThePushUnderItsOwnGit(t *testing.T) {
+	f := newJJWrapper(t)
+	otherLog := filepath.Join(f.dir, "other-argv")
+	other := logging(t, filepath.Join(f.dir, "other-git"), otherLog)
+	// A change and a bookmark on it, made by the test's own jj, so a push has something to send,
+	// and a second remote, which a case names in origin's place. A push through the stand-in
+	// fails, since the stand-in answers it with nothing, so jj records no push and every case
+	// finds the bookmark as new as the first did.
+	repo := f.repo("repo")
+	if err := os.WriteFile(filepath.Join(repo, "file"), []byte("a change\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.setup.Run(repo, "jj", "describe", "-m", "a change")
+	f.setup.Run(repo, "jj", "bookmark", "create", "probe", "-r", "@")
+	elsewhere := filepath.Join(f.dir, "elsewhere.git")
+	f.setup.Run(f.dir, fixturegit.InitBare(elsewhere, "main")...)
+	f.setup.Run(repo, "jj", "git", "remote", "add", "elsewhere", elsewhere)
+
+	// A scope naming the other git for the push alone, passed on the push's own command line in
+	// each spelling of --config. Whatever the wrapper does about it, refuse the push or run it
+	// through the git wrapper, the other git must never run.
+	for _, push := range []struct {
+		command string
+		args    []string
+	}{
+		{command: "git push", args: []string{"git", "push", "--bookmark", "probe"}},
+		{command: "gerrit upload", args: []string{"gerrit", "upload", "-r", "@", "--remote-branch", "main"}},
+	} {
+		scope := fmt.Sprintf("[{ \"--when\" = { commands = [%q] }, git = { executable-path = %q } }]", push.command, other)
+		for _, spelling := range []struct {
+			name string
+			args []string
+		}{
+			{name: "a --config", args: []string{"--config", "\"--scope\"=" + scope}},
+			{name: "an attached --config=", args: []string{"--config=--scope=" + scope}},
+		} {
+			t.Run(fmt.Sprintf("a jj %s with a scope in %s", push.command, spelling.name), func(t *testing.T) {
+				for _, log := range []string{f.log, otherLog} {
+					if err := os.Remove(log); err != nil && !errors.Is(err, os.ErrNotExist) {
+						t.Fatal(err)
+					}
+				}
+				out, err := f.run.Try(repo, slices.Concat([]string{f.script}, push.args, spelling.args)...)
+				if _, statErr := os.Stat(otherLog); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("the push ran the git that a scope on %q in %s on its command line names, as %q, with no git wrapper and so no leak check: %v\n%s",
+						push.command, spelling.name, ranAs(t, otherLog), err, out)
+				}
+				if strings.Contains(out, "LEAK CHECK SETUP ERROR") {
+					assertRefused(t, out, err, "git.executable-path")
+					return
+				}
+				got := ranAs(t, f.log)
+				at := slices.Index(got, "push")
+				if at < 2 || !slices.Equal(got[at-2:at], []string{"-c", "core.hooksPath=/opt/legion/githooks"}) {
+					t.Fatalf("the wrapper neither refused the push nor ran it through the git wrapper: it reached the git wrapper's git as %q: %v\n%s", got, err, out)
+				}
+			})
+		}
+	}
+
+	// A --config written before the subcommand, on a dry run, which runs no git: says is what jj
+	// prints for it (measured with jj 0.45.1 and 0.46.0-sami), and a push that dropped it says
+	// "Changes to push to origin:" and goes ahead instead.
+	for _, tc := range []struct {
+		name, config, says string
+	}{
+		{name: "a git.private-commits before the subcommand", config: `git.private-commits="all()"`, says: "since it is private"},
+		{name: "a git.push before the subcommand", config: `git.push="elsewhere"`, says: "Changes to push to elsewhere:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := []string{"--config", tc.config, "git", "push", "--bookmark", "probe", "--dry-run"}
+			if out, err := f.setup.Try(repo, append([]string{"jj"}, args...)...); !strings.Contains(out, tc.says) {
+				t.Fatalf("plain jj %q does not say %q, so what this case expects of the wrapper is stale: %v\n%s", args, tc.says, err, out)
+			}
+			out, err := f.run.Try(repo, append([]string{f.script}, args...)...)
+			if !strings.Contains(out, tc.says) {
+				t.Fatalf("the wrapper's push of %q does not say %q as plain jj does, so it ran with a configuration other than the one its read checked: %v\n%s", args, tc.says, err, out)
+			}
+		})
+	}
+}
