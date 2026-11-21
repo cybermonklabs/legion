@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -31,25 +32,27 @@ func scrape(t *testing.T, registry *metrics.Registry) string {
 // last publish error. The cause is logged too: the outbox's own ERROR for the earlier event's
 // failed topic send names that event and its topic. While it waits, each try of the parked lane
 // reads the rule at most once and sends nothing else: the test steps the lane one try at a time,
-// holding each park's timer and running it itself, and a traced pool sees every statement the
-// server sends between one park and the next. Each must be, byte for byte, the rule's own
-// statement (model.MentionCopyRuleSQL), at most one a try; any other statement fails the test,
-// whatever it reads, so a second read of the rule spelled another way fails as a second read
-// spelled the same way does. The send was decided held on a read of the rule: at least one is sent
-// between the comment and the first WARN. Once the topic family is captured again the send lands,
-// the gauges read none and no second WARN comes. The controls are the scrape before the comment and
-// the one after the send landed. The test's waits for the lane are its liveness alone
-// (heldLiveness), never the bound under test.
+// holding each park's timer and running it itself, and reads every statement the server's
+// connections send between one park and the next off the bytes they write (SentStatements), so a
+// statement shows however it was sent - on its own, in a batch, prepared and run by name. Each
+// must be, byte for byte, the rule's own statement (model.MentionCopyRuleSQL) bound to this send's
+// event and destination, at most one a try, or the pool's idle-connection check (PoolPing); any
+// other statement fails the test, whatever it reads. The send was decided held on a read of the
+// rule: at least one, for this send, is sent between the comment and the first WARN, and none for
+// any other send. Once the topic family is captured again the send lands, the gauges read none and
+// no second WARN comes. The controls are the scrape before the comment and the one after the send
+// landed. The test's waits for the lane are its liveness alone (heldLiveness), never the bound
+// under test.
 func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	database := storetest.Open(t)
-	recorder := &storetest.StatementRecorder{}
+	sent := &storetest.SentStatements{}
 	registry := metrics.New()
 	listener, state := newMentionListener(t)
 	handler, _, deps, served := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, envoyTimeout: 30 * time.Second, outboxPublishes: true, metrics: registry,
-		store: storetest.TracedStore(t, database, recorder),
+		store: storetest.SentStore(t, database, sent),
 	})
 	// The sender's park timer: until the test steps the lane, each park's timer starts as the
 	// sender starts it; from then each park hands its timer's run to the test instead.
@@ -92,7 +95,7 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 		attempts, _ := eventAttempts(t, database, first)
 		return attempts > 0
 	})
-	posted := len(recorder.Statements())
+	posted := len(sent.Statements())
 	mention := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "the comment that mentions s1", "mentions": []map[string]any{{"target": "session:s1"}},
 	}))
@@ -101,14 +104,20 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 		return strings.Contains(scrape(t, registry), "envoy_dispatch_mention_sends_held 1\n") &&
 			strings.Contains(logs.String(), warning)
 	})
+	// The held send's own read of the rule: its comment's event, and its destination.
+	heldRead := fmt.Sprintf("event %d to %s", commentEventID(t, database, mention.ID), contracts.LegacyAgentSubject("s1"))
+	var unrecognised []string
 	decidedOn := 0
-	for _, statement := range recorder.Statements()[posted:] {
-		if statement == model.MentionCopyRuleSQL {
+	for _, statement := range sent.Statements()[posted:] {
+		switch read, isRule := ruleRead(statement); {
+		case isRule && read == heldRead:
 			decidedOn++
+		case isRule:
+			unrecognised = append(unrecognised, "a read of the rule for another send, "+read)
 		}
 	}
 	if decidedOn == 0 {
-		t.Errorf("the send was counted held with no read of the rule since the comment, want at least one")
+		t.Errorf("the send was counted held with no read of the rule for it (%s) since the comment, want at least one", heldRead)
 	}
 
 	// The parked lane stepped one try at a time: each park's timer is held and the test runs it,
@@ -117,35 +126,43 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	stepping.Store(true)
 	unpark := nextPark(t, parked)
 	var readsPerTry []int
-	var unrecognised []string
+	pings := 0
 	for range 3 {
-		before := len(recorder.Statements())
+		before := len(sent.Statements())
 		unpark()
 		unpark = nextPark(t, parked)
 		reads := 0
-		for _, statement := range recorder.Statements()[before:] {
-			if statement == model.MentionCopyRuleSQL {
+		for _, statement := range sent.Statements()[before:] {
+			switch read, isRule := ruleRead(statement); {
+			case isRule && read == heldRead:
 				reads++
-				continue
+			case isRule:
+				unrecognised = append(unrecognised, "a read of the rule for another send, "+read)
+			case statement.SQL == storetest.PoolPing:
+				pings++
+			default:
+				unrecognised = append(unrecognised, firstChars(statement.SQL, 160))
 			}
-			unrecognised = append(unrecognised, statement)
 		}
 		readsPerTry = append(readsPerTry, reads)
+	}
+	for _, what := range sent.Blind() {
+		t.Errorf("the recorder could not read a statement the server's connections sent: %s", what)
 	}
 	// Scraped while the lane is parked: the gauges leave out a held lane's head while a try of it
 	// is in flight, which the run of the last timer would start.
 	body := scrape(t, registry)
 	stepping.Store(false)
 	unpark()
-	t.Logf("%d reads of the rule from the comment to its first WARN; three tries of the parked send: reads of the rule %v, %d other statements; gauges:\n%s",
-		decidedOn, readsPerTry, len(unrecognised), heldLines(body))
+	t.Logf("%d reads of the rule for the held send (%s) from the comment to its first WARN; three tries of the parked send: reads of the rule %v, %d idle-connection checks, %d other statements; gauges:\n%s",
+		decidedOn, heldRead, readsPerTry, pings, len(unrecognised), heldLines(body))
 	for try, reads := range readsPerTry {
 		if reads > 1 {
 			t.Errorf("try %d of the parked send read the rule %d times, want at most once", try+1, reads)
 		}
 	}
 	for _, statement := range unrecognised {
-		t.Errorf("a try of the parked send sent a statement that is not the rule's own: %q", firstChars(statement, 160))
+		t.Errorf("the server sent a statement that is not the held send's read of the rule: %q", statement)
 	}
 	if !strings.Contains(body, "envoy_dispatch_mention_send_held_oldest_seconds ") ||
 		strings.Contains(body, "envoy_dispatch_mention_send_held_oldest_seconds 0\n") {
@@ -234,4 +251,19 @@ func firstChars(statement string, n int) string {
 		return text[:n] + "..."
 	}
 	return text
+}
+
+// ruleRead is whether statement is the rule's own statement (model.MentionCopyRuleSQL), byte for
+// byte, and which send it reads for: the event and the destination bound to it, as "event <id> to
+// <destination>".
+func ruleRead(statement storetest.SentStatement) (string, bool) {
+	if statement.SQL != model.MentionCopyRuleSQL {
+		return "", false
+	}
+	event, readEvent := statement.Int8(0)
+	destination, readDestination := statement.Text(1)
+	if !readEvent || !readDestination {
+		return "with arguments that do not read as an event and a destination", true
+	}
+	return fmt.Sprintf("event %d to %s", event, destination), true
 }
