@@ -7,6 +7,7 @@ import (
 	"github.com/nats-io/nkeys"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // AuthCallout is a NATS server's authorization callout: every client that is not one of the
@@ -77,6 +78,25 @@ type AuthCallout struct {
 const calloutPingLines = "# a replica of the auth service that answers nothing is dropped from the callout's queue group within 80 s\n" +
 	"ping_interval: \"20s\"\n" +
 	"ping_max: 2\n"
+
+// privateProjectsTagLines are the lines a callout adds after the ping lines beside
+// PrivateProjects: the server tag natsgrant.PrivateProjectsServerTag. nats-server v2.15.1 reads
+// server_tags (server/opts.go:1803) and copies the server's tags into each authorization request
+// it sends the auth service (claim.Server.Tags = s.getOpts().Tags, server/auth_callout.go:377). The
+// auth service knows a server only by its id and curve key, so the tag is how a request proves
+// that its hub was rendered with PrivateProjects: there, and only there, the auth service admits
+// Dispatch's hub-admission proof and holds every listener to required privacy mode
+// (natsgrant.HubAdmissionAudience, natsgrant.PrivacyRequiredSuffix). A hub rendered without
+// PrivateProjects carries no tag, so its requests prove nothing.
+//
+// The lines are part of CalloutLines, so the clustered hub rolls its pods when the tag comes or
+// goes. nats-server would reload server_tags without a restart (server/reload.go:360-366,
+// :1698-1699), but a reload of the tags alone decides no connection again, so a server that took
+// the tag by a reload would keep every connection the auth service admitted while the tag was
+// absent, and one that lost it every connection admitted under it. Each restart decides every
+// connection again.
+const privateProjectsTagLines = "# this hub is rendered with privateProjects: the auth service admits Dispatch's hub-admission proof only on a request that carries this tag, and there admits a listener only in required privacy mode\n" +
+	"server_tags: [\"" + natsgrant.PrivateProjectsServerTag + "\"]\n"
 
 // The auth service's grant as NATS defines it: the service subscribes to the authorization
 // requests (server/auth_callout.go AuthCalloutSubject) and publishes only its answers, to the
@@ -187,31 +207,38 @@ func serviceGrantRefusal(u User) (field, entry string, wide bool) {
 
 // CalloutLines is every line Render's text holds because of the callout, "" without one, for an
 // authorization Validate accepts: the auth_callout block inside the authorization block, then the
-// ping lines that end the text (calloutParts, which Render writes from too). nats-server v2.15.1
-// refuses a whole reload that changes its callout ("config reload not supported for AuthCallout":
-// server/reload.go diffOptions has no case for it), so a server takes a changed block only when it
-// restarts. The ping lines come and go only with that block, so the one reload of them the server
-// would take is an edit of calloutPingLines itself (reload.go:1751-1754), which each connection
-// applies when its timer next re-arms, within one interval of 20 s (reload.go:670-672 only logs;
-// client.go:6037-6050). A component that reloads its servers rolls them when this text changes,
-// so every server takes a change at one known moment, its restart, with each connection's timer
-// started fresh; the clustered hub's pin of its routes' ping (gcp clusteredHubCluster) appears and
-// goes with the callout, so it always arrives with such a roll. auth_users is in it, so a keyed user
-// added or removed changes it.
+// ping lines and, beside PrivateProjects, the server tag's lines that end the text (calloutParts,
+// which Render writes from too). nats-server v2.15.1 refuses a whole reload that changes its
+// callout ("config reload not supported for AuthCallout": server/reload.go diffOptions has no case
+// for it), so a server takes a changed block only when it restarts. The ping lines come and go
+// only with that block, so the one reload of them the server would take is an edit of
+// calloutPingLines itself (reload.go:1751-1754), which each connection applies when its timer next
+// re-arms, within one interval of 20 s (reload.go:670-672 only logs; client.go:6037-6050). The
+// server tag would reload, but a reload of it decides no connection again (privateProjectsTagLines).
+// A component that reloads its servers rolls them when this text changes, so every server takes a
+// change at one known moment, its restart, with each connection's timer started fresh and each
+// connection decided again; the clustered hub's pin of its routes' ping (gcp clusteredHubCluster)
+// appears and goes with the callout, so it always arrives with such a roll. auth_users is in it, so
+// a keyed user added or removed changes it.
 func (a Authorization) CalloutLines() string {
 	block, tail := a.calloutParts()
 	return block + tail
 }
 
 // calloutParts are the callout's lines of Render's text, both "" without a callout: block, the
-// auth_callout block inside the authorization block, after its users, and tail, the ping lines that
-// end the text. Render and CalloutLines both write them from here, so a line one writes the other
-// holds.
+// auth_callout block inside the authorization block, after its users, and tail, the ping lines
+// and, beside PrivateProjects, the server tag's lines, which end the text. Render and CalloutLines
+// both write them from here, so a line one writes the other holds. Validate refuses PrivateProjects
+// without a callout, so no other text carries the tag.
 func (a Authorization) calloutParts() (block, tail string) {
 	if a.Callout == nil {
 		return "", ""
 	}
-	return a.Callout.block(a.Users), calloutPingLines
+	tail = calloutPingLines
+	if a.PrivateProjects {
+		tail += privateProjectsTagLines
+	}
+	return a.Callout.block(a.Users), tail
 }
 
 // block is the callout's lines of the authorization block, which follow its users: auth_callout

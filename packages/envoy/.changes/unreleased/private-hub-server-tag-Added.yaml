@@ -1,0 +1,4 @@
+kind: Added
+body: |-
+  A hub rendered with `privateProjects` carries the server tag `server_tags: ["envoy-private-projects"]` in its NATS configuration, after the callout's ping lines. nats-server copies its tags into every authorization request, so the auth service can tell from a request alone that its hub was rendered private. Without `privateProjects` the configuration renders exactly as before.
+  The tag is one of the callout's lines (`core.Authorization.CalloutLines`), so setting or removing `privateProjects` rolls `gcp:ClusteredNatsHub`'s pods and every connection is decided again; the VM hub and the AWS hub replace their server on the changed text as they do on any change.

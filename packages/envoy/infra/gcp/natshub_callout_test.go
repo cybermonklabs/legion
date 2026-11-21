@@ -47,6 +47,11 @@ const calloutPingLines = "# a replica of the auth service that answers nothing i
 	"ping_interval: \"20s\"\n" +
 	"ping_max: 2\n"
 
+// privateProjectsTagLines are the lines core renders after the ping lines beside privateProjects:
+// the server tag the auth service reads off each authorization request.
+const privateProjectsTagLines = "# this hub is rendered with privateProjects: the auth service admits Dispatch's hub-admission proof only on a request that carries this tag, and there admits a listener only in required privacy mode\n" +
+	`server_tags: ["envoy-private-projects"]` + "\n"
+
 func otherXKey(t *testing.T) string {
 	t.Helper()
 	curve, err := nkeys.CreateCurveKeys()
@@ -149,14 +154,17 @@ func TestAHubRefusesACalloutCoreRefuses(t *testing.T) {
 	}
 }
 
-// The clustered hub's pods carry the SHA-256 of the callout's lines, the auth_callout block and the
-// ping lines, in the annotation envoy-infra.sjawhar.dev/auth-callout: a change of either, an added
-// user's key in auth_users among them, changes the pod template and rolls the pods one at a time,
-// and a change of a user's grant alone leaves those lines and the annotation as they were, so the
-// reloader applies it. core.Authorization.CalloutLines says why a change rolls rather than reloads.
+// The clustered hub's pods carry the SHA-256 of the callout's lines, the auth_callout block, the
+// ping lines and, beside privateProjects, the server tag, in the annotation
+// envoy-infra.sjawhar.dev/auth-callout: a change of any of them, an added user's key in auth_users
+// or privateProjects set or removed among them, changes the pod template and rolls the pods one at
+// a time, and a change of a user's grant alone leaves those lines and the annotation as they were,
+// so the reloader applies it. core.Authorization.CalloutLines says why a change rolls rather than
+// reloads.
 //
-// Control: hash the auth_callout block alone (core.Authorization.CalloutLines without the ping
-// lines); the first two rows fail.
+// Controls: hash the auth_callout block alone (core.Authorization.CalloutLines without the ping
+// lines); the first two rows fail. Write the server tag's lines after the callout's tail, outside
+// CalloutLines; the privateProjects row fails, since the annotation no longer changes with it.
 func TestClusteredNatsHubRollsThePodsForACalloutChange(t *testing.T) {
 	annotation := func(t *testing.T, args *gcp.ClusteredNatsHubArgs) any {
 		t.Helper()
@@ -185,6 +193,20 @@ func TestClusteredNatsHubRollsThePodsForACalloutChange(t *testing.T) {
 	args = calloutClusteredHub()
 	args.Users[1].Permissions.Publish.Allow = []string{"notifications.>"}
 	require.Equal(t, before, annotation(t, args), "a grant change alone leaves the callout's lines, and the pods, as they were")
+
+	// The server tag is a callout line, so setting privateProjects rolls every pod and removing it
+	// rolls them back: nats-server reloads server_tags, but a reload of the tags alone decides no
+	// connection again, so a server kept by a reload would keep each connection the tag's absence or
+	// presence admitted.
+	public := privateClusteredHub()
+	public.PrivateProjects = false
+	untagged := annotation(t, public)
+	tagged := annotation(t, privateClusteredHub())
+	require.Equal(t, digest(calloutBlock(keyAuth)+calloutPingLines+privateProjectsTagLines), tagged,
+		"setting privateProjects rolls the pods to take the server tag")
+	require.NotEqual(t, untagged, tagged, "privateProjects leaves the pods' annotation as it was, so the tag would reach no running server")
+	require.Equal(t, digest(calloutBlock(keyAuth)+calloutPingLines), untagged,
+		"removing privateProjects rolls the pods back to the untagged lines")
 }
 
 // Beside a callout, the chart's cluster block pins the routes' own ping at today's effective
@@ -205,8 +227,10 @@ func TestClusteredNatsHubPinsTheRoutesPingBesideACallout(t *testing.T) {
 // TestClusteredNatsHubHashesTheRenderedCalloutBlock: the pods' roll annotation is the SHA-256 of
 // the callout's lines exactly as the hub's auth.conf holds them: the auth_callout block cut from
 // the rendered text (what follows the users' closing "  ]" line, up to the authorization block's
-// own "}" line), then the ping lines that end it. So the hash cannot drift from what the servers
-// read. For each hub shape it changes, the callout's own, another xkey and an added user.
+// own "}" line), then the ping lines and, beside privateProjects, the server tag's lines
+// (TestClusteredNatsHubRollsThePodsForACalloutChange), which end it. So the hash cannot drift from
+// what the servers read. For each hub shape it changes, the callout's own, another xkey and an
+// added user.
 //
 // Control: make core's Render write its own block and CalloutLines leave out the last user's key;
 // every row fails.

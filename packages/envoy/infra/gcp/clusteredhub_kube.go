@@ -45,9 +45,10 @@ const (
 	// a raise rolls them as well, which costs a restart and keeps one rule.
 	clusteredHubMaxFileStoreAnnotation = "envoy-infra.sjawhar.dev/max-file-store"
 	// clusteredHubAuthCalloutAnnotation, on the hub's pod template, holds the SHA-256 of auth.conf's
-	// callout lines, the auth_callout block and the ping lines (core.Authorization.CalloutLines),
-	// and is absent without authCallout. A change of either, a user added to or removed from
-	// auth_users among them, rolls the pods as a session-user change does; a change of a grant
+	// callout lines, the auth_callout block, the ping lines and, beside privateProjects, the server
+	// tag (core.Authorization.CalloutLines), and is absent without authCallout. A change of any of
+	// them, a user added to or removed from auth_users or privateProjects set or removed among
+	// them, rolls the pods as a session-user change does; a change of a grant
 	// alone leaves the lines as they were. CalloutLines' doc comment says why a change rolls the
 	// pods rather than reloads, and why the routes' ping pin (clusteredHubCluster) arrives with that
 	// roll; clusteredhub_callout_live_test.go measures the refused reload.

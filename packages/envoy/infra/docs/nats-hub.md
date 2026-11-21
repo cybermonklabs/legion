@@ -324,11 +324,16 @@ exporter's port, 7777. `gcp:NatsHub` opens 8222 only to Google Cloud's health-ch
 rule), from which its group's health check reads `/healthz`; no input widens that, so it has
 nothing to refuse.
 
-`privateProjects` is checked when the hub is planned, and renders nothing itself. What it demands
-(the callout, no session user, no client user beside the auth service's) reaches a running server
-only when that server restarts. On `gcp:ClusteredNatsHub` each pod takes it as the pod roll
-restarts that pod (below), and until then it keeps its old `no_auth_user` and seeded users. On
-`gcp:NatsHub` the VM takes it when the group replaces the VM. So the order holds both ways. Turn
+`privateProjects` is checked when the hub is planned, and renders one thing itself: the server tag
+`server_tags: ["envoy-private-projects"]` after the ping lines (the README's
+[NATS authorization](../README.md#nats-authorization)). nats-server copies it into every
+authorization request, and the auth service admits Dispatch's hub-admission proof only on a request
+that carries it, and there admits a listener only in required privacy mode. What `privateProjects`
+demands (the callout, no session user, no client user beside the auth service's) and its tag reach
+a running server only when that server restarts. On `gcp:ClusteredNatsHub` each pod takes them as
+the pod roll restarts that pod (below), and until then it keeps its old `no_auth_user`, seeded
+users and tags. On `gcp:NatsHub` the VM takes them when the group replaces the VM. So the order
+holds both ways. Turn
 on Dispatch's `DISPATCH_PRIVATE_PROJECTS` only after the hub's update has completed on every server:
 every pod of the clustered hub has restarted, or the VM hub's new VM is up. Turn the hub's
 `privateProjects` off only after no project is private.
@@ -1050,12 +1055,15 @@ reload of them the server would take is an edit of their value (`server/reload.g
 interval when it re-arms (`client.go:6037-6050`), so each connection would take such an edit at
 its timer's next re-arm, within one interval of 20 s. The hub writes the SHA-256 of `auth.conf`'s
 callout lines, `core.Authorization.CalloutLines()` (the `auth_callout` block, which has no
-`timeout` line, and the ping lines), into the hub pods' annotation
-`envoy-infra.sjawhar.dev/auth-callout` (absent without `authCallout`), which rolls the pods, by the
-same depends-on order as the session user's roll, on a change of either: a pod restarted on the old
-`auth.conf` would keep the old callout, and the reload that later brings the new one would be
-refused. The ping lines are in the digest so that every server applies an edit of them at one known
-moment, its pod's restart, with every connection's timer started fresh. The routes' own ping in
+`timeout` line, the ping lines and, beside `privateProjects`, the server tag), into the hub pods'
+annotation `envoy-infra.sjawhar.dev/auth-callout` (absent without `authCallout`), which rolls the
+pods, by the same depends-on order as the session user's roll, on a change of any of them: a pod
+restarted on the old `auth.conf` would keep the old callout, and the reload that later brings the
+new one would be refused. nats-server would reload `server_tags` (`server/reload.go:360-366`), but
+a reload of the tags alone decides no connection again, so the roll is what decides every
+connection under the tag the server now carries. The ping lines are in the digest so that every
+server applies an edit of them at one known moment, its pod's restart, with every connection's
+timer started fresh. The routes' own ping in
 `nats.conf`'s `cluster` block
 ([below](#two-ports-guarded-by-the-networkpolicy-alone)) appears and goes with the callout, so it
 always arrives with a roll. A change of a user's grant or name alone leaves the lines and the pods
