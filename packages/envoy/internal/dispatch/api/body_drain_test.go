@@ -42,6 +42,8 @@ type heldBackBody struct {
 	t          *testing.T
 	connection net.Conn
 	reader     *bufio.Reader
+	// sent is how many bytes of the request, head and body, the client has sent.
+	sent int
 }
 
 // sendPartOfBody posts a body of size bytes to target, sending its head and first, and none of
@@ -70,7 +72,7 @@ func sendPartOfBody(t *testing.T, address, target string, header http.Header, si
 	if _, err := connection.Write(first); err != nil {
 		t.Fatalf("send %d bytes of the %d-byte body before reading the answer: %v", len(first), size, err)
 	}
-	return &heldBackBody{t: t, connection: connection, reader: bufio.NewReader(connection)}
+	return &heldBackBody{t: t, connection: connection, reader: bufio.NewReader(connection), sent: head.Len() + len(first)}
 }
 
 // finish sends the rest of the body and reads the answer.
@@ -122,7 +124,7 @@ func (l *deadlineListener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	recorded := &deadlineConn{Conn: conn}
+	recorded := &deadlineConn{Conn: conn, sent: -1}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.conns == nil {
@@ -146,6 +148,12 @@ func (l *deadlineListener) of(t *testing.T, local net.Addr) *deadlineConn {
 // deadlineConn is a server connection that keeps the read deadline last set on it and, each time a
 // read ends at its deadline, records the deadline then in effect: whatever was set before it, and
 // whatever replaced it before the read ended, the deadline that ended the read.
+//
+// It also keeps a deadline the server sets off the socket until the server has read every byte the
+// client sent (sentAll), then puts that same deadline on it. A drain then reads all of a prefix the
+// client sent, however slowly a loaded machine runs the read, and a deadline already passed by then
+// ends the next read, the one that waits for bytes that never come, at once. Without it a 413 row's
+// verdict depended on reading a megabyte before a 1 s deadline expired.
 type deadlineConn struct {
 	net.Conn
 	mu sync.Mutex
@@ -153,15 +161,21 @@ type deadlineConn struct {
 	// ended at its deadline, in the order they ended.
 	current time.Time
 	ended   []time.Time
+	// read is how many bytes the server has read; sent is how many the client sent, -1 until the
+	// test says (sentAll); held says current is kept off the socket until read reaches sent.
+	read, sent int
+	held       bool
 }
 
 func (c *deadlineConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.read += n
 	if errors.Is(err, os.ErrDeadlineExceeded) {
-		c.mu.Lock()
 		c.ended = append(c.ended, c.current)
-		c.mu.Unlock()
 	}
+	c.releaseLocked()
 	return n, err
 }
 
@@ -169,14 +183,42 @@ func (c *deadlineConn) SetReadDeadline(at time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.current = at
-	return c.Conn.SetReadDeadline(at)
+	if at.IsZero() || c.prefixReadLocked() {
+		c.held = false
+		return c.Conn.SetReadDeadline(at)
+	}
+	c.held = true
+	return c.Conn.SetReadDeadline(time.Time{})
 }
 
 func (c *deadlineConn) SetDeadline(at time.Time) error {
+	if err := c.SetReadDeadline(at); err != nil {
+		return err
+	}
+	return c.Conn.SetWriteDeadline(at)
+}
+
+// sentAll says the client sent n bytes on the connection, and puts a held deadline on the socket
+// if the server has read them all.
+func (c *deadlineConn) sentAll(n int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.current = at
-	return c.Conn.SetDeadline(at)
+	c.sent = n
+	c.releaseLocked()
+}
+
+// prefixReadLocked reports whether the server has read every byte the client sent.
+func (c *deadlineConn) prefixReadLocked() bool {
+	return c.sent >= 0 && c.read >= c.sent
+}
+
+// releaseLocked puts a held deadline on the socket once the server has read every byte the client
+// sent; a read pending on the socket takes it at once.
+func (c *deadlineConn) releaseLocked() {
+	if c.held && c.prefixReadLocked() {
+		c.held = false
+		_ = c.Conn.SetReadDeadline(c.current)
+	}
 }
 
 // endedUnder is the deadline in effect at each read that ended at its deadline.
@@ -687,7 +729,9 @@ func TestAKeyedPostBegunPastItsBoundEndsAtOnce(t *testing.T) {
 // every such deadline must be one a drain computed, drainLimit past its beginning. A deadline
 // replaced after the drain set it, or a drain that chose another bound, fails however loaded the
 // machine is, and a right one passes however long the machine took. A 409 answered before
-// drainLimit had passed still fails too: load only lengthens a step.
+// drainLimit had passed still fails too: load only lengthens a step. The connection keeps each
+// deadline off its socket until the server has read every byte the client sent (deadlineConn), so
+// a row that sends a megabyte past the JSON limit is answered 413 however slowly the drain reads it.
 func TestADrainStopsWaitingForABodyThatStalls(t *testing.T) {
 	const drainLimit = time.Second
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{files: filestest.NewMemory()})
@@ -756,6 +800,7 @@ func TestADrainStopsWaitingForABodyThatStalls(t *testing.T) {
 			}
 			started := time.Now()
 			body := sendPartOfBody(t, server.Listener.Addr().String(), stalled.target, header, stalled.size, stalled.sent)
+			listener.of(t, body.connection.LocalAddr()).sentAll(body.sent)
 			response, answer := body.answer()
 			elapsed := time.Since(started)
 			if response.StatusCode != stalled.status || refusalCode(answer) != stalled.code {
