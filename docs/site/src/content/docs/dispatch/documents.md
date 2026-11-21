@@ -52,12 +52,16 @@ sheet from the bottom.
 To comment, select some text. A bar appears with three actions:
 
 - **Comment** opens a comment on the selection. `Ctrl+Alt+M` (`⌘+⌥+M` on a Mac) does the same
-  from the keyboard.
+  from the keyboard. Each new comment puts the cursor in the comment box, also when a comment
+  box is open already.
 - **Suggest** proposes replacement text for the selection.
 - **Ask** opens a question on the selection, with an urgency, options, and **Allow multiple**.
 
 You can switch between the three in the composer before you send. The selection is highlighted in
 the document, and choosing a highlight opens its thread in the margin.
+
+`Escape` in an empty comment box, or a comment you send, puts the cursor back in the document at
+the text you commented on. On a narrow screen this also closes the sheet.
 
 A thread is a card with its replies in order. In a thread you can:
 
@@ -148,6 +152,13 @@ issue, `dispatch://CORE-12/spec` for its spec, and similar forms for documents, 
 messages. In a document or a comment, a reference shows as a link titled with what it points to.
 Rest the pointer on a link, or focus it with the keyboard, to see a preview card.
 
+A plain click on a link opens it, in a document you edit as well. A link to a Dispatch page, a
+`dispatch://` reference included, opens that page in the same tab. A link to another site opens in
+a new tab. `Ctrl+click` (`⌘+click` on a Mac) or a middle click opens any link in a new tab. In a
+document you edit, put the cursor in a link and press `Alt+Enter` (`⌥+Enter`) to open it. In a
+document you can only read, `Tab` reaches each link and reference, and `Enter` opens it. With a
+link focused, `y` copies its address.
+
 A reference names what it points to only while the id Dispatch records the link under comes to at
 most 2048 bytes: an issue's key, a document's `<KEY>/<name>`, a block's `<KEY>/<name>#<id>`, a
 comment's or message's block's `comment/<id>#<block>` or `message/<id>#<block>`, or an ask's,
@@ -191,7 +202,9 @@ whitespace before the cut, none of its words are indexed. An issue is always fou
 
 Results are grouped by the issue or document they belong to. Choosing a document result opens the
 document and highlights the first place the words appear. Text typed into a live document can take
-about two seconds to show up in search.
+about two seconds to show up in search. `Ctrl+Enter` (`⌘+Enter` on a Mac) opens the highlighted
+result in a new tab, and a `Ctrl`+click or a `⌘`+click opens the result that you click in a new
+tab. The palette stays open.
 
 [Keyboard shortcuts](/legion/dispatch/keyboard/#the-help-and-the-palette) covers the palette's
 other modes.

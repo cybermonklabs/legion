@@ -6,7 +6,8 @@ import {
 } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: a key that is part of an IME composition, which user-event has no form for.
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import type { Window as HappyDOMWindow } from "happy-dom";
 import { type ReactNode, useState } from "react";
@@ -15,12 +16,16 @@ import { Link, MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
-import type { IssueReferenceSummary, SearchResponse, SearchResult } from "../../api/types";
+import { whoAmIQuery } from "../../api/queries";
+import type { IssueReferenceSummary, Project, SearchResponse, SearchResult } from "../../api/types";
+import { CONTROL } from "../../components/control-names";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
-import { appKeymap } from "../shell/keymap";
+import { appKeymap, MOD_KEY_LABEL } from "../shell/keymap";
+import { userPreferenceStorageKey } from "../shell/userPreference";
 import { ANSWER_PREVIEW_CHARS } from "./AskHitStatus";
+import { recordRecent } from "./recents";
 import { SearchPalette } from "./SearchPalette";
 import { searchAnswer } from "./search-fixture";
 import { optionId } from "./search-model";
@@ -151,6 +156,9 @@ interface RenderPaletteOptions {
   control?: ReactNode;
   entries?: string[];
   index?: number;
+  /** Who is signed in, read before the bar opens, as the shell has it: the recent pages the
+   *  bar lists are that person's, and so are the keys (`KeymapProvider`). */
+  login?: string;
   onClose?: () => void;
 }
 
@@ -158,13 +166,17 @@ function renderPalette({
   control,
   entries = ["/"],
   index,
+  login,
   onClose = () => {},
 }: RenderPaletteOptions = {}): { queryClient: QueryClient; unmount: () => void } {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (login !== undefined) {
+    queryClient.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login });
+  }
   const view = render(
     <MemoryRouter initialEntries={entries} initialIndex={index}>
       <QueryClientProvider client={queryClient}>
-        <KeymapProvider>
+        <KeymapProvider login={login}>
           <CurrentRoute />
           {control}
           <SearchPalette onClose={onClose} open />
@@ -539,6 +551,201 @@ test("arrow keys move aria-activedescendant and Enter navigates to the active hr
     );
   } finally {
     search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// dispatch://INFRA-2160, R20: Ctrl+Enter, Cmd+Enter and a Ctrl or Cmd click open a row's page in a
+// new tab, and this tab stays as it was, the bar included.
+test("Ctrl+Enter, Cmd+Enter and a Ctrl+click on a hit open it in a new tab, and the bar stays open with its words, its highlight and the focus in its box", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const open = spyOn(window, "open").mockImplementation(() => null);
+  const closes: string[] = [];
+  const view = renderPalette({ onClose: () => closes.push("close") });
+
+  try {
+    const input = await searchFor(user, "astrolabe");
+    const [first, second] = screen.getAllByRole("option");
+    if (first === undefined || second === undefined)
+      throw new Error("the palette listed fewer than two options");
+    const secondHit = results.find((result) => optionId(result) === second.id);
+    if (secondHit === undefined) throw new Error("the second option is no hit");
+
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    expect(open).toHaveBeenLastCalledWith(
+      "/issues/LEGION-2/spec?q=astrolabe",
+      "_blank",
+      "noopener"
+    );
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(open).toHaveBeenLastCalledWith(
+      "/issues/LEGION-2/spec?q=astrolabe",
+      "_blank",
+      "noopener"
+    );
+
+    await user.keyboard("{Control>}");
+    await user.click(second);
+    await user.keyboard("{/Control}");
+    expect(open).toHaveBeenCalledTimes(3);
+    expect(open).toHaveBeenLastCalledWith(secondHit.href, "_blank", "noopener");
+
+    expect(screen.getByTestId("current-route").textContent).toBe("/");
+    expect(closes).toEqual([]);
+    expect(screen.getByRole("dialog", { name: "Search" })).toBeInTheDocument();
+    expect(input).toHaveFocus();
+    expect(input).toHaveValue("astrolabe");
+    expect(input).toHaveAttribute("aria-activedescendant", first.id);
+
+    // A plain Enter still opens the hit here, as it always has.
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("current-route").textContent).toBe(
+      "/issues/LEGION-2/spec?q=astrolabe"
+    );
+    expect(open).toHaveBeenCalledTimes(3);
+  } finally {
+    open.mockRestore();
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("Ctrl+Enter on a project row and on a recent page opens it in a new tab, and on an action row runs nothing", async () => {
+  const user = userOnFakeClock();
+  const ran: string[] = [];
+  const unregister = registerClose(ran);
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: [],
+      key: "INFRA",
+      name: "Infra",
+      open_asks: 0,
+    },
+  ]);
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  recordRecent("alice", { label: "LEGION-7 Lens grinding", path: "/issues/LEGION-7" });
+  const open = spyOn(window, "open").mockImplementation(() => null);
+  const closes: string[] = [];
+  const view = renderPalette({ login: "alice", onClose: () => closes.push("close") });
+
+  try {
+    // The box is empty, so the bar opens on the recent pages, the first highlighted.
+    const recent = await screen.findByRole("option", { name: "LEGION-7 Lens grinding" });
+    const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
+    expect(input).toHaveAttribute("aria-activedescendant", recent.id);
+    await user.click(input);
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    expect(open).toHaveBeenLastCalledWith("/issues/LEGION-7", "_blank", "noopener");
+
+    await searchFor(user, "infra");
+    const project = await screen.findByRole("option", { name: /^Infra/ });
+    expect(input).toHaveAttribute("aria-activedescendant", project.id);
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(open).toHaveBeenLastCalledWith("/projects/INFRA", "_blank", "noopener");
+
+    // An action has no page, and a key that only opens a tab writes nothing.
+    await searchFor(user, "clo");
+    await waitFor(() => expect(input).toHaveAttribute("aria-activedescendant", CLOSE_ROW));
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await user.keyboard("{Control>}");
+    await user.click(screen.getByRole("option", { name: "Close issue" }));
+    await user.keyboard("{/Control}");
+    expect(ran).toEqual([]);
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(closes).toEqual([]);
+    expect(screen.getByTestId("current-route").textContent).toBe("/");
+  } finally {
+    open.mockRestore();
+    whoAmI.mockRestore();
+    listProjects.mockRestore();
+    search.mockRestore();
+    unregister();
+    window.localStorage.clear();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("the key hint row names the platform's command key with Enter for a new tab", async () => {
+  // The key's own box, and what the row says it does beside it: `$mod` as every key hint draws
+  // it, ⌘ under a Mac's browser and Ctrl elsewhere.
+  const view = renderPalette();
+  try {
+    const hints = screen.getByTestId("search-keyboard-hints");
+    const kbd = within(hints).getByText(/\+Enter$/);
+    expect(kbd).toHaveTextContent(`${MOD_KEY_LABEL}+Enter`);
+    expect(kbd.closest("span")).toHaveTextContent("to open in a new tab");
+  } finally {
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// A key that is part of an input method's composition is the composition's, and its default
+// stays the browser's: the arrows move no highlight, Enter opens no row, and Backspace on the
+// empty box widens no chip. The bar is opened over an issue page, where the plain Backspace on
+// the empty box does widen the chip to the project; the page has no writing cursor in a block,
+// so Tab narrows nothing there with or without a composition.
+test("arrow keys, Enter and Backspace inside an IME composition move no highlight, route or chip", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  // The bar opened over an issue reads that issue once there are words in the box, to offer
+  // them to an agent holding it (`SendToAgentOffer.tsx`). No agent holds LEGION-2, so the bar
+  // offers no such row and the hits are the whole list.
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue({
+    ...issueFixture,
+    artifacts: [{ ...specArtifact, issue_key: "LEGION-2", project: "LEGION" }],
+    key: "LEGION-2",
+    number: 2,
+    project: "LEGION",
+    status: "done",
+    title: "Navigation instruments",
+  });
+  const view = renderPalette({ entries: ["/issues/LEGION-2/spec"] });
+  const box = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
+  const chip = () => screen.getByTestId("search-scope").textContent;
+
+  try {
+    // Backspace widens the chip on an empty box alone, so it is pressed before the words are
+    // typed. `fireEvent` answers false for a key whose default was cancelled, which the bar does
+    // to each key it spends. user-event has no form for this: it cannot mark a key as an IME
+    // composition.
+    expect(chip()).toContain("Acting on LEGION-2");
+    expect(fireEvent.keyDown(box, { isComposing: true, key: "Backspace" })).toBe(true);
+    expect(chip()).toContain("Acting on LEGION-2");
+
+    await searchFor(user, "astrolabe");
+    // Two rows at least, so an arrow the bar took would move the highlight off the first.
+    const [first, second] = screen.getAllByRole("option");
+    if (first === undefined || second === undefined)
+      throw new Error("the palette listed fewer than two options");
+    expect(box).toHaveAttribute("aria-activedescendant", first.id);
+    for (const key of ["ArrowDown", "ArrowUp", "Enter"]) {
+      // user-event has no form for this: it cannot mark a key as an IME composition.
+      expect(fireEvent.keyDown(box, { isComposing: true, key }), `${key} composing`).toBe(true);
+      expect(box, `${key} composing`).toHaveAttribute("aria-activedescendant", first.id);
+    }
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-2/spec");
+
+    // The plain Backspace on the emptied box is the bar's: it widens the chip the composing one
+    // left alone.
+    await user.clear(box);
+    await user.keyboard("{Backspace}");
+    expect(chip()).toContain("Acting on the project LEGION");
+  } finally {
+    search.mockRestore();
+    getIssue.mockRestore();
     view.unmount();
     view.queryClient.clear();
   }
@@ -1073,6 +1280,32 @@ test("Escape calls onClose", async () => {
   }
 });
 
+// R14: the bar's own close is the key of Search and actions, the person's where they changed it,
+// so the key that opened the bar closes it, and the `$mod+k` they took from Search closes nothing.
+test("the bar closes on the person's key for Search and actions, and no more on $mod+k", async () => {
+  const user = userOnFakeClock();
+  const keys = userPreferenceStorageKey("alice", "shell.keymap");
+  window.localStorage.setItem(keys, JSON.stringify({ "global.search": ["$mod+j"] }));
+  let closed = 0;
+  const view = renderPalette({
+    login: "alice",
+    onClose: () => {
+      closed += 1;
+    },
+  });
+
+  try {
+    await user.keyboard("{Control>}k{/Control}");
+    expect(closed).toBe(0);
+    await user.keyboard("{Control>}j{/Control}");
+    expect(closed).toBe(1);
+  } finally {
+    window.localStorage.removeItem(keys);
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 test("Escape closes the palette even when pressed before focus has moved into it", async () => {
   const user = userOnFakeClock();
   let closed = 0;
@@ -1268,6 +1501,41 @@ test("says meaning search is not running, and still shows the hits", async () =>
   }
 });
 
+/** Opens the one panel of the bar's control row, which all four narrowings are added from. A
+ *  narrowing already on is a chip in the row instead, so its control is not in the panel. */
+async function openFilters(user: UserEvent): Promise<void> {
+  await user.click(screen.getByRole("button", { name: "Filter" }));
+}
+
+// The dialog's own strip of controls is the control row itself, so the bar's box, the panel the
+// narrowings are added from and the chips of what is on are one row and not two.
+test("the bar's controls are one control row, and nothing above the hits draws a second box", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    const input = await searchFor(user, "astrolabe");
+    const dialog = screen.getByRole("dialog", { name: "Search" });
+    const rows = dialog.querySelectorAll(`[data-control="${CONTROL.controlRow}"]`);
+    const boxes = dialog.querySelectorAll(`[data-control="${CONTROL.searchBox}"]`);
+
+    expect(rows).toHaveLength(1);
+    expect(boxes).toHaveLength(1);
+    // The query box is in that row: nothing between the dialog's top and its first hit is a
+    // search box, a panel trigger or a chip of the bar's own.
+    expect(boxes[0]).toBe(input);
+    expect(rows[0]?.contains(input)).toBe(true);
+    expect(rows[0]?.querySelector(`[data-control="${CONTROL.panelTrigger}"]`)).toBe(
+      screen.getByRole("button", { name: "Filter" })
+    );
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 test("a chip narrows the search, reads back in the person's words, and comes off again", async () => {
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
@@ -1277,8 +1545,9 @@ test("a chip narrows the search, reads back in the person's words, and comes off
     await searchFor(user, "astrolabe");
     expect(search).toHaveBeenLastCalledWith("astrolabe", { keywords_only: true }, aborts);
 
+    await openFilters(user);
     await user.click(screen.getByRole("button", { name: "Status" }));
-    await user.click(screen.getByRole("button", { name: "In progress" }));
+    await user.click(screen.getByRole("option", { name: "In progress" }));
     await waitFor(() =>
       expect(search).toHaveBeenLastCalledWith(
         "astrolabe",
@@ -1287,13 +1556,257 @@ test("a chip narrows the search, reads back in the person's words, and comes off
       )
     );
 
-    const chip = screen.getByRole("button", { name: "Remove Status In progress" });
+    const chip = screen.getByRole("button", { name: "Remove Status In progress filter" });
     expect(chip.textContent).toContain("Status In progress");
     expect(chip.textContent).not.toContain("status:in_progress");
+    // The chip is the shared one, in the shared row: what the bar narrows by is said where
+    // every other page says it.
+    expect(chip.getAttribute("data-control")).toBe(CONTROL.chip);
+    expect(chip.closest(`[data-control="${CONTROL.controlRow}"]`)).not.toBeNull();
 
     await user.click(chip);
     await waitFor(() => expect(screen.queryByText("Status In progress")).toBeNull());
+    // Removing the chip brings that narrowing's own control back into the panel.
+    await openFilters(user);
     expect(screen.getByRole("button", { name: "Status" })).not.toBeNull();
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("a project picked in the panel narrows the search and reads back as its chip", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: [],
+      key: "INFRA",
+      name: "Infra",
+      open_asks: 0,
+    },
+  ]);
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "astrolabe");
+    await openFilters(user);
+    await user.click(await screen.findByRole("button", { name: "Project" }));
+    await user.click(await screen.findByRole("option", { name: "INFRA" }));
+
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith(
+        "astrolabe",
+        { keywords_only: true, project: "INFRA" },
+        aborts
+      )
+    );
+    expect(screen.getByRole("button", { name: "Remove Project INFRA filter" })).not.toBeNull();
+  } finally {
+    listProjects.mockRestore();
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+/** The text boxes in the page now: a list's own box is one that appears when the list opens. */
+function textBoxes(): Element[] {
+  return [
+    ...document.querySelectorAll('input[type="search"], input[type="text"], input:not([type])'),
+  ];
+}
+
+/** Every element whose own name or text is `name`, as a button or an option: what a reader
+ *  picks from a list, however the list draws it. */
+function picks(name: RegExp): HTMLElement[] {
+  return [
+    ...screen.queryAllByRole("button", { name }),
+    ...screen.queryAllByRole("option", { name }),
+  ];
+}
+
+// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
+// options." The bar's Project and Status lists are such lists. Each one, opened from the panel,
+// holds a text box of its own, and a word typed into it leaves only the options that match.
+test("the bar's Project and Status lists each hold a text box that narrows their options", async () => {
+  const user = userOnFakeClock();
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue(
+    ["INFRA", "CORE"].map((key) => ({
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: [],
+      key,
+      name: key === "INFRA" ? "Infra" : "Core",
+      open_asks: 0,
+    }))
+  );
+  const view = renderPalette();
+
+  try {
+    const lists = [
+      { menu: "Project", word: "COR", kept: /^CORE\b/, gone: /^INFRA\b/ },
+      { menu: "Status", word: "progress", kept: /^In progress\b/, gone: /^Todo\b/ },
+    ];
+    for (const { menu, word, kept, gone } of lists) {
+      await openFilters(user);
+      const before = new Set(textBoxes());
+      await user.click(await screen.findByRole("button", { name: menu }));
+      await waitFor(() => expect(picks(gone).length).toBeGreaterThan(0));
+      const own = textBoxes().filter((box) => !before.has(box));
+      expect(own, `the ${menu} list holds no text box of its own`).toHaveLength(1);
+      await user.type(own[0] as HTMLElement, word);
+      await waitFor(() =>
+        expect(picks(gone), `"${word}" leaves ${gone} in the ${menu} list`).toHaveLength(0)
+      );
+      expect(picks(kept).length, `"${word}" takes ${kept} out of the ${menu} list`).toBeGreaterThan(
+        0
+      );
+      await user.keyboard("{Escape}");
+      await user.keyboard("{Escape}");
+    }
+  } finally {
+    listProjects.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// INFRA-3135, round 12: the Project list was drawn from whatever the bar's read of the projects
+// held, and said "No projects yet" while that read was still out and after it had failed. It says
+// which, as the Agents composer's Issue list does.
+test("the bar's Project list says its projects are loading, then that they could not be loaded, and never that there are none", async () => {
+  const user = userOnFakeClock();
+  const read = Promise.withResolvers<Project[]>();
+  const listProjects = spyOn(api, "listProjects").mockReturnValue(read.promise);
+  const view = renderPalette();
+
+  try {
+    await openFilters(user);
+    await user.click(await screen.findByRole("button", { name: "Project" }));
+    const list = await screen.findByRole("listbox", { name: "Project options" });
+    const panel = list.parentElement as HTMLElement;
+    expect(list).toHaveTextContent("Loading projects…");
+    expect(within(panel).queryByText("No projects yet")).toBeNull();
+
+    await act(async () => {
+      read.reject(new Error("projects unreachable"));
+      await read.promise.catch(() => undefined);
+    });
+    expect(await within(panel).findByText("Could not load projects.")).toBeTruthy();
+    expect(within(panel).queryByText("Loading projects…")).toBeNull();
+    expect(within(panel).queryByText("No projects yet")).toBeNull();
+  } finally {
+    listProjects.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// INFRA-3135, review round 1 (thread PRRT_kwDORFy7ds63p6zJ): Shift+Tab out of the Project list
+// left both panels open with the focus on Updated since, and every Escape after it was refused
+// while the list stood open, so the bar could not be closed from the keyboard.
+test("after Shift+Tab out of the Project list, Escape closes the panel, and the next Escape the bar", async () => {
+  const user = userOnFakeClock();
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: [],
+      key: "INFRA",
+      name: "Infra",
+      open_asks: 0,
+    },
+  ]);
+  let closed = 0;
+  const view = renderPalette({
+    onClose: () => {
+      closed += 1;
+    },
+  });
+
+  try {
+    await openFilters(user);
+    await user.click(await screen.findByRole("button", { name: "Project" }));
+    const box = await screen.findByRole("combobox", { name: "Search projects" });
+    act(() => box.focus());
+    await user.tab({ shift: true });
+    expect(screen.queryByRole("listbox", { name: "Project options" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Project" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Filter" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Filter" })).toHaveFocus();
+    expect(closed).toBe(0);
+    await user.keyboard("{Escape}");
+    expect(closed).toBe(1);
+  } finally {
+    listProjects.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// An item's author is a person's login or a session id, and no list holds both, so the author
+// is typed. Enter takes it, and a login still half-typed searches nothing.
+test("an author typed in the panel is taken on Enter, narrows the search, and comes off again", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "astrolabe");
+    await openFilters(user);
+    const author = screen.getByRole("searchbox", { name: "Author" });
+    await user.click(author);
+    await user.paste("ali");
+    expect(search).toHaveBeenLastCalledWith("astrolabe", { keywords_only: true }, aborts);
+
+    await user.paste("ce");
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith(
+        "astrolabe",
+        { author: "alice", keywords_only: true },
+        aborts
+      )
+    );
+
+    const chip = screen.getByRole("button", { name: "Remove Author alice filter" });
+    expect(chip.textContent).toContain("Author alice");
+
+    await user.click(chip);
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith("astrolabe", { keywords_only: true }, aborts)
+    );
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// Shutting the panel is leaving the box: the press that takes the box away is the reader
+// walking off it, and what they typed is taken then rather than dropped.
+test("an author left in the box is taken when the panel shuts", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    const input = await searchFor(user, "astrolabe");
+    await openFilters(user);
+    await user.click(screen.getByRole("searchbox", { name: "Author" }));
+    await user.paste("alice");
+
+    await user.click(input);
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith(
+        "astrolabe",
+        { author: "alice", keywords_only: true },
+        aborts
+      )
+    );
+    expect(screen.getByRole("button", { name: "Remove Author alice filter" })).not.toBeNull();
   } finally {
     search.mockRestore();
     view.unmount();
@@ -1309,8 +1822,8 @@ test("the page's project is the search's context, not a chip narrowing it", asyn
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
   // The bar opened over an issue reads that issue, to offer the words as a message to an agent
   // holding it (`SendToAgentOffer.tsx`). LEGION-2 is the page's issue and the document hit's
-  // own, and no agent holds it, so the bar offers no such row and the chips below the box are
-  // the whole of what this row reads.
+  // own, and no agent holds it, so the bar offers no such row and the chips of its control row
+  // are the whole of what this row reads.
   const getIssue = spyOn(api, "getIssue").mockResolvedValue({
     ...issueFixture,
     artifacts: [{ ...specArtifact, issue_key: "LEGION-2", project: "LEGION" }],
@@ -1331,6 +1844,7 @@ test("the page's project is the search's context, not a chip narrowing it", asyn
       aborts
     );
     expect(screen.queryByRole("button", { name: /^Remove Project/ })).toBeNull();
+    await openFilters(user);
     expect(screen.getByRole("button", { name: "Project" })).not.toBeNull();
   } finally {
     search.mockRestore();

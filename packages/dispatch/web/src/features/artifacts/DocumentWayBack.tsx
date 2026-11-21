@@ -41,18 +41,20 @@ function artifactOwner(artifact: Artifact): ArtifactOwner {
  * both land on the open page with no reload: its owner's document list and, for an issue, the
  * issue read the artifact page's header draws from; the document's own read; and the project
  * document page, which reads it by `project/slug`. The slug does not move with a correction, so
- * the same keys name the document after it.
+ * the same keys name the document after it. Answers when the owner's document list has been read
+ * again, or has failed to be (`refreshOwnerArtifacts`).
  *
  * The live stream refreshes the same reads from the event the write appends
  * (`api/event-refresh.ts`), which is how one reader's correction reaches another's page; this is
  * what makes the writer's own page move whether or not that stream is up.
  */
-function refreshArtifact(queryClient: QueryClient, artifact: Artifact): void {
-  refreshOwnerArtifacts(queryClient, artifactOwner(artifact));
+function refreshArtifact(queryClient: QueryClient, artifact: Artifact): Promise<void> {
+  const list = refreshOwnerArtifacts(queryClient, artifactOwner(artifact));
   void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
   void queryClient.invalidateQueries({
     queryKey: ["artifact-ref", `${artifact.project}/${artifact.slug}`],
   });
+  return list;
 }
 
 /** What the correction form says of a correction the reader stopped: Dispatch may have saved it,
@@ -104,14 +106,14 @@ export function CorrectTitle({
     onSettled: () => submitGuard.release(),
     onSuccess: (_result, { artifact: corrected }) => {
       setCorrecting(false);
-      refreshArtifact(queryClient, corrected);
+      void refreshArtifact(queryClient, corrected);
     },
     // A correction the reader stopped may have landed, and the heading still shows the title the
     // page held before it. Reading the document again is all this does - the write is settled and
     // no attempt of it is left to make - so the heading shows the title Dispatch holds, which is
     // what the form's sentence sends the reader to read.
     onError: (error, { artifact: corrected }) => {
-      if (error instanceof SendStoppedError) refreshArtifact(queryClient, corrected);
+      if (error instanceof SendStoppedError) void refreshArtifact(queryClient, corrected);
     },
   });
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -230,9 +232,13 @@ export function RemoveDocument({
     write: ({ id }, bounds) =>
       removedEvenIfGone(api.deleteArtifact(id, bounds), isArtifactNotFound),
     onSettled: () => submitGuard.release(),
+    // Pending, and the button held, through the read of the document list that takes the row
+    // away, so the press is still the cause of the row's going (`causedByReader`). That read
+    // settles either way, and a failed one lets the button go.
     onSuccess: (_result, removed) => {
-      refreshArtifact(queryClient, removed);
+      const list = refreshArtifact(queryClient, removed);
       onRemoved?.(removed);
+      return list;
     },
   });
   // A removal the reader stopped may have been made, and Remove is its Retry (`onPress`).

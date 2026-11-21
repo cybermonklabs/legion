@@ -14,11 +14,11 @@ import {
 } from "../refs/routes";
 
 /** The link a picture falls back to: the reference's short form, with the real SPA path as its
- * `href` (in the read-only version view the click is taken by proof-editor's
- * `markdownLinkClickPlugin`, which opens the page in a new tab; a Ctrl/Cmd-click does the same in
- * the live editor; a middle click uses the real `href`) and `data-dispatch-href` for the live
- * editor's click handler and the hover card. The words are the reference's own, never an author's
- * caption, as `RefLink` shows them until a title resolves. */
+ * `href`, which a new tab opens, and `data-dispatch-href`, which the editor opens it by - a plain
+ * click in the same tab, a Ctrl, Cmd or middle click in a new one, in the live editor and a past
+ * version alike (`@legion/proof-editor`'s `src/dispatch-link-open.ts`, which acts on a link a node
+ * view draws as its own) - and the hover card reads. The words are the reference's own, never an
+ * author's caption, as `RefLink` shows them until a title resolves. */
 function fallbackLink(
   route: DispatchReferenceRoute,
   document: Document,
@@ -38,9 +38,12 @@ function fallbackLink(
   // mouseup and the click land on it. Putting the caret beside the picture first makes that the
   // selection ProseMirror restores, so nothing scrolls. Chromium focuses the link itself, and an
   // unfocused editor moves its caret without touching the DOM selection. Not `preventDefault`:
-  // Firefox would then start no drag from the link.
+  // Firefox would then start no drag from the link. A middle press is prevented here, since
+  // `stopEvent` keeps every press on the link from the editor's own handlers, so the browser
+  // pastes nothing into the document; the editor opens the link on the `auxclick` that follows.
   link.addEventListener("mousedown", (event) => {
     if (event.button === 0) placeCaretAfter();
+    else if (event.button === 1) event.preventDefault();
   });
   return link;
 }

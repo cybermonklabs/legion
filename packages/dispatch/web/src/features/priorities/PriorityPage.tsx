@@ -6,6 +6,7 @@ import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
 import { issueProject } from "../../lib/issue-key";
+import { addressPath, copyAddress } from "../../lib/page-address";
 import {
   linkHoverText,
   linkText,
@@ -15,6 +16,8 @@ import {
 } from "../../theme/classes";
 import { IssuesTable } from "../project/IssuesTable";
 import { selectIssues } from "../project/issues-table-model";
+import { buildProjectPath } from "../refs/routes";
+import { useKeymapScope } from "../shell/keymap";
 import { InPlaceField } from "./InPlaceField";
 import { PriorityDescription } from "./PriorityDescription";
 import { PriorityMargin } from "./PriorityMargin";
@@ -38,8 +41,12 @@ const OWNER_FIELD = "priority-owner";
  * The description is an attribute of the priority node and not a Dispatch document, so this
  * page shows no versions, no comments on it and no anchors; there is no delete, since a
  * priority is retired by its state. What happened to it is beside the page, in the margin.
+ *
+ * The work table registers its keys in the `project` scope, which the page pushes, so the `j`
+ * and `k` the shortcut help lists for it walk its rows here as on a project's List.
  */
 export function PriorityPage(): ReactNode {
+  useKeymapScope("project");
   const { id = "" } = useParams();
   const priorities = useQuery(prioritiesQuery());
   const work = useQuery({ ...advancesIssuesQuery({ advances: id }, true), enabled: id !== "" });
@@ -187,7 +194,10 @@ export function PriorityPage(): ReactNode {
                   <Link
                     className={`mr-3 ${linkText} ${linkHoverText}`}
                     key={project}
-                    to={`/projects/${project}/issues?${selectIssues(new URLSearchParams(), keys, title)}`}
+                    to={addressPath(
+                      buildProjectPath({ kind: "issues", project }),
+                      selectIssues(copyAddress(), keys, title)
+                    )}
                   >
                     {project}’s issues table
                   </Link>

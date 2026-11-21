@@ -1,5 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useRef, useState } from "react";
 
+import { heldField, heldPress } from "../../components/held-press";
 import {
   backdrop40,
   card,
@@ -48,7 +49,8 @@ export function NameVersionDialog({
   }
 
   const trimmed = summary.trim();
-
+  // While the save is out the field and Save are held rather than disabled: whichever holds the
+  // focus keeps it (`heldPress`), and `commit` sends nothing more.
   const commit = (): void => {
     if (trimmed === "" || saving) {
       return;
@@ -79,8 +81,8 @@ export function NameVersionDialog({
           <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
             What changed?
             <input
-              className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${inputClasses(false)}`}
-              disabled={saving}
+              {...heldField(saving)}
+              className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none aria-disabled:opacity-50 ${inputClasses(false)}`}
               onChange={(event) => setSummary(event.target.value)}
               onKeyDown={handleInputKeyDown}
               ref={inputRef}
@@ -109,8 +111,8 @@ export function NameVersionDialog({
             </button>
             <button
               className={`rounded-lg px-3 py-1.5 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-              disabled={trimmed === "" || saving}
-              onClick={commit}
+              disabled={trimmed === ""}
+              {...heldPress(saving, commit)}
               type="button"
             >
               {saving ? "Saving…" : "Save"}

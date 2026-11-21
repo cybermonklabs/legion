@@ -1,7 +1,6 @@
 import { beforeEach, expect, jest, test } from "bun:test";
 import { type QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -175,14 +174,18 @@ test("the live editor is told to draw a bare key's, a #id's and a bare reference
         "dispatch://CORE-1/artifact/design": "design.md",
       })
     );
-    // A bare key reads as its key and its title, as a rendered body's link does, and clicking it
-    // opens the issue it names.
+    // A bare key reads as its key and its title, as a rendered body's link does, and links to
+    // the page of the issue it names.
     expect(editors[0]?.references?.targets.get("CORE-2")).toEqual({
       href: "dispatch://CORE-2",
       length: undefined,
+      path: "/issues/CORE-2",
       title: "CORE-2 Fix the thing",
       titleKey: "CORE-2",
     });
+    expect(editors[0]?.references?.targets.get(AUTOLINK)?.path).toBe(
+      "/issues/CORE-1/artifacts/design"
+    );
   } finally {
     view.unmount();
   }
@@ -207,6 +210,7 @@ test("a #id the author left a hyphen on draws its title over the id alone", asyn
       expect(editors[0]?.references?.targets.get("#q2-")).toEqual({
         href: "dispatch://CORE-1/ask/ask-1",
         length: 3,
+        path: "/issues/CORE-1/asks/ask-1",
         title: "Which way round?",
         titleKey: undefined,
       })
@@ -353,25 +357,18 @@ test("a past version is told to draw the title for a link whose text is its own 
   }
 });
 
-test("a click on a reference in a past version opens what it names", async () => {
+test("the link opener a past version's editor calls opens what a reference names", async () => {
   await warmMarkdownRenderer();
-  const user = userEvent.setup();
   const { editors, view } = renderVersion();
 
   try {
     await waitFor(() => expect(editors).toHaveLength(1));
-    const root = editors[0]?.root;
-    if (root === undefined) throw new Error("editor root missing");
-    // What the editor draws over a resolved reference: a link carrying its target, which is
-    // also what its Markdown serializer leaves on a `dispatch://` link mark.
+    // A click on a title or a link of the version is the editor's (`@legion/proof-editor`'s
+    // `src/dispatch-link-open.ts`, whose own suite holds it), which opens its target through the
+    // opener the page hands it.
     act(() => {
-      root.innerHTML =
-        '<p><a class="dispatch-reference" role="link" data-dispatch-href="dispatch://CORE-2">CORE-2 Fix the thing</a></p>';
+      editors[0]?.options.openLink?.("dispatch://CORE-2", { newTab: false });
     });
-    const anchor = root.querySelector("a");
-    if (anchor === null) throw new Error("anchor missing");
-
-    await user.click(anchor);
     expect(within(view.container).getByTestId("current-route").textContent).toBe("/issues/CORE-2");
   } finally {
     view.unmount();

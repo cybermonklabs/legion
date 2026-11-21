@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api, askSnoozeRequest } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
@@ -16,6 +16,9 @@ export interface AskSnoozeWrite {
   error: string | undefined;
   /** True after a save failed until the next attempt starts. */
   failed: boolean;
+  /** The press the failed save was while `failed` holds - its ask, and the moment of a snooze or
+   *  `null` for an un-snooze - which `retry` makes again; `undefined` otherwise. */
+  failedPress: AskSnoozePress | undefined;
   /** The ask the newest save is of while that save is in flight or failed, which the list around
    *  the row holds (`useLiveRegistration`); `undefined` while none is. */
   liveAskId: string | undefined;
@@ -25,16 +28,26 @@ export interface AskSnoozeWrite {
    *  the time it renders, so this - not the row's own `snoozed_until` - is what the reader
    *  just asked for. */
   pendingUntil: string | null | undefined;
-  /** Repeats the failed save. */
-  retry: () => void;
-  /** Snoozes the row until `until` (RFC3339), or brings it back with null. */
-  submit: (until: string | null) => void;
+  /** Repeats the failed save; `onSettled` hears whether the server took it. */
+  retry: (onSettled?: SnoozeSettled) => void;
+  /** Snoozes the row until `until` (RFC3339), or brings it back with null; `onSettled` hears
+   *  whether the server took this press. */
+  submit: (until: string | null, onSettled?: SnoozeSettled) => void;
 }
 
+/** Told once a press settles: true where the server took it, false where it refused it. */
+export type SnoozeSettled = (landed: boolean) => void;
+
 /** One press of a row's snooze: the ask it is of, and the moment, or `null` to bring it back. */
-interface AskSnoozePress {
+export interface AskSnoozePress {
   readonly askId: string;
   readonly until: string | null;
+}
+
+/** Who hears one press settle, with the press it is of. */
+interface SnoozeListener {
+  readonly onSettled: SnoozeSettled;
+  readonly press: AskSnoozePress;
 }
 
 /**
@@ -48,10 +61,37 @@ interface AskSnoozePress {
  * may draw the row's control for one ask after another, so the Retry of a press the reader
  * stopped is of that press's ask, and so is the ask the save holds in the list while it is live
  * (`liveAskId`), whichever ask the hook is rendered for by then.
+ *
+ * The caller of `submit` and `retry` hears whether the server took that press (`onSettled`): of
+ * the newest press only, and only while the hook's host is mounted, as TanStack calls a
+ * `mutate`'s own callbacks. A Retry takes no callbacks of its own (`useKeyedWrite`'s `retry`),
+ * so the hook's own callbacks tell the listener held beside the newest press, found by that
+ * press: a Retry makes that very press again.
  */
 export function useAskSnooze(askId: string): AskSnoozeWrite {
   const queryClient = useQueryClient();
   const inboxKey = inboxQuery().queryKey;
+  /** The newest press's listener, set by each `submit` and `retry` and let go once that press is
+   *  heard or the host unmounts. */
+  const listener = useRef<SnoozeListener | undefined>(undefined);
+  useEffect(
+    () => () => {
+      listener.current = undefined;
+    },
+    []
+  );
+  /** Tells the newest press's listener whether the server took `press`; a press before it, or one
+   *  that settles after the host went, tells nobody. */
+  const heard = (press: AskSnoozePress, landed: boolean): void => {
+    const listening = listener.current;
+    if (listening === undefined || listening.press !== press) return;
+    listener.current = undefined;
+    listening.onSettled(landed);
+  };
+  const listen = (press: AskSnoozePress | undefined, onSettled: SnoozeSettled | undefined) => {
+    listener.current =
+      press === undefined || onSettled === undefined ? undefined : { onSettled, press };
+  };
   // The row says why its snooze was refused, where the reader pressed it. A read of the Inbox
   // asked while the snooze is out waits until Dispatch has taken it (its answer or the viewer's
   // snooze event): Dispatch can answer it before, with the row's moment from before the press.
@@ -75,11 +115,13 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
       );
       return previous;
     },
-    onError: (_error, _press, previous) => {
+    onError: (_error, press, previous) => {
       for (const [key, data] of previous ?? []) {
         queryClient.setQueryData(key, data);
       }
+      heard(press, false);
     },
+    onSuccess: (_answer, press) => heard(press, true),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: inboxKey });
     },
@@ -94,11 +136,19 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
         "saved"
       ) ?? mutation.error?.message,
     failed: mutation.isError,
+    failedPress: mutation.isError ? mutation.variables : undefined,
     liveAskId: livePress(mutation)?.askId,
     pending: mutation.isPending,
     pendingUntil: mutation.isPending ? mutation.variables?.until : undefined,
-    retry: mutation.retry,
-    submit: (until) => mutation.mutate({ askId, until }),
+    retry: (onSettled) => {
+      listen(mutation.variables, onSettled);
+      mutation.retry();
+    },
+    submit: (until, onSettled) => {
+      const press = { askId, until };
+      listen(press, onSettled);
+      mutation.mutate(press);
+    },
   };
 }
 

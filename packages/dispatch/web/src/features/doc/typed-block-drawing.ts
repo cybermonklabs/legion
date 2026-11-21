@@ -26,10 +26,13 @@ function attributeValue(value: unknown): string {
 
 /**
  * One block a pointer names, as a link to it: the reference's short form as its words, the app
- * path as its `href`, and the reference itself as `data-dispatch-href`, which is how a link
- * drawn inside a document reaches the router and the hover card (`ProofDocument`'s click
- * handler and `RefPreview`'s trigger, the same pair `pictureView` writes for). A pointer that
- * names nothing is the text it is.
+ * path as its `href`, and the reference itself as `data-dispatch-href`, which the document editor
+ * opens the link by - a plain click in the same tab, a Ctrl, Cmd or middle click in a new one
+ * (`@legion/proof-editor`'s `src/dispatch-link-open.ts`, which takes a link in this header though
+ * the header is `contenteditable="false"`) - and which the hover card reads (`RefPreview`'s
+ * trigger): the same pair `pictureView` writes. In a rendered body `collectReferenceAnchors`
+ * reads the same attribute, and `LinkClickHost` opens the link. A pointer that names nothing is
+ * the text it is.
  */
 function pointerLink(reference: string): DOMOutputSpec {
   const route = parseNodeReference(reference);

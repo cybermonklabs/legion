@@ -16,6 +16,7 @@ import {
 } from "../settings/classes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useHoldUntilDrawn } from "./useHoldUntilDrawn";
 
 /** The characters that separate the entries of a list field, as a character class's body: line
  *  breaks, and commas or spaces too, since neither a GitHub login nor an `owner/repo` can hold
@@ -136,11 +137,31 @@ export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): Re
     record = settings.data;
   }
   // Keyed by the record's write time, so a save (anyone's) starts the fields over from the record
-  // as the server stored it, and so does a caller handing over another record.
-  return <DeliverySettingsFields key={record?.updated_at ?? "unset"} record={record} />;
+  // as the server stored it, and so does a caller handing over another record. A caller that holds
+  // the record reads it itself, so its own read is what moves once a save lands.
+  return (
+    <DeliverySettingsFields
+      key={record?.updated_at ?? "unset"}
+      record={record}
+      replacedByCaller={initial !== undefined}
+    />
+  );
 }
 
-function DeliverySettingsFields({ record }: { record: DeliverySettings | null }): ReactNode {
+/** The form's fields and its Save. Save is held, and the fields with it, while the save is out
+ *  and until what it changes is drawn, so the press is still the cause of the form's going
+ *  (`causedByReader`): through the record's own read, which draws these fields anew under the
+ *  stored record's key, or - where the caller holds the record (`replacedByCaller`), as the
+ *  Delivery page's live view does, drawing the timeline in the form's place once its snapshot
+ *  comes - until the caller replaces the form (`useHoldUntilDrawn`). A refusal lets them go at
+ *  once, with its reason under the form. */
+function DeliverySettingsFields({
+  record,
+  replacedByCaller,
+}: {
+  record: DeliverySettings | null;
+  replacedByCaller: boolean;
+}): ReactNode {
   const queryClient = useQueryClient();
   const id = useId();
   const submitGuard = useSubmitGuard();
@@ -156,6 +177,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
     staging_apply_job_name: record?.staging_apply_job_name ?? "",
     staging_e2e_job_name: record?.staging_e2e_job_name ?? "",
   }));
+  const [drawing, holdUntilDrawn] = useHoldUntilDrawn();
   // The form shows its own refusal, under the fields it was refused over.
   const save = useKeyedWrite({
     method: "PUT",
@@ -164,17 +186,28 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
     label: () => "Delivery settings saved",
     onSettled: () => submitGuard.release(),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: deliverySettingsQuery().queryKey });
+      if (replacedByCaller) holdUntilDrawn();
+      // Pending through the record's own read, which a caller holding the record has none of.
+      const read = queryClient.invalidateQueries({ queryKey: deliverySettingsQuery().queryKey });
       // A live view learns of the save from Dispatch, as a delta, or as the snapshot a page that
       // had none (DELIVERY_NOT_CONFIGURED) is answered once a configuration exists.
       void queryClient.invalidateQueries({
         queryKey: ["delivery"],
         predicate: (query) => !isLiveQuery(query),
       });
+      return read;
     },
   });
+  // The fields and Save are held, not disabled, while a save is out and until what it changes is
+  // drawn: whichever holds the focus keeps it, an edit made then is dropped, and a submit then
+  // sends nothing (`submitGuard` covers only the save's own round trip).
+  const held = save.isPending || drawing;
+  const edit = (next: Draft) => {
+    if (!held) setDraft(next);
+  };
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (held) return;
     submitGuard.guard(() =>
       save.mutate({
         deploy_repo: draft.deploy_repo,
@@ -194,13 +227,16 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
   return (
     <>
       <form className={`mt-6 grid gap-4 rounded-xl border p-4 ${borderDefault}`} onSubmit={submit}>
-        <fieldset className="grid min-w-0 gap-4 sm:grid-cols-2" disabled={save.isPending}>
+        <fieldset
+          aria-disabled={held || undefined}
+          className="grid min-w-0 gap-4 aria-disabled:opacity-50 sm:grid-cols-2"
+        >
           <label className={settingsFieldLabel} htmlFor={`${id}-deploy-repo`}>
             Deploy repository
             <input
               className={settingsMonoInput}
               id={`${id}-deploy-repo`}
-              onChange={(event) => setDraft({ ...draft, deploy_repo: event.target.value })}
+              onChange={(event) => edit({ ...draft, deploy_repo: event.target.value })}
               pattern={ownerRepoPattern}
               placeholder="owner/repo"
               required
@@ -213,7 +249,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
               className={settingsMonoInput}
               id={`${id}-deploy-workflow`}
               onChange={(event) =>
-                setDraft({ ...draft, deploy_workflow_path: textOrEmpty(event.target.value) })
+                edit({ ...draft, deploy_workflow_path: textOrEmpty(event.target.value) })
               }
               placeholder=".github/workflows/<deploy>.yml"
               required
@@ -228,7 +264,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
                 className={settingsMonoInput}
                 id={`${id}-production-jobs`}
                 onChange={(event) =>
-                  setDraft({ ...draft, production_job_names: textOrEmpty(event.target.value) })
+                  edit({ ...draft, production_job_names: textOrEmpty(event.target.value) })
                 }
                 placeholder="One job name per line, as a deploy run lists it"
                 required
@@ -250,7 +286,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
                 className={settingsMonoInput}
                 id={`${id}-production-apply-step`}
                 onChange={(event) =>
-                  setDraft({ ...draft, production_apply_step_name: event.target.value })
+                  edit({ ...draft, production_apply_step_name: event.target.value })
                 }
                 placeholder="The step whose success means the job applied (optional)"
                 value={draft.production_apply_step_name}
@@ -268,7 +304,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
                 aria-describedby={`${id}-pipeline-jobs-hint`}
                 className={settingsMonoInput}
                 id={`${id}-${key}`}
-                onChange={(event) => setDraft({ ...draft, [key]: event.target.value })}
+                onChange={(event) => edit({ ...draft, [key]: event.target.value })}
                 placeholder={placeholder}
                 value={draft[key]}
               />
@@ -284,7 +320,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
               className={settingsMonoInput}
               id={`${id}-pr-checks-workflow`}
               onChange={(event) =>
-                setDraft({ ...draft, pr_checks_workflow_path: textOrEmpty(event.target.value) })
+                edit({ ...draft, pr_checks_workflow_path: textOrEmpty(event.target.value) })
               }
               placeholder=".github/workflows/<checks>.yml"
               required
@@ -299,7 +335,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
                 className={settingsMonoInput}
                 id={`${id}-population-authors`}
                 onChange={(event) =>
-                  setDraft({ ...draft, population_authors: listOrEmpty(event.target.value) })
+                  edit({ ...draft, population_authors: listOrEmpty(event.target.value) })
                 }
                 placeholder="One GitHub login per line"
                 required
@@ -318,7 +354,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
                 aria-describedby={`${id}-excluded-repos-hint`}
                 className={settingsMonoInput}
                 id={`${id}-excluded-repos`}
-                onChange={(event) => setDraft({ ...draft, excluded_repos: event.target.value })}
+                onChange={(event) => edit({ ...draft, excluded_repos: event.target.value })}
                 placeholder="One owner/repo per line"
                 rows={4}
                 value={draft.excluded_repos}
@@ -331,8 +367,8 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
           </div>
         </fieldset>
         <button
+          aria-disabled={held || undefined}
           className={`justify-self-start ${settingsSubmitButton}`}
-          disabled={save.isPending}
           type="submit"
         >
           Save delivery settings

@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, settle } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -135,6 +135,48 @@ test("code -> lookup -> Deny posts the looked-up code too, which the broker requ
     lookupMachineCredential.mockRestore();
     denyCredentialRecord.mockRestore();
     getMachineLogins.mockRestore();
+  }
+});
+
+// An approval Dispatch made and lost its answer for (`409 KEY_COMMITTED`) looks the code up again
+// for its decision, a lookup the approval starts outside Look up's guard and lets the guard go
+// beside. While that lookup is out, Look up and Enter in the code field send no second one.
+test("while the lookup an unanswered approval starts is out, Look up and Enter send no second lookup", async () => {
+  const user = userEvent.setup();
+  const lookedUpAgain = Promise.withResolvers<RecordResponse>();
+  const lookupMachineCredential = spyOn(api, "lookupMachineCredential")
+    .mockResolvedValueOnce(machineRecord())
+    .mockReturnValue(lookedUpAgain.promise);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+  const approveCredentialRecord = spyOn(api, "approveCredentialRecord").mockRejectedValue(
+    new ApiError(409, { code: "KEY_COMMITTED", error: "made; the answer was lost" })
+  );
+
+  try {
+    renderPage();
+
+    const field = screen.getByLabelText("Code shown on the machine");
+    await user.click(field);
+    await user.paste("abcd1234");
+    await user.click(screen.getByRole("button", { name: "Look up" }));
+    expect(await screen.findByText("worker-7.example.com")).toBeDefined();
+
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(lookupMachineCredential).toHaveBeenCalledTimes(2));
+    const lookUp = screen.getByRole("button", { name: "Look up" });
+    await waitFor(() => expect(lookUp).toHaveAttribute("aria-disabled", "true"));
+
+    await user.click(lookUp);
+    await user.click(field);
+    await user.keyboard("{Enter}");
+    await act(settle);
+    expect(approveCredentialRecord).toHaveBeenCalledTimes(1);
+    expect(lookupMachineCredential).toHaveBeenCalledTimes(2);
+  } finally {
+    cleanup();
+    lookupMachineCredential.mockRestore();
+    getMachineLogins.mockRestore();
+    approveCredentialRecord.mockRestore();
   }
 });
 

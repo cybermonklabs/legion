@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 
-import { isIndefinite, isSnoozed, SNOOZE_INDEFINITE, SNOOZE_PRESETS } from "./snooze";
+import {
+  isIndefinite,
+  isSnoozed,
+  SNOOZE_INDEFINITE,
+  SNOOZE_PRESETS,
+  snoozeChoices,
+  snoozeOf,
+} from "./snooze";
 
 function preset(id: string) {
   const found = SNOOZE_PRESETS.find((option) => option.id === id);
@@ -78,4 +85,24 @@ test("a snooze counts only while its moment is ahead", () => {
 test("only the sentinel reads as a snooze the reader ends themselves", () => {
   expect(isIndefinite(SNOOZE_INDEFINITE)).toBe(true);
   expect(isIndefinite(preset("next-week").until(new Date("2026-09-25T14:30:00")))).toBe(false);
+});
+
+test("the Snooze menu offers the presets on 1 to 4, and on a snoozed row Un-snooze on 0", () => {
+  const now = new Date("2026-09-25T14:30:00");
+  const presets = [
+    { digit: "1", label: "Later today", value: "later-today" },
+    { digit: "2", label: "Tomorrow", value: "tomorrow" },
+    { digit: "3", label: "Next week", value: "next-week" },
+    { digit: "4", label: "Until I clear it", value: "indefinite" },
+  ];
+  expect(snoozeChoices(false)).toEqual(presets);
+  const snoozed = snoozeChoices(true);
+  expect(snoozed.slice(0, 4)).toEqual(presets);
+  const unsnooze = snoozed[4];
+  expect(unsnooze).toMatchObject({ digit: "0", label: "Un-snooze" });
+
+  // A preset writes its moment, computed as it is picked, and Un-snooze writes the end of it.
+  expect(snoozeOf("tomorrow", now)).toBe(preset("tomorrow").until(now));
+  expect(snoozeOf(unsnooze?.value ?? "", now)).toBeNull();
+  expect(() => snoozeOf("no-such-choice", now)).toThrow();
 });

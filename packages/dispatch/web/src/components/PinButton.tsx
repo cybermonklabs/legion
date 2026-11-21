@@ -12,6 +12,7 @@ import {
   secondaryButtonText,
   textMutedHoverToSecondary,
 } from "../theme/classes";
+import { heldPress } from "./held-press";
 import { useTooltips } from "./tooltips";
 
 /** The one pin glyph: an outline that fills with `currentColor` once pinned. */
@@ -33,10 +34,11 @@ function PinIcon({ pinned }: { pinned: boolean }): ReactNode {
  *  pinned state, filled primary once pinned. `quiet` is for hosts that show one per row
  *  (conversation turns): no resting border, so a list is not a column of boxes, and the 44 px
  *  target on every breakpoint, so a turn's height never depends on its asynchronously rendered
- *  Markdown body (`ViewportAnchor` compensates React commits, not that later DOM swap). */
+ *  Markdown body (`ViewportAnchor` compensates React commits, not that later DOM swap). `held`
+ *  while the host's pin write is out (`heldPress`). */
 export function PinButton({
   className,
-  disabled = false,
+  held = false,
   label,
   onClick,
   pinned,
@@ -44,7 +46,7 @@ export function PinButton({
   title,
 }: {
   className?: string;
-  disabled?: boolean;
+  held?: boolean;
   label: string;
   onClick: () => void;
   pinned: boolean;
@@ -73,11 +75,10 @@ export function PinButton({
     <button
       aria-label={label}
       aria-pressed={pinned}
-      className={`flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg disabled:cursor-not-allowed disabled:opacity-50 ${
+      className={`flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg refused:cursor-not-allowed refused:opacity-50 ${
         quiet ? "" : "md:min-h-8 md:min-w-8"
       } ${look} ${className ?? ""}`}
-      disabled={disabled}
-      onClick={onClick}
+      {...heldPress(held, onClick)}
       title={tooltips ? (title ?? label) : undefined}
       type="button"
     >

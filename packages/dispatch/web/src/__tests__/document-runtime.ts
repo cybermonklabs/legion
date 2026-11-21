@@ -24,6 +24,9 @@ export interface FakeEditor {
   access: NonNullable<EditorOptions["access"]>;
   /** Each set of block marks the host handed the editor (`setBlockMarks`), in order. */
   blockMarks: BlockMark[][];
+  /** The target of the link at the fake caret, as `linkAtCaret` answers; null for none. A test
+   *  sets it to press the key that opens it. */
+  caretLink: string | null;
   /** How many times the host asked to comment on the selection. */
   commented: number;
   destroyed: boolean;
@@ -123,6 +126,7 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
     const editor: FakeEditor = {
       access: options.access ?? "edit",
       blockMarks: [],
+      caretLink: null,
       commented: 0,
       destroyed: false,
       documentJSON: undefined,
@@ -159,8 +163,16 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
         editor.focused.push(markId);
       },
       getMarkdown: () => editor.markdown ?? root.textContent ?? "",
+      linkAtCaret() {
+        return editor.caretLink;
+      },
       markOffsets() {
         return new Map<string, number>();
+      },
+      openLinkAtCaret() {
+        if (editor.caretLink === null || options.openLink === undefined) return false;
+        options.openLink(editor.caretLink, { newTab: false });
+        return true;
       },
       removeMark() {},
       remarkMark() {

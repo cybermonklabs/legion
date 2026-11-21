@@ -33,6 +33,7 @@ import type { DwellRef } from "../shell/useDwell";
 import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
 import { AskOptionList } from "./AskOptionList";
+import { inboxActionMark } from "./inbox-action-mark";
 
 export function AskEditHistory({ ask, edits }: { ask: Ask; edits: AskEditWithTrees[] }): ReactNode {
   if (ask.edited_at === null) {
@@ -45,7 +46,10 @@ export function AskEditHistory({ ask, edits }: { ask: Ask; edits: AskEditWithTre
       </p>
       {edits.length === 0 ? null : (
         <details className="mt-1">
-          <summary className={`cursor-pointer font-medium ${linkText} ${linkHoverText}`}>
+          <summary
+            className={`cursor-pointer font-medium ${linkText} ${linkHoverText}`}
+            {...inboxActionMark("inbox.previous-versions")}
+          >
             {edits.length === 1
               ? "Show 1 previous version"
               : `Show ${edits.length} previous versions`}
@@ -85,7 +89,10 @@ export function AskAnswerHistory({ answers }: { answers: AskAnswerWithTrees[] })
         Changed <Timestamp at={latest.at} />
       </p>
       <details className="mt-1">
-        <summary className={`cursor-pointer font-medium underline ${textPrimaryOnSuccessCallout}`}>
+        <summary
+          className={`cursor-pointer font-medium underline ${textPrimaryOnSuccessCallout}`}
+          {...inboxActionMark("inbox.earlier-answers")}
+        >
           {earlier.length === 1
             ? "Show 1 earlier answer"
             : `Show ${earlier.length} earlier answers`}
@@ -232,6 +239,7 @@ function AnsweredAsk({
       {onChangeAnswer === undefined ? null : (
         <button
           className={`mt-2 min-h-11 text-sm font-semibold underline ${textPrimaryOnSuccessCallout}`}
+          {...inboxActionMark("inbox.change-answer")}
           onClick={onChangeAnswer}
           type="button"
         >

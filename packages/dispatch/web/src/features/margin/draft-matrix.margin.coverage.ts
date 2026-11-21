@@ -26,6 +26,8 @@ const REASONS = {
   14: "14. A render inside the margin that throws draws the shell's error section in its place (`ErrorBoundary`, \"the margin\", in `app.tsx`), which unmounts the compose and every card as leaving the document does. Each composer keeps what it holds as it goes (`useKeptDrafts`): the compose and an editor by their address (`keepAway`), a thread's reply under its thread's name, written at each keystroke (`unsent.write`), and what was typed over a refusal in its held send (`keepDraft`). Those stores live with the query client, above the boundary (`unsentDraftsOf`, `heldSends`), and so does the compose (`MarginProvider`). The boundary draws the margin again when the page's path changes (`resetKey`, `componentDidUpdate`), with no thread open and no editor (`useMarginSheet` starts again), and its Reload Dispatch reloads the page as the reload rows do. A composer drawn again at its address opens on its draft (`mountDraft`): the compose on its document, a thread's reply when its thread is opened, an editor when its comment's Edit is pressed (beside a newer body where the comment changed, `changedUnder`), as the document-left rows, the another-thread row and the edit file's margin card show.",
   15: "15. On the new issue page, once its reader turns it on, the margin is Details (`Margin`'s `drawer`, `DetailsDrawer`): the same `MarginSheet` with the same model, under the same `MarginProvider`, in a drawer over the right of the page, so where it sits - its width, its resize handle, its class, and on a phone its dialog role and its shade - moves no composer, as (11) says of the column and the panel. Closed, Details hides itself (`hidden={!open}`) and keeps the compose and every card, reply and editor mounted under it, as (9) says of the phone panel. Its being open is the reader's own (its Close, its shade, `Shift+M`, and Escape on a phone), or the margin's when a card the reader picked or a link names lands, and on a phone a link followed inside it closes it; none moves an address. Its focus, and its dialog on a phone, are (12)'s.",
   16: "16. In Details the margin's box draws only what the page put in the margin's slot (`SheetBody`, `useMarginSlotFill`), and nothing while the page has put nothing there; and a reader who turns the new page on or off, or leaves the issue page, moves the margin between Details and its column (`Margin`'s `drawer`). Either unmounts the compose and every card as leaving the document does, and each keeps what it holds as (5) and (14) say: its stores and the compose live above the margin, so it comes back as it was when the margin draws it again, as the document-left rows' returns show.",
+  17: "17. A compose that ends - its Close, Escape or Discard, or its send landing (`closeComposer`) - hands the reader back to the words they commented on only while they are still at it, the focus in its composer or on nothing and no phone thread open (`sheetThreadKey`, `focusAtComposer`): below 1280 px the panel over the document closes, and the document takes the focus. The compose has ended by then (`cancelCompose`), and the closed panel keeps every card, reply and editor mounted under it, as (9) says, so neither moves a draft.",
+  18: "18. The keymap reads the keys of each binding a component registers (`useKeymap`): a catalogue action's are the reader's own keys for it, and a binding written out whole keeps the keys it is written with. Details on a phone registers its own `Shift+M` that way (`DetailsDrawer`), which closes Details as (15) says; reading a binding's keys draws, ends and moves no composer.",
 } as const;
 
 /** The rows that end a newer compose offering the earlier compose's draft beside its field. */
@@ -331,6 +333,14 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("useMarginSheet | - | form | (sheetThreadKey === undefined) ? …", {
     reason: REASONS[10],
   }),
+  ...answers(
+    "useMarginSheet | - | form | if (sheetThreadKey !== undefined || !focusAtComposer()) return …",
+    { reason: REASONS[17] }
+  ),
+  ...answers("useMarginSheet | - | form | if (window.matchMedia(COMPACT_VIEWPORT_QUERY).matches)", {
+    reason: REASONS[17],
+  }),
+  ...answers('useKeymap | - | form | ("action" in binding) ? …', { reason: REASONS[18] }),
   ...answers("useMarginListeners | - | form | if (isCompactViewport && !sheetExpanded) return …", {
     reason: REASONS[12],
   }),

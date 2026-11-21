@@ -40,6 +40,8 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildDispatchReference, buildIssuePath, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
+import { setActionKeys } from "../shell/keymap-keys";
+import { userPreferenceStorageKey } from "../shell/userPreference";
 import { issueDetails } from "./decisions-filter/decisions-fixtures";
 import {
   DocumentAdmissionProvider,
@@ -284,11 +286,12 @@ function EditedDocument({
  *  (`slots/body.tsx`); `editor` stands in for the editor of the document a row is editing in,
  *  which the page draws on that row's stage; `emptyLine` is what the tree says where the issue
  *  holds nothing, none where it is not given; `isClosed` is whether the issue is closed;
- *  `readsHeld` is whether the reads the tree is built from hold their answers, until `holdReads`
- *  draws the same tree with them held; `redraw` draws the same tree again, as a read answering
- *  does, and `reread` draws it over another tree, as a read answering with other nodes does;
- *  `admit` answers for a document's room, as the page's row editor reports what that room
- *  admitted the page to (`document-admission.tsx`). */
+ *  `login` is who the keys are for, whose own keys the keymap takes (`KeymapProvider`), and
+ *  nobody where it is not given; `readsHeld` is whether the reads the tree is built from hold
+ *  their answers, until `holdReads` draws the same tree with them held; `redraw` draws the same
+ *  tree again, as a read answering does, and `reread` draws it over another tree, as a read
+ *  answering with other nodes does; `admit` answers for a document's room, as the page's row
+ *  editor reports what that room admitted the page to (`document-admission.tsx`). */
 function renderTree(
   root: TreeNode,
   {
@@ -297,6 +300,7 @@ function renderTree(
     editor,
     emptyLine,
     isClosed = false,
+    login,
     readsHeld = true,
     readsSettled = true,
     reveal,
@@ -306,6 +310,7 @@ function renderTree(
     editor?: StandInEditor;
     emptyLine?: string;
     isClosed?: boolean;
+    login?: string;
     readsHeld?: boolean;
     readsSettled?: boolean;
     reveal?: readonly TreeNode[];
@@ -326,7 +331,7 @@ function renderTree(
     <MemoryRouter>
       <AddressProbe seen={seen} />
       <QueryClientProvider client={client}>
-        <KeymapProvider>
+        <KeymapProvider login={login}>
           <MarginProvider>
             <FocusedNodeProvider>
               <DocumentAdmissionProvider>
@@ -765,11 +770,12 @@ function readDecisionsText() {
   });
 }
 
-// A control that disables itself while its write is out drops the focus to the document body
-// if it holds it: a keyboard reader loses their place, and the tree closes the body the focus
-// held, taking Change with it (measured in Chromium: a `focusout` from Keep with no related
-// target 45 ms after its write went out, then the kept decision's body removed). So Keep moves
-// the focus onto its decision's own row first, and the row's body stays open throughout.
+// A focused control that goes drops the focus to the document body: a keyboard reader loses
+// their place, and the tree closes the body the focus held, taking Change with it (measured in
+// Chromium: a `focusout` from Keep with no related target 45 ms after its write went out, then
+// the kept decision's body removed). Keep is held while its write is out (`heldPress`), never
+// disabled, and goes once its Keep lands, so its press moves the focus onto its decision's own
+// row first (`DecisionActions.tsx`'s `keepFocusOnRow`), and the row's body stays open throughout.
 test("Keep keeps the focus on its decision's row while its write is out, and after", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -786,8 +792,8 @@ test("Keep keeps the focus on its decision's row while its write is out, and aft
     const keep = await view.findByRole("button", { name: "Keep" });
     await user.click(keep);
     await waitFor(() => expect(kept).toHaveBeenCalled());
-    await waitFor(() => expect(keep).toHaveProperty("disabled", true));
-    expect(document.activeElement, "the focus stayed on Keep, which its write disables").toBe(row);
+    await waitFor(() => expect(keep).toHaveAttribute("aria-disabled", "true"));
+    expect(document.activeElement, "the focus did not move from Keep to its row").toBe(row);
     expect(row.querySelector("[data-node-body]"), "the decision's body closed").not.toBeNull();
 
     await act(async () => answer.resolve({ ...decision, waiting_review: false } as never));
@@ -799,8 +805,8 @@ test("Keep keeps the focus on its decision's row while its write is out, and aft
   }
 });
 
-// The same for Change's own Send, which is disabled while the comment is out and goes with the
-// form once it lands.
+// The same for Change's own Send, which is held while the comment is out and goes with the form
+// once it lands.
 test("Send change keeps the focus on its decision's row while the comment is out, and after", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -820,11 +826,8 @@ test("Send change keeps the focus on its decision's row while the comment is out
     const send = view.getByRole("button", { name: "Send change" });
     await user.click(send);
     await waitFor(() => expect(sent).toHaveBeenCalled());
-    await waitFor(() => expect(send).toHaveProperty("disabled", true));
-    expect(
-      document.activeElement,
-      "the focus stayed on Send change, which its write disables"
-    ).toBe(row);
+    await waitFor(() => expect(send).toHaveAttribute("aria-disabled", "true"));
+    expect(document.activeElement, "the focus did not move from Send change to its row").toBe(row);
     expect(row.querySelector("[data-node-body]"), "the decision's body closed").not.toBeNull();
 
     await act(async () => answer.resolve({ id: "comment-1" } as never));
@@ -6624,6 +6627,49 @@ test("on a phone a branch's counted line opens its nodes in place", async () => 
   expect(view.container.querySelector("[data-crumb]")).toBeNull();
 });
 
+// The counted line goes as its press opens it. A press that put the focus on it would lose that
+// focus as it went, and the page's rescue would answer the loss with the first row drawn in its
+// place, which would then draw its body and change its length in the view (decision 261). So the
+// press takes no focus, and the focus stays where it was: here, on the head's own row.
+test("on a phone a press on a branch's counted line leaves the focus where it was", async () => {
+  setViewport(390);
+  const user = userEvent.setup();
+  const turn = (id: string, children: TreeNode[] = []) =>
+    node({
+      children,
+      held: children.reduce((total, child) => total + child.held + 1, 0),
+      id,
+      reference: buildDispatchReference({ id, key: KEY, kind: "comment" }),
+      text: `Turn ${id}.`,
+      type: "comment",
+    });
+  const root = node({
+    children: [turn("head", [turn("first", [turn("second", [turn("third")])])])],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root);
+  const [headRow] = rowsFor(view.container, "head");
+  const unfold = headRow?.querySelector<HTMLButtonElement>('button[aria-label="Unfold"]');
+  if (headRow === undefined || unfold === null || unfold === undefined) {
+    throw new Error("the head has no row with an Unfold");
+  }
+  await user.click(unfold);
+  const open = await waitFor(() => {
+    const found = view.container.querySelector<HTMLElement>("[data-branch-more] button");
+    if (found === null) throw new Error("no branch is one line counting its nodes");
+    return found;
+  });
+  await act(async () => headRow.focus());
+  expect(document.activeElement).toBe(headRow);
+
+  await user.click(open);
+  await waitFor(() => expect(rowsFor(view.container, "first")).toHaveLength(1));
+  expect(document.activeElement, "the press took the focus, and lost it as the line went").toBe(
+    headRow
+  );
+});
+
 // A row's key is the path from the issue down to it, and it holds the pin, the open body
 // and the tree's one tab stop. The whole tree drawn from a zoomed node keyed its rows from
 // that node, so a zoom re-keyed every row below it: a pin made before the zoom closed as the
@@ -7852,6 +7898,30 @@ test("Left on the row the tree is zoomed to, the whole tree drawn, says the tree
     widths: [1440],
     zoomed: true,
   });
+});
+
+// R14: the outline's keys are actions of the keymap's catalogue, so a key a person gives one of
+// them in Settings (`keymap-keys.ts`) moves the reader on this page, and the default key it
+// replaced does nothing here any more. Down is a key nobody changes, so it still moves.
+test("a key alice gave Move to the next row moves the focus down the tree, and j no longer does", async () => {
+  setViewport(1440);
+  setActionKeys("alice", "issue.tree-next", ["n"]);
+  const user = userEvent.setup();
+  const view = renderTree(twoCommentsTree(), { login: "alice" });
+  try {
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await user.keyboard("j");
+    expect(focusedRow(view.container), "j moved the focus").toBe("comment-1");
+    await user.keyboard("n");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
+    await user.keyboard("k");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await user.keyboard("{ArrowDown}");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
+  } finally {
+    view.unmount();
+    window.localStorage.removeItem(userPreferenceStorageKey("alice", "shell.keymap"));
+  }
 });
 
 // A zoom the drawn tree no longer holds - the reader zoomed into a row, then a filter left that

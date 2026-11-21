@@ -1,19 +1,17 @@
-import { agentRow, openAgents, plannerSession, seedAgents, shownAgentRows } from "./agents";
+import {
+  agentRow,
+  issueListOf,
+  issueOption,
+  issueSearchIn,
+  openAgents,
+  plannerSession,
+  seedAgents,
+  shownAgentRows,
+} from "./agents";
 import { createMessage } from "./api";
 import { holdPosts, pasteFile, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
-import { expect, type Page, test } from "./test";
+import { expect, test } from "./test";
 import { asUser } from "./users";
-
-/** Resolves once every timer queued before it has run: the next task, the soonest a reader's
- *  pick can follow a key. The issue picker's keyboard-step mark lasts until then, so a row that
- *  presses a key on the select and then picks has to be this far along before it picks. */
-async function nextTask(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const turn = Promise.withResolvers<void>();
-    setTimeout(turn.resolve, 0);
-    return turn.promise;
-  });
-}
 
 test.describe("agents page", () => {
   // @pr: The Agents page's keyboard surface: j/k over the rows, Enter into the composer, i into the issue picker, x to select and Shift+P to pin.
@@ -74,9 +72,9 @@ test.describe("agents page", () => {
         "true"
       );
       await expect(reviewerPicker).toHaveAttribute("aria-expanded", "true");
-      // `i` leaves the reader in the picker's own select, where the letters are its type-ahead
-      // and not the page's keys - Escape is the way back to the row, closing it behind them.
-      await expect(reviewer.getByRole("combobox", { name: "Issue" })).toBeFocused();
+      // `i` leaves the reader in the Issue list's text box, where the letters narrow the issues
+      // and are not the page's keys - Escape is the way back to the row, closing it behind them.
+      await expect(issueSearchIn(reviewer)).toBeFocused();
       await page.keyboard.press("Escape");
       await expect(reviewerPicker).toHaveAttribute("aria-expanded", "false");
       await expect(reviewer).toBeFocused();
@@ -111,9 +109,9 @@ test.describe("agents page", () => {
     }
   });
 
-  // `i` has to leave the reader inside what it opened: the picker's `<select>` is where the
-  // arrows choose an issue and where Escape is the control's own way out. Left on the row, the
-  // key would open something no keystroke could then use or close.
+  // `i` has to leave the reader inside what it opened: the Issue list's text box is where the
+  // arrows choose an issue and where Escape is the list's own way out. Left on the row, the key
+  // would open something no keystroke could then use or close.
   test("i lands in the issue picker, and Escape there closes it and returns to the row", async ({
     browser,
   }) => {
@@ -127,7 +125,7 @@ test.describe("agents page", () => {
       await page.keyboard.press("i");
       const toggle = row.getByRole("button", { name: "Choose issue" });
       await expect(toggle).toHaveAttribute("aria-expanded", "true");
-      const picker = row.getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       await expect(picker).toBeFocused();
 
       await page.keyboard.press("Escape");
@@ -140,7 +138,7 @@ test.describe("agents page", () => {
   });
 
   // A pick is what `i` opened the picker for, so committing one hands the reader back to the
-  // message it belongs to rather than dropping them on the document as the select unmounts.
+  // message it belongs to rather than dropping them on the document as the list closes.
   test("choosing an issue closes the picker and leaves focus in the composer", async ({
     browser,
   }) => {
@@ -153,9 +151,9 @@ test.describe("agents page", () => {
       await page.keyboard.press("j");
       await page.keyboard.press("i");
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      await expect(row.getByRole("combobox", { name: "Issue" })).toBeFocused();
+      await expect(issueSearchIn(row)).toBeFocused();
 
-      // The arrows move the selection; Enter is the pick.
+      // The arrows move the active issue; Enter is the pick.
       await page.keyboard.press("ArrowDown");
       await expect(toggle).toHaveAttribute("aria-expanded", "true");
       await page.keyboard.press("Enter");
@@ -167,9 +165,9 @@ test.describe("agents page", () => {
     }
   });
 
-  // The select renders only once the issue list lands, so the whole latency of that read is a
-  // window in which the reader is somewhere else. Focus is the picker's to take only if they
-  // are still where the open left them.
+  // The list takes the focus only once its issues land, so the whole latency of that read is a
+  // window in which the reader is somewhere else. Focus is the list's to take only if they are
+  // still where the open left them.
   test("a slow issue list never pulls the reader off the row they moved to", async ({
     browser,
   }) => {
@@ -194,7 +192,11 @@ test.describe("agents page", () => {
       await expect(rows.nth(1)).toBeFocused();
 
       release?.();
-      await expect(rows.nth(0).getByRole("combobox", { name: "Issue" })).toBeVisible();
+      // The issues have landed, which is when the list decides whether to take the focus. Its
+      // text box is drawn at the open, before they land, so it cannot be what this waits on; the
+      // `<select>` the list replaced was drawn only once they had, which is what this row waited
+      // on.
+      await expect(issueOption(rows.nth(0), "CORE-1")).toBeVisible();
       await expect(rows.nth(1)).toBeFocused();
 
       // And the reader's next key is still a rove, not a write on the row they left.
@@ -230,7 +232,7 @@ test.describe("agents page", () => {
       // composer is its own discard prompt, which is not this path - and the pick itself is made
       // from the keyboard the open hands over to.
       await toggle.click();
-      await expect(row.getByRole("combobox", { name: "Issue" })).toBeFocused();
+      await expect(issueSearchIn(row)).toBeFocused();
       await page.keyboard.press("ArrowDown");
       await page.keyboard.press("Enter");
       await expect(toggle).toContainText("CORE-1");
@@ -240,7 +242,7 @@ test.describe("agents page", () => {
       // And with the pointer all the way: back to no issue, where the mention the channel
       // seeded goes with the channel and the reader's own words stay exactly as typed.
       await toggle.click();
-      await row.getByRole("combobox", { name: "Issue" }).selectOption("");
+      await issueOption(row, "").click();
       await expect(toggle).toContainText("No issue");
       await expect(field).toHaveValue("please look at the migration");
     } finally {
@@ -262,19 +264,18 @@ test.describe("agents page", () => {
       const upload = await holdPosts(page, "**/api/v1/issues/*/artifacts");
       const row = agentRow(page, plannerSession.session_id);
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = row.getByRole("combobox", { name: "Issue" });
       const field = row.getByRole("textbox", { name: "Comment" });
 
       await page.keyboard.press("j");
       await page.keyboard.press("Enter");
       await expect(field).toBeFocused();
       await toggle.click();
-      await picker.selectOption("CORE-1");
+      await issueOption(row, "CORE-1").click();
       await expect(field).toHaveValue("@Planner");
       await pasteFile(field, "notes.md", "# Notes\n");
       await expect(row.getByRole("button", { name: "Uploading file…" })).toBeDisabled();
       await toggle.click();
-      await picker.selectOption("CORE-2");
+      await issueOption(row, "CORE-2").click();
       await expect(toggle).toContainText("CORE-2");
       upload.release();
 
@@ -322,7 +323,7 @@ test.describe("agents page", () => {
       await page.keyboard.press("Enter");
       await expect(field).toBeFocused();
       await row.getByRole("button", { name: "Choose issue" }).click();
-      await row.getByRole("combobox", { name: "Issue" }).selectOption("CORE-1");
+      await issueOption(row, "CORE-1").click();
       await expect(field).toHaveValue("@Planner");
       await field.press("End");
       await page.keyboard.type(" see attached");
@@ -345,7 +346,7 @@ test.describe("agents page", () => {
   });
 
   // The same slow read, but the reader has gone into the composer rather than to another row:
-  // the picker's focus belongs to the open, and typing is not where the open left them.
+  // the list's focus belongs to the open, and typing is not where the open left them.
   test("a slow issue list never takes focus out of the message being typed", async ({
     browser,
   }) => {
@@ -372,7 +373,9 @@ test.describe("agents page", () => {
       await page.keyboard.type("still typing");
 
       release?.();
-      await expect(row.getByRole("combobox", { name: "Issue" })).toBeVisible();
+      // The issues have landed, which is when the list decides whether to take the focus; its
+      // text box is drawn at the open, before they land.
+      await expect(issueOption(row, "CORE-1")).toBeVisible();
       await expect(field).toBeFocused();
       await expect(field).toHaveValue("still typing");
       await expect(row.getByRole("button", { name: "Choose issue" })).toContainText("No issue");
@@ -381,8 +384,9 @@ test.describe("agents page", () => {
     }
   });
 
-  // What `i` opens, Escape closes - including when the list never arrives. A failed or slow read
-  // renders no select, so focus stays on the row, which is exactly where the key has to work.
+  // What `i` opens, Escape closes - including when the list never arrives. A list whose issues
+  // are still out or failed takes no focus, so it stays on the row, which is exactly where the
+  // key has to work.
   test("Escape closes the issue picker from the row when the list fails or is still out", async ({
     browser,
   }) => {
@@ -406,7 +410,8 @@ test.describe("agents page", () => {
       const row = shownAgentRows(page).nth(0);
       const toggle = row.getByRole("button", { name: "Choose issue" });
 
-      // While the read is still out: no select, focus on the row, Escape closes what it opened.
+      // While the read is still out: the list takes no focus, which stays on the row, and Escape
+      // closes what it opened.
       await page.keyboard.press("j");
       await page.keyboard.press("i");
       await expect(toggle).toHaveAttribute("aria-expanded", "true");
@@ -415,11 +420,11 @@ test.describe("agents page", () => {
       await expect(toggle).toHaveAttribute("aria-expanded", "false");
       await expect(row).toBeFocused();
 
-      // And once it has failed: the picker says so, and Escape still leaves.
+      // And once it has failed: the list says so, and Escape still leaves.
       release?.();
       await page.keyboard.press("i");
       await expect(toggle).toHaveAttribute("aria-expanded", "true");
-      await expect(row.getByText(/Could not load issues/i)).toBeVisible();
+      await expect(issueListOf(row).getByText(/Could not load issues/i)).toBeVisible();
       await expect(row).toBeFocused();
       await page.keyboard.press("Escape");
       await expect(toggle).toHaveAttribute("aria-expanded", "false");
@@ -434,7 +439,7 @@ test.describe("agents page", () => {
     }
   });
 
-  // Enter commits whether or not it changes the issue, and the select unmounts either way. A
+  // Enter commits whether or not it changes the issue, and the list closes either way. A
   // commit that left the reader on the document would hand the message they picked the issue
   // for to the page's shortcuts: `j` roves to a row and `x` then ticks its broadcast box.
   test("Enter on the selection already showing still hands the reader to the composer", async ({
@@ -447,7 +452,7 @@ test.describe("agents page", () => {
       await openAgents(page);
       const row = shownAgentRows(page).nth(0);
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = row.getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const field = row.getByRole("textbox", { name: "Comment" });
       const broadcast = row.getByRole("checkbox", { name: "Select Planner for broadcast" });
 
@@ -493,9 +498,9 @@ test.describe("agents page", () => {
     }
   });
 
-  // A key pressed in the last open must not make this one's pointer pick wait for an Enter: the
-  // mark a key leaves lasts one task, so nothing of it is left by the time the picker reopens.
-  test("a pointer pick commits at once after an arrow and Escape in the last open", async ({
+  // Escape picks nothing: an arrow moves only the active issue, so the list closes with the
+  // message still addressed where it was. A press on an issue is a pick, and it commits at once.
+  test("an arrow and Escape pick nothing, and a press on an issue then picks it at once", async ({
     browser,
   }) => {
     await seedAgents();
@@ -505,7 +510,7 @@ test.describe("agents page", () => {
       await openAgents(page);
       const row = shownAgentRows(page).nth(0);
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = row.getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const field = row.getByRole("textbox", { name: "Comment" });
 
       await page.keyboard.press("j");
@@ -514,14 +519,12 @@ test.describe("agents page", () => {
       await page.keyboard.press("ArrowDown");
       await page.keyboard.press("Escape");
       await expect(toggle).toHaveAttribute("aria-expanded", "false");
+      await expect(toggle).toContainText("No issue");
       await expect(row).toBeFocused();
 
-      // Reopened, and picked the way a pointer's choice arrives from the native popup: a change
-      // with no key and no press on the select in front of it.
       await page.keyboard.press("i");
       await expect(picker).toBeFocused();
-      await nextTask(page);
-      await picker.selectOption("CORE-2");
+      await issueOption(row, "CORE-2").click();
       await expect(toggle).toHaveAttribute("aria-expanded", "false");
       await expect(toggle).toContainText("CORE-2");
       await expect(field).toBeFocused();
@@ -531,10 +534,11 @@ test.describe("agents page", () => {
     }
   });
 
-  // A key that opens the select's native popup - `Alt+ArrowDown` here, the arrows on macOS -
-  // steps nothing, and the pick the reader then makes in that popup arrives in a later task.
-  // That is a pick made, as a pointer's is, and it commits with no second Enter.
-  test("a pick from the popup a key opened commits at once", async ({ browser }) => {
+  // A word that matches no issue leaves nothing in the list to pick, so Enter there picks
+  // nothing: the list stays open on the word, and the message keeps the address it had.
+  test("a word that matches no issue leaves nothing to pick, and Enter picks nothing", async ({
+    browser,
+  }) => {
     await seedAgents();
     const context = await asUser(browser, "alice");
     try {
@@ -542,28 +546,31 @@ test.describe("agents page", () => {
       await openAgents(page);
       const row = shownAgentRows(page).nth(0);
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = row.getByRole("combobox", { name: "Issue" });
+      const list = issueListOf(row);
+      const picker = issueSearchIn(row);
       const field = row.getByRole("textbox", { name: "Comment" });
 
       await page.keyboard.press("j");
       await page.keyboard.press("i");
       await expect(picker).toBeFocused();
-      await page.keyboard.press("Alt+ArrowDown");
+      await page.keyboard.type("zzz");
+      await expect(list.getByRole("option")).toHaveCount(0);
+      await expect(list.getByText("No issue matches that.")).toBeVisible();
+      await page.keyboard.press("Enter");
       await expect(toggle).toHaveAttribute("aria-expanded", "true");
-      await nextTask(page);
-      await picker.selectOption("CORE-2");
-      await expect(toggle).toHaveAttribute("aria-expanded", "false");
-      await expect(toggle).toContainText("CORE-2");
-      await expect(field).toBeFocused();
-      await expect(field).toHaveValue("@Planner");
+      await expect(picker).toBeFocused();
+      await expect(toggle).toContainText("No issue");
+      await expect(field).toHaveValue("");
     } finally {
       await context.close();
     }
   });
 
-  // Only a change the key itself made is a step. A key that moved nothing - `ArrowUp` on the
-  // first option - leaves the next change, a task later, a pick.
-  test("a key that moves nothing leaves the next change a pick", async ({ browser }) => {
+  // The list opens on the issue the message is addressed to, as a select does, so the arrows
+  // move on from that issue rather than from the top of the list.
+  test("the list opens on the issue picked, and ArrowUp from it moves to the one above", async ({
+    browser,
+  }) => {
     await seedAgents();
     const context = await asUser(browser, "alice");
     try {
@@ -571,30 +578,38 @@ test.describe("agents page", () => {
       await openAgents(page);
       const row = shownAgentRows(page).nth(0);
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = row.getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const field = row.getByRole("textbox", { name: "Comment" });
 
       await page.keyboard.press("j");
+      await page.keyboard.press("i");
+      await expect(picker).toBeFocused();
+      await page.keyboard.press("ArrowDown");
+      await page.keyboard.press("ArrowDown");
+      await page.keyboard.press("Enter");
+      await expect(toggle).toContainText("CORE-2");
+      // The field is emptied first, since Escape over a written composer is its own discard
+      // prompt.
+      await field.fill("");
+      await page.keyboard.press("Escape");
+      await expect(row).toBeFocused();
+
       await page.keyboard.press("i");
       await expect(picker).toBeFocused();
       await page.keyboard.press("ArrowUp");
-      await expect(picker).toHaveValue("");
-      await nextTask(page);
-      await picker.selectOption("CORE-1");
-      await expect(toggle).toHaveAttribute("aria-expanded", "false");
+      await page.keyboard.press("Enter");
       await expect(toggle).toContainText("CORE-1");
       await expect(field).toBeFocused();
-      await expect(field).toHaveValue("@Planner");
     } finally {
       await context.close();
     }
   });
 
-  // Type-ahead steps the selection from the key's `keypress`, not its `keydown`, and is a step
-  // like the arrows: the picker stays open until Enter. A keyboard reaches the page as two input
-  // events, `rawKeyDown` then `char`, and Playwright's `press` sends both in one; this row sends
-  // them apart, with a task between, so the `keypress` is judged in a task of its own.
-  test("type-ahead moves the issue selection and Enter commits it", async ({ browser }) => {
+  // A word typed into the list narrows it, and the arrows then move among the issues left, the
+  // first of them active as the word lands.
+  test("a typed word narrows the issues, and the arrows move among those left", async ({
+    browser,
+  }) => {
     await seedAgents();
     const context = await asUser(browser, "alice");
     try {
@@ -602,24 +617,18 @@ test.describe("agents page", () => {
       await openAgents(page);
       const row = shownAgentRows(page).nth(0);
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = row.getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const field = row.getByRole("textbox", { name: "Comment" });
 
       await page.keyboard.press("j");
       await page.keyboard.press("i");
       await expect(picker).toBeFocused();
-      const cdp = await context.newCDPSession(page);
-      const key = { code: "KeyC", key: "c", windowsVirtualKeyCode: 67 };
-      await cdp.send("Input.dispatchKeyEvent", { ...key, type: "rawKeyDown" });
-      await nextTask(page);
-      await cdp.send("Input.dispatchKeyEvent", { ...key, text: "c", type: "char" });
-      await cdp.send("Input.dispatchKeyEvent", { ...key, type: "keyUp" });
-      await expect(picker).toHaveValue("CORE-1");
-      await expect(toggle).toHaveAttribute("aria-expanded", "true");
-      await expect(picker).toBeFocused();
-
+      await page.keyboard.type("core");
+      await expect(issueOption(row, "")).toHaveCount(0);
+      await expect(issueListOf(row).getByRole("option")).toHaveCount(2);
+      await page.keyboard.press("ArrowDown");
       await page.keyboard.press("Enter");
-      await expect(toggle).toContainText("CORE-1");
+      await expect(toggle).toContainText("CORE-2");
       await expect(field).toBeFocused();
       await expect(field).toHaveValue("@Planner");
     } finally {
@@ -642,7 +651,7 @@ test.describe("agents page", () => {
       const toggle = row.getByRole("button", { name: "Choose issue" });
       const pick = async (value: string) => {
         await toggle.click();
-        await row.getByRole("combobox", { name: "Issue" }).selectOption(value);
+        await issueOption(row, value).click();
       };
 
       await page.keyboard.press("j");
@@ -688,7 +697,7 @@ test.describe("agents page", () => {
       const toggle = row.getByRole("button", { name: "Choose issue" });
       const pick = async (value: string) => {
         await toggle.click();
-        await row.getByRole("combobox", { name: "Issue" }).selectOption(value);
+        await issueOption(row, value).click();
       };
 
       await page.keyboard.press("j");
@@ -744,7 +753,7 @@ test.describe("agents page", () => {
       await expect(field).toHaveValue("");
 
       await toggle.click();
-      await row.getByRole("combobox", { name: "Issue" }).selectOption("CORE-1");
+      await issueOption(row, "CORE-1").click();
       await expect(toggle).toContainText("CORE-1");
       await expect(field).toHaveValue("@Planner");
     } finally {
@@ -781,8 +790,9 @@ test.describe("agents page", () => {
     }
   });
 
-  // The disable takes focus to the document; only that focus is the composer's to take back. A
-  // reader who moved on during the round trip keeps where they went.
+  // The send holds the composer's fieldset `aria-disabled`, never `disabled`, so it moves no
+  // focus, and nothing takes the focus back when it lands: a reader who moved on during the
+  // round trip keeps where they went.
   test("a send in flight does not steal back focus the reader has moved", async ({ browser }) => {
     await seedAgents();
     const context = await asUser(browser, "alice");

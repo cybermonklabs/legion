@@ -1,9 +1,9 @@
 /**
  * Windowing for a list whose rows are not all the same height: the Agents page's rows, each of
  * which expands into a conversation (`features/agents/AgentsPage.tsx`). Its neighbour
- * `prList.ts` windows the delivery table, where every row is 36 px inside a `<table>` and the
- * rows on screen are arithmetic with nothing measured; a row that grows a conversation inside it
- * cannot be counted that way. Here a row is as tall as the page last measured it, and a row
+ * `prList.ts` windows a list whose every row is 36 px, where the rows on screen are arithmetic
+ * with nothing measured; a row that grows a conversation inside it cannot be counted that way.
+ * Here a row is as tall as the page last measured it, and a row
  * nothing has measured yet is taken to be `estimate` tall, so the list has a length - and a
  * scrollbar - before a single row is drawn. Pure: no React. The caller draws the rows this
  * answers with, measures them, and hands the heights back (`withMeasuredHeights`).

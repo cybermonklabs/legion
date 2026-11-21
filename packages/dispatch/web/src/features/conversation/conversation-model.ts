@@ -114,7 +114,9 @@ function newest(at: string, candidate: string | null | undefined): string {
   return compareTimestamps(candidate, at) > 0 ? candidate : at;
 }
 
-function isUnread(at: string, unreadFrom: string | undefined): boolean {
+/** Whether activity at `at` is at or after the unread boundary `unreadFrom`; nothing is without
+ *  one. */
+export function isUnread(at: string, unreadFrom: string | undefined): boolean {
   return unreadFrom !== undefined && compareTimestamps(at, unreadFrom) >= 0;
 }
 

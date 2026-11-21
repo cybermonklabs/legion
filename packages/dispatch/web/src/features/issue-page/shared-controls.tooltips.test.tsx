@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import * as ts from "typescript";
 
 import { graphNode } from "../../__tests__/graph-fixture";
+import { pickNamed } from "../../__tests__/list-picks";
 import { artifact as specDocument } from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
@@ -695,7 +696,7 @@ const MOUNTS: readonly Mount[] = [
       await user.click(
         within(view.container).getByRole("button", { name: "Add a priority to CORE-1" })
       );
-      await within(view.container).findByRole("combobox", { name: "Priority to advance" });
+      await within(view.container).findByRole("button", { name: pickNamed("Priority to advance") });
       await settleReads();
     },
   },
@@ -1198,7 +1199,7 @@ const priorityLineLoading: Mount = {
     await user.click(
       within(view.container).getByRole("button", { name: "Add a priority to CORE-1" })
     );
-    await within(view.container).findByRole("combobox", { name: "Priority to advance" });
+    await within(view.container).findByRole("button", { name: pickNamed("Priority to advance") });
   },
 };
 
@@ -1218,7 +1219,10 @@ const repoNothingResolved: Mount = {
     return <RepoControl issueKey="CORE-5" project="CORE" repo={null} resolvedRepo={null} />;
   },
   settle: async (view) => {
-    await within(view.container).findByRole("combobox", { name: "Repository of CORE-5" });
+    // The mount is drawn on both surfaces: inside `NoTooltips` the repository is `main`'s box,
+    // labelled by the control's name, and outside it the shared list's trigger, whose name starts
+    // with the same words, its list's name.
+    await within(view.container).findByLabelText("Repository of CORE-5");
   },
 };
 
@@ -1556,13 +1560,21 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
     mountNamed(
       "RepoControl, its own repository and an inherited one, out of a row of Details and in one, and none in one"
     ),
-    // Outside `NoTooltips` a row of Details draws `main`'s box, its clear control with it.
+    // The default is now the shared list's, from #3729: outside `NoTooltips` each repository,
+    // in a row of Details or not, is the list's badge, whose `title` says what it shows - the
+    // issue's own repository, that an inherited one is inherited or the project's default, and
+    // an empty one where no repository resolves - and no clear control is drawn.
     [
-      "Clear it, and the issue inherits a repository again",
-      "Clear it, and the issue inherits a repository again",
+      "acme/api",
+      "Inherited or the project's default",
+      "",
+      "acme/app",
+      "Inherited or the project's default",
     ],
   ],
-  [repoNothingResolved, []],
+  // The default is now the shared list's, from #3729: the badge of an issue with no repository
+  // carries an empty `title`.
+  [repoNothingResolved, [""]],
   [componentsWithPicker, []],
   [componentPickerSaving, []],
   [
@@ -2702,55 +2714,43 @@ test("inside NoTooltips a fact that only a title held is drawn", async () => {
 // Inside `NoTooltips` the repository's clear control carries no `title`: its name stays `main`'s,
 // and its description, in the page's mark, says what the `title` said, that the issue then
 // inherits a repository. A value that is not owner/name, written with Enter, draws `main`'s
-// refusal in the page's failed red, with the page's mark. Outside, the control keeps `main`'s
-// `title` and no description, and the refusal `main`'s red and no mark.
+// refusal in the page's failed red, with the page's mark. Outside `NoTooltips` the repository is
+// the shared list (#3729), whose own behaviour `features/issue/RepoControl.test.tsx` holds.
 test("inside NoTooltips the repository's clear control is described by what its title said, and a refusal is the page's failed red", async () => {
   const user = userEvent.setup();
   const clearExplains = "Clear it, and the issue inherits a repository again";
-  for (const surface of ["inside", "outside"] as const) {
-    const view = draw(
-      <>
-        <RepoControl issueKey="CORE-1" project="CORE" repo="acme/api" resolvedRepo="acme/api" />
-        <RepoControl issueKey="CORE-2" project="CORE" repo={null} resolvedRepo="acme/web" />
-      </>,
-      surface
-    );
-    try {
-      const scope = within(view.container);
-      const clear = scope.getByRole("button", { name: "Clear the repository of CORE-1" });
-      const description = document.getElementById(clear.getAttribute("aria-describedby") ?? "");
-      if (surface === "inside") {
-        expect(clear.getAttribute("title")).toBeNull();
-        expect(
-          scope.getByRole("button", {
-            description: clearExplains,
-            name: "Clear the repository of CORE-1",
-          })
-        ).toBe(clear);
-        expect(description?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
-      } else {
-        expect(clear.getAttribute("title")).toBe(clearExplains);
-        expect(description).toBeNull();
-      }
+  const view = draw(
+    <>
+      <RepoControl issueKey="CORE-1" project="CORE" repo="acme/api" resolvedRepo="acme/api" />
+      <RepoControl issueKey="CORE-2" project="CORE" repo={null} resolvedRepo="acme/web" />
+    </>,
+    "inside"
+  );
+  try {
+    const scope = within(view.container);
+    const clear = scope.getByRole("button", { name: "Clear the repository of CORE-1" });
+    const description = document.getElementById(clear.getAttribute("aria-describedby") ?? "");
+    expect(clear.getAttribute("title")).toBeNull();
+    expect(
+      scope.getByRole("button", {
+        description: clearExplains,
+        name: "Clear the repository of CORE-1",
+      })
+    ).toBe(clear);
+    expect(description?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
 
-      // The focus starts the mappings' read, which lands before the refusal is read.
-      await user.type(scope.getByRole("combobox", { name: "Repository of CORE-2" }), "nope{Enter}");
-      await settleReads();
-      const refusal = scope.getByRole("alert");
-      expect(refusal.textContent).toBe("Write the repository as owner/name.");
-      if (surface === "inside") {
-        expect(classOf(refusal)).toEqual(expect.arrayContaining(tokens(theme.pageFailedText)));
-        expect(
-          classOf(refusal).filter((token) => tokens(theme.dangerText).includes(token))
-        ).toEqual([]);
-        expect(refusal.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
-      } else {
-        expect(refusal.getAttribute("class")).toBe(theme.dangerText);
-        expect(refusal.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(false);
-      }
-    } finally {
-      undraw(view);
-    }
+    // The focus starts the mappings' read, which lands before the refusal is read.
+    await user.type(scope.getByRole("combobox", { name: "Repository of CORE-2" }), "nope{Enter}");
+    await settleReads();
+    const refusal = scope.getByRole("alert");
+    expect(refusal.textContent).toBe("Write the repository as owner/name.");
+    expect(classOf(refusal)).toEqual(expect.arrayContaining(tokens(theme.pageFailedText)));
+    expect(classOf(refusal).filter((token) => tokens(theme.dangerText).includes(token))).toEqual(
+      []
+    );
+    expect(refusal.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+  } finally {
+    undraw(view);
   }
 });
 
@@ -2980,12 +2980,16 @@ test("inside NoTooltips the words come from the page's word list and carry their
       [CONTROL_LABELS.cancel, "page-chrome"],
     ]);
     expect(
-      within(view.container).getByRole("option", { name: CONTROL_LABELS.choose_priority })
+      within(view.container).getByRole("button", {
+        name: `${CONTROL_LABELS.priority_to_advance} ${CONTROL_LABELS.choose_priority}`,
+      })
     ).toBeTruthy();
   });
   await readDrawn(priorityLineLoading, "inside", (view) => {
     expect(
-      within(view.container).getByRole("option", { name: ANSWER_LINES.loading_priorities })
+      within(view.container).getByRole("button", {
+        name: `${CONTROL_LABELS.priority_to_advance} ${ANSWER_LINES.loading_priorities}`,
+      })
     ).toBeTruthy();
   });
   await readDrawn(priorityLineAtCap, "inside", (view) => {

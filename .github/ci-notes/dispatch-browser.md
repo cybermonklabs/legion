@@ -14,7 +14,7 @@ first sections below.
 Every browser job of the Dispatch suite, in one place. ci.yaml's dispatch-browser job calls it
 with the pull-request lane on a pull request that carries no `full-ci` label and the full lane
 on everything else, and the nightly workflow calls it with the full lane. The rows are spread
-over four shard machines, the three `-alone` projects get a machine each, the two-process job,
+over five shard machines, the three `-alone` projects get a machine each, the two-process job,
 the fake-embedder job and the containerised visual review take one each, and one merge job
 joins what the shard and alone legs wrote into a single report and publishes the run's flake
 rate.
@@ -143,7 +143,7 @@ the artifact this job uploaded on the attempt before.
 
 ## The shard job, its stacks and its container
 
-One leg of the lane's rows. Each leg runs the lane's projects with `--shard=N/4` over four
+One leg of the lane's rows. Each leg runs the lane's projects with `--shard=N/5` over four
 Playwright workers, and the run's `globalSetup` starts one stack per worker, each with a
 Postgres, a harness and a file-store bucket of its own (packages/dispatch/e2e/
 harness-pool.ts), so this job has no `postgres:` service and no job-level DATABASE_URL:
@@ -208,10 +208,10 @@ in shard order, in seconds:
   Browser-test dispatch dashboard         413, 293, 307, 292  419, 297, 334, 295
   every other step summed                  76, 67, 72, 85      79, 76, 80, 77
 
-The rule is in this file's head. The browser step's maximum is the full lane's 419 s, so
-419 x 1.15 = 482 s -> 9 min, which is the bound this issue's R1 asks of the longest
+The rule is in this file's head. The browser step's maximum was the full lane's 419 s, so
+419 x 1.15 = 482 s -> 9 min, which is the bound this issue's R1 asked of the longest
 shard's browser step, and which the container does not move: it is the same rows in the
-same browsers.
+same browsers. The maximum has since moved, and the budget with it (below).
 
 The job budget, the shard job's `timeout-minutes`, is the rule's arithmetic, read on sha256:ba003193, the build of commit
 47a222cd (run 42480325123, job 128730667606), and not on the digest this file pins, which
@@ -270,17 +270,19 @@ reached over those 24 legs, in seconds:
 The three uploads are three steps of this job and not one, so the sum below counts each
 of them: 3 + 2 + 4, not 4.
 
-The browser step's own 9 minutes above still holds at the merged head, where #2958's
-accessibility rows joined the shards: its maxima here are 381 s (run 42521581875, job
-128856388199), 355 s (job 128851420516) and 283 s (nightly run 42522550380), all under the
-419 s that budget was derived from, so the pooled maximum the rule reads is still that
-419 s and the budget the rule gives is still 9 minutes. The 474 s main measured for this
-step, which raised it to 10 minutes there, is not in that sample: it was taken on the bare
-runner with the Playwright install this change removes still in the job.
+The browser step's maximum is now 486 s: the shared search, sort and filter controls'
+rows of dispatch://INFRA-3135 (e2e/table-controls.e2e.ts) took shard 3 to 486 s in full-lane
+runs 44176775681 and 44230393182 and 485 s in 44239098359, whose shard 4 took 469 s. main's
+merge-group run 44234702002 took 365, 218, 378 and 269 s, so those rows add 107 s to shard 3
+and 200 s to shard 4. 486 x 1.15 = 559 s -> 10 min, the budget the step carries. The
+9 minutes held at #2958's merged head (maxima 381 s, 355 s and 283 s, under 419 s), and the
+474 s main measured once was taken on the bare runner with the Playwright install still in
+the job.
 
 The browser step was the one step of this job that carried a budget, so the job's budget was
 that budget plus the maxima above of every step without one, which summed to 219 s:
-540 + 219 = 759 s, 12 min 39 s, rounded up to 13 minutes.
+540 + 219 = 759 s, 12 min 39 s, rounded up to 13 minutes, and 600 + 219 = 819 s, 14 minutes,
+once the browser step carried 10.
 
 THE TWO NETWORK READS, AT A BUSY HOUR. That sum read the binaries download at 5 s and the
 image pull, `Initialize containers`, at 45 s, from quiet runs, and on 2026-11-18 a leg of
@@ -297,9 +299,9 @@ it is built again. So the download now carries a budget of its own and a second 
 and the pull is counted at that 355 s: no step holds it, so no step
 budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
 seconds" in that log) answers a failed read, not a slow one. The job's budget is the
-browser step's 540 s, the two download attempts' 120 s each, and the steps without a
-budget at 219 - 5 - 45 + 355 = 524 s: 1,304 s, 21 min 44 s, rounded up to the 22 minutes
-of the shard job's `timeout-minutes`. The browser step's own budget is unchanged, and it still fires before the job's.
+browser step's 600 s, the two download attempts' 120 s each, and the steps without a
+budget at 219 - 5 - 45 + 355 = 524 s: 1,364 s, 22 min 44 s, rounded up to the 23 minutes
+of the shard job's `timeout-minutes`. The browser step's own budget still fires before the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
 again at this change's head, the suite holds 1,427 rows in 194 files, which is two
@@ -313,9 +315,23 @@ wall-clock rows are the alone job's.
 
 ## Why the leg count stands in two places
 
-Four legs. The count is written here and in the `--shard` denominator of the browser step
-(`--shard=$shard/4` in .github/scripts/dispatch-browser-shard-suite.sh), and nowhere else, so the two move together: a denominator larger than the leg list
+Five legs. The count is written here and in the `--shard` denominator of the browser step
+(`--shard=$shard/5` in .github/scripts/dispatch-browser-shard-suite.sh), and nowhere else, so the two move together: a denominator larger than the leg list
 would leave the rows of the missing legs unrun with nothing red.
+
+Why five, and not four. The full lane's four legs carried about 2,050 s of rows each, and their
+browser steps ran close to the 10 minutes they carry. In run 44786047315 (dispatch://INFRA-2160,
+head b762d647) the four steps took 520, 457, 456 and 571 s. In run 44828129710 (head f89f5c45),
+with the same rows, they took 455, 559, 600 and 600 s: legs 3 and 4 hit the bound with every row
+passed and none failed. Summed over the 426 rows that leg 3 ran in both runs, its rows took
+1,503 s in the first and 2,151 s in the second, so that machine was 43 per cent slower on the
+same work. The rows of the four legs sum to 1,700, 2,110, 2,185 and 2,212 s in the second run, and
+no one file holds that time: the keyboard rows of dispatch://INFRA-2160 sum to 1,178 s over 248
+rows, and the shared controls' rows of dispatch://INFRA-3135 (e2e/table-controls.e2e.ts) to
+933 s over legs 3 and 4, beside the rows that were there before both. A leg on a slow machine
+needs about a tenth less work to fit, so a faster row or two does not hold it. A fifth leg
+gives each about 1,640 s of rows, four fifths of a leg's load before. The step budget stays
+as the rule gives it until a run of five legs is measured.
 
 ## What the shard job downloads in place of a Go build
 
@@ -346,7 +362,7 @@ run-broker.sh serves from.
 
 The step budget note above does not count this step, which is new here. It copies one
 106 MB artifact on the runner's disk (141 ms for those bytes on a pod), and the 16 s
-that rounding up to 22 minutes leaves hold it.
+that rounding up to 23 minutes leaves hold it.
 
 ## Why the shard job makes the downloaded binaries executable
 
@@ -463,11 +479,9 @@ $RUNNER_TEMP beside the stacks' own run directory: a file this step wrote into t
 checkout would leave it dirty afterwards. The blob report goes beside the list
 reporter's output, so a green run reports what it ran too.
 
-The step's budget, `timeout-minutes: 9`, is the 9 minutes the job's head derives from the sharded head's own
-runs, and neither the container nor #2958's added rows move it: at the merged head this
-step's maxima are 381 s, 355 s and 283 s, which the job's head lists with their runs,
-all under the sharded head's 419 s, so the pooled maximum the rule reads is still
-419 s.
+The step's budget, `timeout-minutes: 10`, is the 10 minutes the job's head derives by the rule
+from this step's maximum, 486 s, which the shared controls' rows of dispatch://INFRA-3135 set
+and the job's head lists with its runs: 486 x 1.15 = 559 s.
 
 ## Why the file store's address is set on the step and not in the environment
 

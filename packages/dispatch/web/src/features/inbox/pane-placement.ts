@@ -12,13 +12,23 @@
  *
  * The reader's press, scroll, touch or key is read on the column and not on the window: the list
  * beside it moves the selection with `j` and `k`, and a window-wide reading would end the next
- * item's placement before its document had drawn.
+ * item's placement before its document had drawn. The one move of the reader's made from the
+ * list is the document's own keys (Space, Shift+Space, `g g` and Shift+G, `useInboxKeymap.ts`),
+ * which scroll the column with the focus left where it is: they say so on the column itself
+ * (`PANE_READER_MOVE`), and that ends the placement as a key pressed in the column does.
  */
 import { LIMIT_MS, QUIET_MS } from "../doc/refocus-when-settled";
 import { mermaidDrawsWaiting } from "../refs/mermaid-diagrams";
 
 /** What a reader does to move on from where the column put them. */
 const READER_ACTIONS = ["pointerdown", "wheel", "touchstart", "keydown"] as const;
+
+/** The event a scroll of the column by the Inbox's own keys dispatches on the column before it
+ *  scrolls: the reader moving it from the list, where no event of the column's own fires. */
+export const PANE_READER_MOVE = "dispatch:pane-reader-move";
+
+/** Every event that hands the column to the reader. */
+const RELEASES = [...READER_ACTIONS, PANE_READER_MOVE] as const;
 
 export interface SectionHold {
   /** Told by the pane of each pass where a block of the opened document stands in the column.
@@ -34,7 +44,8 @@ export interface SectionHold {
 
 /**
  * Holds `column` at its section until its drawing settles, the limit passes, the reader presses,
- * scrolls, touches or types in it, or the hold is released.
+ * scrolls, touches or types in it, scrolls it from the list (`PANE_READER_MOVE`), or the hold is
+ * released.
  *
  * `bounds` is there for a row that proves the limit without waiting three seconds, as
  * `resetMermaidDiagrams(limitMs)` is for the worker's own.
@@ -55,7 +66,7 @@ export function holdSection(
     writes = false;
     window.clearTimeout(quiet);
     window.clearTimeout(limit);
-    for (const type of READER_ACTIONS) {
+    for (const type of RELEASES) {
       column.removeEventListener(type, release, true);
     }
   };
@@ -80,7 +91,7 @@ export function holdSection(
     quiet = window.setTimeout(settled, quietMs);
     limit ??= window.setTimeout(release, limitMs);
   };
-  for (const type of READER_ACTIONS) {
+  for (const type of RELEASES) {
     column.addEventListener(type, release, { capture: true, passive: true });
   }
   return { drawing, release, writes: () => writes };

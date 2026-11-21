@@ -174,11 +174,12 @@ async function topOf(locator: Locator): Promise<number> {
   return box.y;
 }
 
-/** Every row of a table, by the name a reader hears: `P1 <title>` on the priorities table and
- *  `<KEY> <title>` on a fault list. */
+/** Every row of a table, by the name a reader hears: `P1 <title>` on the priorities table, whose
+ *  rows carry `data-priority-row`, and `<KEY> <title>` on a fault list, whose carry
+ *  `data-issue-row`. */
 function rowNames(scope: Locator): Promise<string[]> {
   return scope
-    .locator("tr[data-issue-row]")
+    .locator("tr[data-issue-row], tr[data-priority-row]")
     .evaluateAll((rows) => rows.map((row) => row.getAttribute("aria-label") ?? ""));
 }
 
@@ -217,7 +218,7 @@ async function cellUnder(table: Locator, row: Locator, header: string): Promise<
 async function columnTexts(table: Locator, header: string): Promise<string[]> {
   const at = await columnIndex(table, header);
   return table
-    .locator("tr[data-issue-row]")
+    .locator("tr[data-issue-row], tr[data-priority-row]")
     .evaluateAll(
       (rows, index) =>
         rows.map((row) => row.querySelectorAll("td")[index]?.textContent?.trim() ?? ""),
@@ -458,7 +459,7 @@ test("a priority row opens its work by status, and four writes survive a reload"
     const handle = page.getByRole("button", {
       name: `Move P3 ${seed.titles[2]}: drag it, or press the up and down arrows`,
     });
-    await handle.dragTo(page.locator(`tr[data-issue-row="${seed.ids[1]}"]`));
+    await handle.dragTo(page.locator(`tr[data-priority-row="${seed.ids[1]}"]`));
     await expect(page.getByRole("row", { name: `P2 ${seed.titles[2]}` })).toBeVisible();
 
     // Every one of the four is the store's now, not the page's: read back from the server, and
@@ -833,7 +834,11 @@ test("a person places an issue under a priority from the issue and takes it off 
     await page.goto(`/issues/${seed.clock}`);
 
     await page.getByRole("button", { name: `Add a priority to ${seed.clock}` }).click();
-    await page.getByLabel("Priority to advance").selectOption(seed.ids[1]);
+    await page.getByRole("button", { name: "Priority to advance" }).click();
+    await page
+      .getByRole("listbox", { name: "Priority to advance options" })
+      .getByRole("option", { exact: true, name: `P2 ${seed.titles[1]}` })
+      .click();
     await page.getByRole("button", { name: "Add", exact: true }).click();
     const named = page
       .getByTestId("issue-advances")
@@ -920,7 +925,11 @@ test("another person's delete of a priority leaves an open issue page, whose nex
     // The reader places the issue under P2 from the header's own control. The write sends P1 and
     // P2, which the server takes; a set still naming P3 would be refused, a priority that is gone.
     await reader.getByRole("button", { name: `Add a priority to ${seed.smoke}` }).click();
-    await reader.getByLabel("Priority to advance").selectOption(seed.ids[1]);
+    await reader.getByRole("button", { name: "Priority to advance" }).click();
+    await reader
+      .getByRole("listbox", { name: "Priority to advance options" })
+      .getByRole("option", { exact: true, name: `P2 ${seed.titles[1]}` })
+      .click();
     await reader.getByRole("button", { name: "Add", exact: true }).click();
     const added = line.getByRole("link", { name: `P2 ${seed.titles[1]}` });
     await expect(added).toBeVisible();

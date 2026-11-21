@@ -111,9 +111,11 @@ export function IssueHeader({
     saving: updateIssue.isPending,
   });
 
+  // The pin, Close and Reopen are held, never disabled, while their own write is out: each keeps
+  // the focus the press gave it (`heldPress`, `IssueActionsMenu`).
   const actions: IssueAction[] = [
     {
-      disabled: writes.pin.isPending,
+      held: writes.pin.isPending,
       id: "pin",
       pressed: state.pinned,
       run: () =>
@@ -124,7 +126,7 @@ export function IssueHeader({
     },
     isClosed
       ? {
-          disabled: updateIssue.isPending,
+          held: updateIssue.isPending,
           id: "reopen",
           run: () => drafts.requestStatusSubmit("backlog"),
           text:
@@ -133,7 +135,7 @@ export function IssueHeader({
               : CONTROL_LABELS.reopen_into_backlog,
         }
       : {
-          disabled: updateIssue.isPending,
+          held: updateIssue.isPending,
           id: "close",
           run: () => drafts.requestStatusSubmit("done"),
           text: pendingStatus === "done" ? ANSWER_LINES.saving_close : CONTROL_LABELS.close_issue,

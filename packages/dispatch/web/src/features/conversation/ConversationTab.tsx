@@ -14,6 +14,7 @@ import type {
   MessageWithTrees,
   UserState,
 } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { PinButton } from "../../components/PinButton";
 import { useSending } from "../../hooks/useSending";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -74,6 +75,7 @@ import {
   commentDeliveries,
   focusConversation,
   handoffFields,
+  isUnread,
   listedReplies,
   type MessageConversation,
   matchesFilter,
@@ -100,6 +102,13 @@ import { ReplyButton } from "./ReplyButton";
 import { ReplyTurn, ThreadReplies, TurnActions } from "./ReplyTurn";
 import type { CarriedBlockIds } from "./send-request";
 import { capabilitiesForTarget, TargetedMessageCard } from "./TargetedMessageCard";
+import {
+  ConversationTurns,
+  type KeyedThread,
+  turnFocusRing,
+  turnMarks,
+  useTurnKeys,
+} from "./turn-keys";
 import { useFollowLatest } from "./use-follow-latest";
 import { useAgents } from "./useAgents";
 import { threadRepliesSendKey, threadReplySendKey, usePhoneThread } from "./usePhoneThread";
@@ -199,7 +208,7 @@ function ConversationReply({
   markRef,
   onReply,
   reply,
-  replyDisabled,
+  replyHeld,
   root,
 }: {
   agents: readonly Agent[] | undefined;
@@ -209,7 +218,7 @@ function ConversationReply({
   markRef?: DwellRef;
   onReply: (target: ReplyTarget) => void;
   reply: MessageWithTrees;
-  replyDisabled: boolean;
+  replyHeld: boolean;
   root: MessageConversation;
 }): ReactNode {
   const queryClient = useQueryClient();
@@ -230,7 +239,6 @@ function ConversationReply({
   const parent = [root.root, ...root.replies].find((node) => node.id === reply.in_reply_to);
   return (
     <ReplyTurn
-      actions={<CopyRefButton route={{ id: reply.id, key: issueKey, kind: "message" }} />}
       at={reply.created_at}
       author={reply.author}
       body={
@@ -272,7 +280,8 @@ function ConversationReply({
             ? undefined
             : buildIssuePath({ id: reply.in_reply_to, key: issueKey, kind: "message" }),
       }}
-      replyDisabled={replyDisabled}
+      reference={{ id: reply.id, key: issueKey, kind: "message" }}
+      replyHeld={replyHeld}
       turnID={conversationItemId("message", reply.id)}
     />
   );
@@ -283,14 +292,14 @@ function Thread({
   currentReplyId,
   issueKey,
   onReply,
-  replyDisabled,
+  replyHeld,
   root,
 }: {
   agents: readonly Agent[] | undefined;
   currentReplyId: string | undefined;
   issueKey: string;
   onReply: (target: ReplyTarget) => void;
-  replyDisabled: boolean;
+  replyHeld: boolean;
   root: MessageConversation;
 }): ReactNode {
   // The shared thread read mark: the thread is read once its newest reply has been on screen.
@@ -318,7 +327,7 @@ function Thread({
           markRef={reply === newest ? markRef : undefined}
           onReply={onReply}
           reply={reply}
-          replyDisabled={replyDisabled}
+          replyHeld={replyHeld}
           root={root}
         />
       ))}
@@ -341,7 +350,7 @@ function MessageTurn({
   onReply,
   pinned,
   register,
-  replyDisabled,
+  replyHeld,
 }: {
   agents: readonly Agent[] | undefined;
   current: boolean;
@@ -353,15 +362,17 @@ function MessageTurn({
   onReply: (target: ReplyTarget) => void;
   pinned: boolean;
   register?: DwellRef;
-  replyDisabled: boolean;
+  replyHeld: boolean;
 }): ReactNode {
   const author = item.root.author;
+  const reference = { id: item.root.id, key: issueKey, kind: "message" } as const;
   return (
     <li
       aria-current={current ? "true" : undefined}
-      className={`group mt-2 rounded-lg px-2 py-1 ${surfaceMutedHoverBg}`}
+      className={`group mt-2 rounded-lg px-2 py-1 ${surfaceMutedHoverBg} ${turnFocusRing}`}
       data-turn={item.id}
       ref={register}
+      {...turnMarks(true, reference)}
     >
       <div className="flex gap-3">
         <Avatar actor={author} />
@@ -379,9 +390,9 @@ function MessageTurn({
           <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
         </div>
         <TurnActions>
-          <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
+          <CopyRefButton route={reference} />
           <ReplyButton
-            disabled={replyDisabled}
+            held={replyHeld}
             onClick={() => onReply(replyTargetFor(item.root, item, issueKey))}
           />
           <TurnPin onPin={onPin} pinned={pinned} />
@@ -392,7 +403,7 @@ function MessageTurn({
         currentReplyId={currentReplyId}
         issueKey={issueKey}
         onReply={onReply}
-        replyDisabled={replyDisabled}
+        replyHeld={replyHeld}
         root={item}
       />
     </li>
@@ -476,9 +487,10 @@ function HandoffTurn({
   return (
     <li
       aria-current={current ? "true" : undefined}
-      className={`group mt-2 rounded-lg px-2 py-1 ${surfaceMutedHoverBg}`}
+      className={`group mt-2 rounded-lg px-2 py-1 ${surfaceMutedHoverBg} ${turnFocusRing}`}
       data-turn={item.id}
       ref={register}
+      {...turnMarks(true, undefined)}
     >
       <div className="flex gap-3">
         <Avatar actor={author} />
@@ -495,6 +507,7 @@ function HandoffTurn({
             aria-controls={expanded ? fieldsId : undefined}
             aria-expanded={expanded}
             className={`min-h-8 text-sm font-medium ${linkText}`}
+            data-turn-fold=""
             onClick={() => setExpanded((open) => !open)}
             type="button"
           >
@@ -597,9 +610,8 @@ function CommentDeliveryList({
             </span>
             {!canRetry || !safeRetry ? null : (
               <button
-                className={`min-h-8 font-medium ${linkText}`}
-                disabled={retrying}
-                onClick={() => onRetry(delivery)}
+                className={`min-h-8 font-medium refused:cursor-not-allowed refused:opacity-50 ${linkText}`}
+                {...heldPress(retrying, () => onRetry(delivery))}
                 type="button"
               >
                 Retry
@@ -635,16 +647,18 @@ function CommentTurn({
   isPhone = false,
   issueKey,
   item,
+  keyed,
   onAction,
   onEditingChange,
   onPhoneThreadToggle,
   onPin,
   onReply,
   onRetryAction,
+  onReplyCancel,
   pendingAction,
   pinned,
   register,
-  replyDisabled,
+  replyHeld,
   sendKey,
   setExpanded,
   viewerLogin,
@@ -668,15 +682,17 @@ function CommentTurn({
   hideReplyComposer?: boolean;
   /** Drops the card's `New` mark. The phone thread dialog sets it: the reader has the
    *  conversation open and is reading it, so the badge says nothing above the card they are in,
-   *  and a card that never draws one cannot move the thread's rows when it goes. The mark is
-   *  written from that same card a second after it is on screen, and the `lastReadSeq` it moves
-   *  is in the `unreadBoundary` read's key, so the read re-enters `isPending`, `unreadFrom` goes
-   *  undefined and every `New` unmounts - under whatever the reader is pressing in the thread. */
+   *  and a card that never draws one cannot move the thread's rows when it changes. The tab keeps
+   *  each mark for the whole visit (`visitBoundary`), through the read mark this card writes a
+   *  second after it is on screen, but it marks a conversation a live event makes newer, and a
+   *  mark that comes then comes under whatever the reader is pressing. */
   hideUnreadMark?: boolean;
   isClosed: boolean;
   isPhone?: boolean;
   issueKey: string;
   item: Extract<Conversation, { kind: "comment" }>;
+  /** How a key of the tab opened the thread, which its reply box follows (`KeyedThread`). */
+  keyed?: KeyedThread;
   onAction: (id: string, kind: "accept" | "reject" | "resolve" | "reopen") => void;
   onEditingChange: (id: string | undefined) => void;
   onPhoneThreadToggle?: () => void;
@@ -685,10 +701,13 @@ function CommentTurn({
    *  reply is its thread's, so the host opens the thread with it. */
   onReply: (target: ReplyTarget) => boolean;
   onRetryAction: () => void;
+  /** Where the thread's reply box gives the focus back on Escape, keeping the thread open, once
+   *  the tab's `r` put the reader in it (`ThreadCard`'s `onReplyCancel`). */
+  onReplyCancel?: () => void;
   pendingAction: boolean;
   pinned: boolean;
   register?: DwellRef;
-  replyDisabled: boolean;
+  replyHeld: boolean;
   /** The tab's send name, beneath which the thread card's own reply composer names its send
    *  (`threadReplySendKey`). */
   sendKey: MutationKey;
@@ -760,12 +779,14 @@ function CommentTurn({
     }
     setExpanded(!expanded);
   };
+  const reference = { id: item.root.id, key: issueKey, kind: "comment" } as const;
   return (
     <li
       aria-current={current ? "true" : undefined}
-      className="my-2"
+      className={`my-2 rounded-lg ${turnFocusRing}`}
       data-turn={item.id}
       ref={register}
+      {...turnMarks(true, reference)}
     >
       {item.unread && !hideUnreadMark ? (
         <div className="mb-1 flex justify-end">
@@ -787,6 +808,7 @@ function CommentTurn({
         onEdit={editComment}
         onEditingChange={onEditingChange}
         onRetryAction={onRetryAction}
+        onReplyCancel={onReplyCancel}
         onToggle={toggleThread}
         owner={{ key: issueKey, kind: "issue" }}
         pendingAction={pendingAction}
@@ -795,7 +817,8 @@ function CommentTurn({
         // turn's Reply answers through another composer.
         reopenControl="Expand thread"
         replyMutationKey={replySendKey}
-        showReference={false}
+        replyStanding={keyed === "standing"}
+        showRootReference={false}
         renderDeliveries={(comment) => (
           <CommentDeliveryList
             agents={agents}
@@ -819,17 +842,16 @@ function CommentTurn({
         {forceExpanded ? null : (
           <button
             aria-expanded={currentExpanded}
-            className={`min-h-8 font-medium disabled:cursor-not-allowed disabled:opacity-50 ${linkText}`}
-            disabled={currentExpanded && replySending}
-            onClick={toggleThread}
+            className={`min-h-8 font-medium refused:cursor-not-allowed refused:opacity-50 ${linkText}`}
+            {...heldPress(currentExpanded && replySending, toggleThread)}
             type="button"
           >
             {currentExpanded ? "Collapse thread" : "Expand thread"}
           </button>
         )}
-        <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "comment" }} />
+        <CopyRefButton route={reference} />
         <ReplyButton
-          disabled={replyDisabled}
+          held={replyHeld}
           onClick={() => {
             if (onReply(commentReplyTarget(item.root, agentText, issueKey)) && !isPhone) {
               setExpanded(true);
@@ -850,7 +872,7 @@ function TargetedMessageTurn({
   item,
   onReply,
   register,
-  replyDisabled,
+  replyHeld,
 }: {
   agents: readonly Agent[] | undefined;
   current: boolean;
@@ -859,7 +881,7 @@ function TargetedMessageTurn({
   item: Extract<Conversation, { kind: "targeted-message" }>;
   onReply: (target: ReplyTarget) => void;
   register?: DwellRef;
-  replyDisabled: boolean;
+  replyHeld: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
   const text = useAgentText();
@@ -873,6 +895,7 @@ function TargetedMessageTurn({
   });
   const capabilities = capabilitiesForTarget(item.root.target, agents);
   const asker = item.root.author;
+  const reference = { id: item.root.id, key: issueKey, kind: "message" } as const;
 
   return (
     <TargetedMessageCard
@@ -882,7 +905,7 @@ function TargetedMessageTurn({
           <p className={`flex flex-wrap items-center gap-x-2 text-sm ${textSecondaryOnSurface}`}>
             <AgentName actor={asker} className="font-semibold" inline />
             <Timestamp at={item.root.created_at} />
-            <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
+            <CopyRefButton route={reference} />
             {item.unread ? <UnreadMark /> : null}
           </p>
           <MarkdownBody
@@ -902,7 +925,8 @@ function TargetedMessageTurn({
       onReply={() => onReply(replyTargetFor(item.root, item, issueKey))}
       onRetry={retry.mutate}
       register={register}
-      replyDisabled={replyDisabled}
+      reference={reference}
+      replyHeld={replyHeld}
       retrying={retry.isPending}
       targetName={targetName}
       thread={
@@ -911,7 +935,7 @@ function TargetedMessageTurn({
           currentReplyId={currentReplyId}
           issueKey={issueKey}
           onReply={onReply}
-          replyDisabled={replyDisabled}
+          replyHeld={replyHeld}
           root={item}
         />
       }
@@ -982,8 +1006,34 @@ export function ConversationTab({
     queryKey: ["events", issueKey, "head"],
     queryFn: () => api.getIssueEvents(issueKey, { limit: 1, order: "desc" }),
   });
-  const unreadFrom = unreadBoundary.data?.[0]?.created_at;
   const headSeq = head.data?.[0]?.seq ?? 0;
+  // A visit's New marks are only ever added to, as a chat's new-messages line stays where the
+  // reader came in: each turn is marked from the earliest boundary a read of this visit answered.
+  // The read mark moves `lastReadSeq` a second after the newest card is on screen, and the read
+  // under the new key answers a later boundary, or none; marks that went with it would take their
+  // height out from under whatever the reader was pressing below them. A turn a live event adds
+  // after the kept boundary is marked as it is drawn; one added while nothing was unread is marked
+  // once the read under the current key answers its event, which can be after the list drew it. A
+  // read mark moved back, which a refocus reads, answers an earlier boundary and adds its marks.
+  // The boundary starts afresh on a visit to another issue and back (`issueKey`). It places the
+  // marks alone: Jump to latest counts from the boundary the current read answers (`unreadCount`).
+  const [visitBoundary, setVisitBoundary] = useState<{
+    readonly issueKey: string;
+    readonly unreadFrom: string;
+  }>();
+  const keptFrom = visitBoundary?.issueKey === issueKey ? visitBoundary.unreadFrom : undefined;
+  // Read only once the reader's state is known: before that `lastReadSeq` is 0, and the issue's
+  // first event would mark every turn for the rest of the visit.
+  const answeredFrom = state === undefined ? undefined : unreadBoundary.data?.[0]?.created_at;
+  const unreadFrom =
+    answeredFrom !== undefined &&
+    (keptFrom === undefined || compareTimestamps(answeredFrom, keptFrom) < 0)
+      ? answeredFrom
+      : keptFrom;
+  if (unreadFrom !== undefined && unreadFrom !== keptFrom) {
+    // Set while rendering; this render already draws the marks from `unreadFrom`.
+    setVisitBoundary({ issueKey, unreadFrom });
+  }
   const conversations = useMemo(
     () =>
       buildConversations({
@@ -1010,17 +1060,17 @@ export function ConversationTab({
     sendKey,
     sendingNow,
   });
-  // The comments whose thread the reader has open inline.
-  const [openThreads, setOpenThreads] = useState<ReadonlySet<string>>(() => new Set());
-  const setThreadOpen = useCallback((id: string, open: boolean) => {
-    setOpenThreads((current) => {
-      if (current.has(id) === open) return current;
-      const next = new Set(current);
-      if (open) next.add(id);
-      else next.delete(id);
-      return next;
-    });
-  }, []);
+  // The comments whose thread the reader has open inline, and the keys of the turns, which walk
+  // them, open and close their threads and reply in them (R22, `useTurnKeys`).
+  const {
+    beginDockedReply,
+    giveBackFromDockedReply,
+    giveBackFromThread,
+    keyedThreads,
+    openThreads,
+    setThreadOpen,
+    turnList,
+  } = useTurnKeys({ isPhoneViewport, openPhoneThread: phone.open, sendKey, visible });
   // The comment whose editor is open in each thread, by the thread's root: the tab's rather than
   // a card's, since a phone's thread view draws its comment's card afresh each time it opens.
   // Back, then that comment's thread again, finds the editor open where the reader left it, with
@@ -1065,8 +1115,13 @@ export function ConversationTab({
   );
   // Counted over the list as shown, which is the list the pill acts on: it jumps to the first
   // card on the page, so a count taken over the whole set would name unread conversations the
-  // filter is hiding and land on a card carrying no `New` mark.
-  const unreadCount = shown.filter((conversation) => conversation.unread).length;
+  // filter is hiding and land on a card carrying no `New` mark. It counts from the boundary the
+  // reader's read mark gives now (`answeredFrom`), not the visit's kept one: a turn the reader was
+  // shown and has read keeps its `New` for the visit, but is not counted again. That boundary is
+  // never earlier than the kept one, so each conversation counted carries a `New`.
+  const unreadCount = shown.filter((conversation) =>
+    isUnread(conversation.at, answeredFrom)
+  ).length;
   // A landing overrides the filter: arriving at a conversation the current bucket hides resets
   // it to All, so a link never fails to land.
   useEffect(() => {
@@ -1109,6 +1164,7 @@ export function ConversationTab({
   // refusal redirects onto that comment or message instead of overwriting its draft).
   const [replyTo, setReplyTo] = useHeldReplyTo(sendKey);
   const beginReply = (target: ReplyTarget): boolean => {
+    beginDockedReply();
     if (sendingNow()) return false;
     const reply = redirectedReplyTarget(store, sendKey, target);
     setReplyTo(reply);
@@ -1228,11 +1284,9 @@ export function ConversationTab({
   // no history entry, so without that the browser's back and the drawer would leave the issue
   // unread for a reader who had just read its newest conversation in the thread.
   // A thread over any older conversation holds the mark until its own Back gives the list back:
-  // the newest conversation is behind the thread, unread, and marking the issue read would also
-  // move `lastReadSeq` under the reader - that value is in the `unreadBoundary` key above, so
-  // the read re-entering `isPending` unmounts every `New` the list still draws and reflows it by
-  // a row, under the list the reader is given back. The exits that write no mark for
-  // such a thread are the ones that never give the list back: the browser's back and the
+  // the newest conversation is behind the thread, unread, so the issue is not marked read for
+  // it. The list's `New` marks stay drawn either way (`visitBoundary`). The exits that write no
+  // mark for such a thread are the ones that never give the list back: the browser's back and the
   // drawer. A dwell already counting when an older thread opens is cancelled rather than
   // completed, since `useDwell` drops its timers as `enabled` goes false.
   const newestId = conversations[0]?.id;
@@ -1285,63 +1339,68 @@ export function ConversationTab({
 
   // The reader's card keeps its viewport position across live updates - a reply arriving while
   // they browse, a pin reflow, the failed-operations banner, a card moving bucket - except while
-  // they follow the newest conversation, where an arrival simply appears in place.
+  // they follow the newest conversation, where an arrival simply appears in place. The turns
+  // below take the focus from the tab's keys (`ConversationTurns`).
   return (
-    <ViewportAnchor
-      as="section"
-      className="flex min-h-[60dvh] flex-col gap-3 pb-56 sm:pb-16 xl:pb-0"
-      enabled={() => !follow.pinnedToTop()}
-      item="data-turn"
-      label="Conversation"
-    >
-      {/* Mounted, and hidden, while a phone thread covers it: its draft, a send it has out, that
+    <ConversationTurns value>
+      <ViewportAnchor
+        as="section"
+        className="flex min-h-[60dvh] flex-col gap-3 pb-56 sm:pb-16 xl:pb-0"
+        enabled={() => !follow.pinnedToTop()}
+        item="data-turn"
+        label="Conversation"
+      >
+        {/* Mounted, and hidden, while a phone thread covers it: its draft, a send it has out, that
           send's refusal and its reply are all still there on Back. A closed issue takes comments
           and message replies, so it shows and sends there as on an open one (`closed` hides only
           the kinds a closed issue refuses). `contents`, so the composer's own box stays the one
           that sticks. The thread composer's Cancel reply puts its draft here (`intake`). */}
-      <div className="contents" hidden={phoneThread !== undefined}>
-        <MentionComposer
-          closed={isClosed}
-          docked
-          intake={phone.dockedIntake}
-          listed={listed}
-          mutationKey={sendKey}
-          notice={parkedNotice}
-          onCancelReply={() => setReplyTo(null)}
-          onClose={() => setReplyTo(null)}
-          onSent={() => {
-            setReplyTo(null);
-            setOwnSendCount((count) => count + 1);
-          }}
-          owner={{ issueKey, kind: "issue" }}
-          replyTo={replyTo}
-        />
-      </div>
-      {/* All / Open / Closed, the one control over the list. It starts on All every visit: a
+        <div className="contents" hidden={phoneThread !== undefined}>
+          <MentionComposer
+            closed={isClosed}
+            docked
+            intake={phone.dockedIntake}
+            listed={listed}
+            mutationKey={sendKey}
+            notice={parkedNotice}
+            onCancelReply={() => {
+              setReplyTo(null);
+              giveBackFromDockedReply();
+            }}
+            onClose={() => setReplyTo(null)}
+            onSent={() => {
+              setReplyTo(null);
+              setOwnSendCount((count) => count + 1);
+            }}
+            owner={{ issueKey, kind: "issue" }}
+            replyTo={replyTo}
+          />
+        </div>
+        {/* All / Open / Closed, the one control over the list. It starts on All every visit: a
           reader who filtered yesterday still meets the whole conversation today. */}
-      <div className="flex items-center justify-end">
-        <fieldset
-          aria-label="Conversations"
-          className={`flex rounded-md border ${secondaryButtonBorder}`}
-        >
-          {FILTERS.map(({ label, value }) => (
-            <button
-              aria-pressed={filter === value}
-              className={`min-h-11 px-3 text-sm font-medium first:rounded-l-md last:rounded-r-md ${
-                filter === value
-                  ? `${surfaceMutedBg} ${textPrimaryOnSurfaceMuted}`
-                  : textSecondaryOnCanvas
-              }`}
-              key={value}
-              onClick={() => setFilter(value)}
-              type="button"
-            >
-              {label}
-            </button>
-          ))}
-        </fieldset>
-      </div>
-      {/* The pill floats at an edge the docked composer leaves free, so it covers none of the
+        <div className="flex items-center justify-end">
+          <fieldset
+            aria-label="Conversations"
+            className={`flex rounded-md border ${secondaryButtonBorder}`}
+          >
+            {FILTERS.map(({ label, value }) => (
+              <button
+                aria-pressed={filter === value}
+                className={`min-h-11 px-3 text-sm font-medium first:rounded-l-md last:rounded-r-md ${
+                  filter === value
+                    ? `${surfaceMutedBg} ${textPrimaryOnSurfaceMuted}`
+                    : textSecondaryOnCanvas
+                }`}
+                key={value}
+                onClick={() => setFilter(value)}
+                type="button"
+              >
+                {label}
+              </button>
+            ))}
+          </fieldset>
+        </div>
+        {/* The pill floats at an edge the docked composer leaves free, so it covers none of the
           composer's controls; below `sm` that edge is the right edge of the content column
           itself rather than a margin outside it, which is why a card under the pill is covered
           at all. Below `sm` the composer sits at the foot of the screen and grows upward (a
@@ -1359,233 +1418,243 @@ export function ConversationTab({
           and so does the pill's own tap, which jumps to the latest and takes the pill off the
           screen. A thread opened full-screen covers the Conversation the pill acts on, and its
           own composer sits at the foot, so the pill waits for Back. */}
-      {visible && phoneThread === undefined && !follow.atTop && shown.length > 0 ? (
-        <button
-          className={`fixed right-6 bottom-[max(5rem,calc(var(--foot-status-inset,var(--foot-composer-inset,0px))_+_1rem))] z-20 min-h-11 rounded-full px-4 text-sm font-semibold whitespace-nowrap shadow-lg sm:bottom-36 xl:bottom-24 ${primaryButtonBg} ${primaryButtonHoverBg}`}
-          data-testid="jump-to-latest"
-          onClick={follow.jumpToLatest}
-          type="button"
+        {visible && phoneThread === undefined && !follow.atTop && shown.length > 0 ? (
+          <button
+            className={`fixed right-6 bottom-[max(5rem,calc(var(--foot-status-inset,var(--foot-composer-inset,0px))_+_1rem))] z-20 min-h-11 rounded-full px-4 text-sm font-semibold whitespace-nowrap shadow-lg sm:bottom-36 xl:bottom-24 ${primaryButtonBg} ${primaryButtonHoverBg}`}
+            data-testid="jump-to-latest"
+            onClick={follow.jumpToLatest}
+            type="button"
+          >
+            Jump to latest{unreadCount === 0 ? "" : ` · ${unreadCount} new`}
+          </button>
+        ) : null}
+        <ol
+          aria-hidden={phoneThread === undefined ? undefined : true}
+          aria-label="Conversation turns"
+          className="flex flex-col gap-1"
+          inert={phoneThread === undefined ? undefined : true}
+          ref={turnList}
         >
-          Jump to latest{unreadCount === 0 ? "" : ` · ${unreadCount} new`}
-        </button>
-      ) : null}
-      <ol
-        aria-hidden={phoneThread === undefined ? undefined : true}
-        aria-label="Conversation turns"
-        className="flex flex-col gap-1"
-        inert={phoneThread === undefined ? undefined : true}
-      >
-        {shown.map((item) => {
-          const current = item.id === focus?.id;
-          const currentReplyId = current ? focus?.replyId : undefined;
-          const pinned = isPinnedConversation(issueState.dismissed ?? [], item.id);
-          // A thread covering the list hides its copy of the newest card, so that copy gives
-          // up the mark's ref while one is open; the thread's own card carries it below.
-          const register =
-            item.id === newestId && phoneThread === undefined ? registerNewest : undefined;
+          {shown.map((item) => {
+            const current = item.id === focus?.id;
+            const currentReplyId = current ? focus?.replyId : undefined;
+            const pinned = isPinnedConversation(issueState.dismissed ?? [], item.id);
+            // A thread covering the list hides its copy of the newest card, so that copy gives
+            // up the mark's ref while one is open; the thread's own card carries it below.
+            const register =
+              item.id === newestId && phoneThread === undefined ? registerNewest : undefined;
 
-          if (item.kind === "targeted-message") {
+            if (item.kind === "targeted-message") {
+              return (
+                <TargetedMessageTurn
+                  agents={agents}
+                  current={current}
+                  currentReplyId={currentReplyId}
+                  issueKey={issueKey}
+                  item={item}
+                  key={item.id}
+                  onReply={beginReply}
+                  register={register}
+                  replyHeld={composerSending}
+                />
+              );
+            }
+            if (item.kind === "message") {
+              return (
+                <MessageTurn
+                  agents={agents}
+                  issueKey={issueKey}
+                  current={current}
+                  currentReplyId={currentReplyId}
+                  item={item}
+                  key={item.id}
+                  onPin={() => pinConversation(item.id)}
+                  onReply={beginReply}
+                  pinned={pinned}
+                  register={register}
+                  replyHeld={composerSending}
+                />
+              );
+            }
+            if (item.kind === "handoff") {
+              return (
+                <HandoffTurn
+                  current={current}
+                  item={item}
+                  key={item.id}
+                  onPin={() => pinConversation(item.id)}
+                  pinned={pinned}
+                  register={register}
+                />
+              );
+            }
+            if (item.kind === "comment") {
+              return (
+                <CommentTurn
+                  actionFailure={
+                    commentActions.actionFailure?.id === item.root.id
+                      ? commentActions.actionFailure
+                      : undefined
+                  }
+                  hideReplyComposer={
+                    replyTo?.parentKind === "comment" && replyTo.id === item.root.id
+                  }
+                  agents={agents}
+                  issueArtifacts={issueArtifacts}
+                  isPhone={isPhoneViewport}
+                  onPhoneThreadToggle={() => phone.open(item.root.id)}
+                  onAction={(id, kind) => commentActions.mutateItem({ id, kind })}
+                  current={current}
+                  currentReplyId={currentReplyId}
+                  editingCommentId={editingIn.get(item.root.id)}
+                  expanded={openThreads.has(item.root.id)}
+                  keyed={keyedThreads.get(item.root.id)}
+                  onEditingChange={(id) => setEditing(item.root.id, id)}
+                  onReplyCancel={
+                    keyedThreads.get(item.root.id) === "reply"
+                      ? () => giveBackFromThread(item.root.id)
+                      : undefined
+                  }
+                  onRetryAction={commentActions.retryItem}
+                  pendingAction={commentActions.pendingActionIds.has(item.root.id)}
+                  isClosed={isClosed}
+                  issueKey={issueKey}
+                  item={item}
+                  key={item.id}
+                  onPin={() => pinConversation(item.id)}
+                  onReply={isPhoneViewport ? phone.beginReply : beginReply}
+                  pinned={pinned}
+                  register={register}
+                  replyHeld={composerSending}
+                  sendKey={sendKey}
+                  setExpanded={(open) => setThreadOpen(item.root.id, open)}
+                  viewerLogin={viewer.data?.login ?? ""}
+                />
+              );
+            }
             return (
-              <TargetedMessageTurn
-                agents={agents}
-                current={current}
-                currentReplyId={currentReplyId}
-                issueKey={issueKey}
-                item={item}
+              <li
+                aria-current={current ? "true" : undefined}
+                className={`my-2 flex gap-3 rounded-lg ${turnFocusRing}`}
+                data-turn={item.id}
                 key={item.id}
-                onReply={beginReply}
-                register={register}
-                replyDisabled={composerSending}
-              />
-            );
-          }
-          if (item.kind === "message") {
-            return (
-              <MessageTurn
-                agents={agents}
-                issueKey={issueKey}
-                current={current}
-                currentReplyId={currentReplyId}
-                item={item}
-                key={item.id}
-                onPin={() => pinConversation(item.id)}
-                onReply={beginReply}
-                pinned={pinned}
-                register={register}
-                replyDisabled={composerSending}
-              />
-            );
-          }
-          if (item.kind === "handoff") {
-            return (
-              <HandoffTurn
-                current={current}
-                item={item}
-                key={item.id}
-                onPin={() => pinConversation(item.id)}
-                pinned={pinned}
-                register={register}
-              />
-            );
-          }
-          if (item.kind === "comment") {
-            return (
-              <CommentTurn
-                actionFailure={
-                  commentActions.actionFailure?.id === item.root.id
-                    ? commentActions.actionFailure
-                    : undefined
-                }
-                hideReplyComposer={replyTo?.parentKind === "comment" && replyTo.id === item.root.id}
-                agents={agents}
-                issueArtifacts={issueArtifacts}
-                isPhone={isPhoneViewport}
-                onPhoneThreadToggle={() => phone.open(item.root.id)}
-                onAction={(id, kind) => commentActions.mutateItem({ id, kind })}
-                current={current}
-                currentReplyId={currentReplyId}
-                editingCommentId={editingIn.get(item.root.id)}
-                expanded={openThreads.has(item.root.id)}
-                onEditingChange={(id) => setEditing(item.root.id, id)}
-                onRetryAction={commentActions.retryItem}
-                pendingAction={commentActions.pendingActionIds.has(item.root.id)}
-                isClosed={isClosed}
-                issueKey={issueKey}
-                item={item}
-                key={item.id}
-                onPin={() => pinConversation(item.id)}
-                onReply={isPhoneViewport ? phone.beginReply : beginReply}
-                pinned={pinned}
-                register={register}
-                replyDisabled={composerSending}
-                sendKey={sendKey}
-                setExpanded={(open) => setThreadOpen(item.root.id, open)}
-                viewerLogin={viewer.data?.login ?? ""}
-              />
-            );
-          }
-          return (
-            <li
-              aria-current={current ? "true" : undefined}
-              className="my-2 flex gap-3"
-              data-turn={item.id}
-              key={item.id}
-              ref={register}
-            >
-              <div className="min-w-0 flex-1">
-                {item.unread ? (
-                  <div className="mb-1 flex justify-end">
-                    <UnreadMark />
-                  </div>
-                ) : null}
-                {/* The margin shows this same open ask beside the document, so a full
+                ref={register}
+                {...turnMarks(true, { id: item.ask.id, key: issueKey, kind: "ask" })}
+              >
+                <div className="min-w-0 flex-1">
+                  {item.unread ? (
+                    <div className="mb-1 flex justify-end">
+                      <UnreadMark />
+                    </div>
+                  ) : null}
+                  {/* The margin shows this same open ask beside the document, so a full
                     two-row composer here is the question, its options and its answer
                     controls twice on one screen. The list is the record: it carries the
                     compact density, whose options answer in one click and whose note field
                     stays behind its own disclosure. The row's own thread seeds the card, so a
                     page of asks makes no per-ask thread request. */}
-                <AskCard
-                  ask={item.ask}
-                  currentReplyId={currentReplyId}
-                  initialThread={{ ask: item.ask, ...item.ask.thread }}
-                  initialThreadUpdatedAt={asks.dataUpdatedAt}
-                  markRead
-                  thread="collapsed"
-                  variant="compact"
-                />
-              </div>
-              <TurnPin onPin={() => pinConversation(item.id)} pinned={pinned} />
-            </li>
-          );
-        })}
-      </ol>
-      {/* The thread view stays mounted, hidden, while its reply composer holds a reply: Back, or
+                  <AskCard
+                    ask={item.ask}
+                    currentReplyId={currentReplyId}
+                    initialThread={{ ask: item.ask, ...item.ask.thread }}
+                    initialThreadUpdatedAt={asks.dataUpdatedAt}
+                    markRead
+                    thread="collapsed"
+                    variant="compact"
+                  />
+                </div>
+                <TurnPin onPin={() => pinConversation(item.id)} pinned={pinned} />
+              </li>
+            );
+          })}
+        </ol>
+        {/* The thread view stays mounted, hidden, while its reply composer holds a reply: Back, or
           another comment's thread, leaves that composer - its draft, a send it has out and the
           send's refusal - where reopening the comment's thread finds it. Its Cancel reply is the
           reader's own move to the issue's address, so the draft goes to the docked composer
           (`cancelReply`), or, while that one holds a draft of its own, stays put away here for
           the comment's Reply; a send that landed, or a Discard, leaves nothing to carry
           (`endReply`). */}
-      {phoneThread === undefined && phone.replyTo === null ? null : (
-        <section
-          aria-label="Thread"
-          aria-modal="true"
-          className={`fixed inset-0 z-20 flex flex-col ${card}`}
-          hidden={phoneThread === undefined}
-          ref={phoneThreadDialog.containerRef}
-          role="dialog"
-        >
-          <header className={`flex items-center border-b px-4 py-3 ${borderDefault}`}>
-            <button
-              className={`min-h-11 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${textPrimaryOnSurface}`}
-              disabled={phone.cardReplySending}
-              onClick={phone.leave}
-              type="button"
-            >
-              Back
-            </button>
-          </header>
-          {phoneThread === undefined ? null : (
-            <ol className="min-h-0 flex-1 overflow-y-auto px-4 pb-32">
-              <CommentTurn
-                actionFailure={
-                  commentActions.actionFailure?.id === phoneThread.root.id
-                    ? commentActions.actionFailure
-                    : undefined
-                }
-                agents={agents}
-                issueArtifacts={issueArtifacts}
-                composerClassName={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
-                current={phoneThread.id === focus?.id}
-                currentReplyId={phoneThread.id === focus?.id ? focus?.replyId : undefined}
-                viewerLogin={viewer.data?.login ?? ""}
-                editingCommentId={editingIn.get(phoneThread.root.id)}
-                expanded={openThreads.has(phoneThread.root.id)}
-                forceExpanded
-                hideReplyComposer={phoneReplyTargetsThread}
-                hideUnreadMark
-                isClosed={isClosed}
-                issueKey={issueKey}
-                item={phoneThread}
-                isPhone
-                key={phoneThread.id}
-                onAction={(id, kind) => commentActions.mutateItem({ id, kind })}
-                onEditingChange={(id) => setEditing(phoneThread.root.id, id)}
-                onPhoneThreadToggle={phone.leave}
-                onRetryAction={commentActions.retryItem}
-                pendingAction={commentActions.pendingActionIds.has(phoneThread.root.id)}
-                onPin={() => pinConversation(phoneThread.id)}
-                onReply={phone.beginReply}
-                pinned={isPinnedConversation(issueState.dismissed ?? [], phoneThread.id)}
-                register={phoneThreadIsNewest ? registerNewest : undefined}
-                replyDisabled={composerSending}
-                sendKey={sendKey}
-                setExpanded={(open) => setThreadOpen(phoneThread.root.id, open)}
-              />
-            </ol>
-          )}
-          {phone.replyTo === null ? null : (
-            <div hidden={!phoneReplyTargetsThread}>
-              <MentionComposer
-                closed={isClosed}
-                frame={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
-                intake={phone.threadIntake}
-                listed={listed}
-                mutationKey={phone.composerKey}
-                onCancelReply={phone.cancelReply}
-                onClose={phone.endReply}
-                onSent={() => {
-                  phone.endReply();
-                  setOwnSendCount((count) => count + 1);
-                }}
-                owner={{ issueKey, kind: "issue" }}
-                replyTo={phone.replyTo}
-              />
-            </div>
-          )}
-        </section>
-      )}
-      {shown.length === 0 ? <p className={textMutedOnCanvas}>No conversations yet.</p> : null}
-    </ViewportAnchor>
+        {phoneThread === undefined && phone.replyTo === null ? null : (
+          <section
+            aria-label="Thread"
+            aria-modal="true"
+            className={`fixed inset-0 z-20 flex flex-col ${card}`}
+            hidden={phoneThread === undefined}
+            ref={phoneThreadDialog.containerRef}
+            role="dialog"
+          >
+            <header className={`flex items-center border-b px-4 py-3 ${borderDefault}`}>
+              <button
+                className={`min-h-11 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${textPrimaryOnSurface}`}
+                {...heldPress(phone.cardReplySending, phone.leave)}
+                type="button"
+              >
+                Back
+              </button>
+            </header>
+            {phoneThread === undefined ? null : (
+              <ol className="min-h-0 flex-1 overflow-y-auto px-4 pb-32">
+                <CommentTurn
+                  actionFailure={
+                    commentActions.actionFailure?.id === phoneThread.root.id
+                      ? commentActions.actionFailure
+                      : undefined
+                  }
+                  agents={agents}
+                  issueArtifacts={issueArtifacts}
+                  composerClassName={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
+                  current={phoneThread.id === focus?.id}
+                  currentReplyId={phoneThread.id === focus?.id ? focus?.replyId : undefined}
+                  viewerLogin={viewer.data?.login ?? ""}
+                  editingCommentId={editingIn.get(phoneThread.root.id)}
+                  expanded={openThreads.has(phoneThread.root.id)}
+                  forceExpanded
+                  hideReplyComposer={phoneReplyTargetsThread}
+                  hideUnreadMark
+                  isClosed={isClosed}
+                  issueKey={issueKey}
+                  item={phoneThread}
+                  isPhone
+                  key={phoneThread.id}
+                  onAction={(id, kind) => commentActions.mutateItem({ id, kind })}
+                  onEditingChange={(id) => setEditing(phoneThread.root.id, id)}
+                  onPhoneThreadToggle={phone.leave}
+                  onRetryAction={commentActions.retryItem}
+                  pendingAction={commentActions.pendingActionIds.has(phoneThread.root.id)}
+                  onPin={() => pinConversation(phoneThread.id)}
+                  onReply={phone.beginReply}
+                  pinned={isPinnedConversation(issueState.dismissed ?? [], phoneThread.id)}
+                  register={phoneThreadIsNewest ? registerNewest : undefined}
+                  replyHeld={composerSending}
+                  sendKey={sendKey}
+                  setExpanded={(open) => setThreadOpen(phoneThread.root.id, open)}
+                />
+              </ol>
+            )}
+            {phone.replyTo === null ? null : (
+              <div hidden={!phoneReplyTargetsThread}>
+                <MentionComposer
+                  closed={isClosed}
+                  frame={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
+                  intake={phone.threadIntake}
+                  listed={listed}
+                  mutationKey={phone.composerKey}
+                  onCancelReply={phone.cancelReply}
+                  onClose={phone.endReply}
+                  onSent={() => {
+                    phone.endReply();
+                    setOwnSendCount((count) => count + 1);
+                  }}
+                  owner={{ issueKey, kind: "issue" }}
+                  replyTo={phone.replyTo}
+                />
+              </div>
+            )}
+          </section>
+        )}
+        {shown.length === 0 ? <p className={textMutedOnCanvas}>No conversations yet.</p> : null}
+      </ViewportAnchor>
+    </ConversationTurns>
   );
 }

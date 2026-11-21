@@ -1077,7 +1077,7 @@ export function NodeEdges({
   return (
     <>
       {node.alsoUnder.map((chip) => (
-        <Chip
+        <NodeReference
           chip={chip}
           key={`also:${chip.ref}`}
           label={CONTROL_LABELS.also_under}
@@ -1085,7 +1085,7 @@ export function NodeEdges({
         />
       ))}
       {node.chips.map((chip) => (
-        <Chip chip={chip} key={chip.ref} label={chip.label} tabStops={tabStops} />
+        <NodeReference chip={chip} key={chip.ref} label={chip.label} tabStops={tabStops} />
       ))}
       {node.gaps.map((gap) => (
         <span data-gap="" data-gap-kind={gap} key={gap} {...pageChrome}>
@@ -1112,7 +1112,7 @@ export function NodeEdges({
  * target in plain words, decisions 66 and 88), so it is drawn as it stands, with no markdown
  * pass: a pass would read "1. Stand the harness up." as a list and draw it without its number.
  */
-function Chip({
+function NodeReference({
   chip,
   label,
   tabStops,

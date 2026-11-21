@@ -485,7 +485,7 @@ browser row reads: the dashboard and its contracts, the Dispatch server its harn
 builds, and the two workflow files that hold the steps. The retired `dispatch` job's
 filter also held three fixture sets whose only readers are the dashboard's and the
 proof editor's unit tests, and they are not here: dispatch-ui's filter names all
-three, and with this output ungated on a pull request they would start four shard
+three, and with this output ungated on a pull request they would start five shard
 machines and the merge job for a fixture-only change. The dispatch_browser gate in
 .github/scripts/ci_job_reads.py says what this suite reads, and check-ci-filters.sh
 holds this filter to that gate - it refuses a filter that misses a read, never one
@@ -511,7 +511,7 @@ every project and the two-process job, which is the lane the nightly
 whole suite on a pull request with the label, and the group is where a change to
 that file meets it before main anyway. The nightly itself is not in this list:
 no step of this suite reads it, which rule 9's second direction refuses, since
-four shard machines and the merge job would start over a change no row sees. It
+five shard machines and the merge job would start over a change no row sees. It
 is a read of the ci_filters gate instead, so a change to it re-runs this check,
 which holds this filter and that gate together.
 

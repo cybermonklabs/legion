@@ -1,12 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
-import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { projectArchitectureSourcesQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { type TabDefinition, Tabs } from "../../components/Tabs";
+import { AddressRedirect, usePageAddress } from "../../lib/page-address";
 import {
   borderDefault,
   dangerText,
@@ -27,7 +28,6 @@ import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useUserPreference } from "../shell/userPreference";
 import { DocumentList } from "./DocumentList";
 import { IssueBoard } from "./IssueBoard";
-import { IssueFilters } from "./IssueFilters";
 import { IssuesTable } from "./IssuesTable";
 
 type ProjectTab = "architecture" | "issues" | "documents";
@@ -41,7 +41,7 @@ const tabs: readonly TabDefinition<ProjectTab>[] = [
 type IssueView = "list" | "board";
 
 export function ProjectPage(): ReactNode {
-  const location = useLocation();
+  const address = usePageAddress();
   const navigate = useNavigate();
   const [issueView, setIssueView] = useUserPreference<IssueView>(
     "project.issue-view",
@@ -58,7 +58,7 @@ export function ProjectPage(): ReactNode {
     (stored) => stored === "shown",
     (shown) => (shown ? "shown" : "hidden")
   );
-  const route = parseProjectPath(location.pathname, location.search);
+  const route = parseProjectPath(address.pathname, address.search);
   const projectKey = route?.project;
   const inbox = useQuery({
     queryKey: ["inbox", projectKey],
@@ -80,9 +80,7 @@ export function ProjectPage(): ReactNode {
   useKeymapScope("project");
   useKeymap("project", [
     {
-      id: "toggle-view",
-      keys: "v",
-      label: "Toggle List / Board",
+      action: "project.toggle-view",
       run: () => setIssueView(issueView === "list" ? "board" : "list"),
       when: () => route?.kind === "issues",
     },
@@ -114,8 +112,8 @@ export function ProjectPage(): ReactNode {
   if (route.kind === "project") {
     // The open-on rule: a project with an architecture source opens on its Architecture; one
     // without (the list is empty) opens on Issues, the filter parameters forwarded. A failed
-    // read is shown, never quietly turned into Issues. `replace` keeps Back sane; sidebar links
-    // stay on the bare path.
+    // read is shown, never quietly turned into Issues. `AddressRedirect` replaces the entry, so
+    // Back leaves for the page before; sidebar links stay on the bare path.
     if (sources.isPending) {
       return null;
     }
@@ -124,16 +122,13 @@ export function ProjectPage(): ReactNode {
     }
     if (hasSource) {
       return (
-        <Navigate replace to={buildProjectPath({ kind: "architecture", project: route.project })} />
+        <AddressRedirect to={buildProjectPath({ kind: "architecture", project: route.project })} />
       );
     }
     return (
-      <Navigate
-        replace
-        to={{
-          pathname: buildProjectPath({ kind: "issues", project: route.project }),
-          search: location.search,
-        }}
+      <AddressRedirect
+        keepQuery
+        to={buildProjectPath({ kind: "issues", project: route.project })}
       />
     );
   }
@@ -185,7 +180,6 @@ export function ProjectPage(): ReactNode {
         <BlockedOnYou
           asks={inbox.data ?? []}
           className="order-3 shrink-0 md:order-5"
-          variant="pill"
           viewer={viewer}
         />
         <div aria-hidden className="order-4 basis-full md:hidden" />
@@ -268,20 +262,15 @@ export function ProjectPage(): ReactNode {
           issueView === "list" ? (
             <IssuesTable key={route.project} listing={{ project: route.project }} />
           ) : (
-            <>
-              <IssueFilters key={route.project} project={route.project} />
-              {/* Keyed by the project, as the list and the filters are: the board holds what
-                  became of its last move, and a refusal of one project's move names that
-                  project's issue, so another project's board is drawn with none of it. The key
-                  names the board too: the filters beside it are keyed by the same project, and
-                  siblings are told apart by their keys. */}
-              <IssueBoard
-                key={`board:${route.project}`}
-                lanes={lanes}
-                project={route.project}
-                showEdges={showEdges}
-              />
-            </>
+            // Keyed by the project, as the list is: the board holds what became of its last
+            // move, and a refusal of one project's move names that project's issue, so another
+            // project's board is drawn with none of it.
+            <IssueBoard
+              key={route.project}
+              lanes={lanes}
+              project={route.project}
+              showEdges={showEdges}
+            />
           )
         ) : null}
       </div>

@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 
 import { apiErrorMessage } from "../../api/client";
 import type { DecisionResponse, StateResponse } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import type { SubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   dangerText,
@@ -10,6 +11,7 @@ import {
   primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
   secondaryButtonBorder,
+  secondaryButtonDisabledText,
   secondaryButtonHoverBorder,
   secondaryButtonText,
 } from "../../theme/classes";
@@ -18,9 +20,10 @@ import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 /**
  * The Approve/Deny button pair `MachineLoginPage` renders for a pending machine login: that page
  * builds its own `approve`/`deny` mutations, whose POST bodies carry the code the operator typed,
- * then hands them here for the shared disabled-guard, click-wiring, and verbatim broker-error
- * rendering. With no `approve`, only Deny shows: a record nobody may approve any more, such as a
- * service's machine login from before services logged in with their tokens.
+ * then hands them here for the shared guard (both are held while either decision is out,
+ * `heldPress`), click-wiring, and verbatim broker-error rendering. With no `approve`, only Deny
+ * shows: a record nobody may approve any more, such as a service's machine login from before
+ * services logged in with their tokens.
  */
 export function CredentialDecisionButtons({
   approve,
@@ -38,17 +41,15 @@ export function CredentialDecisionButtons({
         {approve === undefined ? null : (
           <button
             className={`min-h-11 rounded-lg px-4 py-2 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-            disabled={deciding}
-            onClick={() => submitGuard.guard(() => approve.mutate())}
+            {...heldPress(deciding, () => submitGuard.guard(() => approve.mutate()))}
             type="button"
           >
             Approve
           </button>
         )}
         <button
-          className={`min-h-11 rounded-lg border px-4 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-          disabled={deciding}
-          onClick={() => submitGuard.guard(() => deny.mutate())}
+          className={`min-h-11 rounded-lg border px-4 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+          {...heldPress(deciding, () => submitGuard.guard(() => deny.mutate()))}
           type="button"
         >
           Deny

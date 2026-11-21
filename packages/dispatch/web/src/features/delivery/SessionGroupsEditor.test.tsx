@@ -1,10 +1,10 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { realClock } from "../../__tests__/fake-clock";
+import { jump, realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -12,7 +12,7 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Agent, DeliverySessionGroup } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
-import { stoppedWriteNote } from "../writes/keyed-write";
+import { SEND_DEADLINE_MS, stoppedWriteNote } from "../writes/keyed-write";
 import { SessionGroupsEditor } from "./SessionGroupsEditor";
 
 const crew: DeliverySessionGroup = {
@@ -28,8 +28,9 @@ const crew: DeliverySessionGroup = {
 const titles = { s1: "Planner one", s2: "Planner two", s3: "Reviewer" };
 const counts = { s1: 3, s2: 2, s3: 1 };
 
-/** The editor over `groups`; `regroup` draws it again over other groups, over the same client, as
- *  the Delivery page does when Dispatch's delta changes them. */
+/** The editor over `groups`, as the Delivery page draws it; `regroup` draws it again over other
+ *  groups, over the same client, as the page does when Dispatch's delta - a live update - changes
+ *  them. */
 function renderEditor(
   groups: readonly DeliverySessionGroup[] = [],
   values: {
@@ -37,7 +38,7 @@ function renderEditor(
     titles?: Readonly<Record<string, string>>;
     counts?: Readonly<Record<string, number>>;
   } = {}
-) {
+): { queryClient: QueryClient; regroup: (shown: readonly DeliverySessionGroup[]) => void } {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   // The agent registry, as the shell's poller last read it: none listed unless a test says so.
   queryClient.setQueryData(["agents"], values.agents ?? []);
@@ -58,7 +59,7 @@ function renderEditor(
   const view = render(tree(groups));
   return {
     queryClient,
-    regroup: (shown: readonly DeliverySessionGroup[]) => view.rerender(tree(shown)),
+    regroup: (shown) => view.rerender(tree(shown)),
   };
 }
 
@@ -152,13 +153,22 @@ test("create: two selected sessions and a name become a group; the live views he
   }
 });
 
+// Each write lands and the live update carrying it draws the group anew, as the page draws it,
+// before the next press: a group's buttons are held from a write's landing until that update.
 test("rename, add, remove and delete each write their one change", async () => {
   const user = userEvent.setup();
   const update = spyOn(api, "updateDeliverySessionGroup").mockResolvedValue(crew);
   const remove = spyOn(api, "deleteDeliverySessionGroup").mockResolvedValue(undefined);
-  renderEditor([crew]);
+  const { queryClient, regroup } = renderEditor([crew]);
+  /** Draws `next`, the live update carrying the write just made, once that write has landed, and
+   *  answers the group's card as it is drawn now. */
+  const drawn = async (next: DeliverySessionGroup) => {
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    regroup([next]);
+    return screen.getByRole("group", { name: next.name });
+  };
   try {
-    const group = screen.getByRole("group", { name: "Release crew" });
+    let group = screen.getByRole("group", { name: "Release crew" });
     const name = within(group).getByLabelText("Name");
     await user.clear(name);
     await user.click(name);
@@ -167,17 +177,22 @@ test("rename, add, remove and delete each write their one change", async () => {
     await waitFor(() =>
       expect(update).toHaveBeenLastCalledWith(crew.id, { name: "Ship crew" }, keyedAttempt)
     );
+    const renamed = { ...crew, name: "Ship crew", updated_at: "2026-10-11T00:01:00Z" };
+    group = await drawn(renamed);
 
     await user.click(screen.getByRole("checkbox", { name: "Reviewer" }));
     await user.click(within(group).getByRole("button", { name: "Add selected" }));
     await waitFor(() =>
       expect(update).toHaveBeenLastCalledWith(crew.id, { add: ["s3"] }, keyedAttempt)
     );
+    const added = { ...renamed, sessions: ["s2", "s9", "s3"], updated_at: "2026-10-11T00:02:00Z" };
+    group = await drawn(added);
 
     await user.click(within(group).getByRole("button", { name: "Remove Planner two" }));
     await waitFor(() =>
       expect(update).toHaveBeenLastCalledWith(crew.id, { remove: ["s2"] }, keyedAttempt)
     );
+    group = await drawn({ ...added, sessions: ["s9", "s3"], updated_at: "2026-10-11T00:03:00Z" });
 
     await user.click(within(group).getByRole("button", { name: "Delete group" }));
     await waitFor(() => expect(remove).toHaveBeenCalledWith(crew.id, keyedAttempt));
@@ -214,13 +229,11 @@ test("a change the reader stopped says it may have been saved, not that it faile
   }
 });
 
-test("group actions are disabled while a save is pending", async () => {
+test("group actions are held while a save is pending", async () => {
   const user = userEvent.setup();
-  let settle: (value: DeliverySessionGroup) => void = () => {};
-  const pending = new Promise<DeliverySessionGroup>((resolve) => {
-    settle = resolve;
-  });
-  const update = spyOn(api, "updateDeliverySessionGroup").mockImplementation(() => pending);
+  const pending = Promise.withResolvers<DeliverySessionGroup>();
+  const update = spyOn(api, "updateDeliverySessionGroup").mockImplementation(() => pending.promise);
+  const remove = spyOn(api, "deleteDeliverySessionGroup");
   renderEditor([crew]);
   try {
     const group = screen.getByRole("group", { name: "Release crew" });
@@ -234,13 +247,97 @@ test("group actions are disabled while a save is pending", async () => {
       expect(update).toHaveBeenCalledWith(crew.id, { name: "Ship crew" }, keyedAttempt)
     );
 
+    // Held, not disabled, so whichever holds the focus keeps it, and a press on any of them
+    // sends nothing while the save is out.
     for (const name of ["Rename", "Add selected", "Remove Planner two", "Delete group"]) {
-      expect((within(group).getByRole("button", { name }) as HTMLButtonElement).disabled).toBe(
-        true
-      );
+      const button = within(group).getByRole("button", { name });
+      expect(button).toHaveAttribute("aria-disabled", "true");
+      await user.click(button);
     }
-    settle(crew);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(remove).not.toHaveBeenCalled();
+    pending.resolve(crew);
   } finally {
+    cleanup();
+    update.mockRestore();
+    remove.mockRestore();
+  }
+});
+
+/** `group`'s Remove of Planner two and its Delete group, which a write of the group holds. */
+function groupButtons(group: HTMLElement): HTMLButtonElement[] {
+  return ["Remove Planner two", "Delete group"].map(
+    (name) => within(group).getByRole("button", { name }) as HTMLButtonElement
+  );
+}
+
+// A write of a group that lands keeps its buttons held until the live update carrying it is
+// drawn: the card is keyed by `updated_at`, so that update draws it anew, and the control the
+// reader pressed goes as their press's doing (`causedByReader`). Drawn anew, the card's buttons
+// are free again. On the held clock, so a second after the landing - when the editor has long
+// heard that the write is no longer out - is a moment the row picks.
+test("a group's buttons stay held after its write lands, until the live update carrying it draws the card anew", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const removed = { ...crew, sessions: ["s9"], updated_at: "2026-10-11T00:01:00Z" };
+  // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
+  const answer = Promise.withResolvers<DeliverySessionGroup>();
+  const update = spyOn(api, "updateDeliverySessionGroup").mockReturnValue(answer.promise);
+  const { queryClient, regroup } = renderEditor([crew]);
+  try {
+    const group = screen.getByRole("group", { name: "Release crew" });
+    await user.click(within(group).getByRole("button", { name: "Remove Planner two" }));
+    expect(update).toHaveBeenCalledWith(crew.id, { remove: ["s2"] }, keyedAttempt);
+    await act(async () => answer.resolve(removed));
+    await jump(1_000);
+    expect(queryClient.isMutating()).toBe(0);
+    // Held, not disabled (INFRA-2160's R2: no control is disabled while its own write is out).
+    for (const button of groupButtons(group)) {
+      expect(button.getAttribute("aria-disabled")).toBe("true");
+      expect(button.disabled).toBe(false);
+    }
+
+    regroup([removed]);
+    expect(group).not.toBeInTheDocument();
+    const redrawn = screen.getByRole("group", { name: "Release crew" });
+    expect(within(redrawn).queryByRole("button", { name: "Remove Planner two" })).toBeNull();
+    expect(
+      within(redrawn).getByRole("button", { name: "Delete group" }).getAttribute("aria-disabled")
+    ).toBeNull();
+  } finally {
+    realClock();
+    cleanup();
+    update.mockRestore();
+  }
+});
+
+// The live update that would draw the group anew never comes - the stream is down, say - so the
+// hold ends at the app's write deadline, and the group's buttons are free again.
+test("a group's buttons held for a live update that never comes are free again at the write deadline", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
+  const answer = Promise.withResolvers<DeliverySessionGroup>();
+  const update = spyOn(api, "updateDeliverySessionGroup").mockReturnValue(answer.promise);
+  const { queryClient } = renderEditor([crew]);
+  try {
+    const group = screen.getByRole("group", { name: "Release crew" });
+    await user.click(within(group).getByRole("button", { name: "Remove Planner two" }));
+    expect(update).toHaveBeenCalledWith(crew.id, { remove: ["s2"] }, keyedAttempt);
+    await act(async () => answer.resolve(crew));
+    await jump(0);
+    expect(queryClient.isMutating()).toBe(0);
+    // Held from the landing, a second short of the deadline still, and free again past it.
+    await jump(SEND_DEADLINE_MS - 1_000);
+    for (const button of groupButtons(group)) {
+      expect(button.getAttribute("aria-disabled")).toBe("true");
+    }
+    await jump(1_000);
+    for (const button of groupButtons(group)) {
+      expect(button.getAttribute("aria-disabled")).toBeNull();
+    }
+  } finally {
+    realClock();
     cleanup();
     update.mockRestore();
   }

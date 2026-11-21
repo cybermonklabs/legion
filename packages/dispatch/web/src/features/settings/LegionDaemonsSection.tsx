@@ -19,7 +19,17 @@ import { api, apiErrorMessage } from "../../api/client";
 import { legionDaemonQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { LegionSetting } from "../../api/types";
+import { heldField, heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
+import {
+  TableBody,
+  TableCell,
+  TableEmpty,
+  TableHead,
+  TableHeadCell,
+  TableRow,
+  TableShell,
+} from "../../components/TableShell";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import {
   borderDefault,
@@ -28,22 +38,13 @@ import {
   textMutedOnCanvas,
   textMutedOnSurface,
   textPrimaryOnCanvas,
-  textPrimaryOnSurface,
   textSecondaryOnCanvas,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import {
-  settingsFieldLabel,
-  settingsMonoInput,
-  settingsSubmitButton,
-  settingsTableHead,
-  settingsTableRow,
-  settingsTableWrapper,
-} from "./classes";
-import { ProjectSelect } from "./ProjectSelect";
+import { settingsFieldLabel, settingsMonoInput, settingsSubmitButton } from "./classes";
+import { NoProjectPicked, ProjectSelect } from "./ProjectSelect";
 import { useLegionDaemons } from "./useLegionDaemons";
 
 /** A daemon a person named: the project it serves and the base URL its state is read from. */
@@ -109,6 +110,8 @@ export function LegionDaemonsSection(): ReactNode {
   const queryClient = useQueryClient();
   const human = useIsHuman();
   const [project, setProject] = useState("");
+  // The form was submitted with no project picked, and says so until one is.
+  const [projectMissing, setProjectMissing] = useState(false);
   const [stateUrl, setStateUrl] = useState("");
   const [failedAction, setFailedAction] = useState<FailedAction>();
   const legion = useLegionDaemons();
@@ -217,6 +220,12 @@ export function LegionDaemonsSection(): ReactNode {
   };
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (writing) return;
+    // The project list is a button, which no `required` holds: an empty one files nothing here.
+    if (project === "") {
+      setProjectMissing(true);
+      return;
+    }
     const { refusal, url } = legionStateUrl(stateUrl);
     if (refusal !== "") {
       setFailedAction({ kind: "input", message: refusal });
@@ -224,6 +233,8 @@ export function LegionDaemonsSection(): ReactNode {
     }
     saveDaemon.mutate({ project, state_url: url });
   };
+  // The form is held while a save or a remove is out: each control keeps the focus the press
+  // gave it (`heldPress`), and the form sends nothing more until the write lands.
   const writing = saveDaemon.isPending || removeDaemon.isPending;
 
   return (
@@ -253,96 +264,72 @@ export function LegionDaemonsSection(): ReactNode {
       ) : null}
       {legion.daemons !== undefined && legion.projects !== undefined ? (
         <>
-          <div className={settingsTableWrapper}>
-            <table className="w-full text-left text-sm">
-              <thead className={settingsTableHead}>
-                <tr>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Project
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Daemon state URL
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Changed
-                  </th>
-                  {human ? (
-                    <th className="px-4 py-3" scope="col">
-                      <span className="sr-only">Actions</span>
-                    </th>
-                  ) : null}
-                </tr>
-              </thead>
-              <tbody>
-                {legion.daemons.length === 0 ? (
-                  <tr>
-                    <td
-                      className={`px-4 py-5 ${textMutedOnSurface}`}
-                      colSpan={human ? 4 : 3}
-                      data-legion-daemons-empty
-                    >
-                      No project names a Legion daemon yet.
-                    </td>
-                  </tr>
-                ) : (
-                  legion.daemons.map((setting) => (
-                    <tr
-                      className={settingsTableRow}
-                      data-legion-daemon={setting.project}
-                      key={setting.project}
-                    >
-                      <td className={`px-4 py-3 font-mono ${textPrimaryOnSurface}`}>
-                        {setting.project}
-                      </td>
-                      <td
-                        className={`px-4 py-3 font-mono ${textSecondaryOnSurface}`}
-                        data-legion-daemon-url
-                      >
-                        {setting.state_url}
-                      </td>
-                      <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
-                        <Timestamp at={setting.updated_at} className={textMutedOnSurface} />
-                      </td>
-                      {human ? (
-                        <td className="px-4 py-3 text-right">
-                          <button
-                            aria-label={`Remove the Legion daemon of ${setting.project}`}
-                            className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
-                            disabled={writing}
-                            onClick={() => removeDaemon.mutate(setting.project)}
-                            type="button"
-                          >
-                            Remove
-                          </button>
-                        </td>
-                      ) : null}
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+          <TableShell className="mt-6" label="Legion daemons">
+            <TableHead>
+              <TableHeadCell>Project</TableHeadCell>
+              <TableHeadCell>Daemon state URL</TableHeadCell>
+              <TableHeadCell>Changed</TableHeadCell>
+              {human ? (
+                <TableHeadCell>
+                  <span className="sr-only">Actions</span>
+                </TableHeadCell>
+              ) : null}
+            </TableHead>
+            <TableBody>
+              {legion.daemons.length === 0 ? (
+                <TableEmpty colSpan={human ? 4 : 3}>
+                  <span data-legion-daemons-empty>No project names a Legion daemon yet.</span>
+                </TableEmpty>
+              ) : (
+                legion.daemons.map((setting) => (
+                  <TableRow data-legion-daemon={setting.project} key={setting.project}>
+                    <TableCell mono tone="primary">
+                      {setting.project}
+                    </TableCell>
+                    <TableCell data-legion-daemon-url mono tone="secondary">
+                      {setting.state_url}
+                    </TableCell>
+                    <TableCell tone="secondary">
+                      <Timestamp at={setting.updated_at} className={textMutedOnSurface} />
+                    </TableCell>
+                    {human ? (
+                      <TableCell align="right">
+                        <button
+                          aria-label={`Remove the Legion daemon of ${setting.project}`}
+                          className={`font-medium refused:cursor-not-allowed refused:opacity-50 ${dangerText} ${dangerHoverText}`}
+                          {...heldPress(writing, () => removeDaemon.mutate(setting.project))}
+                          type="button"
+                        >
+                          Remove
+                        </button>
+                      </TableCell>
+                    ) : null}
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </TableShell>
 
           {human ? (
             <form
               className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end ${borderDefault}`}
               onSubmit={submit}
             >
-              <label className={settingsFieldLabel} htmlFor="legion-project">
-                Legion project
-                <ProjectSelect
-                  disabled={writing}
-                  id="legion-project"
-                  onChange={setProject}
-                  projects={legion.projects}
-                  value={project}
-                />
-              </label>
+              <ProjectSelect
+                held={writing}
+                label="Legion project"
+                onChange={(picked) => {
+                  setProject(picked);
+                  setProjectMissing(false);
+                }}
+                projects={legion.projects}
+                value={project}
+              />
               <label className={settingsFieldLabel} htmlFor="legion-state-url">
                 Legion daemon state URL
                 <input
-                  className={settingsMonoInput}
-                  disabled={writing}
+                  {...heldField(writing)}
+                  className={`${settingsMonoInput} aria-disabled:opacity-50`}
                   id="legion-state-url"
                   onChange={(event) => setStateUrl(event.target.value)}
                   placeholder="https://daemon.example"
@@ -350,11 +337,16 @@ export function LegionDaemonsSection(): ReactNode {
                   value={stateUrl}
                 />
               </label>
-              <button className={settingsSubmitButton} disabled={writing} type="submit">
+              <button
+                aria-disabled={writing || undefined}
+                className={settingsSubmitButton}
+                type="submit"
+              >
                 Save Legion daemon
               </button>
             </form>
           ) : null}
+          {projectMissing ? <NoProjectPicked /> : null}
           {failedAction !== undefined ? (
             <div className="mt-4">
               <QueryError

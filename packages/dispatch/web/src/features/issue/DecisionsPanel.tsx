@@ -12,6 +12,7 @@ import type {
   IssueAskRow,
   IssueDecisions,
 } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
 import {
@@ -256,13 +257,16 @@ function ChangeComposer({
       onDone();
     },
   });
+  // Send is held, not disabled, while the change is out: it keeps the focus the press gave it
+  // (`heldPress`), and Enter or a second press sends nothing more.
+  const held = send.isPending;
   return (
     <form
       aria-label={`Change ${decision.heading}`}
       className="space-y-2"
       onSubmit={(event) => {
         event.preventDefault();
-        if (body.trim() !== "") {
+        if (body.trim() !== "" && !held) {
           send.mutate({ body, quote });
         }
       }}
@@ -296,8 +300,9 @@ function ChangeComposer({
       )}
       <div className="flex gap-2">
         <button
+          aria-disabled={held || undefined}
           className={primaryButton}
-          disabled={send.isPending || body.trim() === ""}
+          disabled={body.trim() === ""}
           type="submit"
         >
           Send
@@ -437,8 +442,7 @@ function WaitingDecision({
             <div className="flex gap-2">
               <button
                 className={secondaryButtonCompact}
-                disabled={keep.isPending}
-                onClick={() => keep.mutate(documentId)}
+                {...heldPress(keep.isPending, () => keep.mutate(documentId))}
                 type="button"
               >
                 Keep

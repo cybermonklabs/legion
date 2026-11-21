@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import type { InboxRow, MyReplyThreadRow } from "../../api/types";
 import { agentRow, replyRow } from "../threads/replies-fixture";
-import { dimensionValue, filterCounts, group, inFieldFilter, sortRows } from "./grouping";
+import { dimensionValue, filterCounts, group, inFieldFilter, sortRows, withBand } from "./grouping";
 import { issueAsk } from "./inbox-fixture";
 import type { InboxListRow } from "./list-row";
 
@@ -153,4 +153,28 @@ test("a field's counts are taken under the other fields' filters, not its own", 
   // Only the P1 rows are counted, and both urgencies of them are, so neither reads 0.
   expect(counts.get("blocking")).toBe(1);
   expect(counts.get("low")).toBe(1);
+});
+
+// INFRA-2160: a priority picked on the only P2 ask moves it to P0, which leaves no P2 band; the
+// list holds the row in the band the reader saw it in, so that band is drawn again, empty, where
+// `group` would have put it.
+test("a band the held row is kept in comes back empty, in its own place, Later last", () => {
+  const snoozed = ask({ id: "s", issue_key: "CORE-9", snoozed_until: "2026-10-13T09:00:00Z" });
+  const groups = group(
+    [ask({ id: "a", priority: 0 }), ask({ id: "b", priority: 3 }), snoozed],
+    "priority",
+    { now, titles, viewer }
+  );
+  expect(groups.map(({ key }) => key)).toEqual(["P0", "P3", "later"]);
+  const kept = withBand(groups, "P2", "priority", titles);
+  expect(kept.map(({ key }) => key)).toEqual(["P0", "P2", "P3", "later"]);
+  expect(kept[1]?.rows).toEqual([]);
+  // A band already drawn is left as it is.
+  expect(withBand(groups, "P3", "priority", titles)).toBe(groups);
+  // Under Waiting on, the turn bands keep their order.
+  const turns = group([thread({ thread_id: "t" })], "waiting-on", { now, titles, viewer });
+  expect(withBand(turns, "agent", "waiting-on", titles).map(({ key }) => key)).toEqual([
+    "human",
+    "agent",
+  ]);
 });

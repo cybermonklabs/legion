@@ -1,6 +1,7 @@
 import { type ReactNode, type RefObject, useRef } from "react";
 
 import type { Artifact, Ask, DispatchEvent } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
   activeTabIndicatorBorder,
@@ -458,9 +459,8 @@ export function MarginSheet({
           >
             <header className={`flex items-center border-b px-4 py-3 ${borderDefault}`}>
               <button
-                className={`min-h-11 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${textPrimaryOnSurface}`}
-                disabled={sheet.replySending}
-                onClick={sheet.closeThread}
+                className={`min-h-11 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${textPrimaryOnSurface}`}
+                {...heldPress(sheet.replySending, sheet.closeThread)}
                 type="button"
               >
                 Back

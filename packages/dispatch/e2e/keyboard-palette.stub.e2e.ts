@@ -20,6 +20,7 @@ import {
 import { seedFakeGithub } from "./fake-github-helpers";
 import { selectedRow } from "./inbox-pane";
 import { openIssue, searchPath } from "./keyboard-palette";
+import { bulkSnoozeMenu } from "./menus";
 import { stubbed } from "./stub/stub-test";
 
 /** One issue per row, so each keeps the title it was written with, and the second project the
@@ -335,19 +336,23 @@ listTest(
     const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
       name: "Actions",
     });
-    await expect(actions.getByRole("option", { name: "Open issue" })).toHaveCount(1);
-    // `Enter` from the row opens it too, and `Open issue` is already that action's row.
+    // The project scope's row actions are one set whichever list draws them, so their labels
+    // name no list (INFRA-2160): the row is `Open` and its key, read whole, since `Open in a new
+    // tab` and `Open the inbox` begin with the same word.
+    const open = actions.getByRole("option", { name: /^Open\s*o$/ });
+    await expect(open).toHaveCount(1);
+    // `Enter` from the row opens it too, and `Open` is already that action's row.
     // Soft, so one run names every row that should not be there.
-    for (const absent of ["Next issue", "Previous issue", "Open the focused issue"]) {
+    for (const absent of ["Next row", "Previous row", "Open the focused row"]) {
       await expect.soft(actions.getByRole("option", { name: absent })).toHaveCount(0);
     }
-    await actions.getByRole("option", { name: "Open issue" }).click();
+    await open.click();
     await expect(page).toHaveURL(new RegExp(`/issues/${scene.issue}$`));
   }
 );
 
 inboxTest(
-  "the Inbox offers the selection's snooze but not the keys that mark and clear it @pr",
+  "the Inbox offers the selection's snooze and Clear the selection, but not the key that marks a row @pr",
   async ({ page, scene }) => {
     await page.goto("/");
     const row = page.locator("[data-inbox-row]");
@@ -360,7 +365,7 @@ inboxTest(
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", scene.askId);
     await row.focus();
     await page.keyboard.press("x");
-    const bar = page.getByRole("group", { name: "Selected rows" });
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
     await expect(bar).toContainText("1 selected");
 
     const dialog = page.getByRole("dialog", { name: "Search" });
@@ -377,19 +382,26 @@ inboxTest(
     await expect(dialog).toHaveCount(0);
     await expect(row).toBeFocused();
 
-    // Off the row, with the mark still made: Escape here clears the selection, and in the
-    // palette Escape closes the palette, so that binding is no row. The snooze still is.
+    // Off the row, with the mark still made: Escape here clears the selection. The bar's Clear
+    // selection is a row of the palette too (INFRA-2160, R11), which shows that Escape; in the
+    // palette Escape closes the palette, so the row is chosen by Enter or a click. The snooze
+    // still is a row.
     await page.keyboard.press("Escape");
     await expect(row).not.toBeFocused();
     await expect(bar).toContainText("1 selected");
     await page.keyboard.press("Control+k");
     await expect(snooze).toHaveCount(1);
-    await expect.soft(actions.getByRole("option", { name: "Clear the selection" })).toHaveCount(0);
+    await expect(actions.getByRole("option", { name: /^Clear the selection\s*Esc/ })).toHaveCount(
+      1
+    );
 
-    // It runs on the page the palette opened over: the bulk picker takes focus, the mark kept.
+    // It runs on the page the palette opened over: the bulk Snooze menu opens on its first
+    // choice, the mark kept.
     await snooze.click();
     await expect(dialog).toHaveCount(0);
-    await expect(bar.getByRole("combobox", { name: "Snooze selected asks" })).toBeFocused();
+    await expect(
+      bulkSnoozeMenu(page).getByRole("menuitem", { exact: true, name: "Later today" })
+    ).toBeFocused();
     await expect(bar).toContainText("1 selected");
   }
 );

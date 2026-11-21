@@ -286,7 +286,7 @@ test("live: resolving an ask updates its pinned issue's open-ask count", async (
     // The pinned refetch the resolve below asks for is held back by `MIN_REFETCH_INTERVAL_MS`.
     await page.clock.install();
     await page.goto("/");
-    await expect(page.getByRole("heading", { name: "Pinned" })).toBeVisible();
+    await expect(page.getByRole("heading", { exact: true, name: "Pinned" })).toBeVisible();
     const pinned = page
       .getByRole("navigation", { name: "Navigation" })
       .getByRole("link", { name: new RegExp(`${issue.key}.*Pinned ask`) });

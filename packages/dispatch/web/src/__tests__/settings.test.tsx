@@ -1,8 +1,9 @@
 import { expect, spyOn, test } from "bun:test";
 import { PROJECT_NAME_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: the focus sites below reach the picker's people list without a press, which user-event has no form for
+// biome-ignore lint/style/noRestrictedImports: the focus site below reaches the picker's people list without a press, which user-event has no form for
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
@@ -13,6 +14,7 @@ import { App } from "../app";
 // for, so the module is loaded here, with the test file, and no wait measures that load.
 import "../features/settings/SettingsPage";
 import { keyedAttempt } from "./keyed-attempt";
+import { panelOf, pickNamed } from "./list-picks";
 
 /** The mapping routes' server state as the Settings page reaches it: a read answers what the writes
  *  have left, and a write follows the server's default rules (the body's default, else the
@@ -155,7 +157,10 @@ test("human users manage repository project mappings from the settings route", a
 
     await user.click(screen.getByLabelText("Repository"));
     await user.paste("Owner/Repo.git");
-    await user.selectOptions(screen.getByLabelText("Project"), "CORE");
+    // By role: the page's Keyboard shortcuts section is a region named Project too.
+    const project = screen.getByRole("button", { name: pickNamed("Project") });
+    await user.click(project);
+    await user.click(within(panelOf(project)).getByRole("option", { name: "CORE · Core" }));
     await user.click(screen.getByRole("button", { name: "Add mapping" }));
     await waitFor(() =>
       expect(putRepoProject).toHaveBeenLastCalledWith(
@@ -412,7 +417,7 @@ test("a human creates a project from Settings and it appears in the mappings sel
     expect(screen.getByLabelText("Name")).toHaveProperty("maxLength", PROJECT_NAME_MAX);
     // The form starts on the person the server would take anyway - the one creating it - and
     // sends them, so the new project names somebody from the moment it exists.
-    expect(screen.getByLabelText<HTMLSelectElement>("Default assignee").value).toBe("alice");
+    expect(screen.getByLabelText("Default assignee").textContent).toBe("alice");
     await user.click(screen.getByRole("button", { name: "New project" }));
 
     await waitFor(() =>
@@ -423,11 +428,14 @@ test("a human creates a project from Settings and it appears in the mappings sel
     );
     await waitFor(() => expect(listProjects).toHaveBeenCalledTimes(2));
     expect(await screen.findByRole("cell", { name: "QA" })).toBeDefined();
-    const qa = await screen.findByRole("combobox", { name: "Default assignee of QA" });
-    await waitFor(() => expect(qa).toHaveProperty("value", "alice"));
+    const qa = await screen.findByLabelText("Default assignee of QA");
+    await waitFor(() => expect(qa.textContent).toBe("alice"));
     expect(listDefaults).toHaveBeenCalledTimes(2);
+    // By role: the page's Keyboard shortcuts section is a region named Project too.
+    const project = screen.getByRole("button", { name: pickNamed("Project") });
+    await user.click(project);
     expect(
-      within(screen.getByRole("combobox", { name: "Project" })).getByRole("option", {
+      within(panelOf(project)).getByRole("option", {
         name: "QA · Quality",
       })
     ).toBeDefined();
@@ -606,10 +614,43 @@ function renderSettings(projects: string[]): {
   };
 }
 
-const defaultAssigneeControl = async (project: string): Promise<HTMLSelectElement> =>
-  (await screen.findByRole("combobox", {
-    name: `Default assignee of ${project}`,
-  })) as HTMLSelectElement;
+/** A project's default-assignee list's trigger, found by its label: its name may go on to the
+ *  person it shows. What it shows is its value, as a select's `value` was. */
+const defaultAssigneeControl = (project: string): Promise<HTMLButtonElement> =>
+  screen.findByLabelText<HTMLButtonElement>(`Default assignee of ${project}`);
+
+/** Opens `control`'s list, unless it stands open, and answers it once it offers `login`: the
+ *  people are read only once a reader reaches for the control. The list is portalled out of the
+ *  page, so it is found through its trigger. */
+async function listOffering(
+  user: UserEvent,
+  control: HTMLElement,
+  login: string
+): Promise<HTMLElement> {
+  if (control.getAttribute("aria-expanded") !== "true") await user.click(control);
+  const list = within(panelOf(control)).getByRole("listbox");
+  await within(list).findByRole("option", { name: login });
+  return list;
+}
+
+/** Picks `login` from `control`'s list, as `selectOptions` picked it from the select. */
+async function pickPerson(user: UserEvent, control: HTMLElement, login: string): Promise<void> {
+  const list = await listOffering(user, control, login);
+  await user.click(within(list).getByRole("option", { name: login }));
+}
+
+/** The people `list` offers, each as its option's name: the row's words without the tick the
+ *  picked one carries, which is hidden from its name. */
+function offered(list: HTMLElement): string[] {
+  return within(list)
+    .getAllByRole("option")
+    .map((option) =>
+      [...option.children]
+        .filter((part) => part.getAttribute("aria-hidden") !== "true")
+        .map((part) => part.textContent)
+        .join("")
+    );
+}
 
 test("default assignee picks made while one is saving show, and only the newest follows the held save", async () => {
   const user = userEvent.setup();
@@ -631,32 +672,28 @@ test("default assignee picks made while one is saving show, and only the newest 
     expect(await section.findByText(/no project mapping/)).toHaveTextContent("default project");
 
     const control = await defaultAssigneeControl("CORE");
-    await waitFor(() => expect(control.value).toBe("alice@example.com"));
+    await waitFor(() => expect(control.textContent).toBe("alice@example.com"));
     expect(control.disabled).toBe(false);
     // Nobody is listed until a reader reaches for the picker.
     expect(listUsers).not.toHaveBeenCalled();
 
-    // Reaching the control without pressing it: user-event has no form for focus alone.
+    // Reaching the control without pressing it: user-event has no form for focus alone. The
+    // focus alone starts the people read, before any press.
     fireEvent.focus(control);
-    await waitFor(() =>
-      expect(within(control).getByRole("option", { name: "carol@example.com" })).toBeDefined()
-    );
-    expect(
-      within(control)
-        .getAllByRole("option")
-        .map((option) => option.textContent)
-    ).toEqual(["alice@example.com", "bob@example.com", "carol@example.com"]);
+    await waitFor(() => expect(listUsers).toHaveBeenCalledTimes(1));
+    const list = await listOffering(user, control, "carol@example.com");
+    expect(offered(list)).toEqual(["alice@example.com", "bob@example.com", "carol@example.com"]);
 
     const release = server.hold();
-    await user.selectOptions(control, "bob@example.com");
-    await waitFor(() => expect(control.value).toBe("bob@example.com"));
+    await pickPerson(user, control, "bob@example.com");
+    await waitFor(() => expect(control.textContent).toBe("bob@example.com"));
     await waitFor(() => expect(server.sent).toEqual(["bob@example.com"]));
 
     // Two more picks while bob's save is held: each shows, neither is sent yet.
-    await user.selectOptions(control, "alice@example.com");
-    await waitFor(() => expect(control.value).toBe("alice@example.com"));
-    await user.selectOptions(control, "carol@example.com");
-    await waitFor(() => expect(control.value).toBe("carol@example.com"));
+    await pickPerson(user, control, "alice@example.com");
+    await waitFor(() => expect(control.textContent).toBe("alice@example.com"));
+    await pickPerson(user, control, "carol@example.com");
+    await waitFor(() => expect(control.textContent).toBe("carol@example.com"));
     await act(async () => {});
     expect(putDefault).toHaveBeenCalledTimes(1);
 
@@ -667,15 +704,15 @@ test("default assignee picks made while one is saving show, and only the newest 
       expect(server.rows()).toEqual([{ assignee: "carol@example.com", project: "CORE" }])
     );
     expect(putDefault).toHaveBeenCalledTimes(2);
-    await waitFor(() => expect(control.value).toBe("carol@example.com"));
+    await waitFor(() => expect(control.textContent).toBe("carol@example.com"));
 
     // Nothing clears a default, so the picker holds no option that names nobody: every pick it
     // can make sends a person, and CORE is left naming one.
-    expect(
-      within(control)
-        .getAllByRole("option")
-        .map((option) => option.getAttribute("value"))
-    ).toEqual(["alice@example.com", "bob@example.com", "carol@example.com"]);
+    expect(offered(await listOffering(user, control, "carol@example.com"))).toEqual([
+      "alice@example.com",
+      "bob@example.com",
+      "carol@example.com",
+    ]);
     expect(putDefault.mock.calls.map(([, input]) => input)).toEqual([
       { assignee: "bob@example.com" },
       { assignee: "carol@example.com" },
@@ -706,31 +743,22 @@ test("a default assignee picked after Settings is remounted supersedes the pick 
   try {
     let control = await defaultAssigneeControl("CORE");
     await waitFor(() => expect(control.disabled).toBe(false));
-    // Reaching the control without pressing it: user-event has no form for focus alone.
-    fireEvent.focus(control);
-    await waitFor(() =>
-      expect(within(control).getByRole("option", { name: "dave@example.com" })).toBeDefined()
-    );
+    await listOffering(user, control, "dave@example.com");
 
     const release = server.hold();
-    await user.selectOptions(control, "bob@example.com");
+    await pickPerson(user, control, "bob@example.com");
     await waitFor(() => expect(server.sent).toEqual(["bob@example.com"]));
-    await user.selectOptions(control, "carol@example.com");
-    await waitFor(() => expect(control.value).toBe("carol@example.com"));
+    await pickPerson(user, control, "carol@example.com");
+    await waitFor(() => expect(control.textContent).toBe("carol@example.com"));
 
     leave();
     reopen();
     control = await defaultAssigneeControl("CORE");
     // The pick still waiting behind bob's held save is what the returning row shows.
-    await waitFor(() => expect(control.value).toBe("carol@example.com"));
-    // Reaching the control without pressing it: user-event has no form for focus alone.
-    fireEvent.focus(control);
-    await waitFor(() =>
-      expect(within(control).getByRole("option", { name: "dave@example.com" })).toBeDefined()
-    );
+    await waitFor(() => expect(control.textContent).toBe("carol@example.com"));
 
-    await user.selectOptions(control, "dave@example.com");
-    await waitFor(() => expect(control.value).toBe("dave@example.com"));
+    await pickPerson(user, control, "dave@example.com");
+    await waitFor(() => expect(control.textContent).toBe("dave@example.com"));
     await act(async () => {});
     // Still one at a time: nothing follows bob's save onto the wire while it is held.
     expect(server.sent).toEqual(["bob@example.com"]);
@@ -741,7 +769,7 @@ test("a default assignee picked after Settings is remounted supersedes the pick 
       expect(server.rows()).toEqual([{ assignee: "dave@example.com", project: "CORE" }])
     );
     expect(putDefault).toHaveBeenCalledTimes(2);
-    await waitFor(() => expect(control.value).toBe("dave@example.com"));
+    await waitFor(() => expect(control.textContent).toBe("dave@example.com"));
   } finally {
     done();
     listDefaults.mockRestore();
@@ -768,13 +796,8 @@ test("a default assignee save refused while Settings is unmounted shows its reas
 
   try {
     let core = await defaultAssigneeControl("CORE");
-    await waitFor(() => expect(core.value).toBe("alice@example.com"));
-    // Reaching the control without pressing it: user-event has no form for focus alone.
-    fireEvent.focus(core);
-    await waitFor(() =>
-      expect(within(core).getByRole("option", { name: "bob@example.com" })).toBeDefined()
-    );
-    await user.selectOptions(core, "bob@example.com");
+    await waitFor(() => expect(core.textContent).toBe("alice@example.com"));
+    await pickPerson(user, core, "bob@example.com");
     await waitFor(() => expect(putDefault).toHaveBeenCalledTimes(1));
 
     leave();
@@ -794,7 +817,7 @@ test("a default assignee save refused while Settings is unmounted shows its reas
     await waitFor(() =>
       expect(coreCell.getByRole("alert")).toHaveTextContent("the default assignee save was refused")
     );
-    expect(core.value).toBe("alice@example.com");
+    expect(core.textContent).toBe("alice@example.com");
 
     await user.click(coreCell.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(coreCell.queryByRole("alert")).not.toBeInTheDocument());
@@ -805,7 +828,7 @@ test("a default assignee save refused while Settings is unmounted shows its reas
       ["CORE", { assignee: "bob@example.com" }, keyedAttempt],
       ["CORE", { assignee: "bob@example.com" }, keyedAttempt],
     ]);
-    await waitFor(() => expect(core.value).toBe("bob@example.com"));
+    await waitFor(() => expect(core.textContent).toBe("bob@example.com"));
   } finally {
     done();
     listDefaults.mockRestore();
@@ -841,28 +864,23 @@ test("a refused default assignee puts the row back, shows the server's reason in
     const coreCell = within(core.closest("td") as HTMLElement);
     const opsCell = within(ops.closest("td") as HTMLElement);
     await waitFor(() => expect(core.disabled).toBe(false));
-    // Reaching the control without pressing it: user-event has no form for focus alone.
-    fireEvent.focus(core);
-    await waitFor(() =>
-      expect(within(core).getByRole("option", { name: "bob@example.com" })).toBeDefined()
-    );
 
-    await user.selectOptions(core, "bob@example.com");
+    await pickPerson(user, core, "bob@example.com");
     await waitFor(() =>
       expect(coreCell.getByRole("alert")).toHaveTextContent("bob@example.com has never signed in")
     );
     // The refused pick is not left on screen: the row reads the person the server holds.
-    expect(core.value).toBe("alice@example.com");
+    expect(core.textContent).toBe("alice@example.com");
 
     // A save on another row neither clears nor takes over this row's error.
-    await user.selectOptions(ops, "bob@example.com");
+    await pickPerson(user, ops, "bob@example.com");
     await waitFor(() =>
       expect(server.rows()).toEqual([
         { assignee: "alice@example.com", project: "CORE" },
         { assignee: "bob@example.com", project: "OPS" },
       ])
     );
-    expect(ops.value).toBe("bob@example.com");
+    expect(ops.textContent).toBe("bob@example.com");
     expect(opsCell.queryByRole("alert")).not.toBeInTheDocument();
     expect(coreCell.getByRole("alert")).toHaveTextContent("bob@example.com has never signed in");
 
@@ -873,7 +891,7 @@ test("a refused default assignee puts the row back, shows the server's reason in
       ["OPS", { assignee: "bob@example.com" }, keyedAttempt],
       ["CORE", { assignee: "bob@example.com" }, keyedAttempt],
     ]);
-    await waitFor(() => expect(core.value).toBe("bob@example.com"));
+    await waitFor(() => expect(core.textContent).toBe("bob@example.com"));
     expect(server.rows()).toContainEqual({ assignee: "bob@example.com", project: "CORE" });
   } finally {
     done();
@@ -889,31 +907,26 @@ test("a default assignee the page has not read is disabled and names nobody", as
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockReturnValueOnce(read.promise);
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "alice@example.com" }]);
   const { done } = renderSettings(["CORE"]);
-  const optionNames = (control: HTMLSelectElement) =>
-    within(control)
-      .getAllByRole("option")
-      .map((option) => option.textContent);
 
   try {
     const section = within(await screen.findByRole("region", { name: "Projects" }));
     const control = await defaultAssigneeControl("CORE");
-    // Still reading: nobody knows yet which person CORE names.
+    // Still reading: nobody knows yet which person CORE names. Disabled, the control opens no
+    // list, and the one value it holds is what it shows.
     expect(control.disabled).toBe(true);
-    expect(control.value).not.toBe("");
-    expect(optionNames(control)).toEqual(["Loading…"]);
+    expect(control.textContent).toBe("Loading…");
 
     await act(async () => read.reject(new ApiError(500, { code: "INTERNAL", error: "boom" })));
     await waitFor(() =>
       expect(section.getByRole("alert")).toHaveTextContent("Couldn't load the default assignees.")
     );
     expect(control.disabled).toBe(true);
-    expect(control.value).not.toBe("");
-    expect(optionNames(control)).toEqual(["Unavailable"]);
+    expect(control.textContent).toBe("Unavailable");
 
     listDefaults.mockResolvedValue([{ assignee: "alice@example.com", project: "CORE" }]);
     await user.click(section.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(control.disabled).toBe(false));
-    expect(control.value).toBe("alice@example.com");
+    expect(control.textContent).toBe("alice@example.com");
     expect(section.queryByRole("alert")).not.toBeInTheDocument();
   } finally {
     done();

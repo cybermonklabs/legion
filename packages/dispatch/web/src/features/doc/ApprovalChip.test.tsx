@@ -1,10 +1,10 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -33,7 +33,11 @@ function artifact(approval: ArtifactApproval | undefined): Artifact {
   };
 }
 
-function renderChip(target: Artifact, variant?: "header" | "list", onReviewed?: () => void) {
+function renderChip(
+  target: Artifact,
+  variant?: "header" | "list" | "pane",
+  onReviewed?: () => void
+) {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -157,9 +161,105 @@ test("the header's Approve reads the latest version for a stale approval", () =>
   }
 });
 
-test("clicking Approve posts an approved review and refreshes the issue and inbox", async () => {
+test("an unread document draws nothing but in the reading pane's head, which holds its two actions", () => {
+  for (const variant of ["list", "header"] as const) {
+    const view = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ApprovalChip artifact={undefined} variant={variant} />
+      </QueryClientProvider>
+    );
+    try {
+      expect(view.container.firstChild).toBeNull();
+    } finally {
+      view.unmount();
+    }
+  }
+  const view = render(
+    <QueryClientProvider client={new QueryClient()}>
+      <ApprovalChip
+        artifact={undefined}
+        shortcutKeys={{ approve: ["a"], requestChanges: ["Shift+R"], showReviews: [] }}
+        variant="pane"
+      />
+    </QueryClientProvider>
+  );
+  try {
+    // Both drawn and held, each in its box with its key, and no state to show yet.
+    const buttons = screen.getAllByRole("button");
+    expect(buttons.map((button) => button.getAttribute("data-approval-action"))).toEqual([
+      "approve",
+      "request-changes",
+    ]);
+    for (const button of buttons) {
+      expect(button).toHaveAttribute("aria-disabled", "true");
+      expect(button.parentElement?.tagName).toBe("SPAN");
+    }
+    expect(screen.getByRole("button", { name: "Approve" })).toHaveAttribute(
+      "aria-keyshortcuts",
+      "A"
+    );
+    expect(screen.getByRole("button", { name: "Request changes" })).toHaveAttribute(
+      "aria-keyshortcuts",
+      "Shift+R"
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+test("the reading pane's Approve keeps one label for a stale approval", () => {
+  const view = renderChip(artifact({ latest_version: 4, state: "stale", version: 2 }), "pane");
+  try {
+    expect(screen.getByRole("button", { name: "Approve" })).not.toHaveAttribute("aria-disabled");
+    expect(screen.queryByRole("button", { name: "Approve v4" })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+  }
+});
+
+// The keys find the two actions and the badge by their marks: the Inbox's `a` and Shift+R press
+// Approve and Request changes, and its command bar's Show the reviews presses the badge by the
+// mark the Inbox gives it (`stateMarks`), which no other host's badge carries.
+test("the header's actions and its badge carry the marks the keys press them by", () => {
+  const awaiting = artifact({ latest_version: 3, state: "awaiting" });
+  const view = render(
+    <QueryClientProvider client={new QueryClient()}>
+      <ApprovalChip
+        artifact={awaiting}
+        stateMarks={{ "data-inbox-action": "show-reviews" }}
+        variant="header"
+      />
+    </QueryClientProvider>
+  );
+  try {
+    expect(screen.getByRole("button", { name: "Approve" })).toHaveAttribute(
+      "data-approval-action",
+      "approve"
+    );
+    expect(screen.getByRole("button", { name: "Request changes" })).toHaveAttribute(
+      "data-approval-action",
+      "request-changes"
+    );
+    expect(screen.getByRole("button", { name: "Awaiting approval" })).toHaveAttribute(
+      "data-inbox-action",
+      "show-reviews"
+    );
+  } finally {
+    view.unmount();
+  }
+  const unmarked = renderChip(awaiting, "header");
+  try {
+    expect(screen.getByRole("button", { name: "Awaiting approval" })).not.toHaveAttribute(
+      "data-inbox-action"
+    );
+  } finally {
+    unmarked.unmount();
+  }
+});
+
+test("clicking Approve posts an approved review of the version the page read", async () => {
   const user = userEvent.setup();
-  const createArtifactReview = spyOn(api, "createArtifactReview").mockResolvedValue({
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockResolvedValue({
     actor: { id: "alice", kind: "user" },
     artifact_id: "artifact-1",
     ask_id: null,
@@ -175,14 +275,229 @@ test("clicking Approve posts an approved review and refreshes the issue and inbo
   const view = renderChip(artifact({ latest_version: 3, state: "awaiting" }), "header");
   try {
     await user.click(screen.getByRole("button", { name: "Approve" }));
-    await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
-    expect(createArtifactReview).toHaveBeenCalledWith(
+    await waitFor(() => expect(createArtifactVersionReview).toHaveBeenCalledTimes(1));
+    expect(createArtifactVersionReview).toHaveBeenCalledWith(
       "artifact-1",
+      3,
       { state: "approved" },
       keyedAttempt
     );
   } finally {
-    createArtifactReview.mockRestore();
+    createArtifactVersionReview.mockRestore();
+    view.unmount();
+  }
+});
+
+// A stale approval's Approve names the latest version, and that is the version it sends.
+test("a stale approval's Approve posts its review of the latest version", async () => {
+  const user = userEvent.setup();
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockResolvedValue({
+    actor: { id: "alice", kind: "user" },
+    artifact_id: "artifact-1",
+    ask_id: null,
+    content_sha256: null,
+    content_sha256_source: null,
+    created_at: "2026-09-11T00:00:00Z",
+    id: "review-1",
+    kind: "person",
+    reason: null,
+    state: "approved",
+    version: 4,
+  });
+  const view = renderChip(artifact({ latest_version: 4, state: "stale", version: 2 }), "header");
+  try {
+    await user.click(screen.getByRole("button", { name: "Approve v4" }));
+    await waitFor(() => expect(createArtifactVersionReview).toHaveBeenCalledTimes(1));
+    expect(createArtifactVersionReview).toHaveBeenCalledWith(
+      "artifact-1",
+      4,
+      { state: "approved" },
+      keyedAttempt
+    );
+  } finally {
+    createArtifactVersionReview.mockRestore();
+    view.unmount();
+  }
+});
+
+// The document moved after the page read it: Dispatch writes nothing and says which version a
+// review would now record. The chip shows those words, and the page reads the document again,
+// so the next press reviews what the reader then has in front of them.
+test("an Approve whose version moved shows the server's refusal and reads the document again", async () => {
+  const user = userEvent.setup();
+  const refusal =
+    "the review would record version 4 of Design notes, not version 3: read version 4 and review it";
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockRejectedValue(
+    new ApiError(409, { code: "REVIEW_VERSION_MOVED", error: refusal })
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  queryClient.setQueryData(["artifact", "artifact-1"], artifact(undefined));
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <ApprovalChip
+        artifact={artifact({ latest_version: 3, state: "awaiting" })}
+        variant="header"
+      />
+    </QueryClientProvider>
+  );
+  try {
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(refusal));
+    expect(queryClient.getQueryState(["artifact", "artifact-1"])?.isInvalidated).toBe(true);
+    expect(createArtifactVersionReview).toHaveBeenCalledTimes(1);
+  } finally {
+    createArtifactVersionReview.mockRestore();
+    view.unmount();
+  }
+});
+
+/** An approved review of `version` of the document, as Dispatch answers one it recorded. */
+function approvedReview(version: number): ArtifactReview {
+  return {
+    actor: { id: "alice", kind: "user" },
+    artifact_id: "artifact-1",
+    ask_id: null,
+    content_sha256: null,
+    content_sha256_source: null,
+    created_at: "2026-09-11T00:00:00Z",
+    id: "review-1",
+    kind: "person",
+    reason: null,
+    state: "approved",
+    version,
+  };
+}
+
+/** The chip as both issue pages' header draws it: from the issue's own read, which carries the
+ *  issue's documents (`primarySpec`), never from the document's read. Each read of the issue is
+ *  answered by `read`. */
+function IssueReadChip({
+  read,
+}: {
+  read: () => Promise<{ readonly artifacts: readonly Artifact[] }>;
+}): ReactNode {
+  const issue = useQuery({ queryFn: read, queryKey: ["issue", "CORE-1"] });
+  const spec = issue.data?.artifacts[0];
+  return spec === undefined ? null : <ApprovalChip artifact={spec} variant="header" />;
+}
+
+/** A client whose reads and writes are not tried again. */
+function chipClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+}
+
+// On an issue page the header draws the chip from the issue's read, which a 409 reads again too:
+// the next press reviews the version the page then draws, rather than sending the version the
+// server refused again and again until something else reads the issue.
+test("on an issue page, an Approve whose version moved reads the issue again, and the next press reviews the version it then draws", async () => {
+  const user = userEvent.setup();
+  const refusal =
+    "the review would record version 4 of Design notes, not version 3: read version 4 and review it";
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview")
+    .mockRejectedValueOnce(new ApiError(409, { code: "REVIEW_VERSION_MOVED", error: refusal }))
+    .mockResolvedValue(approvedReview(4));
+  // The version the issue's read answers; the document moves on to 4 once the page has read 3.
+  let latest = 3;
+  let reads = 0;
+  const view = render(
+    <QueryClientProvider client={chipClient()}>
+      <IssueReadChip
+        read={async () => {
+          reads += 1;
+          return { artifacts: [artifact({ latest_version: latest, state: "awaiting" })] };
+        }}
+      />
+    </QueryClientProvider>
+  );
+  try {
+    const approve = await screen.findByRole("button", { name: "Approve" });
+    latest = 4;
+    await user.click(approve);
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(refusal));
+    await waitFor(() => expect(reads, "the refusal reads the issue again").toBe(2));
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(createArtifactVersionReview).toHaveBeenCalledTimes(2));
+    expect(createArtifactVersionReview.mock.calls.map(([, version]) => version)).toEqual([3, 4]);
+  } finally {
+    createArtifactVersionReview.mockRestore();
+    view.unmount();
+  }
+});
+
+// Approve stays held until the reads its review made stale are in, outside `NoTooltips` as
+// inside: Dispatch records an approval at the latest version for a review with no request open,
+// so a second press - a second `a`, a held key's repeat, a double click - before the issue is read
+// again would record a second approval.
+test("a second press of Approve before the page reads its approval again sends no second review", async () => {
+  const user = userEvent.setup();
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockResolvedValue(
+    approvedReview(3)
+  );
+  const answered = artifact({ latest_version: 3, state: "approved", version: 3 });
+  const readAgain = Promise.withResolvers<{ readonly artifacts: readonly Artifact[] }>();
+  let reads = 0;
+  const view = render(
+    <QueryClientProvider client={chipClient()}>
+      <IssueReadChip
+        read={() => {
+          reads += 1;
+          return reads === 1
+            ? Promise.resolve({ artifacts: [artifact({ latest_version: 3, state: "awaiting" })] })
+            : readAgain.promise;
+        }}
+      />
+    </QueryClientProvider>
+  );
+  try {
+    const approve = await screen.findByRole("button", { name: "Approve" });
+    await user.click(approve);
+    await waitFor(() => expect(createArtifactVersionReview).toHaveBeenCalledTimes(1));
+    // The review is recorded, and the issue is being read again.
+    await waitFor(() => expect(reads).toBe(2));
+    await user.click(approve);
+    await user.click(approve);
+    await act(settle);
+    expect(createArtifactVersionReview).toHaveBeenCalledTimes(1);
+    expect(approve).toHaveAttribute("aria-disabled", "true");
+
+    // The read lands with the request answered, and the chip draws the approval in Approve's place.
+    await act(async () => readAgain.resolve({ artifacts: [answered] }));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument()
+    );
+    expect(screen.getByRole("button", { name: "Approved v3" })).toBeInTheDocument();
+    expect(createArtifactVersionReview).toHaveBeenCalledTimes(1);
+  } finally {
+    readAgain.resolve({ artifacts: [answered] });
+    createArtifactVersionReview.mockRestore();
+    view.unmount();
+  }
+});
+
+test("a change request whose version moved shows the server's refusal in its box", async () => {
+  const user = userEvent.setup();
+  const refusal =
+    "the review would record version 4 of Design notes, not version 3: read version 4 and review it";
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockRejectedValue(
+    new ApiError(409, { code: "REVIEW_VERSION_MOVED", error: refusal })
+  );
+  const view = renderChip(artifact({ latest_version: 3, state: "awaiting" }), "header");
+  try {
+    await user.click(screen.getByRole("button", { name: "Request changes" }));
+    const dialog = screen.getByRole("dialog", { name: "Request changes" });
+    await user.click(within(dialog).getByLabelText("Reason"));
+    await user.paste("Needs another pass");
+    await user.click(within(dialog).getByRole("button", { name: "Request changes" }));
+    await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent(refusal));
+    // One refusal, in the box the reader is in: the header shows none of its own beside it.
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+  } finally {
+    createArtifactVersionReview.mockRestore();
     view.unmount();
   }
 });
@@ -196,8 +511,11 @@ test("clicking Approve posts an approved review and refreshes the issue and inbo
 test("approving again after a stopped approval and a change request goes under its own key", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
-  const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
-    new NetworkError("/api/v1/artifacts/artifact-1/reviews", new TypeError("Failed to fetch"))
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockRejectedValue(
+    new NetworkError(
+      "/api/v1/artifacts/artifact-1/versions/3/reviews",
+      new TypeError("Failed to fetch")
+    )
   );
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -215,8 +533,8 @@ test("approving again after a stopped approval and a change request goes under i
   try {
     await user.click(screen.getByRole("button", { name: "Approve" }));
     await stopTheLateWrite(queryClient);
-    const stoppedKey = createArtifactReview.mock.calls[0]?.[2]?.key;
-    const stopped = createArtifactReview.mock.calls.length;
+    const stoppedKey = createArtifactVersionReview.mock.calls[0]?.[3]?.key;
+    const stopped = createArtifactVersionReview.mock.calls.length;
 
     // The change request lands. Its answer is held, as the next Approve's is, and given inside
     // `act` after its press, as docs/testing.md ("The act rule of a Dispatch unit test") says.
@@ -234,7 +552,7 @@ test("approving again after a stopped approval and a change request goes under i
       version: 3,
     };
     const changesAnswer = Promise.withResolvers<ArtifactReview>();
-    createArtifactReview.mockReturnValue(changesAnswer.promise);
+    createArtifactVersionReview.mockReturnValue(changesAnswer.promise);
     await user.click(screen.getByRole("button", { name: "Request changes" }));
     const dialog = screen.getByRole("dialog", { name: "Request changes" });
     await user.click(within(dialog).getByLabelText("Reason"));
@@ -244,23 +562,24 @@ test("approving again after a stopped approval and a change request goes under i
       changesAnswer.resolve(review);
     });
     await tick(1_000);
-    expect(createArtifactReview).toHaveBeenCalledTimes(stopped + 1);
+    expect(createArtifactVersionReview).toHaveBeenCalledTimes(stopped + 1);
 
     // Approve again: the same values the stopped press carried, and a press of its own.
     const approvalAnswer = Promise.withResolvers<ArtifactReview>();
-    createArtifactReview.mockReturnValue(approvalAnswer.promise);
+    createArtifactVersionReview.mockReturnValue(approvalAnswer.promise);
     await user.click(screen.getByRole("button", { name: "Approve" }));
     await act(async () => {
       approvalAnswer.resolve(review);
     });
     await tick(1_000);
 
-    expect(createArtifactReview).toHaveBeenCalledTimes(stopped + 2);
-    const again = createArtifactReview.mock.calls.at(-1);
-    expect(again?.[1]).toEqual({ state: "approved" });
-    expect(again?.[2].key).not.toBe(stoppedKey);
+    expect(createArtifactVersionReview).toHaveBeenCalledTimes(stopped + 2);
+    const again = createArtifactVersionReview.mock.calls.at(-1);
+    expect(again?.[1]).toBe(3);
+    expect(again?.[2]).toEqual({ state: "approved" });
+    expect(again?.[3].key).not.toBe(stoppedKey);
   } finally {
-    createArtifactReview.mockRestore();
+    createArtifactVersionReview.mockRestore();
     view.unmount();
     realClock();
   }
@@ -271,8 +590,11 @@ test("approving again after a stopped approval and a change request goes under i
 test("a change request the reader stopped says it may have been made, not that it failed", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
-  const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
-    new NetworkError("/api/v1/artifacts/artifact-1/reviews", new TypeError("Failed to fetch"))
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockRejectedValue(
+    new NetworkError(
+      "/api/v1/artifacts/artifact-1/versions/3/reviews",
+      new TypeError("Failed to fetch")
+    )
   );
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -296,7 +618,7 @@ test("a change request the reader stopped says it may have been made, not that i
       stoppedWriteNote("your review", "made", { anew: "Request changes sends a new review." })
     );
   } finally {
-    createArtifactReview.mockRestore();
+    createArtifactVersionReview.mockRestore();
     view.unmount();
     queryClient.clear();
     realClock();
@@ -305,7 +627,7 @@ test("a change request the reader stopped says it may have been made, not that i
 
 test("Request changes requires a reason before it can submit, then posts it", async () => {
   const user = userEvent.setup();
-  const createArtifactReview = spyOn(api, "createArtifactReview").mockResolvedValue({
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockResolvedValue({
     actor: { id: "alice", kind: "user" },
     artifact_id: "artifact-1",
     ask_id: null,
@@ -330,9 +652,10 @@ test("Request changes requires a reason before it can submit, then posts it", as
     expect(submit).not.toHaveAttribute("disabled");
 
     await user.click(submit);
-    await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
-    expect(createArtifactReview).toHaveBeenCalledWith(
+    await waitFor(() => expect(createArtifactVersionReview).toHaveBeenCalledTimes(1));
+    expect(createArtifactVersionReview).toHaveBeenCalledWith(
       "artifact-1",
+      3,
       {
         reason: "Needs another pass",
         state: "changes_requested",
@@ -340,7 +663,7 @@ test("Request changes requires a reason before it can submit, then posts it", as
       keyedAttempt
     );
   } finally {
-    createArtifactReview.mockRestore();
+    createArtifactVersionReview.mockRestore();
     view.unmount();
   }
 });
@@ -351,7 +674,7 @@ test("a refused reason shows the server's message", async () => {
   const user = userEvent.setup();
   const refusal =
     "reason block 1 (paragraph) is 1 characters over the 32000-character block limit (32001/32000)";
-  const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockRejectedValue(
     new ApiError(400, { code: "CAP_EXCEEDED", error: refusal })
   );
   const view = renderChip(artifact({ latest_version: 3, state: "awaiting" }), "header");
@@ -364,7 +687,7 @@ test("a refused reason shows the server's message", async () => {
 
     await waitFor(() => expect(screen.getByRole("alert").textContent).toBe(refusal));
   } finally {
-    createArtifactReview.mockRestore();
+    createArtifactVersionReview.mockRestore();
     view.unmount();
   }
 });
@@ -374,7 +697,7 @@ test("a refused reason shows the server's message", async () => {
 // open of the dialog rather than a second review of the reason already sent.
 test("a change request made with its answer lost closes the dialog, refuses nothing and reads again", async () => {
   const user = userEvent.setup();
-  const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockRejectedValue(
     new ApiError(409, { code: "KEY_COMMITTED", error: "made; the answer was lost" })
   );
   const queryClient = new QueryClient({
@@ -401,9 +724,9 @@ test("a change request made with its answer lost closes the dialog, refuses noth
     );
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(queryClient.getQueryState(["artifact-reviews", "artifact-1"])?.isInvalidated).toBe(true);
-    expect(createArtifactReview).toHaveBeenCalledTimes(1);
+    expect(createArtifactVersionReview).toHaveBeenCalledTimes(1);
   } finally {
-    createArtifactReview.mockRestore();
+    createArtifactVersionReview.mockRestore();
     view.unmount();
   }
 });
@@ -462,7 +785,7 @@ test("clicking the chip opens a popover listing every review", async () => {
 // that the reader reviewed it here, so it can move on to the next item.
 test("a review the server records tells the host, once, that the document was reviewed", async () => {
   const user = userEvent.setup();
-  const createArtifactReview = spyOn(api, "createArtifactReview").mockResolvedValue({
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockResolvedValue({
     actor: { id: "alice", kind: "user" },
     artifact_id: "artifact-1",
     ask_id: null,
@@ -483,9 +806,9 @@ test("a review the server records tells the host, once, that the document was re
     expect(reviewed).toBe(0);
     await user.click(screen.getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(reviewed).toBe(1));
-    expect(createArtifactReview).toHaveBeenCalledTimes(1);
+    expect(createArtifactVersionReview).toHaveBeenCalledTimes(1);
   } finally {
-    createArtifactReview.mockRestore();
+    createArtifactVersionReview.mockRestore();
     view.unmount();
   }
 });
@@ -538,7 +861,7 @@ test("a change request refused on one document posts none of its reason on the d
     ref_key: "CORE-1/release-notes",
     slug: "release-notes",
   };
-  const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockRejectedValue(
     new ApiError(403, { code: "FORBIDDEN", error: "not a reviewer of CORE-1" })
   );
   const queryClient = new QueryClient({
@@ -568,7 +891,7 @@ test("a change request refused on one document posts none of its reason on the d
     await screen.findByRole("heading", { name: "Release notes" });
     expect(screen.queryByRole("dialog", { name: "Request changes" })).toBeNull();
 
-    createArtifactReview.mockResolvedValue({
+    createArtifactVersionReview.mockResolvedValue({
       actor: { id: "alice", kind: "user" },
       artifact_id: "artifact-2",
       ask_id: null,
@@ -588,14 +911,15 @@ test("a change request refused on one document posts none of its reason on the d
     await user.paste("The dates are missing");
     await user.click(within(dialog).getByRole("button", { name: "Request changes" }));
 
-    await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(2));
-    expect(createArtifactReview).toHaveBeenLastCalledWith(
+    await waitFor(() => expect(createArtifactVersionReview).toHaveBeenCalledTimes(2));
+    expect(createArtifactVersionReview).toHaveBeenLastCalledWith(
       "artifact-2",
+      3,
       { reason: "The dates are missing", state: "changes_requested" },
       keyedAttempt
     );
   } finally {
-    createArtifactReview.mockRestore();
+    createArtifactVersionReview.mockRestore();
     view.unmount();
   }
 });

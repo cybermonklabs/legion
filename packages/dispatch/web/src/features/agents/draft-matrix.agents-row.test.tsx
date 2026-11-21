@@ -83,6 +83,7 @@ import {
   REFUSAL,
   REFUSED_NOTE,
 } from "../../__tests__/draft-matrix-fixture";
+import { panelOf, pickNamed } from "../../__tests__/list-picks";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
@@ -603,10 +604,12 @@ for (const held of HELD) {
     const page = await openAgents();
     try {
       await holdAtSession(page, held);
-      await page.user.click(within(row()).getByRole("button", { name: "Choose issue" }));
-      await page.user.selectOptions(
-        await within(row()).findByRole("combobox", { name: "Issue" }),
-        coreIssue.key
+      const toggle = within(row()).getByRole("button", { name: pickNamed("Choose issue") });
+      await page.user.click(toggle);
+      await page.user.click(
+        await within(panelOf(toggle)).findByRole("option", {
+          name: `${coreIssue.key} · ${coreIssue.title}`,
+        })
       );
       await waitFor(() => expect(field().value).toBe(`@Planner ${BODY}`));
       expect({ note: note(), retry: retryOffered() }).toEqual(ownMoveToIssue[held]);

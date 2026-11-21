@@ -1,5 +1,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useSyncExternalStore,
+} from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 
@@ -629,12 +636,12 @@ const ANCHOR_GAP_PX = 6;
 function PreviewCard({ target }: { target: PreviewTarget }): ReactNode {
   const element = useRef<HTMLDivElement>(null);
   const path = useReferencePath(target.route);
-  // Re-measured on every render: the card grows when its data arrives, and its size decides
-  // whether it fits below the anchor. Fixed positioning against the anchor's viewport rect is
+  // Below the anchor where the card fits, else above it, and inside the viewport across. Its
+  // size decides whether it fits below. Fixed positioning against the anchor's viewport rect is
   // the boring choice that works in Chromium and iPhone Safari alike — the native Popover API
   // would still need this same arithmetic (CSS anchor positioning is not yet in every engine
   // the e2e projects cover), and the card has no need for the top layer.
-  useLayoutEffect(() => {
+  const place = useCallback(() => {
     const node = element.current;
     if (node === null) {
       return;
@@ -654,7 +661,23 @@ function PreviewCard({ target }: { target: PreviewTarget }): ReactNode {
     );
     node.style.top = `${top}px`;
     node.style.left = `${left}px`;
+  }, [target.anchor]);
+  // Placed on every render of the card, and again whenever its own size changes: what it shows
+  // renders on its own (a preview's read landing, its text being drawn) and the card grows with
+  // it, so a card placed above its anchor at its loading height would otherwise grow down over
+  // the anchor, under the pointer pressing it.
+  useLayoutEffect(() => {
+    place();
   });
+  useEffect(() => {
+    const node = element.current;
+    if (node === null) {
+      return;
+    }
+    const observer = new ResizeObserver(place);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [place]);
   return (
     <div
       className={`fixed top-0 left-0 z-[60] w-80 max-w-[calc(100vw-1rem)] rounded-xl border p-3 text-sm shadow-lg ${card}`}

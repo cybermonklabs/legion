@@ -1,4 +1,5 @@
 import type { InboxRow } from "../../api/types";
+import type { MenuChoice } from "../../components/ChoiceMenu";
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -80,6 +81,29 @@ export const SNOOZE_PRESETS: readonly SnoozePreset[] = [
   },
   { id: "indefinite", label: "Until I clear it", until: () => SNOOZE_INDEFINITE },
 ];
+
+/** The Snooze menu's choice that ends a snooze the row is in. */
+const UNSNOOZE = "unsnooze";
+
+/** The Snooze menu (`ChoiceMenu`): the presets in order on `1` to `4`, and on a row already
+ *  snoozed, Un-snooze on `0`. The selection bar's menu snoozes only, so it asks for none. */
+export function snoozeChoices(snoozed: boolean): MenuChoice<string>[] {
+  const presets = SNOOZE_PRESETS.map((preset, index) => ({
+    digit: `${index + 1}`,
+    label: preset.label,
+    value: preset.id,
+  }));
+  return snoozed ? [...presets, { digit: "0", label: "Un-snooze", value: UNSNOOZE }] : presets;
+}
+
+/** What a pick of the Snooze menu writes, worked out as the reader picks it: the moment its
+ *  preset names, or null, the end of the snooze, for Un-snooze. */
+export function snoozeOf(choice: string, now: Date): string | null {
+  if (choice === UNSNOOZE) return null;
+  const preset = SNOOZE_PRESETS.find(({ id }) => id === choice);
+  if (preset === undefined) throw new Error(`The Snooze menu has no choice ${choice}.`);
+  return preset.until(now);
+}
 
 /**
  * Whether the reader has deferred this row and its moment is still ahead. The window is

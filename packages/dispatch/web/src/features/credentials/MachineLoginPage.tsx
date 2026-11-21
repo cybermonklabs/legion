@@ -116,8 +116,12 @@ export function MachineLoginPage(): ReactNode {
 
   useDocumentTitle("Machine login · Dispatch");
 
+  // While a lookup is out - Look up's own, or the one an approval or a denial Dispatch answered
+  // with nothing starts outside the guard - Look up and Enter send no second one; the guard drops
+  // a second press made in the same task as the first.
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (lookup.isPending) return;
     submitGuard.guard(() => {
       approve.reset();
       deny.reset();
@@ -168,9 +172,12 @@ export function MachineLoginPage(): ReactNode {
             value={code}
           />
         </div>
+        {/* Held rather than disabled while a lookup is out, so it keeps the focus Enter gave it
+            (`heldPress`); `submit` sends no second lookup then. */}
         <button
+          aria-disabled={lookup.isPending || undefined}
           className={`min-h-11 rounded-lg px-4 py-2 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-          disabled={lookup.isPending || code.trim() === ""}
+          disabled={code.trim() === ""}
           type="submit"
         >
           Look up

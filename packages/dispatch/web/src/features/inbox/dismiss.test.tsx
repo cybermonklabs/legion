@@ -17,6 +17,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, settle } from "../../__tests__/fake-clock";
+import { pickFromMenu } from "../../__tests__/menu-picks";
 import { answerAskSnoozes, answerInboxDismisses } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -433,7 +434,7 @@ test("the bulk bar offers Snooze for the asks among the selection and Dismiss fo
   // A thread row takes the mark `x` makes, as an ask does.
   await user.click(screen.getAllByLabelText("Select Root")[0] as HTMLElement);
   await screen.findByText("1 selected");
-  expect(screen.queryByLabelText("Snooze selected asks")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Snooze selected asks" })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Dismiss selected threads" })).toBeTruthy();
 
   const asksMark = [...document.querySelectorAll<HTMLElement>('input[type="checkbox"]')].find(
@@ -441,7 +442,10 @@ test("the bulk bar offers Snooze for the asks among the selection and Dismiss fo
   );
   await user.click(asksMark as HTMLElement);
   await screen.findByText("2 selected");
-  expect(screen.getByLabelText("Snooze selected asks")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Snooze selected asks" })).toHaveAttribute(
+    "aria-haspopup",
+    "menu"
+  );
 
   await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
   await waitFor(() => expect(rowIds()).not.toContain("reply:c1"));
@@ -582,9 +586,10 @@ test("a bulk snooze the reader stopped says it may have been saved, not that it 
     await user.click(asksMark as HTMLElement);
     await screen.findByText("1 selected");
     jest.useFakeTimers();
-    await userOnFakeClock().selectOptions(
-      screen.getByLabelText("Snooze selected asks"),
-      "tomorrow"
+    await pickFromMenu(
+      userOnFakeClock(),
+      screen.getByRole("button", { name: "Snooze selected asks" }),
+      "Tomorrow"
     );
     await stopTheLateWrite(client);
     await waitFor(() =>

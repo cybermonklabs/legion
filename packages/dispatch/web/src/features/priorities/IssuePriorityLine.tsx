@@ -1,11 +1,13 @@
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { Issue, PriorityRow } from "../../api/types";
+import { heldPress } from "../../components/held-press";
+import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
 import { usePageWords, useTooltips } from "../../components/tooltips";
 import {
   dangerText,
@@ -53,6 +55,11 @@ export function addPriorityControlName(issueKey: string): string {
   return `Add a priority to ${issueKey}`;
 }
 
+/** The mark the add form's Priority to advance list writes on its trigger, which the form finds
+ *  it by to hand it the focus as it opens. */
+const PICKER_ATTRIBUTE = "data-priority-picker";
+const PICKER_MARKS: ListMarks = { trigger: { [PICKER_ATTRIBUTE]: "" } };
+
 /** The cross a priority's Remove draws inside `NoTooltips`, one em square so it takes its
  *  button's text size, in its button's text colour. It is a shape and not text because the page's
  *  typeface holds only the characters its subset lists, and ✕ is not among them: as text, ✕ is
@@ -98,6 +105,14 @@ function RemoveCross(): ReactNode {
  * priorities to choose from is read only once the line has an entry to name or the control is
  * open, as the components line reads the architecture tree only while its picker is open.
  *
+ * The control adds in two steps. `+` opens a small form in its own place: its Priority to
+ * advance is the shared list's single pick (`MultiSelect`), whose text box narrows the priorities
+ * as the reader types, and a pick stages the priority there; Add writes it, and Cancel drops it.
+ * The press takes the focus away with the `+`, and the form lands it on its first control, the
+ * list's trigger, with no scroll, since the form stands where the `+` stood, where the page's
+ * focus rescue would land it too (`components/focus-place.ts`). The list says the priorities are
+ * loading while their read is out, and that they could not be loaded where it failed.
+ *
  * Inside `NoTooltips` (`components/tooltips.tsx`) it says the new issue page's words with their
  * marks and carries no `title`; there `inRow` draws it as the value of a row of Details, which
  * draws the label: no `Advances` of its own, a line that wraps and cuts no word, and "Add a
@@ -121,7 +136,7 @@ export function IssuePriorityLine({
   const own = advances.filter((entry) => !entry.inherited).map((entry) => entry.id);
   const [adding, setAdding] = useState(false);
   const [picked, setPicked] = useState("");
-  const selectId = useId();
+  const [listOpen, setListOpen] = useState(false);
   const queryClient = useQueryClient();
   const priorities = useQuery({
     ...prioritiesQuery(),
@@ -158,37 +173,33 @@ export function IssuePriorityLine({
   });
   const writeOwn = (ids: string[]) =>
     write.mutate({ advances: ids, advances_revision: issue.advances_revision });
-  const busy = disabled || write.isPending;
-  // Inside `NoTooltips` each control a write of the line refuses - a priority's Remove, the
-  // form's Add and the add control - is `aria-disabled` while the write is out, in place of
-  // `disabled`, so it can hold the focus, and a press of it does nothing then; the line's own
-  // `disabled` still disables each, on both sides. Outside each is `disabled` while the write is
-  // out, as on `main`.
-  const holdsFocus = page !== null && !disabled;
-  const refusedWhileOut = (holdsFocus && write.isPending) || undefined;
-  const controlDisabled = busy && !holdsFocus;
+  // Disabled on a closed issue; held while a write is out, so each control keeps the focus the
+  // press gave it and sends nothing more until the write lands (`heldPress`): a priority's
+  // Remove, the form's Add and the add control, on both sides of `NoTooltips`. Inside, the write
+  // is out until the issue is read again (`onSettled`, above).
+  const held = write.isPending;
   const addControl = useRef<HTMLButtonElement>(null);
-  const picker = useRef<HTMLSelectElement>(null);
-  // Opening the form puts the focus in its first field: the add control the form replaces leaves
-  // the page, and without this the focus would drop to the body with it and a keyboard user
-  // would have to find the form again.
+  const form = useRef<HTMLFormElement>(null);
+  // Opening the form puts the focus in its first field, the list's trigger: the add control the
+  // form replaces leaves the page, and without this the focus would drop to the body with it and
+  // a keyboard user would have to find the form again. It scrolls nothing, since the form stands
+  // where the add control stood.
   useEffect(() => {
-    if (adding) picker.current?.focus();
+    if (!adding) return;
+    form.current
+      ?.querySelector<HTMLElement>(`[${PICKER_ATTRIBUTE}]`)
+      ?.focus({ preventScroll: true });
   }, [adding]);
   // Closing it - Add, Cancel or Escape - owes the add control, drawn again in its place, the
-  // focus the form held, for the same reason. The control takes it once it can hold it: outside
-  // `NoTooltips` Add's write disables the control until the write settles, and a disabled control
-  // holds no focus, so after an add the focus waits on the body until then; inside, the control
-  // holds it while the write is out (`holdsFocus`) and takes it at once. Only a focus still on
-  // the document is taken back (`focusOnDocument`): anywhere else, the reader put it there in
-  // between.
+  // focus the form held, for the same reason. The control is held, never disabled, while a write
+  // is out, so it takes the focus at once. Only a focus still on the document is taken back
+  // (`focusOnDocument`): anywhere else, the reader put it there in between.
   const focusAddControl = useRef(false);
-  const addWaitsForWrite = write.isPending && !holdsFocus;
   useEffect(() => {
-    if (adding || addWaitsForWrite || !focusAddControl.current) return;
+    if (adding || !focusAddControl.current) return;
     focusAddControl.current = false;
     if (focusOnDocument()) addControl.current?.focus();
-  }, [adding, addWaitsForWrite]);
+  }, [adding]);
   const closeForm = () => {
     setPicked("");
     setAdding(false);
@@ -197,13 +208,14 @@ export function IssuePriorityLine({
   // Inside `NoTooltips` a press of a priority's Remove is remembered, with the issue's own entries
   // drawn after it and then before it, the nearest first, until its write stops pending, which is
   // once the issue is read again (`onSettled` returns its reads); each Remove is kept by its
-  // entry's id. A Remove is never `disabled` there, so while its entry is drawn - the write
-  // failed, or the read kept it - it keeps the focus and nothing moves it. Once the read has taken
-  // the entry off the page, a focus that fell with it to the document (`focusOnDocument`) goes to
-  // the Remove of the nearest of those entries still drawn, else to the add control; a focus
-  // anywhere else is left where it is. The press is forgotten whenever the write stops pending.
-  // It is state, not a ref, so the render the press makes reads the write pending, and a write
-  // that ends before its own pending render is drawn still ends the press.
+  // entry's id. A Remove is never `disabled` while its write is out, so while its entry is drawn -
+  // the write failed, or the read kept it - it keeps the focus and nothing moves it. Once the read
+  // has taken the entry off the page, a focus that fell with it to the document
+  // (`focusOnDocument`) goes to the Remove of the nearest of those entries still drawn, else to
+  // the add control; a focus anywhere else is left where it is. The press is forgotten whenever
+  // the write stops pending. It is state, not a ref, so the render the press makes reads the
+  // write pending, and a write that ends before its own pending render is drawn still ends the
+  // press.
   const [removePressed, setRemovePressed] = useState<{
     id: string;
     nearest: readonly string[];
@@ -254,7 +266,7 @@ export function IssuePriorityLine({
 
   const add = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (picked === "" || write.isPending) return;
+    if (picked === "" || held) return;
     writeOwn([...own, picked]);
     closeForm();
   };
@@ -292,12 +304,10 @@ export function IssuePriorityLine({
               </span>
             ) : (
               <button
-                aria-disabled={refusedWhileOut}
                 aria-label={`Remove ${label} from ${issue.key}`}
-                className={`shrink-0 ${page === null ? dismissButtonText : `${pageMutedText} hover:text-page-ink`}`}
-                disabled={controlDisabled}
-                onClick={() => {
-                  if (write.isPending) return;
+                className={`shrink-0 refused:cursor-not-allowed refused:opacity-50 ${page === null ? dismissButtonText : `${pageMutedText} hover:text-page-ink`}`}
+                disabled={disabled}
+                {...heldPress(held, () => {
                   if (page !== null) {
                     const at = own.indexOf(entry.id);
                     setRemovePressed({
@@ -306,7 +316,7 @@ export function IssuePriorityLine({
                     });
                   }
                   writeOwn(own.filter((id) => id !== entry.id));
-                }}
+                })}
                 ref={(button) => {
                   if (button === null) removeButtons.current.delete(entry.id);
                   else removeButtons.current.set(entry.id, button);
@@ -341,39 +351,64 @@ export function IssuePriorityLine({
             // it would close the form and the panel together and leave the focus on nothing. The
             // registry passes over a press already `defaultPrevented` (`keymap.ts`), and a press
             // stopped here reaches no listener above the form either. A second Escape, pressed on
-            // the add control the focus returns to, is the panel's.
+            // the add control the focus returns to, is the panel's. An Escape in the open list is
+            // the list's own: its panel takes it before it reaches the form (`AnchoredPanel`).
             event.preventDefault();
             event.stopPropagation();
             closeForm();
           }}
           onSubmit={add}
+          ref={form}
+          // Inside `NoTooltips` the form's words are the page's - the list's name, what its
+          // trigger says while nothing is picked, Add and Cancel - and carry its mark; a picked
+          // priority's title carries the author's.
+          {...page?.pageChrome}
         >
-          <label className="sr-only" htmlFor={selectId} {...page?.pageChrome}>
-            {page?.CONTROL_LABELS.priority_to_advance ?? "Priority to advance"}
-          </label>
-          <select
-            className={`min-h-11 max-w-56 min-w-0 shrink-0 truncate rounded-lg px-2 py-1 text-sm md:min-h-8 ${page === null ? inputClasses(true) : `${pageHairBorder} ${pagePaperBg} ${pageInkText} ${focusBorder}`}`}
-            id={selectId}
-            onChange={(event) => setPicked(event.target.value)}
-            ref={picker}
-            value={picked}
-          >
-            <option value="">
-              {priorities.data === undefined
+          <MultiSelect
+            emptyMessage={
+              priorities.isPending
                 ? (page?.ANSWER_LINES.loading_priorities ?? "Loading priorities…")
-                : (page?.CONTROL_LABELS.choose_priority ?? "Choose a priority")}
-            </option>
-            {choices.map((row) => (
-              <option key={row.id} value={row.id}>
-                {labels.get(row.id) ?? row.id}
-              </option>
-            ))}
-          </select>
+                : priorities.isError || choices.length > 0
+                  ? "No priority matches that."
+                  : "No priority left to add."
+            }
+            error={
+              priorities.isError
+                ? (page?.ANSWER_LINES.priorities_unreadable ?? "Could not load the priorities.")
+                : null
+            }
+            label={page?.CONTROL_LABELS.priority_to_advance ?? "Priority to advance"}
+            marks={PICKER_MARKS}
+            mode="single"
+            onOpenChange={setListOpen}
+            onPick={setPicked}
+            open={listOpen}
+            optionLabel={(id) => labels.get(id)}
+            options={choices.map((row) => row.id)}
+            searchLabel="Search priorities"
+            // A fixed width, the 224 px the native select this list replaced was capped at: as
+            // wide as that select was once any option reached the cap, so the form beside it
+            // never moves as the reader picks, nor once the priorities have loaded, and a title
+            // longer than that ends in an ellipsis, as it did in the select. Inside `NoTooltips`
+            // it is the page's field, and a long title wraps (`MultiSelect`).
+            triggerClassName={`min-h-11 w-56 shrink-0 rounded-lg px-2 py-1 text-left text-sm md:min-h-8 ${page === null ? inputClasses(true) : `${pageHairBorder} ${pagePaperBg} ${pageInkText} ${focusBorder}`}`}
+            value={picked === "" ? undefined : picked}
+          >
+            {picked === "" ? (
+              priorities.data === undefined ? (
+                (page?.ANSWER_LINES.loading_priorities ?? "Loading priorities…")
+              ) : (
+                (page?.CONTROL_LABELS.choose_priority ?? "Choose a priority")
+              )
+            ) : page === null ? undefined : (
+              <span {...page.authorText}>{labels.get(picked) ?? picked}</span>
+            )}
+          </MultiSelect>
           <button
             // While no priority is picked it is `disabled` alone, on both sides of `NoTooltips`.
-            aria-disabled={picked === "" ? undefined : refusedWhileOut}
-            className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${page === null ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}` : `${pageLineBorder} ${pageMutedText} refused:text-page-quiet`}`}
-            disabled={controlDisabled || picked === ""}
+            aria-disabled={picked === "" ? undefined : held || undefined}
+            className={`min-h-11 rounded px-2 py-1 text-sm font-medium refused:cursor-not-allowed md:min-h-8 ${page === null ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}` : `${pageLineBorder} ${pageMutedText} refused:text-page-quiet`}`}
+            disabled={disabled || picked === ""}
             type="submit"
             {...page?.pageChrome}
           >
@@ -390,9 +425,6 @@ export function IssuePriorityLine({
         </form>
       ) : (
         <button
-          // Inside `NoTooltips` it is `aria-disabled` in place of `disabled` while the write is
-          // out (`holdsFocus`, above).
-          aria-disabled={refusedWhileOut}
           // One character and its name, as the remove control beside it is: an issue that
           // advances nothing still carries this control, and a word here puts the issue
           // header's metadata rail over its width on a desktop, which would leave every bare
@@ -408,12 +440,10 @@ export function IssuePriorityLine({
           // Inside `NoTooltips` it is 28 px tall from `md`, as the controls beside it in Details
           // are (the repository's box, `main`'s input in `RepoControl.tsx`, with its `md:min-h-7`;
           // the labels' and the components' triggers' `sm:min-h-7`); below 1280 px `styles.css`
-          // gives each of them a 44 px floor all the same. Outside it the class is `main`'s.
-          className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${page === null ? `${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}` : `${pagePaneBg} ${pageMutedText} hover:text-page-ink md:min-h-7 md:py-1`}`}
-          disabled={controlDisabled}
-          onClick={() => {
-            if (!write.isPending) setAdding(true);
-          }}
+          // gives each of them a 44 px floor all the same. Outside it the class is this tree's.
+          className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none refused:cursor-not-allowed refused:opacity-50 ${page === null ? `${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}` : `${pagePaneBg} ${pageMutedText} hover:text-page-ink md:min-h-7 md:py-1`}`}
+          disabled={disabled}
+          {...heldPress(held, () => setAdding(true))}
           ref={addControl}
           title={tooltips ? addPriorityControlName(issue.key) : undefined}
           type="button"

@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import { AGENT_LIST_REFILLING, isAgentListRefilling } from "../api/client";
 import { dangerText, textSecondaryOnSurface } from "../theme/classes";
+import { heldPress } from "./held-press";
 
 export interface QueryErrorProps {
   /** The failure itself. An agent list that is refilling (`isAgentListRefilling`) is not a
@@ -10,7 +11,9 @@ export interface QueryErrorProps {
   message: string;
   /** Omitted for a failure a retry cannot get past; no Retry is offered then. */
   onRetry?: () => void;
-  /** Disables Retry while the retried request is in flight. */
+  /** Holds Retry while the retried request is in flight (`heldPress`): `aria-disabled`, never
+   *  `disabled`, since a browser takes the focus off a button that becomes disabled under it, and
+   *  a press then does nothing. */
   retrying?: boolean;
 }
 
@@ -45,9 +48,8 @@ export function QueryError({
       {refilling ? <AgentListRefilling /> : <p>{message}</p>}
       {onRetry === undefined ? null : (
         <button
-          className="font-medium underline disabled:cursor-not-allowed disabled:opacity-50"
-          disabled={retrying}
-          onClick={onRetry}
+          className="font-medium underline refused:cursor-not-allowed refused:opacity-50"
+          {...heldPress(retrying, onRetry)}
           type="button"
         >
           Retry

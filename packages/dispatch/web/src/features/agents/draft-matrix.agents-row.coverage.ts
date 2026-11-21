@@ -14,7 +14,7 @@ const REASONS = {
   2: "2. Elsewhere needs a held refusal; the typed version is the unmount row.",
   3: "3. The row's composer has no anchor, so it draws no Close (asserted absent below).",
   4: "4. A row draws its details, and the composer in them, from the first time the reader opens it (`opened`, from `openedRows`, which only gains rows), so that conditional starts the mount and never ends one.",
-  5: "5. A row the reader has opened stays mounted, hidden, when its group is folded, the filters leave it out, or the window scrolls past it (`keptAside`, the row's `hidden`), in the same parent under the same key, so nothing its composer holds moves.",
+  5: "5. A row the reader has opened stays mounted, hidden, when its group is folded, the filters leave it out, or the window scrolls past it (`keptAside`, its list item's `hidden` and the row's), in the same parent under the same key, so nothing its composer holds moves.",
   6: "6. A session that leaves the live list takes its row with it, and a page with no session lists none (`isPending`, `isError`, an empty list); the row drawn when the session is back is the one the page-left row's return draws, at the same session's send name.",
   7: "7. The windowed list draws a group's heading for an item of kind `group` and a row for one of kind `row` (`renderItem`), and each item's kind is fixed where `items` builds it under a key of its own (`group:<name>` or the session), so no row is ever drawn as a heading in its place.",
   8: "8. The layout changes one thing in a row: from `md` its directory shows the path's last segment and below it the whole path (`mdViewport`). The row, its details and its composer are drawn the same at every width, so a phone makes the rows above as they are. The app shell's forms are the sign-in file's.",
@@ -92,7 +92,8 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[5] },
     { reason: REASONS[6] }
   ),
-  ...answers("AgentsPage | AgentRow | key | <div key={agent.session_id}>", { reason: REASONS[5] }),
+  ...answers("AgentsPage | AgentRow | key | <li key={agent.session_id}>", { reason: REASONS[5] }),
+  ...answers("AgentsPage | AgentRow | conditional | <li hidden>", { reason: REASONS[5] }),
   ...answers(
     "AgentsPage | AgentRow | conditional | drawn by grouped[group] .filter((agent) => kept.has(agent.session_id) && !(shown[group] && matches(agent, group))) .map(…)",
     { reason: REASONS[5] },
@@ -114,7 +115,7 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers('AgentsPage | AgentRow | conditional | !(item.kind === "group") ? …', {
     reason: REASONS[7],
   }),
-  ...answers("WindowedList | AgentRow | key | <div key={item.key}>", { reason: REASONS[7] }),
+  ...answers("WindowedList | AgentRow | key | <li key={item.key}>", { reason: REASONS[7] }),
   ...answers("WindowedList | AgentRow | early return | if (item === undefined) return …", {
     reason: REASONS[5],
   }),

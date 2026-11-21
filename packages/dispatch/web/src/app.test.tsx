@@ -2,7 +2,7 @@ import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { realClock, tick } from "./__tests__/fake-clock";
 import { graphNode } from "./__tests__/graph-fixture";
@@ -13,15 +13,21 @@ import { ApiError, api, NetworkError } from "./api/client";
 import { liveSocketFor } from "./api/live-socket";
 import type { AuthenticatedUser } from "./api/types";
 import { AuthGate } from "./app";
-// The Answers, document and project pages are lazy routes of the app, and the margin a lazy part
-// of its shell (`MarginColumn.tsx`, which mounts it on every route). A page module's first
-// compile is not what a wait is for, and a load a row starts and ends before lands in a later row
-// as React's report of a suspended resource outside `act`. So the modules are loaded here, with
-// the test file, and no row starts or waits for that load.
+import { appKeymap } from "./features/shell/keymap";
+// The pages below are lazy routes of the app, and the margin a lazy part of its shell
+// (`MarginColumn.tsx`, which mounts it on every route). A page module's first compile is not what
+// a wait is for, and a load a row starts and ends before lands in a later row as React's report
+// of a suspended resource outside `act`. So the modules are loaded here, with the test file, and
+// no row starts or waits for that load.
+import "./features/agents/AgentsPage";
 import "./features/answers/AnswersPage";
+import "./features/delivery/DeliveryPage";
+import "./features/delivery/PipelinePage";
 import "./features/document/DocumentPage";
 import "./features/margin/Margin";
+import "./features/priorities/PrioritiesPage";
 import "./features/project/ProjectPage";
+import "./features/settings/SettingsPage";
 import { SendStoppedError } from "./features/writes/keyed-write";
 import { plainWrite, writesOf } from "./features/writes/write-store";
 
@@ -415,9 +421,11 @@ test("signing out asks first, then drops every write here and tells every other 
     expect(keptWrites()).toHaveLength(2);
 
     answer = true;
-    // The declined question leaves the sign-out's write settling, and the control disabled until
-    // it has: a press lands on it once it is pressable again.
-    await waitFor(() => expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled());
+    // The declined question leaves the sign-out's write settling, and the control held until it
+    // has (`aria-disabled`, a press on it doing nothing): a press lands on it once it lets go.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Sign out" })).not.toHaveAttribute("aria-disabled")
+    );
     await user.click(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(writesOf(queryClient).rows()).toEqual([]));
     await screen.findByRole("link", { name: "Sign in with Google" });
@@ -1110,5 +1118,79 @@ test("a live socket refused once the person is signed out takes the page to sign
   } finally {
     teardown();
     sockets.restore();
+  }
+});
+
+/** The address the app is at, for a test that moves it. */
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="location">{location.pathname}</output>;
+}
+
+// R11: every page the navigation always shows is a command bar row, "Go to" and its name, with
+// no key of its own where it has none, and each moves the page to its address.
+test("the command bar's Go to rows reach every page the navigation always shows", async () => {
+  const originalMatchMedia = window.matchMedia;
+  window.matchMedia = (() =>
+    ({
+      addEventListener: () => {},
+      addListener: () => {},
+      dispatchEvent: () => true,
+      matches: false,
+      media: "",
+      onchange: null,
+      removeEventListener: () => {},
+      removeListener: () => {},
+    }) as MediaQueryList) as typeof window.matchMedia;
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
+
+  try {
+    for (const [label, keys, address] of [
+      ["Go to Inbox", ["g i"], "/"],
+      ["Go to Agents", ["g a"], "/agents"],
+      ["Go to Priorities", [], "/priorities"],
+      ["Go to Delivery", [], "/delivery"],
+      ["Go to Pipeline", [], "/pipeline"],
+      ["Go to Settings", ["g s"], "/settings"],
+    ] as const) {
+      const view = render(
+        <MemoryRouter initialEntries={["/answers-elsewhere"]}>
+          <QueryClientProvider
+            client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+          >
+            <AuthGate />
+            <LocationProbe />
+          </QueryClientProvider>
+        </MemoryRouter>
+      );
+      try {
+        await screen.findByText("Signed in as alice");
+        const row = appKeymap.actions().find((action) => action.label === label);
+        expect(row?.keys).toEqual(keys);
+        act(() => row?.run());
+        // Read at once and left at once: the move is the row's, and the page it reaches is that
+        // page's own test's to draw.
+        expect(screen.getByTestId("location").textContent).toBe(address);
+      } finally {
+        // The lazy page the move reached suspends until its module, loaded above, resolves; it
+        // resolves inside this act, after the unmount, so no page draws and React says nothing.
+        await act(async () => view.unmount());
+      }
+    }
+  } finally {
+    getInbox.mockRestore();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    listProjects.mockRestore();
+    whoAmI.mockRestore();
+    window.matchMedia = originalMatchMedia;
   }
 });

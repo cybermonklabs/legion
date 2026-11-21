@@ -273,8 +273,7 @@ test("ProofDocument highlights a routed search term again after route and docume
   }
 });
 
-test("ProofDocument opens a hover card for a dispatch:// link in the live editor and navigates in-app", async () => {
-  const user = userEvent.setup();
+test("ProofDocument opens a hover card for a dispatch:// link in the live editor, and its link opener navigates in-app", async () => {
   const issue: IssueDetails = {
     route_status: null,
     route_holder: null,
@@ -349,7 +348,11 @@ test("ProofDocument opens a hover card for a dispatch:// link in the live editor
     });
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
 
-    await user.click(anchor);
+    // A click on the link is the editor's (`@legion/proof-editor`'s `src/dispatch-link-open.ts`,
+    // whose own suite holds it), which opens the target through the page's opener.
+    act(() => {
+      editors[0]?.options.openLink?.("dispatch://CORE-1", { newTab: false });
+    });
     expect(within(view.container).getByTestId("current-route").textContent).toBe("/issues/CORE-1");
   } finally {
     getIssue.mockRestore();
@@ -357,28 +360,20 @@ test("ProofDocument opens a hover card for a dispatch:// link in the live editor
   }
 });
 
-// A link's target is a node its author named, so a click on a link to a document whose name is
-// past the bound text is held to (2683 characters, which a new upload's reference key still
-// holds) opens that document in-app, rather than leaving the browser to follow the sanitized
-// mark's empty href.
-test("ProofDocument opens an explicit link to a long-named document in-app", async () => {
-  const user = userEvent.setup();
+// A link's target is a node its author named, so the opener the editor calls for a link to a
+// document whose name is past the bound text is held to (2683 characters, which a new upload's
+// reference key still holds) opens that document in-app, rather than leaving the browser to
+// follow the sanitized mark's empty href.
+test("ProofDocument's link opener opens an explicit link to a long-named document in-app", async () => {
   const slug = "a".repeat(2683);
   const { editors, sync, view } = renderProofDocument();
 
   try {
     await sync();
     await waitFor(() => expect(editors).toHaveLength(1));
-    const root = editors[0]?.root;
-    if (root === undefined) throw new Error("editor root missing");
-    // What the proof-editor serializer emits for a dispatch:// link mark (the test above says why).
     act(() => {
-      root.innerHTML = `<p><a href="" data-dispatch-href="dispatch://CORE-1/artifact/${slug}">design</a></p>`;
+      editors[0]?.options.openLink?.(`dispatch://CORE-1/artifact/${slug}`, { newTab: false });
     });
-    const anchor = root.querySelector("a");
-    if (anchor === null) throw new Error("anchor missing");
-
-    await user.click(anchor);
     expect(within(view.container).getByTestId("current-route").textContent).toBe(
       `/issues/CORE-1/artifacts/${slug}`
     );
@@ -1123,6 +1118,130 @@ test("Ctrl+Alt+M comments on the selection while the editor has focus, and nowhe
     view.unmount();
   }
   expect(appKeymap.describe().some((entry) => entry.id === "comment-on-selection")).toBe(false);
+});
+
+/** Presses the key `init` names on `target` through the application's registry, as
+ *  `KeymapProvider`'s window listener does, and answers whether a binding claimed it; a
+ *  navigation or a focus move it makes is drawn. */
+function pressThroughRegistry(target: Element, init: KeyboardEventInit): boolean {
+  const event = new KeyboardEvent("keydown", { ...init, bubbles: true, cancelable: true });
+  act(() => {
+    target.dispatchEvent(event);
+    appKeymap.handleKeyDown(event);
+  });
+  return event.defaultPrevented;
+}
+
+const ALT_ENTER: KeyboardEventInit = { altKey: true, code: "Enter", key: "Enter" };
+const ESCAPE: KeyboardEventInit = { code: "Escape", key: "Escape" };
+
+test("Alt+Enter opens the link at the caret while the editor has focus and takes edits, and nowhere else", async () => {
+  const { editors, rerender, sync, view } = renderProofDocument();
+  const composer = document.body.appendChild(document.createElement("textarea"));
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    const editor = editors[0];
+    if (editor === undefined) throw new Error("no editor");
+    expect(appKeymap.describe().filter((entry) => entry.id === "open-link")).toMatchObject([
+      { keys: ["Alt+Enter"], label: "Open the link at the caret", scope: "document" },
+    ]);
+    editor.root.contentEditable = "true";
+    editor.root.tabIndex = 0;
+    editor.root.focus();
+
+    // No link at the caret: the key is the editor's own, and opens nothing.
+    expect(pressThroughRegistry(editor.root, ALT_ENTER)).toBe(false);
+
+    // Focus in a comment composer: the key is the composer's.
+    editor.caretLink = "dispatch://CORE-1";
+    composer.focus();
+    expect(pressThroughRegistry(composer, ALT_ENTER)).toBe(false);
+
+    // A closed issue's document takes no edits, and its links are in the tab order instead.
+    editor.root.focus();
+    rerender({ isClosed: true });
+    expect(pressThroughRegistry(editor.root, ALT_ENTER)).toBe(false);
+    expect(within(view.container).getByTestId("current-route").textContent).not.toBe(
+      "/issues/CORE-1"
+    );
+
+    rerender({ isClosed: false });
+    expect(pressThroughRegistry(editor.root, ALT_ENTER)).toBe(true);
+    expect(within(view.container).getByTestId("current-route").textContent).toBe("/issues/CORE-1");
+  } finally {
+    composer.remove();
+    view.unmount();
+  }
+  expect(appKeymap.describe().some((entry) => entry.id === "open-link")).toBe(false);
+});
+
+test("Escape takes the focus out of the editor the reader edits onto the document, and nowhere else does anything", async () => {
+  const { editors, rerender, sync, view } = renderProofDocument();
+  const composer = document.body.appendChild(document.createElement("textarea"));
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    const editor = editors[0];
+    if (editor === undefined) throw new Error("no editor");
+    // ProseMirror leaves a plain Escape to the page, whose registry reads it; an Escape with a
+    // modifier, and every other key, stay the editor's.
+    const { keydown } = editor.viewProps.handleDOMEvents as {
+      keydown(view: unknown, event: KeyboardEvent): boolean;
+    };
+    expect(keydown(null, new KeyboardEvent("keydown", { key: "Escape" }))).toBe(true);
+    expect(keydown(null, new KeyboardEvent("keydown", { key: "Escape", shiftKey: true }))).toBe(
+      false
+    );
+    expect(keydown(null, new KeyboardEvent("keydown", { key: "Enter" }))).toBe(false);
+    expect(appKeymap.describe().filter((entry) => entry.id === "leave-editor")).toMatchObject([
+      { keys: ["Escape"], label: "Take the focus out of the editor", scope: "document" },
+    ]);
+    const article = within(view.container).getByRole("article", { name: "Document" });
+    // The document is no Tab stop of its own: the focus Escape gives it is the only way in, and
+    // the next Tab from it goes into the editor it holds.
+    expect(article.tabIndex).toBe(-1);
+    editor.root.contentEditable = "true";
+    editor.root.tabIndex = 0;
+    editor.root.focus();
+
+    expect(pressThroughRegistry(editor.root, ESCAPE)).toBe(true);
+    expect(document.activeElement).toBe(article);
+    // Out of the editor the key is not the document's any more.
+    expect(pressThroughRegistry(article, ESCAPE)).toBe(false);
+    expect(document.activeElement).toBe(article);
+
+    // Focus in a comment composer: Escape is the composer's.
+    composer.focus();
+    expect(pressThroughRegistry(composer, ESCAPE)).toBe(false);
+    expect(document.activeElement).toBe(composer);
+
+    // A closed issue's document takes no edits, so there is no typing to leave.
+    editor.root.focus();
+    rerender({ isClosed: true });
+    expect(pressThroughRegistry(editor.root, ESCAPE)).toBe(false);
+    expect(document.activeElement).toBe(editor.root);
+  } finally {
+    composer.remove();
+    view.unmount();
+  }
+  expect(appKeymap.describe().some((entry) => entry.id === "leave-editor")).toBe(false);
+
+  // A pane's editor takes no edits: its document binds no Escape and takes no focus.
+  const pane = renderProofDocument({ surface: "pane" });
+  try {
+    await pane.sync();
+    await waitFor(() => expect(pane.editors).toHaveLength(1));
+    expect(appKeymap.describe().some((entry) => entry.id === "leave-editor")).toBe(false);
+    expect(pane.editors[0]?.viewProps.handleDOMEvents).toBeUndefined();
+    expect(
+      within(pane.view.container).getByRole("article", { name: "Document" })
+    ).not.toHaveAttribute("tabindex");
+  } finally {
+    pane.view.unmount();
+  }
 });
 
 // ---------------------------------------------------------------------------------------------

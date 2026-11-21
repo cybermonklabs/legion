@@ -23,9 +23,9 @@ import { MarginProvider } from "../margin/margin-context";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { claimIsTakeable } from "./ClaimChip";
+import { idlePriorityWrite, mockHeaderReads } from "./header-fixture";
 import { IssueHeader } from "./IssueHeader";
 import { stateForIssue } from "./pins";
-import type { IssuePriorityWrite } from "./useIssuePriority";
 
 const claim: IssueClaim = {
   actor: { kind: "session", id: "session-one", origin: { session_title: "Implementer" } },
@@ -63,17 +63,6 @@ const base: Issue = {
   updated_at: "2026-09-24T06:00:00Z",
 };
 
-/** These rows are about the claim chip, not the priority: the header's write never runs, and it
- *  draws no priority, as `base` has none. */
-const idlePriorityWrite: IssuePriorityWrite = {
-  failed: false,
-  pending: false,
-  retry: () => undefined,
-  shown: null,
-  stopped: undefined,
-  submit: () => undefined,
-};
-
 function header(
   issue: Issue,
   liveness: ClaimHolderLiveness = {}
@@ -95,12 +84,7 @@ function header(
     referenced_by_count: 0,
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  // The header reads the project's repository mappings at once for an issue that resolves to
-  // none, as these do; a project that maps none shows no repository item. The components line
-  // reads the project's architecture sources the same way, and a project with none offers no
-  // picker, so neither read reaches the network.
-  const mappings = spyOn(api, "listRepoProjects").mockResolvedValue([]);
-  const architectureSources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]);
+  const restoreReads = mockHeaderReads();
   const wrapper = ({ children }: { children: ReactNode }) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
@@ -123,8 +107,7 @@ function header(
     client,
     unmount: () => {
       view.unmount();
-      mappings.mockRestore();
-      architectureSources.mockRestore();
+      restoreReads();
     },
     user,
   };

@@ -18,6 +18,8 @@ import { useLiveSocketPill } from "./api/live-socket";
 import { userAgentStateQuery, whoAmIQuery } from "./api/queries";
 import { askSignInAgain } from "./api/query-client";
 import type { AuthenticatedUser } from "./api/types";
+import { useFocusRescue } from "./components/focus-place";
+import { heldPress } from "./components/held-press";
 import { useLiveViews } from "./features/agent-view/live-views";
 import { LiveViewRoute, MountedLiveViews } from "./features/agent-view/MountedLiveViews";
 import { legacyPinnedIds, useAgentPinWrite, usePinnedAgents } from "./features/agents/pins";
@@ -28,6 +30,7 @@ import { TextAskBlockCard } from "./features/doc/AskBlockCard";
 import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
 import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
+import { buildInboxPath } from "./features/inbox/inbox-route";
 import { useInboxCount } from "./features/inbox/useInboxCount";
 import { CreateIssueDialog } from "./features/issue/CreateIssueDialog";
 import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
@@ -47,7 +50,9 @@ import { ShortcutHelpOpener } from "./features/issue-page/shortcut-help-opener";
 import { MarginColumn } from "./features/margin/MarginColumn";
 import { MarginProvider } from "./features/margin/margin-context";
 import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
+import { PRIORITIES_PATH } from "./features/priorities/priority-routes";
 import { AgentRegistryPoller } from "./features/refs/agent-registry";
+import { LinkClickHost } from "./features/refs/link-open";
 import { TextAskCard } from "./features/refs/markdown-cards";
 import { RefPreviewHost } from "./features/refs/RefPreview";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./features/refs/ref-preview-card";
@@ -55,7 +60,6 @@ import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
   ANSWERS_PATH,
-  buildInboxPath,
   buildProjectPath,
   liveViewSessionOf,
   parseIssuePath,
@@ -69,12 +73,7 @@ import { useRecordRecents } from "./features/search/recents";
 import { SearchPalette } from "./features/search/SearchPalette";
 import { ErrorBoundary } from "./features/shell/ErrorBoundary";
 import { KeymapProvider } from "./features/shell/KeymapProvider";
-import {
-  appKeymap,
-  type KeyBindingDescription,
-  MOD_KEY_LABEL,
-  useKeymap,
-} from "./features/shell/keymap";
+import { appKeymap, type KeyBindingDescription, useKeymap } from "./features/shell/keymap";
 import { NotFoundPage } from "./features/shell/NotFoundPage";
 import { RailButton } from "./features/shell/RailButton";
 import { ShortcutHelp } from "./features/shell/ShortcutHelp";
@@ -436,26 +435,24 @@ function NavigationContents({
         ) : null}
       </div>
       <RailButton
-        ariaKeyshortcuts="Control+K Meta+K"
+        action="global.search"
         className="mt-4"
         label="Search"
         onOpen={() => {
           onClose();
           onSearch();
         }}
-        shortcut={MOD_KEY_LABEL === "⌘" ? "⌘K" : "Ctrl K"}
       />
-      {/* The hint is `AppShell`'s global `create` binding, written as `?` and the palette write
-          it (`c`); `aria-keyshortcuts` names the same key in ARIA's uppercase form. */}
+      {/* The hint is `AppShell`'s global `create` action, in the person's keys, as `?` and the
+          palette write them. */}
       <RailButton
-        ariaKeyshortcuts="C"
+        action="global.create"
         className="mt-1"
         label="New issue"
         onOpen={() => {
           onClose();
           onCreateIssue();
         }}
-        shortcut="c"
       />
       <Sidebar
         onHide={compact ? undefined : onHideSidebar}
@@ -468,9 +465,8 @@ function NavigationContents({
       <div className={`mt-auto border-t pt-4 ${railBorder}`}>
         <p className={`px-2 text-sm ${railMutedText}`}>Signed in as {user.login}</p>
         <button
-          className={`mt-1 px-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${railAccentText} ${railAccentHoverText}`}
-          disabled={signOutPending}
-          onClick={onSignOut}
+          className={`mt-1 px-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${railAccentText} ${railAccentHoverText}`}
+          {...heldPress(signOutPending, onSignOut)}
           type="button"
         >
           Sign out
@@ -665,6 +661,9 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
 
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);
+  // The page's one focus rescue, mounted once here: what it answers and where it sends the focus
+  // is `useFocusRescue`'s own description (`components/focus-place.ts`).
+  useFocusRescue(mainRef);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   // The status corner floats over the foot of the screen as the composers it sits above do, so
   // it publishes its own reach the same way: a control floating at that foot - the
@@ -702,38 +701,27 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   useKeymap("global", [
     {
       // Opens only: while the bar is open the `dialog` scope is the only one consulted, and
-      // the bar's own `$mod+k` binding closes it. It fires while the reader is writing, so
-      // the key reaches the bar from inside a document's editor too.
-      id: "search",
-      inEditable: true,
-      keys: "$mod+k",
-      label: "Search and actions",
+      // the bar's own binding of the person's keys for Search and actions closes it.
+      action: "global.search",
       run: () => setBarOpen(true),
     },
     {
-      // The same bar. No row: chosen from the bar it would only reopen the bar. Not
-      // `inEditable`, so a slash typed into a document stays a slash, and the Agents page
-      // shadows it with its own filter box.
-      id: "search-only",
-      keys: "/",
-      label: "Search",
-      palette: false,
+      // The same bar.
+      action: "global.search-only",
       run: () => setBarOpen(true),
     },
+    { action: "global.help", run: () => setHelpSnapshot(appKeymap.describe()) },
+    { action: "global.create", run: () => setCreateOpen(true) },
+    { action: "global.go-inbox", run: () => navigate("/") },
+    { action: "global.go-agents", run: () => navigate("/agents") },
+    { action: "global.go-settings", run: () => navigate("/settings") },
+    // The other pages the navigation always shows, which are command bar rows with no key of
+    // their own (R11): the sidebar's own addresses.
+    { action: "global.go-priorities", run: () => navigate(PRIORITIES_PATH) },
+    { action: "global.go-delivery", run: () => navigate("/delivery") },
+    { action: "global.go-pipeline", run: () => navigate("/pipeline") },
     {
-      id: "help",
-      keys: "?",
-      label: "Keyboard shortcuts",
-      run: () => setHelpSnapshot(appKeymap.describe()),
-    },
-    { id: "create", keys: "c", label: "Create issue", run: () => setCreateOpen(true) },
-    { id: "go-inbox", keys: "g i", label: "Go to Inbox", run: () => navigate("/") },
-    { id: "go-agents", keys: "g a", label: "Go to Agents", run: () => navigate("/agents") },
-    { id: "go-settings", keys: "g s", label: "Go to Settings", run: () => navigate("/settings") },
-    {
-      id: "go-documents",
-      keys: "g d",
-      label: "Go to Documents",
+      action: "global.go-documents",
       run: () => {
         if (routeProject !== undefined) {
           navigate(buildProjectPath({ kind: "documents", project: routeProject }));
@@ -743,46 +731,43 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     },
     {
       // The same bar again, where a reader after a project types its name: its projects are
-      // rows of the one list. No row, for `/`'s reason.
-      id: "go-project",
-      keys: "g p",
-      label: "Go to project…",
-      palette: false,
+      // rows of the one list.
+      action: "global.go-project",
       run: () => setBarOpen(true),
     },
     {
-      id: "inbox-drawer",
-      keys: "i",
-      label: "Open the inbox",
+      action: "global.inbox-drawer",
       run: () => setInboxDrawerOpen((open) => !open),
       // The Inbox page already shows everything the drawer would, so a peek over itself is
       // never offered; `g i` still gets the reader there from anywhere else.
       when: () => !routeIsInbox(location.pathname),
     },
     {
-      id: "toggle-sidebar",
-      keys: "Shift+S",
-      label: "Toggle sidebar",
+      action: "global.toggle-sidebar",
       run: () => setSidebarHidden(!sidebarHidden),
       // Below `xl` the sidebar is a sheet with its own Menu control, and the preference is inert;
       // so it is in the new issue page's frame, whose navigation is its icon rail.
       when: () => !isCompactViewport && !issueFrame,
     },
-    {
-      // In the new issue page's frame the margin is Details, which this key opens and closes at
-      // every width. Its id follows the gate, so that crossing it registers the binding again
-      // and the list of keys reads the label of the shell it is in.
-      id: detailsDrawer === undefined ? "toggle-margin" : "toggle-details",
-      keys: "Shift+M",
-      label: detailsDrawer === undefined ? "Toggle margin" : "Open or close Details",
-      run: () =>
-        detailsDrawer === undefined
-          ? setMarginHidden(!marginHidden)
-          : detailsDrawer.setOpen(!detailsDrawer.open),
-      // Below `xl` the margin is a sheet the route opens itself: `Margin` reads the preference
-      // only from `xl`, so a toggle there would change nothing on screen and flip it for later.
-      when: () => detailsDrawer !== undefined || (!isCompactViewport && hasMargin),
-    },
+    // In the new issue page's frame the margin is Details, which Shift+M opens and closes at
+    // every width: the catalogue's Open or close Details, an action apart from Toggle margin, so
+    // a key a person gives one of the two leaves the other as it was (R14). Its id differs from
+    // the margin's, so that crossing the gate registers the binding again and the list of keys
+    // reads the label of the shell it is in. On today's pages Shift+M is the catalogue's Toggle
+    // margin, whose key a person can change too.
+    detailsDrawer === undefined
+      ? {
+          action: "global.toggle-margin",
+          run: () => setMarginHidden(!marginHidden),
+          // Below `xl` the margin is a sheet the route opens itself: `Margin` reads the
+          // preference only from `xl`, so a toggle there would change nothing on screen and flip
+          // it for later.
+          when: () => !isCompactViewport && hasMargin,
+        }
+      : {
+          action: "global.toggle-details",
+          run: () => detailsDrawer.setOpen(!detailsDrawer.open),
+        },
   ]);
   const login = user.login;
   // Each press signs out the person signed in when it was made, and carries their login: the
@@ -899,10 +884,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // One count on one control: the work waiting on the reader and the threads they have not
   // read, which the Inbox lists together now. On the Inbox page it stays plain text - the page
   // is the Inbox already, so there is nowhere for it to go. The peek that opened the drawer
-  // from this bar stays beside it, without the count it used to carry.
-  const inboxLabel = inboxCount === 0 ? "Inbox" : `Inbox ${inboxCount}`;
+  // from this bar stays beside it, without the count it used to carry. Until every read the
+  // count adds up has answered (`useInboxCount`) the control is drawn without a number.
+  const counted = inboxCount !== undefined && inboxCount !== 0;
+  const inboxLabel = counted ? `Inbox ${inboxCount}` : "Inbox";
   const inboxBadgeClass = `whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${
-    inboxCount === 0 ? railHoverBg : `${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`
+    counted ? `${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}` : railHoverBg
   }`;
 
   return (
@@ -1129,6 +1116,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
         {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
         <RefPreviewHost />
+        <LinkClickHost />
       </div>
     </ShellProviders>
   );
@@ -1149,7 +1137,7 @@ function AuthenticatedApp({ user }: { user: AuthenticatedUser }): ReactNode {
   // Every Markdown body the shell renders - routes, the margin, the inbox drawer, previews and
   // dialogs - draws a decision block in its text as the read-only card (`TextAskCard`).
   return (
-    <KeymapProvider>
+    <KeymapProvider login={login}>
       <AgentRegistryPoller />
       <TextAskCard.Provider value={TextAskBlockCard}>
         <AppShell user={user} />

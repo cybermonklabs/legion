@@ -4,6 +4,7 @@ import { fireEvent, render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, type ReactNode, type RefObject } from "react";
 
+import { PANEL_ATTRIBUTE } from "./keymap";
 import { type AnchorRow, ViewportAnchor } from "./ViewportAnchor";
 
 const ROW_HEIGHT = 50;
@@ -251,6 +252,42 @@ test("the pointer moving onto the card a row opened keeps that row the current o
   } finally {
     view.unmount();
     card.remove();
+  }
+});
+
+// A menu or a list a control of a row opened - the priority's menu, the hand-on's list - stands
+// over the page, portalled out of the list, and takes the focus as it opens; the trigger names it
+// (`aria-controls`) while it is open. The focus in it is the hand on that row, as the focus in
+// the row is, so a row arriving above it leaves it where it was, and the hand lets the row go
+// only once the menu has closed and the focus is in no row.
+test("the focus in a menu a row's control opened keeps that row the current one, until the menu closes", () => {
+  const view = render(<List rows={ids(12)} />);
+  const menu = document.createElement("div");
+  menu.id = "row-menu";
+  menu.setAttribute(PANEL_ATTRIBUTE, "");
+  const choice = document.createElement("button");
+  choice.type = "button";
+  menu.append(choice);
+  document.body.append(menu);
+  try {
+    setScrollY(100);
+    const trigger = document.querySelector<HTMLElement>('[data-row="r3"] button');
+    if (trigger === null) throw new Error("r3 button missing");
+    trigger.setAttribute("aria-controls", menu.id);
+    choice.focus();
+    const triggerRowTop = viewportTop("r3");
+
+    expect(chosen()).toEqual({ id: "r3", via: "focus" });
+    view.rerender(<List rows={["a", ...ids(12)]} />);
+    expect(viewportTop("r3")).toBe(triggerRowTop);
+
+    // The menu closed on nothing that takes the focus.
+    trigger.removeAttribute("aria-controls");
+    menu.remove();
+    expect(chosen()?.via).toBe("center");
+  } finally {
+    view.unmount();
+    menu.remove();
   }
 });
 

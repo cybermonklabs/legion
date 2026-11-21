@@ -1,3 +1,4 @@
+import type { InboxDismissSeen, MyReplyAgentRow, MyReplyThreadRow } from "@legion/contracts";
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import type { Actor, InboxRow, Message } from "../web/src/api/types";
@@ -301,6 +302,15 @@ export function agentRowId(messageId: string): string {
  *  id, under no prefix at all. */
 export function isThreadRow(rowId: string): boolean {
   return Object.values(THREAD_ROW_PREFIX).some((prefix) => rowId.startsWith(prefix));
+}
+
+/** What a dismissal of the thread row `row`, as `GET /api/v1/me/replies` answers it, carries for
+ *  it in `seen_replies`, which is what the page sends for a row it drew: a Reply row's own
+ *  `version`, and an Agent row's newest session reply with the ids it answered as unread. */
+export function seenOf(row: MyReplyThreadRow | MyReplyAgentRow): InboxDismissSeen {
+  return row.kind === "agent"
+    ? { newest_reply: row.reply.id, unread_replies: row.unread_reply_ids }
+    : { version: row.version };
 }
 
 /**

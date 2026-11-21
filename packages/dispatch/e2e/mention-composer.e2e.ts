@@ -189,7 +189,7 @@ test("a conversation send holds Reply and refuses Ctrl+K from the same task", as
       );
     });
 
-    await expect(reply).toBeDisabled();
+    await expect(reply).toHaveAttribute("aria-disabled", "true");
     await expect(page.getByRole("dialog", { name: "Reference picker" })).toHaveCount(0);
     send.release();
     await expect(field).toHaveValue("");
@@ -271,7 +271,7 @@ test("a conversation thread's own reply holds Collapse thread while it is out", 
 
     await expect(field).toHaveValue("Thread reply");
     await expect(field).toBeDisabled();
-    await expect(collapse).toBeDisabled();
+    await expect(collapse).toHaveAttribute("aria-disabled", "true");
     refuse();
     await expect(form.getByText(WRITE_REFUSED_TEXT)).toBeVisible();
     await expect(field).toHaveValue("Thread reply");

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import type { IssuePriority } from "../../api/types";
+import { ChoiceMenu, type MenuChoice } from "../../components/ChoiceMenu";
 import { QueryError } from "../../components/QueryError";
 import { usePageWords } from "../../components/tooltips";
 import {
@@ -12,21 +13,22 @@ import {
   priorityBadge,
 } from "../../theme/classes";
 import {
+  badgeMenuHeaderTrigger,
+  badgeMenuPageTrigger,
+  badgeMenuTrigger,
   badgeSelectBadge,
-  badgeSelectHeaderWrapper,
-  badgeSelectOverlay,
   badgeSelectPageBadge,
-  badgeSelectPageWrapper,
-  badgeSelectWrapper,
 } from "./badge-select";
 import { type IssuePriorityWrite, useIssuePriority } from "./useIssuePriority";
 
-const priorityOptions: readonly { label: string; value: IssuePriority | null }[] = [
-  { label: "Unset", value: null },
-  { label: "P0", value: 0 },
-  { label: "P1", value: 1 },
-  { label: "P2", value: 2 },
-  { label: "P3", value: 3 },
+/** The priority menu: Unset, then P0 to P3 on their own digits. A choice's value is the priority
+ *  as text, `""` for none. */
+const priorityChoices: readonly MenuChoice<string>[] = [
+  { label: "Unset", value: "" },
+  { digit: "0", label: "P0", value: "0" },
+  { digit: "1", label: "P1", value: "1" },
+  { digit: "2", label: "P2", value: "2" },
+  { digit: "3", label: "P3", value: "3" },
 ];
 
 /**
@@ -37,46 +39,66 @@ export function PriorityControl({
   disabled,
   issueKey,
   priority,
+  shortcutKeys,
 }: {
   disabled?: boolean;
   issueKey: string;
   priority: IssuePriority | null;
+  /** The keys that open the menu, where the host draws them on the trigger (the Inbox's reading
+   *  pane's head: `p`, or the person's own). */
+  shortcutKeys?: readonly string[];
 }): ReactNode {
   const write = useIssuePriority(issueKey, priority);
-  return <PriorityEditor disabled={disabled} issueKey={issueKey} write={write} />;
+  return (
+    <PriorityEditor
+      disabled={disabled}
+      issueKey={issueKey}
+      shortcutKeys={shortcutKeys}
+      write={write}
+    />
+  );
 }
 
 /**
  * The single priority editor: shows the issue's priority as the `P0`–`P3` badge (a muted
- * "Priority" tag when unset) and, on click, tap, Enter or Space, opens a native `<select>` to
- * pick P0–P3 or Unset — the same picker on desktop and iPhone. The select is laid invisibly over
- * the badge so the tap target stays 44 px (32 px from `md`) while the badge keeps its size, and
- * the wrapper draws the keyboard focus ring. `write` goes through `useIssuePriority`, so every
- * surface gets the same optimistic update, rollback and list refetch. The select stays enabled
- * while a save is in flight: a disabled control drops the focus it holds and leaves the tab
- * order, and a pick made meanwhile is queued behind the save rather than refused. A press on the
- * select stays on the select: a board card is a drag activator, and a held tap on the badge must
- * open the picker, not lift the card. The select is labelled `Priority of <KEY>`; the board's `p`
- * reaches it through the focused card.
+ * "Priority" tag when unset), and a click, a tap, Enter or Space on it opens the priority menu
+ * (`ChoiceMenu`) of Unset and P0–P3, with the current one checked and `0`–`3` writing P0–P3 -
+ * the same menu on desktop and iPhone. The badge is the 44 px tap target (32 px from `md`) and
+ * draws the keyboard focus ring. `write` goes through `useIssuePriority`, so every surface gets
+ * the same optimistic update, rollback and list refetch. The trigger stays enabled while a save
+ * is in flight: a disabled control drops the focus it holds and leaves the tab order, and a pick
+ * made meanwhile is queued behind the save rather than refused. A press on the badge or in its
+ * menu stays there: a board card is a drag activator, and a held tap on the badge must open the
+ * menu, not lift the card. The trigger is named `Priority of <KEY>` and then the priority it
+ * shows (`Priority of CORE-1 P2`; an unset one by the label alone) and marked
+ * `data-priority-menu`, which the Inbox's, the issue page's and the Board's `p` press.
  *
  * The host passes the write when it has other ways to set the same priority: the issue page
  * creates one for the page and shares it with the keyboard's `0`–`3` and the palette's Set
  * priority rows, so one refusal is reported once, here, by the control the reader is looking at.
  * The priority drawn is the write's (`IssueFieldWrite.shown`), so a pick from any of them shows
  * from its press.
+ * `held` is the host's own write out (the issue page's other field writes): the trigger keeps the
+ * focus and its Tab stop and opens nothing (`ChoiceMenu`'s `held`).
  *
  * `variant="header"` draws the new issue page header's shape (the prototype's `.prio`): three
  * bars filled by how urgent the priority is, beside `P1` in the ink, or the word Priority in the
- * quiet grey while it has none. The select over it is the same either way.
+ * quiet grey while it has none, on a trigger of the header line's 24 px
+ * (`badgeMenuHeaderTrigger`). The menu it opens, and the trigger's name, are the same either way.
  */
 export function PriorityEditor({
   disabled = false,
+  held = false,
   issueKey,
+  shortcutKeys,
   variant = "badge",
   write,
 }: {
   disabled?: boolean;
+  held?: boolean;
   issueKey: string;
+  /** The keys that open the menu, named on its trigger and the first drawn inside it. */
+  shortcutKeys?: readonly string[];
   variant?: "badge" | "header";
   write: IssuePriorityWrite;
 }): ReactNode {
@@ -96,16 +118,30 @@ export function PriorityEditor({
   const label = priority === null ? (page?.PROPERTY_LABELS.priority ?? "Priority") : `P${priority}`;
   const mark = priority === null ? page?.pageChrome : page?.authorText;
   // Inside `NoTooltips` the priority is a value, so it keeps `max-w-full` and breaks anywhere,
-  // and its wrapper narrows to the line rather than keep its width. The header variant is the
+  // and its trigger narrows to the line rather than keep its width. The header variant is the
   // new page's shape alone, so it wraps on every surface.
+  const trigger =
+    variant === "header"
+      ? badgeMenuHeaderTrigger
+      : page === null
+        ? badgeMenuTrigger
+        : badgeMenuPageTrigger;
   return (
     <>
-      <span
-        className={`${variant === "header" ? badgeSelectHeaderWrapper : page === null ? badgeSelectWrapper : badgeSelectPageWrapper} ${disabled ? "opacity-50" : ""}`}
+      <ChoiceMenu
+        checked={priority === null ? "" : `${priority}`}
+        choices={priorityChoices}
+        disabled={disabled}
+        face={label}
+        held={held}
+        label={`Priority of ${issueKey}`}
+        marks={{ "data-priority-menu": "" }}
+        onChoose={(value) => write.submit(value === "" ? null : (Number(value) as IssuePriority))}
+        shortcutKeys={shortcutKeys}
+        triggerClassName={trigger}
       >
         {variant === "header" ? (
           <span
-            aria-hidden="true"
             className={`inline-flex min-w-0 max-w-full items-center gap-[5px] text-sm leading-5 font-semibold [overflow-wrap:anywhere] ${
               priority === null ? pageQuietText : pageInkText
             }`}
@@ -116,33 +152,13 @@ export function PriorityEditor({
           </span>
         ) : (
           <span
-            aria-hidden="true"
             className={`${page === null ? badgeSelectBadge : badgeSelectPageBadge} ${badgeTone}`}
             {...mark}
           >
             {label}
           </span>
         )}
-        <select
-          aria-label={`Priority of ${issueKey}`}
-          className={badgeSelectOverlay}
-          disabled={disabled}
-          onMouseDown={(event) => event.stopPropagation()}
-          onPointerDown={(event) => event.stopPropagation()}
-          onTouchStart={(event) => event.stopPropagation()}
-          onChange={(event) => {
-            const { value } = event.target;
-            write.submit(value === "" ? null : (Number(value) as IssuePriority));
-          }}
-          value={priority ?? ""}
-        >
-          {priorityOptions.map((option) => (
-            <option key={option.label} value={option.value ?? ""}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </span>
+      </ChoiceMenu>
       {write.failed ? (
         <QueryError
           message={write.stopped ?? `Could not update the priority of ${issueKey}.`}

@@ -4,6 +4,7 @@ import { type ReactNode, useMemo } from "react";
 import { api } from "../../api/client";
 import { type EventPages, mergeEventPages } from "../../api/event-feed";
 import type { UserState } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { PinButton } from "../../components/PinButton";
 import {
   dangerText,
@@ -161,8 +162,7 @@ export function ActivityTab({ issueKey, state }: ActivityTabProps): ReactNode {
         <div className="flex items-center justify-center">
           <button
             className={`min-h-11 rounded-lg px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-            disabled={log.isFetchingNextPage}
-            onClick={() => void log.fetchNextPage()}
+            {...heldPress(log.isFetchingNextPage, () => void log.fetchNextPage())}
             type="button"
           >
             {log.isFetchingNextPage ? "Loading…" : "Load older"}

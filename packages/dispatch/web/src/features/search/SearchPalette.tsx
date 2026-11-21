@@ -1,6 +1,6 @@
 import { snippetSegments } from "@legion/contracts/dispatch-snippet";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
-import { useQuery } from "@tanstack/react-query";
+import { type UseQueryResult, useQuery } from "@tanstack/react-query";
 import {
   Fragment,
   type KeyboardEvent,
@@ -14,7 +14,13 @@ import { useNavigate } from "react-router-dom";
 
 import { projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { Project, SearchResult, SearchResultKind } from "../../api/types";
+import { ControlRow } from "../../components/ControlRow";
+import { filterChips } from "../../components/filter-chips";
+import { MultiSelect } from "../../components/MultiSelect";
+import { PanelTrigger } from "../../components/PanelTrigger";
 import { QueryError } from "../../components/QueryError";
+import { SearchBox } from "../../components/SearchBox";
+import { useNestedPanels } from "../../components/useNestedPanels";
 import {
   backdrop50,
   badgeLow,
@@ -34,7 +40,7 @@ import {
   textSecondaryOnSurface,
   textSecondaryOnSurfaceMuted,
 } from "../../theme/classes";
-import { statusText } from "../project/board-model";
+import { issueStatuses, statusText } from "../project/board-model";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { referenceTriggerProps } from "../refs/RefPreview";
 import {
@@ -43,17 +49,29 @@ import {
   type DispatchReferenceRoute,
   nodeRouteFromHref,
 } from "../refs/routes";
-import { appKeymap, DIALOG_SCOPE, type KeymapAction, useKeymap } from "../shell/keymap";
+import {
+  appKeymap,
+  DIALOG_SCOPE,
+  type KeymapAction,
+  MOD_KEY_LABEL,
+  useKeymap,
+} from "../shell/keymap";
+import { useActionKeys } from "../shell/keymap-keys";
+import { openInNewTab } from "../shell/new-tab";
 import { KeyHints } from "../shell/ShortcutHelp";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
 import { AskHitStatus } from "./AskHitStatus";
 import { NEW_ISSUE_GROUP_ID, useNewIssueOffer } from "./NewIssueOffer";
 import { barNoteClassName, type Offer, type OfferRow } from "./offer";
 import { type RecentItem, readRecents } from "./recents";
-import { SearchFilterBar } from "./SearchFilterBar";
 import { SearchOperators } from "./SearchOperators";
 import { SEND_TO_AGENT_GROUP_ID, useSendToAgentOffer } from "./SendToAgentOffer";
-import { type SearchBarFilters, searchRequest } from "./search-filters";
+import {
+  type SearchBarFilters,
+  type SearchFilterName,
+  searchFilterChips,
+  searchRequest,
+} from "./search-filters";
 import {
   groupResults,
   kindLabel,
@@ -101,6 +119,14 @@ interface RecentRow {
  *  only these. An offer's row (`OfferRow`) carries its own press, so the dialog never reaches
  *  back into the offer to run it. */
 type PaletteRow = ActionRow | OfferRow | ProjectRow | RecentRow | ResultRow;
+
+/** The page a row opens, in this tab or in a new one: a project's own page, a recent page's own
+ *  path, or a hit's. An action or an offer opens none. */
+function rowPath(row: ProjectRow | RecentRow | ResultRow): string {
+  if (row.kind === "project")
+    return buildProjectPath({ kind: "project", project: row.project.key });
+  return row.kind === "recent" ? row.item.path : row.result.href;
+}
 
 function SearchResultIcon({ kind }: { kind: SearchResultKind }): ReactNode {
   const common = {
@@ -160,7 +186,8 @@ function SearchResultIcon({ kind }: { kind: SearchResultKind }): ReactNode {
 }
 
 /** One row of the listbox, a hit or a command: the selected outline and fill, and a click, Enter
- *  or Space selecting it. `layout` arranges the row's own content. */
+ *  or Space selecting it. A click or a key with Ctrl or Cmd held asks for the row in a new tab
+ *  (`newTab`), as the browser's own does for a link. `layout` arranges the row's own content. */
 function PaletteOption({
   active,
   children,
@@ -173,7 +200,7 @@ function PaletteOption({
   children: ReactNode;
   id: string;
   layout?: string;
-  onSelect: () => void;
+  onSelect: (newTab: boolean) => void;
   /** A hit's target, which makes the row a `RefPreview` trigger. */
   reference?: DispatchReferenceRoute;
 }): ReactNode {
@@ -184,11 +211,11 @@ function PaletteOption({
         active ? selectedCardBorder : ""
       }`}
       id={id}
-      onClick={onSelect}
+      onClick={(event) => onSelect(event.ctrlKey || event.metaKey)}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          onSelect();
+          onSelect(event.ctrlKey || event.metaKey);
         }
       }}
       role="option"
@@ -214,7 +241,7 @@ function ResultOption({
 }: {
   active: boolean;
   muted: boolean;
-  onSelect: () => void;
+  onSelect: (newTab: boolean) => void;
   result: SearchResult;
 }): ReactNode {
   // The server reads the hit's snippet for display and marks the words that matched in the
@@ -274,7 +301,7 @@ function CommandOption({
   hint: ReactNode;
   id: string;
   label: string;
-  onSelect: () => void;
+  onSelect: (newTab: boolean) => void;
 }): ReactNode {
   return (
     <PaletteOption
@@ -324,7 +351,7 @@ function CommandGroup({
   section,
 }: {
   activeId: string | undefined;
-  onSelect: (row: PaletteRow) => void;
+  onSelect: (row: PaletteRow, newTab: boolean) => void;
   section: CommandSection;
 }): ReactNode {
   if (section.options.length === 0) {
@@ -348,11 +375,151 @@ function CommandGroup({
             id={row.id}
             key={row.id}
             label={label}
-            onSelect={() => onSelect(row)}
+            onSelect={(newTab) => onSelect(row, newTab)}
           />
         ))}
       </fieldset>
     </>
+  );
+}
+
+/** What a chip removed puts back, under the name `searchFilterChips` gives it. */
+const FILTER_REMOVALS: Record<SearchFilterName, SearchBarFilters> = {
+  author: { author: undefined },
+  project: { project: undefined },
+  status: { status: undefined },
+  updatedSince: { updatedSince: undefined },
+};
+
+/** The two lists the panel opens inside itself, which `useNestedPanels` keeps one open at a time,
+ *  as the Delivery page's facets are. */
+type FilterListName = "project" | "status";
+
+/**
+ * The four narrowings the bar offers, in the panel its one trigger opens: a project, an issue
+ * status, an author and the day since which the item was last written. Each is a control in the
+ * panel while it is unset and a chip in the row once the person has chosen, and pressing that
+ * chip drops that narrowing alone and brings its control back.
+ *
+ * The project and the status are each picked from the shared list's single-pick mode
+ * (`MultiSelect`), a text box over the options that narrows them. Its `option` rows join neither
+ * the rows this dialog's arrows walk nor the hits a reader is told there are: the list is
+ * portalled to the body (`AnchoredPanel`), outside the dialog. A pick takes its control out of
+ * the panel, and the panel hands the focus to the control now at its place (`PanelTrigger`).
+ *
+ * The author is typed rather than picked: an item's author is a person's login or a session id,
+ * and no list holds both. It is taken when the person presses Enter or leaves the box, so a
+ * half-typed login never searches. The box keeps what was typed while the panel is shut, so a
+ * reader who opens it again finds their half-typed login where they left it.
+ *
+ * The Project list is drawn from the bar's one read of the projects, which can still be out or
+ * have failed when the panel opens: it says which, as the Agents composer's Issue list does,
+ * rather than call an unread list empty.
+ */
+function SearchNarrowing({
+  filters,
+  onFilters,
+  projects,
+}: {
+  filters: SearchBarFilters;
+  onFilters: (filters: SearchBarFilters) => void;
+  projects: UseQueryResult<Project[]>;
+}): ReactNode {
+  const projectList = projects.data ?? emptyProjects;
+  const [open, setOpen] = useState(false);
+  const filterList = useNestedPanels<FilterListName>(open);
+  const [author, setAuthor] = useState("");
+  const set = (patch: SearchBarFilters) => onFilters({ ...filters, ...patch });
+  const takeAuthor = () => {
+    const typed = author.trim();
+    if (typed !== "") {
+      setAuthor("");
+      set({ author: typed });
+    }
+  };
+
+  return (
+    <PanelTrigger
+      label="Filter"
+      onOpenChange={(next) => {
+        // Shutting the panel is leaving the author box as much as moving off it is: a press
+        // outside takes the box away with the panel, before it could lose focus on its own.
+        if (!next) takeAuthor();
+        setOpen(next);
+      }}
+      open={open}
+      stacked
+    >
+      {() => (
+        <>
+          {filters.project === undefined ? (
+            <MultiSelect
+              {...filterList("project")}
+              emptyMessage={
+                projects.isPending
+                  ? "Loading projects…"
+                  : projects.isError || projectList.length > 0
+                    ? "No project matches that."
+                    : "No projects yet"
+              }
+              error={projects.isError ? "Could not load projects." : null}
+              label="Project"
+              mode="single"
+              onPick={(project) => set({ project })}
+              options={projectList.map((project) => project.key)}
+              searchLabel="Search projects"
+            />
+          ) : null}
+          {filters.status === undefined ? (
+            <MultiSelect
+              {...filterList("status")}
+              emptyMessage="No status matches that."
+              label="Status"
+              mode="single"
+              onPick={(status) => set({ status })}
+              optionLabel={statusText}
+              options={issueStatuses}
+              searchLabel="Search statuses"
+            />
+          ) : null}
+          {filters.author === undefined ? (
+            <SearchBox
+              className="w-full"
+              label="Author"
+              onBlur={takeAuthor}
+              onChange={setAuthor}
+              onKeyDown={(event) => {
+                // An Enter that ends or moves an input method's composition is the composition's.
+                if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  takeAuthor();
+                }
+              }}
+              placeholder="Author"
+              value={author}
+            />
+          ) : null}
+          {/* The date box carries its words on screen: a browser draws an empty one as its own
+              date format and nothing else, so without them a reader cannot tell what the box
+              narrows. */}
+          {filters.updatedSince === undefined ? (
+            <label className={`inline-flex items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
+              Updated since
+              <input
+                className={`min-h-11 rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
+                onChange={(event) => {
+                  if (event.target.value !== "") {
+                    set({ updatedSince: event.target.value });
+                  }
+                }}
+                type="date"
+                value=""
+              />
+            </label>
+          ) : null}
+        </>
+      )}
+    </PanelTrigger>
   );
 }
 
@@ -428,13 +595,15 @@ function PaletteDialog({
   // row bound to the card, row or control the reader was actually on.
   const [actions] = useState(() => appKeymap.actions());
   const dialog = useDialog<HTMLDivElement>({ initialFocusRef: inputRef, onClose, open: true });
-  // Every global key is masked while any dialog is open; the palette keeps `$mod+k` as its own
-  // close, so pressing it twice still opens and closes.
+  // Every global key is masked while any dialog is open; the palette keeps the keys of Search and
+  // actions as its own close, the person's where they changed them, so the key that opened it
+  // closes it again, and a `$mod+k` the person took from Search closes nothing.
+  const searchKeys = useActionKeys("global.search");
   useKeymap(DIALOG_SCOPE, [
     {
       id: "search-close",
       inEditable: true,
-      keys: "$mod+k",
+      keys: searchKeys,
       label: "Close search",
       run: onClose,
     },
@@ -451,6 +620,9 @@ function PaletteDialog({
   // this one. The page's project rides with them, under the parameter that narrows nothing,
   // and it is the chip's project at every level because every level sits in one project.
   const narrowed = searchRequest(filters, scope.targets.project);
+  // What is on, in the words the person chose it in: one chip of the row for each narrowing,
+  // and the control of that narrowing stays out of the panel while its chip is up.
+  const narrowings = searchFilterChips(filters);
   // The one search the list reads, in two tiers the hook answers as one. Everything below -
   // the hits, the operators the query was read as, the degraded line and the message under the
   // list - reads this one answer, so the list, what it says about itself and the highlight all
@@ -646,7 +818,17 @@ function PaletteDialog({
 
   useCloseOnNavigation(true, onClose);
 
-  const selectRow = (row: PaletteRow) => {
+  const selectRow = (row: PaletteRow, newTab = false) => {
+    if (newTab) {
+      // Ctrl or Cmd (R20): the row's page in a new tab, and this tab as it was - the bar open on
+      // the same words and the same highlight, with the focus back in its box for the next key.
+      // An action and an offer have no page, and a key that only opens a tab writes nothing, so
+      // on one of them it does nothing.
+      if (row.kind === "action" || row.kind === "offer") return;
+      openInNewTab(rowPath(row));
+      inputRef.current?.focus();
+      return;
+    }
     if (row.kind === "offer") {
       // The rows that write, each pressed through the row it carries rather than through the
       // offer behind it. The new issue is made with the bar still open, so the person reads
@@ -660,13 +842,7 @@ function PaletteDialog({
     if (row.kind === "action") {
       onAction(row.action.run);
     } else {
-      navigate(
-        row.kind === "project"
-          ? buildProjectPath({ kind: "project", project: row.project.key })
-          : row.kind === "recent"
-            ? row.item.path
-            : row.result.href
-      );
+      navigate(rowPath(row));
     }
     onClose();
   };
@@ -683,6 +859,11 @@ function PaletteDialog({
   const firstMore = rows.length - footRows;
   const walkable = searchOut && activeIndex < firstMore ? firstMore : rows.length;
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    // A key that is part of an input method's composition is the composition's, and its default
+    // stays the browser's: it moves no highlight, moves no chip (Tab, Backspace) and picks no row.
+    if (event.nativeEvent.isComposing) {
+      return;
+    }
     if (scope.handleKey(event)) {
       // The browser's own move is what this cancels: the box is the dialog's first focusable,
       // so the dialog's Tab trap, which acts at either end, leaves this key alone.
@@ -699,8 +880,10 @@ function PaletteDialog({
           : stepActive(activeIndex, delta, walkable);
       setActive({ hits: listedQuery, id: rows[next]?.id ?? null });
     } else if (event.key === "Enter" && activeRow !== undefined) {
+      // Enter picks the highlighted row. An Enter that ends or moves an input method's
+      // composition does not reach here: the guard above leaves it to the composition.
       event.preventDefault();
-      selectRow(activeRow);
+      selectRow(activeRow, event.ctrlKey || event.metaKey);
     }
   };
 
@@ -720,47 +903,53 @@ function PaletteDialog({
           role="dialog"
         >
           {scope.header}
-          <div className={`shrink-0 border-b p-3 ${borderDefault}`}>
-            <input
-              aria-activedescendant={activeRow?.id}
-              aria-controls="search-results"
-              aria-expanded={rows.length > 0}
-              aria-label="Search"
-              className={`block w-full rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
-              onChange={(event) => {
-                setQuery(event.target.value);
-                // A new query is a new list, so the highlight is undecided again and the first
-                // hits to answer it take the head.
-                setActive({ hits: "", id: null });
-              }}
-              onKeyDown={handleKeyDown}
-              placeholder="Search Dispatch"
-              ref={inputRef}
-              role="combobox"
-              type="search"
-              value={query}
-            />
-          </div>
-          {/* What narrows the search and what the words themselves can do, between the box and
-              the hits: the chips the reader has added with the controls for the rest, the three
-              operator forms, and, where meaning search did not run, the one line saying so. */}
+          {/* The bar's one row of controls, which is the dialog's own strip rather than a row
+              added to it: the box the words are typed in, the panel the four narrowings are
+              added from, and a chip for each narrowing that is on. */}
+          <ControlRow
+            chips={filterChips(
+              narrowings.map(({ label, name }) => ({
+                key: name,
+                label,
+                remove: () => setFilters({ ...filters, ...FILTER_REMOVALS[name] }),
+              }))
+            )}
+            className={`shrink-0 border-b p-3 ${borderDefault}`}
+            search={
+              <SearchBox
+                className="w-full"
+                combobox={{
+                  activeId: activeRow?.id,
+                  controls: "search-results",
+                  expanded: rows.length > 0,
+                }}
+                label="Search"
+                // The bar names the limit rather than cutting the words a reader typed, so its
+                // box takes a query over it (the message below the list says so).
+                maxLength={null}
+                onChange={(value) => {
+                  setQuery(value);
+                  // A new query is a new list, so the highlight is undecided again and the
+                  // first hits to answer it take the head.
+                  setActive({ hits: "", id: null });
+                }}
+                onKeyDown={handleKeyDown}
+                placeholder="Search Dispatch"
+                ref={inputRef}
+                value={query}
+              />
+            }
+            trigger={
+              <SearchNarrowing filters={filters} onFilters={setFilters} projects={projects} />
+            }
+          />
+          {/* What the words themselves can do, between the controls and the hits: the three
+              operator forms. The line saying that meaning search did not run is NOT here: it
+              arrives with an answer, so a narrowing that degraded the search would push every
+              hit down the dialog, which R1 of dispatch://INFRA-3135 forbids. It is drawn with
+              the other notes about the answer, under the hits. */}
           <div className={`shrink-0 border-b ${borderDefault}`}>
-            <SearchFilterBar
-              filters={filters}
-              onFilters={setFilters}
-              projects={projects.data ?? emptyProjects}
-            />
             <SearchOperators inUse={operators} />
-            {degraded ? (
-              <p
-                className={`px-3 pb-2 text-xs ${textMutedOnSurface}`}
-                data-testid="search-degraded"
-                role="status"
-              >
-                Searching words only: meaning search is not running, so a hit that uses other words
-                may be missing.
-              </p>
-            ) : null}
           </div>
           {rows.length === 0 ? null : (
             <div
@@ -841,7 +1030,7 @@ function PaletteDialog({
                           active={activeRow?.id === row.id}
                           muted={muted}
                           key={row.id}
-                          onSelect={() => selectRow(row)}
+                          onSelect={(newTab) => selectRow(row, newTab)}
                           result={row.result}
                         />
                       ))}
@@ -907,10 +1096,24 @@ function PaletteDialog({
               />
             </div>
           ) : null}
+          {/* What the answer itself says, under the hits rather than over them: a search that
+              ran on words alone arrives with the answer, and a notice between the controls and
+              the first hit would move every hit each time an answer changed. */}
+          {degraded ? (
+            <p
+              className={`shrink-0 px-3 pb-2 text-xs ${textMutedOnSurface}`}
+              data-testid="search-degraded"
+              role="status"
+            >
+              Searching words only: meaning search is not running, so a hit that uses other words
+              may be missing.
+            </p>
+          ) : null}
           {/* The palette is a keyboard surface and never said so: the keys that drive it sit
               at its foot, quieter than any hit above them - and only where there is a pointer
               that can hover, since a touch reader has none of these keys and the row would
-              cost them 33px of hits. */}
+              cost them 33px of hits. The `?` help leaves the bar's own keys to this row (R13),
+              so the row names the new-tab key too: ⌘+Enter on a Mac, Ctrl+Enter elsewhere. */}
           <div
             className={`hidden shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t px-3 py-2 text-xs pointer-fine:flex ${borderDefault} ${textMutedOnSurface}`}
             data-testid="search-keyboard-hints"
@@ -923,6 +1126,12 @@ function PaletteDialog({
             <span className="inline-flex items-center gap-1">
               <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>Enter</kbd>
               to open
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>
+                {MOD_KEY_LABEL}+Enter
+              </kbd>
+              to open in a new tab
             </span>
             <span className="inline-flex items-center gap-1">
               <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>Esc</kbd>

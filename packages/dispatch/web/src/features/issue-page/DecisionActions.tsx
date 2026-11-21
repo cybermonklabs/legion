@@ -1,8 +1,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { createContext, type ReactNode, useContext, useId, useMemo, useState } from "react";
+import { createContext, type ReactNode, useContext, useId, useMemo, useRef, useState } from "react";
 
 import { api } from "../../api/client";
 import type { Artifact, Decision, IssueDecisions } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { useTooltips } from "../../components/tooltips";
 import {
   borderDefault,
@@ -66,13 +67,13 @@ const TONES = {
 } as const;
 
 /**
- * Moves the focus off `control` onto its decision's own row, where `control` holds it, before a
- * write disables or removes `control`. A focused control that is disabled drops the focus to the
- * document body (measured in Chromium: a `focusout` from Keep with no related target 45 ms
- * after its write went out), which loses a keyboard reader's place on the page, and the tree
- * then closes the body the focus held (`IssueTree.tsx`), taking Change with it. On the row the
- * focus has not left the tree, so the body stays open. The row is `NodeRow`'s `data-node-row`,
- * and the move takes no scroll: the reader is already looking at it.
+ * Moves the focus off `control` onto its decision's own row, where `control` holds it, before
+ * the write it pressed takes `control` away: Keep goes once its Keep lands, and the Change form
+ * once its change lands. Neither is disabled while its write is out (`heldPress`), but a focused
+ * control that goes drops the focus to the document body, which loses a keyboard reader's place
+ * on the page, and the tree then closes the body the focus held (`IssueTree.tsx`), taking Change
+ * with it. On the row the focus has not left the tree, so the body stays open. The row is
+ * `NodeRow`'s `data-node-row`, and the move takes no scroll: the reader is already looking at it.
  */
 function keepFocusOnRow(control: HTMLElement): void {
   if (!control.contains(document.activeElement)) return;
@@ -155,6 +156,7 @@ function DecisionControls({
   issueKey: string;
   tabStops: boolean;
 }): ReactNode {
+  const keepButton = useRef<HTMLButtonElement>(null);
   const queryClient = useQueryClient();
   const tones = TONES[useTooltips() ? "main" : "page"];
   const drafts = useContext(ChangeDrafts);
@@ -206,14 +208,15 @@ function DecisionControls({
         {decision.waiting_review ? (
           // Out of the tab order, as every control inside a row is, unless `tabStops` holds,
           // and found by its mark: the tree is one tab stop and the row's own key presses this
-          // (R9, WCAG 2.1.1, `useTreeKeymap.ts`'s `tree-keep`).
+          // (R9, WCAG 2.1.1, `useTreeKeymap.ts`'s `tree-keep`). Held, not disabled, while its
+          // Keep is out (`heldPress`): it keeps the focus, and a second press keeps nothing more.
           <button
             className={`${DECISION_BUTTON} bg-page-decision text-page-paper`}
-            disabled={keep.isPending}
-            onClick={(event) => {
-              keepFocusOnRow(event.currentTarget);
+            {...heldPress(keep.isPending, () => {
+              if (keepButton.current !== null) keepFocusOnRow(keepButton.current);
               keep.mutate(documentId);
-            }}
+            })}
+            ref={keepButton}
             tabIndex={tabStops ? undefined : -1}
             type="button"
             {...ROW_ACTION_MARKS.keep}
@@ -318,7 +321,7 @@ function ChangeComposer({
     },
   });
   // Whether the send is reading the decisions document's text, which it does before the comment
-  // goes out: Send is off while it does, as it is while the comment is out.
+  // goes out: Send is held while it does, as it is while the comment is out.
   const [reading, setReading] = useState(false);
   // The one place inside a row that takes the tab order, and only while it is open: this is a
   // form a reader is typing in, so Tab walks its field, Send change and Cancel as it does in
@@ -335,11 +338,12 @@ function ChangeComposer({
       className="flex min-w-0 flex-col gap-1"
       onSubmit={(event) => {
         event.preventDefault();
-        if (body.trim() === "" || reading) return;
-        // Send is disabled while the comment is out, and the form goes once it lands. The draft
-        // goes while the send is out: a body that closes then comes back with Change closed, and
-        // the shell's pending-writes indicator holds the send, so a second press cannot write the
-        // change twice. A refusal gives the words back to the draft (`onError`).
+        if (body.trim() === "" || reading || send.isPending) return;
+        // Send is held while the send reads the document and while the comment is out, and this
+        // sends nothing then; the form goes once the comment lands. The draft goes while the send
+        // is out: a body that closes then comes back with Change closed, and the shell's
+        // pending-writes indicator holds the send, so a second press cannot write the change
+        // twice. A refusal gives the words back to the draft (`onError`).
         keepFocusOnRow(event.currentTarget);
         drafts?.delete(decision.ref);
         // Which of the quote's places in the decisions document is this decision's own, counted
@@ -399,9 +403,14 @@ function ChangeComposer({
         </p>
       )}
       <p className="flex min-w-0 flex-wrap items-baseline gap-2">
+        {/* The document read and the comment are both this press's own send, so Send is held
+            while either is out, never disabled: it keeps the focus the press gave it
+            (`heldPress`), and the form's submit sends nothing then. Only an empty field, which
+            has nothing to send, disables it. */}
         <button
+          aria-disabled={reading || send.isPending || undefined}
           className={`rounded border px-1 text-xs ${tones.rule} ${tones.muted}`}
-          disabled={send.isPending || reading || body.trim() === ""}
+          disabled={body.trim() === ""}
           type="submit"
           {...pageChrome}
         >

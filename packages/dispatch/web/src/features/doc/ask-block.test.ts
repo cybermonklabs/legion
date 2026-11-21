@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 import { EditorState, TextSelection } from "@milkdown/kit/prose/state";
-import type { EditorView } from "@milkdown/kit/prose/view";
+import { EditorView } from "@milkdown/kit/prose/view";
 import { DOMSerializer, Schema } from "prosemirror-model";
 
 import type { BlockTypeSchema } from "../../api/types";
-import { askBlockEditingPlugin, editingAskBlockPos } from "./ask-block";
+import { askBlockEditingPlugin, editingAskBlockPos, installTypedBlocks } from "./ask-block";
 import { renderTypedBlock } from "./typed-block-drawing";
 
 const schema = new Schema({
@@ -172,16 +172,18 @@ test("a typed block's header shows the author's attributes and hides the schema'
 // A `check` block, whose `serves` points at the requirements it proves. The drawing printed
 // every array attribute with `JSON.stringify`, so driving the real page showed a reader
 // `serves ["dispatch://VER-1/spec#b-r1"]` - the value's JSON instead of the blocks it names
-// (INFRA-174).
+// (INFRA-174). Each node draws as the Proof schema's `toDOM` draws it, a typed block as its
+// section and content alone, for an editor to draw before its node views are installed.
 const checkSchema = new Schema({
   nodes: {
     doc: { content: "block+" },
-    paragraph: { content: "inline*", group: "block" },
+    paragraph: { content: "inline*", group: "block", toDOM: () => ["p", 0] },
     text: { group: "inline" },
     check: {
       attrs: { blockId: { default: null }, run: { default: null }, serves: { default: null } },
       content: "paragraph+",
       group: "block",
+      toDOM: () => ["section", ["div", { "data-proof-block-content": "" }, 0]],
     },
   },
 });
@@ -213,7 +215,8 @@ test("a block[] attribute draws the blocks it points at, each linked to its bloc
   expect(
     Array.from(serves?.querySelectorAll("a") ?? [], (link) => ({
       href: link.getAttribute("href"),
-      // What the document's own click handler and hover card read a drawn link's target from.
+      // What the editor's link plugin (`@legion/proof-editor`'s `dispatch-link-open.ts`) and the
+      // hover card read a drawn link's target from.
       reference: link.getAttribute("data-dispatch-href"),
       text: link.textContent,
     }))
@@ -245,4 +248,78 @@ test("a block[] attribute pointing at no block is not drawn at all", () => {
   expect(drawn.querySelector('dd[data-proof-block-attribute="run"]')?.textContent).toBe(
     "bun test web/src"
   );
+});
+
+/** A real editor holding one check, its typed blocks installed, whose `serves` link has taken the
+ *  keyboard focus and been named by the hover card in its `aria-describedby`, as a Tab onto the
+ *  link leaves it, with the check's element as the editor drew it before that change. `remove`
+ *  takes the editor down. */
+async function checkWithFocusedLink() {
+  const mount = document.createElement("div");
+  document.body.append(mount);
+  const node = checkSchema.node(
+    "check",
+    { blockId: "c1", run: "bun test web/src", serves: ["dispatch://CORE-1/spec#b-r1"] },
+    [checkSchema.node("paragraph", undefined, [checkSchema.text("The tab lists every check.")])]
+  );
+  const view = new EditorView(mount, {
+    state: EditorState.create({ doc: checkSchema.node("doc", undefined, [node]) }),
+  });
+  const remove = () => {
+    view.destroy();
+    mount.remove();
+  };
+  installTypedBlocks(
+    view,
+    { types: [checkType], version: 1 },
+    () => {},
+    () => () => {}
+  );
+  const block = view.dom.querySelector<HTMLElement>('[data-proof-block-type="check"]');
+  const link = block?.querySelector<HTMLElement>('dd[data-proof-block-attribute="serves"] a');
+  if (block === null || link === null || link === undefined) {
+    remove();
+    throw new Error("expected the check and its serves link");
+  }
+  link.focus();
+  link.setAttribute("aria-describedby", "ref-preview-card");
+  // ProseMirror reads the page's changes in a MutationObserver's callback, a microtask later.
+  await Promise.resolve();
+  return { block, link, remove, view };
+}
+
+// INFRA-2160: a pointer's link in a typed block's header - a check's `serves`, a plan task's -
+// takes the keyboard focus, and the hover card names itself in the link's `aria-describedby`.
+// ProseMirror read that change in the block's drawing as an edit and drew the block anew, so the
+// link holding the focus left the page and the page's focus rescue sent the focus elsewhere: a
+// Tab into the Plan tab's document went back to the top of the page.
+test("a change the page makes in a typed block's header leaves the block and its focused link in place", async () => {
+  const { block, link, remove, view } = await checkWithFocusedLink();
+  try {
+    expect(view.dom.querySelector('[data-proof-block-type="check"]')).toBe(block);
+    expect(link.isConnected).toBe(true);
+    expect(document.activeElement).toBe(link);
+  } finally {
+    remove();
+  }
+});
+
+// The header's changes are the only ones the block's view keeps from ProseMirror: a line the
+// browser draws in the block's body - as a paste or a phone keyboard's Enter draws one - is still
+// read into the document. A change to the text of a line already there is no test of the view:
+// ProseMirror asks that line's own text, not the block's view, whether to read it.
+test("a line drawn in a typed block's body is read into the document", async () => {
+  const { block, remove, view } = await checkWithFocusedLink();
+  try {
+    const body = block.querySelector("[data-proof-block-content]");
+    if (body === null) throw new Error("expected the check's body");
+    const line = document.createElement("p");
+    line.textContent = "And its run.";
+    body.append(line);
+    await Promise.resolve();
+
+    expect(view.state.doc.textContent).toBe("The tab lists every check.And its run.");
+  } finally {
+    remove();
+  }
 });

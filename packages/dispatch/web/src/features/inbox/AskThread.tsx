@@ -1,9 +1,10 @@
 import type { UseQueryResult } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useId, useState } from "react";
+import { type FormEvent, type ReactNode, useContext, useId, useState } from "react";
 
 import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
 import type { Ask, AskRead, Comment, CommentWithTrees, CreateCommentInput } from "../../api/types";
+import { heldField } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
@@ -23,8 +24,11 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
+import { ConversationTurns, turnFocusRing, turnMarks } from "../conversation/turn-keys";
 import { AgentName } from "../refs/AgentName";
+import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { Unfurl } from "../refs/Unfurl";
@@ -33,6 +37,7 @@ import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { inboxActionMark } from "./inbox-action-mark";
 import type { AskPress } from "./outstanding-answers";
 import { askArtifactId } from "./owner-reads";
 import { clearReplyDraft, setReplyDraft, useReplyDraft } from "./reply-drafts";
@@ -47,6 +52,8 @@ export type CreateReply = (
 const createReply: CreateReply = (issueKey, input, bounds) =>
   api.createComment(issueKey, input, bounds);
 
+/** One reply of an ask's thread, with the Copy reference of a reply on an issue. On an issue's
+ *  Conversation tab it is a turn that tab's keys reach (`turn-keys.ts`). */
 function AskReply({
   comment,
   current = false,
@@ -56,12 +63,15 @@ function AskReply({
   current?: boolean;
   markRef?: DwellRef;
 }): ReactNode {
+  const inTab = useContext(ConversationTurns);
+  const reference = itemRoute("comment", comment, undefined);
   return (
     <li
       aria-current={current ? "true" : undefined}
-      className={`rounded-lg p-2 text-sm ${surfaceMutedBg}`}
+      className={`rounded-lg p-2 text-sm ${surfaceMutedBg} ${inTab ? turnFocusRing : ""}`}
       data-reply=""
       ref={markRef}
+      {...turnMarks(inTab, reference)}
     >
       <div className={textPrimaryOnSurfaceMuted}>
         <MarkdownBody
@@ -71,8 +81,11 @@ function AskReply({
         />
       </div>
       <Unfurl body={comment.body} source={textSourceOf("comment", comment.id)} />
-      <p className={`mt-1 text-xs ${textMutedOnSurfaceMuted}`}>
-        <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
+      <p className={`mt-1 flex flex-wrap items-center gap-x-1 text-xs ${textMutedOnSurfaceMuted}`}>
+        <span>
+          <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
+        </span>
+        {reference === undefined ? null : <CopyRefButton route={reference} />}
       </p>
     </li>
   );
@@ -176,8 +189,9 @@ export function UnsentReply({ className, text }: { className?: string; text: str
  * or to its document for a project-document ask, then invalidates the shared thread so the reply
  * shows first. Its draft is the ask's (`reply-drafts.ts`), and its send is the ask's too: while
  * any composer's reply to this ask is out, every composer for it, including one mounted since,
- * shows the draft disabled. A file pasted or dropped into the field uploads to `uploadOwner` and
- * its text joins the draft.
+ * shows the draft held: the field and Reply keep the focus and their Tab stops and send nothing
+ * more (`heldPress`). A file pasted or dropped into the field uploads to `uploadOwner` and its
+ * text joins the draft.
  */
 export function AskReplyComposer({
   ask,
@@ -205,6 +219,7 @@ export function AskReplyComposer({
     setReplyDraft(askId, (current) => appendToDraft(current, text))
   );
   const uploading = upload.pending > 0;
+  const held = sending;
   // The form shows a refused reply itself, with Retry, under the draft it kept. Each press
   // carries the ask it replies to, as an answer's does (`useAskAnswerForm`): where it posts, and
   // the draft and the thread its landing clears and reads again, are that ask's, whichever ask a
@@ -244,19 +259,21 @@ export function AskReplyComposer({
     <form className="flex flex-col gap-2" onSubmit={submitReply}>
       <label className={`block text-sm font-medium ${textSecondaryOnCanvas}`} htmlFor={fieldId}>
         Reply
+        {/* `data-reply-box`: the box a page's reply key hands the caret (the Inbox's `r`). */}
         <textarea
-          className={`mt-1 block w-full rounded-lg px-3 py-2 font-normal outline-none ${inputClasses(true)}`}
-          disabled={sending}
+          {...heldField(held)}
+          className={`mt-1 block w-full rounded-lg px-3 py-2 font-normal outline-none aria-disabled:opacity-50 ${inputClasses(true)}`}
+          data-reply-box=""
           id={fieldId}
           onChange={(event) => setBody(event.target.value)}
           onDrop={
-            uploadOwner === undefined
+            uploadOwner === undefined || held
               ? undefined
               : (event) => upload.drop(event, uploadOwner, ask.id)
           }
           onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading })}
           onPaste={
-            uploadOwner === undefined
+            uploadOwner === undefined || held
               ? undefined
               : (event) => upload.paste(event, uploadOwner, ask.id)
           }
@@ -265,8 +282,9 @@ export function AskReplyComposer({
       </label>
       <DraftUploadStatus upload={upload} />
       <button
-        className={`self-start rounded-lg border px-3 py-1.5 text-sm font-medium ${borderStrong} ${textSecondaryOnSurface} ${enabledCardHoverBorder} disabled:cursor-not-allowed disabled:opacity-50`}
-        disabled={body.trim() === "" || sending || uploading}
+        aria-disabled={held || undefined}
+        className={`self-start rounded-lg border px-3 py-1.5 text-sm font-medium ${borderStrong} ${textSecondaryOnSurface} ${enabledCardHoverBorder} refused:cursor-not-allowed refused:opacity-50`}
+        disabled={body.trim() === "" || uploading}
         type="submit"
       >
         {sending ? "Replying…" : "Reply"}
@@ -362,6 +380,7 @@ export function AskThread({
   const fold = (
     <EarlierReplies
       count={folded.length}
+      marks={inboxActionMark("inbox.earlier-replies")}
       onToggle={() => setShowAllReplies(!showAll)}
       open={showAll}
       replies={(id) => (

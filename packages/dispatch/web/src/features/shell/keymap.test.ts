@@ -1,6 +1,23 @@
 import { expect, test } from "bun:test";
+import { act, render } from "@testing-library/react";
+import { createElement } from "react";
 
-import { createKeymap, DIALOG_SCOPE, type KeyBinding, type Keymap } from "./keymap";
+import { KeymapProvider } from "./KeymapProvider";
+import {
+  actionBinding,
+  appKeymap,
+  ariaKeyshortcuts,
+  createKeymap,
+  DIALOG_SCOPE,
+  type KeyBinding,
+  type Keymap,
+  PANEL_ATTRIBUTE,
+  useKeymap,
+  useKeymapScope,
+} from "./keymap";
+import { NO_PERSON_KEYS } from "./keymap-catalogue";
+import { setActionKeys } from "./keymap-keys";
+import { userPreferenceStorageKey } from "./userPreference";
 
 interface Harness {
   advance: (ms: number) => void;
@@ -309,6 +326,105 @@ test("a checkbox, radio or button takes no text, so single keys still fire while
   }
 });
 
+/** An open panel as `AnchoredPanel` draws one: an element carrying the keymap's mark, holding the
+ *  controls a panel holds - the display menu's radio, a filter panel's checkbox and buttons - one
+ *  of them inside a group. The panel itself takes the focus where it holds no control. */
+function openPanel(): { controls: HTMLElement[]; panel: HTMLElement; radio: HTMLInputElement } {
+  const panel = document.createElement("div");
+  panel.setAttribute(PANEL_ATTRIBUTE, "");
+  panel.tabIndex = -1;
+  const typed = (type: string) => {
+    const input = document.createElement("input");
+    input.type = type;
+    return input;
+  };
+  const radio = typed("radio");
+  const checkbox = typed("checkbox");
+  const button = typed("button");
+  const group = document.createElement("fieldset");
+  const grouped = document.createElement("button");
+  group.appendChild(grouped);
+  panel.append(radio, checkbox, button, group);
+  document.body.appendChild(panel);
+  return { controls: [radio, checkbox, button, grouped], panel, radio };
+}
+
+// INFRA-3135's review round 1, follow-up F5: the display menu and the filter panels replaced
+// selects, where a page's single keys did nothing, with radios and checkboxes, which take no
+// text; with a panel open, `j` on its radio walked the table behind it.
+test("a key pressed anywhere inside an open panel fires only inEditable bindings, whatever control of it holds the focus", () => {
+  const { keymap, press } = harness();
+  const next = binding("next", "j");
+  const search = binding("search", "$mod+k", { inEditable: true });
+  keymap.register("global", [next.definition, search.definition]);
+  const { controls, panel } = openPanel();
+  try {
+    for (const target of [panel, ...controls]) {
+      expect(press("j", { target }), `j on ${target.outerHTML}`).toBe(false);
+      expect(press("k", { ctrlKey: true, target }), `$mod+k on ${target.outerHTML}`).toBe(true);
+    }
+    expect(next.fired()).toBe(0);
+    expect(search.fired()).toBe(controls.length + 1);
+  } finally {
+    panel.remove();
+  }
+});
+
+test("only a key pressed inside a panel is masked: a panel standing open with the focus on the page leaves the page's keys alone", () => {
+  const { keymap, press } = harness();
+  const next = binding("next", "j");
+  keymap.register("global", [next.definition]);
+  const { panel, radio } = openPanel();
+  const onPage = document.createElement("input");
+  onPage.type = "radio";
+  document.body.appendChild(onPage);
+  try {
+    expect(press("j"), "j on the body").toBe(true);
+    expect(press("j", { target: onPage }), "j on a radio of the page").toBe(true);
+    expect(next.fired()).toBe(2);
+    expect(press("j", { target: radio }), "j on the panel's radio").toBe(false);
+    expect(next.fired()).toBe(2);
+  } finally {
+    panel.remove();
+    onPage.remove();
+  }
+});
+
+// INFRA-3135's review round 2: an option list's trigger replaced a `<select>` or a text box,
+// where a page's single keys did nothing; a plain button, it let them through, so a digit on the
+// issue header's Assignee wrote the priority. Closed or open, the trigger takes a select's keys.
+test("a key pressed on an option list's trigger fires only inEditable bindings, open or closed", () => {
+  const { keymap, press } = harness();
+  const next = binding("next", "j");
+  const digit = binding("digit", "2");
+  const search = binding("search", "$mod+k", { inEditable: true });
+  keymap.register("global", [next.definition, digit.definition, search.definition]);
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.setAttribute("aria-haspopup", "listbox");
+  const panelTrigger = document.createElement("button");
+  panelTrigger.type = "button";
+  panelTrigger.setAttribute("aria-haspopup", "dialog");
+  document.body.append(trigger, panelTrigger);
+  try {
+    for (const expanded of ["false", "true"]) {
+      trigger.setAttribute("aria-expanded", expanded);
+      expect(press("j", { target: trigger }), `j, expanded ${expanded}`).toBe(false);
+      expect(press("2", { target: trigger }), `2, expanded ${expanded}`).toBe(false);
+      expect(press("k", { ctrlKey: true, target: trigger }), "$mod+k").toBe(true);
+    }
+    expect(next.fired()).toBe(0);
+    expect(digit.fired()).toBe(0);
+    expect(search.fired()).toBe(2);
+    // A trigger that opens a dialog - a filter panel's, the display menu's - is a plain button.
+    expect(press("j", { target: panelTrigger }), "j on a panel's trigger").toBe(true);
+    expect(next.fired()).toBe(1);
+  } finally {
+    trigger.remove();
+    panelTrigger.remove();
+  }
+});
+
 test("an already-handled key (defaultPrevented) or one mid-IME-composition is left alone", () => {
   const { keymap, press } = harness();
   const next = binding("next", "j");
@@ -525,6 +641,34 @@ test("a row does nothing once its binding's component has unregistered it", () =
   expect(close.fired()).toBe(0);
 });
 
+// An action that writes runs once per press (`CatalogueEntry.writes`): a held key's repeats would
+// write again, or, once the write hands the reader on (R8), write on an item nobody chose. Every
+// other action runs on each repeat, as a held `j` walks a list. A repeat of either is the
+// registry's, so it reaches no page.
+test("a held key runs an action that writes once and any other action on each repeat, and a row runs the one that writes", () => {
+  const { keymap, press } = harness();
+  let dismissed = 0;
+  let moved = 0;
+  keymap.register("inbox", [
+    actionBinding({ action: "inbox.dismiss", run: () => (dismissed += 1) }, NO_PERSON_KEYS),
+    actionBinding({ action: "inbox.next", run: () => (moved += 1) }, NO_PERSON_KEYS),
+  ]);
+  keymap.pushScope("inbox");
+
+  for (const key of ["e", "j"]) {
+    expect(press(key)).toBe(true);
+    expect(press(key, { repeat: true })).toBe(true);
+    expect(press(key, { repeat: true })).toBe(true);
+  }
+  expect(dismissed).toBe(1);
+  expect(moved).toBe(3);
+
+  const row = keymap.actions().find((action) => action.id === "dismiss");
+  expect(row).toBeDefined();
+  row?.run();
+  expect(dismissed).toBe(2);
+});
+
 test("rows within a scope read alphabetically, a lowercase word among capitalised ones included", () => {
   const { keymap } = harness();
   keymap.register("global", [
@@ -538,4 +682,138 @@ test("rows within a scope read alphabetically, a lowercase word among capitalise
     "Go to project…",
     "Go to Settings",
   ]);
+});
+
+test("Space and Shift+Space are two keys, and the space bar presses Space", () => {
+  const { keymap, press } = harness();
+  const down = binding("scroll-down", "Space");
+  const up = binding("scroll-up", "Shift+Space");
+  keymap.register("inbox", [down.definition, up.definition]);
+  keymap.pushScope("inbox");
+
+  expect(press(" ")).toBe(true);
+  expect([down.fired(), up.fired()]).toEqual([1, 0]);
+  expect(press(" ", { shiftKey: true })).toBe(true);
+  expect([down.fired(), up.fired()]).toEqual([1, 1]);
+  // The space character itself names no key.
+  expect(() => keymap.register("inbox", [binding("space", " ").definition])).toThrow(/no key/);
+});
+
+test("a beforeScopes binding wins over the innermost scope and an open dialog, even in a field, until its when is false", () => {
+  const { keymap, press } = harness();
+  let onLink = true;
+  const copyLink = binding("copy-link", "y", { beforeScopes: true, when: () => onLink });
+  const copyRow = binding("copy-ref", "y");
+  const closeDialog = binding("close", "y");
+  keymap.register("global", [copyLink.definition]);
+  keymap.pushScope("inbox");
+  keymap.register("inbox", [copyRow.definition]);
+  keymap.register(DIALOG_SCOPE, [closeDialog.definition]);
+
+  expect(press("y")).toBe(true);
+  expect([copyLink.fired(), copyRow.fired()]).toEqual([1, 0]);
+  // Its `when` is its only guard: a field's focus does not hold it back.
+  expect(press("y", { target: document.createElement("input") })).toBe(true);
+  expect(copyLink.fired()).toBe(2);
+
+  const popDialog = keymap.pushScope(DIALOG_SCOPE);
+  expect(press("y")).toBe(true);
+  expect([copyLink.fired(), closeDialog.fired()]).toEqual([3, 0]);
+  popDialog();
+
+  onLink = false;
+  expect(press("y")).toBe(true);
+  expect([copyLink.fired(), copyRow.fired()]).toEqual([3, 1]);
+});
+
+test("a pending chord lists each key that can follow with its label, innermost scope first and once each", () => {
+  const { advance, keymap, press } = harness();
+  keymap.register("global", [
+    binding("go-inbox", "g i", { label: "Go to Inbox" }).definition,
+    binding("go-settings", "g s", { label: "Go to Settings" }).definition,
+    binding("go-documents", "g d", { label: "Go to Documents", when: () => false }).definition,
+  ]);
+  keymap.pushScope("inbox");
+  keymap.register("inbox", [
+    binding("scroll-top", "g g", { label: "Scroll to the top" }).definition,
+    binding("inbox-settings", "g s", { label: "Inbox settings" }).definition,
+  ]);
+
+  expect(keymap.chord()).toEqual({ keys: "", next: [] });
+  press("g");
+  expect(keymap.chord()).toEqual({
+    keys: "g",
+    next: [
+      { key: "g", label: "Scroll to the top" },
+      { key: "s", label: "Inbox settings" },
+      { key: "i", label: "Go to Inbox" },
+    ],
+  });
+  // One snapshot per chord, as `useSyncExternalStore` needs.
+  expect(keymap.chord()).toBe(keymap.chord());
+  advance(1000);
+  expect(keymap.chord()).toEqual({ keys: "", next: [] });
+
+  // While a dialog is open its scope is the only one a key is read through, and the hint's too.
+  keymap.register(DIALOG_SCOPE, [binding("dialog-go", "g x", { label: "Dialog step" }).definition]);
+  keymap.pushScope(DIALOG_SCOPE);
+  press("g");
+  expect(keymap.chord()).toEqual({ keys: "g", next: [{ key: "x", label: "Dialog step" }] });
+});
+
+test("actions() offers one row for an action several lists register, and it runs the one that applies", () => {
+  const { keymap } = harness();
+  let focused: "main" | "beside" = "beside";
+  const main = binding("open", "o", { label: "Open", when: () => focused === "main" });
+  const beside = binding("open", "o", { label: "Open", when: () => focused === "beside" });
+  keymap.register("project", [main.definition]);
+  keymap.register("project", [beside.definition]);
+  keymap.pushScope("project");
+
+  const rows = keymap.actions();
+  expect(rows.map((row) => [row.scope, row.id])).toEqual([["project", "open"]]);
+  rows[0]?.run();
+  expect([main.fired(), beside.fired()]).toEqual([0, 1]);
+
+  focused = "main";
+  keymap.actions()[0]?.run();
+  expect([main.fired(), beside.fired()]).toEqual([1, 1]);
+});
+
+test("aria-keyshortcuts names $mod as both modifiers, a letter in upper case, and no chord", () => {
+  expect(ariaKeyshortcuts(["$mod+k"])).toBe("Control+K Meta+K");
+  expect(ariaKeyshortcuts(["c"])).toBe("C");
+  expect(ariaKeyshortcuts(["b", "Shift+H", "g i", "Alt+Enter"])).toBe("B Shift+H Alt+Enter");
+  expect(ariaKeyshortcuts(["g g"])).toBe("");
+});
+
+test("a person's key for an action registers the binding again under that key", () => {
+  const stored = userPreferenceStorageKey("alice", "shell.keymap");
+  window.localStorage.removeItem(stored);
+  let snoozed = 0;
+  function Page(): null {
+    useKeymapScope("inbox");
+    useKeymap("inbox", [{ action: "inbox.snooze", run: () => (snoozed += 1) }]);
+    return null;
+  }
+  const snoozeKeys = () =>
+    appKeymap.describe().find((entry) => entry.scope === "inbox" && entry.id === "snooze")?.keys;
+  const press = (init: KeyboardEventInit) =>
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { cancelable: true, ...init }));
+    });
+  const view = render(createElement(KeymapProvider, { login: "alice" }, createElement(Page)));
+
+  try {
+    expect(snoozeKeys()).toEqual(["b", "h"]);
+    act(() => setActionKeys("alice", "inbox.snooze", ["Shift+B"]));
+    expect(snoozeKeys()).toEqual(["Shift+B"]);
+    press({ key: "h" });
+    expect(snoozed).toBe(0);
+    press({ key: "B", shiftKey: true });
+    expect(snoozed).toBe(1);
+  } finally {
+    view.unmount();
+    window.localStorage.removeItem(stored);
+  }
 });

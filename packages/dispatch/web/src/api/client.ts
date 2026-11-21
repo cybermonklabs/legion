@@ -488,7 +488,11 @@ export function apiErrorCodeIn(error: unknown, codes: ReadonlySet<string>): erro
  *  conversation, named by the agent's session id (direct messages on the Agents page). */
 export type ArtifactOwner = { issue: string } | { project: string } | { session: string };
 
-export type CreateArtifactReviewInput = Body<"/api/v1/artifacts/{id}/reviews", "post">;
+/** What a review says: approved, or changes requested with the reason Dispatch requires for it. */
+export type CreateArtifactReviewInput = Body<
+  "/api/v1/artifacts/{id}/versions/{number}/reviews",
+  "post"
+>;
 
 /** What a decline carries: the person's own note, which is optional. */
 export type DeclineAskInput = Body<"/api/v1/asks/{id}/decline", "post">;
@@ -1665,8 +1669,22 @@ export class DispatchApiClient {
     return this.read("/api/v1/artifacts/{id}/reviews", { id });
   }
 
-  createArtifactReview(id: string, input: CreateArtifactReviewInput, bounds: WriteBounds) {
-    return this.post("/api/v1/artifacts/{id}/reviews", { id }, input, bounds);
+  /** A review of version `version` of the document, the version the reader read. Dispatch records
+   *  it only while that is the version a review would record - the latest settled version, or
+   *  the one an open approval request names - and refuses any other with `409
+   *  REVIEW_VERSION_MOVED`, writing nothing, so no review approves a version nobody read. */
+  createArtifactVersionReview(
+    id: string,
+    version: number,
+    input: CreateArtifactReviewInput,
+    bounds: WriteBounds
+  ) {
+    return this.post(
+      "/api/v1/artifacts/{id}/versions/{number}/reviews",
+      { id, number: String(version) },
+      input,
+      bounds
+    );
   }
 
   listArtifactAsks(id: string, state: "all" | "open" | "answered" = "all") {

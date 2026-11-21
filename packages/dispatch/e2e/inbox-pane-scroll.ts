@@ -59,7 +59,7 @@ const DIAGRAM = [
 ].join("\n");
 
 /** `count` paragraphs of filler, so a document is longer than the column that shows it. */
-function notes(prefix: string, count: number): string[] {
+export function notes(prefix: string, count: number): string[] {
   return Array.from(
     { length: count },
     (_, index) =>
@@ -68,7 +68,7 @@ function notes(prefix: string, count: number): string[] {
 }
 
 /** One markdown body from the blocks it holds. */
-function body(blocks: readonly string[]): string {
+export function body(blocks: readonly string[]): string {
   return `${blocks.join("\n\n")}\n`;
 }
 
@@ -433,6 +433,8 @@ const baselineSpec = body([
 
 export interface ApprovalMarksSeed {
   approvalAskId: string;
+  /** The document the request asks about. */
+  artifactId: string;
   /** How many blocks the version the column draws marks as changed. */
   changedBlocks: number;
 }
@@ -469,7 +471,7 @@ export async function seedApprovalWithMarks(): Promise<ApprovalMarksSeed> {
     await requestApproval(artifactId, { summary: "The mirror-first rollout." }, session)
   );
   expect(atTwo.version).toBe(2);
-  return { approvalAskId: atTwo.ask.id, changedBlocks: CHANGED_STEPS };
+  return { approvalAskId: atTwo.ask.id, artifactId, changedBlocks: CHANGED_STEPS };
 }
 
 // ---------------------------------------------------------------------------
@@ -633,7 +635,7 @@ export interface HeldRead {
   readonly release: () => Promise<void>;
 }
 
-/** Holds one read of the page's, so a row decides when its answer lands. */
+/** Holds every read of the page's that `read` matches, so a row decides when its answer lands. */
 async function holdRead(page: Page, read: string): Promise<HeldRead> {
   const held = Promise.withResolvers<void>();
   await page.route(read, async (route) => {
@@ -645,6 +647,29 @@ async function holdRead(page: Page, read: string): Promise<HeldRead> {
       held.resolve();
       await page.unroute(read);
     },
+  };
+}
+
+/** Holds every read of `page` that one of `reads` matches until the answer is called, then
+ *  serves them all. A read the page gave up on while it was held - a query the column cancelled
+ *  as it mounted again - is already answered by then, and the hold lets it go unanswered rather
+ *  than failing the row on a read nobody waits for. */
+export async function holdReads(
+  page: Page,
+  reads: readonly string[]
+): Promise<() => Promise<void>> {
+  const held = Promise.withResolvers<void>();
+  for (const read of reads) {
+    await page.route(read, async (route) => {
+      await held.promise;
+      await route.continue().catch(() => undefined);
+    });
+  }
+  return async () => {
+    held.resolve();
+    for (const read of reads) {
+      await page.unroute(read);
+    }
   };
 }
 

@@ -136,6 +136,15 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
 ];
 
 export const PRIORITY_COLUMNS_BY_ID = columnsById(PRIORITY_COLUMNS);
-export const PRIORITY_LAYOUT = tableLayout(PRIORITY_COLUMNS, "title");
+
+/** The priorities table's own words for its rows, which the table core reads and never
+ *  invents: the attribute a row carries holding its priority's id, the one naming the group it
+ *  sits in, and the one on the link opening the row follows, its order's link to the priority's
+ *  page. A priority is no issue, so none of them is the issue table's. */
+export const PRIORITY_ROW_ATTRIBUTE = "data-priority-row";
+export const PRIORITY_GROUP_ATTRIBUTE = "data-priority-group";
+export const PRIORITY_LINK_ATTRIBUTE = "data-priority-link";
+
+export const PRIORITY_LAYOUT = tableLayout(PRIORITY_COLUMNS, "title", PRIORITY_ROW_ATTRIBUTE);
 /** The table opens in the one order, which is what the page is about. */
 export const PRIORITY_SORTING = [{ id: "order", desc: false }];

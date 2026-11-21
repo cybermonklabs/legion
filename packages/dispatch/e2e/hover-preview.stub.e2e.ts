@@ -6,7 +6,7 @@
  *  (packages/dispatch/README.md, "The stubbed layer"). The phone row stayed in
  *  `hover-preview.e2e.ts`: the `iphone` project runs no stubbed row.
  */
-import { expect, type Page } from "@playwright/test";
+import { expect, type Locator, type Page, type Request } from "@playwright/test";
 
 import {
   REF_PREVIEW_CLOSE_DELAY_MS,
@@ -54,6 +54,37 @@ async function centreInBoard(page: Page, key: string): Promise<void> {
     scroller.scrollLeft +=
       cardBox.left + cardBox.width / 2 - (scrollerBox.left + scrollerBox.width / 2);
   }, key);
+}
+
+/** Spend the reader's dwell on the Conversation's turns until its read mark of `issueKey` has
+ * been written, so the write and the reads it starts land before a gesture rather than under
+ * one. The dwell is a page timer (`DWELL_MS`), so the page's own clock spends it, and the jump
+ * repeats because the mark is written only once the observer has reported the turn. The tab
+ * keeps each `New` mark it drew for the whole visit: it marks the turns from the earliest unread
+ * boundary a read of the visit answered (`visitBoundary`, `ConversationTab.tsx`), so through that
+ * write and the read of the unread boundary it starts the turn's mark is still drawn after it,
+ * and the reference stays where it was drawn. */
+async function spendDwell(page: Page, turns: Locator, issueKey: string): Promise<void> {
+  const mark = `/api/v1/me/issues/${issueKey}/state`;
+  let written = false;
+  const note = (request: Request) => {
+    if (request.method() === "PUT" && new URL(request.url()).pathname === mark) written = true;
+  };
+  page.on("requestfinished", note);
+  try {
+    await expect
+      .poll(
+        async () => {
+          if (!written) await page.clock.runFor(DWELL_MS);
+          return written;
+        },
+        { intervals: [50, 50, 100, 200, 500] }
+      )
+      .toBe(true);
+  } finally {
+    page.off("requestfinished", note);
+  }
+  await expect(turns.getByText("New", { exact: true })).toHaveCount(1);
 }
 
 test("hovering a dispatch:// reference in a comment previews the target issue; Escape closes it @pr", async ({
@@ -179,18 +210,8 @@ test("a card survives a held-button drag that leaves its reference and comes bac
   const turns = page.getByRole("list", { name: "Conversation turns" });
   const link = turns.getByRole("link", { name: "Hover target" });
   await expect(link).toBeVisible();
-  // The dwell's read mark drops the `New` mark and moves the reference 24 px up; settle it
-  // first. The dwell is a page timer (`DWELL_MS`), so the page's own clock spends it, and the
-  // jump repeats because the mark is written only once the observer has reported the turn.
-  await expect
-    .poll(
-      async () => {
-        await page.clock.runFor(DWELL_MS);
-        return turns.getByText("New", { exact: true }).count();
-      },
-      { intervals: [50, 50, 100, 200, 500] }
-    )
-    .toBe(0);
+  // The dwell's read mark is written before the gesture, and the turn keeps its `New` mark.
+  await spendDwell(page, turns, scene.source);
   await link.hover();
   const card = page.getByRole("tooltip");
   await page.clock.runFor(REF_PREVIEW_OPEN_DELAY_MS);
@@ -238,18 +259,8 @@ test("a card survives a held-button move from the card back onto its reference @
   const turns = page.getByRole("list", { name: "Conversation turns" });
   const link = turns.getByRole("link", { name: "Hover target" });
   await expect(link).toBeVisible();
-  // The dwell's read mark drops the `New` mark and moves the reference 24 px up; settle it
-  // first. The dwell is a page timer (`DWELL_MS`), so the page's own clock spends it, and the
-  // jump repeats because the mark is written only once the observer has reported the turn.
-  await expect
-    .poll(
-      async () => {
-        await page.clock.runFor(DWELL_MS);
-        return turns.getByText("New", { exact: true }).count();
-      },
-      { intervals: [50, 50, 100, 200, 500] }
-    )
-    .toBe(0);
+  // The dwell's read mark is written before the gesture, and the turn keeps its `New` mark.
+  await spendDwell(page, turns, scene.source);
   await link.hover();
   const card = page.getByRole("tooltip");
   await page.clock.runFor(REF_PREVIEW_OPEN_DELAY_MS);

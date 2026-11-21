@@ -32,6 +32,7 @@ import {
 } from "./inbox-filter";
 import { askCard, askControls, inboxRow } from "./inbox-pane";
 import { expectInboxCount } from "./inbox-threads";
+import { pickFromMenu, priorityTrigger } from "./menus";
 import { setCreatedAt } from "./seed";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, test } from "./test";
@@ -693,9 +694,9 @@ test("under Waiting on, Sort by priority puts a P0 ask ahead of a P2 ask clarifi
     await page.goto(`/issues/${p0Issue.key}`);
     // `Priority of <KEY>` is the issue's own grade; the header also carries the control that
     // adds a priority the issue advances, whose name holds that word too.
-    const priority = page.getByLabel(/^Priority of /);
-    await priority.selectOption("0");
-    await expect(priority).toHaveValue("0");
+    const priority = page.getByRole("button", { name: /^Priority of / });
+    await pickFromMenu(priority, "P0");
+    await expect(priority).toHaveText("P0");
     await expect.poll(() => getIssue(p0Issue.key)).toMatchObject({ priority: 0 });
     // Clarified P0 first, so recency alone would put the P2 ask on top: the order under test is
     // the priority one, not the one the writes happened to land in.
@@ -729,18 +730,19 @@ test("the Inbox sets its question's issue priority in place", async ({ browser }
     const page = await alice.newPage();
     await page.goto("/");
     // The question's own controls, where this width puts them: the reading column's head, for
-    // the row it is showing.
+    // the row it is showing. The control's name ends in the value it holds, its badge's words,
+    // and holds no key, though the reading column's head draws the control's key inside it.
     const controls = await askControls(page, ask.id);
-    const control = controls.getByLabel(`Priority of ${issue.key}`);
-    await expect(controls.locator("span", { hasText: /^P2$/ })).toBeVisible();
+    const control = priorityTrigger(controls, issue.key);
+    await expect(control).toHaveAccessibleName(`Priority of ${issue.key} P2`);
     const patch = page.waitForRequest(
       (request) =>
         request.method() === "PATCH" &&
         new URL(request.url()).pathname === `/api/v1/issues/${issue.key}`
     );
-    await control.selectOption("0");
+    await pickFromMenu(control, "P0");
     expect((await patch).postDataJSON()).toEqual({ priority: 0 });
-    await expect(controls.locator("span", { hasText: /^P0$/ })).toBeVisible();
+    await expect(control).toHaveAccessibleName(`Priority of ${issue.key} P0`);
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: 0 });
     // The row's link was not followed.
     expect(new URL(page.url()).pathname).toBe("/");
@@ -753,7 +755,7 @@ test("the Inbox sets its question's issue priority in place", async ({ browser }
     });
 
     await page.reload();
-    await expect(controls.locator("span", { hasText: /^P0$/ })).toBeVisible();
+    await expect(control).toHaveAccessibleName(`Priority of ${issue.key} P0`);
   } finally {
     await alice.close();
   }
@@ -761,9 +763,9 @@ test("the Inbox sets its question's issue priority in place", async ({ browser }
 
 // Deferring a row is only worth anything if it stops being asked about, so this case gates the
 // whole rule at the UI: the band, and the two counts that would otherwise keep nagging - the
-// Blocked-on-you banner and the shell's one Inbox count - including after an agent replies,
+// Blocked on you control and the shell's one Inbox count - including after an agent replies,
 // which hands the turn back and is exactly what could pull a deferred ask onto the list.
-test("a snoozed row leaves Later, the banner and the Inbox count alone until un-snoozed", async ({
+test("a snoozed row leaves Later, the Blocked on you control and the Inbox count alone until un-snoozed", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -775,11 +777,13 @@ test("a snoozed row leaves Later, the banner and the Inbox count alone until un-
     const page = await alice.newPage();
     await page.goto("/");
     const row = inboxRow(page, ask.id);
-    const banner = page.getByText(/Blocked on you: 1 item/);
+    // Blocked on you is a control of the row now (INFRA-3135, R7), named for what it narrows to,
+    // in the one control row.
+    const blockedOnYou = page.getByRole("button", { name: /Blocked on you: 1 item/ });
     // The shell carries one number now, the Inbox entry's (INFRA-450), and the band the row
     // stands in is read off the row itself.
     await expect(row).toHaveAttribute("data-inbox-section", "human");
-    await expect(banner).toBeVisible();
+    await expect(blockedOnYou).toBeVisible();
     await expectInboxCount(page, 1);
 
     const put = page.waitForRequest(
@@ -787,9 +791,12 @@ test("a snoozed row leaves Later, the banner and the Inbox count alone until un-
         request.method() === "PUT" &&
         new URL(request.url()).pathname === `/api/v1/me/asks/${ask.id}/snooze`
     );
-    await (await askControls(page, ask.id))
-      .getByLabel(`Snooze ${issue.key}`)
-      .selectOption("tomorrow");
+    await pickFromMenu(
+      (await askControls(page, ask.id)).getByRole("button", {
+        name: new RegExp(`^Snooze ${issue.key}`),
+      }),
+      "Tomorrow"
+    );
     expect(Date.parse((await put).postDataJSON().snoozed_until)).toBeGreaterThan(Date.now());
 
     // Folded away, and off both counts: the viewer is not asked about it again until it
@@ -797,7 +804,7 @@ test("a snoozed row leaves Later, the banner and the Inbox count alone until un-
     const later = page.getByRole("button", { name: /^Later \(1\)/ });
     await expect(later).toBeVisible();
     await expect(row).toBeHidden();
-    await expect(banner).toBeHidden();
+    await expect(blockedOnYou).toBeHidden();
     await expectInboxCount(page, 0);
     await expect
       .poll(async () => (await getInbox({ login: "alice" })).at(0)?.snoozed_until)
@@ -809,7 +816,7 @@ test("a snoozed row leaves Later, the banner and the Inbox count alone until un-
     await page.reload();
     await expect(page.getByRole("button", { name: /^Later \(1\)/ })).toBeVisible();
     await expect(row).toBeHidden();
-    await expect(banner).toBeHidden();
+    await expect(blockedOnYou).toBeHidden();
     await expectInboxCount(page, 0);
 
     // The real pointer opens the disclosure; the row is there with its return time.
@@ -834,7 +841,7 @@ test("a snoozed row leaves Later, the banner and the Inbox count alone until un-
       .click();
     await remove;
     await expect(row).toHaveAttribute("data-inbox-section", "human");
-    await expect(page.getByText(/Blocked on you: 1 item/)).toBeVisible();
+    await expect(page.getByRole("button", { name: /Blocked on you: 1 item/ })).toBeVisible();
     // The row's link was not followed by any of it.
     expect(new URL(page.url()).pathname).toBe("/");
     // What the page shows so far is the optimistic write; the reload reads the server, and a
@@ -852,9 +859,9 @@ test("a snoozed row leaves Later, the banner and the Inbox count alone until un-
 
 // A credential request is listed above the asks and waits on its approver as much as an ask
 // whose turn is theirs, so it is as much a reason not to say "Nothing needs you" and as much a
-// part of the Inbox count and the Blocked-on-you banner. A request waiting on someone else
-// is in neither. A secret request is decided on the secrets broker's own page, so its row is a
-// plain link to the page the broker named for it, `approve_url`, as the broker gave it.
+// part of the Inbox count and the Blocked on you control's count. A request waiting on someone
+// else is in neither. A secret request is decided on the secrets broker's own page, so its row is
+// a plain link to the page the broker named for it, `approve_url`, as the broker gave it.
 test("a pending credential request alone is listed, counted, and keeps the empty state away", async ({
   browser,
 }, testInfo) => {
@@ -896,7 +903,9 @@ test("a pending credential request alone is listed, counted, and keeps the empty
     await expect(requests.getByRole("link")).toHaveAttribute("href", approveUrl);
     await expect(empty).toHaveCount(0);
     await expectInboxCount(page, 1);
-    await expect(page.getByText(/^Blocked on you: 1 item, oldest/)).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: /^Blocked on you: 1 item, oldest/ })
+    ).toBeVisible();
 
     const shot = testInfo.outputPath(`inbox-credential-request-${testInfo.project.name}.png`);
     await page.screenshot({ path: shot });
@@ -1497,10 +1506,11 @@ test("clearing the filter lists every question, and the Unassigned filter lists 
     await expect(page.locator("[data-inbox-row]")).toHaveCount(1);
 
     // Cleared, the list holds every open question, the document's included.
+    // The trigger is read while the panel it stands in is still open, then both are shut.
     await clearAssigneeFilter(page);
+    await expect(assigneeFilter(page)).toHaveText("Assignee · everyone");
     await closeAssigneeFilter(page);
     await expect(page).toHaveURL(`/?item=${hersAsk.id}&assignee=everyone`);
-    await expect(assigneeFilter(page)).toHaveText("Assignee · everyone");
     for (const ask of [hersAsk, carolsAsk, documentAsk]) {
       await expect(inboxRow(page, ask.id)).toBeVisible();
     }
@@ -1535,7 +1545,7 @@ test("clearing the filter lists every question, and the Unassigned filter lists 
 // `features/inbox/BlockedOnYou.tsx`): open questions whose next move is a person's, on issues
 // assigned to them. Widening the list they are looking at is not more work waiting on them, so
 // no count moves with it; another issue assigned to them is, so they all move together.
-test("the Inbox count, the banner and an Agents card count the reader's own work, whatever the filter lists", async ({
+test("the Inbox count, the Blocked on you control and an Agents card count the reader's own work, whatever the filter lists", async ({
   browser,
 }) => {
   await setLiveSessions([{ session_id: session.actor.id, title: "e2e-session-title" }]);
@@ -1562,14 +1572,14 @@ test("the Inbox count, the banner and an Agents card count the reader's own work
     await page.goto("/");
     await expect(page.locator("[data-inbox-row]")).toHaveCount(2);
     await expectInboxCount(page, 2);
-    await expect(page.getByText(/^Blocked on you: 2 items/)).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Blocked on you: 2 items/ })).toBeVisible();
 
     // Widened to every question: twice the rows, the same two counts.
     await clearAssigneeFilter(page);
     await closeAssigneeFilter(page);
     await expect(page.locator("[data-inbox-row]")).toHaveCount(4);
     await expectInboxCount(page, 2);
-    await expect(page.getByText(/^Blocked on you: 2 items/)).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Blocked on you: 2 items/ })).toBeVisible();
 
     // The Agents card says the same number about the same session.
     await navigateInApp(page, "/agents");
@@ -1583,7 +1593,7 @@ test("the Inbox count, the banner and an Agents card count the reader's own work
     await expect(card.getByRole("link", { name: "Needs you 3" })).toBeVisible();
     await expectInboxCount(page, 3);
     await navigateInApp(page, "/");
-    await expect(page.getByText(/^Blocked on you: 3 items/)).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Blocked on you: 3 items/ })).toBeVisible();
     await expectInboxCount(page, 3);
   } finally {
     await alice.close();
@@ -1746,7 +1756,10 @@ for (const refusal of [
       // reading column's head, which carries the controls for the row it is showing.
       const controls = await askControls(page, ask.id);
       await expect(controls).toBeVisible();
-      await controls.getByLabel(`Snooze ${issue.key}`).selectOption("tomorrow");
+      await pickFromMenu(
+        controls.getByRole("button", { name: new RegExp(`^Snooze ${issue.key}`) }),
+        "Tomorrow"
+      );
 
       const retry = controls.getByRole("button", { name: "Retry" });
       await expect(retry).toBeVisible();

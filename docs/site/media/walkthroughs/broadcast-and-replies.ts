@@ -101,11 +101,23 @@ const broadcastAndReplies: Walkthrough<Seeded> = {
         }
       },
       act: async (page, _seeded, cue) => {
-        // The line names the page as it opens, and the filter as the pointer sets it.
+        // The line names the page as it opens, and the filter as the pointer sets it: the row's
+        // one Filter, named with how many narrowings are on, opens the panel that holds the
+        // machine control.
         await linger(page, 0.3);
-        const machine = page.getByRole("combobox", { name: "Machine" });
+        const filter = page.getByRole("button", { name: /^Filter · \d+$/ });
+        await pointTo(page, filter);
+        await filter.click();
+        const machine = page.getByRole("button", { name: "Filter by machine" });
         await pointTo(page, machine);
-        await machine.selectOption("build-host");
+        await machine.click();
+        const host = page.getByRole("option", { exact: true, name: "build-host" });
+        await pointTo(page, host);
+        await host.click();
+        // Escape closes the machine's list, then the panel, and the list under them shows.
+        await page.keyboard.press("Escape");
+        await page.keyboard.press("Escape");
+        await expect(filter).toHaveText("Filter · 1");
         const matching = page.getByText("3 matching", { exact: true });
         await expect(matching).toBeVisible();
         // The pointer goes to the filter's count of agents, then to the select-all box as the

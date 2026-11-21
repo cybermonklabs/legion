@@ -11,6 +11,11 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { digitKbdClass } from "../shell/ShortcutHelp";
+import { type OptionDigit, ROW_IN_HAND_CLASS } from "./option-digits";
+
+/** Which of an approval request's two options a row is: Approve, or Request changes. */
+export type AskApprovalAction = "approve" | "request-changes";
 
 const ROW_CLASS = `flex min-h-11 items-start gap-3 rounded-lg border px-3 py-2 text-sm ${borderDefault}`;
 
@@ -38,21 +43,30 @@ function OptionText({ option }: { option: AskOptionWithTrees }): ReactNode {
 }
 
 /** A choosable option: a radio or checkbox row. The `name` groups radios per ask. `hotkey` marks
- * the input `data-ask-option` so the Inbox's number keys 1–9 pick it (the real options of the
- * focused ask, not Other). */
+ * the input `data-ask-option` so the Inbox's digit keys pick it - every option of the ask in hand,
+ * Other included as the digit after the last real option - and `digit` is the key the row draws
+ * for that, beside its text and hidden from assistive tech, whose name for the option stays its
+ * label (`option-digits.ts`). `approval` marks one of an approval request's two options
+ * `data-ask-approval`, which the Inbox's `a` and Shift+R pick it by. `held` while the card's
+ * answer is out: the input keeps the focus and its Tab stop, and a pick made then changes nothing
+ * (`heldPress`). */
 export function AskChoiceRow({
+  approval,
   checked,
   className = "",
-  disabled = false,
+  digit,
+  held = false,
   hotkey = false,
   multiple,
   name,
   onChange,
   option,
 }: {
+  approval?: AskApprovalAction;
   checked: boolean;
   className?: string;
-  disabled?: boolean;
+  digit?: OptionDigit;
+  held?: boolean;
   hotkey?: boolean;
   multiple: boolean;
   name: string;
@@ -66,14 +80,27 @@ export function AskChoiceRow({
       className={`${ROW_CLASS} cursor-pointer ${checked ? `${selectedCardBorder} ${selectedCardBg}` : cardHoverBorder} ${className}`}
     >
       <input
+        aria-disabled={held || undefined}
         checked={checked}
+        className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+        data-ask-approval={approval}
         data-ask-option={hotkey ? "" : undefined}
-        disabled={disabled}
         name={name}
-        onChange={onChange}
+        onChange={() => {
+          if (!held) onChange();
+        }}
         type={multiple ? "checkbox" : "radio"}
       />
       <OptionText option={option} />
+      {/* The digit is for the eye: the option's name stays its label. */}
+      {digit === undefined ? null : (
+        <span
+          aria-hidden="true"
+          className={`ml-auto shrink-0 ${digit.whileRowInHand ? ROW_IN_HAND_CLASS : ""}`}
+        >
+          <kbd className={digitKbdClass}>{digit.key}</kbd>
+        </span>
+      )}
     </label>
   );
 }

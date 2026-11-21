@@ -3,6 +3,7 @@ import { type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { GraphEdge } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import {
   borderDefault,
   linkHoverText,
@@ -197,6 +198,9 @@ function Excerpt({ text }: { text: string }): ReactNode {
  *  so a card or a header costs no graph request until the reader opens its panel. A count of
  *  zero is a fact, not an affordance: it renders as plain text, since opening it would only say
  *  nothing references the node. `controls` names the panel the host renders when expanded.
+ *  `marks` are the host's own handles on the button, by which its keys find and press it: the
+ *  Inbox's ask card passes the mark its command bar presses it by (`inboxActionMark`), inside the
+ *  item in hand.
  *
  *  A block of a document has no such count - no listing the tabs read carries one - so `count`
  *  is left out there and the control offers itself without one, the panel's own read being the
@@ -205,11 +209,13 @@ export function ReferencedByToggle({
   controls,
   count,
   expanded,
+  marks,
   onToggle,
 }: {
   controls: string;
   count?: number;
   expanded: boolean;
+  marks?: Readonly<Record<`data-${string}`, string>>;
   onToggle: () => void;
 }): ReactNode {
   if (count === 0) {
@@ -227,6 +233,7 @@ export function ReferencedByToggle({
       aria-controls={controls}
       aria-expanded={expanded}
       className={`flex min-h-11 shrink-0 items-center gap-2 rounded-lg px-2 py-1 text-sm font-medium ${linkText} ${linkHoverText}`}
+      {...marks}
       onClick={onToggle}
       type="button"
     >
@@ -276,9 +283,8 @@ export function ReferencedBy({
         <p className={`flex flex-wrap items-center gap-2 text-sm ${textMutedOnSurface}`}>
           <span>Referenced by unavailable.</span>
           <button
-            className={`font-medium underline ${linkText} ${linkHoverText}`}
-            disabled={query.isFetching}
-            onClick={() => void query.refetch()}
+            className={`font-medium underline refused:cursor-not-allowed refused:opacity-50 ${linkText} ${linkHoverText}`}
+            {...heldPress(query.isFetching, () => void query.refetch())}
             type="button"
           >
             Retry

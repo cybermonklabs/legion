@@ -176,8 +176,9 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
     await expect(commentBody).toBeFocused();
 
     // D11: Escape on a non-empty draft shows an inline "Discard draft?" affordance (not a
-    // blocking confirm()); Escape again closes it. Only the composer closes — the phone
-    // sheet (if any) stays open, because the composer's own Escape handler claims it first.
+    // blocking confirm()); Escape again discards it. That ends the comment, so the composer
+    // closes, and on a phone the sheet it opened in closes with it and the caret goes back to the
+    // document (R19 of dispatch://INFRA-2160).
     await commentBody.fill("why?");
     await commentBody.press("Escape");
     await expect(page.getByText("Discard draft?")).toBeVisible();
@@ -185,8 +186,8 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
     await commentBody.press("Escape");
     await expect(commentComposer).toHaveCount(0);
     if (isPhone) {
-      await expect(page.getByRole("button", { name: /Close review panel/ })).toBeVisible();
-      await page.getByRole("button", { name: /Close review panel/ }).click();
+      await expect(page.getByRole("button", { name: /Open review panel/ })).toBeVisible();
+      await expect(documentEditor(page)).toBeFocused();
     }
 
     // D25: a pinned Conversation turn renders its own description, never the literal "Event <seq>".
@@ -206,7 +207,7 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
   }
 });
 
-test("a phone thread trap skips a held composer's disabled controls @phone", async ({
+test("a phone sheet trap wraps Tab from its last control to its first past a held composer @phone", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -231,32 +232,32 @@ test("a phone thread trap skips a held composer's disabled controls @phone", asy
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(body).toBeDisabled();
 
-    const focused = await sheet.evaluate((container) => {
-      const controls = [
+    // The hold makes none of the composer's controls `disabled` - its fieldset is `aria-disabled`
+    // and its fields read-only - so the focus a reader has in it stays, and the last control the
+    // trap reaches can be one of the composer's own. The first control a reader can reach -
+    // enabled and on screen - is marked before the key, and the focus starts on the last.
+    await expect(form.locator(":disabled")).toHaveCount(0);
+    const startedOnLast = await sheet.evaluate((container) => {
+      const enabled = [
         ...container.querySelectorAll<HTMLElement>(
           'a[href], button, textarea, input, select, [tabindex]:not([tabindex="-1"])'
         ),
-      ];
-      const last = controls.filter((control) => !control.matches(":disabled")).at(-1);
-      if (last === undefined) throw new Error("expected an enabled focus target");
+      ].filter((control) => !control.matches(":disabled") && control.getClientRects().length > 0);
+      const first = enabled[0];
+      const last = enabled.at(-1);
+      if (first === undefined || last === undefined || first === last)
+        throw new Error("expected two enabled focus targets");
+      first.dataset.e2eFirstControl = "";
       last.focus();
-      return {
-        focused: document.activeElement === last,
-        hasDisabledControlAfter: controls
-          .slice(controls.indexOf(last) + 1)
-          .some((control) => control.matches(":disabled")),
-      };
+      return document.activeElement === last;
     });
-    expect(focused).toEqual({ focused: true, hasDisabledControlAfter: true });
+    expect(startedOnLast).toBe(true);
     await page.keyboard.press("Tab");
-    expect(await activeElementInside(page, '[data-testid="margin-sheet"]')).toBe(true);
     expect(
-      await sheet.evaluate(
-        (container) =>
-          document.activeElement instanceof HTMLElement &&
-          container.contains(document.activeElement) &&
-          !document.activeElement.matches(":disabled")
-      )
+      await page.evaluate(
+        () => document.activeElement?.hasAttribute("data-e2e-first-control") ?? false
+      ),
+      "Tab from the sheet's last control wraps to its first"
     ).toBe(true);
     refuse();
   } finally {
@@ -264,9 +265,9 @@ test("a phone thread trap skips a held composer's disabled controls @phone", asy
   }
 });
 
-// The wrap's other end. Shift+Tab from the sheet's first control goes to its last enabled one,
-// past the held composer's disabled controls, which a trap that read the `disabled` attribute
-// counted as the last and could not focus, leaving focus where it was.
+// The wrap's other end. Shift+Tab from the sheet's first control goes to its last one a reader
+// can reach, which a held composer leaves focusable: the hold makes none of its controls
+// `disabled`.
 test("a phone sheet trap wraps Shift+Tab from its first control past a held composer @phone", async ({
   browser,
 }) => {

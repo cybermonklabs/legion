@@ -1,7 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useRef } from "react";
 
 import { observeStrip } from "../hooks/observe-strip";
-import { useScrollFadeTrailing } from "../hooks/useScrollFadeTrailing";
 import {
   activeTabIndicatorBorder,
   activeTabIndicatorText,
@@ -10,6 +9,7 @@ import {
   textSecondaryOnCanvas,
 } from "../theme/classes";
 import { Pill } from "./Pill";
+import { useScrollEnds } from "./useScrollEnds";
 
 export interface TabDefinition<Id extends string> {
   id: Id;
@@ -76,7 +76,7 @@ export function Tabs<Id extends string>({
 }): ReactNode {
   const tabRefs = useRef<Partial<Record<Id, HTMLButtonElement | null>>>({});
   const pointerCapturedScroll = useRef(false);
-  const tablistFade = useScrollFadeTrailing();
+  const tablistFade = useScrollEnds({ ends: "trailing" });
 
   const selectTab = (tab: Id) => {
     if (!pointerCapturedScroll.current) {

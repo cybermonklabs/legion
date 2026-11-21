@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 
 import { realClock, settle } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { pickFromLabelled } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
@@ -141,7 +142,7 @@ test("naming a project's daemon sends the PUT and lists what the server stored",
   spies.push(putLegionDaemon);
   const section = await renderSection(server);
 
-  await user.selectOptions(await section.findByLabelText("Legion project"), "ACME");
+  await pickFromLabelled(user, "Legion project", "ACME · ACME");
   await user.click(section.getByLabelText("Legion daemon state URL"));
   await user.paste("http://127.0.0.1:9731");
   await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
@@ -181,7 +182,7 @@ test("a refusal the server made is shown as the server wrote it, and the row goe
   spies.push(putLegionDaemon);
   const section = await renderSection(server);
 
-  await user.selectOptions(await section.findByLabelText("Legion project"), "ACME");
+  await pickFromLabelled(user, "Legion project", "ACME · ACME");
   await user.click(section.getByLabelText("Legion daemon state URL"));
   await user.paste("http://127.0.0.1:9731");
   await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
@@ -204,7 +205,7 @@ test("a URL with a path is refused by the field, in the words the route uses", a
   spies.push(putLegionDaemon);
   const section = await renderSection(server);
 
-  await user.selectOptions(await section.findByLabelText("Legion project"), "ACME");
+  await pickFromLabelled(user, "Legion project", "ACME · ACME");
   await user.click(section.getByLabelText("Legion daemon state URL"));
   await user.paste("http://127.0.0.1:9731/legion/v1/state");
   await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
@@ -217,9 +218,37 @@ test("a URL with a path is refused by the field, in the words the route uses", a
   expect(putLegionDaemon).not.toHaveBeenCalled();
 });
 
+// The Legion project list is a button, which no `required` holds as the select it replaced held
+// the form: with no project picked the form files nothing and says to choose one, as the browser
+// said for the select, until a project is picked.
+test("with no project picked, Save Legion daemon files nothing and says to choose a project", async () => {
+  const user = userEvent.setup();
+  const server = legionServer([]);
+  const putLegionDaemon = spyOn(api, "putLegionDaemon").mockImplementation(server.put);
+  spies.push(putLegionDaemon);
+  const section = await renderSection(server);
+
+  expect(await section.findByLabelText("Legion project")).toHaveTextContent("Choose a project");
+  await user.click(section.getByLabelText("Legion daemon state URL"));
+  await user.paste("http://127.0.0.1:9731");
+  await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
+  await act(async () => {});
+  expect(putLegionDaemon, "a daemon was saved for no project").not.toHaveBeenCalled();
+  expect(section.getByRole("alert")).toHaveTextContent("Choose a project.");
+
+  await pickFromLabelled(user, "Legion project", "ACME · ACME");
+  expect(section.queryByRole("alert")).toBeNull();
+  await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
+  await waitFor(() =>
+    expect(putLegionDaemon).toHaveBeenLastCalledWith("ACME", "http://127.0.0.1:9731", keyedAttempt)
+  );
+  expect(putLegionDaemon).toHaveBeenCalledTimes(1);
+});
+
 // A daemon's save the reader stopped may have been made: the section says so, and that its Retry
-// sends the same `PUT` again, which is the same however often it is made. The section is drawn on
-// the real clock, so every read it makes has answered before the clock is held for the save.
+// sends the same `PUT` again, which is the same however often it is made. The section is drawn,
+// and its project picked, on the real clock, so every read it makes has answered before the clock
+// is held for the save.
 test("a daemon save the reader stopped says Retry sends it again, not that it failed", async () => {
   const putLegionDaemon = spyOn(api, "putLegionDaemon").mockRejectedValue(
     new NetworkError("/api/v1/projects/ACME/legion/daemon", new TypeError("Failed to fetch"))
@@ -227,12 +256,11 @@ test("a daemon save the reader stopped says Retry sends it again, not that it fa
   spies.push(putLegionDaemon);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const section = await renderSection(legionServer([]), true, queryClient);
-  const projectField = await section.findByLabelText("Legion project");
+  await pickFromLabelled(userEvent.setup(), "Legion project", "ACME · ACME");
 
   jest.useFakeTimers();
   try {
     const user = userOnFakeClock();
-    await user.selectOptions(projectField, "ACME");
     await user.click(section.getByLabelText("Legion daemon state URL"));
     await user.paste("http://127.0.0.1:9731");
     await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
@@ -367,7 +395,7 @@ function shownUrls(): (string | null)[] {
 /** Names `url` as ACME's daemon through the section's form, without pressing Save. */
 async function fillDaemonForm(url: string) {
   const user = userEvent.setup();
-  await user.selectOptions(screen.getByLabelText("Legion project"), "ACME");
+  await pickFromLabelled(user, "Legion project", "ACME · ACME");
   await user.click(screen.getByLabelText("Legion daemon state URL"));
   await user.paste(url);
 }
@@ -493,7 +521,7 @@ test("a read of a project out when its daemon's save is answered does not put ba
   const section = await renderSection(held.server, true, queryClient);
 
   await section.findByRole("cell", { name: "http://127.0.0.1:9731" });
-  await user.selectOptions(section.getByLabelText("Legion project"), "ACME");
+  await pickFromLabelled(user, "Legion project", "ACME · ACME");
   await user.click(section.getByLabelText("Legion daemon state URL"));
   await user.paste("https://daemon.example");
   await user.click(section.getByRole("button", { name: "Save Legion daemon" }));

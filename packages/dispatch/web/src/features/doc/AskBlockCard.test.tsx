@@ -491,12 +491,14 @@ test("the hosted card offers the options as the shared choice rows, plus Other, 
   }
 });
 
-test("Other opens the composer; the words are the answer and no option is recorded", async () => {
+test("Other opens the composer with the caret in it; the words are the answer and no option is recorded", async () => {
   answerAsk.mockResolvedValue({ ...ask, state: "answered" });
   const card = renderCard({ node: askNode({ urgency: "med" }) });
   try {
     await card.user.click(await card.footer.findByRole("radio", { name: "Other" }));
     const field = card.footer.getByLabelText("Your answer");
+    // The pick of Other is a move into the box its words go in (R17).
+    expect(field).toHaveFocus();
     const submit = card.footer.getByRole("button", { name: "Answer" });
     expect((submit as HTMLButtonElement).disabled).toBe(true);
     await card.user.click(field);
@@ -527,6 +529,7 @@ test("with multiple choice, Other sits beside the options and both are sent", as
     await card.user.click(ship);
     await card.user.click(card.footer.getByRole("checkbox", { name: "Other" }));
     expect(ship.checked).toBe(true);
+    expect(card.footer.getByLabelText("Your answer")).toHaveFocus();
     const submit = card.footer.getByRole("button", { name: "Answer" });
     // Other still needs words, even with an option ticked beside it.
     expect((submit as HTMLButtonElement).disabled).toBe(true);

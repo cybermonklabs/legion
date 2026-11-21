@@ -3,5 +3,5 @@ import { badgeLow, hoverToDangerText, secondaryButtonText } from "../../theme/cl
 /** The pill a session is listed in (subscribed agents, an ask's followers). */
 export const sessionChipClassName = `flex items-center gap-2 rounded-full px-3 py-1 text-sm ${badgeLow.bg} ${badgeLow.text}`;
 
-/** The chip's remove control, red on hover. */
-export const sessionRemoveButtonClassName = `font-medium ${secondaryButtonText} ${hoverToDangerText} disabled:cursor-not-allowed disabled:opacity-50`;
+/** The chip's remove control, red on hover; disabled, or held while its removal is out. */
+export const sessionRemoveButtonClassName = `font-medium ${secondaryButtonText} ${hoverToDangerText} refused:cursor-not-allowed refused:opacity-50`;

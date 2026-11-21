@@ -215,6 +215,38 @@ test("Dismiss on an expired row sends that record's dismissal and reads the list
   }
 });
 
+// Dismiss is held (`aria-disabled`), never disabled, from its press through the read of the list
+// that takes the row away: the dismissal's answer alone does not let it go, so it keeps the focus
+// and the press is still the cause of the row's going (`causedByReader`). Once that read settles
+// the button is let go.
+test("Dismiss stays held and keeps the focus after its dismissal lands, until the list is read again", async () => {
+  const user = userEvent.setup();
+  const dismiss = spyOn(api, "dismissCredentialRequest").mockResolvedValue(undefined);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const reread = Promise.withResolvers<void>();
+  const invalidate = spyOn(client, "invalidateQueries").mockReturnValue(reread.promise);
+  try {
+    renderSection({ requests: [expiredSecretRow()], status: "listed" }, client);
+    const button = screen.getByRole("button", {
+      name: "Dismiss expired secret request DEEL_API_KEY",
+    });
+    await user.click(button);
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["credential-pending"] })
+    );
+    expect(dismiss.mock.calls).toEqual([["req-9", keyedAttempt]]);
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).not.toBeDisabled();
+    expect(button).toHaveFocus();
+
+    await act(async () => reread.resolve());
+    await waitFor(() => expect(button).not.toHaveAttribute("aria-disabled"));
+    expect(button).toHaveFocus();
+  } finally {
+    dismiss.mockRestore();
+  }
+});
+
 // The broker's refusal is shown under the row it names, and the list is read again, since the
 // refusal says the list the page holds is not what the broker holds.
 test("a refused dismissal shows the broker's message and reads the list again", async () => {

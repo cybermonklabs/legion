@@ -58,7 +58,9 @@ import { MentionComposer } from "../conversation/MentionComposer";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { AgentName } from "../refs/AgentName";
 import { agentsQuery } from "../refs/agent-registry";
+import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { type DispatchReferenceRoute, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
@@ -66,6 +68,7 @@ import { threadLayout, unreadWrites } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { type RepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { AskCard } from "./AskCard";
+import { inboxActionMark } from "./inbox-action-mark";
 
 /** One message of a thread, whatever route it was read from. */
 interface ThreadTurn {
@@ -79,6 +82,10 @@ interface ThreadTurn {
   /** Drawn under the body: an Agent reply the session took as a turn of its live conversation
    *  says so there. */
   readonly note?: ReactNode;
+  /** The message's own reference, which its Copy reference copies: a comment's, under its issue
+   *  or its document, and an issue message's. A message to a session names no issue and has
+   *  none. */
+  readonly reference?: DispatchReferenceRoute;
 }
 
 /** The text a thread in a document is anchored to, which a card and the pane's fall-back show in
@@ -118,6 +125,7 @@ function ThreadTurnView({
         <span>
           <AgentName actor={turn.author} inline /> · <Timestamp at={turn.created_at} />
         </span>
+        {turn.reference === undefined ? null : <CopyRefButton route={turn.reference} />}
         {unread ? (
           <span
             className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase ${badgePrimary.bg} ${badgePrimary.text}`}
@@ -202,6 +210,7 @@ function ThreadTurns({
   const fold = (
     <EarlierReplies
       count={folded.length}
+      marks={inboxActionMark("inbox.earlier-replies")}
       onToggle={() => setShowEarlier(!showEarlier)}
       open={showEarlier}
       replies={(id) => (
@@ -325,8 +334,8 @@ function CommentThreadBody({
       (left, right) =>
         compareTimestamps(left.created_at, right.created_at) || left.id.localeCompare(right.id)
     )
-    .map(commentTurn);
-  const rootTurn = root === undefined ? undefined : commentTurn(root);
+    .map((comment) => commentTurn(comment, thread.document));
+  const rootTurn = root === undefined ? undefined : commentTurn(root, thread.document);
   return (
     <ThreadTurns
       composer={
@@ -366,17 +375,30 @@ function CommentThreadBody({
   );
 }
 
-function commentTurn(comment: CommentWithTrees): ThreadTurn {
+/** A comment as a turn, referenced under its issue, else under `document`, the project document
+ *  the thread is in. */
+function commentTurn(
+  comment: CommentWithTrees,
+  document: { project: string; slug: string } | undefined
+): ThreadTurn {
+  const reference = itemRoute("comment", comment, document);
   return {
     author: comment.author,
     body: comment.body,
     created_at: comment.created_at,
     id: comment.id,
     tree: comment.body_tree,
+    ...(reference === undefined ? {} : { reference }),
   };
 }
 
-function messageTurn(message: MessageWithTrees, note?: ReactNode): ThreadTurn {
+/** A message as a turn, referenced under `issueKey` where it is an issue's: a message to a
+ *  session names no issue. */
+function messageTurn(
+  message: MessageWithTrees,
+  issueKey: string | undefined,
+  note?: ReactNode
+): ThreadTurn {
   return {
     author: message.author,
     body: message.body,
@@ -384,6 +406,9 @@ function messageTurn(message: MessageWithTrees, note?: ReactNode): ThreadTurn {
     id: message.id,
     tree: message.body_tree,
     ...(note === undefined ? {} : { note }),
+    ...(issueKey === undefined
+      ? {}
+      : { reference: { id: message.id, key: issueKey, kind: "message" } as const }),
   };
 }
 
@@ -412,8 +437,8 @@ function MessageThreadBody({
   }
   const read = messages.data.find((candidate) => candidate.message.id === thread.thread_id);
   const root = read?.message;
-  const rootTurn = root === undefined ? undefined : messageTurn(root);
-  const replies = (read?.replies ?? []).map((message) => messageTurn(message));
+  const rootTurn = root === undefined ? undefined : messageTurn(root, issueKey);
+  const replies = (read?.replies ?? []).map((message) => messageTurn(message, issueKey));
   // A reply into a targeted thread is delivered as the thread's newest attempt was, which is how
   // the issue's Conversation addresses one.
   const last =
@@ -554,6 +579,7 @@ function AgentThreadBody({
   const turn = (message: MessageWithTrees): ThreadTurn =>
     messageTurn(
       message,
+      undefined,
       (message.deliveries ?? []).some((attempt) => attempt.accepted_as === "user_turn") ? (
         <AcceptedAsTurn sessionId={sessionId} />
       ) : undefined

@@ -21,6 +21,7 @@ import {
 import { artifactBlocksQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, AuthenticatedUser, Version } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
 import { copyText } from "../../lib/clipboard";
@@ -50,6 +51,7 @@ import {
 import { useMargin } from "../margin/margin-context";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { blockFragment } from "../refs/block-reference";
+import { useLinkOpener } from "../refs/link-open";
 import { watchPicturePath } from "../refs/reference-target";
 import {
   buildDispatchReference,
@@ -68,7 +70,7 @@ import type { AnchoredBlockHost } from "./ask-block";
 import { ChangeView } from "./ChangeView";
 import type { ConnectionState, DocumentConnection } from "./connection";
 import { colorForLogin } from "./connection";
-import { DocumentReferences, useReferenceClick } from "./document-references";
+import { DocumentReferences } from "./document-references";
 import type { EditorHandle, EditorOptions } from "./editor";
 import { bindRemoteMarks } from "./editor";
 import type { Highlight } from "./highlight";
@@ -258,6 +260,17 @@ function setSearchHighlights(root: HTMLElement, query: string): void {
   CSS.highlights.set("dispatch-search", new Highlight(...ranges));
 }
 
+/** The page editor's `keydown` handler of `handleDOMEvents`: true for a plain Escape, which
+ *  ProseMirror then leaves to the page (`leave-editor`); a press during an input method's
+ *  composition, or with a modifier, stays the editor's. */
+function plainEscape(_view: EditorHandle["view"], event: KeyboardEvent): boolean {
+  return (
+    event.key === "Escape" &&
+    !event.isComposing &&
+    !(event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)
+  );
+}
+
 export function ProofDocument({
   anchoredThread,
   artifact,
@@ -276,6 +289,8 @@ export function ProofDocument({
   version,
 }: ProofDocumentProps): ReactNode {
   const root = useRef<HTMLDivElement>(null);
+  /** The document's frame, which Escape in the editor gives the focus to (`leave-editor`). */
+  const article = useRef<HTMLElement>(null);
   const editorRef = useRef<EditorHandle | undefined>(undefined);
   // The handle this document's references are drawn through, beside the ref the callbacks reach
   // it by: the titles are a render of their own, so the surface that draws them re-renders with
@@ -327,7 +342,10 @@ export function ProofDocument({
   // Where a `#id` in this document's text resolves: this document, whose question blocks
   // declare the asks it names (`refs.ScopeOf` of a document version is the document).
   const textSource = useMemo(() => textSourceOf("artifact", artifact.id), [artifact.id]);
-  const followReference = useReferenceClick();
+  // The page's link opener, which the editor calls for a click on one of its links and for
+  // Alt+Enter (`features/refs/link-open.ts`). It is one function for the life of this view and
+  // follows the router's latest `navigate`, so the editor, which reads its options once, holds it.
+  const openLink = useLinkOpener();
   // The address's fragment as the dashboard's own navigation leaves it: a click on a link to a
   // block of this document changes it in place, firing no event of the browser's own.
   const { hash: routedHash } = useLocation();
@@ -624,20 +642,47 @@ export function ProofDocument({
   // document is its own scope, since the issue page and a project's document page both render
   // one. A pane pushes no scope and registers no binding: the scope stack belongs to the page the
   // reader is on, and a pane's editor takes no edits, so it would never offer Comment.
+  // Alt+Enter, Google Docs' key for the link at the caret, opens the link or the reference title
+  // the caret is in or beside, as a click does, and changes no text: a link in a document the
+  // reader edits opens on a click, so this is how a writer opens one from the keyboard. A view
+  // the reader cannot edit puts its links in the tab order instead, and Enter opens the focused
+  // one.
   useKeymapScope(page ? "document" : null);
   useKeymap(
     "document",
     page
       ? [
           {
-            id: "comment-on-selection",
-            inEditable: true,
-            keys: "$mod+Alt+m",
-            label: "Comment on selection",
+            action: "document.comment-on-selection",
             run: () => editorRef.current?.commentOnSelection(),
             when: () => {
               const view = editorRef.current?.view;
               return view?.editable === true && view.hasFocus() && !view.state.selection.empty;
+            },
+          },
+          {
+            action: "document.open-link",
+            run: () => editorRef.current?.openLinkAtCaret(),
+            when: () => {
+              const editor = editorRef.current;
+              return (
+                editor?.view.editable === true &&
+                editor.view.hasFocus() &&
+                editor.linkAtCaret() !== null
+              );
+            },
+          },
+          {
+            // Escape takes the focus out of the editor the reader edits, onto the document's own
+            // frame, so the page's keys work again; the next Tab goes back into the editor, where
+            // ProseMirror kept the caret. The editor leaves the press to the page (`plainEscape`):
+            // the page editor runs in margin mode, which installs no mark popover, so no menu of
+            // the editor's own takes Escape.
+            action: "document.leave-editor",
+            run: () => article.current?.focus({ preventScroll: true }),
+            when: () => {
+              const view = editorRef.current?.view;
+              return view?.editable === true && view.hasFocus();
             },
           },
         ]
@@ -759,6 +804,10 @@ export function ProofDocument({
         setSearchHighlights(handle.view.dom, highlightTermRef.current);
         marginRef.current.registerDocument({
           artifactId: artifact.id,
+          // The margin calls it a frame after a comment ends, by when this editor may be gone.
+          focus: () => {
+            if (bound) handle.view.focus();
+          },
           focusBlock: (blockId) => {
             requestAnimationFrame(() => {
               if (bound) focusInEditor(() => handle.focusBlock(blockId));
@@ -775,6 +824,16 @@ export function ProofDocument({
           setActiveBlocks: (blockIds) => handle.setActiveBlocks(blockIds),
           setActiveMarks: (markIds) => handle.setActiveMarks(markIds),
           whenSent,
+        });
+      }
+      // ProseMirror's base keymap binds Escape to "select the parent node", which claims the press
+      // before the page's registry reads it; on the page, Escape takes the focus out of the editor
+      // (`leave-editor`). A `handleDOMEvents` handler that answers true leaves the event to the
+      // page: ProseMirror neither handles it nor prevents its default. The editor's own direct
+      // handlers stay beside it (`ask-content.ts` in the editor library sets them).
+      if (page) {
+        handle.view.setProps({
+          handleDOMEvents: { ...handle.view.props.handleDOMEvents, keydown: plainEscape },
         });
       }
       const unbindRemoteMarks = bindRemoteMarks(connection.doc, handle);
@@ -989,6 +1048,7 @@ export function ProofDocument({
                 },
                 onMarkClick: (markId) => marginRef.current.focusItemForMark(markId),
                 onMarkHover: (markId) => marginRef.current.hoverItemForMark(markId),
+                openLink,
                 // A pane takes no edits and no comments: a reader who clicks into the text from a
                 // list never changes the document they are reading.
                 access: editorAccess(page, isClosedRef.current, schemaReadOnlyRef.current),
@@ -1048,6 +1108,7 @@ export function ProofDocument({
     focusInEditor,
     followBlockHash,
     loadTransport,
+    openLink,
     page,
     pendingWaiter,
     queryClient,
@@ -1133,14 +1194,11 @@ export function ProofDocument({
             version.
           </p>
           <button
-            // Inside `NoTooltips` the button keeps its focus while it rebuilds: it is
-            // `aria-disabled` then, in place of `disabled`, and a press does nothing. Outside it
-            // is `disabled` while it rebuilds, as on `main`.
-            aria-disabled={(!tooltips && rebuild.isPending) || undefined}
+            // The button keeps its focus while it rebuilds, on both sides of `NoTooltips`: it is
+            // held then (`heldPress`), `aria-disabled` in place of `disabled`, and a press does
+            // nothing.
             className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${tooltips ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : controlOnPage}`}
-            disabled={tooltips && rebuild.isPending}
-            onClick={() => {
-              if (rebuild.isPending) return;
+            {...heldPress(rebuild.isPending, () => {
               if (
                 window.confirm(
                   "Rebuild this document from its latest version? This discards its unreadable history."
@@ -1148,7 +1206,7 @@ export function ProofDocument({
               ) {
                 rebuild.mutate();
               }
-            }}
+            })}
             type="button"
           >
             {rebuild.isPending ? "Rebuilding…" : "Rebuild from the latest version"}
@@ -1236,14 +1294,15 @@ export function ProofDocument({
           This document could not load: {shownLoadError}
         </p>
       )}
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: dispatch:// link clicks bubble here; the
-      editor already handles keyboard activation of its own links. */}
+      {/* The page's document takes the focus Escape gives it out of the editor (`leave-editor`),
+          which no Tab reaches; a pane's takes none, since its editor takes no edits. */}
       <article
         aria-label="Document"
-        className="dispatch-doc relative"
+        className="dispatch-doc relative outline-none"
         data-read-only={isClosed || schemaReadOnly}
         hidden={version !== undefined || admissionHidesEditor}
-        onClick={followReference}
+        ref={article}
+        tabIndex={page ? -1 : undefined}
       >
         <div ref={root} />
         {anchoredThread === undefined || anchoredHost === undefined
@@ -1272,27 +1331,32 @@ export function ProofDocument({
             aria-label="Block references"
             className="pointer-events-none absolute top-0 right-0 z-10 w-8"
           >
-            {blockReferencesQuery.data
-              .filter((block) => block.references.comments + block.references.asks > 0)
-              .map((block) => {
-                const count = block.references.comments + block.references.asks;
-                return (
-                  <button
-                    aria-label={`${count} references on block`}
-                    className={`pointer-events-auto absolute right-0 min-h-11 min-w-11 rounded-full text-xs font-semibold ${countChip}`}
-                    data-block-references={block.id}
-                    key={block.id}
-                    onClick={() => {
-                      marginRef.current.filterToBlock(block.id);
-                      focusInEditor(() => editorRef.current?.focusBlock(block.id));
-                    }}
-                    style={{ top: `${blockPlacements.get(block.id)?.top ?? 0}px` }}
-                    type="button"
-                  >
-                    {count}
-                  </button>
-                );
-              })}
+            {/* One item per block, each button placed against the aside at its block's height:
+                the items are static, so the aside stays the box each button is placed in. */}
+            <ul>
+              {blockReferencesQuery.data
+                .filter((block) => block.references.comments + block.references.asks > 0)
+                .map((block) => {
+                  const count = block.references.comments + block.references.asks;
+                  return (
+                    <li key={block.id}>
+                      <button
+                        aria-label={`${count} references on block`}
+                        className={`pointer-events-auto absolute right-0 min-h-11 min-w-11 rounded-full text-xs font-semibold ${countChip}`}
+                        data-block-references={block.id}
+                        onClick={() => {
+                          marginRef.current.filterToBlock(block.id);
+                          focusInEditor(() => editorRef.current?.focusBlock(block.id));
+                        }}
+                        style={{ top: `${blockPlacements.get(block.id)?.top ?? 0}px` }}
+                        type="button"
+                      >
+                        {count}
+                      </button>
+                    </li>
+                  );
+                })}
+            </ul>
           </aside>
         ) : null}
       </article>

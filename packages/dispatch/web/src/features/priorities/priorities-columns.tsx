@@ -65,6 +65,7 @@ function OrderCell({ actions, item }: { actions: PriorityRowActions; item: Prior
       ) : null}
       <Link
         className={`font-semibold tabular-nums ${linkText} ${linkHoverText}`}
+        data-priority-link
         to={priorityPath(item.priority.id)}
       >
         {item.order}

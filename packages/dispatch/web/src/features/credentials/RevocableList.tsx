@@ -2,7 +2,17 @@ import type { UseQueryResult } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import type { WriteBounds } from "../../api/client";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
+import {
+  TableBody,
+  TableCell,
+  TableEmpty,
+  TableHead,
+  TableHeadCell,
+  TableRow,
+  TableShell,
+} from "../../components/TableShell";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   dangerText,
@@ -14,11 +24,8 @@ import {
   textMutedOnCanvas,
   textMutedOnSurface,
   textPrimaryOnCanvas,
-  textPrimaryOnSurface,
   textSecondaryOnCanvas,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
-import { settingsTableWrapper } from "../settings/classes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { refusedNote, useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
 
@@ -37,12 +44,12 @@ export interface RevocableColumn<Row> {
  * revoke was of (`rowName`), and it goes once that row leaves the list - revoked elsewhere, or
  * expired - rather than stand under rows it was never about. Each section hands over its own
  * query, columns and revoke call, and `confirm` when a revoke asks first; the list owns the one
- * revoke in flight: every Revoke button is disabled while it is pending, and the submit guard
- * drops a second press that lands before that re-render (a same-tick double click). `onRevoked`
- * runs once a revoke succeeds, for the section to refresh what it changed. A section may also list
- * rows the broker lets nobody revoke: `unrevocable` names why for such a row, which is then
- * read-only, with that line where its button would be, so the page offers no button that can only
- * fail.
+ * revoke in flight: every Revoke button is held while it is pending (`heldPress`), and the submit
+ * guard drops a second press that lands before that re-render (a same-tick double click).
+ * `onRevoked` runs once a revoke succeeds, for the section to refresh what it changed. A section
+ * may also list rows the broker lets nobody revoke: `unrevocable` names why for such a row, which
+ * is then read-only, with that line where its button would be, so the page offers no button that
+ * can only fail.
  */
 export function RevocableList<Row>({
   className,
@@ -120,64 +127,50 @@ export function RevocableList<Row>({
         </div>
       ) : null}
       {query.isSuccess ? (
-        <div className={settingsTableWrapper}>
-          <table className="w-full text-left text-sm">
-            <thead className={`border-b ${textSecondaryOnSurface}`}>
-              <tr>
-                {columns.map((column) => (
-                  <th className="px-4 py-3 font-semibold" key={column.header} scope="col">
-                    {column.header}
-                  </th>
-                ))}
-                <th className="px-4 py-3" scope="col">
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {query.data.length === 0 ? (
-                <tr>
-                  <td className={`px-4 py-5 ${textMutedOnSurface}`} colSpan={columns.length + 1}>
-                    {empty}
-                  </td>
-                </tr>
-              ) : (
-                query.data.map((row) => (
-                  <tr className="border-b last:border-0" key={rowKey(row)}>
-                    {columns.map((column, index) => (
-                      <td
-                        className={
-                          index === 0
-                            ? `px-4 py-3 font-medium ${textPrimaryOnSurface}`
-                            : `px-4 py-3 ${textSecondaryOnSurface}`
-                        }
-                        key={column.header}
+        <TableShell className="mt-6" label={heading}>
+          <TableHead>
+            {columns.map((column) => (
+              <TableHeadCell key={column.header}>{column.header}</TableHeadCell>
+            ))}
+            <TableHeadCell>
+              <span className="sr-only">Actions</span>
+            </TableHeadCell>
+          </TableHead>
+          <TableBody>
+            {query.data.length === 0 ? (
+              <TableEmpty colSpan={columns.length + 1}>{empty}</TableEmpty>
+            ) : (
+              query.data.map((row) => (
+                <TableRow key={rowKey(row)}>
+                  {columns.map((column, index) => (
+                    <TableCell
+                      key={column.header}
+                      tone={index === 0 ? "primary" : "secondary"}
+                      weight={index === 0 ? "medium" : "normal"}
+                    >
+                      {column.cell(row)}
+                    </TableCell>
+                  ))}
+                  <TableCell align="right">
+                    {unrevocable?.(row) ? (
+                      <span className={`text-xs whitespace-nowrap ${textMutedOnSurface}`}>
+                        {unrevocable(row)}
+                      </span>
+                    ) : (
+                      <button
+                        className={`min-h-11 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap refused:cursor-not-allowed refused:opacity-50 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText} ${hoverToDangerText}`}
+                        {...heldPress(mutation.isPending, () => press(row))}
+                        type="button"
                       >
-                        {column.cell(row)}
-                      </td>
-                    ))}
-                    <td className="px-4 py-3 text-right">
-                      {unrevocable?.(row) ? (
-                        <span className={`text-xs whitespace-nowrap ${textMutedOnSurface}`}>
-                          {unrevocable(row)}
-                        </span>
-                      ) : (
-                        <button
-                          className={`min-h-11 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-50 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText} ${hoverToDangerText}`}
-                          disabled={mutation.isPending}
-                          onClick={() => press(row)}
-                          type="button"
-                        >
-                          Revoke
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                        Revoke
+                      </button>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </TableShell>
       ) : null}
       {/* A revoke the reader stopped may have been made, and Revoke is a press of its own, under
           a key of its own: it never makes the stopped revoke again. */}

@@ -19,6 +19,7 @@ import { createElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, settle } from "../../__tests__/fake-clock";
+import { pickNamed } from "../../__tests__/list-picks";
 import { renderWithQueries } from "../../__tests__/query-provider";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -382,8 +383,12 @@ test("the four control names are main's", async () => {
   );
   try {
     const scope = within(view.container);
-    expect(scope.getByRole("combobox", { name: "Assignee of CORE-1" })).toBeInTheDocument();
-    expect(scope.getByRole("combobox", { name: "Repository of CORE-1" })).toBeInTheDocument();
+    expect(
+      scope.getByRole("button", { name: pickNamed("Assignee of CORE-1") })
+    ).toBeInTheDocument();
+    expect(
+      scope.getByRole("button", { name: pickNamed("Repository of CORE-1") })
+    ).toBeInTheDocument();
     expect(
       await scope.findByRole("button", { name: "Edit components of CORE-1" })
     ).toBeInTheDocument();
@@ -815,7 +820,7 @@ function entryOf(view: RenderResult, step: string): HTMLElement {
 
 /** Records the reader's every review as Dispatch answers an approval of `artifactId`. */
 function answerReviews(artifactId: string) {
-  return spyOn(api, "createArtifactReview").mockResolvedValue({
+  return spyOn(api, "createArtifactVersionReview").mockResolvedValue({
     actor: { id: "alice", kind: "user" },
     artifact_id: artifactId,
     ask_id: null,
@@ -886,7 +891,8 @@ test("ApprovalSteps draws Approve and Request changes on each entry of actionsOn
       );
       await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
       expect(createArtifactReview.mock.calls[0]?.[0]).toBe(VERIFICATION_ID);
-      expect(createArtifactReview.mock.calls[0]?.[1]).toEqual({ state: "approved" });
+      expect(createArtifactReview.mock.calls[0]?.[1]).toBe(1);
+      expect(createArtifactReview.mock.calls[0]?.[2]).toEqual({ state: "approved" });
     } finally {
       waitingOnReader.unmount();
     }
@@ -969,7 +975,8 @@ test("ApprovalSteps names each document's actions when actionsOn holds two docum
       );
       await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
       expect(createArtifactReview.mock.calls[0]?.[0]).toBe(VERIFICATION_ID);
-      expect(createArtifactReview.mock.calls[0]?.[1]).toEqual({ state: "approved" });
+      expect(createArtifactReview.mock.calls[0]?.[1]).toBe(1);
+      expect(createArtifactReview.mock.calls[0]?.[2]).toEqual({ state: "approved" });
     } finally {
       undraw(both);
     }

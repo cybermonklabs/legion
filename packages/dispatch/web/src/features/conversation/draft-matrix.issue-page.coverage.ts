@@ -56,6 +56,11 @@ export const coverage: readonly CoverageEntry[] = [
     cells("docked composer · issue left, then back"),
     cells("phone thread · issue left, then back")
   ),
+  ...answers(
+    'IssueDetail | ConversationTab | address prop | visible={activeTab === "conversation"}',
+    cells("docked composer · another tab, then back"),
+    cells("phone thread · another tab, then back")
+  ),
   ...answers("IssueDetail | ConversationTab | address prop | state={state.data}", {
     reason: REASONS[4],
   }),

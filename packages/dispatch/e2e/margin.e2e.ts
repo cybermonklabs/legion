@@ -365,6 +365,11 @@ test("accepting a suggestion changes the text in both browsers and names a versi
     const acceptComposer = bobPage.getByRole("form", { name: "Comment composer" });
     await acceptComposer.getByLabel("Replacement").fill("red");
     await acceptComposer.getByRole("button", { exact: true, name: "Send" }).click();
+    // A sent suggestion puts Bob's caret back in the document, where Alice's editor draws it with
+    // his name among the words it reads; Escape takes his focus out of the editor again.
+    await expect(bobEditor).toBeFocused();
+    await bobPage.keyboard.press("Escape");
+    await expect(bobEditor).not.toBeFocused();
     const accepted = await commentWithBody(issue.key, artifactId, "Suggested replacement.");
     if (accepted.anchor === null) {
       throw new Error("The accepted suggestion has no anchor.");
@@ -416,6 +421,9 @@ test("accepting a suggestion changes the text in both browsers and names a versi
     await rejectComposer.getByLabel("Replacement").fill("slow");
     const submitSuggestion = rejectComposer.getByRole("button", { exact: true, name: "Send" });
     await submitSuggestion.click();
+    await expect(bobEditor).toBeFocused();
+    await bobPage.keyboard.press("Escape");
+    await expect(bobEditor).not.toBeFocused();
     await expect
       .poll(() =>
         listComments(issue.key, artifactId).then((items) =>

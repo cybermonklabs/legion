@@ -2,16 +2,16 @@
  * What the reader marked in the Inbox, and the two bulk writes the bar presses on it: the one
  * Snooze over the asks among the marks, and the one Dismiss over the threads.
  *
- * The state lives here rather than in `BulkBar` because either write can take every marked row
+ * The state lives here rather than in the bar because either write can take every marked row
  * off the view at once: a bar that owned the write would be unmounted before its own refusal
- * arrived. The bar reports one press downward and renders what it is told.
+ * arrived. The bar (`SelectionBar`) reports one press downward and renders what it is told.
  */
 
 import { type RefObject, useCallback, useRef, useState } from "react";
 
 import { useMarkedKeys } from "../../hooks/useMarkedKeys";
 import { stoppedWriteNote } from "../writes/keyed-write";
-import type { InboxFilters } from "./InboxBar";
+import type { InboxFilters } from "./grouping";
 import { type InboxListRow, rowId } from "./list-row";
 import { type AskSnoozeFailure, useAskSnoozeMany } from "./useAskSnooze";
 import {
@@ -61,9 +61,9 @@ export interface InboxSelection {
   /** Whether the reader pressed **Select all**, which takes in every row the narrowing matches,
    *  the ones a fold or a page is holding back included. The bar says so instead of counting. */
   readonly allRows: boolean;
-  /** The bar's own element, which the keymap reaches through this: Escape from the bulk picker
-   *  focuses the bar itself when a press has left no row to return to. */
-  readonly barRef: RefObject<HTMLFieldSetElement | null>;
+  /** The bar's own element, which the keymap reaches through this: `b` and `h` press the bar's
+   *  Snooze menu while rows are marked. */
+  readonly barRef: RefObject<HTMLElement | null>;
   /** Whether the bar shows: a mark is on the page, a pick is in the air, or a refusal is
    *  standing. Escape with no row focused is the keyboard's Clear and is offered on exactly this,
    *  so the two cannot drift. */
@@ -80,6 +80,9 @@ export interface InboxSelection {
   readonly dismissRows: (rows: readonly InboxDismissRow[]) => void;
   /** The one dismiss write this list shares, for what it is doing and what it was refused. */
   readonly dismissWrite: InboxDismiss;
+  /** The row the reader marked last, by `rowId`, or null before their first mark: the row whose
+   *  checkbox takes the focus when the bar goes with it (`SelectionBar`'s `returnFocus`). */
+  readonly lastMarked: () => string | null;
   /** Every row the reader has marked, by `rowId`, a folded one's included. */
   readonly marked: ReadonlySet<string>;
   readonly onMark: (id: string) => void;
@@ -89,7 +92,9 @@ export interface InboxSelection {
   /** The thread rows a **Dismiss** press names, each with what the page drew in it, which is
    *  what the bar counts for that press. */
   readonly selectedThreads: readonly InboxDismissRow[];
-  readonly snoozePick: (until: string) => void;
+  /** One pick over the marked asks the view is drawing; resolves with the ids the server took,
+   *  once the whole pick has settled. */
+  readonly snoozePick: (until: string) => Promise<readonly string[]>;
   /** What the reader is told about the last bulk snooze the server refused in part. */
   readonly snoozeRefusal: string | undefined;
   /** How many asks the snooze now in flight covers, 0 when none is: the optimistic fold empties
@@ -150,7 +155,7 @@ export function useInboxSelection({
   const [allRows, setAllRows] = useState(false);
   const bulkWrite = useAskSnoozeMany();
   const [snoozing, setSnoozing] = useState(0);
-  const barRef = useRef<HTMLFieldSetElement>(null);
+  const barRef = useRef<HTMLElement>(null);
   const [snoozeRefusal, setSnoozeRefusal] = useState<string | undefined>(undefined);
   /** The rows the reader has pressed Dismiss on here, by `rowId`, while that press is out: the
    *  list's hand-hold skips them, so a row they dismissed leaves the list at once even with their
@@ -171,8 +176,14 @@ export function useInboxSelection({
     setAllRows(false);
     setSnoozeRefusal(undefined);
   }, [setMarked]);
+  // The marks as this render drew them, so a mark tells a row being marked from one being
+  // unmarked while `onMark` stays as stable as `useMarkedKeys` makes it.
+  const markedNow = useRef(marked);
+  markedNow.current = marked;
+  const lastMarkedId = useRef<string | null>(null);
   const onMark = useCallback(
     (id: string) => {
+      if (!markedNow.current.has(id)) lastMarkedId.current = id;
       setAllRows(false);
       toggleMark(id);
     },
@@ -198,16 +209,18 @@ export function useInboxSelection({
     const ids = [...selectedAsks];
     setSnoozeRefusal(undefined);
     setSnoozing(ids.length);
-    void bulkWrite.submit(ids, until).then(({ failed }) => {
+    return bulkWrite.submit(ids, until).then(({ failed }) => {
       setSnoozing(0);
       setSnoozeRefusal(snoozeRefusalText(failed, ids.length));
       const refused = new Set(failed.map(({ askId }) => askId));
-      const taken = new Set(ids.filter((id) => !refused.has(id)));
+      const taken = ids.filter((id) => !refused.has(id));
+      const takenIds = new Set(taken);
       setMarked((current) => {
-        const next = new Set([...current].filter((id) => !taken.has(id)));
+        const next = new Set([...current].filter((id) => !takenIds.has(id)));
         for (const id of refused) next.add(id);
         return next;
       });
+      return taken;
     });
   };
   /** One press of the reader's, from a row's own control, from `e`, or from the bar: the ids go
@@ -245,6 +258,7 @@ export function useInboxSelection({
     dismissPick,
     dismissRows,
     dismissWrite,
+    lastMarked: () => lastMarkedId.current,
     marked,
     onMark,
     selectAll: () => {

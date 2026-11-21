@@ -19,6 +19,7 @@ import type {
 } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
+import { heldField, heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
@@ -79,7 +80,7 @@ import {
   OrphanedAnchorNotice,
 } from "./AskCompletionCard";
 import { AskHandOn } from "./AskHandOn";
-import { AskChoiceRow } from "./AskOptionRow";
+import { type AskApprovalAction, AskChoiceRow } from "./AskOptionRow";
 import { AskRecipients } from "./AskRecipients";
 import { AskThread, UnsentBox } from "./AskThread";
 import { AskThreadDisclosure } from "./AskThreadDisclosure";
@@ -88,6 +89,8 @@ import { askTurnHolder } from "./ask-turn";
 import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
 import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
+import { inboxActionMark } from "./inbox-action-mark";
+import { useOptionDigits } from "./option-digits";
 import { useAskAnswerForm } from "./useAskAnswerForm";
 
 const answerAsk = (id: string, input: AnswerAskInput, bounds: WriteBounds): Promise<Ask> =>
@@ -165,6 +168,14 @@ const URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
   med: badgeMed.text,
 };
 
+/** The mark of each of an approval request's two options, by its label: the labels are the
+ *  server's own (`docs.ApprovalOptionApprove`, `docs.ApprovalOptionRequestChanges`), and the
+ *  Inbox's `a` and Shift+R find the inputs by the mark (`data-ask-approval`). */
+const APPROVAL_ACTIONS: Readonly<Record<string, AskApprovalAction>> = {
+  Approve: "approve",
+  "Request changes": "request-changes",
+};
+
 /** What the unsent answer's box says, on today's pages and inside `NoTooltips` alike. */
 const UNSENT_ANSWER_WHY =
   "This question closed before you sent your answer, so it was not sent. Your text is here to copy.";
@@ -218,21 +229,31 @@ const PAGE_URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
   med: "text-page-question",
 };
 
-/** Moves focus from inside the form to the nearest focusable ancestor (in the Inbox, the row, so
- *  j/k/Escape still start from the same place) instead of letting it fall to the document body. */
+/** Moves focus from inside the form to the form's nearest focusable ancestor instead of letting
+ *  it fall to the document body, so the Inbox's keys (j, k, Enter and Escape by default) still
+ *  start from the same place: whoever caused the loss, and with no scroll. In the Inbox's list
+ *  layout that ancestor is the ask's own row, the reader's own place, so the focus goes to no
+ *  other row; a row whose ask was answered or withdrawn elsewhere stays in the list, with the
+ *  card's closed state, while it holds the focus. In the reading column it is the column's own
+ *  focus stop. The Inbox's keys answer from either. Where the loss is the reader's own answer
+ *  landing, the Inbox then hands them on to the item after it while they have not moved on (R8,
+ *  `pane-selection.ts`'s `landHandOff`), whose focus effect runs after every commit, so its
+ *  target wins over this hand-off and over the rescue. */
 function handOffFocus(form: HTMLElement): void {
   if (!form.contains(document.activeElement)) return;
   form.parentElement?.closest<HTMLElement>("[tabindex]")?.focus({ preventScroll: true });
 }
 
-/** The form's callback ref. When the form leaves while a control inside it has focus - the ask
- *  was answered or resolved elsewhere and the card swaps to its record - focus is handed off
- *  without any event; React detaches a ref before removing its node, so the form is still in the
- *  document when this cleanup runs. The form is also kept in `formRef` for the disabled-control
- *  hand-off below: in the compact variant the answer field is unmounted while its disclosure is
- *  closed, so the field's `.form` is not a reliable way to reach it. The callback must be stable
- *  across renders: React re-runs a changed callback ref's cleanup on every commit, and that
- *  cleanup moves focus. */
+/** The form's callback ref. When the form leaves while a control inside it has focus - the card
+ *  swapping to its record once the ask is answered, or resolved elsewhere - its cleanup runs the
+ *  hand-off without any event, which moves the focus to the form's nearest focusable ancestor,
+ *  the list layout's row or the reading column's focus stop, with no scroll (`handOffFocus`);
+ *  React detaches a ref before removing its node, so the form is still in the document when this
+ *  cleanup runs. The form is also kept in `formRef` for the disabled-control hand-off below: in
+ *  the compact variant the answer field is unmounted while its disclosure is closed, so the
+ *  field's `.form` is not a reliable way to reach it. The callback must be stable across renders:
+ *  React re-runs a changed callback ref's cleanup on every commit, and that cleanup can move
+ *  focus. */
 function useFormRef(): [
   { current: HTMLFormElement | null },
   (form: HTMLFormElement | null) => (() => void) | undefined,
@@ -283,6 +304,7 @@ export function AskCard({
     clarification,
     completed,
     displayedAsk,
+    dropReasonPick,
     edits,
     isApproval,
     isSubmitting,
@@ -366,8 +388,8 @@ export function AskCard({
     }
   }, [reasonFieldShown]);
   // Opening the disclosure is a move into the field it reveals, whoever opened it: the reader's
-  // own click, and the Inbox's Enter, which presses this same control (`Inbox.tsx`). The field
-  // is drawn by the render the press schedules, so the focus can only be this effect's - the
+  // own click, and the Inbox's Enter, which presses this same control (`useInboxKeymap.ts`). The
+  // field is drawn by the render the press schedules, so the focus can only be this effect's - the
   // opener runs before React has committed the box and would focus nothing. Only an open by the
   // disclosure itself focuses, which is why the intent is recorded as the control is pressed: an
   // option that opens the disclosure for its own words, and a change that seeds the note, leave
@@ -380,10 +402,26 @@ export function AskCard({
       answerFieldRef.current?.focus();
     }
   }, [ownWordsOpen]);
-  // A control that disables itself under the reader's focus - Ask back while sending and once
-  // its text is sent - would have the browser drop focus to the document body (in the Inbox, out
-  // of the row, which then lets the row go) with nothing the card could act on afterwards; the
-  // same hand-off as a vanishing form, in the commit that disables it, before the browser looks.
+  // A pick of Other is a move into the box its words go in, by a click or by the Inbox's digit,
+  // which presses the same input (R17). The box stands under the options in the full card, and
+  // behind the note disclosure in the compact one, which the pick opens and whose render the
+  // field waits for (the effect above).
+  const focusAnswerField = () => {
+    const field = answerFieldRef.current;
+    if (field !== null) {
+      field.focus();
+      return;
+    }
+    focusNoteOnOpen.current = true;
+    setOwnWordsOpen(true);
+  };
+  // The digit each option row draws where an Inbox holds this card in hand (`option-digits.ts`).
+  const digitOf = useOptionDigits(displayedAsk.id);
+  // A control that disables itself under the reader's focus - Ask back once its text is sent,
+  // since a send that is out only holds it - would have the browser drop focus to the document
+  // body (in the Inbox, out of the row, which then lets the row go) with nothing the card could
+  // act on afterwards; the same hand-off as a vanishing form, in the commit that disables it,
+  // before the browser looks.
   const [formRef, trackForm] = useFormRef();
   useLayoutEffect(() => {
     const form = formRef.current;
@@ -393,28 +431,30 @@ export function AskCard({
     }
   });
   const tooltips = useTooltips();
-  // Inside `NoTooltips` the card refuses its form from the press of an answer or a clarification
-  // until that write is done with: while it is out, and, once it lands, until a read of the ask's
-  // thread newer than the landing is drawn (`awaitingRead`). Until then the form on the page is
-  // stale: after an answer that landed with no body to show, its options are still picked, and
-  // Answer would send a second answer. A landing that starts no read of the thread ends the
-  // refusal as it lands (a first answer that comes back with its body, whose record replaces the
-  // form at once), and so does a read that fails, so the card never stays refused. Each control it
-  // refuses - the answer box, Answer (Save answer), Ask back, Ask back instead, Answer with it
-  // anyway, the Cancel of a change, and the options with Other - is `aria-disabled` in place of
-  // `disabled`: the box is `readOnly`, and the options are refused by their group. `disabled`
-  // drops the focus to the body in a browser; this way the control the reader pressed keeps it.
-  // A press of any of them does nothing then, and neither does Ctrl+Enter, a paste or a drop in
-  // the box, or the form's submit. Each is drawn from the form as it stood when the refusal began
-  // (`held`): the landing empties the box and closes the choice a question-shaped answer offers,
-  // and the control that would turn `disabled` or leave the page with that - Ask back, its text
-  // gone, or Ask back instead - stays on the page, refused. So the hand-off above moves no focus
-  // while the card refuses, and nothing holding the focus leaves. The one move of the focus comes
-  // as the refusal ends: the form's hand-off, or Ask back instead's, as it leaves the page, or the
-  // one above as Ask back turns `disabled`; a focus the reader moved out of the form meanwhile
-  // stays where they put it. Any other reason a control cannot be pressed - nothing typed before
-  // the press, an upload still out - still disables it, on both sides. Outside `NoTooltips` each
-  // is `disabled` while the write is out and no longer, as on `main`.
+  // While the answer or the question back is out, the form's controls are held rather than
+  // disabled: whichever holds the focus keeps it (`heldPress`, `heldField`), and none sends a
+  // second write. Inside `NoTooltips` the card holds its form from the press until that write is
+  // done with: while it is out, and, once it lands, until a read of the ask's thread newer than
+  // the landing is drawn (`awaitingRead`). Until then the form on the page is stale: after an
+  // answer that landed with no body to show, its options are still picked, and Answer would send
+  // a second answer. A landing that starts no read of the thread ends the hold as it lands (a
+  // first answer that comes back with its body, whose record replaces the form at once), and so
+  // does a read that fails, so the card never stays held. Each control it holds - the answer box,
+  // Answer (Save answer), Ask back, Ask back instead, Answer with it anyway, the Cancel of a
+  // change, and the options with Other - is `aria-disabled` in place of `disabled`, on both sides:
+  // the box is `readOnly`, and the options are held by their rows (and, inside, by their group
+  // as well). `disabled` drops the focus to the body in a browser; this way the control the reader
+  // pressed keeps it. A press of any of them does nothing then, and neither does Ctrl+Enter, a
+  // paste or a drop in the box, or the form's submit. Inside `NoTooltips` each is drawn from the
+  // form as it stood when the hold began (`refusedForm`): the landing empties the box and closes
+  // the choice a question-shaped answer offers, and the control that would turn `disabled` or
+  // leave the page with that - Ask back, its text gone, or Ask back instead - stays on the page,
+  // held. So the hand-off above moves no focus while the card holds, and nothing holding the focus
+  // leaves. The one move of the focus comes as the hold ends: the form's hand-off, or Ask back
+  // instead's, as it leaves the page, or the one above as Ask back turns `disabled`; a focus the
+  // reader moved out of the form meanwhile stays where they put it. Any other reason a control
+  // cannot be pressed - nothing typed before the press, an upload still out - still disables it,
+  // on both sides. Outside `NoTooltips` the hold ends as the write lands.
   const holdsFocus = !tooltips;
   // The newest write of the form that has landed, by when it was sent: 0 while none has.
   const landedWrite = Math.max(
@@ -425,7 +465,7 @@ export function AskCard({
   // `seededFor` is): an effect would let one render between the landing and the record reach the
   // screen, and a press then would be taken. `readAfter` is when the thread read on the page at
   // the landing was made; the card waits for a newer one while the thread is being read. Outside
-  // `NoTooltips` nothing waits, so nothing is recorded and the card renders as on `main`.
+  // `NoTooltips` nothing waits, so nothing is recorded and the card holds while the write is out.
   const [landing, setLanding] = useState<{ readAfter: number | null; write: number }>({
     readAfter: null,
     write: landedWrite,
@@ -441,31 +481,32 @@ export function AskCard({
   if (holdsFocus && (landedNow || readAfter !== landing.readAfter)) {
     setLanding({ readAfter, write: Math.max(landedWrite, landing.write) });
   }
-  // The one flag every refusal of the form reads: outside `NoTooltips` it is `isSubmitting`.
-  const refusing = isSubmitting || awaitingRead;
-  const refusedWhileOut = (holdsFocus && refusing) || undefined;
-  const disabledWhileOut = !holdsFocus && isSubmitting;
-  // What a refused control is drawn from, recorded while rendering as the landing is, in the
-  // first render that refuses: the press, before the landing empties the box.
+  // The one flag every hold of the form reads: outside `NoTooltips` it is `isSubmitting`.
+  const held = isSubmitting || awaitingRead;
+  const refusedWhileOut = (holdsFocus && held) || undefined;
+  // What a held control is drawn from inside `NoTooltips`, recorded while rendering as the
+  // landing is, in the first render that holds: the press, before the landing empties the box.
   const formNow = {
     cannotAnswer: !canAnswer,
     choice: questionChoice,
     nothingToAskBack: trimmedAnswer === "",
   };
   const [heldForm, setHeldForm] = useState<typeof formNow | null>(null);
-  const held = refusedWhileOut ? (heldForm ?? formNow) : null;
-  if (held !== heldForm) setHeldForm(held);
-  const cannotAnswer = held?.cannotAnswer ?? !canAnswer;
-  const nothingToAskBack = held?.nothingToAskBack ?? trimmedAnswer === "";
-  const choiceShown = held?.choice ?? questionChoice;
-  // Ask back instead takes the focus as it is drawn. Outside `NoTooltips` its callback is a new
-  // one at each render, which focuses it again at each render, as on `main`. Inside it is this
-  // one callback, stable across renders as `useFormRef`'s is, which focuses it once: a focus
-  // taken at each render would move the reader's focus while a write is out - from Answer with
-  // it anyway, say, whose answer is out. The choice leaves the page, and the button with it, as
-  // the clarification lands outside `NoTooltips`, and inside once the ask is read again after it;
-  // a focus the button still holds then goes where the form's own hand-off puts it, not to the
-  // body.
+  const refusedForm = refusedWhileOut ? (heldForm ?? formNow) : null;
+  if (refusedForm !== heldForm) setHeldForm(refusedForm);
+  const cannotAnswer = refusedForm?.cannotAnswer ?? !canAnswer;
+  const nothingToAskBack = refusedForm?.nothingToAskBack ?? trimmedAnswer === "";
+  const choiceShown = refusedForm?.choice ?? questionChoice;
+  // Ask back instead takes the focus as it is drawn, once, through this one callback, stable
+  // across renders as `useFormRef`'s is: a focus taken at each render would move the reader's
+  // focus while a write is out - from Answer with it anyway, say, whose answer is out. The choice
+  // leaves the page, and the button with it, as the clarification lands, and inside `NoTooltips`
+  // once the ask is read again after it; a focus the button still holds then is handed off as the
+  // form's is (`handOffFocus`), whoever caused the loss: in the reading column to the column's own
+  // focus stop, in the list layout to the ask's own row. The button is held, never `disabled`,
+  // while the clarification is out, so no other hand-off takes that focus first. A question back
+  // hands the reader on to no next item: the Inbox's R8 hand-off follows an answer, never a
+  // question back.
   const focusAskBackInstead = useCallback(
     (button: HTMLButtonElement | null) => {
       if (button === null) return undefined;
@@ -545,6 +586,7 @@ export function AskCard({
           controls={referencesPanelId}
           count={referencedByCount}
           expanded={referencesOpen}
+          marks={inboxActionMark("inbox.referenced-by")}
           onToggle={() => setReferencesOpen((open) => !open)}
         />
         {referencesOpen ? (
@@ -604,31 +646,33 @@ export function AskCard({
           {reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
         </span>
         <textarea
-          className={`block w-full rounded-lg px-3 py-2 font-normal outline-none ${tooltips ? inputClasses(true) : ON_PAGE.field}`}
+          {...heldField(held)}
+          className={`block w-full rounded-lg px-3 py-2 font-normal outline-none aria-disabled:opacity-50 ${tooltips ? inputClasses(true) : ON_PAGE.field}`}
           data-ask-answer=""
-          disabled={disabledWhileOut}
           id={answerFieldId}
           onChange={(event) => {
             setAnswerText(event.target.value);
             setQuestionChoice(false);
           }}
           onDrop={
-            uploadOwner === undefined
+            uploadOwner === undefined || held
               ? undefined
-              : (event) => {
-                  if (!refusing) upload.drop(event, uploadOwner, ask.id);
-                }
+              : (event) => upload.drop(event, uploadOwner, ask.id)
           }
-          onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading || refusing })}
+          onKeyDown={(event) => {
+            // Escape in the reason an approval's Request changes asks for lets go of that pick,
+            // and sends nothing: the Inbox's own Escape then puts the focus back on the row,
+            // which is why this neither stops the key nor calls `preventDefault`. The box
+            // stays, with what was typed in it, so nothing under the reader's focus unmounts.
+            if (event.key === "Escape" && reasonRequired) dropReasonPick();
+            submitOnModifiedEnter(event, { disabled: uploading || held });
+          }}
           onPaste={
-            uploadOwner === undefined
+            uploadOwner === undefined || held
               ? undefined
-              : (event) => {
-                  if (!refusing) upload.paste(event, uploadOwner, ask.id);
-                }
+              : (event) => upload.paste(event, uploadOwner, ask.id)
           }
           placeholder={answerPlaceholder}
-          readOnly={holdsFocus && refusing}
           ref={answerFieldRef}
           rows={2}
           value={answerText}
@@ -640,11 +684,11 @@ export function AskCard({
   const submitButton = (
     <button
       // While nothing can be sent it is `disabled` alone, on both sides of `NoTooltips`; while the
-      // card refuses, that is read from the form as the refusal found it (`held`).
-      aria-disabled={cannotAnswer || uploading ? undefined : refusedWhileOut}
+      // card holds, that is read inside from the form as the hold found it (`refusedForm`).
+      aria-disabled={cannotAnswer || uploading ? undefined : held || undefined}
       aria-describedby={submitHint === undefined ? undefined : submitHintId}
       className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${filledLook}`}
-      disabled={cannotAnswer || disabledWhileOut || uploading}
+      disabled={cannotAnswer || uploading}
       title={tooltips ? submitHint : undefined}
       type="submit"
     >
@@ -666,24 +710,18 @@ export function AskCard({
   const answerActions = choiceShown ? (
     <fieldset aria-label="Question-shaped answer" className="flex gap-2">
       <button
-        aria-disabled={refusedWhileOut}
         className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${filledLook}`}
-        disabled={disabledWhileOut}
-        onClick={() => {
-          if (!refusing) sendClarification();
-        }}
-        ref={tooltips ? (node) => node?.focus() : focusAskBackInstead}
+        {...inboxActionMark("inbox.ask-back-instead")}
+        {...heldPress(held, sendClarification)}
+        ref={focusAskBackInstead}
         type="button"
       >
         {clarification.isPending ? "Sending…" : "Ask back instead"}
       </button>
       <button
-        aria-disabled={refusedWhileOut}
-        className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryLook}`}
-        disabled={disabledWhileOut}
-        onClick={() => {
-          if (!refusing) sendAnswer(answerText);
-        }}
+        className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${secondaryLook}`}
+        {...inboxActionMark("inbox.answer-anyway")}
+        {...heldPress(held, () => sendAnswer(answerText))}
         type="button"
       >
         Answer with it anyway
@@ -695,12 +733,9 @@ export function AskCard({
         {submitButton}
         {changing ? (
           <button
-            aria-disabled={refusedWhileOut}
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryLook}`}
-            disabled={disabledWhileOut}
-            onClick={() => {
-              if (!refusing) cancelChanging();
-            }}
+            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${secondaryLook}`}
+            {...inboxActionMark("inbox.cancel")}
+            {...heldPress(held, cancelChanging)}
             type="button"
           >
             Cancel
@@ -708,14 +743,12 @@ export function AskCard({
         ) : (
           <button
             // While it has no text to send it is `disabled` alone, on both sides of `NoTooltips`;
-            // while the card refuses, that is read from the form as the refusal found it (`held`),
-            // so the text the landing clears leaves it refused and not `disabled`.
-            aria-disabled={nothingToAskBack || uploading ? undefined : refusedWhileOut}
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryLook}`}
-            disabled={nothingToAskBack || disabledWhileOut || uploading}
-            onClick={() => {
-              if (!refusing) sendClarification();
-            }}
+            // while the card holds, that is read inside from the form as the hold found it
+            // (`refusedForm`), so the text the landing clears leaves it held and not `disabled`.
+            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${secondaryLook}`}
+            {...inboxActionMark("inbox.ask-back")}
+            disabled={nothingToAskBack || uploading}
+            {...heldPress(held, sendClarification)}
             type="button"
           >
             {clarification.isPending ? "Sending…" : "Ask back"}
@@ -778,7 +811,7 @@ export function AskCard({
       // key that must not fire while the reader is answering an ask (the issue page's priority
       // digits, beside this card's own options) matches the bare attribute, and the Inbox's
       // answer keys find the selected question's own card by its value (`answerHand` in
-      // `Inbox.tsx`). Neither asks for a test id.
+      // `useInboxKeymap.ts`). Neither asks for a test id.
       data-ask-card={displayedAsk.id}
       data-testid={`ask-${displayedAsk.id}`}
     >
@@ -887,6 +920,7 @@ export function AskCard({
                     <button
                       aria-expanded={handlesOpen}
                       className={`flex min-w-0 items-center gap-1 ${tooltips ? textMutedHoverToSecondary : ON_PAGE.quietAct}`}
+                      {...inboxActionMark("inbox.asker-handles")}
                       onClick={() => setHandlesOpen((open) => !open)}
                       type="button"
                     >
@@ -903,21 +937,33 @@ export function AskCard({
               <Timestamp at={displayedAsk.created_at} />
             </span>
           </span>
-          {reference === undefined ? null : <CopyRefButton route={reference} />}
+          {reference === undefined ? null : <CopyRefButton item route={reference} />}
           {!handlesOpen ? null : (
             <span className="flex basis-full flex-wrap items-center gap-x-1.5">
               {sessionAuthor === undefined ? null : (
-                <CopyButton value={sessionAuthor.id} what="session ID">
+                <CopyButton
+                  marks={inboxActionMark("inbox.copy-session-id")}
+                  value={sessionAuthor.id}
+                  what="session ID"
+                >
                   ID
                 </CopyButton>
               )}
               {sessionTitle === undefined || sessionTitle === "" ? null : (
-                <CopyButton value={sessionTitle} what="session title">
+                <CopyButton
+                  marks={inboxActionMark("inbox.copy-session-title")}
+                  value={sessionTitle}
+                  what="session title"
+                >
                   title
                 </CopyButton>
               )}
               {tmuxTarget === undefined ? null : (
-                <CopyButton value={tmuxTarget} what="tmux target">
+                <CopyButton
+                  marks={inboxActionMark("inbox.copy-tmux-target")}
+                  value={tmuxTarget}
+                  what="tmux target"
+                >
                   {tmuxTarget}
                 </CopyButton>
               )}
@@ -947,30 +993,31 @@ export function AskCard({
       {answerFirst ? null : threadNode}
       <form
         className="mt-3 space-y-3"
-        // While the card refuses a submit sends nothing: inside `NoTooltips` a press of Answer,
-        // or Enter in an option, still reaches it then (`refusing`).
+        // While the card holds a submit sends nothing: a press of Answer, or Enter in an option,
+        // still reaches it then (`held`).
         onSubmit={(event) => {
-          if (refusing) event.preventDefault();
+          if (held) event.preventDefault();
           else submit(event);
         }}
         ref={trackForm}
       >
         {(displayedAsk.options ?? []).length === 0 ? null : (
-          // Inside `NoTooltips`, while the card refuses, the options are refused by their group's
-          // `aria-disabled`, which ARIA passes to each option in it: an option row puts no
-          // attribute of its own on its input (`AskChoiceRow`).
+          // While the card holds, each option row holds its input (`AskChoiceRow`'s `held`), and
+          // inside `NoTooltips` the group is `aria-disabled` as well, which ARIA passes to each
+          // option in it.
           <fieldset aria-disabled={refusedWhileOut} className="min-w-0 space-y-2">
             <legend className="sr-only">Answer options</legend>
-            {(displayedAsk.options ?? []).map((option) => (
+            {(displayedAsk.options ?? []).map((option, index) => (
               <AskChoiceRow
+                approval={isApproval ? APPROVAL_ACTIONS[option.label] : undefined}
                 checked={selected.includes(option.label)}
-                disabled={disabledWhileOut}
+                digit={digitOf(index)}
+                held={held}
                 hotkey
                 key={option.label}
                 multiple={displayedAsk.multiple}
                 name={`ask-${displayedAsk.id}`}
                 onChange={() => {
-                  if (refusing) return;
                   selectRealOption(option.label);
                   if (isCompact)
                     setOwnWordsOpen(requiresReason(option.label) || trimmedAnswer !== "");
@@ -981,13 +1028,15 @@ export function AskCard({
             {isApproval ? null : (
               <AskChoiceRow
                 checked={otherSelected}
-                disabled={disabledWhileOut}
+                digit={digitOf((displayedAsk.options ?? []).length)}
+                held={held}
+                hotkey
                 multiple={displayedAsk.multiple}
                 name={`ask-${displayedAsk.id}`}
                 onChange={() => {
-                  if (refusing) return;
                   toggleOther();
-                  if (isCompact && !otherSelected) setOwnWordsOpen(true);
+                  // A multiple-choice Other turned off asks for no words, so it moves nobody.
+                  if (!otherSelected) focusAnswerField();
                 }}
                 option={{ label: "Other" }}
               />
@@ -1009,7 +1058,7 @@ export function AskCard({
                 className={`min-h-11 text-sm font-medium ${tooltips ? textSecondaryOnSurface : ON_PAGE.muted}`}
                 // The Inbox's Enter opens this disclosure to reach the answer box behind it,
                 // and finds the control by this handle, as it finds the box by
-                // `data-ask-answer` and an option by `data-ask-option` (`Inbox.tsx`).
+                // `data-ask-answer` and an option by `data-ask-option` (`useInboxKeymap.ts`).
                 data-ask-note-disclosure=""
                 onClick={() => {
                   // Opening it is a move into the field behind it; closing it moves nowhere.

@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 import { api } from "../../api/client";
 import type { MyAnswerRow, MyAnswersResponse } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
+import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
 import {
@@ -208,8 +209,7 @@ export function AnswersPage(): ReactNode {
       {answers.hasNextPage ? (
         <button
           className={`mt-4 min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${linkText} ${linkHoverText}`}
-          disabled={answers.isFetchingNextPage}
-          onClick={() => void answers.fetchNextPage()}
+          {...heldPress(answers.isFetchingNextPage, () => void answers.fetchNextPage())}
           type="button"
         >
           {answers.isFetchingNextPage ? "Loading…" : "Show more"}

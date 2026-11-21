@@ -306,6 +306,37 @@ test("a refused save shows the server's message as it wrote it, and the draft st
   }
 });
 
+// A caller that holds the record (the Delivery page's live view) replaces the form once the save's
+// snapshot comes, so Save stays held after the save lands, and the submit guard, which covers only
+// the save's own round trip, has let go by then. A second press of Save then sends nothing.
+test("a Save pressed after the save lands, before the caller replaces the form, sends nothing", async () => {
+  const user = userEvent.setup();
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue(record);
+
+  try {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <DeliverySettingsForm initial={record} />
+      </QueryClientProvider>
+    );
+    const save = screen.getByRole("button", { name: "Save delivery settings" });
+    await user.click(save);
+    await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
+    // The save has settled, and with it the guard's hold, but the caller has not drawn its
+    // answer yet: the form is still the one the save was made from.
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect(save.getAttribute("aria-disabled")).toBe("true");
+
+    await user.click(save);
+    expect(putDeliverySettings).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(save);
+  } finally {
+    cleanup();
+    putDeliverySettings.mockRestore();
+  }
+});
+
 // A save the reader stopped may have been made: the form says so, and that its button sends what
 // the fields hold then, rather than a failure it cannot know of.
 test("a save the reader stopped says it may have been made, not that it failed", async () => {

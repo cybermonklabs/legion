@@ -153,9 +153,9 @@ export const borderStrongHover = "hover:border-slate-300 dark:hover:border-slate
 export const focusBorder = "focus:border-sky-600 dark:focus:border-sky-400";
 export const focusRing = "focus:ring-sky-600 dark:focus:ring-sky-400";
 export const focusVisibleRing = "focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400";
-/** `focusVisibleRing` for a wrapper whose focusable control is invisible inside it (e.g. a
- * native `<select>` laid over a badge): the ring shows on the wrapper when the control has
- * keyboard focus. */
+/** `focusVisibleRing` for a wrapper whose focusable control draws no ring of its own inside it
+ * (e.g. a list's trigger filling a badge's tap target, `badge-select.ts`): the ring shows on the
+ * wrapper when the control has keyboard focus. */
 export const hasFocusVisibleRing =
   "has-focus-visible:ring-sky-600 dark:has-focus-visible:ring-sky-400";
 export const cardHoverBorder = "hover:border-sky-400 dark:hover:border-sky-300";
@@ -243,6 +243,8 @@ export const tableFilterActive = "bg-sky-100 text-sky-700 dark:bg-sky-900 dark:t
 registerText("active table filter", pair(P.SKY_700, P.SKY_300), pair(P.SKY_100, P.SKY_900));
 export const tableResizeActive = "bg-sky-500 dark:bg-sky-400";
 export const tableResizeHover = "hover:bg-sky-300 dark:hover:bg-sky-700";
+/** A column's grip while it holds the keyboard's focus: the dragged grip's colour. */
+export const tableResizeFocus = "focus-visible:bg-sky-500 dark:focus-visible:bg-sky-400";
 /** `linkText`, unqualified, also renders directly inside a `SURFACE_MUTED`/`SURFACE_RECESSED`
  * container in several places (an unfurled reference card, a Conversation turn's recessed quote
  * box) — `LINK` is a single fixed pair, so these are the same values already checked above, just
@@ -1222,6 +1224,20 @@ export const canvasText = "bg-slate-50 dark:bg-slate-950 text-slate-900 dark:tex
  */
 export const scrollFadeTrailing =
   "[mask-image:linear-gradient(to_right,#000_calc(100%-32px),#0000)]";
+
+/**
+ * The 48 px fades at the ends of a control row's chips strip (`components/ControlRow.tsx`), one at
+ * each end that has a chip out of view beyond it: `leading` while the strip is scrolled away from
+ * its start, `trailing` while there is more to the right, `both` while both are true. The row's
+ * round scroll button laid over that end then sits over faded chips rather than over the opaque
+ * end of one. 48 px is the width the strip's scroll padding keeps clear, so a chip brought into
+ * view is never under a fade. Masks, not colours, like `scrollFadeTrailing`.
+ */
+export const chipStripFade: Record<"both" | "leading" | "trailing", string> = {
+  both: "[mask-image:linear-gradient(to_right,#0000,#000_48px,#000_calc(100%-48px),#0000)]",
+  leading: "[mask-image:linear-gradient(to_right,#0000,#000_48px)]",
+  trailing: "[mask-image:linear-gradient(to_right,#000_calc(100%-48px),#0000)]",
+};
 
 /**
  * The width of `scrollFadeTrailing`, for code that keeps an item clear of the fade. Tailwind needs

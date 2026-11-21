@@ -7,7 +7,7 @@
  *  with the rest (packages/dispatch/README.md, "The stubbed layer"). Every refusal below is the
  *  row's own `page.route`, which replays as readily as it ran.
  */
-import { expect } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 
 import { createAsk, createIssue, createProject, patchIssue } from "./api";
 import {
@@ -30,7 +30,13 @@ import {
   seedPane,
   session,
 } from "./keyboard-inbox";
+import { bulkSnoozeMenu, bulkSnoozeTrigger, choiceOf, menuOf, pickFromMenu } from "./menus";
 import { stubbed } from "./stub/stub-test";
+
+/** The first choice of the bulk bar's Snooze menu, which `h` with rows marked opens on. */
+function bulkFirstChoice(page: Page): Locator {
+  return bulkSnoozeMenu(page).getByRole("menuitem", { exact: true, name: "Later today" });
+}
 
 /** The three asks the marks are made on. */
 const test = stubbed(async () => {
@@ -139,8 +145,8 @@ test.describe("inbox selection", () => {
     );
 
     await markFromKeyboard(page, 2);
-    const bar = page.getByRole("group", { name: "Selected rows" });
-    await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("tomorrow");
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
+    await pickFromMenu(bulkSnoozeTrigger(page), "Tomorrow");
 
     await expect(bar).toContainText(
       "Could not snooze 2 of 2: snoozed_until must be a moment, and 1 other reason."
@@ -159,17 +165,16 @@ test.describe("inbox selection", () => {
     await rows.nth(0).getByRole("checkbox").check();
     await rows.nth(1).getByRole("checkbox").check();
     await expect(rows.nth(1).getByRole("checkbox")).toBeFocused();
-    const bar = page.getByRole("group", { name: "Selected rows" });
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
     await expect(bar).toContainText("2 selected");
 
     // `h` from the box the reader just ticked is the flow the pointer leaves them in: it
-    // reaches the bulk picker with no roving in between.
+    // opens the bulk Snooze menu with no roving in between.
     await page.keyboard.press("h");
-    const picker = bar.getByRole("combobox", { name: "Snooze selected asks" });
-    await expect(picker).toBeFocused();
+    await expect(bulkFirstChoice(page)).toBeFocused();
     await page.keyboard.press("Escape");
 
-    // j moves off the ticked row, and h reaches the picker from there too. A tick marks its
+    // j moves off the ticked row, and h opens the menu from there too. A tick marks its
     // row and moves nothing else, so the reading column is still on the row the Inbox opened
     // on and the step from there is the second row; without the column j roves from the box
     // holding the focus and lands on the third.
@@ -180,11 +185,11 @@ test.describe("inbox selection", () => {
       await expect(rows.nth(2)).toBeFocused();
     }
     await page.keyboard.press("h");
-    await expect(picker).toBeFocused();
+    await expect(bulkFirstChoice(page)).toBeFocused();
   });
 
-  // Escape is always one level out. The per-row picker honours it through `back`; the bulk picker
-  // has no row ancestor, so it needs its own way back to the list.
+  // Escape is always one level out: a Snooze menu, the row's or the bar's, hands the focus back
+  // to the row it was opened from.
   test("Escape leaves the bulk picker for the row it was opened from, keeping the marks @pr", async ({
     page,
     scene,
@@ -192,23 +197,21 @@ test.describe("inbox selection", () => {
     await openInbox(page, scene.rows);
     const rows = page.locator("[data-inbox-row]");
 
-    // Control: the Snooze the reader reaches for the row they are on, which already returns
-    // to that row.
+    // Control: the Snooze the reader reaches for the row they are on, which returns to that row.
     await goToRow(page, 0);
     const rowPicker = await rowSnooze(page, await askIdOf(page, 0));
     await page.keyboard.press("h");
-    await expect(rowPicker).toBeFocused();
+    await expect(choiceOf(await menuOf(rowPicker), "Later today")).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(rows.nth(0)).toBeFocused();
 
-    // The bulk picker does the same, and leaves the selection alone on the way.
+    // The bulk menu does the same, and leaves the selection alone on the way.
     await goToRow(page, 1);
     await page.keyboard.press("x");
-    const bar = page.getByRole("group", { name: "Selected rows" });
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
     await expect(bar).toContainText("1 selected");
     await page.keyboard.press("h");
-    const picker = bar.getByRole("combobox", { name: "Snooze selected asks" });
-    await expect(picker).toBeFocused();
+    await expect(bulkFirstChoice(page)).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(rows.nth(1)).toBeFocused();
     await expect(bar).toContainText("1 selected");
@@ -228,7 +231,7 @@ test.describe("inbox selection", () => {
   }) => {
     await openInbox(page, scene.rows);
     const rows = page.locator("[data-inbox-row]");
-    const bar = page.getByRole("group", { name: "Selected rows" });
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
     await markFromKeyboard(page, 1);
     await expect(bar).toContainText("1 selected");
     // No row focused, so the page's Escape is the Clear the popover now stands in front of.
@@ -242,7 +245,12 @@ test.describe("inbox selection", () => {
     await expect(bar).toContainText("1 selected");
     await expect(rows.nth(0).getByRole("checkbox")).toBeChecked();
 
-    // With the popover shut, the same key clears the selection, as it always did.
+    // The popover is one level inside the panel it is drawn in, so the next press closes that
+    // panel - still clearing nothing - and the one after it clears the selection, as it always
+    // did with no panel open.
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog", { name: "Filter" })).toHaveCount(0);
+    await expect(bar).toContainText("1 selected");
     await page.keyboard.press("Escape");
     await expect(bar).toHaveCount(0);
     await expect(rows.nth(0).getByRole("checkbox")).not.toBeChecked();
@@ -308,7 +316,7 @@ test.describe("inbox selection", () => {
       const rows = page.locator("[data-inbox-row]");
       await expect(rows).toHaveCount(2);
       await page.locator("body").focus();
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
 
       const hiddenRow = page.locator(`[data-inbox-row="${scene.hiddenAskId}"]`);
       await hiddenRow.getByRole("checkbox").check();
@@ -330,12 +338,12 @@ test.describe("inbox selection", () => {
       await expect(hiddenRow).toHaveCount(0);
       await expect(bar).toHaveCount(0);
 
-      // Nothing is marked here, so `h` reaches the Snooze of the row the reader is on, not a
+      // Nothing is marked here, so `h` opens the Snooze of the row the reader is on, not a
       // bulk write.
       const onlyPicker = await rowSnooze(page, await askIdOf(page, 0));
       await goToRow(page, 0);
       await page.keyboard.press("h");
-      await expect(onlyPicker).toBeFocused();
+      await expect(choiceOf(await menuOf(onlyPicker), "Later today")).toBeFocused();
       expect(wrote).toBe(false);
     }
   );
@@ -348,7 +356,7 @@ test.describe("inbox selection", () => {
     async ({ page, scene }) => {
       await page.goto(`/?agent=${scene.agent}`);
       const rows = page.locator("[data-inbox-row]");
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
       await expect(rows).toHaveCount(1);
       await expect(rows.nth(0)).toHaveAttribute("data-inbox-row", scene.fromOtherAskId);
 
@@ -389,8 +397,8 @@ test.describe("inbox selection", () => {
     );
 
     await markFromKeyboard(page, 2);
-    const bar = page.getByRole("group", { name: "Selected rows" });
-    await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("tomorrow");
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
+    await pickFromMenu(bulkSnoozeTrigger(page), "Tomorrow");
     await expect(bar).toContainText("Could not snooze 2 of 2");
 
     const rows = page.locator("[data-inbox-row]");
@@ -409,7 +417,7 @@ test.describe("inbox selection", () => {
     "h does not pull the reader out of an ask they are answering @pr",
     async ({ page, scene }) => {
       await openInbox(page, scene.rows);
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
       await markFromKeyboard(page, 1);
       await expect(bar).toContainText("1 selected");
 
@@ -418,19 +426,20 @@ test.describe("inbox selection", () => {
       await expect(hold).toBeFocused();
       await page.keyboard.press("h");
       await expect(hold).toBeFocused();
-      await expect(bar.getByRole("combobox", { name: "Snooze selected asks" })).not.toBeFocused();
+      await expect(bulkSnoozeMenu(page)).toHaveCount(0);
     }
   );
 
-  // Reaching the picker with the pointer leaves no `h` behind it, so Escape must not send the
-  // reader to whatever row an earlier `h` happened to be on.
-  test("Escape from a pointer-opened bulk picker goes to the list, not a stale row @pr", async ({
+  // Reaching the bulk menu with the pointer leaves no `h` behind it, so Escape must not send the
+  // reader to whatever row an earlier `h` happened to be on: it hands the focus back to the
+  // Snooze the pointer pressed.
+  test("Escape from a pointer-opened bulk picker goes back to its Snooze, not a stale row @pr", async ({
     page,
     scene,
   }) => {
     await openInbox(page, scene.rows);
     const rows = page.locator("[data-inbox-row]");
-    const bar = page.getByRole("group", { name: "Selected rows" });
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
 
     // An `h` from the first row records that row, then the reader leaves and marks row 3.
     await goToRow(page, 0);
@@ -442,9 +451,10 @@ test.describe("inbox selection", () => {
     await rows.nth(2).getByRole("checkbox").check();
     await expect(bar).toContainText("1 selected");
 
-    await bar.getByRole("combobox", { name: "Snooze selected asks" }).focus();
+    await bulkSnoozeTrigger(page).click();
+    await expect(bulkFirstChoice(page)).toBeFocused();
     await page.keyboard.press("Escape");
-    await expect(rows.nth(2)).toBeFocused();
+    await expect(bulkSnoozeTrigger(page)).toBeFocused();
   });
 });
 

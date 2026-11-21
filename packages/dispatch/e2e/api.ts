@@ -616,6 +616,16 @@ export function markInboxRead(
   return post("/api/v1/me/inbox/read", { body }, options);
 }
 
+/** `POST /api/v1/me/inbox/dismiss`: the Inbox's Dismiss, which takes the threads `body` names
+ *  out of the caller's Inbox, or with `restore` puts them back (Move to Inbox). Answers
+ *  `dismissed`, how many threads it moved. */
+export function dismissInbox(
+  body: Body<"/api/v1/me/inbox/dismiss", "post">,
+  options: ApiOptions = {}
+) {
+  return post("/api/v1/me/inbox/dismiss", { body }, options);
+}
+
 /** `PUT /api/v1/me/asks/{id}/snooze`: the caller's own snooze on an Inbox row, until
  *  `snoozedUntil` (RFC 3339, in the future). */
 export function snoozeAsk(id: string, snoozedUntil: string, options: ApiOptions = {}) {

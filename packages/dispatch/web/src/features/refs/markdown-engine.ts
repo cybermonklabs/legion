@@ -517,6 +517,10 @@ export function renderWithEngine(
 export const markdownClassName =
   "dispatch-markdown prose prose-sm prose-slate break-words dark:prose-invert";
 
+/** Every element a rendered body is painted into (`markdownClassName`'s own class): where the
+ *  shell's one link click handler acts (`LinkClickHost`, `link-open.ts`). */
+export const MARKDOWN_BODY_SELECTOR = ".dispatch-markdown";
+
 /** Text outside code with every `dispatch://` reference written as its short form
  *  (`dispatch://CORE-1/ask/a1` reads `CORE-1 ask`), as a rendered body's link reads until its
  *  title resolves; a reference in code stays as its author wrote it, as it does in a body. */

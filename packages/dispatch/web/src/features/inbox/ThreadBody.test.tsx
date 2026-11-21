@@ -286,6 +286,59 @@ test("a comment thread's card draws the quote it is anchored to and the thread w
   expect(turns[1]?.hasAttribute("data-inbox-thread-unread")).toBe(true);
 });
 
+test("each message of a comment thread on an issue draws its own Copy reference, and the card's own is the one the Inbox's y presses", async () => {
+  spy("getIssue", { closed_at: null } as unknown as IssueDetails);
+  spy("listComments", [
+    comment("comment-1", "The retry budget is too small."),
+    comment("comment-2", "Agreed.", {
+      author: { id: "bob", kind: "user" },
+      created_at: "2026-10-12T01:00:00Z",
+      reply_to: "comment-1",
+    }),
+  ]);
+  renderCard(commentRow());
+
+  const body = await screen.findByTestId("inbox-thread-comment");
+  await waitFor(() => expect(body.textContent).toContain("Agreed."));
+  const turns = [...body.querySelectorAll<HTMLElement>("[data-inbox-thread-turn]")];
+  expect(
+    turns.map((turn) => within(turn).getByRole("button", { name: /^Copy reference / }))
+  ).toHaveLength(2);
+  expect(
+    within(turns[1] as HTMLElement).getByRole("button", { name: /^Copy reference / })
+  ).toHaveAttribute("aria-label", "Copy reference dispatch://CORE-1/comment/comment-2");
+  // The card's own control is the thread's, drawn above the thread, and the only one marked as
+  // the item's.
+  const items = document.querySelectorAll('[data-copy-ref="item"] button');
+  expect(items).toHaveLength(1);
+  expect(items[0]).toHaveAttribute(
+    "aria-label",
+    "Copy reference dispatch://CORE-1/comment/comment-1"
+  );
+  expect(body.contains(items[0] as Node)).toBe(false);
+});
+
+test("a message to a session names no issue, so neither the card nor its messages draw a Copy reference", async () => {
+  spy("listAgents", [session]);
+  spy("listAgentMessages", [
+    {
+      message: message("message-1", "Have a look at the build"),
+      replies: [
+        message("reply-1", "Looked at it.", {
+          author: { id: "planner", kind: "session" },
+          created_at: "2026-10-12T01:00:00Z",
+          in_reply_to: "message-1",
+        }),
+      ],
+    } satisfies MessageRead,
+  ]);
+  renderCard(plannerAgentRow());
+
+  const body = await screen.findByTestId("inbox-thread-agent");
+  await waitFor(() => expect(body.textContent).toContain("Looked at it."));
+  expect(document.querySelector("[data-copy-ref]")).toBeNull();
+});
+
 // A thread box in the Inbox stands for its thread: its reply is the box's own address, which
 // nothing ends, so it draws no Cancel reply. Pressed, that control would do nothing and leave the
 // draft in the field (MentionComposer's `standing`).

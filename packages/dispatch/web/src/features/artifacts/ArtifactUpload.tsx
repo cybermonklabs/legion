@@ -21,6 +21,7 @@ import {
   type WriteMethod,
 } from "../../api/client";
 import type { Artifact, Version } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -222,16 +223,22 @@ export function ReplacingUploadNote(): ReactNode {
   );
 }
 
-/** Refreshes the lists a write to `owner` adds a row to: an upload's, and a new document's. */
-export function refreshOwnerArtifacts(queryClient: QueryClient, owner: ArtifactOwner): void {
+/** Refreshes the lists a write to `owner` adds a row to: an upload's, and a new document's.
+ *  Answers when the owner's document list has been read again, or has failed to be: a removal
+ *  waits on it, so its button stays held until that read takes the row away. */
+export function refreshOwnerArtifacts(
+  queryClient: QueryClient,
+  owner: ArtifactOwner
+): Promise<void> {
   if ("issue" in owner) {
-    void queryClient.invalidateQueries({ queryKey: ["artifacts", owner.issue] });
+    const list = queryClient.invalidateQueries({ queryKey: ["artifacts", owner.issue] });
     void queryClient.invalidateQueries({ queryKey: ["issue", owner.issue] });
-  } else if ("project" in owner) {
-    void queryClient.invalidateQueries({ queryKey: ["project", owner.project, "artifacts"] });
-  } else {
-    void queryClient.invalidateQueries({ queryKey: ["agent-artifacts", owner.session] });
+    return list;
   }
+  if ("project" in owner) {
+    return queryClient.invalidateQueries({ queryKey: ["project", owner.project, "artifacts"] });
+  }
+  return queryClient.invalidateQueries({ queryKey: ["agent-artifacts", owner.session] });
 }
 
 /** `text` added to the end of a draft, a space apart from what is already there. */
@@ -340,7 +347,7 @@ export function useDraftUpload<Draft = void>(
     // Stored either way; with no answer to give, its reference cannot be added to the draft, and
     // the field says so (`upload.unanswered`).
     onSuccess: (landed, { draft, file, owner }) => {
-      refreshOwnerArtifacts(queryClient, owner);
+      void refreshOwnerArtifacts(queryClient, owner);
       if (landed !== null) insert(uploadedFileText(owner, file, landed.result), draft);
     },
     onSettled: () => {
@@ -547,7 +554,7 @@ export function useArtifactUpload(
       // with no answer to give, the row says so (`upload.unanswered`).
       setPendingFile(null);
       setSummary("");
-      refreshOwnerArtifacts(queryClient, owner);
+      void refreshOwnerArtifacts(queryClient, owner);
       if (result !== null) {
         void queryClient.invalidateQueries({ queryKey: ["artifact", result.artifact.id] });
       }
@@ -656,7 +663,8 @@ export function useArtifactUpload(
 /** The upload control of a strip: its button, and, while a file is staged, that file's name, its
  *  summary and the two presses that store or discard it. `refusalShownBy` is the id of a line the
  *  host already shows the refusal on - the one line a closed issue's strip shows for every control
- *  in it; without it the row shows its own. */
+ *  in it; without it the row shows its own. The two presses are held while the upload is out
+ *  (`heldPress`). */
 export function ArtifactUploadRow({
   refusalShownBy,
   upload,
@@ -703,16 +711,14 @@ export function ArtifactUploadRow({
           />
           <button
             className={`min-h-11 shrink-0 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-            disabled={upload.isPending}
-            onClick={upload.confirm}
+            {...heldPress(upload.isPending, upload.confirm)}
             type="button"
           >
             Upload
           </button>
           <button
             className={`min-h-11 shrink-0 text-sm font-medium ${linkText} ${linkHoverText}`}
-            disabled={upload.isPending}
-            onClick={upload.cancel}
+            {...heldPress(upload.isPending, upload.cancel)}
             type="button"
           >
             Cancel

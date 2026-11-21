@@ -17,9 +17,10 @@ const REASONS = {
   5: "5. The Conversation draws a loading line or an error in place of the list while its reads are out or failed (`loading`, `failed`), which unmounts the reply as Collapse thread does.",
   6: "6. Another issue's address draws the issue page afresh (`IssueDetail` keyed by `route.key`), unmounting the card and its reply as Collapse thread does, and another tab hides the Conversation's panel with the reply mounted (`draft-matrix.issue-page.test.tsx` makes both moves for the docked and phone thread composers).",
   7: "7. Which end of the thread the reply sits at (`composerFirst`, from `useThreadOrder`) is read when the card is drawn and again only when who is signed in changes (`useUserPreference`), so it never moves a reply that is on screen.",
-  8: "8. On a phone the comment's Expand thread opens the full-screen thread view in place of opening the card in the list (`toggleThread`'s `isPhone`), and its Reply answers in the view's own composer (`onReply`, and Reply's `!isPhone`), so the first row and the phone Reply row are the phone's forms of the Collapse thread and Reply rows. A comment link opens the view as Expand thread does (`ConversationTab`'s focus effect), and a decision landing on the comment closes it as Back does (`phone.hide`).",
+  8: "8. On a phone the comment's Expand thread opens the full-screen thread view in place of opening the card in the list (`toggleThread`'s `isPhone`), and its Reply answers in the view's own composer (`onReply`, and Reply's `!isPhone`), so the first row and the phone Reply row are the phone's forms of the Collapse thread and Reply rows. The tab's keys on a comment's turn do the same there: Enter and `o` open the view as Expand thread does, and `r` presses the comment's Reply (`toggleOf`, `replyOf`). A comment link opens the view as Expand thread does (`ConversationTab`'s focus effect), and a decision landing on the comment closes it as Back does (`phone.hide`).",
   9: "9. The view's card is drawn only while a thread is open (`phoneThread`) and keyed by its thread (`key={phoneThread.id}`): another thread is opened after Back, and widening the page past the phone layout closes the view as Back does unless a send from it is out (`usePhoneThread`'s `outlived`), the first row's move either way.",
   10: "10. The read mark's ref on the newest card (`register`) moves to the view's copy of it while a thread is open; it marks the issue read and moves no reply. The margin's thread reply is the margin file's, and the app shell's forms are the sign-in file's.",
+  11: "11. A key of the tab opens a comment's thread in one of two ways (`keyed`, `KeyedThread`): Enter or `o` with its reply standing (`replyStanding`, `MentionComposer`'s `standing`), which takes no focus as it mounts and draws no Cancel reply, its Escape ending the reply as the Escape row's does; and `r` with the reply taking the focus, whose Cancel reply and Escape give the focus back to the turn and leave the thread open, the reply mounted with its draft in the field (`onReplyCancel`, `giveBackFromThread`). Neither changes the reply's address, its thread's root under the thread's send name (1), and an inline reply keeps what the reader has not sent there whether it stands or not (`keptNames` in `useKeptDrafts`), so the rows above, on a thread a click opened, make its moves. The margin's `ThreadList` passes no `replyStanding`, so a margin thread's reply never stands.",
 } as const;
 
 export const coverage: readonly CoverageEntry[] = [
@@ -57,6 +58,10 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[7] }
   ),
   ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | address prop | standing={replyStanding}",
+    { reason: REASONS[11] }
+  ),
+  ...answers(
     "CommentTurn | ThreadCard | address prop | expanded={currentExpanded}",
     cells(`${HOST} · thread collapsed by the host, then opened`)
   ),
@@ -68,6 +73,9 @@ export const coverage: readonly CoverageEntry[] = [
     "CommentTurn | ThreadCard | address prop | hideReplyComposer={hideReplyComposer}",
     cells(`${HOST} · Reply on its comment, then back`)
   ),
+  ...answers('CommentTurn | ThreadCard | address prop | replyStanding={keyed === "standing"}', {
+    reason: REASONS[11],
+  }),
   ...answers(
     "CommentTurn | ThreadCard | address prop | replyMutationKey={replySendKey}",
     cells(`${HOST} · thread collapsed by the host, then opened`),
@@ -109,8 +117,14 @@ export const coverage: readonly CoverageEntry[] = [
   }),
   ...answers("ConversationTab | CommentTurn | address prop | item={item}", { reason: REASONS[4] }),
   ...answers(
-    'ConversationTab | CommentTurn | address prop | hideReplyComposer={replyTo?.parentKind === "comment" && replyTo.id === item.root.id}',
+    'ConversationTab | CommentTurn | address prop | hideReplyComposer={ replyTo?.parentKind === "comment" && replyTo.id === item.root.id }',
     cells(`${HOST} · Reply on its comment, then back`)
+  ),
+  ...answers(
+    "ConversationTab | CommentTurn | address prop | keyed={keyedThreads.get(item.root.id)}",
+    {
+      reason: REASONS[11],
+    }
   ),
   ...answers("ConversationTab | CommentTurn | address prop | sendKey={sendKey}", {
     reason: REASONS[6],
@@ -156,6 +170,10 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("ConversationTab | CommentTurn | form | key={phoneThread.id}", { reason: REASONS[9] }),
   ...answers("ConversationTab | - | form | if (phone.id === id)", { reason: REASONS[8] }),
   ...answers("ConversationTab | - | form | if (isPhoneViewport)", { reason: REASONS[8] }),
+  ...answers("useTurnKeys | - | form | (isPhoneViewport) ? …", { reason: REASONS[8] }),
+  ...answers("useTurnKeys | - | form | if (comment !== undefined && !isPhoneViewport) return …", {
+    reason: REASONS[8],
+  }),
   ...answers("CommentTurn | - | form | if (forceExpanded || (isPhone && !expanded)) return …", {
     reason: REASONS[8],
   }),

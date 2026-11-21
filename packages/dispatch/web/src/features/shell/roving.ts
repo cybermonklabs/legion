@@ -60,3 +60,23 @@ export function roveFocus(
       : Math.max(0, Math.min(reachable.length - 1, at + delta));
   reachable[next]?.focus();
 }
+
+/**
+ * Where a roving focus goes from `at` of `count` controls on `key`: `back` and `forward` step
+ * one, wrapping at the ends, and Home and End go to the first and the last; undefined for any
+ * other key. A menu's choices step so (`ChoiceMenu`, and the issue page's menu of views in
+ * `IssuePresets`); `roveFocus` clamps instead, for the rows `j` and `k` walk.
+ */
+export function stepIndex(
+  key: string,
+  at: number,
+  count: number,
+  back: string,
+  forward: string
+): number | undefined {
+  if (key === forward) return (at + 1) % count;
+  if (key === back) return (at - 1 + count) % count;
+  if (key === "Home") return 0;
+  if (key === "End") return count - 1;
+  return undefined;
+}

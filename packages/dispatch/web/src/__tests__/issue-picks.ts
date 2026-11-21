@@ -1,12 +1,19 @@
 /** What the unit rows of an issue's picks share (`issue-field-writes.test.tsx`,
  *  `assignee-repo-picks.test.tsx`): the issue picked and its detail, the page's query client
- *  signed in, what each save Dispatch received carried, and the repository box's suggestions
- *  and picks. */
+ *  signed in, what each save Dispatch received carried, what the shared list's single picks
+ *  show, suggest and pick, and the priority's menu.
+ *
+ *  This tree's priority is a menu, not a native select (INFRA-2160's R4): its trigger is a button
+ *  named by the menu and then by what it shows (`ChoiceMenu`), so it is found by the start of its
+ *  name, and a pick is a press of the trigger and then of the choice, as a reader makes it, and
+ *  writes only then. */
 import type { QueryKey } from "@tanstack/react-query";
+import { screen, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 
 import { DispatchQueryClient } from "../api/query-client";
 import type { Issue, IssueDetails } from "../api/types";
+import { panelOf, pickNamed } from "./list-picks";
 
 /** CORE-1, the issue every row picks a field of, as Dispatch answers a save of it. */
 export const issue: Issue = {
@@ -75,21 +82,64 @@ export function bodies(patchIssue: { mock: { calls: unknown[][] } }): unknown[] 
   return patchIssue.mock.calls.map((call) => call[1]);
 }
 
-/** The repositories `box` suggests: its `<datalist>`'s option values, in the box's order. */
-export function repoSuggestions(box: HTMLInputElement): string[] {
-  return Array.from(box.list?.options ?? [], (option) => option.value);
+/** The words `element` holds that assistive technology reads: its text less what it hides, such
+ *  as a badge beside the words that read it or the mark of a picked row. A single pick's trigger
+ *  holds what it shows and not its label, so for a trigger these are what its name reads after
+ *  the label. */
+export function shownBy(element: Element): string {
+  const words = element.cloneNode(true) as Element;
+  for (const hidden of words.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
+  return words.textContent ?? "";
 }
 
-/** Empties `box`, types `repo` and presses Enter, which writes it; `""` is an Inherit pick. */
-export async function typeRepo(
+/** The repositories the open Repository list in `panel` suggests: the labels of its options after
+ *  Inherit, in the list's order, without the mark of the picked one. */
+export function repoSuggestions(panel: HTMLElement): string[] {
+  return within(panel)
+    .getAllByRole("option")
+    .map((option) => shownBy(option))
+    .filter((label) => label !== "Inherit");
+}
+
+/** Picks the row named `name` of the single pick `trigger` opens, which writes it, opening its
+ *  list unless it stands open. The list is portalled out of the control's container, so the row
+ *  is found in the panel the trigger names. */
+export async function pickIn(
   user: UserEvent,
-  box: () => HTMLInputElement,
+  trigger: () => HTMLElement,
+  name: string
+): Promise<void> {
+  if (trigger().getAttribute("aria-expanded") !== "true") await user.click(trigger());
+  await user.click(await within(panelOf(trigger())).findByRole("option", { name }));
+}
+
+/** Picks `repo` from the Repository list `trigger` opens, which writes it; `""` is an Inherit
+ *  pick, the list's Inherit row. */
+export async function pickRepo(
+  user: UserEvent,
+  trigger: () => HTMLElement,
   repo: string
 ): Promise<void> {
-  await user.clear(box());
-  if (repo !== "") {
-    await user.click(box());
-    await user.paste(repo);
-  }
-  await user.keyboard("{Enter}");
+  await pickIn(user, trigger, repo === "" ? "Inherit" : repo);
+}
+
+/** Every trigger of the menu named `label` (`Priority of CORE-1`) on the screen, in its order. */
+export function pickerTriggers(label: string): HTMLElement[] {
+  return screen.getAllByRole("button", { name: pickNamed(label) });
+}
+
+/** The priority the menu's `trigger` shows, in the words a native `<select>` of it held as its
+ *  value: the priority's digit, and `""` where it shows none (Priority). */
+export function shownValue(trigger: HTMLElement): string {
+  const face = trigger.querySelector("[id$='-face']") ?? trigger;
+  return /^P([0-3])$/.exec(face.textContent ?? "")?.[1] ?? "";
+}
+
+/** Picks `value` in the priority menu `trigger` opens, as a reader does: a press of the trigger,
+ *  then of the choice `P<value>`, or of Unset for `""`. */
+export async function pick(user: UserEvent, trigger: HTMLElement, value: string): Promise<void> {
+  await user.click(trigger);
+  const menu = await screen.findByRole("menu");
+  const name = pickNamed(value === "" ? "Unset" : `P${value}`);
+  await user.click(within(menu).getByRole("menuitemradio", { name }));
 }

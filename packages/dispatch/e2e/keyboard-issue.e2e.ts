@@ -1,6 +1,7 @@
 import { createAsk, createIssue, createProject, getIssue } from "./api";
 import { barAction, selectEditorText } from "./editor";
-import { leaveFocus, onBody, openIssue } from "./keyboard-issue";
+import { leaveFocus, openIssue } from "./keyboard-issue";
+import { pickFromMenu, priorityTrigger } from "./menus";
 import { expect, type Request, test } from "./test";
 import { asUser } from "./users";
 
@@ -34,18 +35,28 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     await page.setViewportSize({ width: 1280, height: 900 });
     await openIssue(page, issue.key, "Keyboard issue");
     const header = page.getByTestId("issue-header");
-    const priority = page.getByRole("combobox", { name: `Priority of ${issue.key}` });
-    const status = page.getByRole("combobox", { name: "Status" });
+    const priority = priorityTrigger(header, issue.key);
+    const priorityMenu = page.getByRole("menu", { name: `Priority of ${issue.key}` });
+    const statusMenu = page.getByRole("menu", { name: "Status" });
 
-    // p and s reach their own control: two assertions, so a p that focused Status fails.
+    // p and s open their own menu, each on its checked choice: two assertions, so a p that
+    // opened Status fails. Escape closes each and writes nothing.
     await page.keyboard.press("p");
-    await expect(priority).toBeFocused();
+    await expect(
+      priorityMenu.getByRole("menuitemradio", { exact: true, name: "Unset" })
+    ).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(priorityMenu).toHaveCount(0);
     await leaveFocus(page);
     await page.keyboard.press("s");
-    await expect(status).toBeFocused();
+    await expect(
+      statusMenu.getByRole("menuitemradio", { exact: true, name: "Triage" })
+    ).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(statusMenu).toHaveCount(0);
     await leaveFocus(page);
 
-    // A digit sets P0–P3 through the same write the picker uses, and Shift+P pins through the
+    // A digit sets P0–P3 through the same write the menu uses, and Shift+P pins through the
     // header's own control. Both are optimistic, so each write is waited for rather than raced,
     // and one reload below carries both: a second one would prove nothing the first does not.
     const patch = page.waitForRequest(
@@ -55,7 +66,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     );
     await page.keyboard.press("2");
     expect((await patch).postDataJSON()).toEqual({ priority: 2 });
-    await expect(header.locator("span", { hasText: /^P2$/ })).toBeVisible();
+    await expect(priority).toHaveText("P2");
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: 2 });
     await leaveFocus(page);
 
@@ -70,7 +81,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     await leaveFocus(page);
 
     await page.reload();
-    await expect(header.locator("span", { hasText: /^P2$/ })).toBeVisible();
+    await expect(priority).toHaveText("P2");
     await expect(header.getByRole("button", { name: "Unpin issue" })).toBeVisible();
     await leaveFocus(page);
 
@@ -82,8 +93,8 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     await expect(page.getByRole("listbox", { name: "Labels options" })).toHaveCount(0);
     await leaveFocus(page);
 
-    // e edits the title, where every single key is text again: typing "sp0" neither focused
-    // Status or the priority nor set P0, and Escape discards the edit.
+    // e edits the title, where every single key is text again: typing "sp0" neither opened
+    // the Status or the priority menu nor set P0, and Escape discards the edit.
     await page.keyboard.press("e");
     const titleInput = page.getByLabel("Issue title");
     await expect(titleInput).toBeFocused();
@@ -142,19 +153,29 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     await expect(dialog).toBeVisible();
     const issueSection = dialog.getByRole("region", { name: "Issue", exact: true });
     await expect(issueSection).toContainText("Set priority P0–P3");
-    await expect(issueSection).toContainText("Focus the status");
+    await expect(issueSection).toContainText("Open the status menu");
+    await expect(issueSection).toContainText("Open the priority menu");
     await expect(
       issueSection.getByRole("listitem").filter({ hasText: "Set priority P0–P3" }).locator("kbd")
     ).toHaveText(["0", "3"]);
     await expect(
-      issueSection.getByRole("listitem").filter({ hasText: "Conversation tab" }).locator("kbd")
+      issueSection
+        .getByRole("listitem")
+        .filter({ hasText: "Conversation: open its tab (on the new page, every filter off)" })
+        .locator("kbd")
     ).toHaveText(["t", "c"]);
     // `t v` is Activity and `t c` the Conversation, so Verification takes its checks' `k`.
     await expect(
-      issueSection.getByRole("listitem").filter({ hasText: "Verification tab" }).locator("kbd")
+      issueSection
+        .getByRole("listitem")
+        .filter({ hasText: "Verification: open its tab (on the new page, its filter)" })
+        .locator("kbd")
     ).toHaveText(["t", "k"]);
     await expect(
-      issueSection.getByRole("listitem").filter({ hasText: "Plan tab" }).locator("kbd")
+      issueSection
+        .getByRole("listitem")
+        .filter({ hasText: "Plan: open its tab (on the new page, its filter)" })
+        .locator("kbd")
     ).toHaveText(["t", "p"]);
     await expect(
       issueSection.getByRole("listitem").filter({ hasText: "Steps tab" }).locator("kbd")
@@ -176,7 +197,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
   }
 });
 
-test("a priority the server refuses shows the header's own failure, whether the digit key or the picker sent it", async ({
+test("a priority the server refuses shows the header's own failure, whether the digit key or the menu sent it", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -187,6 +208,7 @@ test("a priority the server refuses shows the header's own failure, whether the 
     await page.setViewportSize({ width: 1280, height: 900 });
     await openIssue(page, issue.key, "Refused priority");
     const header = page.getByTestId("issue-header");
+    const priority = priorityTrigger(header, issue.key);
     await page.route(`**/api/v1/issues/${issue.key}`, async (route) => {
       if (route.request().method() !== "PATCH") {
         await route.continue();
@@ -200,7 +222,7 @@ test("a priority the server refuses shows the header's own failure, whether the 
       });
     });
 
-    // The digit key and the picker are one write, so a refusal of either is reported once, by
+    // The digit key and the menu are one write, so a refusal of either is reported once, by
     // the control the reader is looking at, and the badge rolls back.
     await page.keyboard.press("2");
     const failure = header
@@ -209,72 +231,21 @@ test("a priority the server refuses shows the header's own failure, whether the 
     await expect(failure).toBeVisible();
     await expect(failure).toHaveCount(1);
     await expect(failure.getByRole("button", { name: "Retry" })).toBeVisible();
-    await expect(header.locator("span", { hasText: /^Priority$/ })).toBeVisible();
+    await expect(priority).toHaveText("Priority");
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
 
-    // The picker goes through that same write, so its refusal lands in the one failure the
+    // The menu goes through that same write, so its refusal lands in the one failure the
     // digit key already showed instead of raising a second beside it.
-    await header.getByRole("combobox", { name: `Priority of ${issue.key}` }).selectOption("3");
+    await pickFromMenu(priority, "P3");
     await expect(failure).toHaveCount(1);
     await expect(failure.getByRole("button", { name: "Retry" })).toBeVisible();
-    await expect(header.locator("span", { hasText: /^Priority$/ })).toBeVisible();
+    await expect(priority).toHaveText("Priority");
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
   } finally {
     await context.close();
   }
 });
 
-test("Escape leaves a focused header select, so the next chord is a chord and not type-ahead", async ({
-  browser,
-}) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Type-ahead" });
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
-    await page.setViewportSize({ width: 1280, height: 900 });
-    await openIssue(page, issue.key, "Type-ahead");
-    // Every PATCH this page sends, so a status the select's own type-ahead picked is caught
-    // even though the pill would show it for only as long as the reader stayed.
-    const patched: string[] = [];
-    page.on("request", (request) => {
-      if (request.method() === "PATCH") {
-        patched.push(new URL(request.url()).pathname);
-      }
-    });
-
-    // Three of the status labels begin with `t` (Triage, Todo, Testing), so a `t` that reached
-    // the Status select would write one of them instead of starting the tab chord.
-    for (const [key, control] of [
-      ["s", page.getByRole("combobox", { name: "Status" })],
-      ["p", page.getByRole("combobox", { name: `Priority of ${issue.key}` })],
-    ] as const) {
-      await page.keyboard.press(key);
-      await expect(control).toBeFocused();
-      await page.keyboard.press("Escape");
-      await expect.poll(() => onBody(page)).toBe(true);
-      await page.keyboard.press("t");
-      await expect(page.getByTestId("chord-indicator")).toHaveText(/t/);
-      await page.keyboard.press("c");
-      await expect(page.getByRole("tab", { name: "Conversation" })).toHaveAttribute(
-        "aria-selected",
-        "true"
-      );
-      await page.getByRole("tab", { name: "Spec" }).click();
-      await leaveFocus(page);
-    }
-
-    expect(patched).toEqual([]);
-    await expect
-      .poll(() => getIssue(issue.key))
-      .toMatchObject({
-        priority: null,
-        status: "triage",
-      });
-  } finally {
-    await context.close();
-  }
-});
 // The issue page's `0`-`3` write the issue's priority, and an ask card on that page carries option
 // radios. A radio takes no typed text, so this slice's editable policy lets a digit through to the
 // page - which must not turn "pick option 2" into "this issue is P2". The second half of this row

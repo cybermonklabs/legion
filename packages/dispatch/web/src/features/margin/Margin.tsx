@@ -269,18 +269,17 @@ function DetailsDrawer({
     onClose: () => setOpenNow.current(false),
     open: open && isPhoneViewport,
   });
-  // An open dialog masks every global binding, `Shift+M` among them, so the sheet binds its own
-  // in the dialog's scope: it closes Details, as the global one does at every other width, while
-  // Details is the innermost dialog the focus is in. A dialog over it - another layer, or a
-  // thread's own dialog drawn inside it - holds the focus, and the key leaves Details open.
+  // An open dialog masks every global binding, `Shift+M` among them, so the sheet registers the
+  // frame's own action, Open or close Details, in the dialog's scope, with the person's keys for
+  // it: it closes Details, as the frame's does at every other width, while Details is the
+  // innermost dialog the focus is in. A dialog over it - another layer, or a thread's own dialog
+  // drawn inside it - holds the focus, and the key leaves Details open.
   useKeymap(
     DIALOG_SCOPE,
     open && isPhoneViewport
       ? [
           {
-            id: "details.close",
-            keys: "Shift+M",
-            label: "Open or close Details",
+            action: "global.toggle-details",
             run: () => setOpenNow.current(false),
             when: () => document.activeElement?.closest('[role="dialog"]') === box.current,
           },

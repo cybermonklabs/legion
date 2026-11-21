@@ -21,13 +21,16 @@ import {
   removedEvenIfGone,
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { projectsQuery, userStateQuery } from "../../api/queries";
+import { projectsQuery, userStateQuery, whoAmIQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
+import { ChoiceMenu } from "../../components/ChoiceMenu";
+import { focusOnMount } from "../../components/focus-place";
+import { heldPress } from "../../components/held-press";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
-import { useScrollFadeTrailing } from "../../hooks/useScrollFadeTrailing";
+import { useScrollEnds } from "../../components/useScrollEnds";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   badgePrimary,
@@ -58,10 +61,12 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { TURN_ROW } from "../conversation/turn-keys";
 import { ApprovalChip } from "../doc/ApprovalChip";
+import { outsideAskCard } from "../inbox/ask-card";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
-import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
+import { issueStatuses, openIssueStatuses, statusLabel, statusText } from "../project/board-model";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
@@ -74,6 +79,7 @@ import { AssigneeControl } from "./AssigneeControl";
 import { ClaimChip } from "./ClaimChip";
 import { GitHubLink } from "./GitHubLink";
 import { gatedStepEntries } from "./gated-steps";
+import { usableControl } from "./header-control";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueLabels } from "./IssueLabels";
 import { PriorityEditor } from "./PriorityControl";
@@ -93,6 +99,11 @@ const routeHint =
   "New asks, comments, and messages on this issue wake this agent or role; replies inside a thread reach their participants directly. It is where messages go, not who is working the issue — that is the claim.";
 
 const titleRefusals = new Set(["CAP_EXCEEDED", "ISSUE_CLOSED"]);
+
+/** A turn of the Conversation tab, or a reply inside one (`turn-keys.ts`). While the focus is on
+ *  one the reader is on that turn, not on the header, so the header's Approve and Request
+ *  changes keys stand down. */
+const CONVERSATION_TURN = `#issue-conversation-panel :is(${TURN_ROW})`;
 
 /** Whether `input` is the Status pill's pick alone: that control shows its write in the shell's
  *  indicator and rolls back on a refusal, where every other header field holds its draft and
@@ -142,7 +153,7 @@ export function IssueHeader({
     }
   }, [parentEditing]);
   // The details rail's trailing fade, worn while the rail has anywhere left to scroll.
-  const railFade = useScrollFadeTrailing();
+  const railFade = useScrollEnds({ ends: "trailing" });
   const [subscribersOpen, setSubscribersOpen] = useState(false);
   const [referencesOpen, setReferencesOpen] = useState(false);
   const agentText = useAgentText();
@@ -216,37 +227,36 @@ export function IssueHeader({
     },
   });
   const drafts = useIssueDrafts(issue, updateIssue);
-  // Palette-only: closing and reopening an issue are too consequential for a single key, so they
-  // are reachable from `$mod+k` alone, through the same handlers and the same guards as the
-  // Close and Reopen buttons below. `IssuePage` pushes the `issue` scope these are offered under.
+  // No default key: closing and reopening an issue are too consequential for a single key, so
+  // they are rows of `$mod+k` until a person gives them a key, through the same handlers and the
+  // same guards as the Close and Reopen buttons below. The four Set priority rows have none
+  // either: the page's digits `0`–`3` set the priority (`issue.set-priority`), which is no row,
+  // since each digit writes its own priority. `IssuePage` pushes the `issue` scope these are
+  // offered under.
   useKeymap("issue", [
     {
-      id: "close",
-      keys: [],
-      label: "Close issue",
+      action: "issue.close",
       run: () => drafts.requestStatusSubmit("done"),
-      // `disabled={updateIssue.isPending}` on the button, and `isClosed` decides whether it is
+      // The button is held while `updateIssue` is pending, and `isClosed` decides whether it is
       // rendered at all; a row offered while the write is in flight would submit a second one.
       when: () => !isClosed && !updateIssue.isPending,
     },
     {
-      id: "reopen",
-      keys: [],
-      label: "Reopen issue",
+      action: "issue.reopen",
       run: () => drafts.requestStatusSubmit("backlog"),
       when: () => isClosed && !updateIssue.isPending,
     },
     ...([0, 1, 2, 3] as const).map((level) => ({
-      id: `set-p${level}`,
-      keys: [],
-      label: `Set priority P${level}`,
+      action: `issue.set-p${level}` as const,
       run: () => priorityWrite.submit(level),
-      // The same condition as `PriorityEditor`'s `disabled` below.
+      // The same condition as `PriorityEditor`'s `disabled` and `held` below.
       when: () => !(isClosed || updateIssue.isPending),
     })),
   ]);
   const statusSaving = updateIssue.isPending && updateIssue.variables?.status !== undefined;
   const pendingStatus = statusSaving ? updateIssue.variables?.status : undefined;
+  // What the status menu's trigger shows: the status a pick is saving, else the issue's.
+  const statusShown = statusText(pendingStatus ?? issue.status);
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
@@ -280,6 +290,42 @@ export function IssueHeader({
   const showApprovalActions =
     documentArtifact?.approval !== undefined &&
     (documentArtifact.approval.state !== "draft" || approvalRequestOpen);
+  // `a` and Shift+R press the header's Approve and Request changes (R7) while the primary
+  // document's own approval request waits on the reader: its `ask_id` names an open ask of this
+  // issue whose turn is a person's, and that person is the reader. `showApprovalActions` is not
+  // that test: it draws Request changes on an approved spec while only another document of the
+  // issue waits, whose request the reader reaches on the Artifacts tab. Inside an ask card the
+  // card's controls own the keys, and on a turn of the Conversation tab the reader is on that
+  // turn; a text field keeps both keys already, since neither fires while one has the focus.
+  const viewer = useQuery(whoAmIQuery()).data?.login;
+  const approvalAskId = documentArtifact?.approval?.ask_id;
+  const approvalWaitsOnReader =
+    viewer !== undefined &&
+    waitingForHuman.some((ask) => ask.id === approvalAskId && ask.waiting_on_person === viewer);
+  /** The header's Approve or Request changes, while the key that presses it is the reader's:
+   *  drawn, taking a press, and the request waiting on them. */
+  const approvalControl = (action: "approve" | "request-changes"): HTMLElement | null =>
+    approvalWaitsOnReader &&
+    outsideAskCard() &&
+    document.activeElement?.closest(CONVERSATION_TURN) == null
+      ? usableControl(`[data-approval-action="${action}"]`)
+      : null;
+  useKeymap("issue", [
+    {
+      // Approve stays held from the press until the page reads the approval again
+      // (`ApprovalChip`), so a second press meanwhile presses nothing.
+      action: "issue.approve",
+      run: () => approvalControl("approve")?.click(),
+      when: () => approvalControl("approve") !== null,
+    },
+    {
+      // Request changes opens its box with the focus in the reason, where Ctrl or Cmd+Enter
+      // sends and Escape closes it sending nothing (`ApprovalChip`).
+      action: "issue.request-changes",
+      run: () => approvalControl("request-changes")?.click(),
+      when: () => approvalControl("request-changes") !== null,
+    },
+  ]);
   const pinGuard = useSubmitGuard();
   const updateState = useKeyedWrite({
     // A read of the state asked while the pin is out could be answered before Dispatch takes it,
@@ -325,6 +371,11 @@ export function IssueHeader({
       event.currentTarget.blur();
     }
   };
+  // While a field write is out every header control that writes the issue is held rather than
+  // disabled: it keeps the focus the press gave it (`heldPress`). The route and parent forms'
+  // submits need no guard of their own: `useIssueDrafts` keeps a draft submitted meanwhile and
+  // sends it once the write out lands, never beside it.
+  const fieldHeld = updateIssue.isPending;
   const saveRoute = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (drafts.requestRouteSubmit()) {
@@ -381,6 +432,7 @@ export function IssueHeader({
   );
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   const referencesPanelId = useId();
+  const externalLinks = issue.external_links ?? [];
   // The title slot has one flex-basis whether it shows the heading or the editor: below 2xl the
   // title always takes its own row (basis-full) and the state controls and details line share
   // the row beneath it; from 2xl the slot is content-sized (basis-auto) so they join the title's
@@ -406,8 +458,7 @@ export function IssueHeader({
           <button
             aria-label="Reopen issue"
             className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-            disabled={updateIssue.isPending}
-            onClick={() => drafts.requestStatusSubmit("backlog")}
+            {...heldPress(fieldHeld, () => drafts.requestStatusSubmit("backlog"))}
             title="Reopen into Backlog"
             type="button"
           >
@@ -442,6 +493,9 @@ export function IssueHeader({
                 }}
                 onChange={(event) => drafts.writeTitle(event.target.value)}
                 onKeyDown={(event) => {
+                  // An Enter or an Escape that ends or moves an input method's composition is the
+                  // composition's: it saves nothing, discards nothing and keeps the editor open.
+                  if (event.nativeEvent.isComposing) return;
                   if (event.key === "Escape") {
                     drafts.discardTitle();
                     setEditingTitle(false);
@@ -449,20 +503,19 @@ export function IssueHeader({
                   }
                   saveTitleOnEnter(event);
                 }}
-                ref={(node) => node?.focus()}
+                ref={focusOnMount}
                 value={drafts.title}
               />
             ) : (
+              // The heading opens its editor when the reader activates it - a click, Enter or
+              // Space - and never as it takes the focus: an editor that opens on focus changes
+              // the page on focus (WCAG 2.2, 3.2.1 On Focus), and the heading can take the focus
+              // with no act of the reader's, from the page's focus rescue.
               <h1
                 className={`min-w-0 flex-1 break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface} ${
                   isClosed ? "" : `cursor-text ${borderStrongHover}`
                 }`}
                 onClick={() => {
-                  if (!isClosed) {
-                    setEditingTitle(true);
-                  }
-                }}
-                onFocus={() => {
                   if (!isClosed) {
                     setEditingTitle(true);
                   }
@@ -479,7 +532,7 @@ export function IssueHeader({
               </h1>
             )}
             <PinButton
-              disabled={updateState.isPending}
+              held={updateState.isPending}
               label={state.pinned ? "Unpin issue" : "Pin issue"}
               onClick={() => pinGuard.guard(() => updateState.mutate(!state.pinned))}
               pinned={state.pinned}
@@ -490,35 +543,40 @@ export function IssueHeader({
           className="flex w-full min-w-0 flex-wrap items-center gap-2 md:w-auto"
           data-testid="issue-state-actions"
         >
-          <label
-            className={`flex min-h-11 shrink-0 items-center gap-2 rounded-full border px-2 text-sm font-semibold uppercase tracking-wide sm:px-3 md:min-h-8 xl:px-2 ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
+          {/* The status menu: on an open issue every open status, since Close issue is an open
+              issue's one way into Done; on a closed issue every status, its own Done among them,
+              and disabled, since its way back is Reopen. The current status is checked. Held
+              while a write is out, so the focus a status pick hands back to it stays there. */}
+          <ChoiceMenu
+            checked={pendingStatus ?? issue.status}
+            choices={selectableStatuses.map((status) => ({
+              label: statusLabel(status),
+              value: status,
+            }))}
+            disabled={isClosed}
+            face={statusShown}
+            held={fieldHeld}
+            label="Status"
+            marks={{ "data-status-menu": "" }}
+            onChoose={drafts.requestStatusSubmit}
+            triggerClassName={`flex min-h-11 shrink-0 cursor-pointer items-center gap-2 rounded-full border px-2 text-sm font-semibold uppercase tracking-wide outline-none focus-visible:ring-2 refused:cursor-not-allowed refused:opacity-50 sm:px-3 md:min-h-8 xl:px-2 ${focusVisibleRing} ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
           >
             <span
               aria-hidden="true"
               className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
             />
-            <select
-              aria-label="Status"
-              className={`min-w-0 appearance-none font-inherit outline-none disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${statusPill.text}`}
-              disabled={isClosed || updateIssue.isPending}
-              onChange={(event) => drafts.requestStatusSubmit(event.target.value)}
-              value={pendingStatus ?? issue.status}
-            >
-              {selectableStatuses.map((status) => (
-                <option key={status} value={status}>
-                  {statusLabel(status)}
-                </option>
-              ))}
-            </select>
-          </label>
+            {statusShown}
+          </ChoiceMenu>
           <PriorityEditor
-            disabled={isClosed || updateIssue.isPending}
+            disabled={isClosed}
+            held={fieldHeld}
             issueKey={issue.key}
             write={priorityWrite}
           />
           <AssigneeControl
             assignee={issue.assignee}
-            disabled={isClosed || updateIssue.isPending}
+            disabled={isClosed}
+            held={fieldHeld}
             issueKey={issue.key}
           />
           {/* Progress is state about how far the work has got, like the status and the claim,
@@ -573,8 +631,7 @@ export function IssueHeader({
               <button
                 aria-label={`Release the claim on ${issue.key}`}
                 className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-                disabled={releaseClaim.isPending}
-                onClick={() => releaseClaim.mutate()}
+                {...heldPress(releaseClaim.isPending, () => releaseClaim.mutate())}
                 title="Release this claim so another agent can take the issue"
                 type="button"
               >
@@ -586,8 +643,7 @@ export function IssueHeader({
             <button
               aria-label="Close issue"
               className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-              disabled={updateIssue.isPending}
-              onClick={() => drafts.requestStatusSubmit("done")}
+              {...heldPress(fieldHeld, () => drafts.requestStatusSubmit("done"))}
               type="button"
             >
               {pendingStatus === "done" ? (
@@ -704,18 +760,26 @@ export function IssueHeader({
               row above must keep every control on one row at a phone width. Every issue has an
               item here, since every issue takes a repository whatever its project maps. */}
           <RepoControl
-            disabled={isClosed || updateIssue.isPending}
+            disabled={isClosed}
+            held={fieldHeld}
             issueKey={issue.key}
             project={issue.project}
             repo={issue.repo}
             resolvedRepo={issue.resolved_repo}
           />
           <IssueComponentsLine issue={issue} />
-          {(issue.external_links ?? []).map((link) => (
-            <div className="flex shrink-0 items-center" key={link.url}>
-              <GitHubLink link={link} />
-            </div>
-          ))}
+          {externalLinks.length === 0 ? null : (
+            // The issue's external links as a list, a link to an item. The list keeps the rail's
+            // gap between its items, so each link stands where it would as an item of the rail,
+            // and it is drawn only while there is a link, so it adds no gap at the rail's end.
+            <ul aria-label="External links" className="flex shrink-0 items-center gap-2">
+              {externalLinks.map((link) => (
+                <li className="flex shrink-0 items-center" key={link.url}>
+                  <GitHubLink link={link} />
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
         {referencesOpen ? (
           <ReferencedBy
@@ -746,7 +810,8 @@ export function IssueHeader({
             id="issue-route"
             onChange={(event) => drafts.writeRoute(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Escape") {
+              // An Escape that ends an input method's composition is the composition's.
+              if (event.key === "Escape" && !event.nativeEvent.isComposing) {
                 drafts.discardRoute();
                 setRouteEditing(false);
               }
@@ -756,8 +821,9 @@ export function IssueHeader({
             value={drafts.route}
           />
           <button
-            className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
-            disabled={isClosed || !drafts.routeIsValid || updateIssue.isPending}
+            aria-disabled={fieldHeld || undefined}
+            className={`min-h-11 rounded px-2 py-1 text-sm font-medium refused:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+            disabled={isClosed || !drafts.routeIsValid}
             type="submit"
           >
             Save route
@@ -795,7 +861,8 @@ export function IssueHeader({
             id="issue-parent"
             onChange={(event) => drafts.writeParent(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Escape") {
+              // An Escape that ends an input method's composition is the composition's.
+              if (event.key === "Escape" && !event.nativeEvent.isComposing) {
                 drafts.discardParent();
                 setParentEditing(false);
               }
@@ -805,8 +872,9 @@ export function IssueHeader({
             value={drafts.parent}
           />
           <button
-            className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
-            disabled={isClosed || updateIssue.isPending}
+            aria-disabled={fieldHeld || undefined}
+            className={`min-h-11 rounded px-2 py-1 text-sm font-medium refused:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+            disabled={isClosed}
             type="submit"
           >
             Save parent

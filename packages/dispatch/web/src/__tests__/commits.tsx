@@ -49,10 +49,14 @@ export function recordCommits<Host>(draw: () => string): Commits<Host> {
   };
 }
 
-/** What a badge picker draws - a `<select>` laid over its badge, as `PriorityEditor` and
- *  `AssigneeControl` draw one: the value the select holds and the text of the badge before it. */
-export function drawnPick(select: HTMLSelectElement): string {
-  return `${select.value} ${select.previousElementSibling?.textContent}`;
+/** What a picker's trigger draws - the priority's menu (`ChoiceMenu`) or a single pick's list
+ *  (`MultiSelect`): the words its name says after its label, the value it holds as a `<select>`
+ *  says its value, and its text. A trigger that shows its label's first words - an unset
+ *  priority's `Priority` - is named by its label alone, and its name says nothing after it. */
+export function drawnPick(trigger: HTMLElement): string {
+  const [, ...shown] = trigger.getAttribute("aria-labelledby")?.split(" ") ?? [];
+  const named = shown.map((id) => document.getElementById(id)?.textContent).join(" ");
+  return `${named} ${trigger.textContent}`;
 }
 
 /** TanStack Query's notifications to the observers of its caches, held back from now on. */

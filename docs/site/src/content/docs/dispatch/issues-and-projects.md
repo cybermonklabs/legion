@@ -21,7 +21,8 @@ A project page has up to three tabs:
 
 - **Issues**: the project's issues, as a List or a Board.
 - **Documents**: the project's documents that belong to no single issue. Pick or drop a file here to
-  upload it.
+  upload it. In the list of documents, `j` and `k` move the focus between the rows, `o` or `Enter`
+  opens the focused document, and `Shift+O` opens it in a new tab.
 - **Architecture**: the project's components and how much tracked work each has. This tab appears
   only when the project has an architecture source, which you add in **Settings → Architecture
   sources**.
@@ -69,7 +70,8 @@ Legion, when it works an issue, moves that issue's status itself.
 ## The List and the Board
 
 The **List** and **Board** buttons switch between two views of the same issues. Press `v` to
-toggle. Dispatch remembers your choice.
+toggle. Dispatch remembers your choice. On a focused row of the List or a focused card of the
+Board, `o` opens the issue, and `Shift+O` opens it in a new tab.
 
 The **List** is a sortable table, initially ordered by **Queue**, with Done excluded.
 Queue numbers are the waiting order of Todo issues labelled `legion`, using the Board's rank order.
@@ -184,6 +186,11 @@ The List and Board share **Needs you** (open asks) and **Unread** (unseen activi
 The List folds unclaimed work into its **Claimed by** column: its **Nobody or lapsed** value lists the issues nobody holds plus those whose claim the server would hand over. The Board keeps its **Unclaimed** chip, and both read the same `unclaimed=1` address parameter.
 The Board's active-filter chips remove individual picks.
 Filters, table sort, grouping, search and page live in the address, so a reload or shared link restores them.
+
+`Shift+F` opens the **Filters** panel of the List or the Board, and `Shift+V` opens the List's
+**View** menu. The focus goes to the first control inside. On a panel that is already open, such
+as the Board's when Dispatch opens it on load, `Shift+F` moves the focus into it. `Escape` closes
+an open list, then the panel, and the focus goes back to where it was before the key.
 
 An issue an agent is implementing shows **Claimed by** and the agent's name, which opens its
 [live view](/legion/dispatch/agents/#the-live-view). The claim holds while that agent's session is
@@ -347,7 +354,10 @@ agents using it stop working at once.
 
 Press `t` and then `s`, `k`, `p`, `e`, `c`, `h`, `a`, `v`, `d`, or `o` to switch to Spec,
 Verification, Plan, Steps, Conversation, Children, Artifacts, Activity, Decisions, or
-Collaborators.
+Collaborators. After you press `t`, the bottom right corner lists each key that can come next.
+Press `]` for the next tab and `[` for the previous one. After the last tab `]` goes to the
+first, and before the first `[` goes to the last.
+[Keyboard shortcuts](/legion/dispatch/keyboard/#issue) lists the issue page's other keys.
 
 An issue with no Verification document, or no plan document, shows on that tab the
 `dispatch artifact` command that makes one.

@@ -6,6 +6,7 @@ import { Link } from "react-router-dom";
 import { api } from "../../api/client";
 import { myRepliesKey } from "../../api/queries";
 import type { MyReplyRow, UserAgentState } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
@@ -15,11 +16,13 @@ import {
   textMutedOnCanvas,
 } from "../../theme/classes";
 import { storeAgentState } from "../agents/unread";
+import { CopyRefButton } from "../refs/CopyRefButton";
 import { Timestamp } from "../refs/Timestamp";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { ThreadOwnerLine } from "./AskOwnerLink";
 import { DismissControl } from "./DismissControl";
-import { rowPriority, rowType } from "./list-row";
+import { inboxActionMark } from "./inbox-action-mark";
+import { rowPriority, rowType, threadReferenceRoute } from "./list-row";
 import { RowKindIcon, RowPriorityTag } from "./RowMarks";
 import { ThreadBody } from "./ThreadBody";
 import { ThreadTitle } from "./ThreadTitle";
@@ -29,12 +32,13 @@ import { ThreadTitle } from "./ThreadTitle";
  * drawer shows at every width.
  *
  * It draws the head - the kind icon, the title and the time of the last write, then the priority
- * tag and the whole issue key and title - then the thread itself, exactly as the reading pane
- * draws it and collapsed the same way (`ThreadBody`), and the three controls a thread row offers:
+ * tag, the whole issue key and title, and the thread's own Copy reference, which the Inbox's `y`
+ * presses (`ITEM_COPY_REF_SELECTOR`) - then the thread itself, exactly as the reading pane draws
+ * it and collapsed the same way (`ThreadBody`), and the three controls a thread row offers:
  * **Open**, **Mark read**, and the **Dismiss** that takes the row out of the Inbox - **Move to
  * Inbox** in the Dismissed view - which the list it is drawn in provides (`DismissControl`). A
  * thread anchored in a document shows the text it is anchored to rather than the document: a card
- * is no place to open one.
+ * is no place to open one. Mark read is held while its write is out (`heldPress`).
  */
 export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
   const queryClient = useQueryClient();
@@ -65,6 +69,7 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
     },
   });
   const row = { kind: "thread", thread } as const;
+  const reference = threadReferenceRoute(thread);
   return (
     <div className={`rounded-xl border p-3 ${card} ${borderDefault}`} data-inbox-thread-card="">
       <div className="flex min-w-0 items-baseline gap-2">
@@ -77,6 +82,7 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
       <div className="mt-1 flex min-w-0 flex-wrap items-baseline gap-2">
         <RowPriorityTag priority={rowPriority(row)} />
         <ThreadOwnerLine className={`truncate text-sm ${textMutedOnCanvas}`} thread={thread} />
+        {reference === undefined ? null : <CopyRefButton item route={reference} />}
       </div>
       <ThreadBody quote thread={thread} />
       <div className="mt-2 flex flex-wrap items-center gap-4 text-sm">
@@ -91,8 +97,8 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
         </Link>
         <button
           className={`min-h-11 font-medium ${linkText} ${linkHoverText}`}
-          disabled={markRead.isPending}
-          onClick={() => markRead.mutate(thread)}
+          {...inboxActionMark("inbox.mark-read")}
+          {...heldPress(markRead.isPending, () => markRead.mutate(thread))}
           type="button"
         >
           {markRead.isPending ? "Marking read…" : "Mark read"}

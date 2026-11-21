@@ -32,7 +32,6 @@ import type {
   heatmapPlugin,
 } from "proof-sdk-upstream/src/editor/plugins/heatmap-decorations";
 import type { markPopoverPlugin } from "proof-sdk-upstream/src/editor/plugins/mark-popover";
-import type { markdownLinkClickPlugin } from "proof-sdk-upstream/src/editor/plugins/markdown-link-click";
 import type {
   accept,
   applyRemoteMarks,
@@ -95,8 +94,6 @@ export type UpstreamBoundaryIsTyped = [
   Assert<NotAny<typeof heatmapPlugin>>,
   // editor/plugins/mark-popover
   Assert<NotAny<typeof markPopoverPlugin>>,
-  // editor/plugins/markdown-link-click
-  Assert<NotAny<typeof markdownLinkClickPlugin>>,
   // editor/plugins/marks
   Assert<NotAny<typeof accept>>,
   Assert<NotAny<typeof applyRemoteMarks>>,

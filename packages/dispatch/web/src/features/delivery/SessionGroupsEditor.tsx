@@ -4,6 +4,7 @@ import { type ReactNode, useId, useRef, useState } from "react";
 import { api, type WriteBounds, type WriteMethod } from "../../api/client";
 import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySessionGroup } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
@@ -22,6 +23,7 @@ import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { refusedNote, useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
 import { storedSessionTitle } from "./lib/sessionTitles";
+import { useHoldUntilDrawn } from "./useHoldUntilDrawn";
 
 /** One change to the groups: what it is, as the editor's sentences name it (`the rename of the
  *  group Crew`), the group it changes, the method of its request and one attempt of it. A delete
@@ -39,24 +41,32 @@ const sectionLabel = `text-xs tracking-wide uppercase ${textMutedOnSurface}`;
 const fieldClass = `h-8 min-w-0 flex-1 rounded border px-2 text-sm ${inputClasses(true)} ${textPrimaryOnSurface}`;
 
 /** One group: its name, renamable, its members, each removable, and the window's selected
- *  sessions to add. While any group write is pending, every mutating button is disabled so a
- *  second click cannot race the one request that decides the membership. */
+ *  sessions to add, drawn as an item of the editor's list of groups. While any group write is
+ *  out, every mutating button is held (`heldPress`), so a second press cannot race the one
+ *  request that decides the membership. A write of this card's own that lands keeps them held
+ *  until the live update carrying it draws the card anew - its item is keyed by `updated_at` - or
+ *  takes it away (`useHoldUntilDrawn`), so the control the reader pressed goes as their press's
+ *  doing; a refusal lets them go at once. */
 function GroupCard({
   group,
+  pending,
   storedTitle,
   selected,
-  pending,
   write,
 }: {
   group: DeliverySessionGroup;
+  pending: boolean;
   storedTitle: (session: string) => string | undefined;
   selected: readonly string[];
-  pending: boolean;
-  write: (change: GroupChange) => void;
+  /** Sends `change`, and calls `landed` once Dispatch has made it. */
+  write: (change: GroupChange, landed: () => void) => void;
 }): ReactNode {
   const id = useId();
   const text = useAgentText();
   const [name, setName] = useState(group.name);
+  const [drawing, holdUntilDrawn] = useHoldUntilDrawn();
+  const held = pending || drawing;
+  const send = (change: GroupChange) => write(change, holdUntilDrawn);
   const addable = selected.filter((session) => !(group.sessions ?? []).includes(session));
   return (
     <fieldset aria-label={group.name} className={`grid gap-2 rounded border p-3 ${borderDefault}`}>
@@ -72,16 +82,16 @@ function GroupCard({
         />
         <button
           className={secondaryButtonCompact}
-          disabled={pending || name.trim() === "" || name.trim() === group.name}
-          onClick={() =>
-            write({
+          disabled={name.trim() === "" || name.trim() === group.name}
+          {...heldPress(held, () =>
+            send({
               group,
               method: "PATCH",
               run: (bounds) =>
                 api.updateDeliverySessionGroup(group.id, { name: name.trim() }, bounds),
               what: `the rename of the group ${group.name}`,
             })
-          }
+          )}
           type="button"
         >
           Rename
@@ -100,17 +110,16 @@ function GroupCard({
             />
             <button
               aria-label={`Remove ${text.sessionText(session, storedTitle(session))}`}
-              className={dismissButtonText}
-              disabled={pending}
-              onClick={() =>
-                write({
+              className={`refused:cursor-not-allowed refused:opacity-50 ${dismissButtonText}`}
+              {...heldPress(held, () =>
+                send({
                   group,
                   method: "PATCH",
                   run: (bounds) =>
                     api.updateDeliverySessionGroup(group.id, { remove: [session] }, bounds),
                   what: `the removal of ${text.sessionText(session, storedTitle(session))} from ${group.name}`,
                 })
-              }
+              )}
               type="button"
             >
               ✕
@@ -121,30 +130,29 @@ function GroupCard({
       <div className="flex gap-2">
         <button
           className={secondaryButtonCompact}
-          disabled={pending || addable.length === 0}
-          onClick={() =>
-            write({
+          disabled={addable.length === 0}
+          {...heldPress(held, () =>
+            send({
               group,
               method: "PATCH",
               run: (bounds) => api.updateDeliverySessionGroup(group.id, { add: addable }, bounds),
               what: `the sessions added to ${group.name}`,
             })
-          }
+          )}
           type="button"
         >
           Add selected
         </button>
         <button
           className={`${secondaryButtonCompact} ${dangerText}`}
-          disabled={pending}
-          onClick={() =>
-            write({
+          {...heldPress(held, () =>
+            send({
               group,
               method: "DELETE",
               run: (bounds) => api.deleteDeliverySessionGroup(group.id, bounds),
               what: `the deletion of the group ${group.name}`,
             })
-          }
+          )}
           type="button"
         >
           Delete group
@@ -313,8 +321,8 @@ export function SessionGroupsEditor({
           />
           <button
             className={secondaryButtonCompact}
-            disabled={name.trim() === "" || selected.length === 0 || save.isPending}
-            onClick={create}
+            disabled={name.trim() === "" || selected.length === 0}
+            {...heldPress(save.isPending, create)}
             type="button"
           >
             Create group
@@ -339,17 +347,22 @@ export function SessionGroupsEditor({
 
       {groups.length === 0 ? null : (
         <section className="grid gap-2">
-          <h3 className={sectionLabel}>Groups</h3>
-          {groups.map((group) => (
-            <GroupCard
-              group={group}
-              key={`${group.id}:${group.updated_at}`}
-              pending={save.isPending}
-              selected={selected}
-              storedTitle={storedTitle}
-              write={(change) => save.mutate(change)}
-            />
-          ))}
+          <h3 className={sectionLabel} id={`${id}-groups`}>
+            Groups
+          </h3>
+          <ul aria-labelledby={`${id}-groups`} className="grid gap-2">
+            {groups.map((group) => (
+              <li key={`${group.id}:${group.updated_at}`}>
+                <GroupCard
+                  group={group}
+                  pending={save.isPending}
+                  selected={selected}
+                  storedTitle={storedTitle}
+                  write={(change, landed) => save.mutate(change, { onSuccess: landed })}
+                />
+              </li>
+            ))}
+          </ul>
         </section>
       )}
     </aside>

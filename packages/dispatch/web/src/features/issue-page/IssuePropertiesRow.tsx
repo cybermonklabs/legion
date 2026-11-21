@@ -10,9 +10,9 @@ import {
   whoAmIQuery,
 } from "../../api/queries";
 import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
+import { ChoiceMenu } from "../../components/ChoiceMenu";
 import { approvalPillClassName } from "../../components/Pill";
 import {
-  bgTransparent,
   focusVisibleRing,
   pageInkText,
   pageLabelChip,
@@ -34,7 +34,7 @@ import { gatedStepEntries } from "../issue/gated-steps";
 import { PriorityEditor } from "../issue/PriorityControl";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
-import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
+import { issueStatuses, openIssueStatuses, statusLabel, statusText } from "../project/board-model";
 import { wordsOf } from "../refs/tree-fragment";
 import { APPROVAL_CHIP } from "./approval-chip-box";
 import { decisionsDocumentId } from "./decision-review";
@@ -82,11 +82,11 @@ export function IssuePropertiesRow({
   // the press on this control caused, or an earlier pick of the status still being saved - is
   // held by the header's writes (`pickStatus`: a keyed write in the issue's line, sent after the
   // write in flight), so the press lands on the control as it does with nothing edited, and the
-  // header and Details read one status, the newest one held. No write disables the select, not
-  // even its own: only a closed issue does. The browser moves the focus off a control that turns
-  // disabled, so disabling the select while its pick saves would leave a keyboard pick's focus on
-  // the page's body.
+  // header and Details read one status, the newest one held. No write holds the status menu, not
+  // even its own: only a closed issue disables it.
   const status = writes.pendingStatus ?? issue.status;
+  // What the status menu's trigger shows: the status a pick is saving, else the issue's.
+  const statusShown = statusText(status);
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // What the count counts, read from what the outline already reads under the same keys - the
   // reader's login, the decisions, the coverage's statements, the comments a Change is written
@@ -185,33 +185,28 @@ export function IssuePropertiesRow({
       data-testid="issue-state-actions"
       ref={line}
     >
-      {/* The prototype's `.pill`: the status's shape and word inside a rule of its colour. The
-          rule is drawn inside the pill's box, so the select can fill that box: 24 px tall at
-          every width, the least a target may be (WCAG 2.5.8). The shape is an svg and not text,
-          since the page's typeface lacks ◐; it hides itself from assistive technology and holds
-          no words, so its span only centres it on the pill while the select stretches. */}
-      <label
-        className={`inline-flex min-h-6 shrink-0 items-stretch gap-1 rounded-full px-2 text-xs leading-[18px] font-semibold shadow-[inset_0_0_0_1px_currentColor] ${statusTone(status)}`}
+      {/* The prototype's `.pill`: the status's shape and word inside a rule of its colour, which
+          is the status menu's trigger (`ChoiceMenu`), 24 px tall at every width, the least a
+          target may be (WCAG 2.5.8). Its menu holds every open status on an open issue, and
+          every status on a closed one, whose trigger is disabled, since its way back is Reopen;
+          the status shown is checked. The shape is an svg and not text, since the page's
+          typeface lacks ◐; it hides itself from assistive technology and holds no words. */}
+      <ChoiceMenu
+        checked={status}
+        choices={selectableStatuses.map((choice) => ({
+          label: statusLabel(choice),
+          value: choice,
+        }))}
+        disabled={isClosed}
+        face={statusShown}
+        label={PROPERTY_LABELS.status}
+        marks={{ "data-status-menu": "" }}
+        onChoose={writes.pickStatus}
+        triggerClassName={`inline-flex min-h-6 shrink-0 cursor-pointer items-center gap-1 rounded-full px-2 text-xs leading-[18px] font-semibold shadow-[inset_0_0_0_1px_currentColor] outline-none focus-visible:ring-2 refused:cursor-not-allowed refused:opacity-50 ${statusTone(status)} ${focusVisibleRing}`}
       >
-        <span className="self-center">
-          <StatusGlyph glyph={statusGlyph(status)} />
-        </span>
-        {/* Sized to the status it shows, as the prototype's pill is; a browser with no
-            `field-sizing` draws the select at its longest option, which is its own width. */}
-        <select
-          aria-label={PROPERTY_LABELS.status}
-          className={`min-w-0 cursor-pointer appearance-none font-inherit outline-none [field-sizing:content] disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${focusVisibleRing}`}
-          disabled={isClosed}
-          onChange={(event) => writes.pickStatus(event.target.value)}
-          value={status}
-        >
-          {selectableStatuses.map((choice) => (
-            <option key={choice} value={choice}>
-              {statusLabel(choice)}
-            </option>
-          ))}
-        </select>
-      </label>
+        <StatusGlyph glyph={statusGlyph(status)} />
+        <span {...pageChrome}>{statusShown}</span>
+      </ChoiceMenu>
       {/* The priority and the assignee stay enabled while another write is in flight and queue a
           pick behind it, as the status does and as their own controls say: a press straight out
           of the title's editor lands on them. */}

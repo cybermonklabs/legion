@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { holdSection } from "./pane-placement";
+import { holdSection, PANE_READER_MOVE } from "./pane-placement";
 
 /** Short enough that no row waits for the real numbers, long enough that a slow machine is not
  *  read as a settled drawing. */
@@ -136,6 +136,24 @@ test("a press outside the column leaves it held", () => {
     hold.release();
     box.remove();
     elsewhere.remove();
+  }
+});
+
+// The document's own keys scroll the column from the list (Space, Shift+Space, `g g` and
+// Shift+G), where no event of the column's own fires: they say so on the column, which lets it
+// go as a key pressed in it does, before the document has drawn as much as after.
+test("the list's scroll keys let the column go, whether or not the document has drawn", () => {
+  for (const drawn of [false, true]) {
+    const { box } = column();
+    const hold = holdSection(box, BOUNDS);
+    try {
+      if (drawn) hold.drawing();
+      box.dispatchEvent(new Event(PANE_READER_MOVE));
+      expect(hold.writes()).toBe(false);
+    } finally {
+      hold.release();
+      box.remove();
+    }
   }
 });
 

@@ -47,6 +47,15 @@ The arrow keys do the same while the focus is in the list. The selected row is i
 address as `?item=<id>`, so a link or a reload keeps your place. A question the agent withdraws,
 or that somebody answers elsewhere, leaves the list at once, and the next row is selected.
 
+While the focus is in the list, `Space` and `Shift+Space` scroll the right column down and up, and
+`g g` and `Shift+G` take it to its top and its end. The selection and the focus stay where they
+are. `l` moves the focus into the right column, and `Escape` brings it back to the list.
+
+After you snooze, dismiss, approve, request changes on or answer a row, the row after it is
+selected, and it takes the keyboard focus. If no row comes after it, the row before it is
+selected. If no row is left, the focus goes to the list's empty message. This works the same with
+the **Later** band folded or open, where there is no second column, and in the drawer.
+
 Three things stay in the column until you select another row: a question you had typed an answer
 into, which is shown closed with your text to copy; a question whose answer you sent and the
 server has not decided yet; and a thread you have just read, which is drawn as read where it
@@ -96,20 +105,29 @@ Each card also says `Waiting on you` or `Waiting on <agent>` on its status line.
 
 ### Filter
 
-**Filter**, at the left of the bar, narrows the list by the same five fields: Priority, Urgency,
-Type, Project and Assignee. Each opens a list you can search, and every value in it carries how
-many rows it holds, counted inside what the other four fields have already narrowed — so a value
-that reads 3 has three rows behind it, and picking it never empties the list.
+**Filter**, beside the search box at the left of the bar, narrows the list by the same five
+fields: Priority, Urgency, Type, Project and Assignee. Each opens a list you can search, and every
+value in it carries how many rows it holds, counted inside what the other four fields have
+already narrowed — so a value that reads 3 has three rows behind it, and picking it never empties
+the list.
+
+`Shift+F` opens **Filter** and `Shift+V` opens **View**, on the page and in the drawer. The focus
+goes to the first control inside. `Escape` closes an open list, then the panel, and the focus goes
+back to where it was before the key.
 
 Type is the field that tells the kinds apart: Question, Decision, Approval, Reply and Agent
 message.
 
-Each value you pick becomes a chip under the bar. Remove one with its ×, or all of them with
-**Clear filters**. The filters are in the address as well, so a narrowed list is a link.
+Each value you pick becomes a chip, on a line of its own under the bar while any filter is on.
+Remove one with its ×, or all of them with **Clear filters**, at the end of that line. The filters
+are in the address as well, so a narrowed list is a link.
 
-The banner at the top, for example `Blocked on you: 2 items, oldest 6h`, counts the open asks
-that wait on you and that you have not snoozed, and every credential
-request waiting on you, whatever the filter below it is set to.
+**Blocked on you · 2**, among the bar's own controls, counts the open asks that wait on you and
+that you have not snoozed, and every credential request waiting on you, whatever the filter is
+set to. Hold the pointer on it to read the count with the oldest one's age, for example
+`Blocked on you: 2 items, oldest 6h`. Press it to narrow the list to the asks waiting on you; the
+credential requests stay above the list. It is not shown while nothing waits on you, in the
+**Dismissed** view, or while the list is narrowed to one agent's asks.
 
 A credential request is an agent asking you to let it use a secret, or a machine asking to start
 agent sessions as you. Pending ones are listed under **Credential requests**, above the list.
@@ -118,10 +136,10 @@ in to the broker ([approve a request](/legion/broker/guides/approve-a-request/))
 decides no secret request. A **Machine login** links to Dispatch's machine-login page, where you
 type the code the machine shows and approve or deny it
 ([log a machine in](/legion/broker/guides/log-a-machine-in/)). They count toward the sidebar's
-**Inbox** number and the banner like an ask that waits on you. A request whose deadline passed
-before anybody decided it stays in the list, marked **Expired** with its deadline, with no link,
-until you click **Dismiss**; nobody can decide it, so it counts toward neither number. The Inbox
-says `Nothing needs you` only when your own list holds no ask and no credential request still
+**Inbox** number and **Blocked on you** like an ask that waits on you. A request whose deadline
+passed before anybody decided it stays in the list, marked **Expired** with its deadline, with no
+link, until you click **Dismiss**; nobody can decide it, so it counts toward neither number. The
+Inbox says `Nothing needs you` only when your own list holds no ask and no credential request still
 waiting on a decision; with the filter on someone else it says `Nothing matches this filter`, and
 with the filter cleared, `Nothing needs anyone`. An open Inbox picks up a new request, or one that
 is no longer pending, within moments on its own - no reload needed.
@@ -182,12 +200,13 @@ whose asks you were looking at.
 While the filter names anybody but you alone, the **Waiting on you** band reads **Waiting on a
 person** instead, since those asks wait on whoever holds them.
 
-The banner, a project's **Blocked on you** pill and the Agents page's **Needs you** pill mean
-one thing wherever they appear: the open asks whose turn is a person's, that wait on you and
-that you have not snoozed. The banner adds the credential requests waiting on you, and so
-does the sidebar's **Inbox** number, which adds your unread threads on top of both; a project's
-pill counts no credential request, because a request belongs to no project. None of them follows
-the filter, so a widened filter lists more asks than the number beside the Inbox.
+The Inbox's **Blocked on you** control, a project's **Blocked on you** pill and the Agents page's
+**Needs you** pill mean one thing wherever they appear: the open asks whose turn is a person's,
+that wait on you and that you have not snoozed. The Inbox's control adds the credential requests
+waiting on you, and so does the sidebar's **Inbox** number, which adds your unread threads on top
+of both; a project's pill counts no credential request, because a request belongs to no project.
+None of them follows the filter, so a widened filter lists more asks than the number beside the
+Inbox.
 
 The Agents page links each agent's asks too. Its **Needs you** pill opens the Inbox filtered to
 that agent's asks waiting on you, under an `Asks from <agent> waiting on you · clear` chip. Choose
@@ -196,9 +215,9 @@ the chip to remove the filter, or the **↗** beside it to open the agent's
 
 ### Later and snooze
 
-You can put off an ask instead of answering it now. Every ask has a **Snooze** control with four
+You can put off an ask instead of answering it now. Every ask has a **Snooze** menu with four
 choices, at the head of the right column, or on the ask's own row where there is no second
-column:
+column. Choose **Snooze**, or press `b` or `h`, to open it:
 
 | Choice | Comes back |
 | --- | --- |
@@ -207,17 +226,32 @@ column:
 | Next week | At 09:00 next Monday, in your own time zone. |
 | Until I clear it | Only when you end the snooze. |
 
+Click a choice, or move to it with the arrow keys and press `Enter`, or press its digit, `1` to
+`4`. `Escape`, `Tab` and a click outside the menu close it, and nothing changes. On a snoozed ask
+the menu also offers **Un-snooze**, on `0`.
+
 A snoozed ask moves into the folded **Later** band, which is there whatever you group the list
 by. Open the band to see when each ask comes back and to end a snooze early. A snooze outranks
 whose turn it is: an agent replying to a snoozed ask does not bring it back, and it does not
-count toward the sidebar's **Inbox** number or the banner. A thread cannot be snoozed: it is
-read or it is not.
+count toward the sidebar's **Inbox** number or **Blocked on you**. A thread cannot be snoozed: it
+is read or it is not.
 
-To snooze several asks at once, tick each row's checkbox, or press `x` on the row the right
-column is showing (on the focused row where there is no second column). A bar appears above the
-list reading `3 selected`, with the same four choices and **Clear**. If the server refuses some
-of them, the bar says how many and why, and those rows stay ticked. Press `Escape` with no row
-focused to drop every tick.
+To act on several rows at once, tick each row's checkbox, or press `x` on the row the right
+column is showing (on the focused row where there is no second column). A bar appears over the
+list, at the foot of the window (at its top on a phone), so no row moves. It reads `3 selected`,
+and it holds:
+
+- **Snooze**, while asks are ticked: the same four choices, for each ticked ask that the list
+  shows. It does not snooze a ticked ask in a folded band or behind **Show more**, also after you
+  press **Select all**. `b` and `h` open it too.
+- **Dismiss**, while threads are ticked: it takes each ticked thread that the list shows out of
+  the Inbox. After **Select all**, it takes every thread that **Select all** ticked, also the
+  threads that the list does not show. In the **Dismissed** view it reads **Move to Inbox**.
+- **Select all**, which ticks every row that the list's filters and search match.
+- **Clear selection**.
+
+If the server refuses some of them, the bar says how many and why, and those rows stay ticked.
+Press `Escape` with no row focused to drop every tick.
 
 ## Replies and agent messages
 
@@ -244,7 +278,7 @@ it is showing, and a thread somebody wrote in after the list was read stays unre
 **Dismiss** is what takes a thread out of the Inbox. It is on the row itself — while your pointer
 is on the row, and always on the row you are reading — in the right column's head, and on the
 card where there is no second column. The key `e` dismisses the row you are on, and with rows
-selected the bar above them dismisses all of them at once. A question has no **Dismiss**: you
+selected the selection bar dismisses all of them at once. A question has no **Dismiss**: you
 answer or snooze an ask instead.
 
 What you dismissed is behind **View → Show → Dismissed**, newest dismissal first, where the same

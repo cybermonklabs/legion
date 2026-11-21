@@ -1,9 +1,11 @@
 import type { MessageDeliveryMode } from "@legion/contracts";
-import type { ReactNode } from "react";
+import { type ReactNode, useContext } from "react";
 
 import type { Actor, DisplayTree, ReplyBlockWithTrees } from "../../api/types";
 import { secondaryButtonBorder, textSecondaryOnSurface } from "../../theme/classes";
 import { AgentName, type AgentPart } from "../refs/AgentName";
+import { CopyRefButton } from "../refs/CopyRefButton";
+import type { DispatchReferenceRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import type { DwellRef } from "../shell/useDwell";
 import { Avatar } from "./Avatar";
@@ -15,6 +17,7 @@ import {
   type TargetedMessageAttempt,
   takenAsUserTurn,
 } from "./TargetedMessageCard";
+import { ConversationTurns, turnFocusRing, turnMarks } from "./turn-keys";
 
 /** A turn's action icons - copy-reference, Reply, Pin - beside its body: a row on desktop, a
  *  column on the phone so three 44 px targets do not squeeze the text to a sliver. The column
@@ -55,10 +58,10 @@ interface ReplyDelivery {
 }
 
 /** One reply in a thread: author, time, the quoted parent, the body, and - when the reply was
- *  itself delivered to a session - what became of that delivery. `actions` sit beside the Reply
- *  button (the Conversation adds copy-reference). */
+ *  itself delivered to a session - what became of that delivery. A reply of an issue draws its
+ *  Copy reference beside the Reply button (`reference`); one to a session that names no issue
+ *  has none. On the Conversation tab the row is a turn its keys reach (`turn-keys.ts`). */
 export function ReplyTurn({
-  actions,
   at,
   author,
   body,
@@ -67,10 +70,10 @@ export function ReplyTurn({
   markRef,
   onReply,
   quote,
-  replyDisabled = false,
+  reference,
+  replyHeld = false,
   turnID,
 }: {
-  actions?: ReactNode;
   at: string;
   author: Actor;
   body: ReactNode;
@@ -89,10 +92,13 @@ export function ReplyTurn({
     readonly excerptTree?: DisplayTree;
     readonly to?: string;
   };
+  /** The reply's own reference, which its Copy reference copies. */
+  reference?: DispatchReferenceRoute;
   /** Holds the Reply button while the composer it would address is busy with a send. */
-  replyDisabled?: boolean;
+  replyHeld?: boolean;
   turnID: string;
 }): ReactNode {
+  const inTab = useContext(ConversationTurns);
   // The retry row a delivered reply keeps until the session answers it or took it as its turn.
   const retry =
     delivery !== undefined &&
@@ -103,10 +109,11 @@ export function ReplyTurn({
   return (
     <li
       aria-current={current ? "true" : undefined}
-      className="flex gap-3 rounded-lg py-1"
+      className={`flex gap-3 rounded-lg py-1 ${inTab ? turnFocusRing : ""}`}
       data-reply=""
       data-turn={turnID}
       ref={markRef}
+      {...turnMarks(inTab, reference)}
     >
       <Avatar actor={author} />
       <div className="min-w-0 flex-1">
@@ -148,8 +155,8 @@ export function ReplyTurn({
         )}
       </div>
       <TurnActions>
-        {actions}
-        {onReply === undefined ? null : <ReplyButton disabled={replyDisabled} onClick={onReply} />}
+        {reference === undefined ? null : <CopyRefButton route={reference} />}
+        {onReply === undefined ? null : <ReplyButton held={replyHeld} onClick={onReply} />}
       </TurnActions>
     </li>
   );

@@ -7,6 +7,7 @@ import { Link, MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
+import { installResizeObserver } from "../../__tests__/scroll-box";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type {
@@ -18,7 +19,7 @@ import type {
   IssueReferenceSummary,
 } from "../../api/types";
 import { closeRefPreview, RefPreviewHost, referenceTriggerProps } from "./RefPreview";
-import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./ref-preview-card";
+import { NO_HOVER_PREVIEW_ATTRIBUTE, REF_PREVIEW_CARD_ID } from "./ref-preview-card";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
 import { shortForm } from "./routes";
 
@@ -530,6 +531,67 @@ test("keyboard focus opens the card at once, scrolling under it repositions rath
   } finally {
     view.unmount();
     getIssue.mockRestore();
+  }
+});
+
+// dispatch://INFRA-2160, R1: a card opened above a reference low in the window, at the height of
+// its heading alone, grew down over the reference when its read landed, so a press on the
+// reference came up on the card and followed nothing.
+test("a card placed above its reference is placed again when it grows, so it never covers the reference", async () => {
+  const resizes = installResizeObserver();
+  // The card's height: its heading alone while its read is out, its status row too once it lands.
+  let cardHeight = 46;
+  const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get() {
+      return this.id === REF_PREVIEW_CARD_ID ? cardHeight : (own?.get?.call(this) ?? 0);
+    },
+  });
+  const reads: Array<(details: IssueDetails) => void> = [];
+  const getIssue = spyOn(api, "getIssue").mockImplementation(() => {
+    const read = Promise.withResolvers<IssueDetails>();
+    reads.push(read.resolve);
+    return read.promise;
+  });
+  const view = render(<Harness />);
+  try {
+    const first = screen.getByRole("link", { name: "first" });
+    // Near the window's foot, where the card fits only above the reference.
+    const top = window.innerHeight - 70;
+    first.getBoundingClientRect = () =>
+      ({
+        bottom: top + 16,
+        height: 16,
+        left: 100,
+        right: 280,
+        top,
+        width: 180,
+        x: 100,
+        y: top,
+      }) as DOMRect;
+    act(() => {
+      first.focus();
+    });
+    const card = screen.getByRole("tooltip");
+    expect(card).toHaveTextContent("CORE-1");
+    expect(card.style.top).toBe(`${top - 6 - 46}px`);
+
+    // The read lands and the preview inside the card draws it, which grows the card with no
+    // render of the card itself; the browser then reports the card's new size.
+    cardHeight = 78;
+    await act(async () => {
+      for (const land of reads) land(issues["CORE-1"] as IssueDetails);
+    });
+    expect(card).toHaveTextContent("Design decision");
+    resizes.resize(card);
+    expect(card.style.top).toBe(`${top - 6 - 78}px`);
+  } finally {
+    view.unmount();
+    getIssue.mockRestore();
+    resizes.restore();
+    if (own === undefined) Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
+    else Object.defineProperty(HTMLElement.prototype, "offsetHeight", own);
   }
 });
 

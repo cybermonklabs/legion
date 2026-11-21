@@ -163,6 +163,13 @@ test("a version the browser cannot draw becomes a link to the artifact's page", 
   expect(caretPlaced).toBe(1);
   link.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 2 }));
   expect(caretPlaced).toBe(1);
+  // A middle press is prevented, so the browser pastes nothing into the document, and places no
+  // caret either; the editor opens the link on the `auxclick` after it.
+  const middle = new MouseEvent("mousedown", { bubbles: true, button: 1, cancelable: true });
+  link.dispatchEvent(middle);
+  expect(middle.defaultPrevented).toBe(true);
+  expect(caretPlaced).toBe(1);
+  expect(view.stopEvent?.(middle)).toBe(true);
 });
 
 test("an error raised as the source is set is not missed", () => {

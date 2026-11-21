@@ -21,6 +21,7 @@ export type UserPreference =
   | "project.issue-filters"
   | "project.issue-view"
   | "search.recents"
+  | "shell.keymap"
   | "shell.margin"
   | "shell.margin-width"
   | "shell.sidebar";
@@ -28,6 +29,33 @@ export type UserPreference =
 /** Browser-only values are private to the signed-in Dispatch identity. */
 export function userPreferenceStorageKey(login: string, preference: UserPreference): string {
   return `dispatch.${preference}:${login}`;
+}
+
+/** A store of stored preferences that every reader reads for the tab (`useSyncExternalStore`). */
+export interface PreferenceStore {
+  /** Tells every reader mounted now that the stored value may have changed. */
+  readonly notify: () => void;
+  /** Adds a reader. While any reader is mounted the window's `storage` event tells them all,
+   *  which is how a write in another tab of this browser reaches this one. */
+  readonly subscribe: (listener: () => void) => () => void;
+}
+
+/** A new store with readers of its own, for a module that keeps one preference this way
+ *  (`issue-page/choice.ts`, `keymap-keys.ts`). */
+export function preferenceStore(): PreferenceStore {
+  const listeners = new Set<() => void>();
+  const notify = (): void => {
+    for (const listener of listeners) listener();
+  };
+  const subscribe = (listener: () => void): (() => void) => {
+    if (listeners.size === 0) window.addEventListener("storage", notify);
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) window.removeEventListener("storage", notify);
+    };
+  };
+  return { notify, subscribe };
 }
 
 /**
@@ -67,7 +95,10 @@ function preferenceValue<T>(
  * Reads a browser preference for a resolved signed-in identity. Pending and failed identity use
  * the caller's explicit fallback when one differs from `read(null)`; neither state persists.
  * `read` runs when the hook mounts and when the signed-in identity or `preference` changes, and
- * at no other time: a `read` that consults other state sees that state as it was then.
+ * at no other time: a `read` that consults other state sees that state as it was then. A write
+ * whose value is the one already stored is not made, so a caller whose `read` folds several
+ * stored values into one (the Board's panel, shut while no filter is on whatever is stored)
+ * never writes a value over itself.
  */
 export function useUserPreference<T>(
   preference: UserPreference,
@@ -92,9 +123,10 @@ export function useUserPreference<T>(
   const setAndPersist = useCallback(
     (next: T) => {
       setValue(next);
-      if (login !== undefined) {
-        window.localStorage.setItem(userPreferenceStorageKey(login, preference), write(next));
-      }
+      if (login === undefined) return;
+      const key = userPreferenceStorageKey(login, preference);
+      const stored = write(next);
+      if (window.localStorage.getItem(key) !== stored) window.localStorage.setItem(key, stored);
     },
     [login, preference, write]
   );

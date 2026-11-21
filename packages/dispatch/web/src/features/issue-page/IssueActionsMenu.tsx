@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
+import { heldPress } from "../../components/held-press";
 import {
   pageHairBorder,
   pageHeaderControl,
@@ -137,14 +138,16 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
               className={`flex min-h-11 w-full items-center rounded-[7px] px-2 py-[7px] text-left text-sm font-medium min-[1280px]:min-h-0 ${pageRowHoverBg} ${pageInkText} ${secondaryButtonDisabledText}`}
               disabled={action.disabled}
               key={action.id}
-              onClick={() => {
+              // A held action keeps the focus the press gave it, and takes no press while its
+              // write is out, so the group stays open around it.
+              {...heldPress(action.held === true, () => {
                 // `Shift+P` presses the hidden pin while the group is shut (`useHeaderKeys.ts`):
                 // that press moves no focus.
                 const fromTheMenu = open;
                 setOpen(false);
                 action.run();
                 if (fromTheMenu) control.current?.focus();
-              }}
+              })}
               type="button"
               {...pageChrome}
             >
@@ -161,9 +164,12 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
  *  are its name too - the control carries no `aria-label` - so a voice user who says what it
  *  reads presses it (WCAG 2.5.3, axe's `label-content-name-mismatch`). Reopening says which
  *  status it reopens into, where a tooltip used to, and that whole sentence is the name. A
- *  toggle - the pin - says what is so with `pressed`. */
+ *  toggle - the pin - says what is so with `pressed`. `held` is the action's own write out: the
+ *  control keeps the focus and its Tab stop and takes no press (`heldPress`), where `disabled`
+ *  is an action the issue takes none of, the parent of a closed issue. */
 export interface IssueAction {
   readonly disabled?: boolean;
+  readonly held?: boolean;
   /** Which action this is, apart from the words it shows, which change as it saves. It is the
    *  control's `data-issue-action`, which a key finds the control by (`Shift+P` presses
    *  `button[data-issue-action="pin"]`, `useHeaderKeys.ts`), so the four ids are a contract. */

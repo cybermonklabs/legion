@@ -1,11 +1,13 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the drag of a row onto another below is a drag and a drop, which user-event has no form for
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { api } from "../../api/client";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import { KeymapProvider } from "../shell/KeymapProvider";
+import { appKeymap } from "../shell/keymap";
 import { PrioritiesPage } from "./PrioritiesPage";
 
 function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow {
@@ -148,7 +150,9 @@ function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
   const view = render(
     <MemoryRouter initialEntries={["/priorities"]}>
       <QueryClientProvider client={client}>
-        <PrioritiesPage />
+        <KeymapProvider>
+          <PrioritiesPage />
+        </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -572,20 +576,230 @@ test("a grouped table counts each group in the plural its rows are called by", a
     [issue("CORE-1"), issue("CORE-2")]
   );
   await screen.findByRole("row", { name: "P1 Legion works reliably first" });
-  const groupBy = (region: string) =>
-    within(screen.getByRole("region", { name: region })).getByRole("combobox", {
-      name: /^Group by/,
-    });
+  // Group by is a section of each table's own display menu (`components/DisplayMenu.tsx`), the
+  // same one the project List draws.
+  const groupBy = async (region: string, column: string) => {
+    await user.click(
+      within(screen.getByRole("region", { name: region })).getByRole("button", { name: "View" })
+    );
+    await user.click(
+      within(screen.getByRole("dialog", { name: "View" })).getByRole("radio", { name: column })
+    );
+  };
   // No rule makes a plural from a singular: adding "s" to "priority" wrote "2 prioritys", so each
   // table names both words, as its pager does. The priorities table's heading is the one group
   // row every table draws (`DataTableGroupRow`).
-  await user.selectOptions(groupBy("Priorities"), "owner");
+  await groupBy("Priorities", "Owner");
   expect(
     await screen.findByRole("button", { name: "Collapse INFRA controller, 2 priorities" })
   ).toBeDefined();
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  await user.selectOptions(groupBy("In flight under no priority"), "status");
+  await groupBy("In flight under no priority", "Status");
   expect(
     await screen.findByRole("button", { name: "Collapse In progress, 2 issues" })
   ).toBeDefined();
+});
+
+// Under 640 px a header with its sort and its filter side by side leaves a narrow column's name
+// unreadable, so the title's header stacks the two. The core stacks only the column its caller
+// names, and this table names its `title`, as the project List does.
+test("the priorities table stacks its title's header in a box under 640 px", async () => {
+  // On `Element.prototype`, which owns the method: bun's `mockRestore` leaves a copy on a
+  // prototype that only inherits it, which would hide every later test's spy on `Element`.
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return new DOMRect(0, 0, this.dataset.testid?.endsWith("-scroll") ? 390 : 100, 40);
+  });
+  restores.push(() => rect.mockRestore());
+  page(FIFTEEN);
+  const table = await screen.findByRole("table", { name: "Priorities table" });
+  await waitFor(() =>
+    expect(
+      within(table)
+        .getByRole("columnheader", { name: /^Priority/ })
+        .querySelector("span")
+    ).toHaveClass("flex-col")
+  );
+  expect(
+    within(table)
+      .getByRole("columnheader", { name: /^Owner/ })
+      .querySelector("span")
+  ).not.toHaveClass("flex-col");
+});
+
+// INFRA-3135's review round 1, R10: the priorities table registered `x`, "Select or deselect the
+// priority", though the table selects nothing, so the shortcut help listed a key that did
+// nothing. It registers no select key, as the Delivery list does. The issue tables beside it
+// share the project scope's row actions, whose `x` selects their own rows, so from a priority's
+// row the help lists `x` as not available, with Shift+O, which opens the priority's page in a new
+// tab, and the control row's Shift+F and Shift+V: the row draws a display menu and no filter
+// trigger, so Shift+F is not available here.
+test("the priorities table registers no select key, so from its rows the shortcut help greys x", async () => {
+  page(FIFTEEN);
+  const priorities = await screen.findByRole("table", { name: "Priorities table" });
+  await within(priorities).findByRole("row", { name: "P1 Legion works reliably first" });
+  act(() => rowsOf(priorities, "data-priority-row")[0]?.focus());
+  const described = appKeymap.describe().filter((entry) => entry.scope === "project");
+  expect(Object.fromEntries(described.map((entry) => [entry.id, entry.keys]))).toEqual({
+    display: ["Shift+V"],
+    filter: ["Shift+F"],
+    next: ["j"],
+    open: ["o"],
+    "open-enter": ["Enter"],
+    "open-new-tab": ["Shift+O"],
+    previous: ["k"],
+    select: ["x"],
+  });
+  const enabled = (id: string) => described.find((entry) => entry.id === id)?.enabled;
+  expect(enabled("select")).toBe(false);
+  expect(enabled("filter")).toBe(false);
+  expect(enabled("open")).toBe(true);
+  expect(enabled("open-new-tab")).toBe(true);
+  expect(enabled("display")).toBe(true);
+});
+
+// dispatch://INFRA-2160, R20: Shift+O opens the priority `o` opens in a new tab.
+test("Shift+O on a priority's row opens the priority's page in a new tab, and this page stays", async () => {
+  const user = userEvent.setup();
+  const open = spyOn(window, "open").mockImplementation(() => null);
+  try {
+    page(FIFTEEN);
+    const priorities = await screen.findByRole("table", { name: "Priorities table" });
+    await within(priorities).findByRole("row", { name: "P1 Legion works reliably first" });
+    await user.keyboard("j");
+    const [first] = rowsOf(priorities, "data-priority-row");
+    expect(first).toHaveFocus();
+    const link = first?.querySelector<HTMLAnchorElement>("[data-priority-link]");
+    if (link === null || link === undefined) throw new Error("the row draws no priority link");
+    await user.keyboard("{Shift>}O{/Shift}");
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledWith(link.href, "_blank", "noopener");
+    expect(first).toHaveFocus();
+  } finally {
+    open.mockRestore();
+  }
+});
+
+/** The rows `table` draws under `attribute`, in the order it draws them. */
+function rowsOf(table: HTMLElement, attribute: string): HTMLElement[] {
+  return [...table.querySelectorAll<HTMLElement>(`[${attribute}]`)];
+}
+
+// INFRA-3135's review round 1, R10: the page draws the priorities table and an issue table for
+// each fault, and one for an opened row's work, and every one of them registered `j` and `k`
+// page-wide in the `project` scope, a scope this page never pushed: measured here before the
+// change, `j` moved the focus nowhere at all. The page pushes the scope its tables register in;
+// the priorities table, the page's main one, walks its rows from anywhere the focus is in no
+// table; and each issue table walks its own rows from one of them.
+test("j and k walk the priorities from outside every table, and each issue table's rows from one of its own", async () => {
+  const user = userEvent.setup();
+  page(
+    body({
+      ...FIFTEEN,
+      work_under_no_priority: { by_project: { CORE: 2 }, count: 2, issues: null },
+    }),
+    [
+      issue("CORE-1"),
+      issue("CORE-2"),
+      issue("OPS-1", ["legion-first"]),
+      issue("OPS-2", ["legion-first"]),
+    ]
+  );
+  const priorities = await screen.findByRole("table", { name: "Priorities table" });
+  const faults = await screen.findByRole("table", {
+    name: "Issues in flight under no priority table",
+  });
+  await within(faults).findByRole("row", { name: "CORE-2 Work CORE-2" });
+  const priorityRows = rowsOf(priorities, "data-priority-row");
+  const faultRows = rowsOf(faults, "data-issue-row");
+
+  // From the page, where no table holds the focus: the priorities.
+  await user.keyboard("j");
+  expect(priorityRows[0], "j from the page").toHaveFocus();
+  await user.keyboard("j");
+  expect(priorityRows[1], "a second j").toHaveFocus();
+  // From a fault list's row: that list's own rows, not the priorities.
+  act(() => faultRows[0]?.focus());
+  await user.keyboard("j");
+  expect(faultRows[1], "j from a fault row").toHaveFocus();
+  await user.keyboard("k");
+  expect(faultRows[0], "k from a fault row").toHaveFocus();
+
+  // The work under an opened row is a table of its own: its rows walk it.
+  await user.click(screen.getByRole("button", { name: "Open P1 Legion works reliably first" }));
+  const work = await screen.findByRole("region", {
+    name: "Work advancing Legion works reliably first",
+  });
+  await within(work).findByRole("row", { name: "OPS-2 Work OPS-2" });
+  const workRows = rowsOf(work, "data-issue-row");
+  act(() => workRows[0]?.focus());
+  await user.keyboard("j");
+  expect(workRows[1], "j from a row of the opened work").toHaveFocus();
+});
+
+// An issue table's toolbar and pager stand outside its box but are that table's, so the
+// priorities' page-wide j and k leave a focus on them where it is, as the merge base's page did.
+test("j and k pressed on an issue table's toolbar or pager walk no priority and leave the focus there", async () => {
+  const user = userEvent.setup();
+  page(
+    body({
+      ...FIFTEEN,
+      work_under_no_priority: { by_project: { CORE: 2 }, count: 2, issues: null },
+    }),
+    [issue("CORE-1"), issue("CORE-2")]
+  );
+  const faults = await screen.findByRole("table", {
+    name: "Issues in flight under no priority table",
+  });
+  await within(faults).findByRole("row", { name: "CORE-2 Work CORE-2" });
+  const section = screen.getByRole("region", { name: "Issues in flight under no priority" });
+  const controls = ["Columns", "View", "Next ›"].map((name) =>
+    within(section).getByRole("button", { name })
+  );
+  for (const control of controls) {
+    for (const key of ["j", "k"]) {
+      act(() => control.focus());
+      await user.keyboard(key);
+      expect(control, `${key} on ${control.textContent}`).toHaveFocus();
+    }
+  }
+});
+
+// R1, the architect's chip rule: every narrowing that is on is visible and removable from the
+// control row, whatever set it. This table's narrowings are all its columns', set on their own
+// headers, and the reader may hide a column with the columns menu, which leaves its filter
+// narrowing the table with no header to show it. So the row draws a chip for each.
+test("a column filter of the priorities table is a chip of its row, even while its column is hidden", async () => {
+  const user = userEvent.setup();
+  page(FIFTEEN);
+  // The page draws a table for each fault list beside this one, each with a Columns menu and a
+  // row of its own, so every control here is read inside the priorities section.
+  const section = await screen.findByRole("region", { name: "Priorities" });
+  const table = await within(section).findByRole("table", { name: "Priorities table" });
+  /** How many priorities the table lists, its header row left out. */
+  const listed = () => within(table).getAllByRole("row").length - 1;
+  const before = listed();
+
+  await user.click(within(table).getByRole("button", { name: "Filter Owner" }));
+  await user.click(await screen.findByRole("option", { name: /^BET controller/ }));
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(listed()).toBe(1));
+  expect(within(table).getByRole("row", { name: /Linkage closure eval/ })).toBeDefined();
+  const chip = () =>
+    within(section).getByRole("button", { name: "Remove Owner: BET controller filter" });
+  expect(chip()).toBeDefined();
+
+  // Hidden, the column takes its header and its filter control off the page; the chip is then
+  // the one place the narrowing shows, and its press gives every row back.
+  await user.click(within(section).getByRole("button", { name: "Columns" }));
+  await user.click(screen.getByRole("checkbox", { name: "Owner" }));
+  await user.keyboard("{Escape}");
+  await waitFor(() =>
+    expect(within(table).queryByRole("button", { name: "Filter Owner" })).toBeNull()
+  );
+  expect(listed()).toBe(1);
+  await user.click(chip());
+  await waitFor(() => expect(listed()).toBe(before));
+  expect(screen.queryByRole("button", { name: /^Remove Owner: / })).toBeNull();
 });

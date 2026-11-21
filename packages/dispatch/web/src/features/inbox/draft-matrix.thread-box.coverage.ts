@@ -22,7 +22,7 @@ const REASONS = {
   10: "10. A thread in a document is drawn inside the document's page where its block is found and beside it where the document fails or the block is gone (`ThreadPane`, `DocumentPane`, `ProofDocument`, keyed by the document); moving between the two draws the box afresh at the same thread, as the move to another row and back does, and a version or an admission that hides the document's page keeps the box mounted at its thread.",
   11: "11. A box answers its thread's root; a read that no longer holds the root draws no box, since there is no message left to answer, and a read that holds it again draws the box at the same thread, as the move to another row and back does.",
   12: "12. The Inbox draws a thread's box in the reading column above the column's width and in the row's card below it (`paneShown`), in a drawer that closing takes away (`InboxDrawer`), and on its own page (`app.tsx`'s `/` and `/credentials/*`); a resize across that width, closing the drawer, leaving the page, a column with no row selected or an empty list, and the Inbox's loading line or error unmount the box as the move to another row does, and the box drawn on return is the one that row draws, at the same thread's send name.",
-  13: "13. Below the reading column's width, a phone's included, the Inbox draws no column: each thread row is a card that draws its thread's own box (`ThreadRowCard`, `renderRow`'s `paneShown`), so no move takes a box from one row to another there, and each box stays at its thread while its row is listed. What ends a card's box is (12)'s: leaving the page, closing the drawer the compact header's Peek opens (`inboxDrawerOpen`), the row leaving the list. The box's own moves are the same `ThreadBody`'s as the rows above. The layout's other branches in `Inbox` and `usePaneSelection` pick, focus and scroll the column's row and draw the list beside the column, and move no box; the app shell's forms are the sign-in file's.",
+  13: "13. Below the reading column's width, a phone's included, the Inbox draws no column: each thread row is a card that draws its thread's own box (`ThreadRowCard`, `renderRow`'s `paneShown`), so no move takes a box from one row to another there, and each box stays at its thread while its row is listed. What ends a card's box is (12)'s: leaving the page, closing the drawer the compact header's Peek opens (`inboxDrawerOpen`), the row leaving the list. The box's own moves are the same `ThreadBody`'s as the rows above. The layout's other branches in `Inbox`, its keys (`useInboxKeymap`) and `usePaneSelection` pick, focus and scroll the column's row, find the control a key presses in the item in hand (`atItem`, `approvalControl`, `cardControl`), and draw the list beside the column, and move no box; the app shell's forms are the sign-in file's.",
 } as const;
 
 export const coverage: readonly CoverageEntry[] = [
@@ -357,18 +357,25 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("Inbox | ThreadCardRow | form | <div className>", { reason: REASONS[13] }),
   ...answers("InboxPage | Inbox | form | <section className>", { reason: REASONS[13] }),
   ...answers("AppShell | InboxDrawer | form | open={inboxDrawerOpen}", { reason: REASONS[13] }),
-  ...answers("Inbox | - | form | if (paneShown && paneSelection.selectedNow.current === id)", {
+  ...answers("Inbox | - | form | if (paneShown && named.id !== paneSelection.id)", {
     reason: REASONS[13],
   }),
-  ...answers("Inbox | - | form | if (shownQuestion.current === paneSelection.id) return …", {
+  ...answers("useInboxKeymap | - | form | if (paneShown && active === paneScroller()) return …", {
     reason: REASONS[13],
   }),
-  ...answers("Inbox | - | form | (paneShown) ? …", { reason: REASONS[13] }),
-  ...answers("Inbox | - | form | if (paneShown && focusInPane())", { reason: REASONS[13] }),
-  ...answers("Inbox | - | form | (id === undefined) ? …", { reason: REASONS[13] }),
-  ...answers("Inbox | - | form | (paneSelection.id === undefined) ? …", { reason: REASONS[13] }),
-  ...answers("Inbox | - | form | if (box === null && paneShown) return …", { reason: REASONS[13] }),
-  ...answers("Inbox | - | form | if (paneShown && focusInPane()) return …", {
+  ...answers("useInboxKeymap | - | form | if (paneShown && !outsideAskCard()) return …", {
+    reason: REASONS[13],
+  }),
+  ...answers("useInboxKeymap | - | form | if (!paneShown) return …", { reason: REASONS[13] }),
+  ...answers("useInboxKeymap | - | form | (paneShown) ? …", { reason: REASONS[13] }),
+  ...answers("useInboxKeymap | - | form | if (paneShown && focusInPane())", {
+    reason: REASONS[13],
+  }),
+  ...answers("useInboxKeymap | - | form | (id === undefined) ? …", { reason: REASONS[13] }),
+  ...answers("useInboxKeymap | - | form | if (box === null && paneShown) return …", {
+    reason: REASONS[13],
+  }),
+  ...answers("useInboxKeymap | - | form | if (paneShown && focusInPane()) return …", {
     reason: REASONS[13],
   }),
   ...answers("usePaneSelection | - | form | (selectedId === undefined) ? …", {
@@ -385,11 +392,21 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("usePaneSelection | - | form | if (selectedId === undefined)", {
     reason: REASONS[13],
   }),
-  ...answers("usePaneSelection | - | form | if (!snoozing.has(selectedId) && bulkSnoozing === 0)", {
+  ...answers(
+    "usePaneSelection | - | form | if (!paneShown || selectedNow.current === undefined || !acted.has(selectedNow.current)) return …",
+    { reason: REASONS[13] }
+  ),
+  ...answers("usePaneSelection | - | form | if (paneShown) return …", { reason: REASONS[13] }),
+  ...answers("usePaneSelection | - | form | if (paneShown && target !== null)", {
     reason: REASONS[13],
   }),
   ...answers(
-    "usePaneSelection | - | form | if (!paneShown || listedRows.current.length === 0) return …",
+    'usePaneSelection | - | form | if (paneShown && !drawsAny(acted) && acted.has(selectedNow.current ?? ""))',
+    { reason: REASONS[13] }
+  ),
+  ...answers("usePaneSelection | - | form | if (!paneShown) return …", { reason: REASONS[13] }),
+  ...answers(
+    "usePaneSelection | - | form | if (selectedId !== undefined && paneSubject.current?.kept !== true && !candidates.some((row) => rowId(row) === selectedId))",
     { reason: REASONS[13] }
   ),
   ...answers("usePaneSelection | - | form | if (selectedId !== filter.item)", {

@@ -134,8 +134,12 @@ listTest(
     const projectSection = page
       .getByRole("dialog", { name: "Keyboard shortcuts" })
       .getByRole("region", { name: "Project", exact: true });
-    await expect(projectSection).toContainText("Next issue");
-    await expect(projectSection).toContainText("Open issue");
+    // The project scope's row actions are one set whichever list draws them, so their labels
+    // name no list (INFRA-2160).
+    await expect(projectSection).toContainText("Next row");
+    await expect(
+      projectSection.getByRole("listitem").filter({ hasText: /^Open\s*o$/ })
+    ).toHaveCount(1);
   }
 );
 
@@ -184,11 +188,14 @@ closedTest(
     // The title heading takes no focus while the issue is closed, so `e` is greyed with the
     // controls the header disables; pinning a closed issue still works, so Shift+P is not.
     await expect(row("Edit the title")).toHaveAttribute("data-enabled", "false");
-    await expect(row("Focus the status")).toHaveAttribute("data-enabled", "false");
+    await expect(row("Open the status menu")).toHaveAttribute("data-enabled", "false");
+    await expect(row("Open the priority menu")).toHaveAttribute("data-enabled", "false");
     await expect(row("Edit labels")).toHaveAttribute("data-enabled", "false");
     await expect(row("Set priority P0–P3")).toHaveAttribute("data-enabled", "false");
     await expect(row("Pin or unpin the issue")).toHaveAttribute("data-enabled", "true");
-    await expect(row("Conversation tab")).toHaveAttribute("data-enabled", "true");
+    await expect(
+      row("Conversation: open its tab (on the new page, every filter off)")
+    ).toHaveAttribute("data-enabled", "true");
   }
 );
 
@@ -209,7 +216,7 @@ collapsedTest(
     const section = page
       .getByRole("dialog", { name: "Keyboard shortcuts" })
       .getByRole("region", { name: "Project", exact: true });
-    const roving = ["Next issue", "Previous issue"].map((label) =>
+    const roving = ["Next row", "Previous row"].map((label) =>
       section.getByRole("listitem").filter({ hasText: label }).first()
     );
     for (const listed of roving) await expect(listed).toHaveAttribute("data-enabled", "false");
@@ -239,7 +246,7 @@ boardTest(
     const dialog = page.getByRole("dialog", { name: "Keyboard shortcuts" });
     await expect(dialog.getByRole("region", { name: "Board", exact: true })).toBeVisible();
     const project = dialog.getByRole("region", { name: "Project", exact: true });
-    for (const label of ["Next issue", "Previous issue", "Open the focused issue"]) {
+    for (const label of ["Next row", "Previous row", "Open the focused row"]) {
       await expect(project.getByRole("listitem").filter({ hasText: label })).toHaveCount(0);
     }
     await expect(dialog.getByRole("listitem").filter({ hasText: "Open issue" })).toHaveCount(1);

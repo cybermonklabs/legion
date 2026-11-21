@@ -464,10 +464,15 @@ export function useAskAnswerForm({
     setSelected([]);
     setOtherSelected(true);
   };
+  // An approval's Request changes, picked and then let go of (Escape in its reason field): the
+  // pick goes, and the reason typed so far stays in the box for a second pick.
+  const dropReasonPick = () =>
+    setSelected((current) => current.filter((label) => !requiresReason(label)));
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!canAnswer) return;
+    // Held while an answer or a question back is out: Ctrl+Enter in the field sends nothing more.
+    if (!canAnswer || isSubmitting) return;
     if (
       !isApproval &&
       !otherSelected &&
@@ -505,6 +510,7 @@ export function useAskAnswerForm({
     clarification,
     completed,
     displayedAsk,
+    dropReasonPick,
     edits,
     isApproval,
     isSubmitting,

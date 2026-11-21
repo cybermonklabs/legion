@@ -296,8 +296,13 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     pattern: "/issues/:key/*",
     // The document's connection dot, as the issue-spec row reads it and for the same reason:
     // `artifact-header` is drawn while the editor still says "Connecting to the document…",
-    // and `ArtifactHeader.tsx` draws the dot inside that header.
-    ready: (page) => [page.getByRole("status", { name: "connected" })],
+    // and `ArtifactHeader.tsx` draws the dot inside that header. And the header without the
+    // ring it wears for 2 s after it mounts (`data-highlighted`): run 44176775681 shot the dark
+    // scheme while it still showed, 2,284 pixels, where the run before had shot it after.
+    ready: (page) => [
+      page.getByRole("status", { name: "connected" }),
+      page.locator('[data-testid="artifact-header"]:not([data-highlighted])'),
+    ],
   },
   {
     kind: "reviewed",

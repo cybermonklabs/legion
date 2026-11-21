@@ -1012,13 +1012,19 @@ function fakeBridge(
   artifactId = specArtifact.id
 ): {
   bridge: DocumentBridge;
+  /** How many times the margin put the caret back in the document. */
+  readonly focused: number;
   removed: string[];
   retyped: [string, string][];
 } {
+  let focused = 0;
   const removed: string[] = [];
   const retyped: [string, string][] = [];
   return {
     bridge: stubDocumentBridge(artifactId, {
+      focus() {
+        focused += 1;
+      },
       removeMark(markId) {
         removed.push(markId);
       },
@@ -1027,6 +1033,9 @@ function fakeBridge(
         return retype(markId, kind);
       },
     }),
+    get focused() {
+      return focused;
+    },
     removed,
     retyped,
   };
@@ -1212,6 +1221,175 @@ test("the margin removes the composer's mark when the composer is cancelled or r
     expect(fake.removed).toEqual(["m-1-ask"]);
   } finally {
     view.unmount();
+  }
+});
+
+/** Lets the page draw one frame: the margin puts the caret back in the document a frame after a
+ *  comment ends, once a dialog that closed with it has put back the focus it took. */
+function nextFrame(): Promise<void> {
+  return act(() => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    requestAnimationFrame(() => resolve());
+    return promise;
+  });
+}
+
+// Each comment request puts the caret in its compose's field, wherever the reader took the focus
+// since. A newer compose on the document is a composer of its own, so the open compose's draft
+// waits beside the new field, kept for the words it was written for, until the reader takes it.
+test("a compose while the document's composer is open puts the caret in the new compose's field, with the draft offered beside it", async () => {
+  const user = userEvent.setup();
+  const fake = fakeBridge((markId, kind) => ({
+    markId: `${markId}-${kind}`,
+    placement: null,
+    quote: "selected",
+  }));
+  const view = renderMarginWithBridge(fake.bridge);
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
+    const first = await screen.findByRole("form", { name: "Comment composer" });
+    await waitFor(() => expect(within(first).getByLabelText("Comment")).toHaveFocus());
+    await user.paste("Half a thought");
+
+    // The press takes the focus off the field, as a selection in the document does.
+    await user.click(screen.getByRole("button", { name: "Compose second" }));
+    await screen.findByText(offerLine("selected"));
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    expect(within(composer).getByText("second")).toBeTruthy();
+    const field = within(composer).getByLabelText<HTMLTextAreaElement>("Comment");
+    await waitFor(() => expect(field).toHaveFocus());
+    await user.click(screen.getByRole("button", { name: "Use my draft" }));
+    expect(field.value).toBe("Half a thought");
+    expect(screen.getAllByRole("form", { name: "Comment composer" })).toHaveLength(1);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A comment ends - Escape in its empty field, or its send landing - and the reader goes back to
+// the words they commented on, where the editor kept its selection.
+test("Escape in the empty composer and a sent comment put the caret back in the commented document", async () => {
+  const user = userEvent.setup();
+  const fake = fakeBridge((markId, kind) => ({
+    markId: `${markId}-${kind}`,
+    placement: null,
+    quote: "selected",
+  }));
+  const createComment = spyOn(api, "createComment").mockResolvedValue({
+    ...comment,
+    body: "Why?",
+  });
+  const view = renderMarginWithBridge(fake.bridge);
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
+    const field = await screen.findByLabelText("Comment");
+    await waitFor(() => expect(field).toHaveFocus());
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument()
+    );
+    await nextFrame();
+    expect(fake.focused).toBe(1);
+
+    await user.click(screen.getByRole("button", { name: "Compose second" }));
+    const composer = await screen.findByRole("form", { name: "Comment composer" });
+    await user.click(within(composer).getByLabelText("Comment"));
+    await user.paste("Why?");
+    await user.click(within(composer).getByRole("button", { name: "Send" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument()
+    );
+    await nextFrame();
+    expect(fake.focused).toBe(2);
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// A send can land long after the press: by then the reader may be working somewhere else, and
+// the comment's end takes nothing from them.
+test("a comment whose send lands after the reader went elsewhere leaves the focus where they took it", async () => {
+  const user = userEvent.setup();
+  const fake = fakeBridge((markId, kind) => ({
+    markId: `${markId}-${kind}`,
+    placement: null,
+    quote: "selected",
+  }));
+  const sent = Promise.withResolvers<Comment>();
+  const createComment = spyOn(api, "createComment").mockImplementation(() => sent.promise);
+  const view = renderMarginWithBridge(fake.bridge);
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
+    const composer = await screen.findByRole("form", { name: "Comment composer" });
+    await user.click(within(composer).getByLabelText("Comment"));
+    await user.paste("Why?");
+    await user.click(within(composer).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    const elsewhere = screen.getByRole("button", { name: "Compose second" });
+    act(() => elsewhere.focus());
+
+    await act(async () => {
+      sent.resolve({ ...comment, body: "Why?" });
+      await sent.promise;
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument()
+    );
+    await nextFrame();
+    expect(fake.focused).toBe(0);
+    expect(elsewhere).toHaveFocus();
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// Below 1280 px the margin is a modal sheet over the document, so a second comment starts only
+// once the reader has closed it: the compose keeps its draft under the closed sheet, and the next
+// compose opens the sheet again with the caret in its own field and that draft offered beside it.
+// The comment's end closes the sheet over the document and puts the caret back there.
+test("below 1280 px each compose puts the caret in the sheet's composer, and Escape in the empty box closes the sheet for the document", async () => {
+  const user = userEvent.setup();
+  const restoreViewport = stubViewport(PHONE_WIDTH);
+  const fake = fakeBridge((markId, kind) => ({
+    markId: `${markId}-${kind}`,
+    placement: null,
+    quote: "selected",
+  }));
+  const view = renderMarginWithBridge(fake.bridge);
+
+  try {
+    const sheet = screen.getByTestId("margin-sheet");
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
+    await waitFor(() => expect(sheet).toHaveAttribute("data-expanded", "true"));
+    const first = await within(sheet).findByLabelText("Comment");
+    await waitFor(() => expect(first).toHaveFocus());
+    await user.paste("Half a thought");
+    await user.click(within(sheet).getByRole("button", { name: /^Close review panel/ }));
+    await waitFor(() => expect(sheet).toHaveAttribute("data-expanded", "false"));
+
+    await user.click(screen.getByRole("button", { name: "Compose second" }));
+    await waitFor(() => expect(sheet).toHaveAttribute("data-expanded", "true"));
+    await within(sheet).findByText(offerLine("selected"));
+    const field = within(sheet).getByLabelText<HTMLTextAreaElement>("Comment");
+    await waitFor(() => expect(field).toHaveFocus());
+    expect(within(sheet).getByText("second")).toBeTruthy();
+    await user.click(within(sheet).getByRole("button", { name: "Use my draft" }));
+    expect(field.value).toBe("Half a thought");
+
+    await user.clear(field);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(sheet).toHaveAttribute("data-expanded", "false"));
+    expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument();
+    await nextFrame();
+    expect(fake.focused).toBe(1);
+  } finally {
+    view.unmount();
+    restoreViewport();
   }
 });
 

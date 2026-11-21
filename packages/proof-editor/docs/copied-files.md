@@ -83,6 +83,12 @@ Biome's formatter, linter and `assist` are off over the copies, in the first ove
 
 28. Annotations, casts and assertions that make a file type-check, each of which erases before runtime.
 
+29. A plain click opens a link (dispatch://INFRA-2160, R1, R2).
+    `src/lib.ts` installs `dispatchLinkOpenPlugin` from `./dispatch-link-open` in place of upstream's `markdownLinkClickPlugin`, takes the host's `openLink` option (typed `OpenLink`, which it re-exports), hands each access mode to `setReferenceAccess` in `applyAccess`, and exposes `linkAtCaret` and `openLinkAtCaret` on the handle.
+    `src/lib.css` drops the `.markdown-link-hover-target` and `.markdown-link-action-card` rules, since no hover card is drawn.
+
+30. `src/dispatch-mark-events.ts`'s `handleClick` reports nothing for a click on a link the editor opens (`opensLinkOn` from `./dispatch-link-open`), and its doc comment says so.
+
 ## The two micromark copies
 
 `src/directive-factories.ts` and `src/html-flow.ts` have no counterpart in the fork.

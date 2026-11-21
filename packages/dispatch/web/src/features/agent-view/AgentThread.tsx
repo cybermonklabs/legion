@@ -420,8 +420,9 @@ export function AgentThread({
    *  the one in front is laid out over the page rather than in it, so its own geometry is the
    *  shell's doing and never the reader moving (`useLiveFollow`). */
   front: boolean;
-  /** Whether a model or thinking switch is pending on this session: Send is disabled, still
-   *  reading "Send", until it ends, and `placeholder` is what says why. */
+  /** Whether a model or thinking switch is pending on this session: Send is held
+   *  (`aria-disabled`, a press of it sending nothing), still reading "Send", until it ends, and
+   *  `placeholder` is what says why. */
   held: boolean;
   /** Where this session's reader was when its view last reported, which the view's entry in
    *  `live-views.ts` holds while the view sleeps, or `null` for one that was following. */

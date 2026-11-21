@@ -302,7 +302,9 @@ test("an empty input lists the person's recent items and the actions of that pag
       .soft(recent.getByRole("option", { name: new RegExp(fixture.firstKey) }))
       .toHaveCount(1);
     const actions = bar(page).getByRole("group", { name: "Actions" });
-    await expect.soft(actions.getByRole("option", { name: "Open issue" })).toHaveCount(1);
+    // The List's row action is the project scope's `Open`, read with its key, since other
+    // actions' labels begin with the same word (INFRA-2160).
+    await expect.soft(actions.getByRole("option", { name: /^Open\s*o$/ })).toHaveCount(1);
     await expect.soft(actions.getByRole("option", { name: "Create issue" })).toHaveCount(1);
 
     // A recent item opens from the bar.

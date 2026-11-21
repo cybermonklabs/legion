@@ -12,6 +12,7 @@ import {
   patchIssue,
   userHeaders,
 } from "./api";
+import { listTrigger } from "./filters";
 import { filterRow } from "./issue-page";
 import { assertWhole } from "./unclipped";
 
@@ -35,9 +36,10 @@ declare global {
  *   own (`display: contents`), and in it the band that stays from 761 px up,
  *   `[data-identity-block]`, with `data-condensed` on the header once the page has scrolled more
  *   than 40 px (`IssueHeader.tsx`).
- * - **The properties line** `[data-testid="issue-state-actions"]`: the status
- *   (`select[aria-label="Status"]`), the priority and the assignee (each a `select` named
- *   `Priority of <key>` and `Assignee of <key>`, drawn over an `aria-hidden` badge), the
+ * - **The properties line** `[data-testid="issue-state-actions"]`: the status, the trigger of
+ *   its menu named `Status` and then the status it shows, the priority, the trigger of its menu
+ *   named `Priority of <key>` and then the priority, and the assignee, the trigger of its single
+ *   pick named `Assignee of <key>` and then the person (`badgeValue`), the
  *   children's progress `[data-testid="issue-progress-children"]` and
  *   `[data-testid="issue-progress-subtree"]`, the count `[data-testid="issue-whose-turn"]`, the
  *   approval control, the route's marker `[data-testid="issue-route-unreachable"]`, the labels
@@ -339,13 +341,11 @@ function cssValue(value: string): string {
   return value;
 }
 
-/** The value a badge-and-select control shows a reader: the badge drawn under the `select`
- *  named `label` (`web/src/features/issue/badge-select.ts`). The badge is hidden from assistive
- *  technology, because the select carries the name. */
+/** The header's control named `label` - the priority's and the status's menu, the assignee's
+ *  single pick (dispatch://INFRA-2160) - whose words are the value it shows a reader: its name
+ *  is `label` and then those words, and the menu's or the list's own name stands outside it. */
 export function badgeValue(page: Page, label: string): Locator {
-  return issueHeader(page).locator(
-    `:has(> select[aria-label="${cssValue(label)}"]) > [aria-hidden="true"]`
-  );
+  return listTrigger(issueHeader(page), label);
 }
 
 /** The header's approval chip of the document `artifactId`: the issue's own chip, or the chip of
@@ -421,12 +421,14 @@ export async function holdReviewReads(
 
 /**
  * Every element the header draws that a reader reads or presses, by what it is: its test id, or
- * its tag with the name a reader hears; and every run of words drawn outside those, as
- * `text <its words>`. Words count as drawn outside them where an element holds a text of its own
- * and no part that holds no other part - a control, the title, a test id around words alone -
- * holds that element: the project, the key and a pill are text in a span, and a property added
- * that way is named too. A part that holds others, as the properties line does, names nothing
- * of the words in it. Text it lays out unseen is left out.
+ * its tag with the name a reader hears - its `aria-label`, the words of the elements its
+ * `aria-labelledby` names (a menu's or a single pick's trigger: `Status In progress`), else its
+ * words; and every run of words drawn outside those, as `text <its words>`. Words count as drawn
+ * outside them where an element holds a text of its own and no part that holds no other part - a
+ * control, the title, a test id around words alone - holds that element: the project, the key
+ * and a pill are text in a span, and a property added that way is named too. A part that holds
+ * others, as the properties line does, names nothing of the words in it. Text it lays out unseen
+ * is left out.
  */
 export function headerParts(page: Page): Promise<string[]> {
   return issueHeader(page).evaluate((header) => {
@@ -434,12 +436,22 @@ export function headerParts(page: Page): Promise<string[]> {
     const leaves = all.filter(
       (part) => !all.some((other) => other !== part && part.contains(other))
     );
+    const wordsOf = (element: Element | null) =>
+      (element?.textContent ?? "").replace(/\s+/g, " ").trim();
+    const nameOf = (part: Element) => {
+      const labelledBy = part.getAttribute("aria-labelledby");
+      if (part.getAttribute("aria-label") !== null) return part.getAttribute("aria-label");
+      if (labelledBy === null) return wordsOf(part);
+      return labelledBy
+        .split(" ")
+        .map((id) => wordsOf(document.getElementById(id)))
+        .join(" ");
+    };
     const parts = all
       .filter((part) => part.checkVisibility())
       .map(
         (part) =>
-          part.getAttribute("data-testid") ??
-          `${part.tagName.toLowerCase()} ${part.getAttribute("aria-label") ?? (part.textContent ?? "").replace(/\s+/g, " ").trim()}`
+          part.getAttribute("data-testid") ?? `${part.tagName.toLowerCase()} ${nameOf(part)}`
       );
     const texts = [...header.querySelectorAll("*")].filter(
       (element) =>
@@ -496,10 +508,19 @@ export function shortControls(page: Page, key: string): Promise<string[]> {
   return issueHeader(page).evaluate(
     (header, { actionWords, key }) => {
       const actions = actionWords.map((source) => new RegExp(source));
+      // A menu's or a single pick's trigger, named `label` and then what it shows: the first
+      // element its `aria-labelledby` names holds `label`, or, where what it shows is `label`'s
+      // own first words, its `aria-label` is `label`.
+      const triggerOf = (label: string): Element | null =>
+        [...header.querySelectorAll("button")].find((button) => {
+          if (button.getAttribute("aria-label") === label) return true;
+          const [first = ""] = (button.getAttribute("aria-labelledby") ?? "").split(" ");
+          return first !== "" && document.getElementById(first)?.textContent === label;
+        }) ?? null;
       const named: [string, Element | null][] = [
-        ["the status", header.querySelector('select[aria-label="Status"]')],
-        ["the priority", header.querySelector(`select[aria-label="Priority of ${key}"]`)],
-        ["the assignee", header.querySelector(`select[aria-label="Assignee of ${key}"]`)],
+        ["the status", triggerOf("Status")],
+        ["the priority", triggerOf(`Priority of ${key}`)],
+        ["the assignee", triggerOf(`Assignee of ${key}`)],
         ["the count", header.querySelector('button[data-testid="issue-whose-turn"]')],
         ["the labels' count", header.querySelector('[data-testid="issue-labels-left"]')],
         ["Copy issue key", header.querySelector('button[aria-label^="Copy issue key "]')],

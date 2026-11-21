@@ -42,7 +42,11 @@ function scan(text: string): ReferenceCandidate[] {
   }));
 }
 
-const CORE_1: ReferenceTarget = { href: "dispatch://CORE-1", title: "CORE-1 Fix the thing" };
+const CORE_1: ReferenceTarget = {
+  href: "dispatch://CORE-1",
+  path: "/issues/CORE-1",
+  title: "CORE-1 Fix the thing",
+};
 
 function references(targets: Record<string, ReferenceTarget | null>): EditorReferences {
   return { onKeys: () => {}, scan, targets: new Map(Object.entries(targets)) };
@@ -88,7 +92,7 @@ async function withTornDownEditor(
 test("destroy takes the view down before the ctx that draws it", async () => {
   await withTornDownEditor((handle) => {
     const { view } = handle;
-    const title = view.dom.querySelector("code > a.dispatch-reference");
+    const title = view.dom.querySelector("code a.dispatch-reference");
     expect(title?.textContent).toBe("CORE-1 Fix the thing");
 
     void handle.destroy();

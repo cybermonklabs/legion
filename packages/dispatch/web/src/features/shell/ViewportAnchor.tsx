@@ -1,5 +1,6 @@
 import { Component, type ReactNode, type RefObject } from "react";
 
+import { openerOf } from "../../components/focus-place";
 import { refPreviewCardContains, refPreviewOpenedIn } from "../refs/ref-preview-card";
 
 export interface AnchorRow {
@@ -97,7 +98,10 @@ function rowWithin(root: HTMLElement, selector: string, node: Element | null): H
  * its place for another `group` (a section) is not followed: the reader's place is where the row
  * was, not where it went. The pointer moving from a row onto the hover card a reference in that
  * row opened keeps that row the current one while the card is open: the card is the row's own
- * doing and sits outside the list only because it is `fixed`.
+ * doing and sits outside the list only because it is `fixed`. So does the focus in a menu or a
+ * list a control of a row opened - the priority's menu, the hand-on's list - which the page
+ * portals out of the list and which hands the focus back into the row as it closes: while it is
+ * open the focus is the hand on that row (`openerOf`).
  *
  * Rows are the elements matching `[item]`, identified by that attribute's value, and must keep
  * their identity across the commit (a remounted row is a new node and cannot be found again).
@@ -337,13 +341,17 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     if (rootRef !== undefined) rootRef.current = node;
   };
 
-  /** The row the reader's hand is on: focus within a row, else the pointer resting on one. No
-   *  layout reads, so a parent may call it on every render. */
+  /** The row the reader's hand is on: focus within a row, or within a menu or a list a control
+   *  of a row opened (`openerOf`), else the pointer resting on one. No layout reads, so a parent
+   *  may call it on every render. */
   interacted(): (AnchorRow & { row: HTMLElement }) | null {
     const root = this.root;
     if (root === null) return null;
     const selector = `[${this.props.item}]`;
-    const focused = rowWithin(root, selector, document.activeElement);
+    const active = document.activeElement;
+    const focused =
+      rowWithin(root, selector, active) ??
+      (active === null ? null : rowWithin(root, selector, openerOf(active)));
     const resting =
       this.hovered !== null && (!this.onOwnCard || refPreviewOpenedIn(this.hovered))
         ? this.hovered

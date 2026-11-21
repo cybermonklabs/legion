@@ -1,62 +1,80 @@
-import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import type { Table } from "@tanstack/react-table";
-import type { ReactNode } from "react";
-import {
-  borderDefault,
-  surfaceBg,
-  textPrimaryOnCanvas,
-  textSecondaryOnCanvas,
-} from "../../theme/classes";
-import { ColumnsMenu } from "../project/issues-table-controls";
+import { type ReactNode, useState } from "react";
+import { ColumnsMenu } from "../../components/ColumnsMenu";
+import { ControlRow } from "../../components/ControlRow";
+import { DisplayMenu } from "../../components/DisplayMenu";
+import { columnFilterChips, filterChips } from "../../components/filter-chips";
+import { SearchBox } from "../../components/SearchBox";
 
-/** The search, the group-by and the column control every table on these pages carries, with
- *  whatever else its own page puts beside them. */
+/**
+ * The one row a table of these pages draws its controls in, as the project List draws its own
+ * (`features/project/issues-table-page.tsx`): the search box at the head of the row, the page's
+ * own controls beside it with the columns menu, the display menu at the right end carrying the
+ * grouping, and the chips of the column filters that are on. The table has no narrowing that is
+ * not one of its columns, so the row draws no filter trigger: every column's filter is set on
+ * its own header (`ColumnFilter`). Its chip is drawn here as well, whether the column is shown
+ * or hidden, so a column the reader hid with the columns menu keeps its narrowing in sight, and
+ * the chip's press takes it off (INFRA-3135, R1). Shift+V opens the display menu from the
+ * page, in the project scope the page pushes; with no filter trigger, Shift+F does nothing here.
+ */
 export function TableToolbar<Row>({
   children,
   searchLabel,
   searchPlaceholder,
   table,
 }: {
+  /** The page's own controls, such as the priorities table's **New priority**. */
   children?: ReactNode;
   searchLabel: string;
   searchPlaceholder: string;
   table: Table<Row>;
 }): ReactNode {
+  const [viewOpen, setViewOpen] = useState(false);
   const { globalFilter: search, grouping } = table.getState();
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <input
-        aria-label={searchLabel}
-        className={`w-full min-w-0 flex-none rounded-lg border px-3 py-1.5 text-sm sm:w-auto sm:min-w-64 sm:flex-1 ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
-        maxLength={SEARCH_QUERY_MAX}
-        onChange={(event) => table.setGlobalFilter(event.target.value)}
-        placeholder={searchPlaceholder}
-        type="search"
-        value={search}
-      />
-      <label className={`flex items-center gap-2 text-sm ${textSecondaryOnCanvas}`}>
-        Group by
-        <select
-          className={`rounded-lg border px-2 py-1.5 ${borderDefault} ${surfaceBg}`}
-          onChange={(event) => {
-            table.setGrouping(event.target.value ? [event.target.value] : []);
-            table.setExpanded(true);
-          }}
-          value={grouping[0] ?? ""}
-        >
-          <option value="">Nothing</option>
-          {table
-            .getAllLeafColumns()
-            .filter((column) => column.getCanGroup())
-            .map((column) => (
-              <option key={column.id} value={column.id}>
-                {String(column.columnDef.header)}
-              </option>
-            ))}
-        </select>
-      </label>
-      <ColumnsMenu columns={table.getAllLeafColumns()} />
+    <ControlRow
+      chips={filterChips(columnFilterChips(table.getAllLeafColumns()), "compact")}
+      display={
+        <DisplayMenu
+          label="View"
+          onOpenChange={setViewOpen}
+          open={viewOpen}
+          sections={[
+            {
+              id: "group",
+              label: "Group by",
+              onChange: (next) => {
+                table.setGrouping(next ? [next] : []);
+                table.setExpanded(true);
+              },
+              options: [
+                { label: "Nothing", value: "" },
+                ...table
+                  .getAllLeafColumns()
+                  .filter((column) => column.getCanGroup())
+                  .map((column) => ({ label: String(column.columnDef.header), value: column.id })),
+              ],
+              value: grouping[0] ?? "",
+            },
+          ]}
+          size="compact"
+        />
+      }
+      keyScope="project"
+      search={
+        <SearchBox
+          className="w-full"
+          label={searchLabel}
+          onChange={(value) => table.setGlobalFilter(value)}
+          placeholder={searchPlaceholder}
+          size="compact"
+          value={search}
+        />
+      }
+      size="compact"
+    >
       {children}
-    </div>
+      <ColumnsMenu columns={table.getAllLeafColumns()} size="compact" />
+    </ControlRow>
   );
 }

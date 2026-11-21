@@ -1,0 +1,6756 @@
+/** The shared search, sort and filter controls where proving them needs a server: seeded counts,
+ *  writes, reloads, the keyboard, and the two pages a recording cannot answer - the Agents page,
+ *  whose groups are a session's last-seen time against the clock, and the Delivery page, whose
+ *  window is a range of dates. The rows that read only what a page draws over one fixed answer
+ *  are in `table-controls.stub.e2e.ts`.
+ */
+
+import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts";
+import type { Locator, Route } from "@playwright/test";
+import { CONTROL } from "../web/src/components/control-names";
+import * as theme from "../web/src/theme/classes";
+import {
+  agentFilter,
+  agentGroupToggle,
+  agentRow,
+  type FakeSession,
+  getSentMessages,
+  issueSearchIn,
+  pickAgentFilter,
+  plannerSession,
+  reviewerSession,
+  seedAgents,
+  setLiveSessions,
+  shownAgentRows,
+  toggleAgentGroup,
+} from "./agents";
+import {
+  answerAsk,
+  createAgentMessage,
+  createAsk,
+  createComment,
+  createIssue,
+  createIssueArtifact,
+  createNamedVersion,
+  createPriority,
+  createProject,
+  createProjectDocument,
+  editArtifact,
+  getArtifact,
+  getInbox,
+  getMyState,
+  listIssueArtifacts,
+  listMyReplies,
+  mintAgentToken,
+  patchIssue,
+  putArchitectureSource,
+  putIssueState,
+  putRepoProject,
+  replyToMessageDelivery,
+  resolveAsk,
+  resolveComment,
+} from "./api";
+import { recordClipboard } from "./clipboard";
+import {
+  PIPELINE_AT,
+  seedDeliveryFixture,
+  seedPipelineFixture,
+  seedSessionGroupsFixture,
+} from "./delivery-seed";
+import { connectedDot, documentEditor, placeCaret } from "./editor";
+import {
+  setCredentialGrants,
+  setPendingCredentialRequests,
+  setSignIns,
+} from "./fake-broker-helpers";
+import { seedFakeGithub } from "./fake-github-helpers";
+import {
+  control,
+  controlRow,
+  displayChoice,
+  listOf,
+  listTrigger,
+  openFilterPanel,
+} from "./filters";
+import { nextFrames, settledScrollTop } from "./frames";
+import { drawer, peekTrigger, seedAsk } from "./inbox-drawer";
+import { assigneeFilter, assigneeOptions, openFilterFields } from "./inbox-filter";
+import { askControls, hasReadingPane, inboxRow, selectedRow, selectRow } from "./inbox-pane";
+import {
+  asSession,
+  replyRowId,
+  seedAgentThread,
+  seedCommentThread,
+  THREAD_SESSION,
+} from "./inbox-threads";
+import {
+  bandHeadings,
+  bandLabel,
+  countsOf,
+  drawnIds,
+  lastActivity,
+  seedEveryField,
+  sortedIds,
+  type ViewRow,
+  valuesOf,
+} from "./inbox-view";
+import { leaveFocus } from "./keyboard-issue";
+import { searchPath } from "./keyboard-palette";
+import { seedLegionDaemon } from "./legion-seed";
+import {
+  bulkSnoozeMenu,
+  bulkSnoozeTrigger,
+  choiceOf,
+  menuOf,
+  pickFromMenu,
+  priorityTrigger,
+} from "./menus";
+import { sql } from "./psql";
+import { sessionIds } from "./session-ids";
+import { expandedState, settledState } from "./settled";
+import {
+  closeControlPanel,
+  drawnControlNames,
+  heightOf,
+  isPhoneProject,
+  openDisplay,
+  openIssuesTab,
+  openSurface,
+  pickInboxField,
+  REAL_STACK_SURFACES,
+  resetScroll,
+  SURFACE_CONTROLS,
+  SURFACE_SESSION,
+  seedSurfaces,
+  straysBetween,
+  topOf,
+  widthsOf,
+} from "./table-controls";
+import { expect, type Page, test } from "./test";
+import { assertPageFits } from "./unclipped";
+
+/** How far below its first reading the top of a list's first row may sit once a narrowing is
+ *  on: one more line of chips, a 44 px control and the row's own 8 px gap. */
+const CHIP_LINE = 52;
+
+/** The Inbox's own ceiling: the first item starts this far down the window or less, with no
+ *  narrowing on, with a panel open and with the display menu open. */
+const INBOX_TOP = 203;
+/** And this far down with three narrowings on, which is a second line of chips. */
+const INBOX_TOP_NARROWED = 255;
+
+/** The window the delivery fixture's two pull requests were merged in, with the list drawn. */
+const DELIVERY_WINDOW = "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z";
+
+/** The seed the Agents and Delivery surfaces are read over.
+ *
+ *  The Delivery page's freshness rows are pinned to the verdict a reconcile pass reaches here,
+ *  as `delivery.e2e.ts` and `review-seed.ts` pin them. The fake GitHub holds no App
+ *  installation for acme/widgets, so every pass the server runs on its own five-minute tick
+ *  fails with exactly the error written below, and the page's live socket carries that error to
+ *  the PRs, Deploy runs and PR CI rows. Unpinned, a pass that landed between two reads moved
+ *  the first row with no act of the row's own: at 1440x900 the Source freshness block grew from
+ *  one line to two, 16 px to 36 px, between the narrowing's read and the panel's read, and the
+ *  first row went from 681 px to 701 px. With the verdict written here, the page shows the same
+ *  rows whether or not a pass has run. */
+async function seedRealStackSurfaces(): Promise<{
+  deliveryQuery: string;
+  issue: string;
+  project: string;
+}> {
+  const issue = await seedAgents();
+  await seedDeliveryFixture();
+  await sql(
+    `UPDATE delivery_settings
+       SET last_error = 'the GitHub App is not installed on acme/widgets'
+     WHERE singleton`
+  );
+  return { deliveryQuery: DELIVERY_WINDOW, issue, project: "CORE" };
+}
+
+// SLOW(>=2s): two pages opened at each of this project's widths, over two seeded fixtures.
+test("the Agents page and the Delivery page each draw one row of controls, with nothing else between the title and the first row @phone", async ({
+  page,
+}, testInfo) => {
+  const scene = await seedRealStackSurfaces();
+  const phone = isPhoneProject(testInfo);
+  const measured: string[] = [];
+  for (const size of widthsOf(page, testInfo)) {
+    if (!phone) await page.setViewportSize(size);
+    for (const name of REAL_STACK_SURFACES) {
+      const surface = await openSurface(page, name, scene, { phone });
+      const where = `${name} at ${size.width}x${size.height}`;
+      await expect(surface.row, `${where}: not exactly one control row`).toHaveCount(1);
+      const height = Math.round(await heightOf(surface.row));
+      measured.push(`${where}: control row ${height}px`);
+      expect(height, `${where}: the control row has no height`).toBeGreaterThan(0);
+      const strays = await straysBetween(
+        surface.root,
+        await topOf(surface.head),
+        await topOf(surface.firstRow)
+      );
+      expect(
+        strays,
+        `${where} (control row ${height}px): ${strays.join("; ")} is drawn between the title and the first row and is outside the control row`
+      ).toEqual([]);
+      if (phone) await assertPageFits(page);
+    }
+  }
+  await testInfo.attach("control row heights", {
+    body: measured.join("\n"),
+    contentType: "text/plain",
+  });
+});
+
+// SLOW(>=2s): the same two pages, each narrowed and opened at each of this project's widths, and
+// the Agents page's rows selected.
+test("no narrowing, panel or selection on the Agents page or the Delivery page moves the first row @phone", async ({
+  page,
+}, testInfo) => {
+  const scene = await seedRealStackSurfaces();
+  const phone = isPhoneProject(testInfo);
+  for (const size of widthsOf(page, testInfo)) {
+    if (!phone) await page.setViewportSize(size);
+    for (const name of REAL_STACK_SURFACES) {
+      const surface = await openSurface(page, name, scene, { phone });
+      const where = `${name} at ${size.width}x${size.height}`;
+      await resetScroll(page, surface.firstRow);
+      const first = await topOf(surface.firstRow);
+
+      // Selecting rows, on the page whose list allows it, before any narrowing, so the top is
+      // held to the first reading itself. The Agents page marks rows for a broadcast: a
+      // checkbox on each row (`Select <name> for broadcast`) and one over the list for every row
+      // the filters match (`Select all matching agents`, `features/agents/AgentsPage.tsx`). A
+      // mark draws the broadcast composer, which follows the list and sticks to the bottom of
+      // the viewport rather than standing above the rows. The Delivery page's list marks no
+      // row: `PRList` hands `useDataTable` no `selection` (`features/delivery/PRList.tsx`), and
+      // a table without one selects nothing (`components/DataTable.tsx`); a press on a row opens
+      // that one pull request's details, which marks nothing for an action.
+      if (name === "Agents page") {
+        const composer = surface.root.getByRole("region", { name: "Broadcast" });
+        for (const [act, box] of [
+          [
+            "one row's checkbox ticked",
+            surface.firstRow.getByRole("checkbox", { name: /^Select .+ for broadcast$/ }),
+          ],
+          [
+            "the select-all checkbox ticked",
+            surface.root.getByRole("checkbox", { exact: true, name: "Select all matching agents" }),
+          ],
+        ] as const) {
+          await box.check();
+          await expect(composer, `${where}: ${act} drew no broadcast composer`).toBeVisible();
+          await resetScroll(page, surface.firstRow);
+          const selected = await topOf(surface.firstRow);
+          expect(
+            selected,
+            `${where}: ${act} moved the first row from ${Math.round(first)}px to ${Math.round(selected)}px`
+          ).toBeCloseTo(first, 0);
+        }
+        // Unmarked again, so the narrowing below is read on the page as it opened.
+        await surface.root.getByRole("button", { exact: true, name: "Clear selection" }).click();
+        await expect(composer, `${where}: Clear selection left the composer drawn`).toHaveCount(0);
+      }
+
+      await surface.narrow();
+      await expect(surface.firstRow).toBeVisible();
+      await resetScroll(page, surface.firstRow);
+      const narrowed = await topOf(surface.firstRow);
+      expect(
+        narrowed - first,
+        `${where}: one narrowing moved the first row from ${Math.round(first)}px to ${Math.round(narrowed)}px, which is more than the one line of chips the rule allows`
+      ).toBeLessThanOrEqual(CHIP_LINE);
+      expect(
+        narrowed,
+        `${where}: one narrowing moved the first row up, from ${Math.round(first)}px to ${Math.round(narrowed)}px`
+      ).toBeGreaterThanOrEqual(first - 0.5);
+
+      // Neither page draws a display menu, so the panel is the one act left: it is portalled
+      // over the page and takes no room in the layout.
+      if (surface.panel !== undefined) {
+        await surface.panel();
+        await resetScroll(page, surface.firstRow);
+        const after = await topOf(surface.firstRow);
+        expect(
+          after,
+          `${where}: the filter panel opened moved the first row from ${Math.round(narrowed)}px to ${Math.round(after)}px`
+        ).toBeCloseTo(narrowed, 0);
+        await closeControlPanel(surface.root);
+      }
+    }
+  }
+});
+
+test("the Agents page and the Delivery page draw every shared control their design gives them, and no other", async ({
+  page,
+}) => {
+  const scene = await seedRealStackSurfaces();
+  await page.setViewportSize({ height: 900, width: 1440 });
+  for (const name of REAL_STACK_SURFACES) {
+    const surface = await openSurface(page, name, scene);
+    // A chip is drawn only under a narrowing. The Agents page selects rows, for a broadcast, but
+    // what a mark draws - the select-all header's count and the broadcast composer
+    // (`features/agents/AgentsPage.tsx`) - carries no `data-control` and is no control the design
+    // gives the page, so no row is marked here. The Delivery page's list selects none: `PRList`
+    // hands `useDataTable` no `selection` (`features/delivery/PRList.tsx`).
+    await surface.narrow();
+    const expected = [...SURFACE_CONTROLS[name]].sort();
+    for (const wanted of expected) {
+      await expect(control(surface.root, wanted), `${name} draws no ${wanted}`).not.toHaveCount(0);
+    }
+    const drawn = await drawnControlNames(surface.root);
+    const unexpected = drawn.filter((value) => !(expected as string[]).includes(value)).sort();
+    expect(
+      unexpected,
+      `${name} draws ${unexpected.join(", ")}, which the design does not give it`
+    ).toEqual([]);
+  }
+});
+
+/** Twenty-two questions, so the list is longer than either window, with no credential request
+ *  waiting and nothing selected. Each ask waits on Alice, who holds every issue. */
+async function seedLongInbox(): Promise<void> {
+  await createProject({ key: "CORE", name: "Core" });
+  const priorities = [0, 1, 2, 3] as const;
+  const urgencies = ["blocking", "high", "med", "low"] as const;
+  for (let index = 0; index < 22; index++) {
+    const issue = await createIssue({ project: "CORE", title: `Long inbox item ${index}` });
+    await patchIssue(issue.key, { priority: priorities[index % 4] });
+    await createAsk(
+      issue.key,
+      { question: `Item ${index}: what is the rule?`, urgency: urgencies[index % 4] },
+      SURFACE_SESSION
+    );
+  }
+}
+
+// SLOW(>=2s): twenty-two seeded questions, read at two widths through four states each.
+test("the Inbox's first item starts within 203 px of the window, and within 255 px under three narrowings", async ({
+  page,
+}) => {
+  await seedLongInbox();
+  const firstRow = page.locator("[data-inbox-row]").first();
+  const main = page.getByTestId("main-content");
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 800, width: 1280 },
+  ]) {
+    await page.setViewportSize(size);
+    await page.goto("/");
+    await expect(firstRow).toBeVisible();
+    await resetScroll(page, firstRow);
+    const plain = await topOf(firstRow);
+    expect(
+      plain,
+      `${size.width}x${size.height}: the first item starts ${plain}px down`
+    ).toBeLessThanOrEqual(INBOX_TOP);
+
+    // A panel draws over the page, so it takes no room in the layout.
+    await openFilterPanel(page, main);
+    await resetScroll(page, firstRow);
+    const panelled = await topOf(firstRow);
+    expect(
+      panelled,
+      `${size.width}x${size.height}: with the filter panel open the first item starts ${panelled}px down`
+    ).toBeLessThanOrEqual(INBOX_TOP);
+    await closeControlPanel(main);
+
+    await openDisplay(page, main);
+    await resetScroll(page, firstRow);
+    const menued = await topOf(firstRow);
+    expect(
+      menued,
+      `${size.width}x${size.height}: with the display menu open the first item starts ${menued}px down`
+    ).toBeLessThanOrEqual(INBOX_TOP);
+
+    // Three narrowings, opened in one address so the chips are the only thing that changed.
+    await page.goto("/?priority=P0&urgency=blocking&type=question");
+    await expect(firstRow).toBeVisible();
+    // Three chips, one per narrowing: **Clear filters** beside them is a button, not a chip.
+    await expect(control(controlRow(main), CONTROL.chip)).toHaveCount(3);
+    await resetScroll(page, firstRow);
+    const narrowed = await topOf(firstRow);
+    expect(
+      narrowed,
+      `${size.width}x${size.height}: with three narrowings on the first item starts ${narrowed}px down`
+    ).toBeLessThanOrEqual(INBOX_TOP_NARROWED);
+  }
+});
+
+/** Nine narrowings over the long Inbox that still keep seventeen of its twenty-two items: three
+ *  priorities, the three urgencies the seed pairs with them, two kinds and the one project. */
+const NINE_NARROWINGS =
+  "/?priority=P0,P1,P2&urgency=blocking,high,med&type=question,approval&project=CORE";
+
+// SLOW(>=2s): twenty-two seeded questions, read at three widths with and without nine narrowings.
+test("however many narrowings are on, their chips take at most one more line of the Inbox's row, at every width", async ({
+  page,
+}) => {
+  await seedLongInbox();
+  const firstRow = page.locator("[data-inbox-row]").first();
+  const main = page.getByTestId("main-content");
+  const readings: string[] = [];
+  const over: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 800, width: 1280 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    await page.goto("/");
+    await expect(firstRow).toBeVisible();
+    await resetScroll(page, firstRow);
+    // The first item was waited for and the scroll reset above, so its top is the layout's.
+    const plain = await topOf(firstRow);
+
+    await page.goto(NINE_NARROWINGS);
+    await expect(firstRow).toBeVisible();
+    // One chip per value picked, as the row draws them, so nine chips.
+    await expect(control(controlRow(main), CONTROL.chip)).toHaveCount(9);
+    await resetScroll(page, firstRow);
+    // The nine chips were counted and the scroll reset above, so this is the narrowed layout.
+    const narrowed = await topOf(firstRow);
+    const where = `${size.width}x${size.height}: nine narrowings moved the first item from ${Math.round(plain)}px to ${Math.round(narrowed)}px, ${Math.round(narrowed - plain)}px down`;
+    readings.push(where);
+    if (narrowed - plain > CHIP_LINE) over.push(where);
+  }
+  await test.info().attach("first item with and without nine narrowings", {
+    body: readings.join("\n"),
+    contentType: "text/plain",
+  });
+  // R1: the chips of the narrowings that are on may take one more line of the row, at most
+  // 52 px, on any page and at every width the suite drives - not one more line per few chips.
+  expect(
+    over,
+    `${over.join("; ")}, more than the ${CHIP_LINE}px of one more line of chips`
+  ).toEqual([]);
+});
+
+/** The seven labels every issue of the Board's seed carries: the Board narrows by every label
+ *  it names at once, so each issue holds them all and stays on the Board under all seven. */
+const BOARD_LABELS = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf"];
+
+// SLOW(>=2s): four seeded issues, read at three widths with and without nine narrowings.
+test("however many narrowings are on, their chips take at most one more line of the Board's row, at every width", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  let first = "";
+  for (const title of ["Rollout one", "Rollout two", "Rollout three", "Rollout four"]) {
+    const issue = await createIssue({ project: "CORE", title });
+    await patchIssue(issue.key, { labels: BOARD_LABELS, status: "todo" });
+    await createAsk(issue.key, { question: `${title}: what is the rule?` }, SURFACE_SESSION);
+    if (first === "") first = issue.key;
+  }
+  const main = page.getByTestId("main-content");
+  const firstCard = page.locator("[data-board-card]").first();
+  // Seven labels, the search text and the needs-you flag: nine chips, and every issue kept.
+  const nine = `/projects/CORE/issues?${BOARD_LABELS.map((label) => `label=${label}`).join("&")}&q=Rollout&needs-you=1`;
+  const readings: string[] = [];
+  const over: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 800, width: 1280 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    // The Board is the stored view from here on, so the address below opens on it too.
+    await openSurface(page, "project Board", { issue: first, project: "CORE" });
+    await resetScroll(page, firstCard);
+    // `openSurface` waited for the first card, and the scroll is reset, so this is the layout.
+    const plain = await topOf(firstCard);
+
+    await page.goto(nine);
+    await expect(firstCard).toBeVisible();
+    await expect(control(controlRow(main), CONTROL.chip)).toHaveCount(9);
+    await resetScroll(page, firstCard);
+    // The nine chips were counted and the scroll reset above, so this is the narrowed layout.
+    const narrowed = await topOf(firstCard);
+    const where = `${size.width}x${size.height}: nine narrowings moved the Board's first card from ${Math.round(plain)}px to ${Math.round(narrowed)}px, ${Math.round(narrowed - plain)}px down`;
+    readings.push(where);
+    if (narrowed - plain > CHIP_LINE) over.push(where);
+  }
+  await test.info().attach("first card with and without nine narrowings", {
+    body: readings.join("\n"),
+    contentType: "text/plain",
+  });
+  // R1's bound is on every page of R2, so the Board's chips are held to it as the Inbox's are.
+  expect(
+    over,
+    `${over.join("; ")}, more than the ${CHIP_LINE}px of one more line of chips`
+  ).toEqual([]);
+});
+
+/** The widths a reader's window takes, from the desktop down: R1's two, a tablet held upright,
+ *  the `sm` breakpoint itself (640 px, where the row stops wrapping), and a phone. */
+const READING_WIDTHS = [
+  { height: 900, width: 1440 },
+  { height: 800, width: 1280 },
+  { height: 1024, width: 768 },
+  { height: 800, width: 640 },
+  { height: 664, width: 390 },
+];
+
+/** How much of `element` the reader can see: its box cut by every box above it that clips
+ *  sideways, and by the window. */
+function shownOf(element: Element): { left: number; right: number; width: number; shown: number } {
+  const own = element.getBoundingClientRect();
+  let left = 0;
+  let right = window.innerWidth;
+  for (let box = element.parentElement; box !== null; box = box.parentElement) {
+    if (getComputedStyle(box).overflowX === "visible") continue;
+    const clip = box.getBoundingClientRect();
+    left = Math.max(left, clip.left);
+    right = Math.min(right, clip.right);
+  }
+  return {
+    left: own.left,
+    right: own.right,
+    width: own.width,
+    shown: Math.max(0, Math.min(own.right, right) - Math.max(own.left, left)),
+  };
+}
+
+// SLOW(>=2s): twenty-two seeded questions, the row's keyboard order walked at five widths.
+test("a chip of the Inbox's row that has the keyboard focus is shown whole, with its whole name, at every width", async ({
+  page,
+}) => {
+  await seedLongInbox();
+  const row = controlRow(page.getByTestId("main-content"));
+  const cut: string[] = [];
+  for (const size of READING_WIDTHS) {
+    await page.setViewportSize(size);
+    await page.goto(NINE_NARROWINGS);
+    await expect(control(row, CONTROL.chip)).toHaveCount(9);
+    await control(row, CONTROL.searchBox).focus();
+    let chips = 0;
+    // The search box, the filter trigger, nine chips and Clear filters, and the row's own
+    // controls after them: twenty presses walk past the end of the row.
+    for (let press = 0; press < 20; press++) {
+      await page.keyboard.press("Tab");
+      // The Tab moves the focus, and `onFocus` scrolls it into view with no smooth scroll, while
+      // the browser handles the press, so the instant after it is what the reader sees.
+      const reading = await page.evaluate((measure) => {
+        const shown = new Function(`return (${measure})`)() as typeof shownOf;
+        const focused = document.activeElement;
+        if (!(focused instanceof HTMLElement)) return null;
+        if (focused.closest('[data-control="control-row"]') === null) return null;
+        if (focused.getAttribute("data-control") !== "chip") return { chip: false } as const;
+        const name = focused.querySelector(".truncate");
+        return {
+          chip: true,
+          label: focused.getAttribute("aria-label") ?? "",
+          nameCut: name !== null && name.scrollWidth > name.clientWidth + 1,
+          ...shown(focused),
+        } as const;
+      }, shownOf.toString());
+      if (reading === null) break;
+      if (!reading.chip) continue;
+      chips++;
+      const where = `${size.width}x${size.height}: "${reading.label}" has the focus`;
+      if (reading.shown < reading.width - 1) {
+        cut.push(
+          `${where} and ${Math.round(reading.shown)} of its ${Math.round(reading.width)}px are shown`
+        );
+      } else if (reading.nameCut) {
+        cut.push(`${where} and its name is cut short`);
+      }
+    }
+    expect(chips, `${size.width}x${size.height}: the keyboard reached ${chips} of 9 chips`).toBe(9);
+  }
+  // The row's own promise (components/ControlRow.tsx): a chip the strip scrolled away is reached
+  // by the Tab key and scrolled into view. A reader who cannot see the chip they are on cannot
+  // tell which narrowing Enter takes off, which the chips showed whole before this change.
+  expect(cut, cut.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): twenty-two seeded questions, read at five widths.
+test("Clear filters stays in view in the Inbox's row however many narrowings are on, at every width", async ({
+  page,
+}) => {
+  await seedLongInbox();
+  const row = controlRow(page.getByTestId("main-content"));
+  const hidden: string[] = [];
+  for (const size of READING_WIDTHS) {
+    await page.setViewportSize(size);
+    await page.goto(NINE_NARROWINGS);
+    await expect(control(row, CONTROL.chip)).toHaveCount(9);
+    const clear = row.getByRole("button", { exact: true, name: "Clear filters" });
+    await expect(clear).toHaveCount(1);
+    // The nine chips and Clear filters were waited for above; how much of it shows is the reading.
+    const reading = await clear.evaluate((button, measure) => {
+      const shown = new Function(`return (${measure})`)() as typeof shownOf;
+      return shown(button);
+    }, shownOf.toString());
+    if (reading.shown < reading.width - 1) {
+      hidden.push(
+        `${size.width}x${size.height}: ${Math.round(reading.shown)} of Clear filters' ${Math.round(reading.width)}px are in view`
+      );
+    }
+  }
+  // R6: Clear filters stays in the control row, and it is the one press that takes nine
+  // narrowings off. A mouse's own wheel does not scroll a strip sideways, and the filter panel
+  // holds no Clear filters, so a control scrolled out of view is one a pointer reader cannot find.
+  expect(hidden, hidden.join("; ")).toEqual([]);
+});
+
+/** Which chips of the control row `row` a pointer reader sees whole, in the row's order: a chip
+ *  that no box above it and not the window cuts (`shownOf`, handed in as `measure`), and that
+ *  neither scroll button of the row covers, since each is laid over one end of the strip. */
+function chipsSeenWhole(row: Element, measure: string): boolean[] {
+  const shown = new Function(`return (${measure})`)() as typeof shownOf;
+  const buttons = [...row.querySelectorAll('button[aria-label^="Scroll filters"]')].map((button) =>
+    button.getBoundingClientRect()
+  );
+  return [...row.querySelectorAll('[data-control="chip"]')].map((chip) => {
+    const reading = shown(chip);
+    const covered = buttons.some(
+      (box) => box.left < reading.right - 1 && box.right > reading.left + 1
+    );
+    return reading.shown >= reading.width - 1 && !covered;
+  });
+}
+
+/** Where a chips strip comes to rest, as its `scrollLeft`: unchanged over five frames, since a
+ *  scroll button's press scrolls it smoothly and a wheel may too. */
+function stripAtRest(strip: Locator): Promise<number> {
+  return strip.evaluate((node) => {
+    const { promise, resolve } = Promise.withResolvers<number>();
+    let last = node.scrollLeft;
+    let still = 0;
+    const frame = () => {
+      still = node.scrollLeft === last ? still + 1 : 0;
+      last = node.scrollLeft;
+      if (still >= 5) resolve(last);
+      else requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+    return promise;
+  });
+}
+
+/** Sixteen narrowings over the long Inbox that keep all twenty-two of its items: its four
+ *  priorities and four urgencies, four kinds, and four projects of which CORE holds them all (the
+ *  address keeps three project keys no project has, EDGE, MESH and PIER, which match no row).
+ *  Their chips are more than the row shows whole at once at any of `READING_WIDTHS`, and none is
+ *  wider than the nine chips' widest, `Urgency: Blocking`, so each fits between the scroll
+ *  buttons at 390 px. */
+const SIXTEEN_NARROWINGS = `/?${[
+  "priority=P0,P1,P2,P3",
+  "urgency=blocking,high,med,low",
+  "type=question,decision,approval,reply",
+  "project=CORE,EDGE,MESH,PIER",
+].join("&")}`;
+
+// SLOW(>=2s): twenty-two seeded questions, the row's chips paged through at five widths.
+test("a pointer reaches and removes every chip of the Inbox's row with the row's scroll buttons, at every width", async ({
+  page,
+}) => {
+  await seedLongInbox();
+  const row = controlRow(page.getByTestId("main-content"));
+  const chips = control(row, CONTROL.chip);
+  // The strip the chips scroll in is their own parent.
+  const strip = chips.first().locator("..");
+  const left = row.getByRole("button", { exact: true, name: "Scroll filters left" });
+  const right = row.getByRole("button", { exact: true, name: "Scroll filters right" });
+  const scrollLeft = () => strip.evaluate((node) => node.scrollLeft);
+  // One press on Scroll filters right, waited out until the strip has moved and stopped.
+  const pressRight = async (where: string) => {
+    const from = await scrollLeft();
+    await right.click();
+    await expect
+      .poll(scrollLeft, {
+        message: `${where}: a press on Scroll filters right left the strip at ${from}px`,
+      })
+      .not.toBe(from);
+    return stripAtRest(strip);
+  };
+  const readings: string[] = [];
+  for (const size of READING_WIDTHS) {
+    const where = `${size.width}x${size.height}`;
+    await page.setViewportSize(size);
+    // Where every chip is shown whole there is nothing to page to, so neither button is drawn:
+    // one chip, which the strip shows whole at every width.
+    await page.goto("/?priority=P0");
+    await expect(chips).toHaveCount(1);
+    // The one chip was counted above, so what the strip shows of it is the settled layout.
+    const alone = await row.evaluate(chipsSeenWhole, shownOf.toString());
+    expect(alone, `${where}: the one chip is not shown whole`).toEqual([true]);
+    await expect(
+      right,
+      `${where}: the one chip is shown whole, yet Scroll filters right is drawn`
+    ).toHaveCount(0);
+    await expect(
+      left,
+      `${where}: the one chip is shown whole, yet Scroll filters left is drawn`
+    ).toHaveCount(0);
+
+    await page.goto(SIXTEEN_NARROWINGS);
+    await expect(chips).toHaveCount(16);
+    expect(await scrollLeft(), `${where}: the strip does not open at its start`).toBe(0);
+    const seen = new Set<number>();
+    const look = async () => {
+      // Each call follows the chips' count or a press waited out to rest, so the strip is still.
+      const whole = await row.evaluate(chipsSeenWhole, shownOf.toString());
+      for (const [index, shown] of whole.entries()) if (shown) seen.add(index);
+    };
+    await look();
+    const atStart = seen.size;
+    // The paging below is the row's claim at each width, so a width that shows every chip whole
+    // at the start is named here rather than passed by with nothing paged.
+    expect(
+      atStart,
+      `${where}: all 16 chips are shown whole at the start, so no scroll button has a chip to page to`
+    ).toBeLessThan(16);
+    await expect(
+      left,
+      `${where}: the strip is at its start, yet Scroll filters left is drawn`
+    ).toHaveCount(0);
+    const stops: number[] = [];
+    while (seen.size < 16) {
+      const before = seen.size;
+      await expect(
+        right,
+        `${where}: ${before} of 16 chips seen whole after ${stops.length} presses, and Scroll filters right is not drawn`
+      ).toBeVisible();
+      stops.push(Math.round(await pressRight(where)));
+      await look();
+      expect(
+        seen.size,
+        `${where}: press ${stops.length} on Scroll filters right (strip at ${stops.at(-1)}px) brought no more chip wholly into view: ${before} of 16 seen`
+      ).toBeGreaterThan(before);
+    }
+    await expect(
+      right,
+      `${where}: every chip was seen whole after ${stops.length} presses (strip at ${stops.at(-1)}px), yet Scroll filters right is still drawn`
+    ).toHaveCount(0);
+    await expect(
+      left,
+      `${where}: the strip is paged to its end (${stops.at(-1)}px), and Scroll filters left is not drawn`
+    ).toBeVisible();
+
+    // A mouse's plain wheel scrolls the page, not the strip; Shift and the wheel, and a sideways
+    // wheel, are the two wheel moves that scroll it, and each must.
+    const wheeled: number[] = [];
+    for (const [move, deltaX, deltaY, shift] of [
+      ["Shift and a vertical wheel", 0, 200, true],
+      ["a sideways wheel", 200, 0, false],
+    ] as const) {
+      await strip.evaluate((node) => {
+        node.scrollLeft = 0;
+      });
+      await stripAtRest(strip);
+      // The strip was drawn with its sixteen chips above and has come to rest, so it has a box.
+      const box = await strip.boundingBox();
+      if (box === null) throw new Error(`${where}: the strip has no box`);
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      if (shift) await page.keyboard.down("Shift");
+      await page.mouse.wheel(deltaX, deltaY);
+      if (shift) await page.keyboard.up("Shift");
+      await expect
+        .poll(scrollLeft, { message: `${where}: ${move} over the strip left it at 0px` })
+        .toBeGreaterThan(0);
+      wheeled.push(Math.round(await stripAtRest(strip)));
+    }
+    readings.push(
+      `${where}: ${atStart} of 16 chips shown whole at the start; every chip seen whole after ${stops.length} presses on Scroll filters right (strip at ${stops.join(", ")}px); Shift and the wheel moved the strip 0 to ${wheeled[0]}px, a sideways wheel 0 to ${wheeled[1]}px`
+    );
+  }
+
+  // And the chip the pointer paged to is one it can take off, in place.
+  await page.setViewportSize({ height: 664, width: 390 });
+  await page.goto(NINE_NARROWINGS);
+  await expect(chips).toHaveCount(9);
+  let presses = 0;
+  // Each turn reads after the nine chips' count or a press waited out to rest, so the strip is
+  // still and what it shows whole is settled.
+  while (!(await row.evaluate(chipsSeenWhole, shownOf.toString())).at(-1)) {
+    expect(
+      presses,
+      "390x664: nine presses on Scroll filters right never showed the last chip whole"
+    ).toBeLessThan(9);
+    await pressRight("390x664");
+    presses++;
+  }
+  const last = chips.last();
+  await expect(last).toHaveAttribute("aria-label", "Remove Project: CORE filter");
+  await last.click();
+  await expect(
+    chips,
+    "390x664: pressing the last chip did not leave 8 chips in the row"
+  ).toHaveCount(8);
+  const address = new URL(page.url());
+  expect(address.searchParams.has("project"), "390x664: the address kept ?project=").toBe(false);
+  expect(address.searchParams.get("priority"), "390x664: the press took the priorities").toBe(
+    "P0,P1,P2"
+  );
+  readings.push(
+    `390x664: the last chip shown whole after ${presses} presses, and pressed: 8 chips left`
+  );
+  await test.info().attach("the row's chips paged through by its scroll buttons", {
+    body: readings.join("\n"),
+    contentType: "text/plain",
+  });
+});
+
+/** Where the keyboard focus is, as the chips line reads it: on a chip (by its name), on the
+ *  row's filter trigger, on Clear filters, or anywhere else - the body included - with how much
+ *  of the focused element the reader can see. */
+async function focusInRow(
+  row: Locator
+): Promise<{ where: "chip" | "trigger" | "clear" | "elsewhere"; label: string; whole: boolean }> {
+  return row.evaluate((root, measure) => {
+    const shown = new Function(`return (${measure})`)() as typeof shownOf;
+    const focused = document.activeElement;
+    if (!(focused instanceof HTMLElement) || !root.contains(focused)) {
+      return { where: "elsewhere", label: focused?.tagName ?? "nothing", whole: false } as const;
+    }
+    const reading = shown(focused);
+    const whole = reading.shown >= reading.width - 1;
+    const label = focused.getAttribute("aria-label") ?? focused.textContent?.trim() ?? "";
+    const control = focused.getAttribute("data-control");
+    if (control === "chip") return { where: "chip", label, whole } as const;
+    if (control === "panel-trigger") return { where: "trigger", label, whole } as const;
+    if (label === "Clear filters") return { where: "clear", label, whole } as const;
+    return { where: "elsewhere", label, whole } as const;
+  }, shownOf.toString());
+}
+
+/** The two pages of R2 whose chips this row presses: the Inbox with nine narrowings on, which
+ *  draw nine chips, and the project List with a label, its search text and its three flags on,
+ *  of which the three flags and the label draw chips, four (the label is its column's filter,
+ *  whose chip the row draws whether its column shows or not, and the text is its box).
+ *  `chips` is how many chips each address draws. */
+const CHIP_FOCUS_SURFACES = [
+  { chips: 9, name: "Inbox", path: NINE_NARROWINGS },
+  {
+    chips: 4,
+    name: "project List",
+    path: "/projects/CORE/issues?label=frontend&q=Rollout&needs-you=1&unread=1&unclaimed=1",
+  },
+] as const;
+
+// SLOW(>=2s): two pages at two widths, every chip of each taken off from the keyboard.
+test("a chip taken off from the keyboard hands the focus to the next chip, then the previous, then the filter trigger, and Clear filters hands it to the trigger", async ({
+  page,
+}) => {
+  await seedLongInbox();
+  const scene = await seedSurfaces();
+  const main = page.getByTestId("main-content");
+  const row = controlRow(main);
+  const chips = control(row, CONTROL.chip);
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    for (const surface of CHIP_FOCUS_SURFACES) {
+      const where = `${surface.name} at ${size.width}x${size.height}`;
+      // The List is the stored view from here on, so its address below opens on it.
+      if (surface.name === "project List") await openSurface(page, "project List", scene);
+      await page.goto(surface.path);
+      await expect(chips.first(), `${where}: no chip is drawn`).toBeVisible();
+      await expect(
+        chips,
+        `${where}: the address's narrowings draw another number of chips than ${surface.chips}`
+      ).toHaveCount(surface.chips);
+      // The keys a reader takes a chip off with: the last chip first, which has no next chip,
+      // then the first chip by Space and by Delete, then Enter until no chip is left.
+      let key = "Enter";
+      let pick: "last" | "first" = "last";
+      for (let removal = 0; removal < 20; removal++) {
+        // The chips' count was waited for above and each later turn follows a removal whose
+        // count was waited for, so the chips read are the ones the page settled on.
+        const before = await chips.evaluateAll((all) =>
+          all.map((chip) => chip.getAttribute("aria-label") ?? "")
+        );
+        if (before.length === 0) break;
+        const index = pick === "last" ? before.length - 1 : 0;
+        await chips.nth(index).focus();
+        await page.keyboard.press(key);
+        const took = await expect
+          .poll(() => chips.count(), { timeout: 5_000 })
+          .toBe(before.length - 1)
+          .then(() => true)
+          .catch(() => false);
+        let used = key;
+        if (!took) {
+          wrong.push(`${where}: ${key} on "${before[index]}" took no chip off`);
+          await chips.nth(index).focus();
+          await page.keyboard.press("Enter");
+          await expect(chips).toHaveCount(before.length - 1);
+          used = "Enter";
+        }
+        const left = before.filter((_, at) => at !== index);
+        const expected =
+          left.length === 0
+            ? { where: "trigger", label: "the filter trigger" }
+            : { where: "chip", label: left[Math.min(index, left.length - 1)] ?? "" };
+        // The count above saw the removal commit, and `ControlRow` hands the focus on in that
+        // commit's layout effect, so the focus read is where the removal left it.
+        const focus = await focusInRow(row);
+        const right =
+          focus.where === expected.where &&
+          (expected.where === "trigger" || focus.label === expected.label);
+        if (!right) {
+          wrong.push(
+            `${where}: after ${used} took "${before[index]}" off the focus is on ${focus.where === "elsewhere" ? `${focus.label}, outside the row's controls` : `"${focus.label}"`}, not on ${expected.where === "chip" ? `"${expected.label}"` : expected.label}`
+          );
+        } else if (!focus.whole) {
+          wrong.push(`${where}: after ${used} the focused "${focus.label}" is not shown whole`);
+        }
+        if (removal === 0) {
+          key = "Space";
+          pick = "first";
+        } else if (removal === 1) {
+          key = "Delete";
+        } else {
+          key = "Enter";
+        }
+      }
+      // Clear filters unmounts itself, so the focus it leaves goes to the filter trigger.
+      await page.goto(surface.path);
+      const clear = row.getByRole("button", { exact: true, name: "Clear filters" });
+      await clear.focus();
+      await page.keyboard.press("Enter");
+      await expect(chips, `${where}: Clear filters left chips on`).toHaveCount(0);
+      // The count above saw Clear filters' commit, and `ControlRow` hands the focus on in that
+      // commit's layout effect, so the focus read is where the press left it.
+      const focus = await focusInRow(row);
+      if (focus.where !== "trigger") {
+        wrong.push(
+          `${where}: after Clear filters the focus is on ${focus.where === "elsewhere" ? `${focus.label}, outside the row's controls` : `"${focus.label}"`}, not on the filter trigger`
+        );
+      }
+    }
+  }
+  // R6 keeps every chip's removal and Clear filters, and these are now this change's own
+  // components: a removal that drops the focus onto the page sends a keyboard reader back to the
+  // page's first link for the next chip, which cost 66 presses for 13 chips at 1440 px.
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): two pages at two widths, each page's selection bar taken away from the keyboard.
+test("the selection bar gone from the keyboard hands the focus to the row marked last, or after a snooze to the row after the snoozed rows, never the body, on the Inbox and the project List", async ({
+  page,
+}) => {
+  await seedLongInbox();
+  const scene = await seedSurfaces();
+  // Forty more issues, so the List's one page holds rows its table does not draw at all: past
+  // the window, and past the rows it draws beyond each end of the window.
+  for (let index = 0; index < 40; index++) {
+    await createIssue({ project: "CORE", title: `Far row ${index}` });
+  }
+  const main = page.getByTestId("main-content");
+  const wrong: string[] = [];
+  /** Where the keyboard focus is - the focused element's name, or the tag of the body - and
+   *  whether the window and every box that clips it show the whole of it. */
+  const focusNow = () =>
+    page.evaluate(() => {
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement) || focused === document.body) {
+        return { label: focused?.tagName ?? "nothing", whole: false };
+      }
+      const own = focused.getBoundingClientRect();
+      let top = 0;
+      let bottom = window.innerHeight;
+      let left = 0;
+      let right = window.innerWidth;
+      for (let box = focused.parentElement; box !== null; box = box.parentElement) {
+        const style = getComputedStyle(box);
+        const clip = box.getBoundingClientRect();
+        if (style.overflowY !== "visible") {
+          top = Math.max(top, clip.top);
+          bottom = Math.min(bottom, clip.bottom);
+        }
+        if (style.overflowX !== "visible") {
+          left = Math.max(left, clip.left);
+          right = Math.min(right, clip.right);
+        }
+      }
+      const whole =
+        own.top >= top - 1 &&
+        own.bottom <= bottom + 1 &&
+        own.left >= left - 1 &&
+        own.right <= right + 1;
+      const label = focused.getAttribute("aria-label") ?? focused.textContent?.trim() ?? "";
+      return { label: label === "" ? focused.tagName : label, whole };
+    });
+  /** Records a focus that is not on `wanted`, or is on it out of the reader's sight. The bar
+   *  hands the focus on once the commit that took it away has settled, which for a write that
+   *  lands rather than a key pressed is a moment after the bar is seen gone; the focus is read
+   *  until it is there, for the suite's expect timeout (`playwright.config.ts`). */
+  const focusOn = async (where: string, after: string, wanted: string) => {
+    const landed = await expect
+      .poll(async () => (await focusNow()).label)
+      .toBe(wanted)
+      .then(() => true)
+      .catch(() => false);
+    // The poll above waited until the focus landed or its timeout ran out, so this is where the
+    // focus settled.
+    const focus = await focusNow();
+    if (!landed) {
+      wrong.push(`${where}: after ${after} the focus is on ${focus.label}, not on "${wanted}"`);
+    } else if (!focus.whole) {
+      wrong.push(`${where}: after ${after} the focused "${wanted}" is not in view`);
+    }
+  };
+  /** Scrolls the list until `row` is above the window, so a focus handed back to it has to bring
+   *  it into view: the box around it that scrolls, or the window where none does. */
+  const scrollAbove = (row: Locator) =>
+    row.evaluate((node) => {
+      const by = node.getBoundingClientRect().bottom + 16;
+      for (let box = node.parentElement; box !== null; box = box.parentElement) {
+        const { overflowY } = getComputedStyle(box);
+        if (
+          (overflowY === "auto" || overflowY === "scroll") &&
+          box.scrollHeight > box.clientHeight
+        ) {
+          box.scrollTop += by;
+          return;
+        }
+      }
+      window.scrollBy(0, by);
+    });
+  /** Marks a row from the keyboard, by Space on its checkbox. */
+  const mark = async (box: Locator) => {
+    await box.focus();
+    await page.keyboard.press("Space");
+    await expect(box).toBeChecked();
+  };
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+
+    // The Inbox, whose Escape is the keyboard's Clear while no row holds the focus.
+    let where = `Inbox at ${size.width}x${size.height}`;
+    await page.goto("/");
+    const rows = page.locator("[data-inbox-row]");
+    await expect(rows.nth(3), `${where}: fewer than four rows`).toBeVisible();
+    const inboxBar = page.getByRole("toolbar", { name: "Selected rows" });
+    const inboxBox = (index: number) => rows.nth(index).getByRole("checkbox").first();
+    const inboxClear = inboxBar.getByRole("button", { exact: true, name: "Clear selection" });
+    // The third row and then the second: the row marked last, which is neither the list's first
+    // nor the last marked in the list's order.
+    await mark(inboxBox(2));
+    await mark(inboxBox(1));
+    await expect(inboxBar).toContainText("2 selected");
+    await scrollAbove(rows.nth(1));
+    await inboxClear.focus();
+    await page.keyboard.press("Enter");
+    await expect(inboxBar, `${where}: Clear selection left the bar up`).toHaveCount(0);
+    await focusOn(
+      where,
+      "Enter on Clear selection",
+      (await inboxBox(1).getAttribute("aria-label")) ?? ""
+    );
+    await mark(inboxBox(0));
+    await mark(inboxBox(3));
+    await scrollAbove(rows.nth(3));
+    await inboxClear.focus();
+    await page.keyboard.press("Escape");
+    await expect(inboxBar, `${where}: Escape from the bar left the bar up`).toHaveCount(0);
+    await focusOn(
+      where,
+      "Escape from the bar's Clear selection",
+      (await inboxBox(3).getAttribute("aria-label")) ?? ""
+    );
+    // A snooze picked in the bar folds every marked row into Later, the row marked last with
+    // them, and the bar goes once the write lands: the focus goes to the row of the item after
+    // the last of them in the list (dispatch://INFRA-2160, R8), whose row the hand-off brings
+    // into view. The pick is the keyboard's: Enter on the bar's Snooze opens its menu on Later
+    // today, and Enter writes it.
+    await mark(inboxBox(2));
+    await mark(inboxBox(1));
+    const afterMarked = (await rows.nth(3).getAttribute("data-inbox-row")) ?? "";
+    const picker = bulkSnoozeTrigger(page);
+    await picker.focus();
+    await page.keyboard.press("Enter");
+    await expect(
+      choiceOf(await menuOf(picker), "Later today"),
+      `${where}: Enter on the bar's Snooze opened no menu`
+    ).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(inboxBar, `${where}: the snooze left the bar up`).toHaveCount(0);
+    // The row is read by its id rather than its name: a row's text holds its age, which moves.
+    // Its top is what must be in sight, since a card row at 390 px can be taller than the window.
+    const handedTo = () =>
+      page.evaluate(() => {
+        const focused = document.activeElement;
+        const top = focused?.getBoundingClientRect().top ?? -1;
+        return {
+          row: focused?.getAttribute("data-inbox-row") ?? focused?.tagName ?? "nothing",
+          seen: top >= 0 && top < window.innerHeight,
+        };
+      });
+    const landed = await expect
+      .poll(async () => (await handedTo()).row, { timeout: 2_000 })
+      .toBe(afterMarked)
+      .then(() => true)
+      .catch(() => false);
+    // The poll above waited for the hand-off to land, so this reads where it settled.
+    const handed = await handedTo();
+    if (!landed) {
+      wrong.push(
+        `${where}: after a snooze took the marked rows away the focus is on ${handed.row}, not on the row after them`
+      );
+    } else if (!handed.seen) {
+      wrong.push(
+        `${where}: after a snooze took the marked rows away their next row is not in view`
+      );
+    }
+    // The bar never held the focus, so it is not the bar's to move: on a control of the page's
+    // own, Escape clears the selection and leaves the focus there.
+    const trigger = control(controlRow(main), CONTROL.panelTrigger).first();
+    await mark(inboxBox(1));
+    await trigger.focus();
+    await page.keyboard.press("Escape");
+    await expect(inboxBar, `${where}: Escape on the filter trigger left the bar up`).toHaveCount(0);
+    // The bar was waited gone above, and for a key press its hand-off lands with that commit, so
+    // this reads where the Escape left the focus.
+    if (!(await trigger.evaluate((node) => node === document.activeElement))) {
+      // The check above found the focus off the trigger, and this names where it went instead.
+      const focus = await focusNow();
+      wrong.push(
+        `${where}: Escape on the filter trigger moved the focus to ${focus.label}, off the trigger`
+      );
+    }
+    // And on a row: `x` takes the one mark off the row in hand, the bar goes, and the focus stays
+    // on the row. Escape is not this case: on a row it steps off the row first. The row in hand
+    // is the one the snooze above handed the reader to (R8), which beside the column is also
+    // the selected row, the one `x` marks there.
+    const handRow = page.locator(`[data-inbox-row="${afterMarked}"]`);
+    await handRow.focus();
+    await page.keyboard.press("x");
+    await expect(
+      handRow.getByRole("checkbox").first(),
+      `${where}: x marked another row than the focused one`
+    ).toBeChecked();
+    await expect(inboxBar).toContainText("1 selected");
+    await page.keyboard.press("x");
+    await expect(inboxBar, `${where}: x on the only marked row left the bar up`).toHaveCount(0);
+    // The bar was waited gone above, and for a key press its hand-off lands with that commit, so
+    // this reads where the `x` left the focus.
+    if (!(await handRow.evaluate((node) => node === document.activeElement))) {
+      // The check above found the focus off the row, and this names where it went instead.
+      const focus = await focusNow();
+      wrong.push(`${where}: x on the focused row moved the focus to ${focus.label}, off the row`);
+    }
+
+    // The project List binds no Escape to clearing its selection (`issues-table-page.tsx`,
+    // `IssuesTable.tsx`, `components/table-keys.ts`), so its bar goes by its button alone.
+    where = `project List at ${size.width}x${size.height}`;
+    await openSurface(page, "project List", scene);
+    const issueRows = page.locator("[data-issue-row]");
+    await expect(issueRows.nth(2), `${where}: fewer than three rows`).toBeVisible();
+    const listBar = page.getByRole("toolbar", { name: "Selected issues" });
+    const second = await issueRows.nth(1).getAttribute("data-issue-row");
+    const third = await issueRows.nth(2).getAttribute("data-issue-row");
+    await mark(page.getByRole("checkbox", { exact: true, name: `Select ${third}` }));
+    await mark(page.getByRole("checkbox", { exact: true, name: `Select ${second}` }));
+    await expect(listBar).toContainText("2 selected");
+    await scrollAbove(issueRows.nth(1));
+    await listBar.getByRole("button", { exact: true, name: "Clear selection" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(listBar, `${where}: Clear selection left the bar up`).toHaveCount(0);
+    await focusOn(where, "Enter on Clear selection", `Select ${second}`);
+    // The row marked last, scrolled so far off that the table no longer draws it: the focus is
+    // on its checkbox all the same, brought back into view, and not on a row that happens to be
+    // drawn.
+    const listBox = page.getByTestId("issues-table-scroll");
+    await mark(page.getByRole("checkbox", { exact: true, name: `Select ${second}` }));
+    await listBox.evaluate((node) => {
+      node.scrollTop = node.scrollHeight;
+    });
+    await expect(
+      page.locator(`[data-issue-row="${second}"]`),
+      `${where}: the row marked is still drawn with the list scrolled to its end`
+    ).toHaveCount(0);
+    await listBar.getByRole("button", { exact: true, name: "Clear selection" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(listBar, `${where}: Clear selection left the bar up`).toHaveCount(0);
+    await focusOn(
+      where,
+      "Enter on Clear selection with the row marked scrolled out of the drawn rows",
+      `Select ${second}`
+    );
+    // A select-all marks no row of the reader's own. Two rows listed: the reader marks the
+    // second, the header's checkbox takes in the first, and the focus goes back to the second.
+    await page.goto("/projects/CORE/issues?q=Rollout");
+    await expect(issueRows, `${where}: the search does not list two rows`).toHaveCount(2);
+    const taken = await issueRows.nth(0).getAttribute("data-issue-row");
+    const own = await issueRows.nth(1).getAttribute("data-issue-row");
+    await mark(page.getByRole("checkbox", { exact: true, name: `Select ${own}` }));
+    await mark(page.getByRole("checkbox", { exact: true, name: "Select every row on this page" }));
+    await expect(
+      page.getByRole("checkbox", { exact: true, name: `Select ${taken}` })
+    ).toBeChecked();
+    await expect(listBar).toContainText("2 selected");
+    await listBar.getByRole("button", { exact: true, name: "Clear selection" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(listBar, `${where}: Clear selection left the bar up`).toHaveCount(0);
+    await focusOn(where, "Enter on Clear selection after a select-all", `Select ${own}`);
+  }
+  // A bar that drops the focus onto the page sends a keyboard reader back to its first link, from
+  // which the rows they were marking are a walk through every control above them.
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): two widths, a thread dismissed from the bar and moved back to the Inbox from it.
+test("a thread dismissed from the selection bar, or moved back to the Inbox from it, hands the focus to the item after it or to the view's empty message, never the body", async ({
+  page,
+}) => {
+  await seedLongInbox();
+  // Two threads the reader wrote in, each with a reply under it: the Inbox lists each as a row a
+  // reader can mark and dismiss from the bar.
+  for (const title of ["Nightly mirror", "Weekly digest"]) {
+    const issue = await createIssue({ project: "CORE", title });
+    await seedCommentThread(issue.key, `${title}: when does it run?`, "It moved to 03:00.");
+  }
+  const main = page.getByTestId("main-content");
+  const rows = main.locator("[data-inbox-row]");
+  const bar = main.locator(`[data-control="${CONTROL.selectionBar}"]`);
+  const threads = main.locator('[data-inbox-row^="reply:"]');
+  const wrong: string[] = [];
+  /** The focused row's id, else the focused element's name, else the tag of what holds the
+   *  focus when it is no control. A row is read by its id: its text holds its age, which moves. */
+  const focused = () =>
+    page.evaluate(() => {
+      const element = document.activeElement;
+      if (!(element instanceof HTMLElement) || element === document.body) {
+        return element?.tagName ?? "nothing";
+      }
+      return (
+        element.getAttribute("data-inbox-row") ??
+        element.getAttribute("aria-label") ??
+        element.textContent?.trim() ??
+        element.tagName
+      );
+    });
+  /** The focus once it lands on `wanted` within two seconds, or wherever it is then. */
+  const settled = async (wanted: string) =>
+    expect
+      .poll(focused, { timeout: 2_000 })
+      .toBe(wanted)
+      .then(() => wanted)
+      .catch(() => focused());
+  /** The item after `id` in the list as it is drawn now, else the item before it: where a press
+   *  on `id` hands the reader on to (dispatch://INFRA-2160, R8), or "Inbox empty state", the
+   *  name of the list's empty message, where `id` is all the list holds. */
+  const handOffFrom = async (id: string) => {
+    const drawn = await rows.evaluateAll((all) =>
+      all.map((row) => row.getAttribute("data-inbox-row") ?? "")
+    );
+    const at = drawn.indexOf(id);
+    return drawn[at + 1] ?? drawn[at - 1] ?? "Inbox empty state";
+  };
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    const where = `Inbox at ${size.width}x${size.height}`;
+
+    // Dismiss: the marked thread leaves this view with the bar, so the focus goes to the row of
+    // the item after it in the list.
+    await page.goto("/");
+    await expect(threads, `${where}: no thread row is listed`).toHaveCount(2);
+    const thread = (await threads.first().getAttribute("data-inbox-row")) ?? "";
+    const next = await handOffFrom(thread);
+    await threads.first().getByRole("checkbox").first().check();
+    const dismiss = bar.getByRole("button", { exact: true, name: "Dismiss selected threads" });
+    await dismiss.focus();
+    await page.keyboard.press("Enter");
+    await expect(main.locator(`[data-inbox-row="${thread}"]`)).toHaveCount(0);
+    await expect(bar, `${where}: Dismiss left the bar up`).toHaveCount(0);
+    // The hand-off may land a moment after the bar goes, so the focus is read until it settles.
+    const afterDismiss = await settled(next);
+    if (afterDismiss !== next) {
+      wrong.push(
+        `${where}: after Enter on Dismiss the focus is on ${afterDismiss}, not on "${next}"`
+      );
+    }
+
+    // Move to Inbox, from the dismissed view: the thread leaves that view with the bar, so the
+    // focus goes to the item after it there, or to the view's empty message when none is left.
+    await page.goto("/?show=dismissed");
+    const back = main.locator(`[data-inbox-row="${thread}"]`);
+    await expect(back, `${where}: the dismissed thread is not listed`).toHaveCount(1);
+    const target = await handOffFrom(thread);
+    await back.getByRole("checkbox").first().check();
+    const restore = bar.getByRole("button", {
+      exact: true,
+      name: "Move to Inbox selected threads",
+    });
+    await restore.focus();
+    await page.keyboard.press("Enter");
+    await expect(back).toHaveCount(0);
+    await expect(bar, `${where}: Move to Inbox left the bar up`).toHaveCount(0);
+    const afterRestore = await settled(target);
+    if (afterRestore !== target) {
+      wrong.push(
+        `${where}: after Enter on Move to Inbox the focus is on ${afterRestore}, not on "${target}"`
+      );
+    }
+  }
+  // The ruling the bar's hand-off is built to: a press of the bar hands the focus to the item
+  // after the rows it took (R8), or to the view's empty message, and never to the body.
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+/** What holds the keyboard focus, as a press's outcome reads: the body (the focus is lost), or
+ *  the focused control's name and whether the window shows it. */
+async function focusOutcome(
+  page: Page
+): Promise<{ lost: boolean; label: string; inView: boolean }> {
+  return page.evaluate(() => {
+    const element = document.activeElement;
+    if (!(element instanceof HTMLElement) || element === document.body) {
+      return { lost: true, label: element?.tagName ?? "nothing", inView: false };
+    }
+    const box = element.getBoundingClientRect();
+    return {
+      lost: false,
+      label: (element.getAttribute("aria-label") ?? element.textContent ?? element.tagName)
+        .trim()
+        .slice(0, 60),
+      inView:
+        box.width > 0 &&
+        box.height > 0 &&
+        box.bottom > 0 &&
+        box.top < window.innerHeight &&
+        box.right > 0 &&
+        box.left < window.innerWidth,
+    };
+  });
+}
+
+// SLOW(>=2s): three pages' own controls, each pressed from the keyboard at two widths.
+test("the Agents page, the Delivery page and the project List keep the keyboard focus when a press takes its own control away, at 1440 and 390", async ({
+  page,
+}) => {
+  await seedAgents();
+  await setLiveSessions([plannerSession, reviewerSession]);
+  await seedDeliveryFixture();
+  const first = await createIssue({ project: "CORE", title: "Preserve the caller identity" });
+  const second = await createIssue({ project: "CORE", title: "Document release verification" });
+  const adopted = await createIssue({ project: "CORE", title: "Adopt the interrupted member" });
+  const epic = await createIssue({ project: "CORE", title: "The interrupted action's epic" });
+  // An issue whose title the new epic below repeats, so the server answers it as a possible
+  // duplicate and the List draws its Create anyway and Cancel new epic notice.
+  await createIssue({ project: "CORE", title: "Recover one created epic" });
+  const main = page.getByTestId("main-content");
+  const lost: string[] = [];
+  /** Reads where the focus went once a press settles, and keeps the ones it lost. */
+  const after = async (where: string, press: string) => {
+    await expect
+      .poll(async () => (await focusOutcome(page)).lost, { timeout: 2_000 })
+      .toBe(false)
+      .catch(() => undefined);
+    // The poll above waited up to two seconds for the focus to land, so this is where it settled.
+    const outcome = await focusOutcome(page);
+    if (outcome.lost) lost.push(`${where}: after ${press} the focus is on ${outcome.label}`);
+    else if (!outcome.inView) {
+      lost.push(`${where}: after ${press} the focused "${outcome.label}" is out of view`);
+    }
+  };
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    const at = `${size.width}x${size.height}`;
+
+    // The Agents page's own Clear selection, in its select-all header: it goes with the selection.
+    await page.goto("/agents");
+    await main
+      .getByRole("checkbox", { name: /^Select .* for broadcast$/ })
+      .first()
+      .check();
+    const clear = main.getByRole("button", { exact: true, name: "Clear selection" });
+    await clear.focus();
+    await page.keyboard.press("Enter");
+    await expect(clear).toHaveCount(0);
+    await after(`Agents page at ${at}`, "Enter on Clear selection");
+
+    // The Delivery page's Window control: a new preset changes the window under the select the
+    // reader is on, which stays mounted (`WindowControl.tsx`). The seeded window is a custom
+    // range, the last option, so ArrowUp picks the last preset. The focus never leaves the
+    // select, so `after`'s poll ends at once; the read still sees the press's result, because
+    // `toHaveURL` waits for the commit that wrote the new window.
+    await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
+    const windowSelect = main.getByRole("combobox", { name: "Window" });
+    await windowSelect.focus();
+    await page.keyboard.press("ArrowUp");
+    await expect(page).not.toHaveURL(/from=2024-06-01/);
+    await after(`Delivery page at ${at}`, "ArrowUp on the Window select");
+
+    // The Delivery page's clear brush window: it goes with the brush.
+    await page.goto(
+      `/delivery?${DELIVERY_WINDOW}&mode=list&ws=2024-06-01T06%3A00%3A00Z&we=2024-06-01T18%3A00%3A00Z`
+    );
+    const brush = main.getByRole("button", { exact: true, name: "clear brush window" });
+    await brush.focus();
+    await page.keyboard.press("Enter");
+    await expect(brush).toHaveCount(0);
+    await after(`Delivery page at ${at}`, "Enter on clear brush window");
+
+    // The project List's interrupted-action notice: Dismiss and Finish each take the notice
+    // with them. The action is the record a stopped New epic leaves, here naming an open epic,
+    // so Finish adopts its member and ends.
+    const interruptedNotice = async (id: string) => {
+      await page.goto("/projects/CORE/issues");
+      await page.evaluate(
+        ({ action }) => {
+          localStorage.setItem(
+            "dispatch.project-table.CORE",
+            JSON.stringify({ action: { ...action, startedAt: Date.now() } })
+          );
+        },
+        {
+          action: {
+            id,
+            keys: [adopted.key],
+            kind: "newEpic",
+            project: "CORE",
+            target: epic.key,
+            writes: {},
+          },
+        }
+      );
+      await page.reload();
+      const notice = page.getByRole("region", { name: "Interrupted table action" });
+      await expect(notice).toHaveCount(1);
+      return notice;
+    };
+    for (const press of ["Dismiss", "Finish"]) {
+      const notice = await interruptedNotice(`interrupted-${press}-${at}`);
+      await notice.getByRole("button", { exact: true, name: press }).focus();
+      await page.keyboard.press("Enter");
+      await expect(notice).toHaveCount(0);
+      await after(`project List at ${at}`, `Enter on the interrupted action's ${press}`);
+    }
+
+    // The project List's possible-duplicate notice: Cancel new epic and Create anyway each take
+    // the notice with them.
+    for (const press of ["Cancel new epic", "Create anyway"]) {
+      await page.goto("/projects/CORE/issues");
+      await main.getByRole("checkbox", { exact: true, name: `Select ${first.key}` }).check();
+      await main.getByRole("checkbox", { exact: true, name: `Select ${second.key}` }).check();
+      await page.getByRole("button", { exact: true, name: "New epic from these" }).click();
+      await page
+        .getByRole("dialog", { name: "Name the new epic" })
+        .getByRole("textbox", { name: "Name" })
+        .fill("Recover one created epic");
+      await page.getByRole("button", { exact: true, name: "Create epic" }).click();
+      const button = main.getByRole("button", { exact: true, name: press });
+      await expect(button, `project List at ${at}: no possible-duplicate notice`).toHaveCount(1);
+      await button.focus();
+      await page.keyboard.press("Enter");
+      await expect(button).toHaveCount(0);
+      await after(`project List at ${at}`, `Enter on ${press}`);
+    }
+  }
+  // The architect's ruling ff1a60f5, on every control of the pages this change draws: a press
+  // that takes its own focused control away hands the focus on, and never to the body.
+  expect(lost, lost.join("; ")).toEqual([]);
+});
+
+/** The project List's narrowable columns and what shape each one's panel takes. No column of
+ *  either table is a date or a number that narrows by two ends: Created and Updated narrow by
+ *  the age bands they are grouped into, and Open asks by its own counts, so both are columns of
+ *  values like the rest. */
+const LIST_COLUMN_FILTERS: Record<string, "picks" | "text"> = {
+  Assignee: "picks",
+  "Claimed by": "picks",
+  Created: "picks",
+  "Created by": "picks",
+  Epic: "picks",
+  Key: "text",
+  Labels: "picks",
+  "Open asks": "picks",
+  Priority: "picks",
+  Queue: "picks",
+  Status: "picks",
+  Title: "text",
+};
+
+/** The Delivery list's, which are the five facets that are columns of that table. */
+const DELIVERY_COLUMN_FILTERS: Record<string, "picks" | "text"> = {
+  Author: "picks",
+  Deployed: "picks",
+  Issue: "picks",
+  "Parent agent": "picks",
+  Rework: "picks",
+};
+
+/** Reads one table's column filters: which headers carry one, that each sits inside its own
+ *  header and at its right end, that a press opens exactly one panel, and what that panel
+ *  holds. */
+async function readColumnFilters(
+  page: Page,
+  table: string,
+  expected: Record<string, "picks" | "text">
+): Promise<void> {
+  const headers = page.getByRole("columnheader");
+  // Each caller waited for the table's first row, so its header row is drawn, and the assertion
+  // below fails a read that missed a filter.
+  const named = await headers.evaluateAll((cells) =>
+    cells.map((cell) => ({
+      control: cell.querySelector('[data-control="column-filter"]') !== null,
+      // The header's own label, which is its sort button's text or its plain text.
+      name: (cell.querySelector("button")?.textContent ?? cell.textContent ?? "")
+        .replace(/[▲▼]/g, "")
+        .trim(),
+      right: cell.getBoundingClientRect().right,
+      filterRight: cell.querySelector('[data-control="column-filter"]')?.getBoundingClientRect()
+        .right,
+    }))
+  );
+  const carrying = named.filter((cell) => cell.control).map((cell) => cell.name);
+  expect(
+    [...carrying].sort(),
+    `${table}: the headers carrying a filter are ${carrying.join(", ")}`
+  ).toEqual(Object.keys(expected).sort());
+
+  for (const cell of named) {
+    if (!cell.control) continue;
+    expect(
+      (cell.filterRight ?? 0) - cell.right,
+      `${table}: the ${cell.name} filter is not at the right end of its own header`
+    ).toBeGreaterThanOrEqual(-24);
+    expect((cell.filterRight ?? 0) - cell.right).toBeLessThanOrEqual(1);
+  }
+
+  for (const [name, kind] of Object.entries(expected)) {
+    // A column that already narrows reads `Filter Status: 4 picked`, which is the project
+    // List's own opening view.
+    const trigger = page.getByRole("button", {
+      name: new RegExp(`^Filter ${name}(: \\d+ picked)?$`),
+    });
+    await expect(trigger, `${table}: no filter control on ${name}`).toHaveCount(1);
+    // A press on one header's funnel while another's panel is still shutting is taken by that
+    // panel's own outside-dismiss, so the press is made until the trigger says it is open.
+    await expect(async () => {
+      if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
+      expect(await trigger.getAttribute("aria-expanded")).toBe("true");
+    }).toPass({ timeout: 10_000 });
+    // One panel, and one only: a column of values opens a listbox over its options, a column
+    // of free text a dialog holding the box to type in, and neither opens the other's.
+    await expect(
+      page.locator('[role="listbox"], [role="dialog"]'),
+      `${table}: pressing the ${name} filter opened more than one panel`
+    ).toHaveCount(1);
+    if (kind === "text") {
+      await expect(
+        page.getByRole("dialog").getByRole("textbox", { name: `Filter ${name}` }),
+        `${table}: the ${name} panel holds no text box`
+      ).toHaveCount(1);
+    } else {
+      await expect(
+        page.getByRole("combobox", { exact: true, name: `Search ${name}` }),
+        `${table}: the ${name} panel holds no text box over its own options`
+      ).toHaveCount(1);
+    }
+    await trigger.click();
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  }
+
+  // Nothing draws a filter field between a header and the first row: every column filter of
+  // this table is inside a header cell.
+  const stray = await page.evaluate(() =>
+    [...document.querySelectorAll('[data-control="column-filter"]')]
+      .filter((element) => element.closest("th") === null)
+      .map((element) => element.getAttribute("aria-label") ?? "")
+  );
+  expect(stray, `${table}: ${stray.join(", ")} is drawn outside a column header`).toEqual([]);
+}
+
+// SLOW(>=2s): two tables, every narrowable column of each opened and read.
+test("every column that narrows does it from its own header, and no page draws a filter field under one", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1600 });
+  const scene = await seedSurfaces();
+  const list = await openSurface(page, "project List", scene);
+  await expect(list.firstRow).toBeVisible();
+  await readColumnFilters(page, "the project List", LIST_COLUMN_FILTERS);
+
+  // Typing in a column of values leaves only the matching options.
+  const status = page.getByRole("button", { name: /^Filter Status(: \d+ picked)?$/ });
+  await status.click();
+  // The filter's own options: every row of the table draws a priority `select`, whose options
+  // carry the same role.
+  const options = page.getByRole("listbox", { name: "Status options" }).getByRole("option");
+  const before = await options.count();
+  await page.getByRole("combobox", { exact: true, name: "Search Status" }).fill("tod");
+  await expect(options).toHaveCount(1);
+  expect(before, "the Status filter offered only the one option before any text").toBeGreaterThan(
+    1
+  );
+  await expect(options.first()).toHaveAccessibleName(/^Todo/);
+  await status.click();
+
+  await seedDeliveryFixture();
+  const delivery = await openSurface(page, "Delivery page", {
+    ...scene,
+    deliveryQuery: DELIVERY_WINDOW,
+  });
+  await expect(delivery.firstRow).toBeVisible();
+  await readColumnFilters(page, "the Delivery list", DELIVERY_COLUMN_FILTERS);
+});
+
+// SLOW(>=2s): four pages, each opened and its one trigger read.
+test("every narrowing that is no column opens from its page's one filter trigger", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await seedAgents();
+  const scene = await seedSurfaces();
+  // The session-groups fixture rather than the timeline one: its pull requests name sessions,
+  // and the Session facet draws nothing while no pull request in the window names one
+  // (`Facet`, `features/delivery/DeliveryPage.tsx`). Its merges are in the last seven days,
+  // which is the window the page opens on, so the Delivery surface below names none.
+  await seedSessionGroupsFixture();
+
+  const pages: { controls: string[]; name: Parameters<typeof openSurface>[1] }[] = [
+    {
+      controls: [
+        "Filter by priority",
+        "Filter by urgency",
+        "Filter by type",
+        "Filter by project",
+        "Filter by assignee",
+      ],
+      name: "Inbox",
+    },
+    { controls: ["Labels", "Needs you", "Unread", "Unclaimed"], name: "project Board" },
+    { controls: ["Filter by group", "Filter by machine", "Filter by role"], name: "Agents page" },
+    { controls: ["Repository", "Session", "Priority", "Component"], name: "Delivery page" },
+  ];
+  for (const { controls, name } of pages) {
+    const surface = await openSurface(page, name, { ...scene, deliveryQuery: "" });
+    const triggers = control(controlRow(surface.root), CONTROL.panelTrigger);
+    await expect(triggers, `${name} draws more than one filter trigger in its row`).toHaveCount(1);
+    const panel = await openFilterPanel(page, surface.root);
+    for (const label of controls) {
+      // A narrowing is named either on its own control or beside it, which is what the
+      // Delivery page's facets do.
+      await expect(
+        panel
+          .getByRole("button", { name: new RegExp(`^${label}`) })
+          .or(panel.getByText(label, { exact: true })),
+        `${name}: its panel holds no ${label}`
+      ).not.toHaveCount(0);
+    }
+    await closeControlPanel(surface.root);
+  }
+});
+
+test("selecting a row moves no row, and the bar that appears is fixed over the list", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  const scene = await seedSurfaces();
+  for (const name of ["Inbox", "project List"] as const) {
+    const surface = await openSurface(page, name, scene);
+    await resetScroll(page, surface.firstRow);
+    const before = await topOf(surface.firstRow);
+    await surface.select?.();
+    await resetScroll(page, surface.firstRow);
+    const after = await topOf(surface.firstRow);
+    expect(
+      after,
+      `${name}: selecting a row moved the first row from ${Math.round(before)}px to ${Math.round(after)}px`
+    ).toBeCloseTo(before, 0);
+    const bar = control(surface.root, CONTROL.selectionBar);
+    await expect(bar, `${name}: no selection bar`).toBeVisible();
+    await expect(bar, `${name}: the bar does not carry the count`).toContainText("1 selected");
+    expect(
+      await bar.evaluate((node) => getComputedStyle(node).position),
+      `${name}: the selection bar is not fixed over the list`
+    ).toBe("fixed");
+  }
+});
+
+// SLOW(>=2s): eleven seeded rows read through each of the Inbox's own parameters.
+test("each page's own parameters open the rows they name", async ({ page }) => {
+  const { rows } = await seedEveryField();
+  const at = await lastActivity();
+  const idsWhere = (match: (row: (typeof rows)[number]) => boolean) =>
+    rows.filter(match).map((row) => row.id);
+  const expectRows = async (address: string, expected: readonly string[], why: string) => {
+    await page.goto(address);
+    await expect(page.locator("[data-inbox-row]")).toHaveCount(expected.length);
+    expect([...(await drawnIds(page))].sort(), why).toEqual([...expected].sort());
+  };
+
+  // The Inbox: the four comma lists, the assignee, the text, the section and the agent.
+  await expectRows(
+    "/?assignee=everyone&type=question",
+    idsWhere((row) => row.type === "question"),
+    "?type= lists the questions"
+  );
+  await expectRows(
+    "/?assignee=everyone&priority=P0",
+    idsWhere((row) => row.priority === "P0"),
+    "?priority= lists the P0 rows"
+  );
+  await expectRows(
+    "/?assignee=everyone&urgency=blocking",
+    idsWhere((row) => row.urgency === "blocking"),
+    "?urgency= lists the blocking rows"
+  );
+  await expectRows(
+    "/?assignee=everyone&project=MIRROR",
+    idsWhere((row) => row.project === "MIRROR"),
+    "?project= lists the Mirror rows"
+  );
+  await expectRows(
+    "/?assignee=bob",
+    idsWhere((row) => row.assignee === "bob"),
+    "?assignee= lists one person's rows"
+  );
+  await expectRows(
+    "/?assignee=everyone&q=Lease handover",
+    idsWhere((row) => row.id === rows[2]?.id),
+    "?q= lists the one row whose question holds those words"
+  );
+  // `?show=dismissed` is the reader's other list, which nothing has been dismissed into. The
+  // reading is the **Show** control's own, not the empty list's: a list that has not drawn yet
+  // is empty too, so a count of nothing would pass whatever the address said.
+  await page.goto("/?assignee=everyone&show=dismissed");
+  const showing = await openDisplay(page, page.getByTestId("main-content"));
+  await expect(
+    showing.getByRole("group", { name: "Show" }).locator('input[value="dismissed"]'),
+    "?show=dismissed does not put the Show control on the dismissed list"
+  ).toBeChecked();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("[data-inbox-row]")).toHaveCount(0);
+  // `?sort=` and `?group=` keep every row and change its place.
+  await page.goto("/?assignee=everyone&sort=priority&group=none");
+  await expect(page.locator("[data-inbox-row]")).toHaveCount(rows.length);
+  expect(await drawnIds(page), "?sort=priority orders by priority").toEqual(
+    sortedIds(rows, "priority", at)
+  );
+  await page.goto("/?assignee=everyone&group=type");
+  // A band heading reads its plural and its count in brackets.
+  await expect(page.locator("[data-inbox-row]")).toHaveCount(rows.length);
+  expect(await bandHeadings(page), "?group=type bands by type").toEqual(
+    valuesOf(rows, "type").map((value) => {
+      const plural = {
+        agent: "Agent messages",
+        approval: "Approvals",
+        decision: "Decisions",
+        question: "Questions",
+        reply: "Replies",
+      }[value];
+      return `${plural} (${rows.filter((row) => row.type === value).length})`;
+    })
+  );
+  // `?section=needs-you` is the asks waiting on the reader; `?agent=` one session's asks.
+  await page.goto("/?section=needs-you");
+  // Read the list once it has drawn: an address read before the first row lands is an empty
+  // list whatever the address said, which is how CI run 43270255462 read 0 rows here while a
+  // faster machine read them all.
+  await expect(
+    page.locator("[data-inbox-row]").first(),
+    "?section=needs-you lists the asks waiting on the reader"
+  ).toBeVisible();
+  const waiting = await drawnIds(page);
+  expect(
+    waiting,
+    "?section=needs-you drops the one question handed back to its agent"
+  ).not.toContain(rows[2]?.id);
+  expect(waiting.length, "?section=needs-you lists the asks waiting on the reader").toBeGreaterThan(
+    0
+  );
+  await page.goto(`/?assignee=everyone&agent=${encodeURIComponent("e2e-inbox-view")}`);
+  await expect(page.locator("[data-inbox-row]")).toHaveCount(0);
+});
+
+test("the project List, the Board and the Agents page open the rows their parameters name", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1600 });
+  await seedSurfaces();
+  const listed = async (address: string): Promise<string[]> => {
+    await page.goto(address);
+    await expect(page.getByRole("table", { name: "Project issues table" })).toBeVisible();
+    return page
+      .locator("[data-issue-row]")
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-issue-row") ?? ""));
+  };
+  // Six issues, CORE-1 to CORE-6, every one of them `todo`, holding one open ask, the odd ones
+  // labelled `frontend` and the even ones `backend`.
+  const every = ["CORE-1", "CORE-2", "CORE-3", "CORE-4", "CORE-5", "CORE-6"];
+  expect(await listed("/projects/CORE/issues?sort=-key"), "?sort= orders by a column").toEqual(
+    [...every].reverse()
+  );
+  expect(await listed("/projects/CORE/issues?q=Rollout"), "?q= searches the rows").toEqual([
+    "CORE-1",
+    "CORE-2",
+  ]);
+  expect(await listed("/projects/CORE/issues?label=frontend"), "?label= picks a label").toEqual([
+    "CORE-1",
+    "CORE-3",
+    "CORE-5",
+  ]);
+  expect(await listed("/projects/CORE/issues?status=todo"), "?status= picks a status").toEqual(
+    every
+  );
+  expect(
+    await listed("/projects/CORE/issues?f.assignee=alice"),
+    "?f.<column>= picks another column's value"
+  ).toEqual(every);
+  expect(await listed("/projects/CORE/issues?needs-you=1"), "?needs-you=1 keeps the asked").toEqual(
+    every
+  );
+  expect(await listed("/projects/CORE/issues?unread=1"), "?unread=1 keeps the unread").toEqual(
+    every
+  );
+  expect(
+    await listed("/projects/CORE/issues?unclaimed=1"),
+    "?unclaimed=1 keeps the unclaimed"
+  ).toEqual(every);
+  expect(
+    await listed("/projects/CORE/issues?nofilter=1&size=10&page=1"),
+    "?nofilter=, ?size= and ?page= page the whole list"
+  ).toEqual(every);
+  await page.goto("/projects/CORE/issues?group=status");
+  await expect(
+    page.getByRole("button", { name: /^Todo/ }).first(),
+    "?group= bands the table"
+  ).toBeVisible();
+
+  // The Board reads the same five of them.
+  const carded = async (address: string): Promise<string[]> => {
+    await page.goto(address);
+    await expect(page.getByRole("region", { name: "Project board" })).toBeVisible();
+    return page
+      .locator("[data-board-card]")
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-board-card") ?? ""));
+  };
+  await openIssuesTab(page, "CORE", "Board");
+  expect(await carded("/projects/CORE/issues?label=backend"), "the Board's ?label=").toEqual([
+    "CORE-2",
+    "CORE-4",
+    "CORE-6",
+  ]);
+  expect(await carded("/projects/CORE/issues?q=Ledger"), "the Board's ?q=").toEqual(["CORE-3"]);
+  expect(await carded("/projects/CORE/issues?needs-you=1"), "the Board's ?needs-you=").toEqual(
+    every
+  );
+  expect(await carded("/projects/CORE/issues?unread=1"), "the Board's ?unread=").toEqual(every);
+  expect(await carded("/projects/CORE/issues?unclaimed=1"), "the Board's ?unclaimed=").toEqual(
+    every
+  );
+
+  // The Agents page's own two.
+  await setLiveSessions([plannerSession, reviewerSession]);
+  await page.goto("/agents?q=Reviewer");
+  await expect(page.locator(`[data-agent-row="${sessionIds.reviewer}"]`)).toBeVisible();
+  await expect(page.locator(`[data-agent-row="${sessionIds.planner}"]`)).toHaveCount(0);
+  await page.goto("/agents?machine=box-1");
+  await expect(page.locator(`[data-agent-row="${sessionIds.reviewer}"]`)).toBeVisible();
+  await expect(page.locator(`[data-agent-row="${sessionIds.planner}"]`)).toBeVisible();
+  await page.goto("/agents?machine=nowhere");
+  await expect(page.locator("[data-agent-row]")).toHaveCount(0);
+});
+
+test("the Delivery page's facet parameters open the pull requests they name", async ({ page }) => {
+  await page.setViewportSize({ height: 900, width: 1600 });
+  await seedDeliveryFixture();
+  const listed = async (query: string): Promise<string[]> => {
+    await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list&${query}`);
+    await expect(page.getByRole("heading", { level: 1, name: "Delivery timeline" })).toBeVisible();
+    await expect(page.locator("table")).not.toHaveCount(0);
+    return page
+      .locator("[data-pr-row]")
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-pr-row") ?? ""));
+  };
+  // Two pull requests in the window: #1, shipped and attributed to ACME-1, and #2, a rework
+  // with no issue. The page spells each facet in the address with its own key, not the
+  // server's: `parentAgent`, never `parent_agent`.
+  // The list opens newest merge first, so #2, merged at 03:00, is above #1, merged at 01:00.
+  const both = ["acme/widgets#2", "acme/widgets#1"];
+  expect(await listed("repo=acme%2Fwidgets"), "?repo=").toEqual(both);
+  expect(await listed("author=octocat"), "?author=").toEqual(both);
+  expect(await listed("issue=ACME-1"), "?issue=").toEqual(["acme/widgets#1"]);
+  expect(await listed("rework=rework"), "?rework=").toEqual(["acme/widgets#2"]);
+  expect(await listed("deployed=deployed"), "?deployed=").toEqual(["acme/widgets#1"]);
+  expect(await listed("parentAgent=__no_session__"), "?parentAgent=").toEqual(both);
+  // The fixture's two pull requests name no session, and the server counts none under the
+  // placeholder, so this parameter narrows the list to nothing where `parentAgent` keeps both:
+  // the two are read apart.
+  expect(await listed("session=__no_session__"), "?session=").toEqual([]);
+  // ACME-1, the issue #1 is attributed to, is the window's one P0; #2 links no issue at all.
+  expect(await listed("priority=0"), "?priority=").toEqual(["acme/widgets#1"]);
+  // ACME-1 carries no component, and #2 links no issue at all, so the server counts only the
+  // attributed pull request under the placeholder.
+  expect(await listed("component=__no_component__"), "?component=").toEqual(["acme/widgets#1"]);
+  // And the window and the mode: a preset window outside the fixture's day lists nothing, and
+  // without `mode=list` there is no table at all.
+  await page.goto(`/delivery?window=7d&mode=list`);
+  await expect(page.getByRole("heading", { level: 1, name: "Delivery timeline" })).toBeVisible();
+  await expect(page.locator("[data-pr-row]")).toHaveCount(0);
+  await page.goto(`/delivery?${DELIVERY_WINDOW}`);
+  await expect(page.getByRole("heading", { level: 1, name: "Delivery timeline" })).toBeVisible();
+  await expect(page.locator("[data-pr-row]")).toHaveCount(0);
+});
+
+// SLOW(>=2s): four parameters, each set, read in the address and found again after a reload.
+test("the four parameters this change adds ride in the address and survive a reload, and the drawer writes none", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await seedAgents();
+  const scene = await seedSurfaces();
+  await seedDeliveryFixture();
+
+  // The Agents page's `?group=` and `?role=`, neither in the address until its narrowing is on.
+  await page.goto("/agents");
+  await expect(page).not.toHaveURL(/[?&]group=/);
+  await expect(page).not.toHaveURL(/[?&]role=/);
+  const agents = page.getByTestId("main-content");
+  await openFilterPanel(page, agents);
+  for (const [name, option] of [
+    ["group", "Needs you"],
+    ["role", "planner"],
+  ] as const) {
+    const trigger = page.getByRole("button", { name: `Filter by ${name}` });
+    if ((await expandedState(`the ${name} filter`, trigger)) === "shut") await trigger.click();
+    await page.getByRole("option", { exact: true, name: option }).click();
+    await trigger.click();
+  }
+  await closeControlPanel(agents);
+  await expect(page).toHaveURL(/[?&]group=/);
+  await expect(page).toHaveURL(/[?&]role=planner/);
+  const agentsAddress = new URL(page.url()).search;
+  await page.reload();
+  expect(new URL(page.url()).search, "the Agents page's narrowing is gone after a reload").toBe(
+    agentsAddress
+  );
+  await expect(control(controlRow(agents), CONTROL.chip)).not.toHaveCount(0);
+
+  // The Artifacts tab's `?q=`.
+  await page.goto(`/issues/${scene.issue}/artifacts`);
+  await expect(page).not.toHaveURL(/[?&]q=/);
+  const tab = page.getByTestId("main-content");
+  await control(controlRow(tab), CONTROL.searchBox).fill("plan");
+  await expect(page).toHaveURL(/[?&]q=plan/);
+  await page.reload();
+  await expect(page, "the Artifacts tab's narrowing is gone after a reload").toHaveURL(
+    /[?&]q=plan/
+  );
+  await expect(control(controlRow(tab), CONTROL.searchBox)).toHaveValue("plan");
+  await expect(page.locator('[data-testid^="artifact-"]')).toHaveCount(1);
+
+  // The Delivery page's `?sort=`, absent until a header is pressed.
+  await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
+  await expect(page.locator("[data-pr-row]").first()).toBeVisible();
+  await expect(page).not.toHaveURL(/[?&]sort=/);
+  await page.getByRole("button", { exact: true, name: "Author" }).click();
+  await expect(page).toHaveURL(/[?&]sort=author/);
+  await page.reload();
+  await expect(page, "the Delivery page's sort is gone after a reload").toHaveURL(
+    /[?&]sort=author/
+  );
+
+  // The drawer's own state is its own: narrowing it over the project List writes no parameter.
+  await openIssuesTab(page, scene.project, "List");
+  await expect(page.locator("[data-issue-row]").first()).toBeVisible();
+  const before = page.url();
+  await peekTrigger(page).click();
+  const peek = drawer(page);
+  await expect(peek.locator("[data-inbox-row]").first()).toBeVisible();
+  await pickInboxField(page, "type", /^Question,/, peek);
+  await expect(control(controlRow(peek), CONTROL.chip)).not.toHaveCount(0);
+  expect(page.url(), "the drawer wrote its narrowing into the page's address").toBe(before);
+});
+
+// SLOW(>=2s): eleven seeded rows worked through every field, sort, grouping and view.
+test("the Inbox keeps every field, sort, grouping, view and clear it had", async ({ page }) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  const { rows } = await seedEveryField();
+  const at = await lastActivity();
+  const main = page.getByTestId("main-content");
+  const chips = control(controlRow(main), CONTROL.chip);
+  await page.goto("/?assignee=everyone");
+  await expect(page.locator("[data-inbox-row]")).toHaveCount(rows.length);
+
+  // Each of the four fields in turn: only the matching rows are left, and a chip for it is in
+  // the control row.
+  for (const [field, value, matches] of [
+    ["type", /^Question,/, (row: (typeof rows)[number]) => row.type === "question"],
+    ["priority", /^P0,/, (row: (typeof rows)[number]) => row.priority === "P0"],
+    ["urgency", /^Blocking,/, (row: (typeof rows)[number]) => row.urgency === "blocking"],
+    ["project", /^CORE,/, (row: (typeof rows)[number]) => row.project === "CORE"],
+  ] as const) {
+    await page.goto("/?assignee=everyone");
+    await pickInboxField(page, field, value, main);
+    const expectedIds = rows
+      .filter(matches)
+      .map((row) => row.id)
+      .sort();
+    // The list is read once it holds the narrowed count, never in the frame the pick landed in.
+    await expect(page.locator("[data-inbox-row]")).toHaveCount(expectedIds.length);
+    expect([...(await drawnIds(page))].sort(), `the ${field} field`).toEqual(expectedIds);
+    await expect(chips.filter({ hasText: new RegExp(`^${field}`, "i") })).not.toHaveCount(0);
+  }
+
+  // The count beside each value of another field is the count under the narrowing that is on.
+  await page.goto("/?assignee=everyone&priority=P0");
+  const fields = await openFilterFields(page);
+  const typeTrigger = page.getByRole("button", { name: "Filter by type" });
+  await typeTrigger.click();
+  const names = await page
+    .getByRole("listbox", { name: "Type options" })
+    .getByRole("option")
+    .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label") ?? ""));
+  expect(
+    names.find((name) => name.startsWith("Question")),
+    "the Type counts are not taken under the priority narrowing"
+  ).toBe(
+    `Question, ${rows.filter((row) => row.priority === "P0" && row.type === "question").length} rows`
+  );
+  await typeTrigger.click();
+  await expect(fields).toBeVisible();
+  await closeControlPanel(main);
+
+  // The assignee control.
+  await page.goto("/?assignee=bob");
+  const bobsIds = rows
+    .filter((row) => row.assignee === "bob")
+    .map((row) => row.id)
+    .sort();
+  await expect(page.locator("[data-inbox-row]")).toHaveCount(bobsIds.length);
+  expect([...(await drawnIds(page))].sort(), "the assignee control").toEqual(bobsIds);
+
+  // The six sorts and the seven groupings, worked from the display menu.
+  await page.goto("/?assignee=everyone&group=none");
+  for (const sort of ["newest", "priority", "urgency", "type", "project", "assignee"] as const) {
+    const menu = await openDisplay(page, main);
+    await menu.getByRole("group", { name: "Sort by" }).locator(`input[value="${sort}"]`).click();
+    await expect(page.locator("[data-inbox-row]")).toHaveCount(rows.length);
+    expect(await drawnIds(page), `the ${sort} sort`).toEqual(sortedIds(rows, sort, at));
+  }
+  await page.keyboard.press("Escape");
+  // Each banding draws the bands the fixture holds, each with its own count: the five fields
+  // one band per value they hold, the turn bands the four rows waiting on a person and the one
+  // handed back to its session, and None no band at all.
+  for (const group of [
+    "priority",
+    "urgency",
+    "type",
+    "project",
+    "assignee",
+    "waiting-on",
+    "none",
+  ] as const) {
+    const menu = await openDisplay(page, main);
+    await menu.getByRole("group", { name: "Group by" }).locator(`input[value="${group}"]`).click();
+    await expect(page.locator("[data-inbox-row]")).toHaveCount(rows.length);
+    const expected =
+      group === "none"
+        ? []
+        : group === "waiting-on"
+          ? [`Waiting on a person (${rows.length - 1})`, "Waiting on agents (1)"]
+          : valuesOf(rows, group).map(
+              (value) => `${bandLabel(group, value)} (${countsOf(rows, group).get(value)})`
+            );
+    expect(await bandHeadings(page), `the ${group} grouping`).toEqual(expected);
+  }
+  await page.keyboard.press("Escape");
+
+  // The dismissed view and the thread order.
+  const menu = await openDisplay(page, main);
+  await menu.getByRole("group", { name: "Show" }).locator('input[value="dismissed"]').click();
+  await expect(page).toHaveURL(/show=dismissed/);
+  await menu.getByRole("group", { name: "Show" }).locator('input[value="inbox"]').click();
+  await menu.getByRole("group", { name: "Thread order" }).locator("input").last().click();
+  await expect(
+    menu.getByRole("group", { name: "Thread order" }).locator("input").last()
+  ).toBeChecked();
+  await page.keyboard.press("Escape");
+
+  // Mark all read, and the fold of one group.
+  await page.goto("/?assignee=everyone&group=type");
+  const markAll = page.locator("[data-inbox-mark-all]");
+  await expect(markAll).toBeVisible();
+  await markAll.click();
+  await expect(markAll).toHaveCount(0);
+  const band = page.getByTestId("inbox-list").locator("h2 button").first();
+  await band.click();
+  await expect(band).toHaveAttribute("aria-expanded", "false");
+
+  // Clear filters takes off the four fields, the assignee, the agent and the needs-you section,
+  // and leaves the text, the sort, the grouping and the view. The agent is the session that asked
+  // the seed's questions, so the narrowing is on and its chip drawn before the press.
+  await page.goto(
+    `/?assignee=bob&type=question&priority=P0&urgency=blocking&project=CORE&section=needs-you&agent=${encodeURIComponent(THREAD_SESSION.session_id)}&q=rule&sort=priority&group=type&show=dismissed`
+  );
+  await expect(controlRow(main).getByRole("link", { name: "Clear agent filter" })).toBeVisible();
+  await controlRow(main).getByRole("button", { exact: true, name: "Clear filters" }).click();
+  const address = new URL(page.url());
+  for (const gone of ["assignee", "type", "priority", "urgency", "project", "section", "agent"]) {
+    expect(address.searchParams.has(gone), `Clear filters left ?${gone}=`).toBe(false);
+  }
+  expect(address.searchParams.get("q"), "Clear filters took the text").toBe("rule");
+  expect(address.searchParams.get("sort"), "Clear filters took the sort").toBe("priority");
+  expect(address.searchParams.get("group"), "Clear filters took the grouping").toBe("type");
+  expect(address.searchParams.get("show"), "Clear filters took the view").toBe("dismissed");
+});
+
+// SLOW(>=2s): the List's whole layout worked and then read back after a reload.
+test("the project List keeps its grouping, columns, pager and layout, and the Board its disclosure", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1600 });
+  await createProject({ key: "CORE", name: "Core" });
+  for (let index = 0; index < 60; index++) {
+    const issue = await createIssue({ project: "CORE", title: `Listed work ${index}` });
+    await patchIssue(issue.key, { labels: ["legion"], status: "todo" });
+  }
+  await openIssuesTab(page, "CORE", "List");
+  const table = page.getByRole("table", { name: "Project issues table" });
+  await expect(table).toBeVisible();
+  const main = page.getByTestId("main-content");
+
+  // The bar of status counts, which this change leaves alone.
+  await expect(page.getByRole("button", { name: /^Todo/ }).first()).toBeVisible();
+
+  // The virtual rows: the table draws a window of its page, never all sixty.
+  const rows = page.locator("[data-issue-row]");
+  const drawn = await rows.count();
+  expect(drawn, "the table drew every row of the page at once").toBeLessThan(50);
+  expect(drawn, "the table drew no rows").toBeGreaterThan(0);
+
+  // The pager: its own words, and a second page.
+  const pager = control(main, CONTROL.pager);
+  await expect(pager).toContainText("60 of 60 issues");
+  await pager.getByRole("button", { name: "Next" }).click();
+  await expect(page).toHaveURL(/[?&]page=2/);
+  await pager.getByRole("combobox").selectOption("100");
+  await expect(page).toHaveURL(/[?&]size=100/);
+
+  // The grouping, from the display menu.
+  const menu = await openDisplay(page, main);
+  await menu.getByRole("group", { name: "Group by" }).locator('input[value="status"]').click();
+  await expect(page).toHaveURL(/[?&]group=status/);
+  await page.keyboard.press("Escape");
+
+  // The column visibility, from the columns menu.
+  await control(controlRow(main), CONTROL.columnsMenu).click();
+  await page
+    .getByRole("dialog", { name: "Columns" })
+    .getByRole("checkbox", { exact: true, name: "Updated" })
+    .check();
+  await page.keyboard.press("Escape");
+  const updated = page
+    .getByRole("columnheader")
+    .filter({ has: page.getByRole("button", { exact: true, name: /^Updated/ }) });
+  await expect(updated).toHaveCount(1);
+
+  // The column resize, dragged on the header's own edge.
+  const header = page
+    .getByRole("columnheader")
+    .filter({ has: page.getByRole("button", { exact: true, name: /^Epic/ }) });
+  // The Updated header was waited for above, and the Epic header stands in that same header
+  // row, so its box is drawn.
+  const before = await header.boundingBox();
+  if (before === null) throw new Error("the Epic column has no box");
+  await page.mouse.move(before.x + before.width - 2, before.y + before.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(before.x + before.width + 60, before.y + before.height / 2, { steps: 8 });
+  await page.mouse.up();
+  const after = await header.boundingBox();
+  expect(after?.width ?? 0, "the Epic column did not resize").toBeGreaterThan(before.width + 20);
+
+  // The column reorder. The header moves a column on HTML5 drag events - `dragstart` on its
+  // sort button, `dragover` and `drop` on the header it lands in (`components/DataTable.tsx`) -
+  // which a synthesised mouse drag never produces, so the events are dispatched as the browser
+  // would, sharing one `DataTransfer` so the drop reads what the start wrote.
+  const order = async () =>
+    page
+      .getByRole("columnheader")
+      .evaluateAll((cells) =>
+        cells.map((cell) => (cell.querySelector("button")?.textContent ?? "").replace(/[▲▼]/g, ""))
+      );
+  const orderBefore = await order();
+  // The start and the drop are frames apart: the header cell takes a drop only once React has
+  // re-rendered with the dragged column in hand, which it has not done in the tick the
+  // `dragstart` was dispatched in.
+  await page.evaluate(async () => {
+    const headerOf = (label: string): HTMLElement | undefined =>
+      [...document.querySelectorAll<HTMLElement>("th")].find((cell) =>
+        (cell.querySelector("button")?.textContent ?? "").startsWith(label)
+      );
+    const handle = headerOf("Epic")?.querySelector("button");
+    const to = headerOf("Labels");
+    if (handle === null || handle === undefined || to === undefined) {
+      throw new Error("the Epic and Labels headers are not both drawn");
+    }
+    const dataTransfer = new DataTransfer();
+    handle.dispatchEvent(new DragEvent("dragstart", { bubbles: true, dataTransfer }));
+    for (let frame = 0; frame < 3; frame++) {
+      const drawn = Promise.withResolvers<void>();
+      requestAnimationFrame(() => drawn.resolve());
+      await drawn.promise;
+    }
+    to.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer }));
+    to.dispatchEvent(new DragEvent("drop", { bubbles: true, dataTransfer }));
+    handle.dispatchEvent(new DragEvent("dragend", { bubbles: true, dataTransfer }));
+  });
+  await expect.poll(order, { message: "the columns did not reorder" }).not.toEqual(orderBefore);
+
+  // Reloaded, the stored layout is as it was left.
+  const widths = await page
+    .getByRole("columnheader")
+    .evaluateAll((cells) => cells.map((cell) => Math.round(cell.getBoundingClientRect().width)));
+  const kept = await order();
+  await page.reload();
+  await expect(table).toBeVisible();
+  await expect
+    .poll(order, { message: "the stored column order is not as it was left" })
+    .toEqual(kept);
+  expect(
+    await page
+      .getByRole("columnheader")
+      .evaluateAll((cells) => cells.map((cell) => Math.round(cell.getBoundingClientRect().width))),
+    "the stored column widths are not as they were left"
+  ).toEqual(widths);
+
+  // The Board: the filters open, the last chip cleared, and the disclosure as it was left.
+  const board = page.getByRole("button", { exact: true, name: "Board" });
+  await board.click();
+  await expect(page.getByRole("region", { name: "Project board" })).toBeVisible();
+  await page.goto("/projects/CORE/issues?needs-you=1&unread=1");
+  const boardChips = control(controlRow(main), CONTROL.chip);
+  await expect(boardChips).toHaveCount(2);
+  await boardChips.last().click();
+  await expect(boardChips).toHaveCount(1);
+  const edges = page.getByRole("button", { name: /Icebox & Done$/ });
+  const edgesLabel = await edges.textContent();
+  await edges.click();
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: /Icebox & Done$/ }),
+    "the Board's disclosure is not as it was left"
+  ).not.toHaveText(edgesLabel ?? "");
+});
+
+test("the Delivery list still answers the keyboard and stays windowed, and each page's own bindings still run", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1600 });
+  await seedDeliveryFixture();
+  await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
+  const prs = page.locator("tbody tr[data-pr-row]");
+  await expect(prs).toHaveCount(2);
+  await prs.first().focus();
+  await page.keyboard.press("ArrowDown");
+  await expect(prs.nth(1)).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await expect(prs.first()).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(prs.nth(1)).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(prs.first()).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("dialog", { name: "Details" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  // The rows are drawn inside the shared table's scroll box, which is the thing that windows
+  // them. This fixture holds two pull requests, fewer than any window would cut, so nothing
+  // read here could fail for a window that was lost; what the windowing itself is held to is
+  // the project List's row above, which seeds 60 issues and reads a drawn count under 50.
+  await expect(
+    control(page.getByTestId("main-content"), CONTROL.dataTable).locator("tbody tr[data-pr-row]"),
+    "the Delivery list is not drawn in the shared table"
+  ).toHaveCount(2);
+
+  // The global binding that opens each page, and each page's own list binding.
+  await seedAgents();
+  await seedSurfaces();
+  // The keys wait for the Inbox's heading: pressed as the page loads, before the shell has
+  // registered its keys, they can open nothing.
+  await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
+  await page.locator("body").focus();
+  await page.keyboard.press("g");
+  await page.keyboard.press("a");
+  await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
+  await page.keyboard.press("g");
+  await page.keyboard.press("i");
+  await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
+  // The Inbox's own list keys: `j` moves the hand down the list and `x` marks the row.
+  await page.locator("body").focus();
+  await page.keyboard.press("j");
+  await page.keyboard.press("x");
+  await expect(control(page.getByTestId("main-content"), CONTROL.selectionBar)).toBeVisible();
+  // The project page's own `v`, which flips List and Board.
+  await page.goto("/projects/CORE/issues");
+  await page.locator("body").focus();
+  const boardBefore = await page
+    .getByRole("button", { exact: true, name: "Board" })
+    .getAttribute("aria-pressed");
+  await page.keyboard.press("v");
+  await expect(page.getByRole("button", { exact: true, name: "Board" })).not.toHaveAttribute(
+    "aria-pressed",
+    boardBefore ?? "false"
+  );
+});
+
+/** The Agents page's keep row's sessions, by id: UUIDs, which Dispatch's agent routes require. */
+const KEPT_AGENT = {
+  auditor: "01a0e812-3135-7000-8000-000000000003",
+  planner: "01a0e812-3135-7000-8000-000000000001",
+  reviewer: "01a0e812-3135-7000-8000-000000000002",
+  sleeper: "01a0e812-3135-7000-8000-000000000005",
+  tester: "01a0e812-3135-7000-8000-000000000004",
+} as const;
+
+/** The Agents page's four groups, in the order it draws them. */
+const AGENT_GROUP_ORDER = ["needs-you", "active", "idle", "quiet"] as const;
+
+/** A live session of that row. `last_seen` is taken when the row seeds, never at this module's
+ *  scope, which a worker evaluates once and every later row of that worker ages. */
+function keptAgent(
+  sessionID: string,
+  title: string,
+  machine: string,
+  role: string,
+  silentFor = 5_000
+): FakeSession {
+  return {
+    capabilities: ["aside", "btw"],
+    dir: `/srv/${title.toLowerCase()}`,
+    last_seen: Date.now() - silentFor,
+    machine_id: machine,
+    roles: [role],
+    session_id: sessionID,
+    title,
+  };
+}
+
+/**
+ * Five sessions over two machines and three roles, one in each group but Idle, which holds two
+ * so a pin has an order to change: the Planner needs the reader (an open ask of its own waits on
+ * them), has a question whose next move is its own and a reply the reader has not read; the
+ * Reviewer wrote a comment a moment ago; the Auditor and the Tester have done nothing in
+ * Dispatch; the Sleeper has not been heard from for an hour. Returns the issue the Planner's asks
+ * name, which the search box finds it by.
+ */
+async function seedKeptAgents(): Promise<string> {
+  await setLiveSessions([
+    keptAgent(KEPT_AGENT.planner, "Planner", "box-1", "planner"),
+    keptAgent(KEPT_AGENT.reviewer, "Reviewer", "box-1", "reviewer"),
+    keptAgent(KEPT_AGENT.auditor, "Auditor", "box-2", "tester"),
+    keptAgent(KEPT_AGENT.tester, "Tester", "box-2", "tester"),
+    keptAgent(KEPT_AGENT.sleeper, "Sleeper", "box-2", "tester", 60 * 60_000),
+  ]);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Agents kept" });
+  const asPlanner = {
+    actor: { id: KEPT_AGENT.planner, kind: "session" as const },
+    as: "agent" as const,
+  };
+  await createAsk(issue.key, { question: "Which release?" }, asPlanner);
+  // The reader has answered the second, so its next move is the Planner's.
+  const answered = await createAsk(issue.key, { question: "Which branch?" }, asPlanner);
+  await createComment(issue.key, { ask_id: answered.id, body: "Which one do you mean?" });
+  await createComment(
+    issue.key,
+    { body: "Reviewing the diff." },
+    { actor: { id: KEPT_AGENT.reviewer, kind: "session" }, as: "agent" }
+  );
+  const asked = await createAgentMessage(KEPT_AGENT.planner, {
+    body: "How far along?",
+    delivery: "aside",
+  });
+  await replyToMessageDelivery(
+    asked.id,
+    { attempt: 1, body: "Nearly there." },
+    { id: KEPT_AGENT.planner, kind: "session" }
+  );
+  return issue.key;
+}
+
+/** Reads each group heading's name and count, finding each heading by its test id, in
+ *  `AGENT_GROUP_ORDER`. */
+async function expectAgentGroups(
+  page: Page,
+  headings: readonly [string, string, string, string],
+  what: string
+): Promise<void> {
+  for (const [index, group] of AGENT_GROUP_ORDER.entries()) {
+    await expect(
+      agentGroupToggle(page, group),
+      `${what}: the ${group} group's heading and count`
+    ).toHaveAccessibleName(headings[index] ?? "");
+  }
+}
+
+// R6 on the Agents page. What the page offered at the merge base, dccaf8369449
+// (`fork_point(main@origin | @)`), paths under `web/src/`, and how the row drives each:
+// - Fields: the group (`features/agents/AgentsPage.tsx:932-949`), the machine (:950-962) and the
+//   role (:963-975), each a multi-select, and the search box (:978-990), which matches a
+//   session's title, directory, machine, id and the issues its open asks name
+//   (`features/agents/agent-search.ts:67-76`). Each is put on and the rows it leaves read, with
+//   the group counts under it, and its chip taken off again.
+// - Sort: no control. In a group, pinned rows first, then who needs the reader, open asks, newest
+//   activity and title (`AgentsPage.tsx:114-144`). Read as the rows' order, and again after a pin.
+// - Grouping: Needs you, Active, Idle and Quiet (`features/agents/agent-groups.ts:21-67`,
+//   `AgentsPage.tsx:146-173`), each folding (:854-895, :1523-1540). Each group's place is read,
+//   and one is folded and opened.
+// - Counts: each group heading's `(N)` and `(N, K selected)` (`AgentsPage.tsx:885-887`,
+//   `features/agents/selection.ts:61-66`); the select-all header's `N matching` and
+//   `K of N matching selected` (`AgentsPage.tsx:1032-1034`, `selection.ts:45-59`); a row's
+//   `New reply N` (`AgentsPage.tsx:721-735`), `Needs you N` (:736-744) and `Waiting on agent N`
+//   (:745-760); the composer's `Broadcast to N of M selected` (:1136). Each is read.
+// - Views: none; the page offers no choice of view.
+// - Bulk action: a row's checkbox (`AgentsPage.tsx:631-638`), select-all (:1022-1031), Clear
+//   selection (:1035-1043) and the broadcast composer's Send (:1048-1219). Driven to a send, and
+//   the fake Envoy read for the one message each selected session was sent.
+// - Keys (`features/agents/keyboard.ts:148-244`): `/` (:155-161), `j` (:164-171), `k`
+//   (:172-179), Enter (:180-189), `i` (:190-217), Shift+P (:218-224), `x` (:225-232) and Escape
+//   (:233-243); and `g a`, the global binding that opens the page (`app.tsx:576`). Each pressed
+//   and what it did read.
+// - Stored for the reader: the pins (`features/agents/pins.ts:61-125`) and the read mark an
+//   opened row writes (`features/agents/unread.ts:128-145`), both the reader's agent state in
+//   Dispatch; the page kept nothing in the browser (no `useUserPreference`, no storage). Both are
+//   found again after a reload.
+// SLOW(>=2s): five seeded sessions worked through every narrowing, count, key, pin and a send.
+test("the Agents page keeps every narrowing, grouping, count, key, pin and broadcast it had @phone", async ({
+  page,
+}, testInfo) => {
+  const phone = isPhoneProject(testInfo);
+  if (!phone) await page.setViewportSize({ height: 900, width: 1440 });
+  const issue = await seedKeptAgents();
+  const main = page.getByTestId("main-content");
+  const titles = shownAgentRows(page).locator("h2");
+  const planner = agentRow(page, KEPT_AGENT.planner);
+  const plannerToggle = planner.getByRole("button", { exact: true, name: "Planner" });
+  const reviewer = agentRow(page, KEPT_AGENT.reviewer);
+  const tester = agentRow(page, KEPT_AGENT.tester);
+  const everyRow = ["Planner", "Reviewer", "Auditor", "Tester", "Sleeper"];
+  const opened = ["Needs you (1)", "Active (1)", "Idle (2)", "Quiet (1)"] as const;
+
+  // `g a`, from another page.
+  await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
+  await page.locator("body").focus();
+  await page.keyboard.press("g");
+  await page.keyboard.press("a");
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Agents" }),
+    "the g a key opened no Agents page"
+  ).toBeVisible();
+  await expect(planner).toBeVisible();
+  if (phone) await assertPageFits(page);
+
+  // The four groups with their counts, and the order inside them.
+  await expectAgentGroups(page, opened, "the page as it opens");
+  await expect(titles, "the rows' order").toHaveText(everyRow);
+  await expect(
+    main.getByText("5 matching", { exact: true }),
+    "the select-all header's count"
+  ).toBeVisible();
+  await expect(
+    planner.getByRole("link", { exact: true, name: "Needs you 1" }),
+    "the row's Needs you count"
+  ).toBeVisible();
+  await expect(
+    planner.getByRole("link", { exact: true, name: "Waiting on agent 1" }),
+    "the row's Waiting on agent count"
+  ).toBeVisible();
+  const unread = planner.getByRole("button", { exact: true, name: "New reply 1 from Planner" });
+  await expect(unread, "the row's count of replies not read").toBeVisible();
+
+  // A group's fold.
+  await toggleAgentGroup(page, "idle");
+  await expect(titles, "the Idle group's fold").toHaveText(["Planner", "Reviewer", "Sleeper"]);
+  await toggleAgentGroup(page, "idle");
+  await expect(titles).toHaveText(everyRow);
+
+  // The search box, by a title and by the issue an open ask names.
+  const search = control(controlRow(main), CONTROL.searchBox);
+  await search.fill("reviewer");
+  await expect(titles, "the search box, by a title").toHaveText(["Reviewer"]);
+  await expectAgentGroups(
+    page,
+    ["Needs you (0)", "Active (1)", "Idle (0)", "Quiet (0)"],
+    "the search box"
+  );
+  await expect(
+    main.getByText("1 matching", { exact: true }),
+    "the select-all header's count under the search box"
+  ).toBeVisible();
+  await search.fill(issue);
+  await expect(titles, "the search box, by an open ask's issue").toHaveText(["Planner"]);
+  await search.fill("");
+  await expect(titles).toHaveText(everyRow);
+
+  // The three multi-selects, each with its chip.
+  const chips = control(controlRow(main), CONTROL.chip);
+  for (const [field, option, shown, headings] of [
+    ["group", "Quiet", ["Sleeper"], ["Needs you (0)", "Active (0)", "Idle (0)", "Quiet (1)"]],
+    [
+      "machine",
+      "box-2",
+      ["Auditor", "Tester", "Sleeper"],
+      ["Needs you (0)", "Active (0)", "Idle (2)", "Quiet (1)"],
+    ],
+    ["role", "reviewer", ["Reviewer"], ["Needs you (0)", "Active (1)", "Idle (0)", "Quiet (0)"]],
+  ] as const) {
+    await openFilterPanel(page, main);
+    await expect(agentFilter(page, field), `the ${field} narrowing`).toBeVisible();
+    await pickAgentFilter(page, field, option);
+    await expect(titles, `the ${field} narrowing`).toHaveText(shown);
+    await expectAgentGroups(page, headings, `the ${field} narrowing`);
+    await expect(chips, `the ${field} narrowing's chip`).toHaveCount(1);
+    await chips.click();
+    await expect(titles, `the ${field} narrowing's chip taken off`).toHaveText(everyRow);
+  }
+
+  // The read mark: the count's own press opens the conversation, which reads it. The row is
+  // shut again, and the focus left in it.
+  await unread.click();
+  await expect(unread, "opening the row left its replies unread").toHaveCount(0);
+  await plannerToggle.click();
+
+  // The page's own keys. `/` is the page's search box, shadowing the global search bar; `j` from
+  // the box takes the first row, the one the press above left the focus in.
+  await page.keyboard.press("/");
+  await expect(search, "the / key").toBeFocused();
+  await expect(page.getByRole("dialog", { name: "Search" })).toHaveCount(0);
+  await search.blur();
+  await page.keyboard.press("j");
+  await expect(planner, "the j key").toBeFocused();
+  await page.keyboard.press("j");
+  await expect(reviewer, "the j key, again").toBeFocused();
+  await page.keyboard.press("k");
+  await expect(planner, "the k key").toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(
+    planner.getByRole("textbox", { name: "Comment" }),
+    "the Enter key, into the row's composer"
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(planner, "the Escape key, out of the composer").toBeFocused();
+  const plannerMark = planner.getByRole("checkbox", { name: "Select Planner for broadcast" });
+  await page.keyboard.press("x");
+  await expect(plannerMark, "the x key").toBeChecked();
+  await page.keyboard.press("x");
+  await expect(plannerMark).not.toBeChecked();
+  await page.keyboard.press("j");
+  await expect(reviewer).toBeFocused();
+  await page.keyboard.press("i");
+  const picker = reviewer.getByRole("button", { name: "Choose issue" });
+  await expect(picker, "the i key").toHaveAttribute("aria-expanded", "true");
+  await expect(issueSearchIn(reviewer)).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(picker, "the Escape key, out of the Issue list").toHaveAttribute(
+    "aria-expanded",
+    "false"
+  );
+  await expect(reviewer).toBeFocused();
+  await page.keyboard.press("j");
+  await page.keyboard.press("j");
+  await expect(tester).toBeFocused();
+  await page.keyboard.press("Shift+P");
+  await expect(
+    tester.getByRole("button", { name: "Unpin Tester" }),
+    "the Shift+P key"
+  ).toBeVisible();
+  const pinned = ["Planner", "Reviewer", "Tester", "Auditor", "Sleeper"];
+  await expect(titles, "the pin's place at the head of its group").toHaveText(pinned);
+
+  // The read mark, read where the page draws it. The Planner answers a second message while its
+  // row is shut, which marks nothing read, so its badge counts that one reply; a mark that was
+  // lost would count the first reply too.
+  await plannerToggle.click();
+  await expect(plannerToggle, "the Planner's row did not shut").toHaveAttribute(
+    "aria-expanded",
+    "false"
+  );
+  const askedAgain = await createAgentMessage(KEPT_AGENT.planner, {
+    body: "And the tests?",
+    delivery: "aside",
+  });
+  await replyToMessageDelivery(
+    askedAgain.id,
+    { attempt: 1, body: "Green." },
+    { id: KEPT_AGENT.planner, kind: "session" }
+  );
+  const plannerBadge = planner.getByRole("button", { name: /^New repl/ });
+  await expect(plannerBadge, "the Planner's reply to a shut row").toHaveAccessibleName(
+    "New reply 1 from Planner"
+  );
+
+  // What the page stores for the reader, found again after a reload.
+  await page.reload();
+  await expect(
+    tester.getByRole("button", { name: "Unpin Tester" }),
+    "the pin, after a reload"
+  ).toBeVisible();
+  await expect(titles, "the pinned order, after a reload").toHaveText(pinned);
+  // The badge is drawn from the read state the reload loads, so its number is read only once
+  // that state has answered: one reply unread, the one written after the mark above.
+  await expect(plannerBadge, "the read mark, after a reload").toHaveAccessibleName(
+    "New reply 1 from Planner"
+  );
+
+  // The bulk action: select-all over a narrowing, Clear selection, then two rows and a send.
+  await pickAgentFilter(page, "role", "tester");
+  await main.getByRole("checkbox", { exact: true, name: "Select all matching agents" }).check();
+  await expect(
+    main.getByText("3 of 3 matching selected", { exact: true }),
+    "select-all"
+  ).toBeVisible();
+  await expectAgentGroups(
+    page,
+    ["Needs you (0)", "Active (0)", "Idle (2, 2 selected)", "Quiet (1, 1 selected)"],
+    "select-all"
+  );
+  const composer = page.getByRole("region", { name: "Broadcast" });
+  await expect(composer, "select-all drew no broadcast composer").toBeVisible();
+  await main.getByRole("button", { exact: true, name: "Clear selection" }).click();
+  await expect(composer, "Clear selection").toHaveCount(0);
+  await chips.click();
+  await expect(titles).toHaveText(pinned);
+  await reviewer.getByRole("checkbox", { name: "Select Reviewer for broadcast" }).check();
+  await tester.getByRole("checkbox", { name: "Select Tester for broadcast" }).check();
+  await expect(
+    main.getByText("2 of 5 matching selected", { exact: true }),
+    "two rows' checkboxes"
+  ).toBeVisible();
+  await expect(
+    composer.getByRole("heading", { name: "Broadcast to 2 of 2 selected" }),
+    "the composer's count"
+  ).toBeVisible();
+  await composer.getByRole("textbox", { name: "Broadcast message" }).fill("Report status.");
+  await composer.getByRole("button", { name: "Send to 2" }).click();
+  await page.waitForURL(/\/agents\/broadcasts\/[0-9a-f-]+$/);
+  await expect
+    .poll(
+      async () =>
+        (await getSentMessages())
+          .filter((sent) => sent.message === "Report status.")
+          .map((sent) => String(sent.target_session))
+          .sort(),
+      { message: "the broadcast sent no message to each selected session" }
+    )
+    .toEqual([KEPT_AGENT.reviewer, KEPT_AGENT.tester].sort());
+});
+
+// R6 on an issue's Artifacts tab. What the tab offered at the merge base, dccaf8369449
+// (`fork_point(main@origin | @)`), paths under `web/src/`, and how the row drives each:
+// - Field: the one text box, which keeps an artifact whose name or kind holds the words
+//   (`features/artifacts/ArtifactsTab.tsx:243`, :281-289, :306-317) and says so when none does
+//   (:333-338). Worked by a name, by a kind and by words nothing holds.
+// - Sort: no control. The primary document first, then the newest written, then the id
+//   (:269-280). Read as the rows' order, and again once an upload is the newest.
+// - Grouping: none.
+// - Counts: each row's `N versions` (:196-202) and the references' `References (N)` (:116-150).
+//   Both read; the references opened and their rows counted against the number.
+// - Views: the references, shut until opened (:121-127). Opened.
+// - Bulk action: none; a row's own controls (copy, approval, Download, Remove, :211-231) act on
+//   that row alone.
+// - The strip's two controls that add to the list: New document (:318-323,
+//   `features/artifacts/CreateDocument.tsx`) and Upload (:324, `features/artifacts/ArtifactUpload.tsx`).
+//   Each used, and what it added read in the list.
+// - Keys: the tab's list answers none; `t a`, the issue page's binding that opens the tab
+//   (`features/issue/IssuePage.tsx:153`, :324-330). Pressed.
+// - Stored for the reader: nothing; the words were the tab's own state (:243), kept nowhere.
+// SLOW(>=2s): four seeded documents, an upload and a new document, read in the tab.
+test("an issue's Artifacts tab keeps its narrowing, its order, its counts, its strip and its key @phone", async ({
+  page,
+}, testInfo) => {
+  const phone = isPhoneProject(testInfo);
+  if (!phone) await page.setViewportSize({ height: 900, width: 1440 });
+  await createProject({ key: "CORE", name: "Core" });
+  const home = await createIssue({ project: "CORE", title: "Runbook home" });
+  const runbook = await createIssueArtifact(home.key, {
+    content: "# Runbook\n\nThe steps, in order.\n",
+    name: "runbook.md",
+  });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: `# Kept spec\n\nThe steps are dispatch://${home.key}/artifact/${runbook.artifact.slug}.\n`,
+    title: "Artifacts kept",
+  });
+  const plan = await createIssueArtifact(issue.key, {
+    content: "# Plan\n\nThe first draft.\n",
+    name: "plan.md",
+  });
+  const notes = await createIssueArtifact(issue.key, {
+    content: "# Notes\n\nKept as written.\n",
+    name: "notes.md",
+  });
+  // The plan takes a second version after the notes were written, so it is the newer of the two.
+  await editArtifact(
+    plan.artifact.id,
+    { ops: [{ find: "first draft", op: "replace", with: "second draft" }] },
+    { as: "agent" }
+  );
+  await expect
+    .poll(async () => ((await getArtifact(plan.artifact.id)).versions ?? []).length)
+    .toBe(2);
+  const spec = (await listIssueArtifacts(issue.key)).find((artifact) => artifact.primary);
+  if (spec === undefined) throw new Error("the issue holds no primary document");
+
+  // `t a`, from the issue's own page. On a phone the review panel opens over the page as a
+  // dialog, which holds the keyboard, so it is shut first.
+  await page.goto(`/issues/${issue.key}`);
+  await expect(page.getByTestId("issue-header")).toBeVisible();
+  if (phone) {
+    const reviewPanel = page.getByRole("button", { name: /review panel/i });
+    if ((await expandedState("the review panel", reviewPanel)) === "open") {
+      await reviewPanel.click();
+    }
+  }
+  await page.locator("body").focus();
+  await page.keyboard.press("t");
+  await page.keyboard.press("a");
+  await expect(page, "the t a key").toHaveURL(new RegExp(`/issues/${issue.key}/artifacts$`));
+  const main = page.getByTestId("main-content");
+  const rows = main.locator('[data-testid^="artifact-"]');
+  const order = () =>
+    rows.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-testid") ?? ""));
+  await expect(rows).toHaveCount(3);
+  if (phone) await assertPageFits(page);
+
+  // The order, and each row's count of versions.
+  expect(await order(), "the order: the primary document, then the newest written").toEqual([
+    `artifact-${spec.slug}`,
+    `artifact-${plan.artifact.slug}`,
+    `artifact-${notes.artifact.slug}`,
+  ]);
+  await expect(rows.first().getByText("Primary", { exact: true })).toBeVisible();
+  await expect(
+    main.getByTestId(`artifact-${plan.artifact.slug}`),
+    "a row's count of versions"
+  ).toContainText("doc · 2 versions");
+  await expect(main.getByTestId(`artifact-${notes.artifact.slug}`)).toContainText(
+    "doc · 1 version"
+  );
+
+  // The references' count, which is the number of rows they open on.
+  const references = main.getByText(/^References \(\d+\)$/);
+  await expect(references, "the references' count").toBeVisible();
+  const counted = Number(/\((\d+)\)/.exec((await references.textContent()) ?? "")?.[1]);
+  await references.click();
+  const referenced = main.getByRole("region", { name: "References" });
+  await expect(referenced.getByRole("listitem"), "the references' count").toHaveCount(counted);
+  await expect(referenced.getByRole("link", { exact: true, name: "runbook.md" })).toBeVisible();
+
+  // Upload, which adds a file - a kind the text box narrows by.
+  await page.getByLabel("Upload artifact").setInputFiles({
+    buffer: Buffer.from("one line\n"),
+    mimeType: "text/plain",
+    name: "trace.log",
+  });
+  await main.getByRole("button", { exact: true, name: "Upload" }).click();
+  const trace = main.getByTestId("artifact-trace-log");
+  await expect(trace, "Upload").toContainText("file · 1 version");
+  expect(await order(), "the order, with the upload the newest written").toEqual([
+    `artifact-${spec.slug}`,
+    "artifact-trace-log",
+    `artifact-${plan.artifact.slug}`,
+    `artifact-${notes.artifact.slug}`,
+  ]);
+
+  // The text box, by a name, by a kind, and by words no artifact holds.
+  const filter = control(controlRow(main), CONTROL.searchBox);
+  await filter.fill("plan");
+  await expect(rows, "the text box, by a name").toHaveCount(1);
+  await expect(rows).toHaveAttribute("data-testid", `artifact-${plan.artifact.slug}`);
+  await filter.fill("file");
+  await expect(rows, "the text box, by a kind").toHaveCount(1);
+  await expect(rows).toHaveAttribute("data-testid", "artifact-trace-log");
+  await filter.fill("nothing holds this");
+  await expect(rows).toHaveCount(0);
+  await expect(
+    main.getByText("No artifacts match this filter.", { exact: true }),
+    "the text box's empty state"
+  ).toBeVisible();
+  await filter.fill("");
+  await expect(rows).toHaveCount(4);
+
+  // New document, which opens what it made; the tab then lists it.
+  await main.getByRole("button", { exact: true, name: "New document" }).click();
+  const form = page.getByRole("form", { name: "New document" });
+  await form.getByRole("textbox", { exact: true, name: "Title" }).fill("Drafted");
+  await form.getByRole("button", { exact: true, name: "Create" }).click();
+  await expect(page, "New document").toHaveURL(
+    new RegExp(`/issues/${issue.key}/artifacts/drafted`)
+  );
+  await page.goto(`/issues/${issue.key}/artifacts`);
+  await expect(rows, "New document's row").toHaveCount(5);
+  await expect(rows.nth(1), "New document's row").toContainText("Drafted");
+});
+
+/** The search bar's keep row's seed: four issues and a comment holding `harbour`, over two
+ *  projects, two authors and two statuses; a project document holding it too, whose paragraph
+ *  the writing cursor goes into; and twenty-two `beacon` issues, more than the bar lists at once
+ *  (`searchDefaultLimit`, `packages/envoy/internal/dispatch/api/search.go`). */
+async function seedKeptSearch(): Promise<{ documentSlug: string; rollout: string }> {
+  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
+  const rollout = await createIssue({ project: "CORE", title: "Harbour rollout" });
+  await createComment(rollout.key, { body: "The harbour tide decides the day." });
+  const lights = await createIssue({ project: "CORE", title: "Harbour lights" });
+  await patchIssue(lights.key, { status: "in_progress" });
+  await createIssue({ project: "CORE", title: "Harbour pilot" }, { login: "bob" });
+  await createIssue({ project: "OPS", title: "Harbour crane" }, { login: "bob" });
+  const document = await createProjectDocument("CORE", {
+    content: "# Harbour notes\n\nThe sextant sights the horizon.\n",
+    name: "Harbour notes",
+  });
+  for (let index = 1; index <= 22; index++) {
+    await createIssue({ project: "CORE", title: `Beacon ${index}` });
+  }
+  return { documentSlug: document.artifact.slug, rollout: rollout.key };
+}
+
+/** The owners the bar's hits are grouped under, each as its group is named: `KEY: title`. */
+function hitOwners(bar: Locator): Promise<string[]> {
+  return bar
+    .locator(
+      '#search-results [id^="search-group-issue:"], #search-results [id^="search-group-document:"]'
+    )
+    .evaluateAll((heads) => heads.map((head) => head.getAttribute("aria-label") ?? "").sort());
+}
+
+// R6 on the search bar. What the bar offered at the merge base, dccaf8369449
+// (`fork_point(main@origin | @)`), paths under `web/src/`, and how the row drives each:
+// - Fields: the words in the box (`features/search/SearchPalette.tsx:724-742`); Project
+//   (`features/search/SearchFilterBar.tsx:149-156`), Status (:157-164), Author, taken on Enter
+//   (:165-181), and Updated since (:182-198), each a removable chip once set (:137-148,
+//   `features/search/search-filters.ts:65-89`) and each a parameter of the search (:91-104). Each
+//   is set, the hits it leaves read, and its chip taken off again.
+// - Sort: none to choose; the hits come in the order the search ranks them.
+// - Grouping: the hits under the issue or document they belong to (`SearchPalette.tsx:472`,
+//   :780-851, `features/search/search-model.ts:25-44`); the Recent, Actions and Projects groups
+//   above them (:546-574), and More actions, This issue's agent and New issue below (:575-596).
+//   The hits' groups, Recent, Actions, Projects and New issue are read. More actions holds what
+//   the page's keys offer, and This issue's agent only a live session holding the issue.
+// - Count: `Showing the best N of M matches` (:891-896). Read.
+// - Views: the recent items while the box is empty, the hits while it holds words (:507-524).
+//   Both read.
+// - Bulk action: none.
+// - Keys: in the box, ArrowDown and ArrowUp move the highlight (:685-700) and Enter opens it
+//   (:701-704); Tab narrows the scope to the block being written in and Backspace on an empty
+//   box widens it to the project (`features/search/useBarScope.tsx:72-90`); `$mod+k` shuts the
+//   bar (`SearchPalette.tsx:433-441`) and so does Escape (`features/shell/useDialog.ts:124-137`);
+//   and the three global bindings that open it, `$mod+k`, `/` and `g p` (`app.tsx:547-597`).
+//   Each pressed and what it did read.
+// - Stored for the reader: the recent items, in local storage under `search.recents`
+//   (`features/search/recents.ts:26-87`). Found again after a reload.
+// SLOW(>=2s): twenty-six seeded issues and a document, the bar opened six times over four pages.
+test("the search bar keeps its narrowings, its groups, its count, its recent items and its keys @phone", async ({
+  page,
+}, testInfo) => {
+  const phone = isPhoneProject(testInfo);
+  if (!phone) await page.setViewportSize({ height: 900, width: 1440 });
+  const seed = await seedKeptSearch();
+  const bar = page.getByRole("dialog", { name: "Search" });
+  const box = bar.getByRole("combobox", { name: "Search" });
+  const scope = bar.getByTestId("search-scope");
+  // Four issues, and the project document, which is grouped under its own name.
+  const harbour = [
+    "CORE-1: Harbour rollout",
+    "CORE-2: Harbour lights",
+    "CORE-3: Harbour pilot",
+    "CORE: Harbour notes",
+    "OPS-1: Harbour crane",
+  ].sort();
+
+  // The three keys that open the bar, and the two that shut it.
+  await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
+  for (const [keys, shut] of [
+    [["/"], "Escape"],
+    [["g", "p"], "Control+k"],
+    [["Control+k"], "Escape"],
+  ] as const) {
+    await page.locator("body").focus();
+    for (const key of keys) await page.keyboard.press(key);
+    await expect(bar, `the ${keys.join(" ")} key`).toBeVisible();
+    await expect(box).toBeFocused();
+    await page.keyboard.press(shut);
+    await expect(bar, `the ${shut} key in the bar`).toHaveCount(0);
+  }
+
+  // The words, and the hits grouped under what they belong to.
+  await page.keyboard.press("Control+k");
+  await box.fill("harbour");
+  await expect.poll(() => hitOwners(bar), { message: "the words' hits" }).toEqual(harbour);
+  await expect(
+    bar.getByRole("group", { name: "CORE-1: Harbour rollout" }).getByRole("option"),
+    "an issue's group, holding the issue and its comment"
+  ).toHaveCount(2);
+  if (phone) await assertPageFits(page);
+
+  // The four narrowings, each from the one panel and each a chip.
+  const chips = control(controlRow(bar), CONTROL.chip);
+  const filters = page.getByRole("dialog", { name: "Filter" });
+  const tomorrow = await page.evaluate(() => {
+    const day = new Date();
+    day.setDate(day.getDate() + 1);
+    const pad = (value: number) => String(value).padStart(2, "0");
+    return `${day.getFullYear()}-${pad(day.getMonth() + 1)}-${pad(day.getDate())}`;
+  });
+  const pick = async (list: string, option: string) => {
+    await filters.getByRole("button", { exact: true, name: list }).click();
+    await page
+      .getByRole("listbox", { name: `${list} options` })
+      .getByRole("option", { exact: true, name: option })
+      .click();
+  };
+  for (const [narrowing, field, set, left] of [
+    [
+      "Project",
+      filters.getByRole("button", { exact: true, name: "Project" }),
+      () => pick("Project", "OPS"),
+      ["OPS-1: Harbour crane"],
+    ],
+    [
+      "Status",
+      filters.getByRole("button", { exact: true, name: "Status" }),
+      () => pick("Status", "In progress"),
+      ["CORE-2: Harbour lights"],
+    ],
+    [
+      "Author",
+      filters.getByRole("searchbox", { name: "Author" }),
+      async () => {
+        await filters.getByRole("searchbox", { name: "Author" }).fill("bob");
+        await page.keyboard.press("Enter");
+      },
+      ["CORE-3: Harbour pilot", "OPS-1: Harbour crane"],
+    ],
+    [
+      "Updated since",
+      filters.getByLabel("Updated since"),
+      () => filters.getByLabel("Updated since").fill(tomorrow),
+      [],
+    ],
+  ] as const) {
+    await openFilterPanel(page, bar);
+    await expect(field, `the ${narrowing} narrowing`).toBeVisible();
+    await set();
+    await closeControlPanel(bar);
+    await expect(
+      chips.filter({ hasText: new RegExp(`^${narrowing} `) }),
+      `the ${narrowing} narrowing's chip`
+    ).toHaveCount(1);
+    await expect
+      .poll(() => hitOwners(bar), { message: `the ${narrowing} narrowing` })
+      .toEqual([...left].sort());
+    await chips.click();
+    await expect(chips).toHaveCount(0);
+    await expect.poll(() => hitOwners(bar)).toEqual(harbour);
+  }
+
+  // The count of what the bar holds back, and the projects the words name.
+  await box.fill("beacon");
+  await expect(
+    bar.getByText("Showing the best 20 of 22 matches", { exact: true }),
+    "the count of matches"
+  ).toBeVisible();
+  await box.fill("ops");
+  await expect(
+    bar.getByRole("group", { name: "Projects" }).getByRole("option"),
+    "the Projects group"
+  ).toContainText(["Ops"]);
+
+  // The arrows move the highlight over the hits, and Enter opens the one it is on.
+  await box.fill("harbour");
+  await expect.poll(() => hitOwners(bar)).toEqual(harbour);
+  const first = await box.getAttribute("aria-activedescendant");
+  await page.keyboard.press("ArrowDown");
+  await expect(box, "the ArrowDown key").not.toHaveAttribute("aria-activedescendant", first ?? "");
+  await page.keyboard.press("ArrowUp");
+  await expect(box, "the ArrowUp key").toHaveAttribute("aria-activedescendant", first ?? "");
+  await page.keyboard.press("Enter");
+  await expect(bar, "the Enter key").toHaveCount(0);
+  await expect(page, "the Enter key").toHaveURL(/\/(issues|projects)\//);
+
+  // Over an issue: the page's actions on an empty box, Backspace widening the scope from the
+  // issue to its project, and the new issue the bar offers words nothing holds, which it files
+  // in the page's project.
+  await page.goto(`/issues/${seed.rollout}`);
+  await expect(page.getByTestId("issue-header")).toBeVisible();
+  await page.locator("body").focus();
+  await page.keyboard.press("Control+k");
+  await expect(scope).toHaveText(new RegExp(`Acting on ${seed.rollout}`));
+  await expect(
+    bar.getByRole("group", { name: "Actions" }).getByRole("option"),
+    "the Actions group"
+  ).not.toHaveCount(0);
+  await page.keyboard.press("Backspace");
+  await expect(scope, "the Backspace key").toHaveText(/Acting on the project CORE/);
+  await box.fill("zebrafish");
+  await expect(
+    bar.getByRole("group", { name: "New issue" }).getByRole("option", {
+      name: /Make a new issue from .zebrafish./,
+    }),
+    "the New issue group"
+  ).toHaveCount(1);
+  await page.keyboard.press("Escape");
+
+  // Tab narrows it to the block the writing cursor is in.
+  await page.goto(`/projects/CORE/documents/${seed.documentSlug}`);
+  await expect(documentEditor(page)).toContainText("The sextant sights the horizon.");
+  await placeCaret(page, "after", "sextant");
+  await expect(documentEditor(page)).toBeFocused();
+  await page.keyboard.press("Control+k");
+  await expect(scope).toHaveText(/Harbour notes/);
+  await page.keyboard.press("Tab");
+  await expect(scope, "the Tab key").toHaveText(/The sextant sights the horizon/);
+  await page.keyboard.press("Escape");
+
+  // The recent items, kept in the browser and listed again after a reload.
+  await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
+  await page.locator("body").focus();
+  await page.keyboard.press("Control+k");
+  await expect(box).toHaveValue("");
+  const recent = bar.getByRole("group", { name: "Recent" });
+  await expect(
+    recent.getByRole("option", { name: new RegExp(seed.rollout) }),
+    "a recent issue, after a reload"
+  ).toHaveCount(1);
+  await expect(
+    recent.getByRole("option", { name: /Harbour notes/ }),
+    "a recent document, after a reload"
+  ).toHaveCount(1);
+  expect(
+    await page.evaluate(() => localStorage.getItem("dispatch.search.recents:alice")),
+    "the recent items' stored value"
+  ).toContain(`/issues/${seed.rollout}`);
+});
+
+/** Shuts the surface's display menu by pressing its trigger again. Escape would be the drawer's
+ *  too once the focus has left the menu, and would shut the drawer with it. */
+async function shutDisplay(root: Locator): Promise<void> {
+  const trigger = control(controlRow(root), CONTROL.displayMenu);
+  if ((await expandedState("the surface's View menu", trigger)) === "open") await trigger.click();
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+}
+
+// R6 on the Inbox drawer. At the merge base, dccaf8369449 (`fork_point(main@origin | @)`), the
+// drawer is the Inbox's own list in a dialog, its narrowing its own state rather than the
+// address (`features/inbox/InboxDrawer.tsx:39`, :68-74), so it offered what the Inbox offered.
+// Paths under `web/src/`, and how the row drives each:
+// - Fields: priority, urgency, type and project (`features/inbox/InboxBar.tsx:227-249`), the
+//   assignee control (:250-257, `features/inbox/AssigneeFilter.tsx:26-87`) and the search box
+//   (`features/inbox/Inbox.tsx:1513-1522`); a chip for each value that is on
+//   (`InboxBar.tsx:149-181`, :260-275); and Clear filters (:183-187, :276-283). Each put on, the
+//   rows it leaves read, and its chip taken off; Clear filters read for what it takes off and
+//   what it leaves.
+// - Sorts: newest, priority, urgency, type, project and assignee (`features/inbox/ViewMenu.tsx:169-180`,
+//   `features/refs/routes.ts:76`, :84). Each chosen and the order read.
+// - Groupings: the five fields, Waiting on and None (`ViewMenu.tsx:181-192`, `routes.ts:91`). Each
+//   chosen and its bands read.
+// - Counts: each value's rows in its field's list, taken under the other narrowings
+//   (`InboxBar.tsx:133-141`, :231, :240-241, `AssigneeFilter.tsx:74-77`); each band's
+//   (`features/inbox/InboxGroups.tsx:53`); what waits on the reader, `Blocked on you: N items`
+//   (`Inbox.tsx:1558-1563`, `features/inbox/BlockedOnYou.tsx:111-137`); and the selection's
+//   `N selected` (`features/inbox/BulkBar.tsx:68-82`). Each read.
+// - Views: the Inbox and Dismissed (`ViewMenu.tsx:193-204`), and the thread order (:205-216). Each
+//   chosen and read.
+// - Bulk actions: Snooze selected asks, Dismiss and Move to Inbox selected threads, Select all
+//   and Clear selection (`BulkBar.tsx:98-147`); and Mark all read (`InboxBar.tsx:201-212`). Each
+//   pressed and its write read.
+// - Keys, on the drawer's own dialog scope (`Inbox.tsx:1162-1416`): `j` and `k` (:1167-1182),
+//   the arrows (:1183-1189), Enter (:1190-1221), 1-9 (:1222-1231), `o` (:1232-1238), `y`
+//   (:1239-1247), Escape back to the row (:1248-1280), `l` (:1281-1309), which stands down in a
+//   list with no reading pane, `x` (:1310-1321), `e` (:1322-1338), `h` (:1339-1362), Escape out
+//   of the bulk picker (:1363-1374), Escape clearing the selection (:1375-1390), `f`
+//   (:1391-1401) and Escape out of the search box (:1402-1415); the dialog's own Escape
+//   (`features/shell/useDialog.ts:124-137`); and `i`, the global binding that opens the drawer
+//   (`app.tsx:598-606`). Each pressed and what it did read.
+// - Stored for the reader, in local storage and read by the page and the drawer alike: the thread
+//   order (`features/threads/thread-order.ts:23-30`) and the folded bands
+//   (`features/inbox/preferences.ts:41-62`). Each set, and found again after a reload.
+// SLOW(>=2s): eleven seeded rows worked through every field, sort, grouping, key and bulk action.
+test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk action, key and stored choice it had @phone", async ({
+  page,
+}, testInfo) => {
+  // Measured in an issue pod (two cores), one worker: the row took 46.4 s in Chromium and 41.2 s
+  // in the iPhone project, against the config's 60 s, and with the `e` binding taken out it ran
+  // out of that budget while its 15 s expectation was naming the key. Twice the budget keeps a
+  // step that fails late naming itself rather than the budget.
+  test.setTimeout(120_000);
+  const phone = isPhoneProject(testInfo);
+  if (!phone) await page.setViewportSize({ height: 900, width: 1440 });
+  const copied = await recordClipboard(page);
+  const { rows } = await seedEveryField();
+  const at = await lastActivity();
+  const peek = drawer(page);
+  const listed = peek.locator("[data-inbox-row]");
+  const chips = control(controlRow(peek), CONTROL.chip);
+  const rowOf = (id: string) => peek.locator(`[data-inbox-row="${id}"]`);
+  const idsOf = (match: (row: ViewRow) => boolean) =>
+    rows
+      .filter(match)
+      .map((row) => row.id)
+      .sort();
+  const seeded = (match: (row: ViewRow) => boolean): ViewRow => {
+    const found = rows.find(match);
+    if (found === undefined) throw new Error("the seed holds no such row");
+    return found;
+  };
+  const alices = idsOf((row) => row.assignee === "alice");
+
+  // `i`, over the project List, and the dialog's own Escape.
+  await openIssuesTab(page, "CORE", "List");
+  await expect(page.locator("[data-issue-row]").first()).toBeVisible();
+  await page.locator("body").focus();
+  await page.keyboard.press("i");
+  await expect(peek, "the i key").toBeVisible();
+  await expect(listed).toHaveCount(alices.length);
+  expect((await drawnIds(peek)).sort(), "the drawer as it opens, on the reader's own").toEqual(
+    alices
+  );
+  await page.keyboard.press("Escape");
+  await expect(peek, "the drawer's own Escape").toHaveCount(0);
+  await peekTrigger(page).click();
+  await expect(listed).toHaveCount(alices.length);
+  if (phone) await assertPageFits(page);
+
+  // The assignee control, with the count beside each person, cleared to everyone.
+  await openFilterPanel(page, peek);
+  const assignee = assigneeFilter(page);
+  await assignee.click();
+  const people = assigneeOptions(page);
+  await expect(
+    people.getByRole("option", { exact: true, name: "bob, 1 rows" }),
+    "the count beside a person"
+  ).toHaveCount(1);
+  await people
+    .getByRole("option", { exact: true, name: `alice, you, ${alices.length} rows` })
+    .click();
+  await assignee.click();
+  await closeControlPanel(peek);
+  await expect(listed, "the assignee control").toHaveCount(rows.length);
+  await expect(chips.filter({ hasText: "Assignee: everyone" })).toHaveCount(1);
+
+  // The four fields, each with its chip.
+  for (const [field, value, chip, matches] of [
+    ["type", /^Question,/, "Type: Question", (row: ViewRow) => row.type === "question"],
+    ["priority", /^P0,/, "Priority: P0", (row: ViewRow) => row.priority === "P0"],
+    ["urgency", /^Blocking,/, "Urgency: Blocking", (row: ViewRow) => row.urgency === "blocking"],
+    ["project", /^CORE,/, "Project: CORE", (row: ViewRow) => row.project === "CORE"],
+  ] as const) {
+    await pickInboxField(page, field, value, peek);
+    const expected = idsOf(matches);
+    await expect(listed, `the drawer's ${field} field`).toHaveCount(expected.length);
+    expect((await drawnIds(peek)).sort(), `the drawer's ${field} field`).toEqual(expected);
+    await expect(chips.filter({ hasText: chip }), `the ${field} field's chip`).toHaveCount(1);
+    await chips.filter({ hasText: chip }).click();
+    await expect(listed).toHaveCount(rows.length);
+  }
+
+  // The count beside each value of a field is taken under the narrowing on another.
+  await pickInboxField(page, "priority", /^P0,/, peek);
+  await openFilterPanel(page, peek);
+  const typeTrigger = page.getByRole("button", { name: "Filter by type" });
+  await typeTrigger.click();
+  await expect(
+    page.getByRole("listbox", { name: "Type options" }).getByRole("option", { name: /^Question,/ }),
+    "the Type counts under the priority narrowing"
+  ).toHaveAccessibleName(
+    `Question, ${idsOf((row) => row.priority === "P0" && row.type === "question").length} rows`
+  );
+  await typeTrigger.click();
+  await closeControlPanel(peek);
+  await chips.filter({ hasText: "Priority: P0" }).click();
+  await expect(listed).toHaveCount(rows.length);
+
+  // The six sorts, under no banding, and the seven groupings. Each sort's order is the client's
+  // (`sortRows`, `features/inbox/grouping.ts`), the assignee's as much as the others', which
+  // `sortedIds` models from the seed.
+  await displayChoice(await openDisplay(page, peek), "Group by", "none").click();
+  for (const sort of ["newest", "priority", "urgency", "type", "project", "assignee"] as const) {
+    const menu = await openDisplay(page, peek);
+    await displayChoice(menu, "Sort by", sort).click();
+    await expect(displayChoice(menu, "Sort by", sort)).toBeChecked();
+    await expect
+      .poll(() => drawnIds(peek), { message: `the drawer's ${sort} sort` })
+      .toEqual(sortedIds(rows, sort, at));
+  }
+  for (const group of [
+    "priority",
+    "urgency",
+    "type",
+    "project",
+    "assignee",
+    "waiting-on",
+    "none",
+  ] as const) {
+    const menu = await openDisplay(page, peek);
+    await displayChoice(menu, "Group by", group).click();
+    const expected =
+      group === "none"
+        ? []
+        : group === "waiting-on"
+          ? [`Waiting on a person (${rows.length - 1})`, "Waiting on agents (1)"]
+          : valuesOf(rows, group).map(
+              (value) => `${bandLabel(group, value)} (${countsOf(rows, group).get(value)})`
+            );
+    await expect
+      .poll(() => bandHeadings(peek), { message: `the drawer's ${group} grouping` })
+      .toEqual(expected);
+  }
+  await displayChoice(await openDisplay(page, peek), "Sort by", "newest").click();
+  await shutDisplay(peek);
+  await expect.poll(() => drawnIds(peek)).toEqual(sortedIds(rows, "newest", at));
+
+  // The keys over the rows: `f` and the Escape out of the box, `j`, `k` and the arrows.
+  const order = sortedIds(rows, "newest", at);
+  const search = control(controlRow(peek), CONTROL.searchBox);
+  await page.keyboard.press("f");
+  await expect(search, "the f key").toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(rowOf(order[0] ?? ""), "the Escape key, out of the search box").toBeFocused();
+  await page.keyboard.press("j");
+  await expect(rowOf(order[1] ?? ""), "the j key").toBeFocused();
+  await page.keyboard.press("k");
+  await expect(rowOf(order[0] ?? ""), "the k key").toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(rowOf(order[1] ?? ""), "the ArrowDown key").toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await expect(rowOf(order[0] ?? ""), "the ArrowUp key").toBeFocused();
+
+  // The keys on one question: Enter into its answer, Escape back, `h`, which opens its Snooze
+  // menu on the first choice (dispatch://INFRA-2160) and Escape hands back to the row, `y`, and
+  // `l`, which has no reading pane to go to here.
+  const ledger = seeded((row) => row.type === "question" && row.priority === "P0");
+  const ask = rowOf(ledger.id);
+  await ask.focus();
+  await page.keyboard.press("Enter");
+  await expect(ask.locator("[data-ask-answer]"), "the Enter key").toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(ask, "the Escape key, back to the row").toBeFocused();
+  await page.keyboard.press("h");
+  await expect(
+    choiceOf(await menuOf(ask.locator("[data-inbox-snooze]")), "Later today"),
+    "the h key"
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(ask, "the Escape key, out of the row's Snooze menu").toBeFocused();
+  await page.keyboard.press("y");
+  await expect
+    .poll(async () => (await copied()).join(" "), { message: "the y key" })
+    .toContain(ledger.issueKey ?? "");
+  await page.keyboard.press("l");
+  await expect(ask, "the l key moved the focus with no reading pane to take it").toBeFocused();
+
+  // A number key picks that option of the decision in hand.
+  const decision = rowOf(seeded((row) => row.type === "decision").id);
+  await decision.focus();
+  await page.keyboard.press("1");
+  await expect(decision.locator("[data-ask-option]").first(), "the 1 key").toBeChecked();
+
+  // `x`, `h` with a row marked, and the three Escapes out: the bulk menu, the row, the marks.
+  const bar = control(peek, CONTROL.selectionBar);
+  await ask.focus();
+  await page.keyboard.press("x");
+  await expect(bar, "the x key").toContainText("1 selected");
+  await page.keyboard.press("h");
+  await expect(
+    choiceOf(bulkSnoozeMenu(page), "Later today"),
+    "the h key, with a row marked"
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(ask, "the Escape key, out of the bulk menu").toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(ask).not.toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(bar, "the Escape key that clears the marks").toHaveCount(0);
+  await expect(peek).toBeVisible();
+
+  // Mark all read, while threads are unread.
+  await controlRow(peek).getByRole("button", { exact: true, name: "Mark all read" }).click();
+  await expect(
+    controlRow(peek).getByRole("button", { exact: true, name: "Mark all read" })
+  ).toHaveCount(0);
+  await expect
+    .poll(
+      async () =>
+        ((await listMyReplies({ kind: ["reply", "agent"], state: "unread" })).rows ?? []).length,
+      { message: "Mark all read" }
+    )
+    .toBe(0);
+
+  // The selection bar: two marks, Select all, Clear selection.
+  const clock = seeded((row) => row.type === "question" && row.priority === "P3");
+  const comment = seeded((row) => row.type === "reply" && row.priority === "P3");
+  const message = seeded((row) => row.type === "reply" && row.project === "MIRROR");
+  await rowOf(clock.id).getByRole("checkbox").first().check();
+  await rowOf(comment.id).getByRole("checkbox").first().check();
+  await expect(bar, "two marks").toContainText("2 selected");
+  await bar.getByRole("button", { exact: true, name: "Select all" }).click();
+  await expect(bar, "Select all").toContainText("Every row selected");
+  await bar.getByRole("button", { exact: true, name: "Clear selection" }).click();
+  await expect(bar, "Clear selection").toHaveCount(0);
+
+  // Snooze selected asks, Dismiss selected threads, and `e` on a thread.
+  await rowOf(clock.id).getByRole("checkbox").first().check();
+  await pickFromMenu(
+    bar.getByRole("button", { exact: true, name: "Snooze selected asks" }),
+    "Tomorrow"
+  );
+  await expect(rowOf(clock.id), "Snooze selected asks").toHaveCount(0);
+  await expect
+    .poll(
+      async () => (await getInbox()).find((row) => row.id === clock.id)?.snoozed_until ?? null,
+      { message: "Snooze selected asks wrote no snooze" }
+    )
+    .not.toBeNull();
+  await rowOf(comment.id).getByRole("checkbox").first().check();
+  await bar.getByRole("button", { exact: true, name: "Dismiss selected threads" }).click();
+  await expect(rowOf(comment.id), "Dismiss selected threads").toHaveCount(0);
+  await rowOf(message.id).focus();
+  await page.keyboard.press("e");
+  await expect(rowOf(message.id), "the e key").toHaveCount(0);
+  const dismissed = async () =>
+    ((await listMyReplies({ kind: ["reply", "agent"], state: "dismissed" })).rows ?? [])
+      .map((thread) => `reply:${thread.thread_id}`)
+      .sort();
+  await expect
+    .poll(dismissed, { message: "the two dismissals" })
+    .toEqual([comment.id, message.id].sort());
+
+  // The Dismissed view, and Move to Inbox from it.
+  await displayChoice(await openDisplay(page, peek), "Show", "dismissed").click();
+  await shutDisplay(peek);
+  await expect
+    .poll(async () => (await drawnIds(peek)).sort(), { message: "the Dismissed view" })
+    .toEqual([comment.id, message.id].sort());
+  await rowOf(comment.id).getByRole("checkbox").first().check();
+  await bar.getByRole("button", { exact: true, name: "Move to Inbox selected threads" }).click();
+  await expect(rowOf(comment.id), "Move to Inbox selected threads").toHaveCount(0);
+  await expect.poll(dismissed, { message: "Move to Inbox" }).toEqual([message.id]);
+  await displayChoice(await openDisplay(page, peek), "Show", "inbox").click();
+  await shutDisplay(peek);
+  await expect(rowOf(comment.id)).toHaveCount(1);
+
+  // What waits on the reader, counted, and its press narrowing the list to exactly that.
+  const needsYou = peek.locator("[data-inbox-needs-you]");
+  await expect(needsYou, "the count of what waits on the reader").toHaveText(
+    /^Blocked on you · \d+$/
+  );
+  // The text was waited for above until it carried a number, which the control draws only once
+  // every count it adds up has answered.
+  const waiting = Number((await needsYou.textContent())?.replace(/\D+/g, ""));
+  await needsYou.click();
+  await expect(listed, "the count of what waits on the reader").toHaveCount(waiting);
+  await expect(chips.filter({ hasText: "Waiting on you" })).toHaveCount(1);
+
+  // Clear filters takes off the fields, the assignee and the needs-you narrowing, and leaves the
+  // words, the sort, the grouping and the view.
+  await search.fill("rule");
+  await pickInboxField(page, "type", /^Question,/, peek);
+  const menu = await openDisplay(page, peek);
+  for (const [section, value] of [
+    ["Sort by", "priority"],
+    ["Group by", "type"],
+    ["Show", "dismissed"],
+  ] as const) {
+    await displayChoice(menu, section, value).click();
+  }
+  await shutDisplay(peek);
+  await controlRow(peek).getByRole("button", { exact: true, name: "Clear filters" }).click();
+  await expect(chips, "Clear filters left a narrowing on").toHaveCount(0);
+  await expect(search, "Clear filters took the words").toHaveValue("rule");
+  const kept = await openDisplay(page, peek);
+  for (const [section, value] of [
+    ["Sort by", "priority"],
+    ["Group by", "type"],
+    ["Show", "dismissed"],
+  ] as const) {
+    await expect(
+      displayChoice(kept, section, value),
+      `Clear filters took the ${section}`
+    ).toBeChecked();
+  }
+
+  // The thread order and a folded band, stored for the reader and found again after a reload.
+  await displayChoice(kept, "Show", "inbox").click();
+  await displayChoice(kept, "Group by", "priority").click();
+  await displayChoice(kept, "Thread order", "newest").click();
+  await shutDisplay(peek);
+  await search.fill("");
+  const p0 = peek.getByTestId("inbox-list").locator("h2 button").filter({ hasText: /^P0 / });
+  await p0.click();
+  await expect(p0).toHaveAttribute("aria-expanded", "false");
+  await page.reload();
+  await expect(page.locator("[data-issue-row]").first()).toBeVisible();
+  await peekTrigger(page).click();
+  await expect(listed.first()).toBeVisible();
+  await expect(p0, "the folded band, after a reload").toHaveAttribute("aria-expanded", "false");
+  await expect(
+    displayChoice(await openDisplay(page, peek), "Thread order", "newest"),
+    "the thread order, after a reload"
+  ).toBeChecked();
+  await shutDisplay(peek);
+
+  // `o` opens the row's issue, which takes the reader out of the drawer.
+  const mirror = seeded((row) => row.type === "question" && row.priority === "P1");
+  await rowOf(mirror.id).focus();
+  await page.keyboard.press("o");
+  await expect(page, "the o key").toHaveURL(new RegExp(`/issues/${mirror.issueKey}`));
+  await expect(peek).toHaveCount(0);
+});
+
+/** A `class` attribute's tokens as a sorted set, so neither their order nor a repeat is read. */
+function classTokens(text: string): string[] {
+  return [...new Set(text.split(/\s+/).filter((token) => token !== ""))].sort();
+}
+
+/** The classes of the project page's `Blocked on you · N` pill at
+ *  6ef60ff0ceeba4ccaf285f06f5bbe9b859b2e4d8, the merge base when they were read, as a sorted set
+ *  of tokens, so neither their order nor a repeat is read. That commit's `web/dist` was served by
+ *  `DISPATCH_E2E_SERVER_WEB_DIST` (e2e/run-server.sh) over the row below's seed, and the pill's
+ *  `textContent` and its `href` and `class` attributes were read at 1440x900 on
+ *  `/projects/CORE/issues`: they answered `Blocked on you · 3`, `/` and the `class` these tokens
+ *  make. Its colours are written by the three roles that base's `BlockedOnYou.tsx` drew them
+ *  with, because no file here may write a colour utility of its own
+ *  (`web/src/theme/no-raw-colors.test.ts`); `theme/classes.ts` gives each the value the base
+ *  read. */
+const PILL_CLASSES_AT_THE_BASE = classTokens(
+  [
+    "order-3 shrink-0 md:order-5 inline-flex min-h-11 items-center rounded-full px-3 text-xs",
+    "font-medium md:min-h-9 md:px-2",
+    theme.surfaceMutedStrongBg,
+    theme.textSecondaryOnSurface,
+    theme.textSecondaryHoverToPrimary,
+  ].join(" ")
+);
+
+// SLOW(>=2s): a seeded inbox of asks, threads and one credential request, read twice.
+test("the control in the row carries what the banner carried, and narrows the Inbox to what waits on the reader", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await createProject({ key: "CORE", name: "Core" });
+  // Three asks waiting on Alice, one waiting on Bob, and one handed back to its agent.
+  const mine: string[] = [];
+  for (const title of ["Ledger rollout", "Mirror retries", "Clock drift"]) {
+    const issue = await createIssue({ project: "CORE", title });
+    const ask = await createAsk(issue.key, { question: `${title}?` }, SURFACE_SESSION);
+    mine.push(ask.id);
+  }
+  const bobs = await createIssue({ project: "CORE", title: "Lease handover" });
+  await patchIssue(bobs.key, { assignee: "bob" });
+  await createAsk(bobs.key, { question: "Whose lease?" }, SURFACE_SESSION);
+  const answered = await createIssue({ project: "CORE", title: "Replay budget" });
+  const answeredAsk = await createAsk(
+    answered.key,
+    { question: "How many replays?" },
+    SURFACE_SESSION
+  );
+  // Handed back to its agent, so it waits on nobody here.
+  await createComment(
+    answered.key,
+    { ask_id: answeredAsk.id, body: "Checking the budget now.", turn: "agent" },
+    SURFACE_SESSION
+  );
+  // One unread thread, which the sidebar's own number adds and the control does not: a reply
+  // under a comment the reader wrote, which is what makes it a thread rather than a comment.
+  const thread = await createIssue({ project: "CORE", title: "Nightly mirror" });
+  await seedCommentThread(
+    thread.key,
+    "Is the nightly job still at 02:00?",
+    "It moved to 03:00 last week."
+  );
+  // And one credential request waiting on her.
+  await setPendingCredentialRequests([
+    {
+      approver: "alice",
+      identifiers: ["ANTHROPIC_API_KEY"],
+      kind: "agent_secret",
+      record_id: "record-table-controls",
+      requested_at: "2026-09-27T00:00:00Z",
+      session: { enrollment: null, request: null },
+    },
+  ]);
+
+  await page.goto("/");
+  const main = page.getByTestId("main-content");
+  const list = page.getByTestId("inbox-list");
+  await expect(list).toBeVisible();
+  // No element above the list carries the words the banner carried.
+  await expect(
+    main.getByText(/^Blocked on you: /),
+    "the old banner's words are still drawn above the Inbox's list"
+  ).toHaveCount(0);
+
+  // The control carries the asks waiting on her plus the credential request: three and one. It
+  // is read in the Inbox's control row, where the banner's number now sits.
+  const needsYou = controlRow(page).locator("[data-inbox-needs-you]");
+  await expect(needsYou).toHaveText("Blocked on you · 4");
+  await expect(needsYou).toHaveAttribute("aria-label", /^Blocked on you: 4 items/);
+  const sidebar = page.getByRole("navigation", { name: "Navigation" }).getByRole("link", {
+    name: /^Inbox/,
+  });
+  await expect(sidebar, "the sidebar's Inbox entry draws no number").toHaveText(/\d/);
+  // The number was waited for above, and the entry draws it only once both counts it adds up
+  // have answered, so the number read is the whole sum.
+  const sidebarCount = Number((await sidebar.textContent())?.replace(/\D+/g, "") ?? "0");
+  expect(sidebarCount, "the sidebar's number does not add the unread thread").toBeGreaterThan(4);
+
+  // A press narrows the list to the asks waiting on her, keeps the credential section, and puts
+  // `section=needs-you` in the address while taking `assignee` out of it.
+  await page.goto("/?assignee=bob");
+  await needsYou.click();
+  await expect(page).toHaveURL(/section=needs-you/);
+  await expect(page).not.toHaveURL(/assignee=/);
+  const credentials = page.getByRole("region", { name: "Credential requests" });
+  await expect(
+    credentials,
+    "the credential requests section went with the narrowing"
+  ).toBeVisible();
+  await expect(page.locator("[data-inbox-row]")).toHaveCount(mine.length);
+  const drawn = await drawnIds(page);
+  expect([...drawn].sort(), "the narrowed list is not the asks waiting on the reader").toEqual(
+    [...mine].sort()
+  );
+  await expect(needsYou, "the control in the row draws no number after the press").toHaveText(
+    /^Blocked on you · \d+$/
+  );
+  // The control's text was waited for above in the form that carries its number, so one read
+  // of it is the number the control carries after the press.
+  const carried = Number((await needsYou.textContent())?.replace(/\D+/g, ""));
+  expect(
+    drawn.length + (await credentials.getByRole("listitem").count()),
+    `the page lists a different number of items than the control's ${carried}`
+  ).toBe(carried);
+
+  // On the project page the same component draws its pill as it did at the merge base: its
+  // words with the project's count, the three asks waiting on her, since a credential request
+  // belongs to no project; its link to the Inbox; and its classes (`PILL_CLASSES_AT_THE_BASE`).
+  await page.goto("/projects/CORE/issues");
+  const pill = page.getByRole("link", { name: /^Blocked on you · / });
+  await expect(pill, "the project page's pill is gone").toHaveText("Blocked on you · 3");
+  await expect(pill, "the project page's pill links elsewhere").toHaveAttribute("href", "/");
+  // The pill's words were waited for above, so the classes read are the ones it is drawn with.
+  const pillClass = (await pill.getAttribute("class")) ?? "";
+  expect(
+    classTokens(pillClass),
+    "the project page's pill wears other classes than it wore at the base"
+  ).toEqual(PILL_CLASSES_AT_THE_BASE);
+});
+
+// SLOW(>=2s): ten tables across three pages, each seeded and read.
+test("every table with no controls draws its rows in the shared markup and offers no search, filter or sort", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1600 });
+  await createProject({ key: "CORE", name: "Core" });
+  await putRepoProject("owner/repo", { project: "CORE" });
+  await mintAgentToken("table-controls", "alice");
+  await seedFakeGithub({
+    "legion/arch": {
+      contents: "read",
+      files: { "platform.md": "---\ntitle: Platform\n---\nEverything that runs.\n" },
+      installation_id: 101,
+    },
+  });
+  await putArchitectureSource("CORE", { branch: "main", repo: "legion/arch" });
+  await setSignIns([
+    {
+      created_at: "2026-10-28T09:00:00Z",
+      last_used_at: "2026-11-01T18:30:00Z",
+      machine: "workstations@example-project.iam.gserviceaccount.com",
+      person: "alice",
+      signin_id: "11111111-1111-4111-8111-111111111111",
+      thumbprint: "aaaabbbbccccddddeeeeffffgggghhhhiiiijjjjkkk",
+    },
+  ]);
+  await setCredentialGrants([
+    {
+      approver: "alice",
+      created_at: "2026-10-03T12:07:00Z",
+      decided_by: "alice",
+      enrollment: { kind: "pod", operator: "", runtime_id: "pod-7", slot: null },
+      expires_at: "2026-10-03T12:22:00Z",
+      grant_id: "22222222-2222-4222-8222-222222222222",
+      granted: "approval",
+      listedFor: "alice",
+      names: ["BILLING_KEY"],
+      record_id: "bb22cc33dd44ee55ff6677889900aa11bb22cc33dd44ee55ff6677889900aa11",
+    },
+  ]);
+  // A daemon named for a project of its own, so the Legion daemons table draws a row of it
+  // rather than its empty line.
+  await seedLegionDaemon("http://legion.acme.internal:9731");
+
+  /** Reads one plain table: it is inside the shared markup, it has rows, and it offers no
+   *  search box, no panel trigger and no sort control of its own. */
+  const readPlainTable = async (name: string): Promise<void> => {
+    const shell = page.locator(`[data-control="${CONTROL.tableShell}"]`).filter({
+      has: page.getByRole("table", { name }),
+    });
+    await expect(shell, `${name} is not drawn in the shared table markup`).toHaveCount(1);
+    await expect(
+      shell.getByRole("row"),
+      `${name} draws no rows at all, not even a head`
+    ).not.toHaveCount(0);
+    for (const forbidden of [CONTROL.searchBox, CONTROL.panelTrigger, CONTROL.columnFilter]) {
+      await expect(
+        shell.locator(`[data-control="${forbidden}"]`),
+        `${name} draws a ${forbidden}`
+      ).toHaveCount(0);
+    }
+    // What a sort control is: the header button `DataTable`'s `TableHeaderCell` draws for a
+    // sortable column. `th[aria-sort]` would say nothing here, since that attribute is written
+    // only while a column IS sorted, so a freshly drawn sortable table carries none either.
+    await expect(shell.locator("thead button"), `${name} draws a sort control`).toHaveCount(0);
+    await expect(
+      control(shell, CONTROL.dataTable),
+      `${name} is drawn by the shared TanStack table rather than the plain shell`
+    ).toHaveCount(0);
+  };
+
+  await page.goto("/settings");
+  for (const name of [
+    "Projects",
+    "Repository mappings",
+    "Agent tokens",
+    "Architecture sources",
+    "Sign-ins",
+    "Live grants",
+    "Legion daemons",
+  ]) {
+    await readPlainTable(name);
+  }
+
+  await seedPipelineFixture();
+  await page.goto(`/pipeline?at=${PIPELINE_AT}`);
+  await expect(page.getByRole("heading", { level: 1, name: "Pipeline" })).toBeVisible();
+  for (const name of ["PR CI: slowest jobs", "PR CI: jobs that failed in the last 24 hours"]) {
+    await readPlainTable(name);
+  }
+
+  // No second delivery fixture: `seedPipelineFixture` already wrote the one delivery settings
+  // row, and a second insert is refused by its primary key. The measures table is behind the
+  // panel's own fold, which the page opens shut.
+  await page.goto(`/delivery?${DELIVERY_WINDOW}`);
+  await expect(page.getByRole("heading", { level: 1, name: "Delivery timeline" })).toBeVisible();
+  await page.getByRole("button", { name: /Definitions & alternatives/ }).click();
+  await readPlainTable("Per day (UTC), newest first");
+});
+
+/** R8's reading of one row or card: what it draws, in order, and its box. */
+interface DrawnItem {
+  /** One entry per part, in document order, joined by ` | `: a control as its role and its
+   *  words (`button "ID"`), a run of text outside any control as its words in quotes, and a
+   *  relative time as `time`, since its words move with the clock. Nothing the item hides is a
+   *  part. */
+  readonly parts: string;
+  /** The item's height and width, and the width of the list it is drawn in, in px. */
+  readonly box: readonly [height: number, width: number, list: number];
+}
+
+/** The four lists R8's row reads, each named as its failures name it. */
+type ItemList = "project Board" | "project List" | "Agents page" | "Delivery list";
+
+/** What R8 holds one row or card to: the parts it drew at the base, and its box there. Each size
+ *  is the px the base's CSS gave it, which no font moves; a height the fonts decide is `"lines"`
+ *  instead, the height `linedHeights` gives the item from the lines the page drew it in and the
+ *  base's classes. */
+interface ItemAtTheBase {
+  readonly parts: string;
+  readonly box: readonly [height: number | "lines", width: number, list: number];
+}
+
+/** The lists whose items' heights the fonts decide below `md`, as `linedHeights` reads them. */
+type LinedList = Extract<ItemList, "project Board" | "Agents page">;
+
+/**
+ * The height each item of `list` takes from the lines the page drew it in and the classes the
+ * base drew it with, for a list whose items' heights the fonts decide below `md`. There every
+ * control is at least 44 px tall and every link `inline-flex` (styles.css), so how many lines an
+ * item's controls wrap onto, and how tall the line box a link stands in is, follow the font's
+ * widths and its ascent and descent - the runner's installed fonts, since the stack (`Inter,
+ * ui-sans-serif, system-ui`, styles.css) loads none of its own. Read in this pod with three fonts
+ * in place of the stack's (DejaVu Sans Mono, and DejaVu Sans with its ascent and descent moved and
+ * its size 12% and 40% larger), these were the only sizes of R8's four lists that moved, in either
+ * project: the Board's cards from 129 to 130 px, and an Agents row from 126 to 174 px, at 390.
+ *
+ * - A Board card: its `border` (1 px) and `p-3` (12 px) above and below; the line box its title
+ *   link stands in, read from the page as the space from the top of the card's content box to the
+ *   margin of its row of controls - the font's part; that row's `mt-3` (12 px); and the row, each
+ *   of its lines the 44 px of its tallest control (PriorityControl's badge wrapper, `min-h-11`),
+ *   with `gap-2` (8 px) between two.
+ * - An Agents row: its `border` (1 px) and `py-1.5` (6 px) above and below, and `gap-y-1` (4 px)
+ *   between two of its lines; each line of controls is 44 px (the toggle's `min-h-11`, and every
+ *   control below 1280 px), and the directory's own line (`basis-full`) its lines of `text-xs`
+ *   (16 px). How many lines there are is the font's part.
+ */
+async function linedHeights(items: Locator, list: LinedList): Promise<number[]> {
+  return items.evaluateAll((nodes, which) => {
+    const px = (value: string): number => Number.parseFloat(value);
+    /** The boxes a flex box lays out: a `display: contents` wrapper's children stand in its
+     *  place, and an element drawn nowhere is no box. */
+    const flexItems = (container: Element): Element[] =>
+      [...container.children].flatMap((child): Element[] => {
+        if (getComputedStyle(child).display === "contents") return flexItems(child);
+        return child.getClientRects().length > 0 ? [child] : [];
+      });
+    /** How many lines `boxes` stand on: a box starts a line where it begins below every box of
+     *  the line before it. */
+    const lineCount = (boxes: readonly { bottom: number; top: number }[]): number => {
+      let lines = 0;
+      let bottom = Number.NEGATIVE_INFINITY;
+      for (const box of [...boxes].sort((a, b) => a.top - b.top)) {
+        if (box.top >= bottom) lines += 1;
+        bottom = box.top >= bottom ? box.bottom : Math.max(bottom, box.bottom);
+      }
+      return lines;
+    };
+    const rect = (element: Element) => element.getBoundingClientRect();
+    /** The lines `element`'s text is drawn on. */
+    const textLines = (element: Element): number => {
+      const rects: DOMRect[] = [];
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
+        const range = document.createRange();
+        range.selectNodeContents(text);
+        rects.push(...[...range.getClientRects()].filter((line) => line.width > 0));
+      }
+      return lineCount(rects);
+    };
+    return nodes.map((node): number => {
+      if (which === "project Board") {
+        const row = node.querySelector("[data-issue-link]")?.nextElementSibling;
+        if (row === null || row === undefined) return Number.NaN;
+        const card = getComputedStyle(node);
+        const contentTop = rect(node).top + px(card.borderTopWidth) + px(card.paddingTop);
+        const titleLine = rect(row).top - px(getComputedStyle(row).marginTop) - contentTop;
+        const rowLines = lineCount(flexItems(row).map(rect));
+        return 1 + 12 + titleLine + 12 + rowLines * 44 + (rowLines - 1) * 8 + 12 + 1;
+      }
+      const box = node.firstElementChild;
+      if (box === null) return Number.NaN;
+      const directory = box.querySelector("[data-agent-dir]");
+      const boxes = flexItems(box).filter((item) => item !== directory);
+      const controlLines = lineCount(boxes.map(rect));
+      const directoryLines = directory === null ? 0 : textLines(directory);
+      const lines = controlLines + (directoryLines > 0 ? 1 : 0);
+      return 1 + 6 + controlLines * 44 + directoryLines * 16 + (lines - 1) * 4 + 6 + 1;
+    });
+  }, list);
+}
+
+/** Reads every item `items` finds, each against the nearest ancestor `list` names. */
+async function drawnItems(items: Locator, list: string): Promise<DrawnItem[]> {
+  return items.evaluateAll((nodes, listSelector) => {
+    const controls =
+      'a[href], button, input, select, textarea, [role="button"], [role="checkbox"], [role="combobox"], [role="link"]';
+    const tagRoles: Record<string, string> = {
+      A: "link",
+      BUTTON: "button",
+      SELECT: "combobox",
+      TEXTAREA: "textbox",
+    };
+    const roleOf = (element: Element): string => {
+      const role = element.getAttribute("role");
+      if (role !== null) return role;
+      if (element instanceof HTMLInputElement) {
+        return element.type === "checkbox" ? "checkbox" : "textbox";
+      }
+      return tagRoles[element.tagName] ?? element.tagName.toLowerCase();
+    };
+    /** Whether an element is drawn: a `display: contents` wrapper draws no box of its own, so
+     *  `checkVisibility` calls it hidden, while what it holds is drawn. */
+    const shown = (element: Element): boolean =>
+      getComputedStyle(element).display === "contents" ||
+      element.checkVisibility({ visibilityProperty: true });
+    const textOf = (node: Node): string => (node.textContent ?? "").replace(/\s+/g, " ").trim();
+    /** The words under a control, each run of text once, a relative time as `time`. */
+    const wordsOf = (element: Element): string[] =>
+      [...element.childNodes].flatMap((child): string[] => {
+        if (child.nodeType === Node.TEXT_NODE) return textOf(child) === "" ? [] : [textOf(child)];
+        if (!(child instanceof Element) || !shown(child)) return [];
+        return child.tagName === "TIME" ? ["time"] : wordsOf(child);
+      });
+    const partsOf = (element: Element): string[] =>
+      [...element.childNodes].flatMap((child): string[] => {
+        if (child.nodeType === Node.TEXT_NODE) {
+          return textOf(child) === "" ? [] : [`"${textOf(child)}"`];
+        }
+        if (!(child instanceof Element) || !shown(child)) return [];
+        if (child.tagName === "TIME") return ["time"];
+        if (!child.matches(controls)) return partsOf(child);
+        const name = child.getAttribute("aria-label") ?? wordsOf(child).join(" ");
+        return [`${roleOf(child)} "${name}"`];
+      });
+    const round = (value: number): number => Math.round(value * 100) / 100;
+    return nodes.map((node): DrawnItem => {
+      const box = node.getBoundingClientRect();
+      const list = node.closest(listSelector)?.getBoundingClientRect().width ?? Number.NaN;
+      return {
+        box: [round(box.height), round(box.width), round(list)],
+        parts: partsOf(node).join(" | "),
+      };
+    });
+  }, list);
+}
+
+/**
+ * What R8's four lists drew at commit 6ef60ff0ceeba4ccaf285f06f5bbe9b859b2e4d8, which was the
+ * merge base, `fork_point(main@origin | @)`, when this reading was made, in each project the row
+ * runs in: `chromium` at 1440x900 and `iphone` at its own 390x664.
+ *
+ * Measured, not written from the code. That commit's `packages/dispatch/web` was built in a
+ * scratch tree by `vite build` with this workspace's `node_modules`; outside `web/src` only
+ * documents, CI and tests differed between that commit and the head the reading ran at, so the
+ * server, the contracts and the build were that head's own. The build was served to this row in
+ * place of `web/dist` by `DISPATCH_E2E_SERVER_WEB_DIST` (e2e/run-server.sh), over the row's own
+ * seed, and the row was run over it in both projects: `drawnItems` read each list until its
+ * reading was the one written here, and a list whose reading never was would have been printed
+ * with each value it drew instead. Every list's was, in both projects. The Delivery list's rows
+ * are found by `tbody tr[aria-rowindex]`, because the base's carry no `data-pr-row`: both builds
+ * write `aria-rowindex` on each pull request's row in the list's body.
+ *
+ * Every size kept as a number is one the CSS fixes, which a runner with other fonts draws the
+ * same: none moved when this pod drew the lists in three other fonts (`linedHeights`). The Board
+ * card's 288 px and its column's are `w-72`, and its 114 px at 1440 is `border`, `p-3`, its key and
+ * title each one `text-sm` line of 20 px with `mt-1`, `mt-3` and the 32 px of its row of controls
+ * from `md`. A List row is the cell's `py-2` and border with its tallest cell: one 20 px title
+ * line, `space-y-1` and the 20 px asks badge (61 px), else the 32 px priority control (49 px); at
+ * 390 the title link's 44 px and `space-y-1`, with the badge (85 px) or without (65 px). The
+ * List's 2319.19 and 2106.69 px are its columns' widths, the title's a share of the box
+ * (`ISSUE_TABLE_COLUMNS`), so no text sets them. An Agents row at 1440 is one line from `md`
+ * (`md:flex-nowrap`): `border`, `py-1.5` and its 32 px controls. The Delivery row is the table's
+ * 36 px row height and its filled width. The heights the fonts do decide - the Board's cards and
+ * the Agents rows at 390, where a link's line box and how many lines the controls wrap onto
+ * follow the font - are `"lines"`.
+ */
+const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly ItemAtTheBase[]>>> = {
+  // The priority part alone is written, not measured: since dispatch://INFRA-2160/spec the
+  // priority is the trigger of its menu, as the Snooze and the status are.
+  chromium: {
+    "project Board": [
+      {
+        box: [114, 288, 288],
+        parts: 'link "CORE-1 Keyboard issue" | button "Priority of CORE-1" | "1"',
+      },
+      {
+        box: [114, 288, 288],
+        parts: 'link "CORE-2 Rollout plan" | button "Priority of CORE-2"',
+      },
+      {
+        box: [114, 288, 288],
+        parts: 'link "CORE-3 Rollout order" | button "Priority of CORE-3" | "frontend" | "1"',
+      },
+      {
+        box: [114, 288, 288],
+        parts: 'link "CORE-4 Rollout budget" | button "Priority of CORE-4" | "backend" | "1"',
+      },
+      {
+        box: [114, 288, 288],
+        parts: 'link "CORE-5 Ledger mirror" | button "Priority of CORE-5" | "frontend" | "1"',
+      },
+      {
+        box: [114, 288, 288],
+        parts: 'link "CORE-6 Clock drift" | button "Priority of CORE-6" | "backend" | "1"',
+      },
+      {
+        box: [114, 288, 288],
+        parts: 'link "CORE-7 Replay window" | button "Priority of CORE-7" | "frontend" | "1"',
+      },
+      {
+        box: [114, 288, 288],
+        parts: 'link "CORE-8 Lease handover" | button "Priority of CORE-8" | "backend" | "1"',
+      },
+    ],
+    "project List": [
+      {
+        box: [61, 2319.19, 2319.19],
+        parts:
+          'checkbox "Select CORE-1" | button "Priority of CORE-1" | link "CORE-1" | link "CORE-1 Keyboard issue" | "1" | "Triage" | "No epic" | "alice" | "alice" | "1" | time',
+      },
+      {
+        box: [49, 2319.19, 2319.19],
+        parts:
+          'checkbox "Select CORE-2" | button "Priority of CORE-2" | link "CORE-2" | link "CORE-2 Rollout plan" | "Triage" | "No epic" | "alice" | "alice" | time',
+      },
+      {
+        box: [61, 2319.19, 2319.19],
+        parts:
+          'checkbox "Select CORE-3" | button "Priority of CORE-3" | link "CORE-3" | link "CORE-3 Rollout order" | "1" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+      },
+      {
+        box: [61, 2319.19, 2319.19],
+        parts:
+          'checkbox "Select CORE-4" | button "Priority of CORE-4" | link "CORE-4" | link "CORE-4 Rollout budget" | "1" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+      },
+      {
+        box: [61, 2319.19, 2319.19],
+        parts:
+          'checkbox "Select CORE-5" | button "Priority of CORE-5" | link "CORE-5" | link "CORE-5 Ledger mirror" | "1" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+      },
+      {
+        box: [61, 2319.19, 2319.19],
+        parts:
+          'checkbox "Select CORE-6" | button "Priority of CORE-6" | link "CORE-6" | link "CORE-6 Clock drift" | "1" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+      },
+      {
+        box: [61, 2319.19, 2319.19],
+        parts:
+          'checkbox "Select CORE-7" | button "Priority of CORE-7" | link "CORE-7" | link "CORE-7 Replay window" | "1" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+      },
+      {
+        box: [61, 2319.19, 2319.19],
+        parts:
+          'checkbox "Select CORE-8" | button "Priority of CORE-8" | link "CORE-8" | link "CORE-8 Lease handover" | "1" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+      },
+    ],
+    "Agents page": [
+      {
+        box: [46, 1072, 1072],
+        parts:
+          'checkbox "Select Planner for broadcast" | button "Planner" | link "Open live conversation with Planner" | button "Copy session ID 019a1c01-0d7b-7a2a-8e93-4a5b6c7d8e01" | button "Copy session title Planner" | link "box-1" | "· planner" | "planner" | time | link "Needs you 1" | button "Pin Planner"',
+      },
+      {
+        box: [46, 1072, 1072],
+        parts:
+          'checkbox "Select Reviewer for broadcast" | button "Reviewer" | link "Open live conversation with Reviewer" | button "Copy session ID 019a1c03-2f0d-7c4c-ab85-0c7d1e4f5a03" | button "Copy session title Reviewer" | link "box-1" | "· reviewer" | "reviewer" | time | button "Pin Reviewer"',
+      },
+    ],
+    "Delivery list": [
+      {
+        box: [36, 1152, 1152],
+        parts:
+          '"Jun 1, 3:00 AM" | link "widgets#2" | "fix: a waiting widget" | "No issue" | "No session" | "octocat" | "+" | "4" | "-" | "1" | "waiting" | "rework"',
+      },
+      {
+        box: [36, 1152, 1152],
+        parts:
+          '"Jun 1, 1:00 AM" | link "widgets#1" | "feat: a shipped widget" | "ACME-1 · P0" | "No session" | "octocat" | "+" | "12" | "-" | "3" | button "Open deploy run #500" | "Jun 1, 1:40 AM" | "40m"',
+      },
+    ],
+  },
+  iphone: {
+    "project Board": [
+      {
+        box: ["lines", 288, 288],
+        parts: 'link "CORE-1 Keyboard issue" | button "Priority of CORE-1" | "1"',
+      },
+      {
+        box: ["lines", 288, 288],
+        parts: 'link "CORE-2 Rollout plan" | button "Priority of CORE-2"',
+      },
+      {
+        box: ["lines", 288, 288],
+        parts: 'link "CORE-3 Rollout order" | button "Priority of CORE-3" | "frontend" | "1"',
+      },
+      {
+        box: ["lines", 288, 288],
+        parts: 'link "CORE-4 Rollout budget" | button "Priority of CORE-4" | "backend" | "1"',
+      },
+      {
+        box: ["lines", 288, 288],
+        parts: 'link "CORE-5 Ledger mirror" | button "Priority of CORE-5" | "frontend" | "1"',
+      },
+      {
+        box: ["lines", 288, 288],
+        parts: 'link "CORE-6 Clock drift" | button "Priority of CORE-6" | "backend" | "1"',
+      },
+      {
+        box: ["lines", 288, 288],
+        parts: 'link "CORE-7 Replay window" | button "Priority of CORE-7" | "frontend" | "1"',
+      },
+      {
+        box: ["lines", 288, 288],
+        parts: 'link "CORE-8 Lease handover" | button "Priority of CORE-8" | "backend" | "1"',
+      },
+    ],
+    "project List": [
+      {
+        box: [85, 2106.69, 2106.69],
+        parts:
+          'checkbox "Select CORE-1" | link "CORE-1" | link "CORE-1 Keyboard issue" | "1" | button "Priority of CORE-1" | "Triage" | "No epic" | "alice" | "alice" | "1" | time',
+      },
+      {
+        box: [65, 2106.69, 2106.69],
+        parts:
+          'checkbox "Select CORE-2" | link "CORE-2" | link "CORE-2 Rollout plan" | button "Priority of CORE-2" | "Triage" | "No epic" | "alice" | "alice" | time',
+      },
+      {
+        box: [85, 2106.69, 2106.69],
+        parts:
+          'checkbox "Select CORE-3" | link "CORE-3" | link "CORE-3 Rollout order" | "1" | button "Priority of CORE-3" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+      },
+      {
+        box: [85, 2106.69, 2106.69],
+        parts:
+          'checkbox "Select CORE-4" | link "CORE-4" | link "CORE-4 Rollout budget" | "1" | button "Priority of CORE-4" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+      },
+      {
+        box: [85, 2106.69, 2106.69],
+        parts:
+          'checkbox "Select CORE-5" | link "CORE-5" | link "CORE-5 Ledger mirror" | "1" | button "Priority of CORE-5" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+      },
+      {
+        box: [85, 2106.69, 2106.69],
+        parts:
+          'checkbox "Select CORE-6" | link "CORE-6" | link "CORE-6 Clock drift" | "1" | button "Priority of CORE-6" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+      },
+      {
+        box: [85, 2106.69, 2106.69],
+        parts:
+          'checkbox "Select CORE-7" | link "CORE-7" | link "CORE-7 Replay window" | "1" | button "Priority of CORE-7" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+      },
+      {
+        box: [85, 2106.69, 2106.69],
+        parts:
+          'checkbox "Select CORE-8" | link "CORE-8" | link "CORE-8 Lease handover" | "1" | button "Priority of CORE-8" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+      },
+    ],
+    "Agents page": [
+      {
+        box: ["lines", 342, 342],
+        parts:
+          'checkbox "Select Planner for broadcast" | button "Planner" | link "Open live conversation with Planner" | button "Copy session ID 019a1c01-0d7b-7a2a-8e93-4a5b6c7d8e01" | button "Copy session title Planner" | link "box-1" | "· /srv/planner" | "planner" | time | link "Needs you 1" | button "Pin Planner"',
+      },
+      {
+        box: ["lines", 342, 342],
+        parts:
+          'checkbox "Select Reviewer for broadcast" | button "Reviewer" | link "Open live conversation with Reviewer" | button "Copy session ID 019a1c03-2f0d-7c4c-ab85-0c7d1e4f5a03" | button "Copy session title Reviewer" | link "box-1" | "· /srv/reviewer" | "reviewer" | time | button "Pin Reviewer"',
+      },
+    ],
+    "Delivery list": [
+      {
+        box: [36, 1152, 1152],
+        parts:
+          '"Jun 1, 3:00 AM" | link "widgets#2" | "fix: a waiting widget" | "No issue" | "No session" | "octocat" | "+" | "4" | "-" | "1" | "waiting" | "rework"',
+      },
+      {
+        box: [36, 1152, 1152],
+        parts:
+          '"Jun 1, 1:00 AM" | link "widgets#1" | "feat: a shipped widget" | "ACME-1 · P0" | "No session" | "octocat" | "+" | "12" | "-" | "3" | button "Open deploy run #500" | "Jun 1, 1:40 AM" | "40m"',
+      },
+    ],
+  },
+};
+
+/** An ask card's "Asked of" line from `md`, at the base: the 32 px of its badge's wrapper
+ *  (`badgeSelectWrapper`'s `md:min-h-8`), with the hand-on laid over the badge taking no room -
+ *  a native select then, a button now whose 44 px below 1280 px (styles.css) overhangs it. */
+const ASKED_OF_LINE = 32;
+
+/** The issue header's Assignee badge from `md`, at the base: its wrapper, the badge's own item in
+ *  the header's wrapping row, 32 px (`badgeSelectWrapper`'s `md:min-h-8`), with the native
+ *  select laid over the badge taking no room - the list's 44 px trigger now, which overhangs it
+ *  below 1280 px (`badgeSelectTrigger`). */
+const ASSIGNEE_BADGE = 32;
+
+/** The issue header's `Repository:` line in its details rail from `md`, around the shared list
+ *  trigger's wrapper: the 28 px of that wrapper (`badgeSelectRailWrapper`'s `md:min-h-7`), which
+ *  the trigger overhangs below 1280 px (`badgeSelectRailTrigger`). The reference is the head's own
+ *  shared trigger box, not a reading at the base: R3's intended difference from main's visible
+ *  text box, which this change replaces with the shared list's trigger. At 6ef60ff0, the merge
+ *  base when that line was read, the line holds that text box, and the same read of that line,
+ *  this row's run over that commit's build, measured 44 px at 1024x768. */
+const REPOSITORY_LINE = 28;
+
+// R8: "The rows, the cards, the reading pane and the panes' widths do not change." The Inbox's
+// rows and its reading pane are the stub row's (`table-controls.stub.e2e.ts`), and the tables
+// with no controls the row above; this one holds the Board's cards and the rows of the Agents
+// page, the project List and the Delivery list to what they drew at the base
+// (`ITEMS_AT_THE_BASE`), item by item: the same parts, in the same order, in a box of the same
+// size, where a height the fonts decide is the one its lines and the base's classes give it
+// (`linedHeights`). It holds an ask card's "Asked of" line and the issue header's Assignee badge
+// to their heights at the base too, and the header's `Repository:` line to the box of the shared
+// trigger that replaces the base's text box (`REPOSITORY_LINE`), at 1024x768, between `md` and
+// `xl`, the widths where every button is 44 px tall. The Delivery list draws its clock times in
+// the browser's own zone and words, so both are pinned to the ones the base was read in.
+test.describe("R8's rows and cards", () => {
+  test.use({ locale: "en-US", timezoneId: "UTC" });
+
+  // SLOW(>=2s): six pages over two seeded fixtures, each list read until it is the base's.
+  test("the Board's cards and the rows of the Agents page, the project List and the Delivery list draw the parts and the size they had at the base @phone", async ({
+    page,
+  }, testInfo) => {
+    // Measured in an issue pod (two cores), one worker: the row took 23.6 s in Chromium. A list
+    // that never draws what the base drew is read for the suite's 15 s expect timeout before it
+    // is named, so the four lists can add a minute, which the config's 60 s budget would cut off
+    // before the row named them; two minutes holds both.
+    test.setTimeout(120_000);
+    const atTheBase = ITEMS_AT_THE_BASE[testInfo.project.name];
+    if (atTheBase === undefined) {
+      throw new Error(`no reading at the base for the ${testInfo.project.name} project`);
+    }
+    const { issue } = await seedRealStackSurfaces();
+    await seedSurfaces();
+    if (!isPhoneProject(testInfo)) await page.setViewportSize({ height: 900, width: 1440 });
+    const main = page.getByTestId("main-content");
+    const lists: {
+      name: ItemList;
+      noun: string;
+      open: () => Promise<void>;
+      items: Locator;
+      list: string;
+    }[] = [
+      {
+        name: "project Board",
+        noun: "card",
+        open: () => openIssuesTab(page, "CORE", "Board"),
+        items: main.locator("[data-board-card]"),
+        list: "[data-board-column]",
+      },
+      {
+        name: "project List",
+        noun: "row",
+        open: () => openIssuesTab(page, "CORE", "List"),
+        items: main.locator("[data-issue-row]"),
+        list: "table",
+      },
+      {
+        name: "Agents page",
+        noun: "row",
+        open: async () => {
+          await page.goto("/agents");
+        },
+        items: main.locator("[data-agent-row]:not([hidden])"),
+        list: "[data-agents-list]",
+      },
+      {
+        name: "Delivery list",
+        noun: "row",
+        open: async () => {
+          await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
+        },
+        items: main.locator("tbody tr[aria-rowindex]"),
+        list: "table",
+      },
+    ];
+    const changed: string[] = [];
+    for (const { items, list, name, noun, open } of lists) {
+      await open();
+      await expect(items.first(), `the ${name} draws no ${noun}`).toBeVisible();
+      const base = atTheBase[name];
+      const lined = base.some((was) => was.box[0] === "lines");
+      /** What one reading draws other than the base: the parts of each item, and each size within
+       *  half a pixel, the rounding of a box's edge. */
+      const differences = (drawn: readonly DrawnItem[], heights: readonly number[]): string[] => {
+        const differs: string[] = [];
+        if (drawn.length !== base.length) {
+          differs.push(
+            `the ${name} draws ${drawn.length} ${noun}s, and ${base.length} at the base`
+          );
+        }
+        for (const [index, was] of base.entries()) {
+          const item = drawn[index];
+          if (item === undefined) continue;
+          const at = `the ${name}'s ${noun} ${index + 1}`;
+          if (item.parts !== was.parts) {
+            differs.push(`${at} draws ${item.parts}, and at the base ${was.parts}`);
+          }
+          const [height, width, listWidth] = was.box;
+          const ruled = height === "lines";
+          for (const [size, now, then, from] of [
+            [
+              "height",
+              item.box[0],
+              ruled ? (heights[index] ?? Number.NaN) : height,
+              ruled ? "by its lines and the base's classes" : "at the base",
+            ],
+            ["width", item.box[1], width, "at the base"],
+            ["list's width", item.box[2], listWidth, "at the base"],
+          ] as const) {
+            if (!(Math.abs(now - then) <= 0.5)) {
+              differs.push(
+                `${at}'s ${size} is ${now}px, and ${Math.round(then * 100) / 100}px ${from}`
+              );
+            }
+          }
+        }
+        return differs;
+      };
+      // An item's parts arrive in turns - the read state, the asks, the live link - so the list
+      // is read again until it is what the base drew or the suite's expect timeout runs out
+      // (`playwright.config.ts`), and what differs then is named below; a list no read reached
+      // is named for that.
+      let found = [`the ${name} was never read`];
+      await expect
+        .poll(async () => {
+          const drawn = await drawnItems(items, list);
+          const heights =
+            lined && (name === "project Board" || name === "Agents page")
+              ? await linedHeights(items, name)
+              : [];
+          found = differences(drawn, heights);
+          return found;
+        })
+        .toEqual([])
+        .catch(() => undefined);
+      changed.push(...found);
+    }
+
+    await page.setViewportSize({ height: 768, width: 1024 });
+    await page.goto("/?assignee=everyone");
+    const handOns = main.locator("[data-ask-hand-on]");
+    await expect(handOns.first(), "the Inbox draws no ask card at 1024x768").toBeVisible();
+    const askedOf = await handOns.evaluateAll((wrappers) =>
+      wrappers
+        .filter((wrapper) => wrapper.getClientRects().length > 0)
+        .map(
+          (wrapper) =>
+            Math.round((wrapper.parentElement?.getBoundingClientRect().height ?? 0) * 100) / 100
+        )
+    );
+    /** Each line read at 1024x768: what it is, its height now, the height it is held to, and
+     *  where that height was read. */
+    const lines: [line: string, height: number, held: number, from: string][] = askedOf.map(
+      (height, index) => [
+        `the Inbox's ask card ${index + 1}'s "Asked of" line`,
+        height,
+        ASKED_OF_LINE,
+        "at the base",
+      ]
+    );
+
+    // The issue header's two controls, read once CORE maps a repository, so its rail draws one:
+    // the Assignee's wrapper, the control's parent at the base as now and the badge's own item in
+    // the wrapping row, and the `Repository:` line, the control's grandparent, around the shared
+    // trigger's wrapper.
+    await putRepoProject("acme/widgets", { default: true, project: "CORE" });
+    await page.goto(`/issues/${issue}`);
+    const assigneeControl = page.getByLabel(`Assignee of ${issue}`);
+    const repositoryControl = page.getByLabel(`Repository of ${issue}`);
+    await expect(assigneeControl, "the issue header draws no Assignee at 1024x768").toBeVisible();
+    await expect(
+      repositoryControl,
+      "the issue header draws no Repository at 1024x768"
+    ).toBeVisible();
+    lines.push(
+      [
+        "the issue header's Assignee badge",
+        await assigneeControl.evaluate(
+          (control) =>
+            Math.round((control.parentElement?.getBoundingClientRect().height ?? 0) * 100) / 100
+        ),
+        ASSIGNEE_BADGE,
+        "at the base",
+      ],
+      [
+        "the issue header's `Repository:` line",
+        await repositoryControl.evaluate(
+          (control) =>
+            Math.round(
+              (control.parentElement?.parentElement?.getBoundingClientRect().height ?? 0) * 100
+            ) / 100
+        ),
+        REPOSITORY_LINE,
+        "in the shared trigger's box",
+      ]
+    );
+    for (const [line, height, held, from] of lines) {
+      if (Math.abs(height - held) > 0.5) {
+        changed.push(`${line} at 1024x768 is ${height}px, and ${held}px ${from}`);
+      }
+    }
+    expect(
+      changed,
+      "a card or row draws other parts, or a box of another size, than it drew at the base, or the Repository line is not the shared trigger's box"
+    ).toEqual([]);
+  });
+});
+
+// SLOW(>=2s): three pages at two widths, a press in each shared control that takes away, hides or
+// holds the control it was made on.
+test("no press in the shared controls drops the keyboard focus onto the page, at every width", async ({
+  page,
+}) => {
+  // Three pages at two widths, each press waiting out its write. Measured in an issue pod at
+  // c17d720e: the row ran out of the config's 60 s budget 7 of 7 times in Chromium at its last
+  // width, and with a longer one it finished in 57.7 s and 1.0 min; it takes its siblings' budget.
+  test.setTimeout(150_000);
+  const scene = await seedSurfaces();
+  // Enough issues for two of the List's pages at 25 a page.
+  await Promise.all(
+    Array.from({ length: 24 }, (_, index) =>
+      createIssue({ project: "CORE", title: `Paged row ${index}` })
+    )
+  );
+  // Two issues in Legion's queue: the second's row offers a Start next of its own, which moves it
+  // to the head at the first width, so at the second the other row offers it.
+  for (const title of ["Queued first", "Queued second"]) {
+    const issue = await createIssue({ project: "CORE", title });
+    await patchIssue(issue.key, { labels: ["legion"], status: "todo" });
+  }
+  const main = page.getByTestId("main-content");
+  const row = controlRow(main);
+  const wrong: string[] = [];
+  /** Where each target has already been missed: a target missed once at a width is not waited
+   *  for again there, so a hand-off that is gone costs the row one wait at each width rather
+   *  than one for each press that misses it. */
+  const missed = new Set<string>();
+  /** Holds every issue write until `release`, as a slow server would, so a control can be read
+   *  while its write is out; `stop` takes the hold off once the writes have landed. */
+  const holdIssueWrites = async () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const pattern = "**/api/v1/issues/*";
+    await page.route(pattern, async (route) => {
+      if (route.request().method() !== "PATCH") return route.fallback();
+      await promise;
+      return route.fallback();
+    });
+    return { release: resolve, stop: () => page.unroute(pattern) };
+  };
+  /** The focused element's name, or the tag of the body when nothing is focused. */
+  const focusNow = () =>
+    page.evaluate(() => {
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement) || focused === document.body) {
+        return focused?.tagName ?? "nothing";
+      }
+      const label =
+        focused.getAttribute("aria-label") ??
+        (focused instanceof HTMLInputElement ? focused.labels?.[0]?.textContent?.trim() : null) ??
+        focused.textContent?.trim() ??
+        "";
+      return `"${label === "" ? focused.tagName : label}"`;
+    });
+  /** Records a focus that has not landed on `wanted` within the suite's expect timeout
+   *  (`playwright.config.ts`): the element named, or whatever a check reads off the page. Each
+   *  check follows the change it is about - the control gone, the page turned, the bar gone -
+   *  and a hand-off lands in that same commit or the frame after it. */
+  const focusOn = async (
+    where: string,
+    press: string,
+    wanted: Locator | (() => Promise<boolean>),
+    name: string
+  ) => {
+    if (missed.has(`${where} ${name}`)) return;
+    const landed = await (typeof wanted === "function"
+      ? expect.poll(wanted).toBe(true)
+      : expect(wanted).toBeFocused()
+    ).then(
+      () => true,
+      () => false
+    );
+    if (!landed) {
+      missed.add(`${where} ${name}`);
+      wrong.push(`${where}: after ${press} the focus is on ${await focusNow()}, not on ${name}`);
+    }
+  };
+
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    const at = `${size.width}x${size.height}`;
+
+    // The Inbox's Mark all read, a page control in the row, goes once nothing is left unread:
+    // the focus goes to the next control in its slot, Blocked on you, which `seedSurfaces`' six
+    // asks waiting on the reader draw. A thread of its own at each width, since the press at the
+    // first marks the first one read.
+    let where = `Inbox at ${at}`;
+    const thread = await createIssue({ project: "CORE", title: `Nightly mirror at ${at}` });
+    await seedCommentThread(thread.key, "Is the nightly job still at 02:00?", "It moved to 03:00.");
+    await page.goto("/");
+    const markAll = row.getByRole("button", { exact: true, name: "Mark all read" });
+    const blocked = row.getByRole("button", { name: /^Blocked on you/ });
+    await expect(markAll, `${where}: Mark all read is not drawn`).toBeVisible();
+    await expect(blocked, `${where}: Blocked on you is not drawn`).toBeVisible();
+    await markAll.focus();
+    await page.keyboard.press("Enter");
+    await expect(markAll, `${where}: Enter on Mark all read left it drawn`).toHaveCount(0);
+    await focusOn(where, "Enter on Mark all read", blocked, "Blocked on you");
+
+    // A scroll button of the chips line, pressed by a pointer while a chip holds the focus: the
+    // press takes no focus, and the button that goes at the strip's end takes none with it.
+    await page.goto(NINE_NARROWINGS);
+    const chips = control(row, CONTROL.chip);
+    await expect(chips, `${where}: the nine narrowings draw no nine chips`).toHaveCount(9);
+    const strip = chips.first().locator("..");
+    const chip = chips.first();
+    const chipName = (await chip.getAttribute("aria-label")) ?? "the first chip";
+    await chip.focus();
+    for (const side of ["right", "left"] as const) {
+      const button = row.getByRole("button", { exact: true, name: `Scroll filters ${side}` });
+      await expect(
+        button,
+        `${where}: Scroll filters ${side} is not drawn, so no chip is out of view that way`
+      ).toBeVisible();
+      // The first turn follows the wait above, each later one a strip held still for five frames,
+      // and the button goes in the render its last scroll event makes, so the count is settled.
+      for (let press = 1; (await button.count()) > 0; press++) {
+        expect(
+          press,
+          `${where}: Scroll filters ${side} never reached the strip's end`
+        ).toBeLessThan(12);
+        const from = await strip.evaluate((node) => node.scrollLeft);
+        await button.click();
+        await expect
+          .poll(() => strip.evaluate((node) => node.scrollLeft), {
+            message: `${where}: press ${press} on Scroll filters ${side} left the strip at ${from}px`,
+          })
+          .not.toBe(from);
+        await stripAtRest(strip);
+        await focusOn(where, `press ${press} on Scroll filters ${side}`, chip, `"${chipName}"`);
+      }
+    }
+
+    // The List's pager: Next pressed until the last page and Previous until the first, each
+    // refused there rather than disabled, so the focus stays on the button pressed.
+    where = `project List at ${at}`;
+    await openSurface(page, "project List", scene);
+    await page.goto("/projects/CORE/issues?size=25");
+    const pager = control(main, CONTROL.pager);
+    await expect(pager, `${where}: the List draws no first page`).toContainText(/Page 1 of \d/);
+    // The pager was waited for above until it read `Page 1 of N`, so the count of pages is drawn.
+    const pages = Number(/Page 1 of (\d+)/.exec((await pager.textContent()) ?? "")?.[1] ?? "1");
+    expect(pages, `${where}: the seed fills fewer than two pages`).toBeGreaterThan(1);
+    for (const [step, name, last] of [
+      ["Next", "Next ›", pages],
+      ["Previous", "‹ Previous", 1],
+    ] as const) {
+      const button = pager.getByRole("button", { exact: true, name });
+      await button.focus();
+      for (let press = 1; press < pages; press++) {
+        const to = step === "Next" ? press + 1 : pages - press;
+        await page.keyboard.press("Enter");
+        await expect(pager, `${where}: Enter on ${step} did not reach page ${to}`).toContainText(
+          `Page ${to} of ${pages}`
+        );
+        await focusOn(where, `Enter on ${step} to page ${to}`, button, `"${name}"`);
+      }
+      await expect(button, `${where}: ${step} on page ${last} is still pressable`).toBeDisabled();
+    }
+
+    // A bar action: Take out of epic, held busy while its write is out and pressable by nobody
+    // meanwhile. The focus stays on it while it is busy, and once the write lands and the bar
+    // goes with the selection it hands the focus to the row marked.
+    const first = await page.locator("[data-issue-row]").first().getAttribute("data-issue-row");
+    const box = page.getByRole("checkbox", { exact: true, name: `Select ${first}` });
+    await box.focus();
+    await page.keyboard.press("Space");
+    await expect(box, `${where}: Space did not mark ${first}`).toBeChecked();
+    const bar = page.getByRole("toolbar", { name: "Selected issues" });
+    const takeOut = bar.getByRole("button", { exact: true, name: "Take out of epic" });
+    const writes = await holdIssueWrites();
+    await takeOut.focus();
+    await page.keyboard.press("Enter");
+    await expect(
+      takeOut,
+      `${where}: Take out of epic is pressable while its write is out`
+    ).toBeDisabled();
+    await focusOn(
+      where,
+      "Enter on Take out of epic, while its write is out",
+      takeOut,
+      `"Take out of epic"`
+    );
+    writes.release();
+    await expect(bar, `${where}: the write landed and left the bar up`).toHaveCount(0);
+    await focusOn(where, "Take out of epic's write landed", box, `"Select ${first}"`);
+    await writes.stop();
+
+    // A row's own Start next: held while its write is out, then gone once its issue starts next,
+    // while the row stays. The focus stays on it while it is busy, then goes to the control now
+    // at its place in the row, else the one before it, else the row itself.
+    const offering = page
+      .locator("[data-issue-row]")
+      .filter({ has: page.getByRole("button", { exact: true, name: "Start next" }) });
+    await expect(
+      offering.first(),
+      `${where}: no row offers a Start next of its own`
+    ).toBeAttached();
+    const queued = await offering.first().getAttribute("data-issue-row");
+    const queuedRow = page.locator(`[data-issue-row="${queued}"]`);
+    const startNext = queuedRow.getByRole("button", { exact: true, name: "Start next" });
+    const rank = await holdIssueWrites();
+    await startNext.focus();
+    await page.keyboard.press("Enter");
+    await expect(
+      startNext,
+      `${where}: ${queued}'s Start next is pressable while its write is out`
+    ).toBeDisabled();
+    await focusOn(
+      where,
+      `Enter on ${queued}'s Start next, while its write is out`,
+      startNext,
+      `${queued}'s "Start next"`
+    );
+    rank.release();
+    await expect(startNext, `${where}: Start next did not start ${queued} next`).toHaveCount(0);
+    await focusOn(
+      where,
+      `Start next started ${queued} next`,
+      () => queuedRow.evaluate((node) => node.contains(document.activeElement)),
+      "that row or a control in it"
+    );
+    await rank.stop();
+
+    // The search bar's Filter panel: a pick from its Project menu and from its Status menu, and
+    // an author taken, each take their own control away; the focus goes to the next control in
+    // the panel.
+    where = `search bar at ${at}`;
+    await page.locator("body").focus();
+    await page.keyboard.press("Control+k");
+    const palette = page.getByRole("dialog", { name: "Search" });
+    await expect(palette, `${where}: Control+K opened no search bar`).toBeVisible();
+    await control(controlRow(palette), CONTROL.panelTrigger).focus();
+    await page.keyboard.press("Enter");
+    const filters = page.getByRole("dialog", { name: "Filter" });
+    await expect(filters, `${where}: Enter on Filter opened no panel`).toBeVisible();
+    const author = filters.getByRole("searchbox", { name: "Author" });
+    const panelSteps = [
+      {
+        menu: "Project",
+        option: scene.project,
+        next: filters.getByRole("button", { exact: true, name: "Status" }),
+        nextName: "the Status menu",
+      },
+      { menu: "Status", option: "Todo", next: author, nextName: "the Author box" },
+    ] as const;
+    for (const { menu, option, next, nextName } of panelSteps) {
+      const opener = filters.getByRole("button", { exact: true, name: menu });
+      await opener.focus();
+      await page.keyboard.press("Enter");
+      const pick = page
+        .getByRole("listbox", { name: `${menu} options` })
+        .getByRole("option", { exact: true, name: option });
+      await pick.focus();
+      await page.keyboard.press("Enter");
+      await expect(
+        opener,
+        `${where}: Enter on the ${menu} menu's ${option} left the ${menu} menu drawn`
+      ).toHaveCount(0);
+      await focusOn(where, `Enter on the ${menu} menu's ${option}`, next, nextName);
+    }
+    await author.fill("alice");
+    await page.keyboard.press("Enter");
+    await expect(author, `${where}: Enter on the Author box left it drawn`).toHaveCount(0);
+    await focusOn(
+      where,
+      "Enter on the Author box",
+      filters.getByLabel("Updated since"),
+      "the Updated since box"
+    );
+  }
+  // A press that drops the focus onto the page sends a keyboard reader back to its first link,
+  // from which the control they were using is a walk through everything above it.
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): seven pages at two widths, one press of each page's own controls that disables,
+// takes away or draws again the control it was made on.
+// `@firefox` and `@webkit`: a focused control taken away fires no `focusout` in these engines,
+// so the rescue sees that loss only by watching the page (`playwright.config.ts`).
+test("no page-own press drops the keyboard focus onto the page, on any page of R2, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  // Seven pages at two widths: measured in an issue pod (two cores), one worker, the row took
+  // 61.1 s in Chromium. A press that loses the focus waits out the suite's 15 s expect timeout
+  // (`playwright.config.ts`) for the focus to come back, so the row names each press it lost
+  // while at most five of the 24 lose it, and ends at the budget, on the press it is waiting on,
+  // where more do.
+  test.setTimeout(150_000);
+  const issue = await seedAgents();
+  await seedDeliveryFixture();
+  await createIssueArtifact(issue, {
+    content: "# plan.md\n\nThe rollout plan.\n",
+    name: "plan.md",
+  });
+  const listFirst = await createIssue({ project: "CORE", title: "Epic member one" });
+  const listSecond = await createIssue({ project: "CORE", title: "Epic member two" });
+  const boardCard = await createIssue({ project: "CORE", title: "Card that changes lane" });
+  await patchIssue(boardCard.key, { priority: 0, status: "todo" });
+  const main = page.getByTestId("main-content");
+  const lost: string[] = [];
+  /** Reads where the focus went once a press settles, and keeps the ones it lost. */
+  const after = async (where: string, press: string) => {
+    await expect
+      .poll(async () => (await focusOutcome(page)).lost)
+      .toBe(false)
+      .catch(() => undefined);
+    // The poll above waited up to the expect timeout for the focus to land, so this reads where
+    // it settled.
+    const outcome = await focusOutcome(page);
+    if (outcome.lost) lost.push(`${where}: after ${press} the focus is on ${outcome.label}`);
+    else if (!outcome.inView) {
+      lost.push(`${where}: after ${press} the focused "${outcome.label}" is out of view`);
+    }
+  };
+  /** A question waiting on Alice, with two options to answer it by. */
+  const question = async (title: string) => {
+    const owner = await createIssue({ project: "CORE", title });
+    const ask = await createAsk(
+      owner.key,
+      { options: [{ label: "Yes" }, { label: "No" }], question: `${title}?` },
+      SURFACE_SESSION
+    );
+    return { askId: ask.id, issueKey: owner.key };
+  };
+
+  for (const [step, size] of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ].entries()) {
+    await page.setViewportSize(size);
+    const at = `${size.width}x${size.height}`;
+
+    // The Inbox. Each press takes its row, or its own control, off the list. A width of its own
+    // seeds each, since the first width's press used it up.
+    let where = `Inbox at ${at}`;
+    const threads = await createIssue({ project: "CORE", title: `Mirror lag at ${at}` });
+    const dismissed = await seedCommentThread(threads.key, `Lagging at ${at}?`, "Caught up.");
+    const keyed = await seedCommentThread(threads.key, `Replayed at ${at}?`, "It did.");
+    const assigned = await question(`Who takes the lease at ${at}`);
+    const snoozed = await question(`Rotate the keys at ${at}`);
+    const answered = await question(`Ship the mirror at ${at}`);
+
+    // A thread's Dismiss, by Enter: it holds the focus while its write is out, then goes with
+    // its row.
+    await page.goto("/");
+    const dismissedRow = inboxRow(page, replyRowId(dismissed));
+    await dismissedRow.locator("[data-inbox-dismiss]").focus();
+    await page.keyboard.press("Enter");
+    await expect(dismissedRow, `${where}: Enter on Dismiss kept its row`).toHaveCount(0);
+    await after(where, "Enter on a thread's Dismiss");
+
+    // `e` on the thread row in hand: the row holding the focus goes.
+    const keyedRow = inboxRow(page, replyRowId(keyed));
+    await selectRow(page, replyRowId(keyed));
+    await keyedRow.focus();
+    await page.keyboard.press("e");
+    await expect(keyedRow, `${where}: e kept its row`).toHaveCount(0);
+    await after(where, "e on a focused thread row");
+
+    // Assign to me: it holds the focus while its write is out, then goes once the issue is the
+    // reader's. Every project names a default assignee, so no seed makes a question nobody
+    // holds; every read of the Inbox is answered as if this one were until the press is made,
+    // so no refetch before it takes the button away, and the server's own reads after it.
+    let pressed = false;
+    const unassign = async (route: Route) => {
+      if (pressed) return route.fallback();
+      const response = await route.fetch();
+      const rows = (await response.json()) as { id: string }[];
+      await route.fulfill({
+        json: rows.map((row) =>
+          row.id === assigned.askId ? { ...row, waiting_on_person: null } : row
+        ),
+        response,
+      });
+    };
+    await page.route("**/api/v1/inbox", unassign);
+    await page.goto("/?assignee=everyone");
+    const assign = (await askControls(page, assigned.askId)).getByRole("button", {
+      name: `Assign ${assigned.issueKey} to me`,
+    });
+    await expect(assign, `${where}: the question draws no Assign to me`).toBeVisible();
+    await assign.focus();
+    pressed = true;
+    await page.keyboard.press("Enter");
+    await expect(assign, `${where}: Assign to me stayed once it landed`).toHaveCount(0);
+    await page.unroute("**/api/v1/inbox", unassign);
+    await after(where, "Enter on Assign to me");
+
+    // A Snooze pick from the keyboard: Enter on the Snooze opens its menu on Later today, and
+    // Enter writes it. The row moves into Later, which starts folded, and leaves the list once
+    // the snooze lands.
+    await page.goto("/");
+    const snooze = (await askControls(page, snoozed.askId)).getByRole("button", {
+      name: /^Snooze /,
+    });
+    await snooze.focus();
+    await page.keyboard.press("Enter");
+    await expect(
+      choiceOf(await menuOf(snooze), "Later today"),
+      `${where}: Enter on the Snooze opened no menu`
+    ).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(inboxRow(page, snoozed.askId), `${where}: the snooze kept its row`).toHaveCount(0);
+    await after(where, "a Snooze pick");
+
+    // An Answer on a card row: the answered row leaves the list. The Inbox page draws its
+    // questions as cards below the reading column's width; above it, the drawer does.
+    if (hasReadingPane(page)) {
+      where = `Inbox drawer at ${at}`;
+      await openIssuesTab(page, "CORE", "List");
+      await expect(page.locator("[data-issue-row]").first()).toBeVisible();
+      await peekTrigger(page).click();
+    } else {
+      await page.goto("/");
+    }
+    const card = (hasReadingPane(page) ? drawer(page) : main).getByTestId(`ask-${answered.askId}`);
+    await card.getByRole("radio", { name: "Yes" }).check();
+    await card.getByRole("button", { exact: true, name: "Answer" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(card, `${where}: Answer kept its card`).toHaveCount(0);
+    await after(where, "Enter on a card row's Answer");
+
+    // The project List's unanswered-epic notice: its Dismiss goes with it. The epic's create is
+    // answered as one Dispatch made and kept no answer for (`409 KEY_COMMITTED`), which is what
+    // draws the notice.
+    where = `project List at ${at}`;
+    const keyCommitted = async (route: Route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      return route.fulfill({
+        json: { code: IDEMPOTENCY_KEY_COMMITTED, error: "the key's write was made" },
+        status: 409,
+      });
+    };
+    await page.route("**/api/v1/issues", keyCommitted);
+    await openIssuesTab(page, "CORE", "List");
+    await main.getByRole("checkbox", { exact: true, name: `Select ${listFirst.key}` }).check();
+    await main.getByRole("checkbox", { exact: true, name: `Select ${listSecond.key}` }).check();
+    await page.getByRole("button", { exact: true, name: "New epic from these" }).click();
+    await page
+      .getByRole("dialog", { name: "Name the new epic" })
+      .getByRole("textbox", { name: "Name" })
+      .fill(`The unanswered epic at ${at}`);
+    await page.getByRole("button", { exact: true, name: "Create epic" }).click();
+    const epicNotice = main.getByText(/The selected issues have not been moved/);
+    await expect(epicNotice, `${where}: no unanswered-epic notice`).toBeVisible();
+    await epicNotice.getByRole("button", { exact: true, name: "Dismiss" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(epicNotice).toHaveCount(0);
+    await after(where, "Enter on the unanswered epic's Dismiss");
+    await page.unroute("**/api/v1/issues", keyCommitted);
+
+    // The project Board in swimlanes: a priority pick moves the card into another lane, where it
+    // is drawn again under a new parent. The pick is the keyboard's: Enter on the card's
+    // priority opens its menu, and the lane's digit writes it.
+    where = `project Board at ${at}`;
+    await openIssuesTab(page, "CORE", "Board");
+    const showLanes = page.getByRole("button", { name: "Show lanes" });
+    const hideLanes = page.getByRole("button", { name: "Hide lanes" });
+    const lanes = await settledState("the Board's lanes switch", [
+      ["shown", hideLanes],
+      ["hidden", showLanes],
+    ]);
+    if (lanes === "hidden") await showLanes.click();
+    await expect(hideLanes).toBeVisible();
+    const lane = `P${step + 1}`;
+    const priority = priorityTrigger(page, boardCard.key);
+    await priority.focus();
+    await page.keyboard.press("Enter");
+    await expect(
+      choiceOf(await menuOf(priority), `P${step}`),
+      `${where}: Enter on ${boardCard.key}'s priority opened no menu on its own P${step}`
+    ).toBeFocused();
+    await page.keyboard.press(String(step + 1));
+    await expect(
+      priorityTrigger(page.getByRole("region", { name: `${lane} lane` }), boardCard.key),
+      `${where}: the pick left ${boardCard.key} outside the ${lane} lane`
+    ).toHaveCount(1);
+    await after(where, `a pick of ${lane} on ${boardCard.key}`);
+
+    // The Agents page: the Unread replies pill goes once its press opens the row and reads them,
+    // and a recipient's ✕ chip goes with that recipient. A reply of the width's own keeps a pill.
+    where = `Agents page at ${at}`;
+    await seedAgentThread({
+      body: `How far along at ${at}?`,
+      delivery: "aside",
+      replies: ["Halfway."],
+      session: plannerSession,
+    });
+    await page.goto("/agents");
+    const pill = main.getByRole("button", { name: /^New repl.* from Planner$/ });
+    await pill.focus();
+    await page.keyboard.press("Enter");
+    await expect(pill, `${where}: the replies stayed unread`).toHaveCount(0);
+    await after(where, "Enter on the Unread replies pill");
+
+    const selectBoxes = main.getByRole("checkbox", { name: /^Select .* for broadcast$/ });
+    await selectBoxes.nth(0).check();
+    await selectBoxes.nth(1).check();
+    const chips = main.getByRole("list", { name: "Selected agents" }).getByRole("button");
+    await expect(chips).toHaveCount(2);
+    await chips.first().focus();
+    await page.keyboard.press("Enter");
+    await expect(chips).toHaveCount(1);
+    await after(where, "Enter on a recipient's ✕ chip");
+
+    // The Delivery page's Window: Apply on a custom range sets a new window.
+    where = `Delivery page at ${at}`;
+    await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
+    await main.getByLabel("To", { exact: true }).fill(`2024-06-0${step + 3}`);
+    await main.getByRole("button", { exact: true, name: "Apply" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(new RegExp(`to=2024-06-0${step + 4}`));
+    await after(where, "Enter on Apply over a custom range");
+
+    // The search bar: Retry under a search that failed goes once the search it retries lands.
+    // The bar sends two searches for the words typed (`useTieredSearch`): the keyword search
+    // (`keywords_only`), whose failure is the one shown with its Retry, and a slower one sent
+    // once typing rests, whose answer would take the bar's place. The slower search fails for the
+    // whole step, so nothing but Retry's own keyword search can take the failure away. The
+    // keyword search fails while the bar asks it twice more before it says it failed, and on
+    // until just before the press. The bar says so only once that search has failed three times:
+    // its first ask and the two retries a 5xx is given 500 ms apart (`queryRetry`,
+    // `queryRetryDelay`). TanStack holds a retry back while the page is hidden or offline
+    // (`canContinue` in query-core's retryer), and a refresh of a search with no answer asks it
+    // three times again (`fetchState`), so the step waits on the route's three answers, then
+    // reads what the bar says of them.
+    where = `search bar at ${at}`;
+    let failing = true;
+    let keywordFailures = 0;
+    const failSearch = (route: Route) => {
+      const keywords = new URL(route.request().url()).searchParams.has("keywords_only");
+      if (keywords && !failing) return route.fallback();
+      if (keywords) keywordFailures += 1;
+      return route.fulfill({ json: { code: "INTERNAL", error: "search is down" }, status: 500 });
+    };
+    await page.route(searchPath, failSearch);
+    await page.locator("body").focus();
+    await page.keyboard.press("Control+k");
+    const palette = page.getByRole("dialog", { name: "Search" });
+    await control(controlRow(palette), CONTROL.searchBox).fill("rollout");
+    await expect
+      .poll(() => keywordFailures, {
+        message: `${where}: the bar asked the failing keyword search fewer than three times`,
+      })
+      .toBeGreaterThanOrEqual(3);
+    const failure = palette.getByRole("alert").filter({ hasText: "Search failed." });
+    await expect(failure, `${where}: the search never failed`).toBeVisible();
+    const retry = failure.getByRole("button", { exact: true, name: "Retry" });
+    await expect(retry, `${where}: the failure offers no Retry`).toBeVisible();
+    await expect(retry, `${where}: Retry is held by a search still out`).toBeEnabled();
+    await retry.focus();
+    await expect(retry, `${where}: Retry did not take the focus`).toBeFocused();
+    failing = false;
+    await page.keyboard.press("Enter");
+    await expect(failure, `${where}: Retry left the failure up`).toHaveCount(0);
+    await after(where, "Enter on a failed search's Retry");
+    // `after` above waited for the focus to land somewhere, so this reads where it settled.
+    if (!(await palette.evaluate((node) => node.contains(document.activeElement)))) {
+      lost.push(`${where}: after Enter on Retry the focus is outside the search bar`);
+    }
+    await page.unroute(searchPath, failSearch);
+
+    // The Artifacts tab: a staged file's Upload holds the focus while the upload is out, and
+    // then goes with the staged row.
+    where = `Artifacts tab at ${at}`;
+    await page.goto(`/issues/${issue}/artifacts`);
+    await page.getByLabel("Upload artifact").setInputFiles({
+      buffer: Buffer.from(`# Notes at ${at}\n`),
+      mimeType: "text/markdown",
+      name: `notes-${size.width}.md`,
+    });
+    const summary = main.getByRole("textbox", { exact: true, name: "Summary (optional)" });
+    await expect(summary, `${where}: the file was not staged`).toBeVisible();
+    await main.getByRole("button", { exact: true, name: "Upload" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(summary, `${where}: the upload left the file staged`).toHaveCount(0);
+    await after(where, "Enter on a staged file's Upload");
+  }
+  // The architect's ruling ff1a60f5, on every page of R2: a press that disables, takes away or
+  // draws again the control it was made on hands the focus on, and never to the body.
+  expect(lost, lost.join("; ")).toEqual([]);
+});
+
+/** How many frames running a table's box or a panel holds still before its `scrollTop` is read
+ *  (`settledScrollTop`): a wheel step's scroll lands over frames, and the focus rescue answers a
+ *  loss a frame and a task after it, so a box pulled back shows within three. */
+const WHEEL_STILL_FRAMES = 3;
+
+/** The row holding the keyboard focus, by the value of `rowAttribute` it carries, or null where
+ *  the focus is in no such row. */
+async function focusedRowOf(page: Page, rowAttribute: string): Promise<string | null> {
+  return page.evaluate(
+    (attribute) =>
+      document.activeElement?.closest(`[${attribute}]`)?.getAttribute(attribute) ?? null,
+    rowAttribute
+  );
+}
+
+// SLOW(>=2s): 120 issues and 120 pull requests seeded, and two tables each scrolled by 25 wheel
+// steps with a settled read after each.
+// `@firefox` and `@webkit`: a focused row a virtual table takes away fires no `focusout` in these
+// engines, so the page's focus rescue sees that loss only by watching the page, and each engine
+// lands a wheel step's scroll over its own frames.
+// INFRA-3135's review round 1 (thread PRRT_kwDORFy7ds63p6y_): with a row's checkbox focused, 20
+// wheel steps over a virtual table pulled its box back from 690 px to 24 px and moved the focus
+// onto another row. The reader's scroll is theirs: the box goes where the wheel takes it. The row
+// they picked leaves with the drawn window and takes the focus with it, as it did before the
+// rescue, and nothing hands the focus to a row they did not pick, so `x` then marks none.
+test("a table that holds the keyboard focus scrolls freely, and the focus moves to no row the reader did not pick @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ height: 900, width: 1440 });
+  const main = page.getByTestId("main-content");
+
+  /** Sends 25 wheel steps of 100 px with the pointer over `box`, reads its `scrollTop` once each
+   *  has settled, and answers those reads with what went wrong: a read more than 1 px above the
+   *  one before it, the focus in any row but `picked`, and a box that ended less than 1,500 px
+   *  below where it started. It answers where the focus ended too. */
+  const wheelOver = async (box: Locator, rowAttribute: string, picked: string) => {
+    await box.scrollIntoViewIfNeeded();
+    // `scrollIntoViewIfNeeded` waited above for the box to be visible and stable, so it has a box.
+    const area = await box.boundingBox();
+    if (area === null) throw new Error("the table's box is not on screen");
+    // Near the box's left edge, in the first cell's padding, where no row draws a link: a pointer
+    // resting on a row's link opens that link's hover card, which takes the wheel steps after it
+    // for itself. Measured in WebKit with the pointer at the box's middle: the box stopped at
+    // 400 px for the last 20 steps.
+    await page.mouse.move(area.x + 4, area.y + area.height / 2);
+    const readings = [await settledScrollTop(box, WHEEL_STILL_FRAMES)];
+    const wrong: string[] = [];
+    for (let step = 1; step <= 25; step++) {
+      await page.mouse.wheel(0, 100);
+      // `settledScrollTop` waits until the box held still for three frames: that is the reading.
+      const top = await settledScrollTop(box, WHEEL_STILL_FRAMES);
+      const before = readings.at(-1) ?? 0;
+      if (top < before - 1) wrong.push(`step ${step} pulled the box back from ${before} to ${top}`);
+      readings.push(top);
+      // Read after the box held still for three frames, by which the focus rescue has answered a
+      // loss (`WHEEL_STILL_FRAMES`), so the focus read is where the step left it.
+      const focused = await focusedRowOf(page, rowAttribute);
+      if (focused !== null && focused !== picked) {
+        wrong.push(`after step ${step} the focus is in ${focused}`);
+      }
+    }
+    const moved = (readings.at(-1) ?? 0) - (readings[0] ?? 0);
+    if (moved < 1_500) wrong.push(`the box ended ${moved} px below where it started`);
+    const ended = await page.evaluate(() => document.activeElement?.tagName ?? "nothing");
+    return { ended, readings, wrong };
+  };
+
+  // The project List, on one page of 120 issues, far more than its box draws. Each title differs
+  // from every other in a word of its own, since the server refuses a near copy of a title it
+  // holds (409 POSSIBLE_DUPLICATE).
+  await createProject({ key: "CORE", name: "Core" });
+  for (let batch = 0; batch < 120; batch += 10) {
+    await Promise.all(
+      Array.from({ length: 10 }, (_, offset) =>
+        createIssue({ project: "CORE", title: `Scrolled row ${batch + offset + 1}` })
+      )
+    );
+  }
+  await openIssuesTab(page, "CORE", "List");
+  const pager = control(main, CONTROL.pager);
+  await expect(pager).toContainText("120 of 120 issues");
+  await pager.getByRole("combobox").selectOption("250");
+  await expect(page).toHaveURL(/[?&]size=250/);
+  const listBox = control(main, CONTROL.dataTable);
+  const listRows = listBox.locator("[data-issue-row]");
+  // `getAttribute` waits for the third row to attach, and a row carries its key from its first
+  // render, so the key read is that row's own.
+  const picked = (await listRows.nth(2).getAttribute("data-issue-row")) ?? "";
+  const pickedBox = listBox.getByRole("checkbox", { exact: true, name: `Select ${picked}` });
+  await pickedBox.click();
+  const bar = control(main, CONTROL.selectionBar);
+  await expect(bar).toContainText("1 selected");
+  expect(await focusedRowOf(page, "data-issue-row"), "the click left the focus in no row").toBe(
+    picked
+  );
+  const list = await wheelOver(listBox, "data-issue-row", picked);
+  console.log(
+    `project List, ${picked}'s checkbox clicked: ${list.readings.join(" ")}; the focus ends on ${list.ended}`
+  );
+  expect(list.wrong, `project List: ${list.wrong.join("; ")}`).toEqual([]);
+  // `x` marks no row the reader did not pick: the row they marked is still the one marked, and
+  // the only one, once the box is back at its top.
+  await page.keyboard.press("x");
+  await listBox.evaluate((node) => {
+    node.scrollTop = 0;
+  });
+  await expect(pickedBox).toBeChecked();
+  await expect(bar).toContainText("1 selected");
+
+  // The Delivery list, over the delivery fixture and 120 more pull requests merged in its
+  // window. A press on one of its rows opens that row's details, so the row takes the focus as
+  // its keys give it one. It marks nothing, so its scroll and its focus are all there is to read.
+  await seedDeliveryFixture();
+  await sql(
+    `INSERT INTO delivery_pull_requests (
+       repo, number, title, url, author, created_at, merged_at, additions, deletions, rework, issue_key, sessions, partial
+     )
+     SELECT 'acme/widgets', 100 + n, 'feat: scrolled widget ' || n,
+            'https://github.com/acme/widgets/pull/' || (100 + n), 'octocat',
+            timestamptz '2024-06-01T04:00:00Z' + n * interval '1 minute',
+            timestamptz '2024-06-01T06:00:00Z' + n * interval '1 minute',
+            1, 1, false, null, ARRAY[]::text[], false
+       FROM generate_series(1, 120) AS n`
+  );
+  await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
+  const prBox = control(main, CONTROL.dataTable);
+  const pickedRow = prBox.locator("tbody tr[data-pr-row]").nth(2);
+  await expect(pickedRow).toBeVisible();
+  const pickedPR = (await pickedRow.getAttribute("data-pr-row")) ?? "";
+  await pickedRow.focus();
+  const delivery = await wheelOver(prBox, "data-pr-row", pickedPR);
+  console.log(
+    `Delivery list, ${pickedPR} focused: ${delivery.readings.join(" ")}; the focus ends on ${delivery.ended}`
+  );
+  expect(delivery.wrong, `Delivery list: ${delivery.wrong.join("; ")}`).toEqual([]);
+});
+
+// INFRA-3135's review round 1 (threads PRRT_kwDORFy7ds63p6zI and PRRT_kwDORFy7ds63p6zJ): a panel
+// is portalled to the end of the body, outside the dialog it is opened in, so Tab from its last
+// control went past the end of the page and on to the page behind the search bar; and after
+// Shift+Tab out of the search bar's Project list every Escape was refused while the list stood
+// open, so the bar could not be closed from the keyboard. And a list of the shared list's single
+// pick closed by Tab or Shift+Tab out of its text box leaves the focus on its trigger, on a page
+// and in a dialog (round 12). `@firefox` and `@webkit`: each engine keeps a Tab order of its own -
+// a stop for each field of a date box, one for a radio group - and the panel follows the engine's,
+// the clause of `playwright.config.ts` on the engine's own Tab order; and each engine takes the
+// focus out of a text box the close removes in its own way, the clause on how the engine takes
+// the focus out of one on Tab. The row reads where the focus ends, not which code put it there:
+// with the list's own hand-off to its trigger taken out (`focusLost` in `MultiSelect.tsx`'s close
+// effect read as a focus on the body), the page's rescue still put the focus on the trigger in
+// Firefox and WebKit, and this row passed in both (2026-11-18).
+test("Tab and Escape never leave a panel for the page behind it, in a dialog or on a page @firefox @webkit", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  const { issueKey } = await seedAsk("Which lease holds?");
+  const main = page.getByTestId("main-content");
+
+  /** Focuses `last`, the last control of its panel, and presses Tab until the focus has left it:
+   *  a date box holds a stop for each of its fields, as many as the engine draws. The control is
+   *  held by its handle, since the press that closes the panel takes it out of the page. */
+  const tabOutOf = async (last: Locator) => {
+    await last.focus();
+    // `focus` above waited for the control to attach and focused it, so the handle names it.
+    const handle = await last.elementHandle();
+    for (let press = 0; press < 5; press++) {
+      await page.keyboard.press("Tab");
+      // A Tab moves the focus while the browser handles the press, so the instant after it shows
+      // whether the focus has left the control.
+      if (!(await handle?.evaluate((node) => node === document.activeElement))) break;
+    }
+    await handle?.dispose();
+  };
+
+  // On a page: the Inbox's Filter panel, whose last control is the Assignee filter.
+  await page.goto("/");
+  const inboxTrigger = control(controlRow(main), CONTROL.panelTrigger);
+  const inboxPanel = await openFilterPanel(page, main);
+  const assignee = inboxPanel.getByRole("button", { name: "Filter by assignee" });
+  await tabOutOf(assignee);
+  await expect(
+    inboxPanel,
+    "Inbox: Tab from the last control left the Filter panel open"
+  ).toHaveCount(0);
+  await expect(inboxTrigger, "Inbox: Tab from the panel's last control").toBeFocused();
+
+  // In a dialog: the Inbox drawer's View menu, whose last control is its last section's choice.
+  await openIssuesTab(page, "CORE", "List");
+  await expect(page.locator("[data-issue-row]").first()).toBeVisible();
+  await peekTrigger(page).click();
+  const viewTrigger = control(controlRow(drawer(page)), CONTROL.displayMenu);
+  await viewTrigger.click();
+  const viewMenu = page.getByRole("dialog", { name: "View" });
+  await expect(viewMenu).toHaveCount(1);
+  const lastChoice = viewMenu.getByRole("group").last().locator('input[type="radio"]:checked');
+  await tabOutOf(lastChoice);
+  await expect(
+    viewMenu,
+    "Inbox drawer: Tab from the last choice left the View menu open"
+  ).toHaveCount(0);
+  await expect(viewTrigger, "Inbox drawer: Tab from the View menu's last choice").toBeFocused();
+  await expect(drawer(page)).toBeVisible();
+
+  // In a dialog again: the search bar's Filter panel, whose last control is Updated since. The
+  // key waits for the Inbox's own search box: pressed as the page loads, before the shell has
+  // registered its keys, it opened nothing in WebKit (full lane 44466817714, passed on retry).
+  await page.goto("/");
+  await expect(page.getByRole("searchbox", { name: "Search asks" })).toBeVisible();
+  await page.locator("body").focus();
+  await page.keyboard.press("Control+k");
+  const palette = page.getByRole("dialog", { name: "Search" });
+  await expect(palette).toBeVisible();
+  const barTrigger = control(controlRow(palette), CONTROL.panelTrigger);
+  const barPanel = await openFilterPanel(page, palette);
+  const since = barPanel.getByLabel("Updated since");
+  await tabOutOf(since);
+  await expect(
+    barPanel,
+    "search bar: Tab from Updated since left the Filter panel open"
+  ).toHaveCount(0);
+  await expect(barTrigger, "search bar: Tab from the Filter panel's last control").toBeFocused();
+  await expect(palette).toBeVisible();
+
+  // Filter, then Project, then Shift+Tab out of the list: three presses of Escape close what is
+  // left, the search bar last.
+  await barTrigger.click();
+  const barProject = listTrigger(page.getByRole("dialog", { name: "Filter" }), "Project");
+  await barProject.click();
+  await page.getByRole("combobox", { exact: true, name: "Search projects" }).focus();
+  await page.keyboard.press("Shift+Tab");
+  await expect(
+    barProject,
+    "search bar: Shift+Tab out of the Project list's text box"
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await expect(
+    palette,
+    "the search bar is still open after Shift+Tab and three Escapes"
+  ).toHaveCount(0);
+
+  // On a page: the issue header's Assignee list, which Tab out of its text box closes onto its
+  // trigger, the badge.
+  await page.goto(`/issues/${issueKey}`);
+  const assigneeTrigger = listTrigger(page, `Assignee of ${issueKey}`);
+  await assigneeTrigger.click();
+  const assigneeBox = page.getByRole("combobox", { exact: true, name: "Search people" });
+  await expect(assigneeBox).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(assigneeBox, "issue header: Tab left the Assignee list open").toHaveCount(0);
+  await expect(
+    assigneeTrigger,
+    "issue header: Tab out of the Assignee list's text box"
+  ).toBeFocused();
+});
+
+// SLOW(>=2s): the Delivery page opened four times, in each view, at two widths.
+// INFRA-3135's review round 1 (threads PRRT_kwDORFy7ds63p6zB and PRRT_kwDORFy7ds63p6zE): on the
+// Timeline, the view the page opens on, the row's panel held four of the nine facets and the row
+// drew no chip or count for the other five, which `/delivery?author=x` still narrowed by; a
+// value picked on a column's header in the List drew no chip in the row; and the List's arrows
+// were answered while the list held any row, so ArrowDown with the focus on the page's body
+// moved the focus into the list instead of scrolling the page.
+test("the Delivery page reaches every facet from its row, in both views, and its list answers keys only on a focused row", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  // The delivery fixture with its reconcile verdict pinned, as `seedRealStackSurfaces` pins it,
+  // and one more pull request merged in its window: another author's, written by a session, so
+  // taking the Author chip off gives a pull request back and the Session facet has a value.
+  await seedDeliveryFixture();
+  await sql(
+    `UPDATE delivery_settings
+       SET last_error = 'the GitHub App is not installed on acme/widgets'
+     WHERE singleton`,
+    `INSERT INTO delivery_pull_requests (
+       repo, number, title, url, author, created_at, merged_at, additions, deletions, rework, issue_key, sessions, partial
+     ) VALUES
+       ('acme/widgets', 3, 'feat: a hubot widget', 'https://github.com/acme/widgets/pull/3', 'hubot',
+        '2024-06-01T04:00:00Z', '2024-06-01T05:00:00Z', 2, 1, false, null, ARRAY['e2e-delivery-row'], false)`
+  );
+  const main = page.getByTestId("main-content");
+  const row = controlRow(main);
+  const trigger = control(row, CONTROL.panelTrigger);
+  const shown = main.getByText(/^\d+ PRs in current filter\/window$/);
+
+  // A link naming one of the five column facets, on the Timeline: its chip and its count are in
+  // the row, and the chip takes it off.
+  await page.goto(`/delivery?${DELIVERY_WINDOW}&author=octocat`);
+  await expect(main.getByRole("img", { name: /^Delivery timeline/ })).toBeVisible();
+  await expect(shown).toHaveText("2 PRs in current filter/window");
+  const octocat = row.getByRole("button", { exact: true, name: "Remove Author: octocat filter" });
+  await expect(octocat, "the Timeline draws no chip for ?author=").toBeVisible();
+  await expect(trigger).toHaveText("Filter · 1");
+  await octocat.click();
+  await expect(shown).toHaveText("3 PRs in current filter/window");
+  await expect(page).not.toHaveURL(/[?&]author=/);
+  await expect(trigger).toHaveText("Filter · 0");
+
+  // No column header is drawn on the Timeline, so its panel holds all nine.
+  const panel = await openFilterPanel(page, main);
+  for (const facet of [
+    "Repository",
+    "Session",
+    "Priority",
+    "Component",
+    "Issue",
+    "Parent agent",
+    "Author",
+    "Rework",
+    "Deployed",
+  ]) {
+    await expect(
+      panel.getByRole("button", { name: new RegExp(`^${facet}: `) }),
+      `the Timeline's panel offers no ${facet}`
+    ).toHaveCount(1);
+  }
+  await closeControlPanel(main);
+
+  // In the List, Author is filtered on its column's header, and what it picks is a chip of the
+  // row, whose press takes it off the header too.
+  await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
+  const prs = page.locator("tbody tr[data-pr-row]");
+  await expect(prs).toHaveCount(3);
+  await main.getByRole("button", { exact: true, name: "Filter Author" }).click();
+  await page
+    .getByRole("listbox", { name: "Author options" })
+    .getByRole("option", { name: /^hubot/ })
+    .click();
+  await page.keyboard.press("Escape");
+  await expect(prs).toHaveCount(1);
+  const hubot = row.getByRole("button", { exact: true, name: "Remove Author: hubot filter" });
+  await expect(hubot, "the List draws no chip for its Author column's filter").toBeVisible();
+  await expect(trigger).toHaveText("Filter · 1");
+  await hubot.click();
+  await expect(prs).toHaveCount(3);
+  await expect(main.getByRole("button", { exact: true, name: "Filter Author" })).toBeVisible();
+
+  // Below `xl` the list's box is three quarters of the window under the page's measures, so the
+  // page scrolls. With the focus on the body, ArrowDown is the page's: it scrolls, and no row
+  // takes the focus.
+  await page.setViewportSize({ height: 768, width: 1024 });
+  await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
+  await expect(prs).toHaveCount(3);
+  await leaveFocus(page);
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  await page.keyboard.press("ArrowDown");
+  expect(
+    await focusedRowOf(page, "data-pr-row"),
+    "ArrowDown with the focus on the body put it in a row"
+  ).toBeNull();
+  await expect
+    .poll(() => page.evaluate(() => window.scrollY), {
+      message: "ArrowDown with the focus on the body did not scroll the page",
+    })
+    .toBeGreaterThan(0);
+});
+
+// INFRA-3135's review round 1 (thread PRRT_kwDORFy7ds63p6zU): Blocked on you counts the whole
+// inbox, and its press kept a field narrowing and the search text on, so the list under it held
+// fewer asks than the number it showed. The press takes both off, as it takes the assignee off,
+// and keeps the sort and the grouping.
+test("with a field narrowing and a search on, a press of Blocked on you lists exactly the number it shows", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await createProject({ key: "CORE", name: "Core" });
+  // Three asks waiting on Alice. Only the first is P0, and only its question holds the word the
+  // address searches for.
+  const mine: string[] = [];
+  for (const title of ["Ledger rollout", "Mirror retries", "Clock drift"]) {
+    const issue = await createIssue({ project: "CORE", title });
+    if (mine.length === 0) await patchIssue(issue.key, { priority: 0 });
+    const ask = await createAsk(issue.key, { question: `${title}?` }, SURFACE_SESSION);
+    mine.push(ask.id);
+  }
+
+  await page.goto("/?priority=P0&q=ledger&sort=urgency&group=waiting-on");
+  const rows = page.locator("[data-inbox-row]");
+  await expect(rows).toHaveCount(1);
+  const blocked = page.locator("[data-inbox-needs-you]");
+  await expect(blocked).toHaveText("Blocked on you · 3");
+
+  await blocked.click();
+  await expect(page).toHaveURL(/[?&]section=needs-you(&|$)/);
+  await expect(page, "the press left a field narrowing or the search on").not.toHaveURL(
+    /[?&](priority|q)=/
+  );
+  await expect(page).toHaveURL(/[?&]sort=urgency(&|$)/);
+  await expect(page).toHaveURL(/[?&]group=waiting-on(&|$)/);
+  await expect(page.getByRole("searchbox", { name: "Search asks" })).toHaveValue("");
+  await expect(
+    rows,
+    "the list holds a different number of asks than the control shows"
+  ).toHaveCount(3);
+  expect([...(await drawnIds(page))].sort()).toEqual([...mine].sort());
+});
+
+// SLOW(>=2s): an ask seeded, eight wheel steps over the panel, each scroll read once it has held
+// still, and a Tab through every control the panel holds (3.8 s in Chromium, 4.6 s in Firefox,
+// 5.8 s in WebKit).
+// INFRA-3135's review round 1, R10: a panel with no room for itself on either side of its
+// trigger is cut to the roomier side. To decide the side, the placement took the cut off the
+// panel and read its height, which laid it out at its full height and clamped its own scroll to
+// that layout's, after every render and at every scroll, the panel's own included: the wheel's
+// scroll was pushed back at each step, and a Tab onto a control below the cut scrolled it into
+// view only for the clamp to hide it again. `@firefox` and `@webkit`: each engine lays out a
+// scroll box, lands a wheel step's scroll and clamps its scroll its own way, the clause of
+// `playwright.config.ts` on how the engine lays out a scroll box.
+test("a filter panel cut to a short window scrolls to its last control @firefox @webkit", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 340, width: 1440 });
+  await seedAsk("Which lease holds?");
+  await page.goto("/");
+  const main = page.getByTestId("main-content");
+  const trigger = control(controlRow(main), CONTROL.panelTrigger);
+  const panel = await openFilterPanel(page, main);
+  const measured = await panel.evaluate((node) => ({
+    client: node.clientHeight,
+    cut: (node as HTMLElement).style.maxHeight,
+    holds: node.scrollHeight,
+  }));
+  const under = await trigger.boundingBox();
+  console.log(
+    `Filter panel at 1440x340, under a trigger at ${under?.y}-${(under?.y ?? 0) + (under?.height ?? 0)} px: cut to ${measured.cut || "nothing"}, ${measured.client} px shown of ${measured.holds}`
+  );
+  expect(measured.cut, "the window is not short enough to cut the Filter panel").not.toBe("");
+  const wrong: string[] = [];
+
+  await panel.scrollIntoViewIfNeeded();
+  // `scrollIntoViewIfNeeded` waited above for the panel to be visible and stable, so it has a box.
+  const area = await panel.boundingBox();
+  if (area === null) throw new Error("the Filter panel is not on screen");
+  await page.mouse.move(area.x + area.width / 2, area.y + area.height / 2);
+  // The wheel over the panel, more steps than it has room to move.
+  for (let step = 0; step < 8; step++) await page.mouse.wheel(0, 100);
+  // `settledScrollTop` waits until the panel held still for three frames: that is the reading.
+  const top = await settledScrollTop(panel, WHEEL_STILL_FRAMES);
+  // Read after the panel held still above, so its layout and the room it scrolls are settled.
+  const end = await panel.evaluate((node) => node.scrollHeight - node.clientHeight);
+  if (top < end - 1) wrong.push(`the wheel left the panel at ${top} px of the ${end} it scrolls`);
+
+  // Tab from the control the panel opened on to its last, the Assignee filter, which is then in
+  // sight inside the panel. The control is held by its handle, in case a Tab closes the panel;
+  // `elementHandle` waits for the filter to attach in the panel opened above.
+  const last = await panel.getByRole("button", { name: "Filter by assignee" }).elementHandle();
+  let reached = false;
+  for (let press = 0; press < 30 && !reached; press++) {
+    await page.keyboard.press("Tab");
+    // A Tab moves the focus while the browser handles the press, so the instant after it shows
+    // where the focus went.
+    reached = await last.evaluate((node) => node === document.activeElement);
+  }
+  if (!reached) wrong.push("Tab never reached the Assignee filter");
+  await settledScrollTop(panel, WHEEL_STILL_FRAMES);
+  // Read after the panel's scroll held still for three frames above, so this is where it settled.
+  const shown = await last.evaluate((node) => {
+    const own = node.getBoundingClientRect();
+    const box = node.closest('[role="dialog"]')?.getBoundingClientRect();
+    return {
+      inside: box !== undefined && own.top >= box.top - 1 && own.bottom <= box.bottom + 1,
+      place: `${Math.round(own.top)}-${Math.round(own.bottom)} px in a panel at ${Math.round(box?.top ?? 0)}-${Math.round(box?.bottom ?? 0)} px`,
+    };
+  });
+  if (reached && !shown.inside)
+    wrong.push(`the focused Assignee filter is out of sight: ${shown.place}`);
+  await last.dispose();
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// INFRA-3135's review round 1, F2 item 1 (the architect's chip rule, restated 2026-11-15): a
+// column filter showed only on its column's header, and the columns menu hides any column, so a
+// reader could hide the column a link had narrowed by and be left with a list narrowed by a
+// filter they could neither see nor take off. Every narrowing that is on is a chip of the row,
+// whatever set it, and the row's trigger counts it.
+test("a column filter is visible and removable from the row even while its column is hidden", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  for (const [title, label] of [
+    ["Ledger rollout", "frontend"],
+    ["Mirror retries", "backend"],
+  ] as const) {
+    const issue = await createIssue({ project: "CORE", title });
+    await patchIssue(issue.key, { labels: [label] });
+  }
+  const main = page.getByTestId("main-content");
+  const row = controlRow(main);
+  const trigger = control(row, CONTROL.panelTrigger);
+  const rows = page.locator("[data-issue-row]");
+  const chip = row.getByRole("button", { exact: true, name: "Remove Label: frontend filter" });
+
+  // A link narrowing by a label: one row, one chip, and the trigger counts it.
+  await openIssuesTab(page, "CORE", "List");
+  await page.goto("/projects/CORE/issues?label=frontend");
+  await expect(rows).toHaveCount(1);
+  await expect(chip).toBeVisible();
+  await expect(trigger).toHaveText("Filters · 1");
+
+  // The reader hides the Labels column: its header, and the filter control on it, leave the
+  // page, and the narrowing stays on.
+  await control(row, CONTROL.columnsMenu).click();
+  await page.getByRole("checkbox", { exact: true, name: "Labels" }).click();
+  await page.keyboard.press("Escape");
+  await expect(main.getByRole("button", { name: /^Filter Labels/ })).toHaveCount(0);
+  await expect(rows).toHaveCount(1);
+
+  // The chip is the one place that narrowing is now, and its press takes it off.
+  await expect(chip, "no chip is left for a filter whose column is hidden").toBeVisible();
+  await expect(trigger).toHaveText("Filters · 1");
+  await chip.click();
+  await expect(rows).toHaveCount(2);
+  await expect(page).not.toHaveURL(/[?&]label=/);
+  await expect(trigger).toHaveText("Filters · 0");
+  await expect(chip).toHaveCount(0);
+});
+
+// SLOW(>=2s): 60 issues seeded, the List opened, a middle row marked and unmarked and then closed
+// by a second person through the API.
+// INFRA-3135's review round 1, follow-up F4 (thread PRRT_kwDORFy7ds63p6y_): a focused row a live
+// update removes hands the focus to no other row and scrolls nothing, though the reader's last
+// press was on that row: a press is the cause only of the update that answers it, and the
+// reader's two clicks on the row's checkbox have been answered, the selection bar drawn and gone
+// again, before the second person's close arrives. `@firefox` and `@webkit`: a focused row taken
+// away fires no `focusout` in these engines, so the rescue sees the loss only by watching the
+// page, the clause of `playwright.config.ts` on a focused control taken away.
+test("a row a live update removes while it holds the focus hands the focus to no other row and scrolls nothing @firefox @webkit", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await createProject({ key: "CORE", name: "Core" });
+  // More rows than the box draws, each title its own word, since the server refuses a near copy of
+  // a title it holds (409 POSSIBLE_DUPLICATE).
+  for (let batch = 0; batch < 60; batch += 10) {
+    await Promise.all(
+      Array.from({ length: 10 }, (_, offset) =>
+        createIssue({ project: "CORE", title: `Removed row ${batch + offset + 1}` })
+      )
+    );
+  }
+  // The List opens on the open statuses and not done (`openIssueStatuses`), so closing an issue as
+  // another person takes its row off this view; the List view is opened first, since a project
+  // opens on whichever view the reader last left.
+  await openIssuesTab(page, "CORE", "List");
+  const main = page.getByTestId("main-content");
+  const listBox = control(main, CONTROL.dataTable);
+  await expect(listBox.locator("[data-issue-row]").first()).toBeVisible();
+  // Scroll the box so a row in the middle is in sight, and pick it.
+  await listBox.evaluate((node) => {
+    node.scrollTop = Math.round(node.scrollHeight / 2);
+  });
+  await settledScrollTop(listBox, WHEEL_STILL_FRAMES);
+  // Read after the box held still for three frames above, so the rows in sight are settled.
+  const picked = await listBox.evaluate((node) => {
+    const within = node.getBoundingClientRect();
+    const mid = [...node.querySelectorAll<HTMLElement>("[data-issue-row]")].find((row) => {
+      const box = row.getBoundingClientRect();
+      return box.top >= within.top + 40 && box.bottom <= within.bottom - 40;
+    });
+    return mid?.dataset.issueRow ?? null;
+  });
+  if (picked === null) throw new Error("no row sits wholly in the middle of the box");
+  const pickedBox = listBox.getByRole("checkbox", { exact: true, name: `Select ${picked}` });
+  const bar = control(main, CONTROL.selectionBar);
+  // The reader presses in the row itself: a click on its checkbox marks it, and a second click
+  // unmarks it. WebKit leaves a clicked checkbox unfocused, so the focus is then put on it with no
+  // press, which leaves it there in every engine alike.
+  await pickedBox.click();
+  await expect(bar).toBeVisible();
+  await pickedBox.click();
+  await pickedBox.evaluate((node) => (node as HTMLElement).focus({ preventScroll: true }));
+  await expect(pickedBox).toBeFocused();
+  // The second click's update is drawn - the selection bar gone - before the close is sent, so
+  // that press has been answered by the time the live update takes the row away.
+  await expect(bar).toHaveCount(0);
+  const beforeTop = await listBox.evaluate((node) => node.scrollTop);
+  const beforeY = await page.evaluate(() => window.scrollY);
+  // A second person closes the issue through the API; the live update takes its row off the view.
+  await patchIssue(picked, { status: "done" }, { login: "bob" });
+  await expect(page.locator(`[data-issue-row="${picked}"]`)).toHaveCount(0);
+  // The focus is in no row, and nothing scrolled.
+  const inRow = await page.evaluate(
+    () => document.activeElement?.closest("[data-issue-row]") != null
+  );
+  const afterTop = await listBox.evaluate((node) => node.scrollTop);
+  const afterY = await page.evaluate(() => window.scrollY);
+  expect(inRow, "the focus landed in a row the reader did not pick").toBe(false);
+  expect(Math.abs(afterTop - beforeTop), "the box scrolled").toBeLessThanOrEqual(1);
+  expect(Math.abs(afterY - beforeY), "the window scrolled").toBeLessThanOrEqual(1);
+  // `x` marks nothing: no row holds the focus for it to act on, so no bar appears.
+  await page.keyboard.press("x");
+  await expect(bar).toHaveCount(0);
+});
+
+// SLOW(>=2s): two surfaces, each with three questions seeded and one withdrawn by its asker.
+// INFRA-3135, round 17 (the tester's, measured in builds Job infra-3135-r17h2 at e4d8b3b1): the
+// reader is typing an answer in the Inbox's list layout - the Inbox page below 1280 px, and the
+// drawer at any width - when the asker withdraws the question. The card swaps to its record
+// under them, a loss they did not cause, and the record draws a Reply box where the answer form
+// was. At e4d8b3b1 Chromium leaves the focus in that Reply box, in three runs of three, so the
+// reader's next `j` is typed into it. At 90fa8211 and at the merge base bacd5d7e the focus goes to
+// the question's row and `j` steps to the next row, in Chromium, Firefox and WebKit alike. The
+// architect's rule of 2026-11-19 (13:0xZ): a loss the reader did not cause never lands in a field
+// that takes typed text. A focused control taken away, for which Firefox and WebKit fire no
+// `focusout`: the clause of the `webkit` and `firefox` projects that names the page-own focus
+// row (e2e/playwright.config.ts).
+test("an ask withdrawn while the reader types its answer in the Inbox's list takes none of their next keys as text @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  const typed = "Only the last lease, on a cold start.";
+  await createProject({ key: "CORE", name: "Core" });
+  const wrong: string[] = [];
+  for (const surface of ["page at 390x664", "drawer at 1440x900"] as const) {
+    const ids: string[] = [];
+    for (const title of ["Keep going?", "Ship it?", "Describe the lease format."]) {
+      const issue = await createIssue({ project: "CORE", title: `${surface}: ${title}` });
+      await patchIssue(issue.key, { assignee: "alice" });
+      ids.push((await createAsk(issue.key, { question: title }, SURFACE_SESSION)).id);
+    }
+    // The Inbox lists newest first: the question the reader answers is the first row.
+    const withdrawn = ids[2] as string;
+    let root: Page | Locator = page;
+    if (surface === "page at 390x664") {
+      await page.setViewportSize({ height: 664, width: 390 });
+      await page.goto("/");
+    } else {
+      await page.setViewportSize({ height: 900, width: 1440 });
+      await page.goto("/settings");
+      await expect(page.getByRole("heading", { exact: true, name: "Agent tokens" })).toBeVisible();
+      await page.keyboard.press("i");
+      root = drawer(page);
+      await expect(root).toBeVisible();
+    }
+    const card = root.getByTestId(`ask-${withdrawn}`);
+    const answer = card.locator("[data-ask-answer]");
+    await answer.click();
+    await answer.fill(typed);
+    await expect(answer).toBeFocused();
+    await resolveAsk(
+      withdrawn,
+      { kind: "retracted", reason: "Answered on another issue." },
+      SURFACE_SESSION
+    );
+    // The card shows its closed state, or its row has gone from the list.
+    await expect
+      .poll(() =>
+        page.evaluate((id) => {
+          const shown = document.querySelector(`[data-testid="ask-${id}"]`);
+          return (
+            shown === null || shown.querySelector('[data-testid="ask-resolution-badge"]') !== null
+          );
+        }, withdrawn)
+      )
+      .toBe(true);
+    await expect(answer).toHaveCount(0);
+    // The card's own hand-off runs in the commit, the page's rescue a frame and a task after the
+    // loss, and a component's focus effect after its commit: all of them are done by now.
+    await nextFrames(page);
+    await nextFrames(page);
+    // One read is the answer: every hand-off of the loss has run, and nothing else moves the focus.
+    const holder = await page.evaluate(() => {
+      const active = document.activeElement;
+      const takesText =
+        active instanceof HTMLTextAreaElement ||
+        (active instanceof HTMLElement && active.isContentEditable) ||
+        (active instanceof HTMLInputElement &&
+          ["", "text", "search", "email", "url", "tel", "number", "password"].includes(
+            active.getAttribute("type") ?? ""
+          ));
+      // A field's name as a reader hears it: its own label, else its placeholder.
+      const field = active as HTMLTextAreaElement | HTMLInputElement | null;
+      const named =
+        active?.getAttribute("aria-label") ||
+        field?.labels?.[0]?.textContent?.trim() ||
+        active?.getAttribute("placeholder") ||
+        active?.textContent?.trim().slice(0, 40);
+      return { name: `${active?.tagName.toLowerCase()} "${named}"`, takesText };
+    });
+    if (holder.takesText)
+      wrong.push(`${surface}: the focus is in ${holder.name}, which takes text`);
+    await page.keyboard.press("j");
+    await nextFrames(page);
+    // One read after the key's frames is the answer: a key typed into a box is there at once.
+    const typedInto = await page.evaluate(() =>
+      [...document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("textarea, input")]
+        .filter((field) => field.value.includes("j"))
+        .map(
+          (field) =>
+            field.getAttribute("aria-label") ||
+            field.labels?.[0]?.textContent?.trim() ||
+            field.getAttribute("placeholder") ||
+            field.tagName.toLowerCase()
+        )
+    );
+    if (typedInto.length > 0) {
+      wrong.push(`${surface}: j was typed into ${typedInto.join(", ")}`);
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): two widths, each with an issue and four comments seeded and one resolved by its
+// author.
+// INFRA-3135, round 18 (the tester's, measured in builds Jobs infra-3135-r18xh, -r18xp and
+// -r18xb at e9ed2743, 90fa8211 and the merge base a20e0b05): the reader has narrowed an issue's
+// Conversation to Open and holds the focus on a comment's Reply when the comment's author
+// resolves it, so the filter takes the turn away, a loss the reader did not cause. At e9ed2743
+// and at 90fa8211 the focus goes into the next turn - its Pin, its Reply, its Expand thread or its
+// body - at 1440 and at 390 px in Chromium, Firefox and WebKit, six runs of six: a turn carries no
+// row marker (`components/row-marker.ts`), so the rescue takes the next turn's control for a
+// control in no row. At a20e0b05 the focus goes to the page body in all six. The architect's rule
+// of 2026-11-19: a loss the reader did not cause moves the focus into no other row of a list. A
+// focused control taken away, for which Firefox and WebKit fire no `focusout`: the clause of the
+// `webkit` and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts).
+test("a Conversation turn resolved elsewhere while its Reply holds the focus hands the focus into no other turn @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    const issue = await createIssue({ project: "CORE", title: `Conversation at ${size.width} px` });
+    const ids: string[] = [];
+    for (const turn of [1, 2, 3, 4]) {
+      const made = await createComment(
+        issue.key,
+        { body: `Turn ${turn}: a thought.` },
+        SURFACE_SESSION
+      );
+      ids.push(made.id);
+    }
+    await page.setViewportSize(size);
+    await page.goto(`/issues/${issue.key}/conversation`);
+    const resolved = page.locator(`[data-turn="comment:${ids[1]}"]`);
+    await expect(resolved).toBeVisible();
+    const open = page.getByRole("button", { exact: true, name: "Open" });
+    await open.click();
+    await expect(open).toHaveAttribute("aria-pressed", "true");
+    const reply = resolved.getByRole("button", { exact: true, name: "Reply" });
+    await reply.focus();
+    await expect(reply).toBeFocused();
+    await resolveComment(ids[1] as string, SURFACE_SESSION);
+    await expect(resolved).toHaveCount(0);
+    // The page's rescue runs a frame and a task after the loss, so it is done by now.
+    await nextFrames(page);
+    await nextFrames(page);
+    // One read is the answer: every hand-off of the loss has run, and nothing else moves the focus.
+    const holder = await page.evaluate(() => {
+      const active = document.activeElement;
+      const named =
+        active?.getAttribute("aria-label") ||
+        active?.textContent?.replace(/\s+/g, " ").trim().slice(0, 40);
+      return {
+        name: `${active?.tagName.toLowerCase()} "${named}"`,
+        turn: active?.closest("[data-turn]")?.getAttribute("data-turn") ?? null,
+      };
+    });
+    if (holder.turn !== null) {
+      wrong.push(`at ${size.width} px: the focus is on ${holder.name} in the turn ${holder.turn}`);
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): two widths, each with an issue and three comments pinned, and one card unpinned.
+// INFRA-3135, round 19 (the tester's, measured in builds Jobs infra-3135-r19h and -r19b at
+// 89072a56 and e9ed2743): the reader holds the focus on a pinned card's Unpin on the issue
+// margin's Pinned tab when their other device unpins that card, a loss the reader did not cause.
+// At both commits the focus goes into the next card - its Unpin in Chromium, its author link in
+// Firefox and WebKit - at 1440 and 1280 px: the tab draws each card as an <article> in a <div>
+// (`features/margin/PinnedTab.tsx`), which is no row by `ROW_SELECTOR` and carries no marker
+// (`components/row-marker.ts`), so the rescue takes the next card's control for a control in no
+// row. The architect's rule of 2026-11-19: a loss the reader did not cause moves the focus into
+// no other row of a list. A focused control taken away, for which Firefox and WebKit fire no
+// `focusout`: the clause of the `webkit` and `firefox` projects that names the page-own focus
+// row (e2e/playwright.config.ts).
+test("a pinned card unpinned on another device while its Unpin holds the focus hands the focus into no other card @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 800, width: 1280 },
+  ]) {
+    const issue = await createIssue({ project: "CORE", title: `Pinned at ${size.width} px` });
+    const markers: string[] = [];
+    for (const turn of [1, 2, 3]) {
+      const made = await createComment(
+        issue.key,
+        { body: `Pinned turn ${turn}.` },
+        SURFACE_SESSION
+      );
+      markers.push(`pinned_items:comment:${made.id}`);
+    }
+    // The reader's own state of the issue, as their other device reads it before it writes.
+    const state = async () => {
+      const mine = (await getMyState("alice"))[issue.key];
+      return { dismissed: mine?.dismissed ?? [], seq: mine?.seq ?? 0 };
+    };
+    const before = await state();
+    await putIssueState(
+      issue.key,
+      { dismissed: [...before.dismissed, ...markers], seq: before.seq + 1 },
+      { login: "alice" }
+    );
+    await page.setViewportSize(size);
+    await page.goto(`/issues/${issue.key}`);
+    const margin = page.getByTestId("margin-sheet");
+    await margin.getByRole("tab", { name: "Pinned" }).click();
+    const cards = margin.getByRole("article");
+    await expect(cards).toHaveCount(3);
+    const second = cards.filter({ hasText: "Pinned turn 2." });
+    const unpin = second.getByRole("button", { name: "Unpin" });
+    await unpin.focus();
+    await expect(unpin).toBeFocused();
+    const now = await state();
+    await putIssueState(
+      issue.key,
+      { dismissed: now.dismissed.filter((marker) => marker !== markers[1]), seq: now.seq + 1 },
+      { login: "alice" }
+    );
+    await expect(second).toHaveCount(0);
+    // The page's rescue runs a frame and a task after the loss, so it is done by now.
+    await nextFrames(page);
+    await nextFrames(page);
+    // One read is the answer: every hand-off of the loss has run, and nothing else moves the focus.
+    const holder = await page.evaluate(() => {
+      const active = document.activeElement;
+      const named =
+        active?.getAttribute("aria-label") ||
+        active?.textContent?.replace(/\s+/g, " ").trim().slice(0, 40);
+      return {
+        card:
+          active
+            ?.closest('[data-testid="margin-sheet"] article')
+            ?.textContent?.replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 30) ?? null,
+        name: `${active?.tagName.toLowerCase()} "${named}"`,
+      };
+    });
+    if (holder.card !== null) {
+      wrong.push(
+        `at ${size.width} px: the focus is on ${holder.name} in the card "${holder.card}"`
+      );
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): the search bar and its Filter panel opened twice, for a typed date and a set one.
+// INFRA-3135, round 19 (the tester's, measured in builds Jobs infra-3135-r19h and -r19dt at
+// 89072a56): the search bar's Filter panel draws its Updated since box only while no date is set
+// (`SearchPalette.tsx`), so the reader's own date takes the focused box away. The architect's
+// ruling of 2026-11-19: a change on a date box is the reader's press, and the focus walks back to
+// the control before the box, Author, as it did at 90fa8211. At 89072a56 it does only where the
+// engine fires `change` before the page drops the box: Chromium, for a typed date. Firefox fires
+// `input` alone as the last digit completes the date, and Playwright's fill(), the value set
+// without keys as assistive technology sets it, fires `input` and then `change` on a box the page
+// has already dropped on that `input`. So the rescue sees no press, reads the loss as one the
+// reader did not cause, passes over Author, which takes typed text, and lands on Status: for a
+// set date in Chromium, Firefox and WebKit, and for a typed one in Firefox. WebKit's date box
+// takes no typed date from Playwright's keys, so the typed case is not read there. A focused
+// control taken away, for which Firefox and WebKit fire no `focusout`: the clause of the `webkit`
+// and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts).
+test("a date the reader gives the search bar's Updated since is their press, so the focus walks back to Author @firefox @webkit", async ({
+  browserName,
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await createProject({ key: "CORE", name: "Core" });
+  await createIssue({ project: "CORE", title: "Harbour lights" });
+  await page.setViewportSize({ height: 900, width: 1440 });
+  const wrong: string[] = [];
+  for (const how of ["typed", "set"] as const) {
+    if (how === "typed" && browserName === "webkit") continue;
+    await page.goto("/");
+    await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
+    await page.keyboard.press("Control+k");
+    const bar = page.getByRole("dialog", { name: "Search" });
+    await expect(bar).toBeVisible();
+    await page.keyboard.type("Harbour");
+    await control(controlRow(bar), CONTROL.panelTrigger).click();
+    const filters = page.getByRole("dialog", { name: "Filter" });
+    const since = filters.getByLabel("Updated since");
+    await expect(since).toBeVisible();
+    const day = await page.evaluate(() => {
+      const next = new Date();
+      next.setDate(next.getDate() + 1);
+      const pad = (value: number) => String(value).padStart(2, "0");
+      return {
+        iso: `${next.getFullYear()}-${pad(next.getMonth() + 1)}-${pad(next.getDate())}`,
+        typed: `${pad(next.getMonth() + 1)}${pad(next.getDate())}${next.getFullYear()}`,
+      };
+    });
+    if (how === "typed") {
+      await since.focus();
+      await page.keyboard.type(day.typed);
+    } else {
+      await since.fill(day.iso);
+    }
+    await expect(since).toHaveCount(0);
+    // The page's rescue runs a frame and a task after the loss, so it is done by now.
+    await nextFrames(page);
+    await nextFrames(page);
+    // One read is the answer: every hand-off of the loss has run, and nothing else moves the focus.
+    const holder = await page.evaluate(() => {
+      const active = document.activeElement;
+      const field = active as HTMLInputElement | null;
+      return (
+        field?.labels?.[0]?.textContent?.trim() ||
+        active?.getAttribute("aria-label") ||
+        `${active?.tagName.toLowerCase()} "${active?.textContent?.trim().slice(0, 40)}"`
+      );
+    });
+    if (holder !== "Author") wrong.push(`a ${how} date: the focus is on ${holder}, not Author`);
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): three priorities and two asks seeded, and two pages opened.
+// INFRA-3135's review round 1, follow-up F5: the display menu replaced the Priorities page's
+// grouping select, where `j` and `k` did nothing, with radios, which take no text, so `j` on one
+// of them walked the table behind the open menu. At 1440 px the Inbox's `j` steps its reading
+// column's selection rather than the focus, so there it is the selection that must not move.
+// No engine tag: the rule reads the element the key is pressed on, which is the focused element in
+// every engine, and the row reads that the focus is on the menu's radio before it presses `j`, so
+// another engine would repeat what Chromium shows (`playwright.config.ts`, the comment above
+// `tagged`).
+test("a page's single-key shortcuts do not act from inside an open panel", async ({ page }) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  // Written one after another, since each takes the last place of the one order.
+  for (const title of ["Ship the daemon", "Cut the review queue", "Retire the old ledger"]) {
+    await createPriority({ owner: "alice", title });
+  }
+  const menu = page.getByRole("dialog", { name: "View" });
+  /** Opens the View menu from its trigger with the keyboard, and checks the focus went to one of
+   *  its radios. */
+  const openFromKeyboard = async (trigger: Locator) => {
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+    await expect(menu).toHaveCount(1);
+    await expect(menu.getByRole("radio").first()).toBeFocused();
+  };
+  /** Presses `j` and reads, two frames later, whether the focus is still in the View menu and
+   *  whether it is in a row `rows` names. */
+  const pressJ = async (rows: string) => {
+    await page.keyboard.press("j");
+    await nextFrames(page);
+    return page.evaluate(
+      (selector) => ({
+        inPanel: document.activeElement?.closest('[role="dialog"][aria-label="View"]') != null,
+        inRow: document.activeElement?.closest(selector) != null,
+      }),
+      rows
+    );
+  };
+
+  await page.goto("/priorities");
+  const priorities = page.locator('section[aria-label="Priorities"]');
+  await expect(priorities.locator("[data-priority-row]")).toHaveCount(3);
+  await openFromKeyboard(control(controlRow(priorities), CONTROL.displayMenu));
+  expect(await pressJ("[data-priority-row]"), "Priorities: j on the View menu's radio").toEqual({
+    inPanel: true,
+    inRow: false,
+  });
+  await expect(menu, "Priorities: j closed the View menu").toHaveCount(1);
+
+  const { issueKey } = await seedAsk("Which lease holds?");
+  await createAsk(issueKey, { question: "Which mirror replays first?" }, asSession());
+  await page.goto("/");
+  const rows = page.locator("[data-inbox-row]");
+  await expect(rows).toHaveCount(2);
+  // The two rows were counted above, and a row carries its id from its first render.
+  const top = await rows.first().getAttribute("data-inbox-row");
+  if (top === null) throw new Error("the Inbox's first row carries no id");
+  await selectRow(page, top);
+  const main = page.getByTestId("main-content");
+  await openFromKeyboard(control(controlRow(main), CONTROL.displayMenu));
+  expect(await pressJ("[data-inbox-row]"), "Inbox: j on the View menu's radio").toEqual({
+    inPanel: true,
+    inRow: false,
+  });
+  await expect(selectedRow(page), "Inbox: j moved the reading column's selection").toHaveAttribute(
+    "data-inbox-row",
+    top
+  );
+  await expect(menu, "Inbox: j closed the View menu").toHaveCount(1);
+});
+
+/** What a text box is, in the count R3 reads inside a list's own panel: each kind of field a
+ *  reader types into. */
+const TEXT_BOXES = [
+  "input:not([type])",
+  'input[type="text"]',
+  'input[type="search"]',
+  "textarea",
+  '[role="combobox"]',
+  '[role="searchbox"]',
+  '[role="textbox"]',
+].join(", ");
+
+/** One list of options R3 holds to a text box, as the row below drives it at one width. */
+interface PickList {
+  /** The list as a failure names it: its page, and its trigger's words. */
+  readonly name: string;
+  /** Brings the page to where the trigger is drawn; absent where the list read before this one
+   *  leaves it drawn. */
+  readonly reach?: () => Promise<void>;
+  readonly trigger: Locator;
+  /** The list's value, where a reader reads it: the trigger's words, or - where a pick takes the
+   *  trigger away - the chip the pick puts in the row. */
+  readonly value: () => Promise<string>;
+  /** A word a reader types into the list's text box, and the options it leaves, in order. */
+  readonly word: string;
+  readonly left: readonly (string | RegExp)[];
+  /** What `value` reads once Enter has picked the option the word left. */
+  readonly picked: RegExp;
+  /** Where the pick leaves the focus, where that is not the trigger: the control the panel
+   *  hands it to when the pick takes the trigger away, or the message the composer's pick hands
+   *  the reader to. */
+  readonly focusAfterPick?: Locator;
+  /** Where Escape leaves the focus, where that is not the trigger: the composer's row. */
+  readonly focusAfterEscape?: Locator;
+}
+
+/** What the lists are read over, as `seedPickLists` made it. */
+interface PickListSeed {
+  /** One question waiting on alice for each width, since a width's pick hands its own on. */
+  readonly asks: readonly string[];
+  /** The one member of the first epic, which the List's selection marks. */
+  readonly member: string;
+  /** The issue whose spec, and whose `notes.md`, are each in two versions. */
+  readonly documented: string;
+  /** The issue whose header's Assignee, Repository and Priority to advance are read, assigned to
+   *  alice and inheriting CORE's default repository. */
+  readonly header: string;
+}
+
+/** The Agents page's two live sessions and CORE's Keyboard issue and Rollout plan
+ *  (`seedAgents`); a second project, OPS, which carol makes, so the search bar's, the Create
+ *  issue dialog's and the Settings page's Project lists hold two projects, OPS names carol as its
+ *  default assignee, and the people a question can be handed to, an issue assigned to, or a
+ *  project named by, are alice, bob and carol; three epics, the first with a member; a spec and a
+ *  second document of one issue, each in two versions; a question for each width; two
+ *  repositories mapped to CORE, acme/widgets its default; three priorities; and an issue of CORE
+ *  assigned to alice, which names no repository of its own and advances no priority. */
+async function seedPickLists(): Promise<PickListSeed> {
+  await seedAgents();
+  await createProject({ key: "OPS", name: "Ops" }, { login: "carol" });
+  const epics: string[] = [];
+  for (const title of ["Lease epic", "Mirror epic", "Ledger epic"]) {
+    const epic = await createIssue({ project: "CORE", title });
+    await patchIssue(epic.key, { labels: ["epic"] });
+    epics.push(epic.key);
+  }
+  const member = await createIssue({ project: "CORE", parent: epics[0], title: "Handover step" });
+  const documented = await createIssue({
+    project: "CORE",
+    spec: "The lease passes at noon.\n",
+    title: "Lease handover",
+  });
+  const notes = await createIssueArtifact(documented.key, {
+    content: "The ledger keeps three leases.\n",
+    name: "notes.md",
+  });
+  for (const [id, find, replacement] of [
+    [documented.primary_artifact_id, "noon", "midnight"],
+    [notes.artifact.id, "three", "seven"],
+  ] as const) {
+    await editArtifact(id, { ops: [{ find, op: "replace", with: replacement }] }, { as: "agent" });
+    await expect
+      .poll(async () => ((await getArtifact(id)).versions ?? []).length)
+      .toBeGreaterThanOrEqual(2);
+  }
+  const asks: string[] = [];
+  for (const width of [1440, 390]) {
+    const owner = await createIssue({ project: "CORE", title: `Lease question at ${width}` });
+    const ask = await createAsk(
+      owner.key,
+      { question: `Who holds the lease at ${width}?` },
+      SURFACE_SESSION
+    );
+    asks.push(ask.id);
+  }
+  await putRepoProject("acme/widgets", { default: true, project: "CORE" });
+  await putRepoProject("acme/gadgets", { project: "CORE" });
+  for (const title of ["Ship the daemon", "Cut the review queue", "Retire the old ledger"]) {
+    await createPriority({ owner: "alice", title });
+  }
+  const header = await createIssue({ project: "CORE", title: "Harbour crane" });
+  await patchIssue(header.key, { assignee: "alice" });
+  return { asks, documented: documented.key, header: header.key, member: member.key };
+}
+
+/** The eighteen lists, in the order the row reads them at one width; `step` is the width's
+ *  place, which picks the question it hands on, the issue it addresses, and the person and the
+ *  repository the issue header's lists and the Settings page's people lists pick. */
+function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
+  const main = page.getByTestId("main-content");
+  const palette = page.getByRole("dialog", { name: "Search" });
+  const filters = page.getByRole("dialog", { name: "Filter" });
+  /** The words a trigger shows. */
+  const shown = (trigger: Locator) => async () =>
+    (await trigger.innerText()).replace(/\s+/g, " ").trim();
+  /** The search bar's chip for one narrowing. */
+  const chip = (narrowing: string) => async () =>
+    (
+      await control(controlRow(palette), CONTROL.chip).evaluateAll((chips) =>
+        chips.map((node) => node.getAttribute("aria-label") ?? "")
+      )
+    )
+      .filter((label) => label.startsWith(`Remove ${narrowing} `))
+      .join("; ");
+  const project = listTrigger(filters, "Project");
+  const status = listTrigger(filters, "Status");
+  const moveTo = listTrigger(page, "Move to epic");
+  const mergeInto = listTrigger(page, "Merge into another epic");
+  const question = seed.asks[step];
+  const handOn = listTrigger(page.getByTestId(`ask-${question}`), "Hand this question to");
+  const agent = agentRow(page, plannerSession.session_id);
+  const issue = listTrigger(agent, "Choose issue");
+  const version = listTrigger(page, "Version");
+  const compare = page.getByRole("region", { name: "Compare versions for notes.md" });
+  const from = listTrigger(compare, "Compare notes.md from");
+  const to = listTrigger(compare, "Compare notes.md to");
+  const notesPage = `/issues/${seed.documented}/artifacts/notes-md`;
+  // A version is typed as the words its option starts with, `Version <n>`, which a summary may
+  // follow; the current text's option, `Current` or `Current version`, holds neither.
+  const versionOne = /^Version 1(?: — .+)?$/;
+  const versionTwo = /^Version 2(?: — .+)?$/;
+  // The issue each width's pick addresses, so the second width's pick is a change whatever the
+  // composer kept of the first.
+  const [issueWord, issueOption, issueKey] =
+    step === 0
+      ? ["rollout", "CORE-2 · Rollout plan", "CORE-2"]
+      : ["keyboard", "CORE-1 · Keyboard issue", "CORE-1"];
+  const assignee = listTrigger(page, `Assignee of ${seed.header}`);
+  const repository = listTrigger(page, `Repository of ${seed.header}`);
+  const advance = listTrigger(page, "Priority to advance");
+  const createIssueDialog = page.getByRole("dialog", { name: "Create issue" });
+  const dialogProject = listTrigger(createIssueDialog, "Project");
+  // The Settings page's lists. The New project form's Default assignee is the one whose label
+  // does not go on with " of <KEY>".
+  const opsDefault = listTrigger(page, "Default assignee of OPS");
+  const newProjectDefault = listTrigger(page, /^Default assignee(?! of )/);
+  const mappingProject = listTrigger(page, "Project");
+  const sourceProject = listTrigger(page, "Source project");
+  // Each width's pick is a change: the first hands the issue from alice to bob, the second from
+  // bob to carol, and OPS's default from carol to bob and back; the first gives the issue
+  // acme/gadgets of its own, the second takes it back to the default it inherits.
+  const [personWord, person] = step === 0 ? ["bo", "bob"] : ["car", "carol"];
+  const [repositoryWord, repositoryOption, repositoryPicked] =
+    step === 0
+      ? ["gadg", "acme/gadgets", /^acme\/gadgets$/]
+      : ["inh", "Inherit", /^acme\/widgets$/];
+  const reviewQueue = /^P\d+ Cut the review queue$/;
+  return [
+    {
+      name: "the search bar's Project",
+      reach: async () => {
+        await page.goto("/");
+        await expect(page.locator("[data-inbox-row]").first()).toBeVisible();
+        await page.locator("body").focus();
+        await page.keyboard.press("Control+k");
+        await expect(palette).toBeVisible();
+        await openFilterPanel(page, palette);
+      },
+      trigger: project,
+      value: chip("Project"),
+      word: "op",
+      left: ["OPS"],
+      picked: /^Remove Project OPS filter$/,
+      // A pick takes the list's control out of the panel, which hands the focus to the control
+      // now at its place, as the shared controls' focus row reads it.
+      focusAfterPick: status,
+    },
+    {
+      name: "the search bar's Status",
+      trigger: status,
+      value: chip("Status"),
+      word: "prog",
+      left: ["In progress"],
+      picked: /^Remove Status In progress filter$/,
+      focusAfterPick: filters.getByRole("searchbox", { name: "Author" }),
+    },
+    {
+      name: "the List's Move to epic",
+      reach: async () => {
+        await openIssuesTab(page, "CORE", "List");
+        await main.getByRole("checkbox", { exact: true, name: `Select ${seed.member}` }).check();
+      },
+      trigger: moveTo,
+      value: shown(moveTo),
+      word: "mirr",
+      left: ["Mirror epic"],
+      picked: /^Mirror epic$/,
+    },
+    {
+      name: "an epic's Merge into another epic",
+      reach: async () => {
+        await page.goto("/projects/CORE/issues?group=epic");
+        await page
+          .getByRole("row")
+          .filter({ has: page.getByRole("button", { name: /Lease epic/ }) })
+          .getByRole("button", { name: "Epic actions ▾" })
+          .click();
+      },
+      trigger: mergeInto,
+      value: shown(mergeInto),
+      word: "ledg",
+      left: ["Ledger epic"],
+      picked: /^Ledger epic$/,
+    },
+    {
+      // Every person's questions, so the question stays listed once it waits on bob. Its list is
+      // on its card: the reading column's, for the row selected, or the row's own where the
+      // Inbox is too narrow for that column.
+      name: "the Inbox's Hand this question to",
+      reach: async () => {
+        await page.goto("/?assignee=everyone");
+        await selectRow(page, question);
+      },
+      trigger: handOn,
+      value: shown(handOn),
+      word: "bo",
+      left: ["bob"],
+      picked: /^Asked of bob$/,
+    },
+    {
+      name: "the Agents composer's Issue",
+      reach: async () => {
+        await page.goto("/agents");
+        const toggle = agent.locator("[data-agent-toggle]");
+        await expect(toggle).toBeVisible();
+        if ((await expandedState("the agent row", toggle)) === "shut") await toggle.click();
+      },
+      trigger: issue,
+      value: shown(issue),
+      word: issueWord,
+      left: [issueOption],
+      picked: new RegExp(`^Issue: ${issueKey}$`),
+      // The architect's ruling: a pick hands the reader to the message it addresses, and Escape
+      // is one level out, to the row.
+      focusAfterPick: agent.getByRole("textbox", { name: "Comment" }),
+      focusAfterEscape: agent,
+    },
+    {
+      name: "the Spec tab's Version",
+      reach: async () => {
+        await page.goto(`/issues/${seed.documented}/spec`);
+      },
+      trigger: version,
+      value: shown(version),
+      word: "version 1",
+      left: [versionOne],
+      picked: versionOne,
+    },
+    {
+      // From starts on the older version and To on the newer, so each word picks the other.
+      name: "a document page's compare From",
+      reach: async () => {
+        await page.goto(notesPage);
+        // The editor draws the document's text after the page has drawn the rest, and that text
+        // is above the compare: in Firefox at 1440 a press made while it was still to come
+        // opened nothing, and the trace's next snapshot held the text the press came before.
+        await expect(documentEditor(page)).toContainText("seven leases");
+        await expect(connectedDot(page)).toHaveText("connected");
+        await compare.getByRole("button", { name: "Show comparison" }).click();
+        await expect(compare.getByRole("button", { name: "Hide comparison" })).toBeVisible();
+      },
+      trigger: from,
+      value: shown(from),
+      word: "version 2",
+      left: [versionTwo],
+      picked: versionTwo,
+    },
+    {
+      name: "a document page's compare To",
+      trigger: to,
+      value: shown(to),
+      word: "version 1",
+      left: [versionOne],
+      picked: versionOne,
+    },
+    {
+      // Last on the page, since its pick leaves the page on a past version.
+      name: "a document page's Version",
+      trigger: version,
+      value: shown(version),
+      word: "version 1",
+      left: [versionOne],
+      picked: versionOne,
+    },
+    {
+      name: "the issue header's Assignee",
+      reach: async () => {
+        await page.goto(`/issues/${seed.header}`);
+      },
+      trigger: assignee,
+      value: shown(assignee),
+      word: personWord,
+      left: [person],
+      picked: new RegExp(`^${person}$`),
+    },
+    {
+      // Its value is the badge: the trigger's words of its own, which say whether the issue
+      // inherits it, are what its name goes on to after its label and are never shown.
+      name: "the issue header's Repository",
+      trigger: repository,
+      // The badge, the one hidden element of the trigger that is not its chevron's `svg`.
+      value: async () =>
+        (await repository.locator('[aria-hidden="true"]:not(svg)').innerText()).trim(),
+      word: repositoryWord,
+      left: [repositoryOption],
+      picked: repositoryPicked,
+    },
+    {
+      // A pick stages the priority, which Add would write.
+      name: "the issue header's Priority to advance",
+      reach: async () => {
+        await page
+          .getByRole("button", { exact: true, name: `Add a priority to ${seed.header}` })
+          .click();
+        // The trigger reads `Loading priorities…` until the priorities' read answers, and then
+        // `Choose a priority`: the value the row compares Escape's against is the settled one.
+        await expect(advance).toContainText("Choose a priority");
+      },
+      trigger: advance,
+      value: shown(advance),
+      word: "queue",
+      left: [reviewQueue],
+      picked: reviewQueue,
+    },
+    {
+      // Opened with `c` over the issue page, whose project it starts on, and read once its title
+      // has the focus the dialog gives it on opening. The focus is taken off the list read before
+      // this one first: a list's trigger takes a page's single keys as the select it replaced did,
+      // so `c` pressed on it opens nothing (`isEditableTarget`).
+      name: "the Create issue dialog's Project",
+      reach: async () => {
+        await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+        await page.keyboard.press("c");
+        await expect(createIssueDialog.getByRole("textbox", { name: "Title" })).toBeFocused();
+      },
+      trigger: dialogProject,
+      value: shown(dialogProject),
+      word: "op",
+      left: ["OPS · Ops"],
+      picked: /^OPS · Ops$/,
+    },
+    {
+      // A project's own list, read once the defaults are: until then it is disabled and shows
+      // that they are loading.
+      name: "the Settings page's Default assignee of OPS",
+      reach: async () => {
+        await page.goto("/settings");
+        await expect(opsDefault).toBeEnabled();
+      },
+      trigger: opsDefault,
+      value: shown(opsDefault),
+      word: personWord,
+      left: [person],
+      picked: new RegExp(`^${person}$`),
+    },
+    {
+      // The New project form's, which starts on the viewer, alice, at each load of the page.
+      name: "the Settings page's New project Default assignee",
+      trigger: newProjectDefault,
+      value: shown(newProjectDefault),
+      word: personWord,
+      left: [person],
+      picked: new RegExp(`^${person}$`),
+    },
+    {
+      // The repository mapping form's, which starts on no project at each load of the page.
+      name: "the Settings page's Project",
+      trigger: mappingProject,
+      value: shown(mappingProject),
+      word: "op",
+      left: ["OPS · Ops"],
+      picked: /^OPS · Ops$/,
+    },
+    {
+      name: "the Settings page's Source project",
+      trigger: sourceProject,
+      value: shown(sourceProject),
+      word: "op",
+      left: ["OPS · Ops"],
+      picked: /^OPS · Ops$/,
+    },
+  ];
+}
+
+// SLOW(>=2s): eighteen lists on eight pages, each list opened three times at each of two widths.
+// R3: "Every list of options a reader picks from holds a text box that narrows the options."
+// The row covers the eighteen single picks of the shared list (`components/MultiSelect.tsx`), the
+// lists whose options grow with the project among them: the search bar's Project and Status, the
+// List's Move to epic, an epic's Merge into another epic, the Inbox's Hand this question to
+// (`AskHandOn`), the Agents composer's Issue, the Spec tab's Version (`SpecToolbar`), a document
+// page's Version (`ArtifactHeader`) and its compare From and To (`ArtifactDetails`), the issue
+// header's Assignee (`AssigneeControl`), Repository (`RepoControl`) and Priority to advance
+// (`IssuePriorityLine`), the Create issue dialog's Project (`CreateIssueDialog`), and the Settings
+// page's Default assignee of a project and the New project form's Default assignee
+// (`ProjectsSection`), and its Project and Source project (`ProjectSelect`). The short
+// fixed lists - Priority (`PriorityControl`), Snooze (`SnoozeControl`), the Inbox's bulk Snooze,
+// the issue header's Status, the Agents page's Delivery mode, a table pager's Rows per page
+// (`Pager`), and the Delivery page's Color merges by and Window (`DeliveryPage`,
+// `WindowControl`) - stay native selects by the architect's ruling of 2026-11-17, and the row
+// opens none of them. At each width each list is opened from its trigger: exactly one text box is
+// in the list's own panel - at 390 an `input` of 16 px, the size `styles.css` gives every input
+// below 1280 px and under which iOS Safari zooms the page onto the box - the option a typed word
+// leaves is not the value the list starts on, the word leaves only the options it matches,
+// Escape picks nothing and changes no value, Tab out of the text box (Shift+Tab at the second
+// width) picks nothing and leaves the reader on the trigger, `?` pressed then on the closed
+// trigger opens no Keyboard shortcuts, since the trigger takes a page's single keys as the select
+// or the text box it replaced did (`isEditableTarget` in `features/shell/keymap.ts`), and Enter
+// picks the option the word left - the trigger shows it with the focus back on it, or where the
+// pick takes the trigger away the panel hands the focus on. A list that holds no text box is named
+// and the row goes on, so one run names every such list.
+// It runs in Chromium alone. What an engine decides here is one component's, the same in every
+// list, and two rows read it in Firefox and WebKit at a fraction of this row's cost: the keys the
+// list's text box takes, as each engine delivers them, in `keyboard-agents-picker`'s rows of the
+// composer's Issue list, and where a Tab or Shift+Tab out of the text box leaves the focus - on
+// the trigger - on a page and in a dialog, in the row that Tab and Escape never leave a panel for
+// the page behind it. This row in Firefox read no more than that one: with the list's own hand-off
+// to its trigger taken out, it passed there too (2026-11-18). In both engines it took 2.1 min of
+// its shard (full-lane run 44206548149), which put that shard over its 9-minute step.
+test("every list of options a reader picks from holds a text box that narrows it, at 1440 and 390", async ({
+  page,
+}) => {
+  // Nine page loads and a dialog at each width, with the lists read between them. Measured in
+  // an issue pod (two cores), with each of the eighteen lists opened three times: the row took
+  // 2.3 min in Chromium (2026-11-17), and 41.9 s in CI's Chromium (full-lane run 44206548149).
+  // Six minutes keeps the pod's time under two thirds of the budget.
+  test.setTimeout(360_000);
+  const seed = await seedPickLists();
+  /** The lists the row could not read: no trigger, a trigger that names no list of its own, or
+   *  a list holding other than one text box. */
+  const missing: string[] = [];
+  /** The closed triggers a page's single key acted through. */
+  const keyed: string[] = [];
+  const shortcuts = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+  /** Opens `list` from its trigger and answers the options of its own panel, once the focus is
+   *  in that panel's one text box; or records why not, and shuts what the press opened. */
+  const open = async (list: PickList, at: string): Promise<Locator | undefined> => {
+    await list.trigger.click();
+    const named = await expect(list.trigger)
+      .toHaveAttribute("aria-controls", /\S/)
+      .then(
+        () => true,
+        () => false
+      );
+    if (named) {
+      const panel = listOf(list.trigger);
+      await expect(panel, `${at}: the list its trigger names is not drawn`).toBeVisible();
+      const box = panel.locator(TEXT_BOXES);
+      // The panel was waited for above, and the shared list draws its text box in the panel's
+      // own render, so how many it draws is the count this row records.
+      const boxes = await box.count();
+      if (boxes === 1) {
+        await expect(box, `${at}: the open list left the focus outside its text box`).toBeFocused();
+        if ((page.viewportSize()?.width ?? Number.POSITIVE_INFINITY) < 1280) {
+          expect(
+            await box.evaluate((node) => `${node.tagName} ${getComputedStyle(node).fontSize}`),
+            `${at}: the list's text box is not an input of 16 px`
+          ).toBe("INPUT 16px");
+        }
+        // A row that takes the typed text as it is (the Repository list's `Use "…"`, a single
+        // pick's `onCreate`, drawn with a leading `+`) is no option the list holds.
+        return panel.getByRole("option").filter({ hasNotText: /^\+/ });
+      }
+      missing.push(`${at}: the list its trigger opens holds ${boxes} text boxes, not one`);
+    } else {
+      missing.push(`${at}: its trigger names no list of its own once pressed`);
+    }
+    await page.keyboard.press("Escape");
+    return undefined;
+  };
+
+  for (const [step, size] of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ].entries()) {
+    await page.setViewportSize(size);
+    for (const list of pickLists(page, seed, step)) {
+      const at = `${list.name} at ${size.width}x${size.height}`;
+      await list.reach?.();
+      const drawn = await expect(list.trigger)
+        .toBeVisible()
+        .then(
+          () => true,
+          () => false
+        );
+      if (!drawn) {
+        missing.push(`${at}: no control opens the list`);
+        continue;
+      }
+      const before = await list.value();
+      expect(
+        before,
+        `${at}: the list starts on the option "${list.word}" leaves, so no pick could change it`
+      ).not.toMatch(list.picked);
+
+      // The word makes an option other than the value the active one, and Escape picks nothing.
+      const escaped = await open(list, at);
+      if (escaped === undefined) continue;
+      await expect
+        .poll(() => escaped.count(), {
+          message: `${at}: the list holds no option "${list.word}" does not match`,
+        })
+        .toBeGreaterThan(list.left.length);
+      await page.keyboard.type(list.word);
+      await expect(escaped, `${at}: "${list.word}" left other options than its own`).toHaveText(
+        list.left
+      );
+      await page.keyboard.press("Escape");
+      await expect(list.trigger, `${at}: Escape left the list open`).toHaveAttribute(
+        "aria-expanded",
+        "false"
+      );
+      await expect(
+        list.focusAfterEscape ?? list.trigger,
+        `${at}: Escape left the focus elsewhere`
+      ).toBeFocused();
+      expect(await list.value(), `${at}: Escape changed the list's value`).toBe(before);
+
+      // Tab out of the text box, or Shift+Tab, picks nothing and leaves the reader on the trigger.
+      const tab = step === 0 ? "Tab" : "Shift+Tab";
+      const tabbed = await open(list, at);
+      if (tabbed === undefined) continue;
+      await page.keyboard.press(tab);
+      await expect(list.trigger, `${at}: ${tab} left the list open`).toHaveAttribute(
+        "aria-expanded",
+        "false"
+      );
+      await expect(list.trigger, `${at}: ${tab} left the focus elsewhere`).toBeFocused();
+      expect(await list.value(), `${at}: ${tab} changed the list's value`).toBe(before);
+
+      // A single key of the page, pressed on the closed trigger, is the list's as it was the
+      // select's or the text box's: the shell's `?` opens no Keyboard shortcuts over it.
+      await page.keyboard.press("?");
+      await nextFrames(page);
+      // One read after the press's frames is the answer: the shell draws Keyboard shortcuts in
+      // the render the key's binding starts, which nextFrames has let run.
+      if ((await shortcuts.count()) > 0) {
+        keyed.push(`${at}: ? on the closed trigger opened the Keyboard shortcuts`);
+        await page.keyboard.press("Escape");
+        await expect(shortcuts, `${at}: Escape left the Keyboard shortcuts open`).toHaveCount(0);
+        await list.trigger.focus();
+      }
+
+      // Enter picks the option the word left.
+      const entered = await open(list, at);
+      if (entered === undefined) continue;
+      await page.keyboard.type(list.word);
+      await expect(entered, `${at}: "${list.word}" left other options than its own`).toHaveText(
+        list.left
+      );
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(list.value, { message: `${at}: Enter did not pick the option "${list.word}" left` })
+        .toMatch(list.picked);
+      await expect(
+        list.focusAfterPick ?? list.trigger,
+        `${at}: the pick left the focus elsewhere`
+      ).toBeFocused();
+    }
+  }
+  expect(missing, missing.join("; ")).toEqual([]);
+  expect(keyed, keyed.join("; ")).toEqual([]);
+});
+
+/** A title wider than any list's trigger is at 1024x768, given to an epic, a priority and a named
+ *  version, each of which a list then picks. */
+const LONG_TITLE =
+  "Retire the ledger mirror and hand every lease it still holds to the regional daemons";
+
+/** What is wrong with how a list's trigger draws a value longer than it: the element the value's
+ *  text is in has to be the box that cuts it (its `scrollWidth` past its `clientWidth`) and end
+ *  it in an ellipsis, and the trigger's chevron has to be drawn whole, 16 px wide, at the end of
+ *  the trigger's content box. A value that fits is named, since then the read shows nothing. The
+ *  chevron turns back over `transition-transform` as the list closes, and a box read while it
+ *  turns is wider than the chevron (CI read 17.5 to 21 px), so the read waits for the trigger's
+ *  own animations to end first. */
+function longValueDrawing(trigger: Locator): Promise<string[]> {
+  return trigger.evaluate(async (node) => {
+    await Promise.all(node.getAnimations({ subtree: true }).map((animation) => animation.finished));
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    let text = walker.nextNode();
+    while (text !== null && (text.textContent ?? "").trim() === "") text = walker.nextNode();
+    const holder = text?.parentElement;
+    if (text === null || holder === null || holder === undefined) return ["it holds no text"];
+    const style = getComputedStyle(node);
+    const box = node.getBoundingClientRect();
+    const contentRight =
+      box.right - Number.parseFloat(style.borderRightWidth) - Number.parseFloat(style.paddingRight);
+    const room =
+      node.clientWidth -
+      Number.parseFloat(style.paddingLeft) -
+      Number.parseFloat(style.paddingRight);
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    const width = range.getBoundingClientRect().width;
+    if (width <= room) {
+      return [`its value is ${Math.round(width)} px wide, which fits its ${Math.round(room)} px`];
+    }
+    const wrong: string[] = [];
+    const element = `the value's own element, a ${holder.tagName.toLowerCase()}`;
+    if (!(holder.scrollWidth > holder.clientWidth)) {
+      wrong.push(
+        `${element}, is as wide as the value, so a box around it cuts it with no ellipsis`
+      );
+    }
+    const ending = getComputedStyle(holder).textOverflow;
+    if (ending !== "ellipsis") wrong.push(`${element}, ends it in "${ending}", not an ellipsis`);
+    const chevron = node.querySelector("svg");
+    if (chevron === null) {
+      wrong.push("it draws no chevron");
+    } else {
+      const own = chevron.getBoundingClientRect();
+      if (Math.abs(own.width - 16) > 0.5 || Math.abs(own.right - contentRight) > 1) {
+        wrong.push(
+          `its chevron is ${own.width} px wide at ${Math.round(own.left)}-${Math.round(own.right)} px, not whole at the trigger's end, ${Math.round(contentRight)} px`
+        );
+      }
+    }
+    return wrong;
+  });
+}
+
+// SLOW(>=2s): three pages and a document version, four lists each picked from at 1024x768.
+// INFRA-3135, round 12: below 1280 px `styles.css` makes every button a flex box, whose own text
+// ends in no ellipsis (`TruncatedText`), so a list's trigger cut a long picked value mid-word; no
+// trigger showed that it opens a list, as a `<select>`'s arrow did; and Priority to advance was
+// as wide as the words it showed, so the Add and Cancel beside it moved at each pick. At 1024x768,
+// between `md` and `xl`, four lists of the shared list (`components/MultiSelect.tsx`) each pick a
+// value longer than their trigger - the List's Move to epic, an epic's Merge into another epic,
+// the Spec tab's Version and the issue header's Priority to advance: the element holding the
+// value cuts it and ends it in an ellipsis, and the chevron is whole at the trigger's end. And
+// Priority to advance is one width before a pick, after a short one and after a long one.
+test("a picked value too long for its list's trigger ends in an ellipsis before a whole chevron, and Priority to advance keeps its width across picks, at 1024x768", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 768, width: 1024 });
+  await createProject({ key: "CORE", name: "Core" });
+  const longEpic = await createIssue({ project: "CORE", title: LONG_TITLE });
+  const shortEpic = await createIssue({ project: "CORE", title: "Short epic" });
+  for (const epic of [longEpic, shortEpic]) await patchIssue(epic.key, { labels: ["epic"] });
+  const member = await createIssue({
+    project: "CORE",
+    parent: shortEpic.key,
+    title: "Handover step",
+  });
+  const documented = await createIssue({
+    project: "CORE",
+    spec: "The lease passes at noon.\n",
+    title: "Lease handover",
+  });
+  await createNamedVersion(documented.primary_artifact_id, LONG_TITLE);
+  for (const title of ["Ship", LONG_TITLE]) await createPriority({ owner: "alice", title });
+  const wrong: string[] = [];
+  /** Opens `trigger`'s list, types `word`, and takes the one option the word leaves with Enter. */
+  const pick = async (trigger: Locator, word: string) => {
+    await trigger.click();
+    await expect(listOf(trigger).getByRole("combobox")).toBeFocused();
+    await page.keyboard.type(word);
+    await expect(listOf(trigger).getByRole("option")).toHaveCount(1);
+    await page.keyboard.press("Enter");
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  };
+  /** Records what is wrong with how `trigger` draws the long value just picked. */
+  const read = async (name: string, trigger: Locator) => {
+    await expect(trigger, `${name} does not show the value picked`).toContainText(LONG_TITLE);
+    // The value was waited for above, and `longValueDrawing` waits out the trigger's animations
+    // before it measures, so the drawing read is the settled one.
+    for (const what of await longValueDrawing(trigger)) wrong.push(`${name}: ${what}`);
+  };
+
+  await openIssuesTab(page, "CORE", "List");
+  await page
+    .getByTestId("main-content")
+    .getByRole("checkbox", { exact: true, name: `Select ${member.key}` })
+    .check();
+  const moveTo = listTrigger(page, "Move to epic");
+  await pick(moveTo, "regional");
+  await read("the List's Move to epic", moveTo);
+
+  await page.goto("/projects/CORE/issues?group=epic");
+  await page
+    .getByRole("row")
+    .filter({ has: page.getByRole("button", { name: /Short epic/ }) })
+    .getByRole("button", { name: "Epic actions ▾" })
+    .click();
+  const mergeInto = listTrigger(page, "Merge into another epic");
+  await pick(mergeInto, "regional");
+  await read("an epic's Merge into another epic", mergeInto);
+
+  await page.goto(`/issues/${documented.key}/spec`);
+  const version = listTrigger(page, "Version");
+  await pick(version, "regional");
+  await read("the Spec tab's Version", version);
+
+  await page.goto(`/issues/${member.key}`);
+  await page.getByRole("button", { exact: true, name: `Add a priority to ${member.key}` }).click();
+  const advance = listTrigger(page, "Priority to advance");
+  const width = () => advance.evaluate((node) => node.getBoundingClientRect().width);
+  await expect(advance).toHaveText("Choose a priority");
+  const widths = [await width()];
+  await pick(advance, "ship");
+  await expect(advance).toHaveText(/^P\d+ Ship$/);
+  widths.push(await width());
+  await pick(advance, "regional");
+  await read("the issue header's Priority to advance", advance);
+  widths.push(await width());
+  if (widths.some((each) => Math.abs(each - widths[0]) > 0.5)) {
+    wrong.push(
+      `the issue header's Priority to advance is ${widths.join(", ")} px wide before a pick, after a short one and after a long one`
+    );
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): one issue page at two widths, its form opened four times.
+// INFRA-3135, round 13 (the tester's, measured in builds Jobs at 43b5b641): `+` on the issue
+// header's priority line takes itself away and puts the form in its place, whose first control
+// is Priority to advance. In Chromium the focus lands on that list's trigger; in Firefox and
+// WebKit it lands on the rail's Edit labels, after the form, and at 390 the details rail
+// scrolls to it, leaving the form the reader opened out of view (the trigger at -389 px in
+// Firefox and -274 px in WebKit, with the rail scrolled 426 and 311 px). At the merge base
+// 6ef60ff0 the form stands in view in all three engines. A focused control taken away, for which
+// these engines fire no `focusout`: the clause of the `webkit` and `firefox` projects that names
+// the page-own focus row (e2e/playwright.config.ts). By a press of Enter and by a click, at 1440
+// and 390: the trigger holds the focus and stands whole in the window and in the rail.
+test("Add a priority opens its form in view with the focus on Priority to advance, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Harbour crane" });
+  await createPriority({ owner: "alice", title: "Ship the daemon" });
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    for (const press of ["Enter", "click"] as const) {
+      const at = `${size.width}x${size.height}, by ${press}`;
+      await page.goto(`/issues/${issue.key}`);
+      const add = page.getByRole("button", { exact: true, name: `Add a priority to ${issue.key}` });
+      await expect(add).toBeVisible();
+      if (press === "Enter") {
+        await add.focus();
+        await page.keyboard.press("Enter");
+      } else {
+        await add.click();
+      }
+      const trigger = listTrigger(page, "Priority to advance");
+      await expect(trigger, `${at}: the form opened no Priority to advance`).toBeVisible();
+      const focused = await expect(trigger)
+        .toBeFocused()
+        .then(
+          () => true,
+          () => false
+        );
+      if (!focused) {
+        const holder = await page.evaluate(
+          () =>
+            `${document.activeElement?.tagName.toLowerCase()} "${document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.trim().slice(0, 40)}"`
+        );
+        wrong.push(`${at}: the focus is on ${holder}, not on Priority to advance`);
+      }
+      const placed = await expect
+        .poll(() =>
+          trigger.evaluate((node) => {
+            const box = node.getBoundingClientRect();
+            const rail = node
+              .closest('[data-testid="issue-metadata-rail"]')
+              ?.getBoundingClientRect();
+            const inWindow = box.left >= 0 && box.right <= window.innerWidth;
+            const inRail =
+              rail === undefined || (box.left >= rail.left - 1 && box.right <= rail.right + 1);
+            return inWindow && inRail
+              ? "whole"
+              : `at ${Math.round(box.left)}-${Math.round(box.right)} px`;
+          })
+        )
+        .toBe("whole")
+        .then(
+          () => "whole",
+          async () =>
+            trigger.evaluate(
+              (node) =>
+                `at ${Math.round(node.getBoundingClientRect().left)}-${Math.round(node.getBoundingClientRect().right)} px`
+            )
+        );
+      if (placed !== "whole") {
+        wrong.push(`${at}: Priority to advance stands ${placed}, out of the window or the rail`);
+      }
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): one issue's Conversation at two widths, its decided ask changed four times.
+// INFRA-3135, round 14 (the tester's, measured in builds Job infra-3135-r14flake at aa057a19):
+// Change answer on a decided ask takes itself away and puts the answer form in its place, as
+// Add a priority's + does, and the page's rescue decides where the focus lands. At the merge
+// base d85d81e6 the focus falls to the body in all three engines; at aa057a19 Chromium puts it
+// on the turn's 'Open live conversation' link, and Firefox and WebKit on the session button or
+// Pin, scrolling the page 65 px at 1440 on a click, so it lands on a control the reader did not
+// press and that differs by engine. The architect's hand-off ruling (2026-11-18T11:17Z) gives the
+// landing: the control now at the pressed one's place, the form's own first control. A focused
+// control taken away, for which these engines fire no `focusout`: the clause of the `webkit`
+// and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts). By a
+// press of Enter and by a click, at 1440 and 390: the focus is in the answer form, whose first
+// choice stands whole in the window.
+test("Change answer opens the answer form with the focus in it, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Release train" });
+  const ask = await createAsk(
+    issue.key,
+    { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
+    SURFACE_SESSION
+  );
+  await answerAsk(ask.id, { expected_edited_at: null, selected: ["Ship"] });
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    for (const press of ["Enter", "click"] as const) {
+      const at = `${size.width}x${size.height}, by ${press}`;
+      await page.goto(`/issues/${issue.key}/conversation`);
+      const turn = page.locator(`[data-turn="ask:${ask.id}"]`);
+      await expect(turn).toContainText("Answered by alice");
+      const change = turn.getByRole("button", { name: "Change answer" });
+      await change.scrollIntoViewIfNeeded();
+      if (press === "Enter") {
+        await change.focus();
+        await page.keyboard.press("Enter");
+      } else {
+        await change.click();
+      }
+      const form = turn.locator("form").filter({ has: page.getByRole("radio", { name: "Ship" }) });
+      await expect(form, `${at}: Change answer opened no answer form`).toBeVisible();
+      const inForm = await expect(form.locator(":focus"))
+        .toHaveCount(1)
+        .then(
+          () => true,
+          () => false
+        );
+      if (!inForm) {
+        const holder = await page.evaluate(
+          () =>
+            `${document.activeElement?.tagName.toLowerCase()} "${document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.trim().slice(0, 40)}"`
+        );
+        wrong.push(`${at}: the focus is on ${holder}, not in the answer form`);
+      }
+      const ship = form.getByRole("radio", { name: "Ship" });
+      const whole = await expect
+        .poll(() =>
+          ship.evaluate((node) => {
+            const box = node.getBoundingClientRect();
+            return (
+              box.top >= 0 &&
+              box.bottom <= window.innerHeight &&
+              box.left >= 0 &&
+              box.right <= window.innerWidth
+            );
+          })
+        )
+        .toBe(true)
+        .then(
+          () => true,
+          () => false
+        );
+      if (!whole) wrong.push(`${at}: the form's first choice, Ship, is not whole in the window`);
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});

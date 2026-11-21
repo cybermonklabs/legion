@@ -197,6 +197,8 @@ export const realStackReasons: Record<string, string> = {
   "keyboard-agents-pin.e2e.ts": "sends, uploads and read marks in flight across the pin",
   "keyboard-agents.e2e.ts":
     "the upload's target is the server's record; upload and send against the server; the delivered mention is the assertion",
+  "keyboard-complete.e2e.ts":
+    "the snooze, review, priority, status, assignee, repository, hand-on, answer and dismiss writes each key sends, counted at the server's routes and read back; the assignee, question-back and read-mark writes the command bar's actions send; writes held at the server while a control keeps the focus; the live document; the Inbox drawer over another page; two tabs of one browser; every page of the review corpus walked by the keyboard",
   "keyboard-document.e2e.ts": "comments made from the live document editor",
   "keyboard-inbox.e2e.ts": "snooze write; server refusal; server refusals",
   "keyboard-issue.e2e.ts":
@@ -281,6 +283,10 @@ export const realStackReasons: Record<string, string> = {
     "the attempt is the server's count of the daemon's writes, and a start written twice keeps the server's first",
   "stored-text-reading.e2e.ts":
     "each row reads a body the live server stored and drew as its own tree, and the server's reading is what the row compares against the browser's: a recording would answer a tree recorded elsewhere rather than the one this server sends for those bytes",
+  "table-controls.e2e.ts":
+    "the Agents page folds a session by its last_seen against the clock and the Delivery page reads a window of dates, both of which a recording freezes; the rest count seeded rows against each other - a filter's count beside each of its values, the number waiting on the reader, the pager's total - and write before they read: a column resize, a reorder and a visibility kept for the reader, a Board disclosure and an Artifacts narrowing read back after a reload, and Mark all read",
+  "table-header-room.e2e.ts":
+    "the Delivery page reads a window of dates, which a recording freezes, and its list draws the pull requests the server answers for that window",
   "task-items.e2e.ts": "asserts inside the live document editor",
   "text-typed-blocks.e2e.ts": "the live document editor, including typing a new option",
   "threads-order.e2e.ts":

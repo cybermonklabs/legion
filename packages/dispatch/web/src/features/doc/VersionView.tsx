@@ -7,6 +7,7 @@ import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
+import { useLinkOpener } from "../refs/link-open";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { watchPicturePath } from "../refs/reference-target";
 import { Timestamp } from "../refs/Timestamp";
@@ -14,7 +15,7 @@ import { textSourceOf } from "../refs/text-references";
 import { AskBlockCard } from "./AskBlockCard";
 import { type ChangeBaseline, changeMarksAgainst } from "./change-marks";
 import { colorForLogin } from "./connection";
-import { DocumentReferences, useReferenceClick } from "./document-references";
+import { DocumentReferences } from "./document-references";
 import { createDoc, type EditorHandle } from "./editor";
 import type { Highlight } from "./highlight";
 import { embedHighlight } from "./highlight";
@@ -87,7 +88,10 @@ export function VersionView({
   // Where a `#id` in this version's text resolves: the document it is a version of, whose
   // latest version's question blocks declare the asks it names, as the server reads them.
   const textSource = useMemo(() => textSourceOf("artifact", artifactId), [artifactId]);
-  const followReference = useReferenceClick();
+  // The page's link opener, which the editor calls for a click on one of its links: a past
+  // version takes no edits, so Tab reaches each link and Enter opens it the same way. It is one
+  // function for the life of this view, so the editor, which reads its options once, holds it.
+  const openLink = useLinkOpener();
 
   // `ProofDocument` renders this view and forwards `highlight`; `ArtifactDocument` above it
   // builds that object afresh on every render. So the editor effect below keys on what the
@@ -145,6 +149,7 @@ export function VersionView({
         blockSchema: compiledBlockSchema,
         heatMapMode: "hidden",
         onAskBlockHosts: setAskBlockHosts,
+        openLink,
         user: { color: colorForLogin(login), name: login },
         watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
         ydoc: doc,
@@ -212,7 +217,7 @@ export function VersionView({
       ydoc?.destroy();
       setEditorHandle(undefined);
     };
-  }, [baseline, createEditor, highlighted, login, markdown, queryClient, tree]);
+  }, [baseline, createEditor, highlighted, login, markdown, openLink, queryClient, tree]);
 
   if (versionQuery.isPending) {
     return <p>Loading version…</p>;
@@ -241,14 +246,7 @@ export function VersionView({
       {renderError === undefined ? null : (
         <p role="alert">This version could not be rendered: {renderError}</p>
       )}
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: dispatch:// link clicks bubble here; the
-      editor already handles keyboard activation of its own links. */}
-      <article
-        aria-label="Document"
-        className="dispatch-doc"
-        data-read-only="true"
-        onClick={followReference}
-      >
+      <article aria-label="Document" className="dispatch-doc" data-read-only="true">
         <div ref={root} />
         <DocumentReferences editor={editorHandle} source={textSource} />
         {askBlockHosts.map((host) => {

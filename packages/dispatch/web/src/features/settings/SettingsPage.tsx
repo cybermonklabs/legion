@@ -6,17 +6,24 @@ import { api, apiErrorMessage } from "../../api/client";
 import { projectsQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { RepoProject } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
+import {
+  TableBody,
+  TableCell,
+  TableEmpty,
+  TableHead,
+  TableHeadCell,
+  TableRow,
+  TableShell,
+} from "../../components/TableShell";
 import {
   borderDefault,
   dangerHoverText,
   dangerText,
   textMutedOnCanvas,
-  textMutedOnSurface,
   textPrimaryOnCanvas,
-  textPrimaryOnSurface,
   textSecondaryOnCanvas,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
 import { GrantsSection } from "../credentials/GrantsSection";
 import { credentialPendingQuery } from "../credentials/pending";
@@ -34,12 +41,10 @@ import {
   settingsMonoInput,
   settingsSectionGap,
   settingsSubmitButton,
-  settingsTableHead,
-  settingsTableRow,
-  settingsTableWrapper,
 } from "./classes";
+import { KeyboardShortcutsSection } from "./KeyboardShortcutsSection";
 import { LegionDaemonsSection } from "./LegionDaemonsSection";
-import { ProjectSelect } from "./ProjectSelect";
+import { NoProjectPicked, ProjectSelect } from "./ProjectSelect";
 import { ProjectsSection } from "./ProjectsSection";
 
 interface MappingInput {
@@ -73,6 +78,8 @@ export function SettingsPage(): ReactNode {
   const queryClient = useQueryClient();
   const [repository, setRepository] = useState("");
   const [project, setProject] = useState("");
+  // The form was submitted with no project picked, and says so until one is.
+  const [projectMissing, setProjectMissing] = useState(false);
   const [failedAction, setFailedAction] = useState<FailedAction>();
   const mappings = useQuery({ queryKey: ["repo-projects"], queryFn: () => api.listRepoProjects() });
   const projects = useQuery(projectsQuery());
@@ -195,8 +202,17 @@ export function SettingsPage(): ReactNode {
       deleteMapping.retry();
     }
   };
+  // Every mapping control is held, not disabled, while either mapping write is out: it keeps the
+  // focus the press gave it (`heldPress`), and a press on it then sends nothing.
+  const mappingHeld = putMapping.isPending || deleteMapping.isPending;
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (mappingHeld) return;
+    // The project list is a button, which no `required` holds: an empty one files nothing here.
+    if (project === "") {
+      setProjectMissing(true);
+      return;
+    }
     const [owner, repo] = repository.split("/", 2);
     putMapping.mutate({ project, repo: canonicalRepo(owner ?? "", repo ?? "") });
   };
@@ -254,74 +270,58 @@ export function SettingsPage(): ReactNode {
           ) : null}
           {mappings.isSuccess && projects.isSuccess ? (
             <>
-              <div className={settingsTableWrapper}>
-                <table className="w-full text-left text-sm">
-                  <thead className={settingsTableHead}>
-                    <tr>
-                      <th className="px-4 py-3 font-semibold" scope="col">
-                        Repository
-                      </th>
-                      <th className="px-4 py-3 font-semibold" scope="col">
-                        Project
-                      </th>
-                      <th className="px-4 py-3 font-semibold" scope="col">
-                        Default
-                      </th>
-                      <th className="px-4 py-3" scope="col">
-                        <span className="sr-only">Actions</span>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {mappings.data.length === 0 ? (
-                      <tr>
-                        <td className={`px-4 py-5 ${textMutedOnSurface}`} colSpan={4}>
-                          No repository mappings yet.
-                        </td>
-                      </tr>
-                    ) : (
-                      mappings.data.map((mapping) => (
-                        <tr className={settingsTableRow} key={mapping.repo}>
-                          <td className={`px-4 py-3 font-mono ${textPrimaryOnSurface}`}>
-                            {mapping.repo}
-                          </td>
-                          <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
-                            {mapping.project}
-                          </td>
-                          <td className="px-4 py-3">
-                            <input
-                              aria-label={`Default repository of ${mapping.project}: ${mapping.repo}`}
-                              checked={mapping.default}
-                              className="size-4 cursor-pointer disabled:cursor-not-allowed"
-                              disabled={deleteMapping.isPending || putMapping.isPending}
-                              name={`default-repository-${mapping.project}`}
-                              onChange={() =>
-                                putMapping.mutate({
-                                  default: true,
-                                  project: mapping.project,
-                                  repo: mapping.repo,
-                                })
-                              }
-                              type="radio"
-                            />
-                          </td>
-                          <td className="px-4 py-3 text-right">
-                            <button
-                              aria-label={`Delete mapping for ${mapping.repo}`}
-                              className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
-                              disabled={deleteMapping.isPending || putMapping.isPending}
-                              onClick={() => deleteMapping.mutate(mapping.repo)}
-                              type="button"
-                            >
-                              Delete
-                            </button>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
+              <TableShell className="mt-6" label="Repository mappings">
+                <TableHead>
+                  <TableHeadCell>Repository</TableHeadCell>
+                  <TableHeadCell>Project</TableHeadCell>
+                  <TableHeadCell>Default</TableHeadCell>
+                  <TableHeadCell>
+                    <span className="sr-only">Actions</span>
+                  </TableHeadCell>
+                </TableHead>
+                <TableBody>
+                  {mappings.data.length === 0 ? (
+                    <TableEmpty colSpan={4}>No repository mappings yet.</TableEmpty>
+                  ) : (
+                    mappings.data.map((mapping) => (
+                      <TableRow key={mapping.repo}>
+                        <TableCell mono tone="primary">
+                          {mapping.repo}
+                        </TableCell>
+                        <TableCell tone="secondary">{mapping.project}</TableCell>
+                        <TableCell>
+                          <input
+                            aria-disabled={mappingHeld || undefined}
+                            aria-label={`Default repository of ${mapping.project}: ${mapping.repo}`}
+                            checked={mapping.default}
+                            className="size-4 cursor-pointer refused:cursor-not-allowed aria-disabled:opacity-50"
+                            name={`default-repository-${mapping.project}`}
+                            onChange={() => {
+                              if (mappingHeld) return;
+                              putMapping.mutate({
+                                default: true,
+                                project: mapping.project,
+                                repo: mapping.repo,
+                              });
+                            }}
+                            type="radio"
+                          />
+                        </TableCell>
+                        <TableCell align="right">
+                          <button
+                            aria-label={`Delete mapping for ${mapping.repo}`}
+                            className={`font-medium refused:cursor-not-allowed refused:opacity-50 ${dangerText} ${dangerHoverText}`}
+                            {...heldPress(mappingHeld, () => deleteMapping.mutate(mapping.repo))}
+                            type="button"
+                          >
+                            Delete
+                          </button>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </TableShell>
 
               <form
                 className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end ${borderDefault}`}
@@ -339,23 +339,24 @@ export function SettingsPage(): ReactNode {
                     value={repository}
                   />
                 </label>
-                <label className={settingsFieldLabel} htmlFor="project">
-                  Project
-                  <ProjectSelect
-                    id="project"
-                    onChange={setProject}
-                    projects={projects.data}
-                    value={project}
-                  />
-                </label>
+                <ProjectSelect
+                  label="Project"
+                  onChange={(picked) => {
+                    setProject(picked);
+                    setProjectMissing(false);
+                  }}
+                  projects={projects.data}
+                  value={project}
+                />
                 <button
+                  aria-disabled={mappingHeld || undefined}
                   className={settingsSubmitButton}
-                  disabled={putMapping.isPending || deleteMapping.isPending}
                   type="submit"
                 >
                   Add mapping
                 </button>
               </form>
+              {projectMissing ? <NoProjectPicked /> : null}
               {failedAction !== undefined ? (
                 <div className="mt-4">
                   <QueryError
@@ -383,6 +384,7 @@ export function SettingsPage(): ReactNode {
           <DeliverySettingsForm />
         </section>
         <IssuePagePreference />
+        <KeyboardShortcutsSection />
         <LegionDaemonsSection />
       </div>
     </section>

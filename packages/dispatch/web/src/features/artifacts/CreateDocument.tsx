@@ -90,7 +90,7 @@ export function CreateDocument({
     onSuccess: (made) => {
       setCreating(false);
       setTitle("");
-      refreshOwnerArtifacts(queryClient, owner);
+      void refreshOwnerArtifacts(queryClient, owner);
       // Made, with no answer to open: the form closes, so a second press makes nothing, and the
       // control says what was made (`create.unanswered`).
       if (made === null) return;

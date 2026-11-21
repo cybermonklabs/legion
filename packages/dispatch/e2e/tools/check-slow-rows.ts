@@ -9,7 +9,9 @@
  *  directly above its `test(` or `test.describe(` call: the next line that is neither blank nor
  *  another comment. A marker above a `test.describe(` marks every row of that block; a marker
  *  above a `test(` inside a loop marks every row that call generates, since every one of them
- *  reports that call's line.
+ *  reports that call's line. TypeScript decides what a comment is (`stripComments`): a line of a
+ *  template literal that begins `// SLOW(>=2s):` is that template's text and marks nothing, and
+ *  a block comment between a marker and its call is another comment, as a `//` line is.
  *
  *  A report is a snapshot of a tree that goes on moving: a marker written above a row moves that
  *  row down by its own length, and every line added or taken above one moves it too. So a marked
@@ -48,6 +50,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
 
+import { stripComments } from "../../web/src/__tests__/strip-comments";
+
 const usage =
   "usage: bun e2e/tools/check-slow-rows.ts <report.json> [--slow-ms <n>] [--dir <e2e>]\n" +
   "  <report.json>  a Playwright JSON report (--reporter=json, PLAYWRIGHT_JSON_OUTPUT_NAME)\n" +
@@ -56,7 +60,6 @@ const usage =
 
 /** The marker's exact form. The reason is what the row's author wrote after the colon. */
 const markerPattern = /^\s*\/\/\s*SLOW\(>=2s\):\s*(?<reason>.+?)\s*$/u;
-const commentPattern = /^\s*\/\//u;
 const describePattern = /^(?<indent>\s*)test\.describe[.(]/u;
 const testPattern = /^\s*test[.(]/u;
 /** The title of a marked `test(` call, where the call gives it as one plain string literal. */
@@ -143,31 +146,34 @@ export function reportRows(report: { readonly suites?: readonly ReportSuite[] })
   return rows;
 }
 
-/** The last line of the block a `test.describe(` opens at `lines[start]`: the next line that
+/** The last line of the block a `test.describe(` opens at `code[start]`: the next line that
  *  closes a call at that call's own indentation. The repository is formatted by Biome, so a
  *  block's closer is the only `});` back at the opener's column. */
-function blockEnd(lines: readonly string[], start: number, indent: string): number {
-  for (let index = start + 1; index < lines.length; index += 1) {
-    if (lines[index] === `${indent}});`) return index + 1;
+function blockEnd(code: readonly string[], start: number, indent: string): number {
+  for (let index = start + 1; index < code.length; index += 1) {
+    if (code[index] === `${indent}});`) return index + 1;
   }
-  return lines.length;
+  return code.length;
 }
 
 /** Every marker of one spec file's source, each attributed to the call it sits directly above:
  *  the next line that is neither blank nor another comment. A marker above anything else is left
- *  out - it marks no row, and the caller counts markers only where they can be used. */
+ *  out - it marks no row, and the caller counts markers only where they can be used. `file`'s
+ *  extension picks the grammar the comments are read with. */
 export function markersIn(file: string, source: string): readonly Marker[] {
   const lines = source.split("\n");
+  // The source with every comment blanked and every line where it was: a line left blank here is
+  // blank or comment alone, and a line that still holds text is code, a string's or a
+  // template's text included.
+  const code = stripComments(source, file).split("\n");
   const markers: Marker[] = [];
   for (let index = 0; index < lines.length; index += 1) {
     const reason = markerPattern.exec(lines[index])?.groups?.reason;
-    if (reason === undefined) continue;
+    if (reason === undefined || code[index].trim() !== "") continue;
     let next = index + 1;
-    while (next < lines.length && (lines[next].trim() === "" || commentPattern.test(lines[next]))) {
-      next += 1;
-    }
-    if (next >= lines.length) continue;
-    const describe = describePattern.exec(lines[next]);
+    while (next < code.length && code[next].trim() === "") next += 1;
+    if (next >= code.length) continue;
+    const describe = describePattern.exec(code[next]);
     if (describe?.groups !== undefined) {
       markers.push({
         file,
@@ -175,12 +181,12 @@ export function markersIn(file: string, source: string): readonly Marker[] {
         line: index + 1,
         reason,
         target: next + 1,
-        targetEnd: blockEnd(lines, next, describe.groups.indent),
+        targetEnd: blockEnd(code, next, describe.groups.indent),
       });
       continue;
     }
-    if (testPattern.test(lines[next])) {
-      const title = titlePattern.exec(lines[next])?.groups?.title;
+    if (testPattern.test(code[next])) {
+      const title = titlePattern.exec(code[next])?.groups?.title;
       markers.push({
         file,
         kind: "test",

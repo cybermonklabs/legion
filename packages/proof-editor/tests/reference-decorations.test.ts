@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { TextSelection } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import type { EditorReferences, ReferenceCandidate, ReferenceTarget } from "../src/lib";
+import { referenceAt } from "../src/reference-decorations";
 import { withMarksEditor } from "./marks-editor";
 
 /** A stand-in for the host's reader: a `dispatch://` address, an issue key or a `#id` (`#` and
@@ -20,10 +21,20 @@ function readReferences(text: string): ReferenceCandidate[] {
 
 const CORE_1: ReferenceTarget = {
   href: "dispatch://CORE-1",
+  path: "/issues/CORE-1",
   title: "CORE-1 Fix the thing",
   titleKey: "CORE-1",
 };
-const Q2: ReferenceTarget = { href: "dispatch://CORE-1/ask/q2-uuid", title: "Which way?" };
+const Q2: ReferenceTarget = {
+  href: "dispatch://CORE-1/ask/q2-uuid",
+  path: "/issues/CORE-1/asks/q2-uuid",
+  title: "Which way?",
+};
+const SPEC: ReferenceTarget = {
+  href: "dispatch://CORE-1/spec",
+  path: "/issues/CORE-1/spec",
+  title: "spec.md",
+};
 
 /** The host's side of the titles: what it last handed the editor, every text the editor read
  *  through it, and every key set the editor reported. */
@@ -196,13 +207,20 @@ test("a link whose text is its own address is drawn with its target's title", as
     ({ handle, view }) => {
       handle.setReferences(host.references);
       expect(host.reported).toEqual([["dispatch://CORE-1/spec"]]);
-      const spec: ReferenceTarget = { href: "dispatch://CORE-1/spec", title: "spec.md" };
-      resolve(handle, host, { "dispatch://CORE-1/spec": spec });
+      resolve(handle, host, { "dispatch://CORE-1/spec": SPEC });
 
       expect(titles(view)).toEqual([{ href: "dispatch://CORE-1/spec", text: "spec.md" }]);
       expect(hidden(view)).toEqual(["dispatch://CORE-1/spec"]);
-      // The title stands beside the anchor, never inside it: a link in a link is no link.
-      expect(view.dom.querySelector("a a")).toBeNull();
+      // The title stands inside the link, which is the one link there: the title carries no
+      // address of its own (an `a` with no `href` is no link), and the link it stands in draws
+      // it, so the one stop of Tab there draws the title rather than hidden text alone.
+      const title = view.dom.querySelector("a.dispatch-reference");
+      const link = title?.parentElement?.closest("a");
+      expect(title?.hasAttribute("href")).toBe(false);
+      expect(title?.hasAttribute("tabindex")).toBe(false);
+      expect(link?.getAttribute("data-dispatch-href")).toBe("dispatch://CORE-1/spec");
+      expect(view.dom.querySelectorAll("a:not(.dispatch-reference)")).toHaveLength(1);
+      expect(link?.textContent).toContain("spec.md");
     }
   );
 });
@@ -213,8 +231,8 @@ test("a link whose text its author wrote keeps those words", async () => {
     handle.setReferences(host.references);
     expect(host.reported).toEqual([]);
     resolve(handle, host, {
-      "dispatch://CORE-1/spec": { href: "dispatch://CORE-1/spec", title: "spec.md" },
-      "the decision": { href: "dispatch://CORE-1/spec", title: "spec.md" },
+      "dispatch://CORE-1/spec": SPEC,
+      "the decision": SPEC,
     });
 
     expect(titles(view)).toEqual([]);
@@ -259,7 +277,7 @@ test("drawing titles changes neither the document nor its Markdown", async () =>
     resolve(handle, host, {
       "#q2": Q2,
       "CORE-1": CORE_1,
-      "dispatch://CORE-1/spec": { href: "dispatch://CORE-1/spec", title: "spec.md" },
+      "dispatch://CORE-1/spec": SPEC,
     });
     setFocus(view, true);
     select(view, 5);
@@ -301,6 +319,82 @@ test("an edit re-reads the text it touched and nothing else", async () => {
     view.dispatch(view.state.tr.insertText(" ", 13));
     expect(host.reported.at(-1)).toEqual(["CORE-2"]);
     expect(titles(view)).toEqual([]);
+  });
+});
+
+/** Each drawn title's own address and its place in the tab order, in document order. */
+function titleLinks(view: EditorView): Array<{ href: string | null; tabindex: string | null }> {
+  return Array.from(view.dom.querySelectorAll("a.dispatch-reference"), (link) => ({
+    href: link.getAttribute("href"),
+    tabindex: link.getAttribute("tabindex"),
+  }));
+}
+
+test("a title links to its target's page, and Tab reaches it only where the reader cannot edit", async () => {
+  for (const access of ["edit", "comment", "read"] as const) {
+    const host = hostReferences();
+    await withMarksEditor(
+      "See CORE-1 here.",
+      ({ handle, view }) => {
+        handle.setReferences(host.references);
+        resolve(handle, host, { "CORE-1": CORE_1 });
+
+        // While the reader edits the document, Alt+Enter opens a title from the text beside it
+        // and Tab never stops on it; a document the reader only comments on or reads is a page
+        // of links, which Tab walks.
+        expect({ access, links: titleLinks(view) }).toEqual({
+          access,
+          links: [{ href: "/issues/CORE-1", tabindex: access === "edit" ? "-1" : null }],
+        });
+      },
+      { access }
+    );
+  }
+});
+
+test("a change of access redraws the titles into and out of the tab order", async () => {
+  const host = hostReferences();
+  await withMarksEditor("See CORE-1 and #q2 here.", ({ handle, view }) => {
+    const stored = handle.getMarkdown();
+    handle.setReferences(host.references);
+    resolve(handle, host, { "#q2": Q2, "CORE-1": CORE_1 });
+    const tabIndexes = () => titleLinks(view).map((link) => link.tabindex);
+    expect(tabIndexes()).toEqual(["-1", "-1"]);
+
+    handle.setAccess("read");
+    expect(tabIndexes()).toEqual([null, null]);
+    handle.setAccess("comment");
+    expect(tabIndexes()).toEqual([null, null]);
+    handle.setAccess("edit");
+    expect(tabIndexes()).toEqual(["-1", "-1"]);
+
+    expect(titleLinks(view).map((link) => link.href)).toEqual([
+      "/issues/CORE-1",
+      "/issues/CORE-1/asks/q2-uuid",
+    ]);
+    expect(handle.getMarkdown()).toBe(stored);
+  });
+});
+
+test("the reference at a position is the one whose title stands for the text there or beside it", async () => {
+  const host = hostReferences();
+  // Its paragraph opens at 0, so the text starts at 1: CORE-1 is 5 to 11, #q2- is 16 to 20 with
+  // its title standing for #q2 alone (16 to 19), and CORE-2 is 24 to 30.
+  await withMarksEditor("See CORE-1 and #q2- or CORE-2.", ({ handle, view }) => {
+    handle.setReferences(host.references);
+    resolve(handle, host, { "#q2-": { ...Q2, length: 3 }, "CORE-1": CORE_1, "CORE-2": null });
+    const at = (pos: number) => referenceAt(view.state, pos)?.href;
+
+    for (const pos of [5, 8, 11]) {
+      expect({ pos, reference: at(pos) }).toEqual({ pos, reference: "dispatch://CORE-1" });
+    }
+    for (const pos of [16, 19]) {
+      expect({ pos, reference: at(pos) }).toEqual({ pos, reference: Q2.href });
+    }
+    // Beside the text, after the hyphen the author kept, and over a key no issue holds: none.
+    for (const pos of [4, 12, 20, 26]) {
+      expect({ pos, reference: at(pos) }).toEqual({ pos, reference: undefined });
+    }
   });
 });
 

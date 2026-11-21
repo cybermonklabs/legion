@@ -89,6 +89,7 @@ function CardBody({ ask, onAnswered, onSnoozeLive, viewer }: PaneFlowProps): Rea
           onNextChange={undefined}
           onSkipToAnswer={undefined}
           onSnoozeLive={onSnoozeLive}
+          readFailed={false}
           sectionBlockId={undefined}
           viewer={viewer}
         />
@@ -330,6 +331,7 @@ function ApprovalBody({
           onNextChange={marked ? nextChange : undefined}
           onSkipToAnswer={undefined}
           onSnoozeLive={onSnoozeLive}
+          readFailed={artifactQuery.isError && artifact === undefined}
           sectionBlockId={undefined}
           viewer={viewer}
         />
@@ -367,6 +369,7 @@ function DecisionBody({
           onNextChange={undefined}
           onSkipToAnswer={document.showsDocument ? document.skipToBlock : undefined}
           onSnoozeLive={onSnoozeLive}
+          readFailed={document.failed}
           sectionBlockId={document.sectionBlockId}
           viewer={viewer}
         />

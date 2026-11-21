@@ -147,7 +147,7 @@ async function renderSection(section: Section): Promise<HTMLElement> {
 }
 
 for (const section of sections) {
-  test(`${section.heading}: Revoke is disabled while a revoke is out, and enabled once it settles`, async () => {
+  test(`${section.heading}: Revoke is held while a revoke is out, and pressable once it settles`, async () => {
     const user = userEvent.setup();
     const out = Promise.withResolvers<void>();
     const stubs = section.stub(() => out.promise);
@@ -156,14 +156,18 @@ for (const section of sections) {
       const button = await renderSection(section);
       await user.click(button);
       await waitFor(() => expect(stubs.revokeCalls()).toEqual([[section.rowId, keyedAttempt]]));
-      await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(true));
+      await waitFor(() => expect(button).toHaveAttribute("aria-disabled", "true"));
+      expect(button.hasAttribute("disabled")).toBe(false);
+      // A second press while the revoke is out asks nothing more and sends nothing.
+      const asked = confirm.mock.calls.length;
+      await user.click(button);
+      expect(confirm).toHaveBeenCalledTimes(asked);
+      expect(stubs.revokeCalls()).toHaveLength(1);
 
       out.resolve();
       const region = within(screen.getByRole("region", { name: section.heading }));
       await waitFor(() =>
-        expect((region.getByRole("button", { name: "Revoke" }) as HTMLButtonElement).disabled).toBe(
-          false
-        )
+        expect(region.getByRole("button", { name: "Revoke" })).not.toHaveAttribute("aria-disabled")
       );
     } finally {
       cleanup();

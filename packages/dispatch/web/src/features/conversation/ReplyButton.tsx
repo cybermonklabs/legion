@@ -1,25 +1,25 @@
 import type { ReactNode } from "react";
 
+import { heldPress } from "../../components/held-press";
 import { linkHoverText, linkText } from "../../theme/classes";
 
 /** The Reply action on a message turn: an icon-only button whose 44 px tap target shrinks to
- *  32 px on desktop like the copy-reference and pin controls beside it. `disabled` holds it while
- *  the composer it would address is busy with a send. */
+ *  32 px on desktop like the copy-reference and pin controls beside it. `held` holds it while
+ *  the composer it would address is busy with a send (`heldPress`). */
 export function ReplyButton({
   className = "",
-  disabled = false,
+  held = false,
   onClick,
 }: {
   className?: string;
-  disabled?: boolean;
+  held?: boolean;
   onClick: () => void;
 }): ReactNode {
   return (
     <button
       aria-label="Reply"
-      className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg disabled:cursor-not-allowed disabled:opacity-50 md:min-h-8 md:min-w-8 ${linkText} ${linkHoverText} ${className}`}
-      disabled={disabled}
-      onClick={onClick}
+      className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg refused:cursor-not-allowed refused:opacity-50 md:min-h-8 md:min-w-8 ${linkText} ${linkHoverText} ${className}`}
+      {...heldPress(held, onClick)}
       title="Reply"
       type="button"
     >

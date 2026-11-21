@@ -10,10 +10,11 @@ import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { highlightedRow, listOf, textBoxes } from "../../__tests__/list-picks";
 import { expectSameElements } from "../../__tests__/same-elements";
 import { answerThreadReads } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
-import { askThreadQuery, myRepliesOwnerQuery } from "../../api/queries";
+import { askThreadQuery, myRepliesOwnerQuery, usersQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type {
   AnswerAskInput,
@@ -649,6 +650,35 @@ test("a first approval request shows no earlier approval and no diff control", a
   }
 });
 
+// The compact card - the margin's, the review sheet's - marks its approval options for the keys
+// as the full one does, and its Request changes opens the reason behind its disclosure. Escape
+// there lets go of the pick and leaves the box open on what was typed, so a focus a host moves
+// on the same key is not dropped by a box unmounting under it.
+test("a compact approval card marks its options, and Escape in its reason drops the Request changes pick", async () => {
+  const user = userEvent.setup();
+  const ask = approvalAsk();
+  const { view } = renderCard(
+    <AskCard ask={ask} documentLink={false} initialThread={thread(ask)} variant="compact" />
+  );
+  const card = within(view.container);
+  try {
+    const approve = await card.findByRole("radio", { name: "Approve" });
+    expect(approve).toHaveAttribute("data-ask-approval", "approve");
+    const requestChanges = card.getByRole("radio", { name: "Request changes" });
+    expect(requestChanges).toHaveAttribute("data-ask-approval", "request-changes");
+
+    await user.click(requestChanges);
+    const reason = card.getByLabelText("Reason (required)");
+    expect(reason).toHaveFocus();
+    await user.paste("Name the rollback path.");
+    await user.keyboard("{Escape}");
+    expect((requestChanges as HTMLInputElement).checked).toBe(false);
+    expect(card.getByLabelText("Reason")).toHaveValue("Name the rollback path.");
+  } finally {
+    view.unmount();
+  }
+});
+
 test("the diff cuts every decision block, so answers alone leave nothing changed", async () => {
   const user = userEvent.setup();
   const ask = approvalAsk(earlierApproval);
@@ -968,22 +998,191 @@ test("a hand-on reads the ask's thread again, so a card reading that thread foll
   const { view } = renderCard(<ThreadBody thread={replyRow(open.id, { kind: "ask" })} />);
   const card = within(view.container);
   try {
-    const control = await card.findByLabelText<HTMLSelectElement>("Hand this question to");
-    expect(control.value).toBe("");
+    const control = await card.findByLabelText("Hand this question to");
+    expect(control).toHaveAccessibleName("Hand this question to Asked of nobody");
     // The people are read only once the reader reaches for the control (`AskHandOn`).
     await user.click(control);
-    await waitFor(() => expect(within(control).getByRole("option", { name: "bob" })).toBeTruthy());
+    // The list is portalled to the body, outside the card's own container.
+    const bob = await within(document.body).findByRole("option", { name: "bob" });
     const before = threadReads;
-    await user.selectOptions(control, "bob");
+    await user.click(bob);
     await waitFor(() => expect(handAskTo).toHaveBeenCalled());
     await waitFor(() => expect(threadReads).toBeGreaterThan(before));
     // What that read is for: the person the write moved the ask to is on the screen.
-    await waitFor(() => expect(control.value).toBe("bob"));
+    await waitFor(() =>
+      expect(card.getByLabelText("Hand this question to")).toHaveAccessibleName(
+        "Hand this question to Asked of bob"
+      )
+    );
   } finally {
     view.unmount();
     getAsk.mockRestore();
     handAskTo.mockRestore();
     listMyReplies.mockRestore();
+    listUsers.mockRestore();
+  }
+});
+
+// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
+// options." The card's "Hand this question to" is such a list: its options are the people who
+// have signed in, which grow with the team. Opened, it holds a text box of its own, a word typed
+// into it leaves only the people who match, and a pick hands the question on and puts the focus
+// back on the control.
+test("the hand-on list holds a text box that narrows its people, and a pick hands the question on", async () => {
+  const user = userEvent.setup();
+  const open = answeredAsk({
+    answer: null,
+    asked_of: "alice",
+    state: "open",
+    waiting_on_person: "alice",
+  });
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([
+    { login: "alice" },
+    { login: "bob" },
+    { login: "carol" },
+  ]);
+  const handAskTo = spyOn(api, "handAskTo").mockResolvedValue({
+    ...open,
+    asked_of: "carol",
+    waiting_on_person: "carol",
+  });
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(thread(open, []));
+  const { view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
+  // The list is portalled to the body, outside the card's own container.
+  const page = within(document.body);
+  try {
+    const before = new Set(textBoxes());
+    await user.click(await within(view.container).findByLabelText("Hand this question to"));
+    // The people are read once the reader reaches for the control.
+    await waitFor(() =>
+      expect(page.queryAllByRole("option", { name: /^bob\b/ }).length).toBeGreaterThan(0)
+    );
+    const own = textBoxes().filter((box) => !before.has(box));
+    expect(own, "the hand-on list holds no text box of its own").toHaveLength(1);
+    const list = listOf(own[0] as HTMLElement);
+    expect(within(list).getByRole("option", { name: /^alice\b/ })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    await user.type(own[0] as HTMLElement, "car");
+    await waitFor(() =>
+      expect(
+        within(list).queryAllByRole("option", { name: /^bob\b/ }),
+        `"car" leaves bob in the hand-on list`
+      ).toHaveLength(0)
+    );
+    expect(
+      within(list).queryAllByRole("option", { name: /^alice\b/ }),
+      `"car" leaves alice in the hand-on list`
+    ).toHaveLength(0);
+    await user.click(within(list).getByRole("option", { name: /^carol\b/ }));
+    await waitFor(() => expect(handAskTo).toHaveBeenCalledWith("ask-1", "carol", keyedAttempt));
+    expect(page.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(within(view.container).getByLabelText("Hand this question to")).toHaveFocus();
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+    handAskTo.mockRestore();
+    listUsers.mockRestore();
+  }
+});
+
+// dispatch://INFRA-2160, R6: a hand-on is written the moment a person is picked, so the closed
+// badge takes the list's keys, as a focused `<select>` does: an arrow or a letter only opens the
+// list and moves its highlight, and never reaches the page's keymap, where `b`, `e` and `j` are
+// the Inbox's own keys. Escape writes nothing and leaves the badge on the person it waits on,
+// and only Enter hands the question on.
+test("the hand-on badge's keys open its list and move the highlight, reach no page key, and only Enter hands the question on", async () => {
+  const user = userEvent.setup();
+  const open = answeredAsk({
+    answer: null,
+    asked_of: "alice",
+    state: "open",
+    waiting_on_person: "alice",
+  });
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([
+    { login: "alice" },
+    { login: "bob" },
+    { login: "carol" },
+  ]);
+  const handAskTo = spyOn(api, "handAskTo").mockResolvedValue({
+    ...open,
+    asked_of: "bob",
+    waiting_on_person: "bob",
+  });
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(thread(open, []));
+  const { queryClient, view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
+  const pageKeys: string[] = [];
+  const listen = (event: KeyboardEvent) => {
+    if (!event.defaultPrevented) pageKeys.push(event.key);
+  };
+  window.addEventListener("keydown", listen);
+  try {
+    const control = await within(view.container).findByLabelText("Hand this question to");
+    act(() => control.focus());
+    // The people are read once the reader reaches for the control.
+    await waitFor(() =>
+      expect(queryClient.getQueryState(usersQuery().queryKey)?.status).toBe("success")
+    );
+    expect(listUsers).toHaveBeenCalledTimes(1);
+    for (const [keys, to] of [
+      ["{ArrowDown}", "bob"],
+      ["{End}", "carol"],
+      ["b", "bob"],
+    ] as const) {
+      await user.keyboard(keys);
+      expect(
+        highlightedRow(document.querySelector('[role="combobox"][aria-label="Search people"]')),
+        `${keys} highlights ${to}`
+      ).toBe(to);
+      await user.keyboard("{Escape}");
+      expect(within(document.body).queryByRole("listbox")).not.toBeInTheDocument();
+      expect(control).toHaveFocus();
+      expect(control).toHaveAccessibleName("Hand this question to Asked of alice");
+    }
+    expect(pageKeys, "no key on the closed badge reached the page").toEqual([]);
+    expect(handAskTo).not.toHaveBeenCalled();
+
+    await user.keyboard("b{Enter}");
+    await waitFor(() => expect(handAskTo).toHaveBeenCalledWith("ask-1", "bob", keyedAttempt));
+    expect(handAskTo).toHaveBeenCalledTimes(1);
+  } finally {
+    window.removeEventListener("keydown", listen);
+    view.unmount();
+    getAsk.mockRestore();
+    handAskTo.mockRestore();
+    listUsers.mockRestore();
+  }
+});
+
+// INFRA-3135, round 12: the hand-on list passed no failure, so after a failed read of the people
+// it offered the person the question waits on as if that were everyone, with nothing to say the
+// people never came. It says so, as the Inbox's own people list does.
+test("the hand-on list says the people could not be loaded when their read fails", async () => {
+  const user = userEvent.setup();
+  const open = answeredAsk({
+    answer: null,
+    asked_of: "alice",
+    state: "open",
+    waiting_on_person: "alice",
+  });
+  const listUsers = spyOn(api, "listUsers").mockRejectedValue(new Error("users unreachable"));
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(thread(open, []));
+  const { view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
+  // The list is portalled to the body, outside the card's own container.
+  const page = within(document.body);
+  try {
+    await user.click(await within(view.container).findByLabelText("Hand this question to"));
+    const list = await page.findByRole("listbox", { name: "Hand this question to options" });
+    const panel = list.parentElement as HTMLElement;
+    expect(await within(panel).findByText("Could not load the people list.")).toBeTruthy();
+    expect(within(list).getByRole("option", { name: /^alice\b/ })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
     listUsers.mockRestore();
   }
 });

@@ -83,13 +83,13 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
-    # 540 + 120 + 120 + 524 = 1,304 s, 21 min 44 s, rounded up to the 22 minutes below.
-    timeout-minutes: 22
+    # 600 + 120 + 120 + 524 = 1,364 s, 22 min 44 s, rounded up to the 23 minutes below.
+    timeout-minutes: 23
     strategy:
       fail-fast: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-leg-count-stands-in-two-places
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -147,10 +147,10 @@ jobs:
       - name: Wait for the S3-compatible server
         # why: .github/ci-notes/dispatch-browser.md#why-the-stores-readiness-wait-writes-reads-and-deletes-an-object
         run: .github/scripts/dispatch-browser-wait-for-store.sh
-      - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)
+      - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 5)
         # why: .github/ci-notes/dispatch-browser.md#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is
-        # 419 x 1.15 = 482 s -> 9 min.
-        timeout-minutes: 9
+        # 486 x 1.15 = 559 s -> 10 min.
+        timeout-minutes: 10
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-shard-suite.sh" "${{ matrix.shard }}" "${{ inputs.lane }}" \
             "${{ needs.binaries.outputs.connections }}"

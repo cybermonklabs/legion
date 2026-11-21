@@ -28,6 +28,7 @@ import {
   parseIssuePath,
 } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
+import type { KeymapActionId } from "../shell/keymap-catalogue";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { StepsTab } from "../steps/StepsTab";
@@ -35,10 +36,12 @@ import { VerificationTab } from "../verification/VerificationTab";
 import { ChildrenTab } from "./ChildrenTab";
 import { CollaboratorsTab } from "./CollaboratorsTab";
 import { DecisionsPanel } from "./DecisionsPanel";
+import { usableControl } from "./header-control";
 import { IssueHeader } from "./IssueHeader";
 import { IssueTabs } from "./IssueTabs";
 import { ItemMatchList } from "./ItemMatchList";
 import { issuePriority } from "./issue-priority";
+import { issueTabs } from "./issue-tab-list";
 import { stateForIssue } from "./pins";
 import { SpecRequirements } from "./SpecRequirements";
 import { SpecToolbar } from "./SpecToolbar";
@@ -96,31 +99,12 @@ function ItemLandingFailure({
   );
 }
 
-/**
- * What the `issue` scope acts on. Every target is a control the header or the tablist already
- * renders, so a key does exactly what a click on it does. Scoping the lookup to
- * `[data-issue-header]` keeps a child issue's row in the Children tab - it carries the same
- * accessible names - out of reach.
- */
-const HEADER = "[data-issue-header]";
+/** The header controls the `issue` scope presses (`usableControl`, `header-control.ts`). */
 const LABELS_TRIGGER = 'button[aria-label="Edit labels"]';
 const PIN_TOGGLE = 'button[aria-label="Pin issue"], button[aria-label="Unpin issue"]';
-const PRIORITY_SELECT = 'select[aria-label^="Priority of "]';
-const STATUS_SELECT = 'select[aria-label="Status"]';
+const PRIORITY_MENU = "[data-priority-menu]";
+const STATUS_MENU = "[data-status-menu]";
 const TITLE_HEADING = 'h1[tabindex="0"]';
-
-/** The header control `selector` names, or `null` when it is absent or refuses input (a closed
- *  issue, a save in flight): the one fact both the key's `run` and the `when` that offers it read,
- *  so a shortcut is listed exactly while its control would take a click. */
-function usableControl(selector: string): HTMLElement | null {
-  const node = document.querySelector(HEADER)?.querySelector<HTMLElement>(selector);
-  if (node == null) {
-    return null;
-  }
-  const disabled =
-    (node instanceof HTMLButtonElement || node instanceof HTMLSelectElement) && node.disabled;
-  return disabled ? null : node;
-}
 
 /**
  * Whether focus is outside every `<input>` and outside every ask card. `0`-`3` and `Shift+P` are
@@ -143,23 +127,22 @@ function outsideInputsAndAskCards(): boolean {
   return !(document.activeElement instanceof HTMLInputElement) && outsideAskCard();
 }
 
-/** The tabs the chords reach, each through the tablist button `IssueTabs` renders for it. */
-const tabChords: readonly { keys: string; label: string; tab: IssueTab }[] = [
-  { keys: "t s", label: "Spec tab", tab: "spec" },
-  // `t v` is Activity and `t c` the Conversation, so Verification takes its checks' `k`; `t p`
-  // is free (`p` alone focuses the priority, which is a different scope of key).
-  { keys: "t k", label: "Verification tab", tab: "verification" },
-  { keys: "t p", label: "Plan tab", tab: "plan" },
-  // `t s` is the Spec, so Steps takes the next letter of its name.
-  { keys: "t e", label: "Steps tab", tab: "steps" },
-  { keys: "t c", label: "Conversation tab", tab: "conversation" },
-  { keys: "t h", label: "Children tab", tab: "children" },
-  { keys: "t a", label: "Artifacts tab", tab: "artifacts" },
-  // `t a` is Artifacts and `l` is the issue's label editor, so Activity takes `t v`.
-  { keys: "t v", label: "Activity tab", tab: "activity" },
-  { keys: "t d", label: "Decisions tab", tab: "decisions" },
-  // `s k p e c h a v d` are taken, so Collaborators, the last tab, takes `t o`.
-  { keys: "t o", label: "Collaborators tab", tab: "collaborators" },
+/** The tabs the chords reach, each through the tablist button `IssueTabs` renders for it. `t v`
+ *  is Activity and `t c` the Conversation, so Verification takes its checks' `t k`; `t s` is the
+ *  Spec, so Steps takes the next letter of its name, `t e`; `t a` is Artifacts and `l` is the
+ *  issue's label editor, so Activity takes `t v`; and with `s k p e c h a v d` taken,
+ *  Collaborators, the last tab, takes `t o` (`keymap-catalogue.ts`). */
+const tabChords: readonly { action: KeymapActionId; tab: IssueTab }[] = [
+  { action: "issue.tab-spec", tab: "spec" },
+  { action: "issue.tab-verification", tab: "verification" },
+  { action: "issue.tab-plan", tab: "plan" },
+  { action: "issue.tab-steps", tab: "steps" },
+  { action: "issue.tab-conversation", tab: "conversation" },
+  { action: "issue.tab-children", tab: "children" },
+  { action: "issue.tab-artifacts", tab: "artifacts" },
+  { action: "issue.tab-activity", tab: "activity" },
+  { action: "issue.tab-decisions", tab: "decisions" },
+  { action: "issue.tab-collaborators", tab: "collaborators" },
 ];
 
 /** One of the two role-document tab panels, Verification and Plan. They differ only in the tab
@@ -261,76 +244,71 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // The scope is the issue page itself, and every binding drives the header control or the tab
   // its label names - the same handler a click reaches, offered while that control is. The
   // digits go through `useIssuePriority` on the route's key, the query key this page reads, so
-  // a keyed priority lands in the same cache the picker writes. `IssueHeader` registers the
-  // palette-only issue actions into this same scope; it never pushes one of its own.
+  // a keyed priority lands in the same cache the picker writes. `IssueHeader` registers the keys
+  // of its own actions (close, reopen, the priorities, Approve and Request changes) into this
+  // same scope; it never pushes one of its own.
   const priorityWrite = useIssuePriority(route.key, issuePriority(issue.data?.priority));
+  /** Selects the tab `step` places from the one shown, in the strip's order (`issueTabs`),
+   *  through its button as a click does; past either end it wraps, as the strip's own arrow keys
+   *  do (`Tabs.tsx`). */
+  const stepTab = (step: 1 | -1) => {
+    const tabs = issueTabs(issue.data?.artifacts?.length ?? 0);
+    const at = tabs.findIndex((tab) => tab.id === activeTab);
+    const next = tabs[(at + step + tabs.length) % tabs.length];
+    if (next !== undefined) document.getElementById(tabButtonId("issue", next.id))?.click();
+  };
   useKeymapScope("issue");
   useKeymap("issue", [
     {
-      id: "status",
-      keys: "s",
-      label: "Focus the status",
-      run: () => usableControl(STATUS_SELECT)?.focus(),
-      when: () => usableControl(STATUS_SELECT) !== null,
+      action: "issue.status",
+      run: () => usableControl(STATUS_MENU)?.click(),
+      when: () => usableControl(STATUS_MENU) !== null,
     },
     {
-      id: "priority",
-      keys: "p",
-      label: "Focus the priority",
-      run: () => usableControl(PRIORITY_SELECT)?.focus(),
-      when: () => usableControl(PRIORITY_SELECT) !== null,
+      action: "issue.priority",
+      run: () => usableControl(PRIORITY_MENU)?.click(),
+      when: () => usableControl(PRIORITY_MENU) !== null,
     },
     {
-      id: "set-priority",
-      keys: ["0", "1", "2", "3"],
-      label: "Set priority P0–P3",
+      // While the menu is open the focus is in it, whose keys are its own, so a digit there is
+      // the menu's pick and never this second write.
+      action: "issue.set-priority",
       run: (event) => priorityWrite.submit(Number(event.key) as IssuePriority),
-      when: () => usableControl(PRIORITY_SELECT) !== null && outsideInputsAndAskCards(),
+      when: () => usableControl(PRIORITY_MENU) !== null && outsideInputsAndAskCards(),
     },
     {
-      id: "labels",
-      keys: "l",
-      label: "Edit labels",
+      action: "issue.labels",
       run: () => usableControl(LABELS_TRIGGER)?.click(),
       when: () => usableControl(LABELS_TRIGGER) !== null,
     },
     {
-      // The heading takes focus only while the issue is open: closed, its `tabIndex` is -1 and
-      // `onFocus` does not open the editor, so the key is offered exactly while it edits.
-      id: "title",
-      keys: "e",
-      label: "Edit the title",
-      run: () => usableControl(TITLE_HEADING)?.focus(),
+      // The heading is a Tab stop only while the issue is open - closed, its `tabIndex` is -1
+      // and it opens no editor - so the key is offered exactly while it edits. The key clicks
+      // it, since the heading opens its editor when activated and not when it takes the focus.
+      action: "issue.title",
+      run: () => usableControl(TITLE_HEADING)?.click(),
       when: () => usableControl(TITLE_HEADING) !== null,
     },
     {
-      id: "pin",
-      keys: "Shift+P",
-      label: "Pin or unpin the issue",
+      action: "issue.pin",
       run: () => usableControl(PIN_TOGGLE)?.click(),
       when: () => usableControl(PIN_TOGGLE) !== null && outsideInputsAndAskCards(),
     },
-    {
-      // `s` and `p` put focus in a native select, where every single-key binding is suspended
-      // and the next keystroke is the select's own type-ahead - `t` would pick Todo or Testing
-      // rather than start the tab chord. Escape is the way back out, as it is on the Inbox
-      // rows, the board's cards and the architecture rows.
-      id: "back",
-      inEditable: true,
-      keys: "Escape",
-      label: "Back out of the focused header control",
-      run: () => (document.activeElement as HTMLElement | null)?.blur(),
-      when: () => {
-        const active = document.activeElement;
-        return active === usableControl(STATUS_SELECT) || active === usableControl(PRIORITY_SELECT);
-      },
-    },
-    ...tabChords.map(({ keys, label, tab }) => ({
-      id: `tab-${tab}`,
-      keys,
-      label,
+    ...tabChords.map(({ action, tab }) => ({
+      action,
       run: () => document.getElementById(tabButtonId("issue", tab))?.click(),
       when: () => document.getElementById(tabButtonId("issue", tab)) !== null,
+    })),
+    // Offered while the strip is drawn, which it is once the issue has been read.
+    ...(
+      [
+        ["issue.next-tab", 1],
+        ["issue.previous-tab", -1],
+      ] as const
+    ).map(([action, step]) => ({
+      action,
+      run: () => stepTab(step),
+      when: () => document.getElementById(tabButtonId("issue", activeTab)) !== null,
     })),
   ]);
 

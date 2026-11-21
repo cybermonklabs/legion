@@ -10,6 +10,7 @@ import {
 } from "../../api/client";
 import type { Ask, AskFollower, IssueDetails, Subscriber } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import { textMutedOnSurface } from "../../theme/classes";
@@ -18,6 +19,7 @@ import { UnsubscribeDialog } from "../issue/UnsubscribeDialog";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { sessionChipClassName, sessionRemoveButtonClassName } from "../refs/SessionChip";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { inboxActionMark } from "./inbox-action-mark";
 
 const removeAskFollower = (askId: string, sessionId: string, bounds: WriteBounds): Promise<void> =>
   api.removeAskFollower(askId, sessionId, bounds);
@@ -348,6 +350,7 @@ export function AskRecipients({
       <DisclosureToggle
         expanded={open}
         label={counted ? reachLabel({ count, unknownRoute }) : "Recipients"}
+        marks={inboxActionMark("inbox.recipients")}
         onToggle={() => setOpen((shown) => !shown)}
         textClassName={textMutedOnSurface}
       />
@@ -362,10 +365,9 @@ export function AskRecipients({
                   </span>
                   <button
                     className={sessionRemoveButtonClassName}
-                    disabled={unfollow.isPending}
-                    onClick={() =>
+                    {...heldPress(unfollow.isPending, () =>
                       setConfirming({ kind: "follower", sessionId: follower.session_id })
-                    }
+                    )}
                     type="button"
                   >
                     Unfollow
@@ -417,10 +419,9 @@ export function AskRecipients({
                     {subscriber.removable ? (
                       <button
                         className={sessionRemoveButtonClassName}
-                        disabled={unsubscribe.isPending}
-                        onClick={() =>
+                        {...heldPress(unsubscribe.isPending, () =>
                           setConfirming({ kind: "subscriber", sessionId: subscriber.session_id })
-                        }
+                        )}
                         type="button"
                       >
                         Unsubscribe
