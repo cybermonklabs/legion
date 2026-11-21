@@ -1067,12 +1067,14 @@ func TestVMServicesNeedTheGoogleAudience(t *testing.T) {
 	}
 }
 
-// TestGoogleAPIAccountsAndVMServicesAreIndependent pins that either kind of Google caller, a
+// TestGoogleAPIAccountsAndVMServicesAreIndependent pins that either kind of Google caller here, a
 // google: entry in BROKER_API_ACCOUNTS or a BROKER_VM_SERVICES entry, is enough for the Google
-// audience and needs it, and that an audience with neither, a Kubernetes API caller being no
-// Google caller, is refused at boot naming the audience and both ways to give it a caller.
+// audience and needs it, and that an audience with none, a Kubernetes API caller being no Google
+// caller, is refused at boot naming the audience and all three ways to give it a caller. The
+// third, a google: edge-listener entry in BROKER_NATS_SERVICES, has its rows in
+// TestNATSCalloutSettings.
 func TestGoogleAPIAccountsAndVMServicesAreIndependent(t *testing.T) {
-	const noGoogleCaller = "BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS or a VM service in BROKER_VM_SERVICES"
+	const noGoogleCaller = "BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS, a VM service in BROKER_VM_SERVICES or a google: edge-listener entry in BROKER_NATS_SERVICES"
 	for _, row := range []struct {
 		name                                string
 		api, kubernetes, audience, services bool
@@ -2279,6 +2281,50 @@ func TestLoadReadsTheExchangeWorkflows(t *testing.T) {
 	e["BROKER_EXCHANGE_WORKFLOWS"] = entry + "=EXAMPLE=ada@example.com"
 	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_GITHUB_ISSUER") {
 		t.Errorf("BROKER_EXCHANGE_WORKFLOWS with no GitHub issuer: err = %v, want a refusal naming BROKER_EXCHANGE_GITHUB_ISSUER", err)
+	}
+}
+
+// TestAPrivateProjectOnlyInItsPodsParsesTheSetting pins BROKER_PRIVATE_PROJECTS at load:
+// whitespace-separated project keys land in Config.PrivateProjects sorted, none when unset, and a
+// key that is no project key or a key named twice refuses the configuration, naming the setting
+// and the key. exchange.ParsePrivateProjects's own test holds the rest of the reading.
+func TestAPrivateProjectOnlyInItsPodsParsesTheSetting(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keys := cfg.PrivateProjects.Keys(); keys != nil {
+		t.Fatalf("PrivateProjects.Keys() = %q, want nil when BROKER_PRIVATE_PROJECTS is unset", keys)
+	}
+	e := validEnv()
+	e["BROKER_PRIVATE_PROJECTS"] = " PRIV\n\tACME "
+	cfg, err = Load(env(e))
+	if err != nil {
+		t.Fatalf("BROKER_PRIVATE_PROJECTS naming two project keys: %v", err)
+	}
+	if got, want := cfg.PrivateProjects.Keys(), []string{"ACME", "PRIV"}; !slices.Equal(got, want) {
+		t.Fatalf("PrivateProjects.Keys() = %q, want %q", got, want)
+	}
+	if !cfg.PrivateProjects.Has("PRIV") || cfg.PrivateProjects.Has("OTHER") {
+		t.Fatalf("PrivateProjects.Has: PRIV %v, OTHER %v, want true and false", cfg.PrivateProjects.Has("PRIV"), cfg.PrivateProjects.Has("OTHER"))
+	}
+	// Each key a refusal must name is one BROKER_PRIVATE_PROJECTS does not hold, so the setting's
+	// name in the error cannot stand in for it: the repeated key is ACME, not PRIV.
+	for _, c := range []struct{ setting, key string }{
+		{"PRIV priv", strconv.Quote("priv")},
+		{"PRIV AC-ME", strconv.Quote("AC-ME")},
+		{"ACME PRIV ACME", "ACME"},
+	} {
+		e := validEnv()
+		e["BROKER_PRIVATE_PROJECTS"] = c.setting
+		cfg, err := Load(env(e))
+		if err == nil {
+			t.Errorf("BROKER_PRIVATE_PROJECTS = %q loaded PrivateProjects %q, want a refusal", c.setting, cfg.PrivateProjects.Keys())
+			continue
+		}
+		if !strings.Contains(err.Error(), "BROKER_PRIVATE_PROJECTS") || !strings.Contains(err.Error(), c.key) {
+			t.Errorf("BROKER_PRIVATE_PROJECTS = %q: err = %v, want a refusal naming the setting and %s", c.setting, err, c.key)
+		}
 	}
 }
 

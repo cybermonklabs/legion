@@ -1398,7 +1398,7 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 		{[]string{"api", "repos/sjawhar/legion/pulls/1", "--jq", ".title"}, filepath.Join(root, "sjawhar")},
 		{[]string{"issue", "transfer", "3", "sjawhar/legion", "-R", "sjawhar/legion-smoke"}, filepath.Join(root, "sjawhar")},
 		{[]string{"repo", "list", "sjawhar"}, filepath.Join(root, "sjawhar")},
-		// A repository of an owner the project maps nothing of: the bundle holds that owner's
+		// A repository of an owner no record of the project names: the bundle holds that owner's
 		// directory because the role's App is installed on the account, and the token in it
 		// reaches every repository of that installation.
 		{[]string{"pr", "create", "-R", "example-org/deployment", "--fill"}, filepath.Join(root, "example-org")},

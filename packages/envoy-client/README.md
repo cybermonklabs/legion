@@ -161,15 +161,38 @@ listener's warning returns, so a reword reaches both languages from one place.
 the nats.js `connect` options every session plugin dials with: the credential `natsAuthOptions`
 builds from the resolved `NatsCredential` (`src/nats-auth.ts`, which the package does not export, so
 a plugin dials only with these options), a dial timeout of 10 s (`NATS_DIAL_TIMEOUT_MS`),
-reconnecting forever 2 s apart, and a ping every 10 s (`NATS_PING_INTERVAL_MS`) with the connection
-dropped on the tick that finds two pings unanswered (`NATS_MAX_PINGS_OUT`). So a
+reconnecting forever (2 s apart for a seed or no credential), and a ping every 10 s
+(`NATS_PING_INTERVAL_MS`) with the connection dropped on the tick that finds two pings unanswered
+(`NATS_MAX_PINGS_OUT`). So a
 path that freezes without closing is left within 30 s and redialed at once, and a session is back
-within 42 s when that redial also hangs for its 10 s timeout and the 2 s wait; nats.js's
-default 120 s interval left a frozen path for up to 6 minutes. A plugin opens its connection with
+within 42 s when that redial also hangs for its 10 s timeout and the 2 s wait (a broker-token
+session lost less than a minute after its last dial: within 50 s); nats.js's
+default 120 s interval left a frozen path for up to 6 minutes. A session that presents its broker
+token never gives up over a refused credential, and redials on `brokerRedialDelays` instead of
+2 s apart: at once when it loses a connection that lived a minute or more past its last dial,
+then after waits drawn anew between half and all of 4 s, 8 s, 16 s, then 20 s for good
+(`brokerRedialWaitBounds`), so a hub that refuses every session at once is asked again about 73
+times a second by 1,100 of them rather than 550, and each one's next redial comes within 20 s of
+the hub admitting again. A connection lost less than a minute after its last dial (for one that
+was admitted at once, the dial that opened it) keeps its place in the backoff: its first redial
+waits out the rest of the wait drawn at that dial. A token the connection has yet to present (a
+renewal, a session switch) goes out within about a second (`BROKER_REDIAL_POLL_MS`), in the middle
+of a wait too, once for each token, between the planned redials, whose schedule it does not move.
+A token of another session than the last one dialed (a switch) goes out so whatever the wait; a
+renewal goes out so at most once between two planned redials while the hub refuses, and once more
+after each admission (`BrokerNatsCredential.admitted`). A seed or no credential keeps the flat 2 s.
+A plugin opens its connection with
 `connectNats(connect, options, plan, hooks)`: one bound around the whole `connect()` (the name
 lookup, every address and every server, which nats.js times one at a time), and a failed dial
 dialed again 250 ms later, doubling to 4 s, inside a budget (`NATS_DIAL_PLAN`, `natsDialBudget`),
-unless no redial can cure the failure. A server that closes a dial during its handshake, as
+unless no redial can cure the failure. Under a broker token (`hooks.credential`) a hub's refusal
+waits on the broker-token backoff instead, 2-4 s, 4-8 s, 8-16 s, then 10-20 s, and a token it
+refuses twice is dropped and another trade started at once, once for the session until a dial is
+admitted, on the count the credential keeps and its keeper shares
+(`BrokerNatsCredential.refused`); the host logs each drop as it is made, whether or not another
+dial follows (`hooks.onTokenDropped`, `NATS_DIAL_TOKEN_DROPPED`). A server that closes a dial
+during its
+handshake, as
 nats-server does to a CONNECT that comes more than 2 s after its INFO, fails it at once
 (`patches/nats@2.29.3.patch`). A failed connect is logged as
 `natsDialFailure(named, error, presenting)`: `could not connect to NATS at <servers> presenting
@@ -219,7 +242,7 @@ reconnects the connection with each new token, before the server drops the user 
 admitted as; a renewal that fails is retried at 2 s doubling to a minute and warned about once,
 then every 30 minutes, never naming the token. It reads the connection's status too: a server
 that refuses the live token in hand is warned of at once, and at that token's second refusal the
-keeper drops it (`BrokerNatsCredential.drop`, here and in the token client) and trades for
+keeper drops it (`BrokerNatsCredential.refused`, here and in the token client) and trades for
 another. Refusals are counted per token (`tokenGeneration`), and a drop is made once per session
 until the connection is back (`tokenSession`), so a session switched to has its revoked token
 dropped in its turn, and an auth service that is away costs each session one trade for the
@@ -944,8 +967,10 @@ trades that person, as the Go client does:
   the broker's sign-in domain, so the broker asks Dispatch no member kind for this trade. A value
   that is no list fails the call naming the variable. The machine's own trade names no project.
 
-Dispatch gives the token that names a person the `person` and `approve` scopes, so the session
-writes as that person.
+Dispatch gives the token that names a person the `person` scope, so the session writes as that
+person. It never gives a broker token `approve`: a review, an answer to an approval request, a
+machine login's decision and a personal token's mint need the person's browser, or a personal
+token (`DISPATCH_TOKEN`) the person gave `approve`.
 
 The client reads the sign-ins as the Go client reads them (`signins.ts`). The directory is
 `AGENT_SECRETS_SIGNIN_DIR`, else `$XDG_STATE_HOME/agent-secrets/signins`, else
@@ -1014,9 +1039,11 @@ calling trades about every ten minutes. Every `dispatch` command, Claude Code ho
 `envoy-send` is a process of its own, so each one trades once.
 
 A revoke of the sign-in on Dispatch ends the tokens of that sign-in, and the next trade is
-refused with words that name `agent-secrets login`. The revoke does not end a personal agent
-token that an agent made with the person's `approve` scope before the revoke. It does not end a
-machine-login approval that an agent made with that scope before the revoke.
+refused with words that name `agent-secrets login`. Dispatch gives the sign-in's tokens no
+`approve` (above), so an agent under it makes no personal token and decides no machine login. A
+Dispatch release before that rule did give them `approve`: a personal token or a machine-login
+approval an agent made under one then is not ended by the revoke, so revoke each on its own
+Dispatch page.
 
 `DISPATCH_TOKEN_BROKER=1` makes the broker route the only one. No bearer is read at all: not the
 variables, not the chosen file's `dispatch.token`, not a checkout's pair. A machine that can trade
@@ -1185,11 +1212,12 @@ minute later before reading the refusal as an older Dispatch. In a rollout, a se
 build took but whose answer was lost, and was then sent again to an older build, may still have
 recorded the review, at the version named: `dispatch doc-read` shows the document's approval.
 A review records an approval or a request for changes in the person's name, so it works only with
-a token that names a person who holds `approve`. A session gets such a token from a person's
-sign-in on the machine (above). Dispatch refuses any other token with `403 OAUTH_SCOPE_REQUIRED`
-or `403 SIGN_IN_REQUIRED`. `--version` is the version the caller read, and it must be the version
-the review would record: the document's latest settled version, or the version an open approval
-request names for the document. Dispatch refuses any other version with `409 REVIEW_VERSION_MOVED`,
+a token that names a person who holds `approve`: a personal token (`DISPATCH_TOKEN`) the person
+gave `approve`. A broker token, a person's sign-in included, never holds it. Dispatch refuses any
+other token with `403 OAUTH_SCOPE_REQUIRED` or `403 SIGN_IN_REQUIRED`. `--version` is the version
+the caller read, and it must be the version the review would record: the document's latest
+settled version, or the version an open approval request names for the document. Dispatch
+refuses any other version with `409 REVIEW_VERSION_MOVED`,
 which names the version to read, and records nothing. With an approval request open, the review
 answers that request and records the same verdict on every document the request names, each at
 the version the request names. The output names the state, the version and the actor that

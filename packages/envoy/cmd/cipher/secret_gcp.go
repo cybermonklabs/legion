@@ -1077,6 +1077,10 @@ func (b *gcpBackend) removeTags(ctx context.Context, slug string, held heldTags,
 }
 
 // updateAnnotations sends held's annotations, as change leaves a copy of them, with held's etag.
+// The client makes one attempt (UpdateSecret's default call options retry nothing), so
+// FAILED_PRECONDITION is the etag refusing it (errTagsChanged), and any other code that is no
+// gcpDefiniteRefusal (UNAVAILABLE, DEADLINE_EXCEEDED, INTERNAL, a lost connection) may follow an
+// update the store applied: it is answered as tagsUnknown.
 func (b *gcpBackend) updateAnnotations(ctx context.Context, slug string, held heldTags, change func(map[string]string)) error {
 	annotations := maps.Clone(held.tags)
 	if annotations == nil {
@@ -1091,8 +1095,11 @@ func (b *gcpBackend) updateAnnotations(ctx context.Context, slug string, held he
 		},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"annotations"}},
 	})
-	if status.Code(err) == codes.FailedPrecondition {
+	switch {
+	case status.Code(err) == codes.FailedPrecondition:
 		return fmt.Errorf("%w, so the store refused this write: %w", errTagsChanged, err)
+	case err != nil && !gcpDefiniteRefusal(err):
+		return tagsUnknown{err}
 	}
 	return err
 }

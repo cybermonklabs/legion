@@ -165,9 +165,9 @@ func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing
 // A worker's addressing ends naming its issue's repository and default branch, then the reach
 // its role's own GitHub App gives it: the owner accounts that App is installed on, and that its
 // token reaches every repository of those owners. It names no repository list, since the
-// installation and not the mapping decides where the project may work (INFRA-2543 R6), and the
-// owners are the App's own and not the owners of the repositories the project is mapped, which
-// the daemon answers per role (plan.appOwners). A daemon that runs no workflow resolves no
+// installation decides where the project may work (INFRA-2543 R6), and the owners are the App's
+// own and not the owners of the repositories the project's records name, which the daemon
+// answers per role (plan.appOwners). A daemon that runs no workflow resolves no
 // repository for its claims: the whole sentence is left off, not just the issue's own
 // repository. A deployment whose Apps are installed nowhere is told the App is installed on
 // none, as the controller's addressing is.
@@ -208,7 +208,7 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 			[]string{"acme"},
 			own + "your role's GitHub App is installed on the owner acme, and its token reaches every repository of that owner.",
 		},
-		{"no installation", nil, own + "your role's GitHub App is installed on no owner, so its token reaches no repository."},
+		{"no installation", nil, own + "your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s.appOwners = func(claim.Role) []string { return tc.owners }
@@ -224,7 +224,7 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 
 	// The owners named are the role's own App's: an implementer's and a reviewer's addressing
 	// differ where their Apps' installations do, which is what the clause promises and what the
-	// owners of the project's mapped repositories could not say (INFRA-2543 R6).
+	// owners of the repositories the project's records name could not say (INFRA-2543 R6).
 	s.appOwners = func(role claim.Role) []string { return []string{string(appauth.AppRoleFor(role)) + "-owner"} }
 	if got, want := launch(), own+"your role's GitHub App is installed on the owner implement-owner, and its token reaches every repository of that owner."; !strings.HasSuffix(got, want) {
 		t.Fatalf("the implementer's addressing = %q, want it to end with %q", got, want)
@@ -273,7 +273,7 @@ func TestTheControllersLaunchIsItsHeadlessPromptAndNoCheckout(t *testing.T) {
 	if !slices.Equal(spec.Prompt.RolePromptPaths, want) {
 		t.Errorf("role prompts = %q, want %q", spec.Prompt.RolePromptPaths, want)
 	}
-	if want := "Design gate steps: none. Your role's GitHub App is installed on no owner, so its token reaches no repository."; spec.Prompt.Addressing != want {
+	if want := "Design gate steps: none. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."; spec.Prompt.Addressing != want {
 		t.Errorf("addressing = %q, want %q", spec.Prompt.Addressing, want)
 	}
 	if spec.Prompt.DeploymentInstructionsPath != s.instructions {
@@ -315,13 +315,13 @@ func TestTheControllersLaunchNamesTheProjectsSlackChannels(t *testing.T) {
 	if _, set := spec.Env["LEGION_SLACK_CHANNELS"]; set {
 		t.Errorf("the spec sets LEGION_SLACK_CHANNELS (%v), the runtime's variable", spec.Env)
 	}
-	want := "Design gate steps: `spec`. Your role's GitHub App is installed on no owner, so its token reaches no repository. Slack channels: `C00000000`, `G00000001`: " +
+	want := "Design gate steps: `spec`. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository. Slack channels: `C00000000`, `G00000001`: " +
 		"your session hears each one's app mentions while it holds the controller role; answer each in its thread, " +
 		"and nothing from any other channel (skill://legion-controller/references/slack-mentions.md)."
 	if spec.Prompt.Addressing != want {
 		t.Errorf("addressing = %q, want %q", spec.Prompt.Addressing, want)
 	}
-	if none := launch(nil); none.Prompt.Addressing != "Design gate steps: `spec`. Your role's GitHub App is installed on no owner, so its token reaches no repository." {
+	if none := launch(nil); none.Prompt.Addressing != "Design gate steps: `spec`. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository." {
 		t.Errorf("with no channel: addressing %q, want no Slack line", none.Prompt.Addressing)
 	}
 }
@@ -355,7 +355,7 @@ func TestTheControllersAddressingGainsTheReachItsAppGives(t *testing.T) {
 		},
 		// A deployment with no installation is a state a running project reaches, never a
 		// refusal to launch.
-		{"no installation", nil, "Your role's GitHub App is installed on no owner, so its token reaches no repository."},
+		{"no installation", nil, "Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var asked []claim.Role
