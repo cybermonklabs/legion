@@ -1303,20 +1303,32 @@ func TestARefusedFrameIsRelayedAtMost8644TimesOverTheStreamsRetention(t *testing
 
 // The count the ladder climbs is the message's own, carried from the pull that published the
 // frame to the reply that refuses it (relayFrame.delivered): a session that refuses the same
-// frame over and over has it back about a second later, then about two seconds later, rather
-// than every second. The row reads the frames' arrivals on the session's own connection, as the
-// relay rows above read what the session was sent, and their Envoy-Delivered headers, which is
-// the same count the ladder is read from.
+// frame over and over has it back on the ladder's rungs, a second after its first delivery and two
+// seconds after its second, rather than every second.
+//
+// The row reads its verdict from the order of what crossed the wire, not from how long anything
+// took: the frames the session was sent, in order, each carrying its delivery count
+// (Envoy-Delivered), and the nak the relay sent the server for each delivery, in order, with the
+// delay it asked for (watchNaks). A window of wall-clock time was once the verdict, and a stall of
+// the whole test process -- the NATS server runs in it -- longer than the window's slack failed a
+// relay that did nothing wrong: the frames came, after the window had run out. The arrivals'
+// spacing is logged, not judged, and the waits are bounded by the test binary's deadline alone
+// (testwait.Receive). The receipt wait is an hour, so a stall while a frame waits for its answer
+// does not pause the relay, whose restart at the ack floor would deliver the frame again at count 1.
 func TestARefusedFrameComesBackOnTheLadderRatherThanEverySecond(t *testing.T) {
-	rig := newRelayRig(t)
+	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, time.Hour)
 	const sessionID = "ses_nak_relay_ladder"
+	naks := watchNaks(t, rig.url)
 	standIn := startSessionStandIn(t, rig.url, sessionID, func(relayedFrame) []string {
 		return []string{relayReplyReceived, relayReplyNak}
 	})
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	stored, seq := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 
-	frames := standIn.collect(t, 3, 20*time.Second)
+	frames := make([]relayedFrame, 0, 3)
+	for len(frames) < 3 {
+		frames = append(frames, testwait.Receive(t, fmt.Sprintf("delivery %d of the refused frame", len(frames)+1), standIn.frames))
+	}
 	for i, frame := range frames {
 		if frame.item.EventID != stored.EventID || frame.seq != seq {
 			t.Fatalf("frame %d carries %d:%s, want the one refused frame %d:%s", i+1, frame.seq, frame.item.EventID, seq, stored.EventID)
@@ -1325,14 +1337,47 @@ func TestARefusedFrameComesBackOnTheLadderRatherThanEverySecond(t *testing.T) {
 			t.Fatalf("frame %d carries %s = %q, want %d", i+1, relayHeaderDelivered, got, i+1)
 		}
 	}
-	first := frames[1].arrived.Sub(frames[0].arrived)
-	second := frames[2].arrived.Sub(frames[1].arrived)
-	t.Logf("the refused frame came back after %s and then %s", first, second)
-	if first < 500*time.Millisecond || first > 2500*time.Millisecond {
-		t.Errorf("the first redelivery came %s after the refusal, want about relayNakDelay (%s)", first, relayNakDelay)
+	t.Logf("the refused frame came back after %s and then %s", frames[1].arrived.Sub(frames[0].arrived), frames[2].arrived.Sub(frames[1].arrived))
+	// Each delivery comes only after the nak of the one before it, so the naks arrive in the order
+	// of the deliveries they answer.
+	for i, want := range []time.Duration{relayNakDelay, 2 * relayNakDelay} {
+		if got := testwait.Receive(t, fmt.Sprintf("the nak of delivery %d", i+1), naks); got != want {
+			t.Errorf("the nak of delivery %d asked the server for %s, want %s, the ladder's rung for the message's own delivery count %d",
+				i+1, got, want, i+1)
+		}
 	}
-	if second < 1600*time.Millisecond {
-		t.Errorf("the second redelivery came %s after the first, want about twice relayNakDelay (%s): the delay is flat, so the frame comes back every second for the stream's whole retention",
-			second, 2*relayNakDelay)
+}
+
+// watchNaks subscribes, on a connection of its own in url's account and before anything is
+// relayed, to the consumers' ack subjects ($JS.ACK.>), and sends on the channel it returns the
+// delay each nak asks the server for, in the order the naks reach the server. A nak's body is
+// -NAK, with {"delay": nanoseconds} after it when it asks for a delay (nats.go,
+// jetStreamMsg.ackReply); an ack or a progress reply is no nak and is passed over.
+func watchNaks(t *testing.T, url string) <-chan time.Duration {
+	t.Helper()
+	conn := testnats.Connect(t, url)
+	t.Cleanup(conn.Close)
+	naks := make(chan time.Duration, 64)
+	if _, err := conn.Subscribe("$JS.ACK.>", func(msg *natsgo.Msg) {
+		rest, ok := strings.CutPrefix(string(msg.Data), "-NAK")
+		if !ok {
+			return
+		}
+		var asked struct {
+			Delay int64 `json:"delay"`
+		}
+		if body := strings.TrimSpace(rest); body != "" {
+			if err := json.Unmarshal([]byte(body), &asked); err != nil {
+				t.Errorf("decode the nak %q: %v", msg.Data, err)
+				return
+			}
+		}
+		naks <- time.Duration(asked.Delay)
+	}); err != nil {
+		t.Fatalf("subscribe to the consumers' ack subjects: %v", err)
 	}
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush the subscription to the consumers' ack subjects: %v", err)
+	}
+	return naks
 }
