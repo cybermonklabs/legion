@@ -25,8 +25,10 @@ func TestALazyVerifierAnswersPastAnIssuerThatNeverAnswers(t *testing.T) {
 	// channel. Nothing here synchronizes the goroutine's exit — there is no
 	// WaitGroup — so this narrows the window for a send on a closed channel
 	// rather than closing it. Reaching it would need a connection accepted in
-	// the instant before Close and still mid-send, and the attempt issues exactly
-	// one GET; net/http does not redial after a cancellation.
+	// the instant before Close and still mid-send. The discovery attempt outlives
+	// this test's 300 ms wait, since it runs detached from its caller under
+	// discoveryAttemptTimeout, but it dials once: its one GET is accepted and
+	// then waits, and net/http does not redial a connection it holds.
 	accepted := make(chan net.Conn, 4)
 	t.Cleanup(func() {
 		close(accepted)

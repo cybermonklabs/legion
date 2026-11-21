@@ -592,7 +592,8 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // (roleOwnSessionVerdict) refuses to give a role away from its holder meanwhile, and GET
 // /v1/sessions keeps answering the copy, which it refuses only when the view cannot be served. The
 // answers writeDependencyHealth gives carry only status and error, as before: they report a fault
-// below the copy, not its freshness.
+// below the copy, not its freshness. main adds the identity token issuers' "oidc" and "google"
+// fields to every answer here (withIssuerHealth).
 func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1031,12 +1032,14 @@ func main() {
 		log.Fatal(err)
 	}
 	// Neither issuer is read here. Each verifier reads its issuer's discovery document in the
-	// background from now on (oidc.LazyVerifier.Run: at once, then after a wait that doubles from
-	// a second up to 30 s, logging a failure at most once a minute) and on the first token that
-	// needs it. So a listener started while the cluster's issuer or Google's cannot be read serves
-	// everything that does not need that issuer, the shared token, an open /v1, /healthz, /metrics
-	// and the webhooks, and answers a token of that issuer 503 until it is read
-	// (refuseIdentityToken). A start that read them first exited when either read failed, and a
+	// background from now on (oidc.LazyVerifier.Run: at once, then again 5 to 30 s after each
+	// failure, logging a failure at most once a minute) and when a token needs it, the request
+	// waiting for it at most discoveryWait. So a listener started while the cluster's issuer or
+	// Google's cannot be read serves everything that does not need that issuer, the shared token,
+	// an open /v1, /healthz, /metrics and the webhooks, and answers a token of that issuer 503
+	// until it is read (refuseIdentityToken); /healthz's oidc and google fields and the
+	// envoy_listener_oidc_issuer_discovered gauge report which issuers it has read
+	// (issuer_health.go). A start that read them first exited when either read failed, and a
 	// listener of one replica restarted during either outage then served nobody. Each Run ends
 	// once its issuer is read; while it is not, it runs until the process ends, holding nothing
 	// a shutdown has to stop.
@@ -1154,8 +1157,9 @@ func main() {
 	// /metrics is always reachable — NOT gated by readiness.
 	mux.Handle("/metrics", met.Handler())
 
-	// /healthz is always reachable, before NATS setup as well as after it.
-	mux.HandleFunc("/healthz", healthzHandler(&deps))
+	// /healthz is always reachable, before NATS setup as well as after it. Every answer carries
+	// the identity token issuers' fields (withIssuerHealth), which never decide its status.
+	mux.Handle("/healthz", withIssuerHealth(healthzHandler(&deps), apiAuthConfig))
 
 	// /livez answers 204 and touches nothing: no flush to NATS, no cache ping and no read of the
 	// durable consumer. It says only that the process answers, for the startup and liveness
@@ -1179,6 +1183,7 @@ func main() {
 	}
 	// Serve /v1/* on the listener port for local plugin registration.
 	apiAuthConfig.requests = newListenerRequests(met)
+	registerIssuerGauge(met, apiAuthConfig)
 	apiAuthConfig.route = v1Gate.route
 	v1Handler := apiAuth(apiAuthConfig, v1Gate)
 	mux.Handle("/v1", v1Handler)

@@ -222,8 +222,8 @@ func TestLazyVerifierVerifiesOnceItsIssuerIsDiscovered(t *testing.T) {
 // Issues picks a lazy verifier's tokens by their iss claim alone, before its issuer is discovered
 // and while the issuer cannot be read, and reads nothing from the issuer to do it: a server that
 // trusts two issuers sends a token to the one it is for, which then answers it as unchecked
-// rather than the other refusing it. Google's scheme-less spelling is Google's, as it is for
-// Verifier.Issues.
+// rather than the other refusing it. Google's scheme-less spelling is Google's
+// (TestGooglesSchemelessIssuerIsGooglesOwn holds the same rule after discovery).
 func TestALazyVerifierPicksItsTokensBeforeItsIssuerIsRead(t *testing.T) {
 	issuer := oidctest.New(t)
 	signing := issuer.PublishKey(t, "signing-key")

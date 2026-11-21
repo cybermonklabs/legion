@@ -192,10 +192,15 @@ func (v *LazyVerifier) VerifyGoogleIdentity(ctx context.Context, raw string) (Cl
 	return verifier.VerifyGoogleIdentity(ctx, raw)
 }
 
-// Issues is Verifier.Issues. It reads only raw's iss claim and the issuer's name, and nothing the
-// discovery document holds, so it answers the same before the issuer is discovered as after, and
-// reads nothing from the issuer: a caller picks the verifier a token is for while that issuer is
-// down, and the token is then answered as one that verifier could not check.
+// Issues reports whether raw's iss claim, read without verifying anything, names this verifier's
+// issuer, Google's scheme-less spelling included when the verifier is Google's (issuerNamed). A
+// caller that trusts several issuers picks with it the one verifier a token is for, so a token of
+// one issuer never makes another's verifier read its issuer; Verify still checks the issuer with
+// everything else. It reads unverified text, so it picks a verifier and decides nothing about a
+// caller: no claim anyone is admitted on comes from it. It reads nothing the discovery document
+// holds, so it answers the same before the issuer is discovered as after: a caller picks the
+// verifier a token is for while that issuer is down, and the token is then answered as one that
+// verifier could not check.
 func (v *LazyVerifier) Issues(raw string) bool {
 	claims, err := decodeUnverifiedClaims(raw)
 	return err == nil && issuerNamed(v.discovery.issuer, claims.Issuer)

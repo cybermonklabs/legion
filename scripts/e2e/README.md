@@ -197,7 +197,7 @@ Each item below names a script, then what it proves.
 - `verifiers-staging-token.sh`
 
   `dispatch` and the Envoy listener authenticate a projected service-account token the staging EKS cluster actually minted
-  — the right audience is accepted, the other binary's audience and a missing bearer are refused, each shared token still works, half an OIDC pair refuses either boot, an issuer that does not answer refuses the listener's boot, Dispatch starts and serves against such an issuer (`/healthz` `service_tokens` false, a JWT-shaped bearer `503 OIDC_ISSUER_UNAVAILABLE` until it discovers it in the background), and a refused token leaves its failure class in the log and nowhere else
+  — the right audience is accepted, the other binary's audience and a missing bearer are refused, each shared token still works, half an OIDC pair refuses either boot, Dispatch starts and serves against an issuer that does not answer (`/healthz` `service_tokens` false, a JWT-shaped bearer `503 OIDC_ISSUER_UNAVAILABLE` until it discovers it in the background), the listener does the same (`/healthz` `oidc` false, `envoy_listener_oidc_issuer_discovered{issuer="cluster"} 0`, a JWT-shaped bearer 503 with `Retry-After: 1`, the shared token served), and a refused token leaves its failure class in the log and nowhere else
 
 - `burstable-kind.sh`
 
@@ -3654,8 +3654,8 @@ What the run touches, and nothing else:
 
 - the containers `verifiers-e2e-pg` (pgvector on PostgreSQL 18, the image CI's Dispatch service runs, pinned by digest) and `verifiers-e2e-nats` (the hub's nats-server with `-js`, [`lib/nats-image.sh`](#libnats-imagesh)), both on ephemeral loopback ports.
 
-- two ports the kernel chose, one for `dispatch` and one for the listener, each held by [`lib/held-port.py`](#libheld-portpy) from that choice until its binary serves on it (`DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`).
-  The boot refusals exit before any bind and get none.
+- two ports the kernel chose at a time, one for `dispatch` and one for the listener, each held by [`lib/held-port.py`](#libheld-portpy) from that choice until its binary serves on it (`DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`): first for the boots against an issuer that does not answer, which are stopped, then for the boots against the staging issuer.
+  The half-pair boot refusals exit before any bind and get none.
 
 After any exit — pass, failure, or an interrupt
 — the `EXIT` trap signals both binaries and removes both containers; `docker ps -a --filter name=verifiers-e2e` comes back empty.
@@ -3671,7 +3671,7 @@ The last step asserts that neither binary's log contains `eyJ`.
 ### How it fails
 
 Every step is fatal and names its reason:
-a cluster that will not mint, a discovery document with no `https` issuer, a token whose `iss`, `aud` or `sub` is not the one asked for, a container that never becomes ready, a binary that exits during boot (reported at once from its dead pid, with its log, rather than after the whole wait), a Dispatch booted against an issuer that does not answer that exits, never answers `/healthz`, reports `service_tokens` as anything but `false`, or does not stop with status 0 within 30 s of its SIGTERM, a boot log that does not name the issuer, any of the nine calls answering the wrong status, a body that is not the actor the verifier should have produced (or, for the bearer sent before the issuer is discovered, not `OIDC_ISSUER_UNAVAILABLE`), a refusal whose class is missing from the log
+a cluster that will not mint, a discovery document with no `https` issuer, a token whose `iss`, `aud` or `sub` is not the one asked for, a container that never becomes ready, a binary that exits during boot (reported at once from its dead pid, with its log, rather than after the whole wait), a Dispatch booted against an issuer that does not answer that exits, never answers `/healthz`, reports `service_tokens` as anything but `false`, or does not stop with status 0 within 30 s of its SIGTERM, a listener booted against such an issuer that exits, never reports healthy, reports `oidc` as anything but `false` or `google` as anything but `null`, reads anything but `0` on `envoy_listener_oidc_issuer_discovered{issuer="cluster"}`, answers a JWT-shaped bearer anything but `503` with `Retry-After: 1` or the shared token anything but `200`, logs no line naming the issuer, or does not stop with status 1, its ordered shutdown's, within 30 s of its SIGTERM, a boot log that does not name the issuer, any of the nine calls answering the wrong status, a body that is not the actor the verifier should have produced (or, for the bearer sent before the issuer is discovered, not `OIDC_ISSUER_UNAVAILABLE`), a refusal whose class is missing from the log
 — or present in the 401 body, which would tell an unauthenticated caller which credential the listener is configured for.
 
 Two notes on what the script had to learn about its own surface:

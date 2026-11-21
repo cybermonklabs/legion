@@ -3,10 +3,10 @@
 # binaries authenticate a real projected service-account token minted by the staging EKS
 # cluster, refuse a token minted for the other binary's audience, refuse a request with no
 # bearer, and still accept their shared tokens. It also proves what keeps the feature honest: a
-# half-configured OIDC pair stops either boot, naming the missing variable; an issuer that does
-# not answer stops the listener's boot, naming that issuer; and Dispatch, which reads no issuer at
-# boot, starts and serves against one that does not answer, answering a JWT-shaped bearer
-# 503 OIDC_ISSUER_UNAVAILABLE until it has discovered it.
+# half-configured OIDC pair stops either boot, naming the missing variable; and neither binary
+# reads its issuer at boot, so each starts and serves against one that does not answer, reports
+# that it has not read it, and answers a JWT-shaped bearer 503 until it has: Dispatch's
+# OIDC_ISSUER_UNAVAILABLE, the listener's with Retry-After: 1.
 #
 # Every step is fatal and names itself — no `|| true` outside the cleanup a trap must never
 # fail on, and every wait is bounded. The run leaves no container, no process, and nothing in
@@ -165,7 +165,7 @@ shared_listener_token="listener-shared-$RANDOM$RANDOM"
 # The environment each binary boots with. HOME is the scratch dir so the signing key and app
 # credentials land there and never in the box's ~/.local/share/dispatch, and the working
 # directory is the scratch dir so no repo .envoy/envoy.json is picked up. Neither names a port:
-# the boot refusals below exit before any bind, and the boots serve on held sockets.
+# the half-pair refusals below exit before any bind, and the boots serve on held sockets.
 dispatch_env=(
   env -i PATH="$PATH" HOME="$work/home"
   DATABASE_URL="$database_url"
@@ -194,11 +194,6 @@ expect_refusal "dispatch, issuer without audience" "$work/refusal-dispatch-pair.
   fail "the listener booted with ENVOY_OIDC_AUDIENCE and no ENVOY_OIDC_ISSUER"
 expect_refusal "listener, audience without issuer" "$work/refusal-listener-pair.log" \
   "ENVOY_OIDC_ISSUER is required when ENVOY_OIDC_AUDIENCE is set"
-# The listener reads its issuer at boot: one that does not answer stops the boot, naming it.
-"${listener_env[@]}" ENVOY_OIDC_ISSUER="$absent_issuer" ENVOY_OIDC_AUDIENCE=envoy \
-  "$work/listener" >"$work/refusal-listener-issuer.log" 2>&1 &&
-  fail "the listener booted against an issuer that does not answer"
-expect_refusal "listener, issuer that does not answer" "$work/refusal-listener-issuer.log" "$absent_issuer"
 
 # Every boot below serves on a port the kernel chose, held from that choice until it serves on it
 # (lib/held-port.py, which writes the port to a file and becomes the binary).
@@ -265,6 +260,62 @@ wait "$dispatch_pid" || fail "dispatch exited $? on its SIGTERM" "$work/dispatch
 dispatch_pid=
 grep -q 'eyJ' "$work/dispatch-absent-issuer.log" && fail "dispatch's log repeats the JWT-shaped bearer"
 echo "  stopped on SIGTERM with status 0; its log repeats no token"
+
+echo "== the listener serves against an issuer that does not answer"
+# The listener reads no issuer at boot either. It binds and serves, reads the issuer in the
+# background, and until it has, /healthz reports oidc false (google null: no Google pair here),
+# envoy_listener_oidc_issuer_discovered reads 0 for the cluster's issuer, and a JWT-shaped bearer
+# is 503 with Retry-After: 1 — never a 401, since the token was not judged — while the shared
+# token is served.
+python3 "$held_port" exec --port-file "$work/listener-absent-issuer.port" --fd-env ENVOY_LISTEN_FD -- \
+  "${listener_env[@]}" ENVOY_LISTEN_FD=3 PORT='{port}' \
+  ENVOY_OIDC_ISSUER="$absent_issuer" ENVOY_OIDC_AUDIENCE=envoy \
+  "$work/listener" >"$work/listener-absent-issuer.log" 2>&1 &
+listener_pid=$!
+listener_port=''
+port_of "the listener against an issuer that does not answer" "$work/listener-absent-issuer.port" "$listener_pid" \
+  listener_port "$work/listener-absent-issuer.log"
+absent_listener_url="http://127.0.0.1:$listener_port"
+for i in $(seq 1 100); do
+  curl -fs -o "$body" --max-time 5 "$absent_listener_url/healthz" && [ "$(jq -r .status "$body")" = healthy ] && break
+  kill -0 "$listener_pid" 2>/dev/null ||
+    fail "the listener exited during boot against an issuer that does not answer" "$work/listener-absent-issuer.log"
+  [ "$i" = 100 ] && fail "the listener never reported healthy against an issuer that does not answer" "$work/listener-absent-issuer.log"
+  sleep 0.3
+done
+expect_body "the listener's /healthz against an issuer that does not answer" '.oidc == false and .google == null'
+echo "  /healthz → 200 healthy, oidc false, google null"
+curl -fsS -o "$work/listener-absent-issuer.metrics" --max-time 5 "$absent_listener_url/metrics" ||
+  fail "the listener's /metrics did not answer" "$work/listener-absent-issuer.log"
+grep -qxF 'envoy_listener_oidc_issuer_discovered{issuer="cluster"} 0' "$work/listener-absent-issuer.metrics" ||
+  fail "the listener's /metrics does not read envoy_listener_oidc_issuer_discovered{issuer=\"cluster\"} 0" "$work/listener-absent-issuer.metrics"
+echo "  /metrics → envoy_listener_oidc_issuer_discovered{issuer=\"cluster\"} 0"
+unjudged_envoy_token="$(printf '{"alg":"RS256","typ":"JWT"}' | b64url).$(printf '{"iss":"%s","aud":["envoy"]}' "$absent_issuer" | b64url).$(printf 'unsigned' | b64url)"
+status=$(printf 'header = "Authorization: Bearer %s"\n' "$unjudged_envoy_token" |
+  curl -sS -o "$body" -D "$work/listener-absent-issuer.headers" -w '%{http_code}' --max-time 15 -K - "$absent_listener_url/v1/sessions")
+expect_status "a JWT-shaped bearer before the listener has read its issuer" 503 "$status"
+grep -qiE $'^retry-after: 1\r?$' "$work/listener-absent-issuer.headers" ||
+  fail "the listener's 503 for a JWT-shaped bearer carries no Retry-After: 1" "$work/listener-absent-issuer.headers"
+echo "    with Retry-After: 1"
+status=$(request "$absent_listener_url/v1/sessions" "$shared_listener_token")
+expect_status "the shared token while the listener has not read its issuer" 200 "$status"
+grep -F 'oidc: discover the issuer' "$work/listener-absent-issuer.log" | grep -qF "$absent_issuer" ||
+  fail "the listener's log does not name the issuer it could not read" "$work/listener-absent-issuer.log"
+echo "  its log names the issuer it could not read"
+# Stopped by its own pid and judged: the listener ends an ordered SIGTERM shutdown with status 1
+# (cmd/listener's shutdown tests), so any other status is a defect.
+kill -TERM "$listener_pid"
+for i in $(seq 1 100); do
+  kill -0 "$listener_pid" 2>/dev/null || break
+  [ "$i" = 100 ] && fail "the listener did not stop within 30 s of its SIGTERM" "$work/listener-absent-issuer.log"
+  sleep 0.3
+done
+listener_status=0
+wait "$listener_pid" || listener_status=$?
+[ "$listener_status" = 1 ] || fail "the listener exited $listener_status on its SIGTERM, want 1" "$work/listener-absent-issuer.log"
+listener_pid=
+grep -q 'eyJ' "$work/listener-absent-issuer.log" && fail "the listener's log repeats the JWT-shaped bearer"
+echo "  stopped on SIGTERM with status 1; its log repeats no token"
 
 echo "== mint two real projected service-account tokens"
 ns="${VERIFIERS_E2E_NAMESPACE:-legion}"

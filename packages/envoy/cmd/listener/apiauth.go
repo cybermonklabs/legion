@@ -109,7 +109,11 @@ type googleIdentities struct {
 // and not_listed. Its error is the verifier's own, which matches oidc.ErrIssuerUnavailable when no
 // verdict was reached (refuseIdentityToken).
 func (g *googleIdentities) admits(r *http.Request, raw string, logger *logging.Logger) (string, error) {
-	claims, err := g.verifier.VerifyGoogleIdentity(r.Context(), raw)
+	var claims oidc.Claims
+	err := awaitDiscovery(r, g.verifier)
+	if err == nil {
+		claims, err = g.verifier.VerifyGoogleIdentity(r.Context(), raw)
+	}
 	account := fold.ASCII(claims.Email)
 	var reason string
 	switch {
@@ -140,7 +144,11 @@ func (g *googleIdentities) admits(r *http.Request, raw string, logger *logging.L
 // is the verifier's own, which matches oidc.ErrIssuerUnavailable when no verdict was reached
 // (refuseIdentityToken).
 func (a listenerAPIAuth) admitsServiceAccount(r *http.Request, raw string) (string, error) {
-	claims, err := a.verifier.Verify(r.Context(), raw)
+	var claims oidc.Claims
+	err := awaitDiscovery(r, a.verifier)
+	if err == nil {
+		claims, err = a.verifier.Verify(r.Context(), raw)
+	}
 	if err != nil {
 		a.logger.Warn("listener: service-account token rejected",
 			slog.String("reason", oidc.Reason(err)),
@@ -155,6 +163,26 @@ func (a listenerAPIAuth) admitsServiceAccount(r *http.Request, raw string) (stri
 		return "", identityRefusal(nil, "not_listed")
 	}
 	return claims.Subject, nil
+}
+
+// discoveryWait bounds how long a request waits for its issuer's discovery document, well inside
+// the 10 s newHTTPServer gives a route to write its answer. A discovery attempt itself may take
+// longer (an issuer that accepts the connection and never answers holds it to its own 10 s
+// bound), and a request that started or joined one would then be cut off by the write deadline
+// with no answer at all, rather than the 503 refuseIdentityToken gives it.
+const discoveryWait = 5 * time.Second
+
+// awaitDiscovery waits, for at most discoveryWait, until verifier has read its issuer's discovery
+// document, reading it if no attempt is under way, and answers nil once it has; its error matches
+// oidc.ErrIssuerUnavailable. It bounds only this wait, never the context the token is then
+// verified on: a verification cut off by its context is oidc.ErrCancelled, which is a 401.
+func awaitDiscovery(r *http.Request, verifier *oidc.LazyVerifier) error {
+	if verifier.Discovered() {
+		return nil
+	}
+	wait, cancel := context.WithTimeout(r.Context(), discoveryWait)
+	defer cancel()
+	return verifier.Discover(wait)
 }
 
 // identityRefusal is the error an identity token that was judged and not admitted reads as: the
@@ -268,7 +296,7 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 // listener is configured for.
 //
 // The two identity-token bearers are told apart by the token's own issuer
-// (oidc.Verifier.Issues), including Google's scheme-less issuer spelling: a token
+// (oidc.LazyVerifier.Issues), including Google's scheme-less issuer spelling: a token
 // Google issued goes to the Google branch, any other to the projected-token one, and a listener
 // that takes only one of them gives it every token, so each refusal is logged with its class and
 // no token is judged twice.

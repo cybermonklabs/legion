@@ -400,14 +400,19 @@ How `/v1` admits a caller depends on who reaches the listener:
   `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE` and `ENVOY_OIDC_ACCOUNTS` (`<l>.oidcAccounts` joined
   by commas) in place of the flag, and admits a request only with a projected ServiceAccount token
   `<l>.oidcIssuer` signed for `<l>.oidcAudience`, of a subject `<l>.oidcAccounts` lists; anything
-  else gets 401. A calling pod mounts such a token with a projected volume of its own
-  (`serviceAccountToken` with `audience: <l>.oidcAudience`) and sends it as
-  `Authorization: Bearer <token>`. The NetworkPolicy then narrows who may try, and is not the only
-  guard. The listener renders no `ENVOY_ALLOWED_HOSTS`, since a listener that requires a bearer
-  serves `/v1` to any `Host`, so `<l>.allowedHosts` is refused. It reads the issuer's discovery
-  document when it starts and refuses to start when the issuer does not answer, so its pod needs
-  egress to the issuer, such as GKE's cluster issuer,
-  `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`.
+  else gets 401, except a token it cannot yet check (below). A calling pod mounts such a token with
+  a projected volume of its own (`serviceAccountToken` with `audience: <l>.oidcAudience`) and sends
+  it as `Authorization: Bearer <token>`. The NetworkPolicy then narrows who may try, and is not the
+  only guard. The listener renders no `ENVOY_ALLOWED_HOSTS`, since a listener that requires a
+  bearer serves `/v1` to any `Host`, so `<l>.allowedHosts` is refused. The listener does not read
+  the issuer's discovery document before it starts: it starts, reads the document in the
+  background, and answers every projected token 503 with `Retry-After: 1` until it has read it.
+  Its pod still needs egress to the issuer, such as GKE's cluster issuer,
+  `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`:
+  without it, or with a wrong `<l>.oidcIssuer`, the pod becomes Ready, the rolling update replaces
+  the old pod, and every `/v1` caller then gets that 503. `/healthz`'s `oidc` field reads `false`
+  and `envoy_listener_oidc_issuer_discovered{issuer="cluster"}` reads `0` while the listener has
+  not read the issuer; neither probe below reads them, so an alert on that gauge is what shows it.
 
 Three probes read the pod's own loopback, two routes between them:
 

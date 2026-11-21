@@ -14,8 +14,9 @@ const GoogleIssuer = "https://accounts.google.com"
 const googleSchemelessIssuer = "accounts.google.com"
 
 // namesIssuer reports whether iss is this verifier's issuer, taking Google's scheme-less spelling
-// as Google's, as the go-oidc verifier underneath does. Verify's classification and Issues both
-// read it, so a token Verify would accept is never called another issuer's.
+// as Google's, as the go-oidc verifier underneath does. Verify's classification reads it, and
+// LazyVerifier.Issues reads the same rule (issuerNamed), so a token Verify would accept is never
+// called another issuer's.
 func (v *Verifier) namesIssuer(iss string) bool { return issuerNamed(v.issuer, iss) }
 
 // issuerNamed reports whether iss names issuer, Google's scheme-less spelling naming GoogleIssuer:
