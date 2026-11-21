@@ -6,7 +6,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
@@ -267,7 +266,8 @@ func TestAnApprovalOfARestrictedMembersOldRequestGrantsNothing(t *testing.T) {
 
 	// While Dispatch cannot say what kind of member the full member is, the same approval is
 	// refused, *projectaccess.MemberKindUncheckable, and decides nothing: the request stays
-	// pending with no grant. A fresh client stands in for the 2 s a failed read is kept.
+	// pending with no grant. A fresh client, so no answer the steps above kept
+	// (projectaccess.CacheTTL) stands in for the outage.
 	dispatch.SetDown(true)
 	m.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
 	dec, err = m.ApplyDecision(ctx, *fullReq.RecordID, true, "bob@example.com")
@@ -281,6 +281,7 @@ func TestAnApprovalOfARestrictedMembersOldRequestGrantsNothing(t *testing.T) {
 	}
 
 	// The control: once Dispatch answers, the same approval of the full member's request grants it.
+	// A client keeps a person's failed read 2 s; a fresh client stands in for that wait.
 	dispatch.SetDown(false)
 	m.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
 	if dec, err := m.ApplyDecision(ctx, *fullReq.RecordID, true, "bob@example.com"); err != nil || dec.State != "granted" || dec.GrantID == "" {
@@ -293,12 +294,7 @@ func TestAnApprovalOfARestrictedMembersOldRequestGrantsNothing(t *testing.T) {
 // say, the approval is refused, *projectaccess.MemberKindUncheckable, and nothing is granted; once
 // Dispatch answers, the same approval grants.
 func TestAJudgesApprovalIsRefusedWhileTheMemberKindCannotBeRead(t *testing.T) {
-	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "TEAM_HUMAN", Hosts: []string{"team.example"}, Judge: new(uint32(900))}}}
-	m, enr, key, _ := newProjectFixture(t, rules, publicTeam)
-	retag(t, m, taggedSecret("TEAM_HUMAN", fixtureOperator, policy.TierHuman, teamProject, "team-human-v1"))
-	m.Chain = NewChainVerifier(m.Store, testAudience, time.Minute, m.Airlock)
-	m.Judge = func(PendingRequest) {}
-	req := pendingJudgeable(t, m, enr, key, "TEAM-7: rotate the deploy key", 600, "TEAM_HUMAN")
+	m, _, req := judgeHeldTeamRequest(t)
 	dispatch := answerFrom(t, m, dispatchRows(publicTeam))
 	dispatch.SetDown(true)
 	dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve"})

@@ -165,6 +165,24 @@ func (b *boundLog) States(ctx context.Context, projects []string) (map[string]pr
 	return b.inner.States(ctx, projects)
 }
 
+// teamJudgeReason is the reason of judgeHeldTeamRequest's request, naming TEAM's issue.
+const teamJudgeReason = "TEAM-7: rotate the deploy key"
+
+// judgeHeldTeamRequest is a machine that runs a model judge, its fixture operator's session, and
+// that session's pending request for TEAM_HUMAN, a human-tier secret tagged TEAM that the judge
+// may decide, for teamJudgeReason: a request each of the judge's methods asks Dispatch about. A
+// broker that runs a judge holds a judge key's request for it (judge_until), and only a request
+// the judge holds takes its approval.
+func judgeHeldTeamRequest(t *testing.T) (m *Machine, enrollmentID string, req Request) {
+	t.Helper()
+	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "TEAM_HUMAN", Hosts: []string{"team.example"}, Judge: new(uint32(900))}}}
+	m, enrollmentID, key, _ := newProjectFixture(t, rules, publicTeam)
+	retag(t, m, taggedSecret("TEAM_HUMAN", fixtureOperator, policy.TierHuman, teamProject, "team-human-v1"))
+	m.Chain = NewChainVerifier(m.Store, testAudience, time.Minute, m.Airlock)
+	m.Judge = func(PendingRequest) {}
+	return m, enrollmentID, pendingJudgeable(t, m, enrollmentID, key, teamJudgeReason, 600, "TEAM_HUMAN")
+}
+
 // TestNoDispatchReadOnTheJudgesPathSkipsItsBound is round 4's class test for B7 and B8 on
 // cybermonklabs/legion#4135: every question the machine asks Dispatch for the model judge — its
 // policy check (JudgePolicy), its project check (JudgeProject) and its approval's checks before
@@ -174,15 +192,7 @@ func (b *boundLog) States(ctx context.Context, projects []string) (map[string]pr
 // issue. The test lists each question, and a method that asked Dispatch nothing at all is a
 // failure too, since a list without it cannot say whether its reads are bounded.
 func TestNoDispatchReadOnTheJudgesPathSkipsItsBound(t *testing.T) {
-	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "TEAM_HUMAN", Hosts: []string{"team.example"}, Judge: new(uint32(900))}}}
-	m, enr, key, _ := newProjectFixture(t, rules, publicTeam)
-	retag(t, m, taggedSecret("TEAM_HUMAN", fixtureOperator, policy.TierHuman, teamProject, "team-human-v1"))
-	m.Chain = NewChainVerifier(m.Store, testAudience, time.Minute, m.Airlock)
-	// A broker that runs a judge holds a judge key's request for it (judge_until), and only a
-	// request the judge holds takes its approval.
-	m.Judge = func(PendingRequest) {}
-	const reason = "TEAM-7: rotate the deploy key"
-	req := pendingJudgeable(t, m, enr, key, reason, 600, "TEAM_HUMAN")
+	m, enr, req := judgeHeldTeamRequest(t)
 	log := &boundLog{inner: m.Projects}
 	m.Projects = log
 
@@ -191,7 +201,7 @@ func TestNoDispatchReadOnTheJudgesPathSkipsItsBound(t *testing.T) {
 		t.Fatalf("JudgePolicy = %+v, %v; want an approval", decision, err)
 	}
 	log.during("JudgeProject")
-	if private, err := m.JudgeProject(t.Context(), enr, "TEAM_HUMAN", reason); err != nil || private {
+	if private, err := m.JudgeProject(t.Context(), enr, "TEAM_HUMAN", teamJudgeReason); err != nil || private {
 		t.Fatalf("JudgeProject = %v, %v; want false: TEAM is public", private, err)
 	}
 	log.during("JudgeRequestState")
@@ -223,12 +233,7 @@ func TestNoDispatchReadOnTheJudgesPathSkipsItsBound(t *testing.T) {
 // projectaccess.CacheTTL old when the decision is made; and for the model judge every read of its
 // approval shares one JudgeDispatch bound, the same deadline, never one bound after another.
 func TestAnApprovalAsksTheMemberKindFirstUnderTheDecisionsOneBound(t *testing.T) {
-	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "TEAM_HUMAN", Hosts: []string{"team.example"}, Judge: new(uint32(900))}}}
-	m, enr, key, _ := newProjectFixture(t, rules, publicTeam)
-	retag(t, m, taggedSecret("TEAM_HUMAN", fixtureOperator, policy.TierHuman, teamProject, "team-human-v1"))
-	m.Chain = NewChainVerifier(m.Store, testAudience, time.Minute, m.Airlock)
-	m.Judge = func(PendingRequest) {}
-	req := pendingJudgeable(t, m, enr, key, "TEAM-7: rotate the deploy key", 600, "TEAM_HUMAN")
+	m, _, req := judgeHeldTeamRequest(t)
 	log := &boundLog{inner: m.Projects}
 	m.Projects = log
 	log.during("ApplyJudgeDecision")
