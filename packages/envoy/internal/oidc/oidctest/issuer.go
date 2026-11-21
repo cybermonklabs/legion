@@ -269,6 +269,13 @@ func (i *Issuer) Publish(key *Key) {
 	})
 }
 
+// Withdraw removes the key kid from the served set, as an issuer does once that key has leaked.
+func (i *Issuer) Withdraw(kid string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.served = slices.DeleteFunc(i.served, func(key jose.JSONWebKey) bool { return key.KeyID == kid })
+}
+
 // AdvertiseIssuer makes the discovery document name a different issuer than the
 // URL it is served from.
 func (i *Issuer) AdvertiseIssuer(issuer string) {

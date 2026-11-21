@@ -119,20 +119,21 @@ func TestKeyFindsAKeyPublishedAfterTheWindowHasPassed(t *testing.T) {
 	}
 }
 
-func TestKeyKeepsServingTheCachedSetWhenAReadFails(t *testing.T) {
+// A set stale by MinRefresh or more is read again before it answers. When that read fails, a key
+// the cached set holds is still answered from it, and a key it does not hold is the read's
+// failure, ErrKeySet: an issuer that is down stops no verification it does not have to.
+func TestAnOldSetWhoseReadFailsStillAnswersTheKeysItHolds(t *testing.T) {
 	issuer := oidctest.New(t)
 	keys, signing := keysFor(t, issuer, "exchange-key")
-	// Every Key reads the issuer again, so the cached set is only ever the fallback.
-	keys.Lifetime = 0
+	// Every set is past Lifetime + MinRefresh, so every Key reads the issuer first and the cached
+	// set is only ever the fallback.
+	keys.Lifetime, keys.MinRefresh = 0, 0
 	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
 		t.Fatalf("Key(the published key): %v", err)
 	}
-	// A caller that has already hung up: the read fails before it reaches the issuer, which is
-	// the cheap, race-free stand-in for an issuer that cannot be reached.
-	hungUp, cancel := context.WithCancel(context.Background())
-	cancel()
+	issuer.FailKeys(http.StatusInternalServerError)
 
-	key, err := keys.Key(hungUp, "exchange-key", testAlgorithm)
+	key, err := keys.Key(context.Background(), "exchange-key", testAlgorithm)
 	if err != nil {
 		t.Fatalf("Key(a cached key) with the read failing = %v, want the cached key", err)
 	}
@@ -140,12 +141,56 @@ func TestKeyKeepsServingTheCachedSetWhenAReadFails(t *testing.T) {
 	if !signs(t, token, key) {
 		t.Error("Key answered a key the issuer's token does not verify against")
 	}
-	if fetches := issuer.JWKSFetches(); fetches != 1 {
-		t.Errorf("key set read %d times, want 1: the failed read never reached the issuer", fetches)
+	if fetches := issuer.JWKSFetches(); fetches != 2 {
+		t.Errorf("key set read %d times, want 2: the first read and the one that failed", fetches)
 	}
 
-	if _, err := keys.Key(hungUp, "never-published", testAlgorithm); !errors.Is(err, ErrKeySet) {
+	if _, err := keys.Key(context.Background(), "never-published", testAlgorithm); !errors.Is(err, ErrKeySet) {
 		t.Errorf("Key(a key the cached set does not hold) with the read failing = %v, want ErrKeySet", err)
+	}
+}
+
+// A caller whose keys deadline passes while a set stale by MinRefresh or more is read again is
+// answered from the cached set where it holds the key, at that deadline: the read carries on and
+// is kept.
+func TestAKeysDeadlineCutsTheReadOfAnOldSetToTheCachedKey(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "exchange-key")
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+		t.Fatalf("the first read: %v", err)
+	}
+	keys.Lifetime, keys.MinRefresh = time.Millisecond, time.Millisecond
+	time.Sleep(10 * time.Millisecond)
+	issuer.DelayKeys(time.Second)
+	ctx := WithKeysDeadline(context.Background(), time.Now().Add(50*time.Millisecond))
+	start := time.Now()
+	key, err := keys.Key(ctx, "exchange-key", testAlgorithm)
+	if err != nil || key == nil {
+		t.Fatalf("Key on a set past Lifetime + MinRefresh, its read slower than the keys deadline: %v, want the cached key", err)
+	}
+	if elapsed := time.Since(start); elapsed < 40*time.Millisecond || elapsed > 500*time.Millisecond {
+		t.Fatalf("Key answered after %s, want it at its 50 ms keys deadline, after waiting on the read", elapsed.Round(time.Millisecond))
+	}
+}
+
+// While the issuer answers, a key it has withdrawn verifies for at most Lifetime + MinRefresh after
+// the last good read: a token signed by it, presented to a cache that sat idle for longer, is read
+// against the issuer first and refused, never answered from the old set.
+func TestAWithdrawnKeyIsRefusedOnceTheSetIsPastMinRefresh(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, withdrawn := keysFor(t, issuer, "key-a")
+	keys.Lifetime, keys.MinRefresh = 100*time.Millisecond, 200*time.Millisecond
+	verifier := NewWithKeys(issuer.URL(), testAudience, keys)
+	token := issuer.Mint(t, withdrawn, issuer.Claims(testSubject, testAudience))
+	if _, err := verifier.Verify(context.Background(), token); err != nil {
+		t.Fatalf("Verify while key-a is published: %v", err)
+	}
+	issuer.Withdraw("key-a")
+	issuer.PublishKey(t, "key-b")
+	time.Sleep(time.Second)
+	claims, err := verifier.Verify(context.Background(), token)
+	if !errors.Is(err, ErrSignature) {
+		t.Fatalf("Verify of a token signed by the withdrawn key-a after 1 s idle (Lifetime 100 ms, MinRefresh 200 ms) = %+v, %v; want ErrSignature", claims, err)
 	}
 }
 
@@ -320,9 +365,9 @@ func TestCallersWithAKeysDeadlineShareOneReadThatIsKept(t *testing.T) {
 	}
 }
 
-// A stale set (older than Lifetime) that holds the key asked for answers at once, with no wait for
-// the refresh, even one a keys deadline would cut: the refresh runs in the background, and the set
-// it reads is kept.
+// A stale set (older than Lifetime, by less than MinRefresh) that holds the key asked for answers
+// at once, with no wait for its refresh from a key set 500 ms slow: the refresh runs in the
+// background, and the set it reads is kept.
 func TestAStaleSetThatHoldsTheKeyAnswersAtOnceAndRefreshesInTheBackground(t *testing.T) {
 	issuer := oidctest.New(t)
 	keys, _ := keysFor(t, issuer, "exchange-key")
@@ -382,9 +427,9 @@ func TestAGoodReadAfterAFailedOneSettlesAMissingKeyID(t *testing.T) {
 	}
 }
 
-// A read that fails because its caller hung up says nothing about the issuer: it starts no
-// FailureSpacing, so the next caller reads at once and is answered.
-func TestAReadACallerHungUpOnStartsNoSpacing(t *testing.T) {
+// A caller that hangs up ends only its own wait: the read it started runs on, reaches the issuer
+// and is kept, so the next caller is answered from that read with no read of its own.
+func TestACallerThatHangsUpEndsOnlyItsOwnWait(t *testing.T) {
 	issuer := oidctest.New(t)
 	keys, _ := keysFor(t, issuer, "exchange-key")
 	hungUp, cancel := context.WithCancel(context.Background())
@@ -392,11 +437,140 @@ func TestAReadACallerHungUpOnStartsNoSpacing(t *testing.T) {
 	if _, err := keys.Key(hungUp, "exchange-key", testAlgorithm); !errors.Is(err, ErrKeySet) {
 		t.Fatalf("Key for a caller that hung up before any set was read: err = %v, want ErrKeySet", err)
 	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, fetched := keys.state(); !fetched.IsZero() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the read the hung-up caller started never landed within 5 s (key set read %d times)", issuer.JWKSFetches())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
-		t.Fatalf("Key right after a read whose caller hung up: %v, want the key from a new read", err)
+		t.Fatalf("Key after the hung-up caller's read landed: %v, want the key from that read", err)
 	}
 	if fetches := issuer.JWKSFetches(); fetches != 1 {
-		t.Fatalf("key set read %d times, want 1: the hung-up read never reached the issuer, the next caller's did", fetches)
+		t.Fatalf("key set read %d times, want 1: the hung-up caller's read, kept for the next", fetches)
+	}
+}
+
+// Callers that hang up while a key set accepts the connection and never answers start no extra
+// reads: every read runs to its own FetchTimeout, its failure starts FailureSpacing, and a flood
+// of such callers costs the issuer at most one read per FailureSpacing.
+func TestCallersThatHangUpCostNoMoreThanOneReadPerSpacing(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "exchange-key")
+	keys.FailureSpacing = time.Second
+	keys.FetchTimeout = 500 * time.Millisecond
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+		t.Fatalf("the first read: %v", err)
+	}
+	keys.Lifetime = time.Millisecond
+	time.Sleep(5 * time.Millisecond)
+	issuer.DelayKeys(4 * time.Second)
+
+	const flood = 3 * time.Second
+	stop := time.Now().Add(flood)
+	var wg sync.WaitGroup
+	for range 64 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for time.Now().Before(stop) {
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+				_, _ = keys.Key(ctx, "never-published", testAlgorithm)
+				cancel()
+			}
+		}()
+	}
+	wg.Wait()
+	if reads, most := issuer.JWKSFetches()-1, 1+int(flood/keys.FailureSpacing); reads > most {
+		t.Fatalf("callers hanging up at 20 ms for %s made %d key-set reads, want at most %d: one per FailureSpacing", flood, reads, most)
+	}
+}
+
+// While a background refresh is under way, the callers a stale set answers start no other: 200
+// callers at once against a key set 3 s slow cost one refresh.
+func TestAStaleSetIsRefreshedOnceForManyCallers(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "exchange-key")
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+		t.Fatalf("the first read: %v", err)
+	}
+	keys.Lifetime = time.Millisecond
+	time.Sleep(5 * time.Millisecond)
+	issuer.DelayKeys(3 * time.Second)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for range 200 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+				t.Errorf("a caller on the stale set: %v, want the cached key", err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	time.Sleep(200 * time.Millisecond)
+	if fetches := issuer.JWKSFetches(); fetches != 2 {
+		t.Fatalf("key set read %d times for 200 callers on a stale set, want 2: the first read and one refresh", fetches)
+	}
+}
+
+// A refresh asked for once the set is fresh again, because another caller's refresh landed in the
+// meantime, starts no read.
+func TestARefreshOfAFreshSetReadsNothing(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "exchange-key")
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+		t.Fatalf("the first read: %v", err)
+	}
+	keys.refreshInBackground(context.Background())
+	time.Sleep(200 * time.Millisecond)
+	if fetches := issuer.JWKSFetches(); fetches != 1 {
+		t.Fatalf("key set read %d times, want 1: the set was fresh, so no refresh", fetches)
+	}
+}
+
+// A miss read that failed is followed early by another only while no good read has come since:
+// once a read has succeeded, a key id it lacks waits out MinRefresh from the miss, as any settled
+// miss does, and makes no read of its own.
+func TestAMissWindowDoesNotReopenAfterAGoodRead(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "key-a")
+	keys.FailureSpacing = 50 * time.Millisecond
+	if _, err := keys.Key(context.Background(), "key-a", testAlgorithm); err != nil {
+		t.Fatalf("Key(the cached key): %v", err)
+	}
+	issuer.FailKeys(http.StatusInternalServerError)
+	if _, err := keys.Key(context.Background(), "never-published-1", testAlgorithm); !errors.Is(err, ErrKeySet) {
+		t.Fatalf("a key id whose miss read fails: err = %v, want ErrKeySet", err)
+	}
+	issuer.FailKeys(0)
+	time.Sleep(keys.FailureSpacing + 50*time.Millisecond)
+	// A good read that no miss prompted: the stale set's background refresh.
+	keys.Lifetime = time.Millisecond
+	if _, err := keys.Key(context.Background(), "key-a", testAlgorithm); err != nil {
+		t.Fatalf("Key(the cached key) on the stale set: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for issuer.JWKSFetches() < 3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the background refresh never reached the issuer within 5 s (reads %d)", issuer.JWKSFetches())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	keys.Lifetime = time.Hour
+	if _, err := keys.Key(context.Background(), "never-published-2", testAlgorithm); !errors.Is(err, ErrNoKey) {
+		t.Fatalf("a key id the good refresh does not hold, within MinRefresh of the failed miss: err = %v, want ErrNoKey", err)
+	}
+	if fetches := issuer.JWKSFetches(); fetches != 3 {
+		t.Fatalf("key set read %d times, want 3: no new miss read after the good refresh", fetches)
 	}
 }
 

@@ -1,16 +1,21 @@
 kind: Fixed
 body: |-
-  Identity tokens are checked against an issuer's key set with less waiting and fewer reads. After
-  a failed read of the key set, no other read is made for 5 seconds, whether or not a set was ever
-  read; before, once a set had been read and was older than 15 minutes, a key set that kept failing
-  was read once per request. A key set older than 15 minutes that holds a token's key answers at
-  once and is read again in the background, so a slow key set no longer holds each request. During
-  a key rotation whose read failed, a token naming the new key is looked for again 5 seconds after
-  that failure, rather than a minute. This is in the key-set cache the secrets broker and Dispatch
-  share with the listener, so for them too: a failed read is followed by 5 seconds with no new read;
-  a stale set answers at once; and a key id the cache lacks, while a read runs or for 5 seconds
-  after it failed, is answered as the issuer being unavailable (Dispatch:
-  `503 OIDC_ISSUER_UNAVAILABLE`; IAP sign-in: unavailable) rather than refused.
+  Identity tokens are checked against an issuer's key set with less waiting and fewer reads, in the
+  key-set cache the listener, Dispatch and the secrets broker share. After a failed read of the key
+  set, no other read is made for 5 seconds, whether or not a set was ever read: before, once a set
+  had been read and was older than 15 minutes, a key set that kept failing was read once per
+  request. Every read now runs on its own, so a caller that gives up ends only its own wait. A key
+  set older than 15 minutes, by less than a minute, that holds a token's key answers at once and is
+  read again in the background; an older set is read again first, as before. So while the issuer
+  answers, a key it has withdrawn is accepted for at most 16 minutes after the last good read, plus
+  the background read's 10 seconds. During a key rotation whose read failed, a token naming the new
+  key is looked for again 5 seconds after that failure, rather than a minute. For a key id the cache
+  lacks while that is unsettled (a read runs, or one failed less than 5 seconds ago): the listener
+  answers `503` with `Retry-After: 1` once its 4-second wait ends; Dispatch waits on the read under
+  way and answers `503 OIDC_ISSUER_UNAVAILABLE` when it fails, and IAP sign-in
+  `503 SIGNIN_UNAVAILABLE`; the secrets broker still refuses the token as unverified
+  (`401 ACCOUNT_TOKEN_INVALID`, `401 POD_TOKEN_INVALID`, and `invalid_request` on the token
+  exchange).
 time: 2026-11-21T13:16:08Z
 custom:
     Issue: pr4838
