@@ -268,7 +268,8 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 		// final sweep (sweepClosedIssueAsks) in the same write: the open asks' blocks and copies
 		// written resolved, while their rows still read open, beside the resolved and answered block
 		// asks' blocks and copies from their rows as they stand, and every unindexed block marked
-		// resolved. Every document write comes before the first event.
+		// resolved. Every document write comes before the first event, and each withdrawal is
+		// planned after them, as a close plans it (planWithdrawal).
 		openAsks, withdrawing, err := s.readOpenIssueAsks(documentCtx, tx, issueKey)
 		if err != nil {
 			return repair, err
@@ -278,8 +279,12 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 			return repair, err
 		}
 		repair.Swept = len(unindexed)
+		planned, err := planWithdrawal(documentCtx, tx, issueKey, openAsks, closer)
+		if err != nil {
+			return repair, err
+		}
 		var asks []model.Ask
-		asks, events, err = s.recordWithdrawnAsksTx(documentCtx, tx, ledger, issueKey, openAsks, closer)
+		asks, events, err = s.recordWithdrawnAsksTx(ledger, issueKey, planned, closer)
 		if err != nil {
 			return repair, err
 		}
@@ -306,7 +311,7 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 		if events, err = s.recordRestoredAsksTx(documentCtx, ledger, issueKey, restored, reopener); err != nil {
 			return repair, err
 		}
-		repair.Restored = len(restored)
+		repair.Restored = len(restored.asks)
 	default:
 		return repair, nil
 	}

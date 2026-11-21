@@ -24,12 +24,12 @@ const test = stubbed(async () => {
   expect(plan.artifact.slug).toBe("plan-md");
   const cited = await blockId(plan.artifact.id, "Ship the block graph first.");
   const paragraph = `Decided: dispatch://${issue.key}/artifact/plan-md#b-${cited} holds.`;
-  const decisions = await createIssueArtifact(issue.key, {
+  const notes = await createIssueArtifact(issue.key, {
     content: `Context.\n\n${paragraph}\n`,
-    name: "decisions.md",
+    name: "notes.md",
   });
-  expect(decisions.artifact.slug).toBe("decisions-md");
-  const citing = await blockId(decisions.artifact.id, paragraph);
+  expect(notes.artifact.slug).toBe("notes-md");
+  const citing = await blockId(notes.artifact.id, paragraph);
   return { citing, issue: issue.key, paragraph };
 });
 
@@ -80,7 +80,7 @@ test("a block of another document citing a block shows as that document's row, l
   // One row: the citing paragraph, shown as the document holding it and linked to that block.
   await expect(references.getByRole("link", { name: `Artifact · ${scene.issue}` })).toHaveAttribute(
     "href",
-    `/issues/${scene.issue}/artifacts/decisions-md#b-${scene.citing}`
+    `/issues/${scene.issue}/artifacts/notes-md#b-${scene.citing}`
   );
   await expect(references.getByText(scene.paragraph, { exact: true })).toBeVisible();
   await expect(references.getByRole("heading")).toHaveText("Referenced by (1)");

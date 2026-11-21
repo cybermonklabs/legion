@@ -24,10 +24,10 @@ func blockPointerTestSchema(attributes BlockAttributes) BlockSchema {
 		attributes = oneAttribute("serves", BlockAttributeSchema{Kind: BlockAttributeBlockList, Targets: []string{"requirement"}})
 	}
 	return BlockSchema{
-		Version: active.schema.Version,
-		Nodes:   active.schema.Nodes,
-		Marks:   active.schema.Marks,
-		Types: append(slices.Clone(active.schema.Types),
+		Version: active.Load().schema.Version,
+		Nodes:   active.Load().schema.Nodes,
+		Marks:   active.Load().schema.Marks,
+		Types: append(slices.Clone(active.Load().schema.Types),
 			BlockTypeSchema{Name: "claim", Content: BlockContentParagraphs, Render: "host", Attributes: attributes},
 		),
 	}
@@ -51,11 +51,11 @@ func useTestBlockSchema(t testing.TB, value BlockSchema) {
 
 // A block[] attribute's name is the kind of the links it makes, so it is one `?kind=` can name and
 // never a structural edge kind; its targets are types whose blocks the link graph holds; only it
-// carries targets. The shipped schema declares two: a plan task's serves and needs, the first of
-// which a check shares.
+// carries targets. The shipped schema declares three: a plan task's serves and needs, the first of
+// which a check shares, and the shaped a decision and an ask share.
 func TestABlockPointerSchemaDeclaresANameAndTargets(t *testing.T) {
-	if kinds := LinkKinds(); !slices.Equal(kinds, []string{"needs", "serves"}) {
-		t.Fatalf("the shipped schema's link kinds = %v, want needs and serves", kinds)
+	if kinds := LinkKinds(); !slices.Equal(kinds, []string{"needs", "serves", "shaped"}) {
+		t.Fatalf("the shipped schema's link kinds = %v, want needs, serves and shaped", kinds)
 	}
 	if err := validateBlockSchema(blockPointerTestSchema(nil)); err != nil {
 		t.Fatalf("validate the test schema: %v", err)
@@ -95,8 +95,8 @@ func TestABlockPointerSchemaDeclaresANameAndTargets(t *testing.T) {
 		{Name: "note", BlockAttributeSchema: BlockAttributeSchema{Kind: BlockAttributeString}},
 	}})
 	useTestBlockSchema(t, twice)
-	if kinds := LinkKinds(); !slices.Equal(kinds, []string{"needs", "serves"}) {
-		t.Fatalf("link kinds of the types declaring serves = %v, want [needs serves]", kinds)
+	if kinds := LinkKinds(); !slices.Equal(kinds, []string{"needs", "serves", "shaped"}) {
+		t.Fatalf("link kinds of the types declaring serves = %v, want [needs serves shaped]", kinds)
 	}
 	var served BlockSchema
 	if err := json.Unmarshal(SchemaJSON(), &served); err != nil || len(served.Types) != len(twice.Types) {
@@ -198,12 +198,12 @@ func TestBuiltInBlockTargetsAreTheBlocksTheBlockListHolds(t *testing.T) {
 		}
 	}
 	for nodeType := range listed {
-		if !builtInBlockNode(active.schema, nodeType) {
+		if !builtInBlockNode(active.Load().schema, nodeType) {
 			t.Errorf("the block list holds %s, which a block[] attribute cannot target", nodeType)
 		}
 	}
 	for _, nodeType := range []string{"list_item", "table_header_row", "table_row", "table_cell", "table_header", "doc", "text", "nope"} {
-		if builtInBlockNode(active.schema, nodeType) {
+		if builtInBlockNode(active.Load().schema, nodeType) {
 			t.Errorf("a block[] attribute can target %s, which no block list holds", nodeType)
 		}
 	}

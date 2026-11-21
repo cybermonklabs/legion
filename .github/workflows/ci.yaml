@@ -138,6 +138,7 @@ jobs:
       check_private_names_terms_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_terms_test }}
       check_private_names_keys_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_keys_test }}
       check_plugin_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_plugin_names_test }}
+      check_kept_for_one_release_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_kept_for_one_release_test }}
       check_fireevent_reasons_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_fireevent_reasons_test }}
       check_daemon_api_contract_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_daemon_api_contract_test }}
       check_release_credentials_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_release_credentials_test }}
@@ -343,6 +344,7 @@ jobs:
       check_private_names_terms_test: ${{ needs.changes.outputs.check_private_names_terms_test }}
       check_private_names_keys_test: ${{ needs.changes.outputs.check_private_names_keys_test }}
       check_plugin_names_test: ${{ needs.changes.outputs.check_plugin_names_test }}
+      check_kept_for_one_release_test: ${{ needs.changes.outputs.check_kept_for_one_release_test }}
       check_fireevent_reasons_test: ${{ needs.changes.outputs.check_fireevent_reasons_test }}
       check_daemon_api_contract_test: ${{ needs.changes.outputs.check_daemon_api_contract_test }}
       check_release_credentials_test: ${{ needs.changes.outputs.check_release_credentials_test }}
@@ -623,7 +625,7 @@ jobs:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # The Dispatch API under the race detector, on a runner of its own (.github/ci-notes/ci.md#the-race-lane-what-it-runs-why-it-is-three-jobs-and-what-is-not-in-it
-  # says why). Its tests drive the store, so the job carries the lane's Postgres service.
+  # says why). Its tests drive the store and one runs this tree's dispatch command, so the job carries the lane's Postgres service and installs Bun.
   envoy-go-race-api:
     needs: changes
     if: needs.changes.outputs.envoy_go_race_api == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')

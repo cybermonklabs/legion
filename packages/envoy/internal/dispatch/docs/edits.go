@@ -37,16 +37,23 @@ type operationStamped interface {
 	setOperation(int)
 }
 
-// ErrInvalidOp identifies the malformed user-facing operation field.
+// ErrInvalidOp identifies the malformed user-facing operation field. Err is the refusal Reason
+// reports where another check made it - a block pointer the write may not hold
+// (pmdoc.ErrBlockPointer), the caller's markdown the schema refuses (ErrInvalidMarkdown) - so a
+// caller tells that refusal by its kind, as it does where no operation reports it; it is nil where
+// the reason is the operation's own.
 type ErrInvalidOp struct {
 	opIndex
 	Field  string
 	Reason string
+	Err    error
 }
 
 func (e *ErrInvalidOp) Error() string {
 	return fmt.Sprintf("%sinvalid document operation field %q: %s", e.prefix(), e.Field, e.Reason)
 }
+
+func (e *ErrInvalidOp) Unwrap() error { return e.Err }
 
 func invalidOp(field string) error {
 	return &ErrInvalidOp{Field: field}
@@ -116,7 +123,7 @@ func (e *ErrQuoteNotFound) Unwrap() error { return pmdoc.ErrTargetNotFound }
 type ErrBlockNotFound struct {
 	opIndex
 	// Block is the id the operation wrote, Op the operation that wrote it, and Field the
-	// operation field it stood in: "after", "before" or "block".
+	// operation field it stood in: "after", "before", "into" or "block".
 	Block string
 	Op    string
 	Field string
@@ -591,6 +598,17 @@ func requirePreconditionCoverage(tree *batchTree, ops []model.EditOp, preconditi
 }
 
 func operationPreconditionBlocks(tree *batchTree, op model.EditOp) ([]string, error) {
+	into, inside, err := intoBlock(op)
+	switch {
+	case err != nil:
+		return nil, err
+	case inside:
+		// An insert into a block changes that block, whose guard covers what it writes.
+		if err := requireBlock(tree, op, "into", into); err != nil {
+			return nil, err
+		}
+		return []string{into}, nil
+	}
 	switch op.Op {
 	case "replace":
 		return quotePreconditionBlock(tree, "find", op.Find, op.Occurrence)
@@ -1473,6 +1491,10 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 	op.With = pmdoc.LineFeeds(op.With)
 	op.Markdown = pmdoc.LineFeeds(op.Markdown)
 	op.Attributes = pmdoc.LineFeedAttrs(op.Attributes)
+	into, inside, err := intoBlock(op)
+	if err != nil {
+		return nil, err
+	}
 	switch op.Op {
 	case "replace":
 		return applyReplace(tree, op, budget)
@@ -1518,6 +1540,9 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 	case "insert":
 		if op.Markdown == "" {
 			return nil, invalidOp("markdown")
+		}
+		if inside {
+			return insertInto(tree, op, into, budget)
 		}
 		anchor, after, err := anchorOf(op)
 		if err != nil {
@@ -1679,15 +1704,74 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 	}
 }
 
-// anchorOf returns the one insert or move anchor an operation names.
+// anchorOf returns the one anchor beside a block an insert or a move names, after or before. An
+// insert that names neither goes into a block, which intoBlock reads, or is refused naming all
+// three.
 func anchorOf(op model.EditOp) (anchor string, after bool, err error) {
 	if (op.After == "" && op.Before == "") || (op.After != "" && op.Before != "") {
+		if op.Op == "insert" {
+			return "", false, &ErrInvalidOp{Field: "after, before or into", Reason: "an insert names exactly one of after, before and into"}
+		}
 		return "", false, invalidOp("after or before")
 	}
 	if op.After != "" {
 		return op.After, true, nil
 	}
 	return op.Before, false, nil
+}
+
+// intoBlock is the block an insert's into names and whether the operation names one. into puts
+// the insert's markdown inside that block, after its last child, where after and before put it
+// beside one, so it takes `block:<id>` alone, and an insert names it alone of the three: into on
+// another operation, beside after or before, or naming a quote, a heading or a document edge is
+// refused naming into.
+func intoBlock(op model.EditOp) (blockID string, inside bool, err error) {
+	if op.Into == "" {
+		return "", false, nil
+	}
+	if op.Op != "insert" {
+		return "", false, &ErrInvalidOp{Field: "into", Reason: "into is an insert's alone: it names the block the insert's markdown goes inside"}
+	}
+	if op.After != "" || op.Before != "" {
+		return "", false, &ErrInvalidOp{Field: "into", Reason: "an insert names exactly one of after, before and into: into writes inside a block, after and before beside one"}
+	}
+	blockID, named := strings.CutPrefix(op.Into, "block:")
+	if !named || blockID == "" {
+		return "", false, &ErrInvalidOp{Field: "into", Reason: fmt.Sprintf(
+			`%q names no block: into takes "block:<id>" alone, the block the markdown goes inside; a quote, a heading: anchor, start and end name places beside blocks, which after and before take`, op.Into)}
+	}
+	return blockID, true, nil
+}
+
+// insertInto is an insert whose into names the block its markdown closes (pmdoc.InsertInto): the
+// markdown is read as content of that block's type, not as a document of its own, so one insert
+// into a decision's or an answered ask's block writes a reading of it, which stands nowhere at a
+// document's level. The checks every insert gets run on what it leaves: a block id the markdown
+// repeats and a document that reads back otherwise here, and a reading in an ask that holds no
+// answer on the write path (refuseReadingsWithoutAnswers).
+func insertInto(tree *batchTree, op model.EditOp, blockID string, budget *pmdoc.WriteBudget) (*pmdoc.Node, error) {
+	valid, err := tree.validated("InsertInto")
+	if err != nil {
+		return nil, invalidSchemaOp("markdown", err)
+	}
+	out, with, err := valid.InsertInto(blockID, func(parent string) (*pmdoc.Node, error) {
+		fragment, err := uploadedInput(pmdoc.ParseFragmentInto(op.Markdown, parent, budget))
+		return fragment, invalidMarkdownOp("markdown", err)
+	})
+	if errors.Is(err, pmdoc.ErrHoldsNoBlocks) {
+		return nil, &ErrInvalidOp{Field: "into", Reason: err.Error() + `: into names a block that holds others, such as a decision or an ask, and the markdown closes it; write beside this one with after or before`}
+	}
+	if err != nil {
+		return nil, invalidSchemaOp("markdown", blockNotFound(tree, op, "into", blockID, err))
+	}
+	if err := pmdoc.RepeatedBlockID(tree.node, out, with); err != nil {
+		return nil, &ErrInvalidOp{Field: "markdown", Reason: err.Error()}
+	}
+	// What is stored is the document's rendering, as for every insert.
+	if err := pmdoc.RefuseMisreadWrite(tree.node, out); err != nil {
+		return nil, invalidSchemaOp("markdown", err)
+	}
+	return out, nil
 }
 
 // anchorField names the operation field an anchor came from, for the errors it produces.
@@ -1784,7 +1868,7 @@ func invalidSchemaOp(field string, err error) error {
 // the route's other attribute refusals are.
 func invalidBlockPointerOp(err error) error {
 	if errors.Is(err, pmdoc.ErrBlockPointer) {
-		return &ErrInvalidOp{Field: "attributes", Reason: err.Error()}
+		return &ErrInvalidOp{Field: "attributes", Reason: err.Error(), Err: err}
 	}
 	return err
 }
@@ -1826,7 +1910,7 @@ func invalidTableIndex(tree *pmdoc.Node, blockID, axis, supplied, problem string
 
 func invalidMarkdownOp(field string, err error) error {
 	if errors.Is(err, ErrInvalidMarkdown) {
-		return &ErrInvalidOp{Field: field, Reason: err.Error()}
+		return &ErrInvalidOp{Field: field, Reason: err.Error(), Err: err}
 	}
 	return err
 }

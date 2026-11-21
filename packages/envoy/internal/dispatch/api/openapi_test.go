@@ -166,8 +166,8 @@ func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
 		}
 	}
 	hooks := openAPIHookRoutes()
-	if len(hooks) != 15 {
-		t.Fatalf("the table mounts %d test hooks with Deps.TestHooksEnabled, want 15", len(hooks))
+	if len(hooks) != 16 {
+		t.Fatalf("the table mounts %d test hooks with Deps.TestHooksEnabled, want 16", len(hooks))
 	}
 	for name := range hooks {
 		if !marked[name] {

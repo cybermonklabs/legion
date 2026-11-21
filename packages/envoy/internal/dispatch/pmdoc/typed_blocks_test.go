@@ -315,10 +315,11 @@ func TestRetypeBlockKeepsTheBlockIdentityAndParagraphBody(t *testing.T) {
 	if ask.Type != "ask" {
 		t.Fatalf("retyped type = %q, want ask", ask.Type)
 	}
+	// A server attribute has no written default: the retyped ask holds no state until the server
+	// writes one (writtenDefault).
 	if got := ask.Attrs; !attrsEqual(got, Attrs{
 		BlockIDAttr: "question-id",
 		"multiple":  true,
-		"state":     "open",
 		"urgency":   "high",
 	}) {
 		t.Fatalf("retyped attrs = %#v", got)
@@ -528,7 +529,7 @@ func TestTypedBlockDirectiveErrorsNameTheProblem(t *testing.T) {
 		{
 			name:     "unknown type",
 			markdown: ":::unknown{#block-1}\nBody.\n:::\n",
-			want:     `unknown typed block "unknown" (known types: ask, callout, check, plan_task, requirement)`,
+			want:     `unknown typed block "unknown" (known types: ask, callout, check, decision, plan_task, reading, requirement)`,
 		},
 		{
 			name:     "invalid enum",

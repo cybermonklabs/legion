@@ -239,8 +239,8 @@ func uploadedInput(tree *pmdoc.Node, err error) (*pmdoc.Node, error) {
 	return asUploaded(tree), nil
 }
 
-// asUploaded is a copy of tree as an upload is taken: without anchor marks, and with every
-// server-owned typed-block attribute at its default, since the server owns those.
+// asUploaded is a copy of tree as an upload is taken: without anchor marks, and without any
+// server-owned typed-block attribute, since the server owns those (pmdoc.StripServerOwnedAttrs).
 func asUploaded(tree *pmdoc.Node) *pmdoc.Node {
 	out := pmdoc.StripAnchorMarks(tree)
 	pmdoc.StripServerOwnedAttrs(out)

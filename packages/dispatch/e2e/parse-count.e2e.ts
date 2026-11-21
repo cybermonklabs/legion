@@ -156,12 +156,12 @@ async function seedStoredTexts(): Promise<Seeded> {
     { as: "agent" }
   );
 
-  // The issue's decisions.md, which the Decisions tab draws block by block: its one decision
-  // holds a paragraph of its own so the tab has a stored text to draw, and it links no spec
-  // block, so the issue page above draws no margin card for it.
+  // A decision of the issue, which the Decisions tab draws block by block: a `decision` block of
+  // a document of its own, holding a paragraph so the tab has a stored text to draw. It shapes
+  // no spec block, so the issue page above draws no margin card for it.
   await createIssueArtifact(issue.key, {
-    content: "## Store the notices\n\nA **decided** thing.\n",
-    name: "decisions.md",
+    content: ":::decision{#d1}\n### Store the notices\n\nA **decided** thing.\n:::\n",
+    name: "choices.md",
   });
 
   // An answered ask on an issue of its own, which the related-item check behind the create

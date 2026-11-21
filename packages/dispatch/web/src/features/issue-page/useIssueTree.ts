@@ -94,17 +94,21 @@ export interface NamesFailure {
 }
 
 /**
- * The documents whose blocks the tree reads: the spec and the plan, Verification and decisions
- * documents, whose typed blocks are the ones the page draws (the root spec's R2), each the one
- * the issue read names by its id (`primarySpec`, `roleDocument`). That id is the server's own
- * answer to which document plays the part - the one in that role, or a role-less one under the
- * role's slug, which is how a row a rolling deploy left with no role still plays it
+ * The documents whose blocks the tree reads: the spec and the plan and Verification documents,
+ * whose typed blocks are the ones the page draws (the root spec's R2), each the one the issue
+ * read names by its id (`primarySpec`, `roleDocument`). That id is the server's own answer to
+ * which document plays the part - the one in that role, or a role-less one under the role's
+ * slug, which is how a row a rolling deploy left with no role still plays it
  * (`api/artifacts.go`'s `documentPlays`) - and the coverage and results reads find the
  * document by the same rule. The artifact's own `role` is no answer: the server omits it on
  * such a row, so a plan read by its role would leave that plan's tasks out of the tree while
- * the coverage counts them. A block read for every document of the issue was 25 of a first
- * load's 47 requests, so no other document's blocks are read: four reads at most, and fewer
- * where one document plays two parts or the issue holds none in a part.
+ * the coverage counts them. A decision is a `decision` block of the spec or of another of the
+ * issue's documents, so the spec's own blocks carry its decisions, and the decisions read names
+ * every decision of every document (`IssueTreeReads.decisions`); no decisions document plays a
+ * part, and one an earlier release stored is read no more than any other document. A block read
+ * for every document of the issue was 25 of a first load's 47 requests, so no other document's
+ * blocks are read: three reads at most, and fewer where one document plays two parts or the
+ * issue holds none in a part.
  */
 export function treeDocumentIds(issue: IssueDetails): string[] {
   const ids = new Set<string>();
@@ -112,7 +116,6 @@ export function treeDocumentIds(issue: IssueDetails): string[] {
     primarySpec(issue),
     roleDocument(issue, "plan"),
     roleDocument(issue, "verification"),
-    roleDocument(issue, "decisions"),
   ]) {
     if (document !== undefined) ids.add(document.id);
   }
@@ -291,8 +294,8 @@ export const EVENT_FRESH = {
  * request per node.
  *
  * The reads are the issue's own (handed in, because the page already has it), the coverage, the
- * decisions, the results, the issue's asks, and the blocks of the spec and of the plan,
- * Verification and decisions documents (`treeDocumentIds`) - ids, types and
+ * decisions, the results, the issue's asks, and the blocks of the spec and of the plan and
+ * Verification documents (`treeDocumentIds`) - ids, types and
  * attributes, never text, which is how a `serves` edge is held without reading a document the
  * reader has not opened (R20). Every one of them is a key another surface of this issue already
  * reads, so opening the Conversation or the Decisions panel after the tree finds them answered

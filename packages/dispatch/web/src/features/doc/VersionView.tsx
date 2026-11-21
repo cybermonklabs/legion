@@ -21,7 +21,7 @@ import { embedHighlight } from "./highlight";
 import { refocusWhenSettled } from "./refocus-when-settled";
 import { DocumentRuntime } from "./runtime";
 import { compiledBlockSchema } from "./schema";
-import type { AskBlockHost } from "./typed-block-drawing";
+import { type AskBlockHost, recordsAnswerState, type ServedAsk } from "./typed-block-drawing";
 
 export interface VersionViewProps {
   artifactId: string;
@@ -39,6 +39,11 @@ export interface VersionViewProps {
   highlight: Highlight | undefined;
   /** The project document shown, for block asks with no issue to be referenced under. */
   owner: { project: string; slug: string } | undefined;
+  /** The server's read of the ask the block `blockId` shows (`ServedAsk`), which a block of a
+   *  version that records no answer state is read from, as the live card reads it: the document
+   *  page's, the owner's asks and then the live text, so a copy finds its source on another
+   *  document. Without it such a block reads its own attributes. */
+  servedAsk?: (blockId: string) => ServedAsk | undefined;
   version: number;
 }
 
@@ -49,6 +54,7 @@ export function VersionView({
   createdAt,
   highlight,
   owner,
+  servedAsk,
   version,
 }: VersionViewProps): ReactNode {
   const root = useRef<HTMLDivElement>(null);
@@ -262,6 +268,11 @@ export function VersionView({
               owner={owner}
               readOnly
               rowResolution={false}
+              served={
+                markdown !== undefined && recordsAnswerState(markdown, blockId)
+                  ? undefined
+                  : servedAsk?.(blockId)
+              }
             />
           );
         })}

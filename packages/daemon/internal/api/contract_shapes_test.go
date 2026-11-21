@@ -383,7 +383,9 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	mergeWords := []record.MergeState{record.MergeStateClean, record.MergeStateUnstable, record.MergeStateHasHooks,
 		record.MergeStateBlocked, record.MergeStateDirty, record.MergeStateBehind, record.MergeStateDraft,
 		record.MergeStateUnknown}
-	stepWords := []record.DesignStep{record.DesignStepDecisions, record.DesignStepCriteria, record.DesignStepSpec}
+	// `decisions`, which the plugin's enumeration names and no record.DesignStep constant spells
+	// since the step went (answers.go's designSteps).
+	stepWords := []record.DesignStep{"decisions", record.DesignStepCriteria, record.DesignStepSpec}
 	statusWords := []GatedStepStatus{GatedStepUnregistered, GatedStepWaiting, GatedStepApproved, GatedStepChangesRequested}
 	partWords := []record.LinePart{record.PartReturned, record.PartStarting}
 	kindWords := []record.LineKind{record.LineReturning, record.LineAnswered, record.LineQueuedRoot,

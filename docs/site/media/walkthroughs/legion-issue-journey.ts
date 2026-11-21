@@ -10,6 +10,7 @@ import {
   accept,
   admit,
   DELIVERY_DATE,
+  decisionAnswered,
   file,
   finish,
   linkPullRequest,
@@ -18,8 +19,6 @@ import {
   SAVED_CART,
   seedProject,
   setStatus,
-  specVersionAfter,
-  specVersions,
   type Tracked,
   writeDesign,
 } from "../legion/journey";
@@ -156,7 +155,6 @@ const legionIssueJourney: Walkthrough<Seeded> = {
         ).toBeInViewport({ ratio: 1 });
       },
       act: async (page, seeded, cue) => {
-        const before = await specVersions(seeded.next);
         await linger(page, 0.5);
         const decision = row(page, DECISION);
         await highlight(page, decision.getByText(DECISION));
@@ -172,8 +170,9 @@ const legionIssueJourney: Walkthrough<Seeded> = {
         await expect(row(page, DECISION)).toHaveCount(0);
         await ring(page, page.getByText("Nothing needs you"));
         cue("answered");
-        // The answer lands in the spec as a new version; the architect then asks for approval.
-        await specVersionAfter(seeded.next, before);
+        // The answer is held on the ask, which reads answered; the one version it writes changes
+        // only the block's state, answerer and time, and the architect then asks for approval.
+        await decisionAnswered(seeded.next, DELIVERY_DATE);
         const approval = await requestSpecApproval(seeded.next, DELIVERY_DATE);
         const card = page.getByTestId(`ask-${approval}`);
         await expect(card).toContainText("Approval requested");

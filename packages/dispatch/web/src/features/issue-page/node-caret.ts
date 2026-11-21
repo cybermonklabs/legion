@@ -399,6 +399,19 @@ const BLOCK_ID_PROPERTY = "blockId";
  * guard of its own: a refused one changes nothing, and the editor draws the page again from its
  * document.
  *
+ * A block holds blocks of its own too - a typed block its paragraphs, a decision its heading and
+ * its words, a list its items - and the same rule holds inside it, in two halves. Its paragraphs
+ * are its words, which an edit may split and join: Enter in a typed block makes a paragraph
+ * inside it, a paste of two paragraphs puts both in, Backspace at a paragraph's start joins it to
+ * the paragraph before it, and a list's item sinks into the item before it. Every other block
+ * inside it is its structure, which an edit of words never changes: each block inside it the
+ * transaction leaves standing - its content kept, wherever the transaction puts it - is still a
+ * block of the type and the attributes it was, its id aside, which the editor mints for a block
+ * a split or a sink makes or moves (`ownAttributes`). So a decision's heading lowered a level or
+ * made a paragraph, a paragraph made a heading, and a paragraph joined to the heading before it
+ * are each refused, as they are for the block itself; a block deleted whole with the words a
+ * selection held is not standing, and keeps nothing.
+ *
  * A heading stores as one line of markdown, and measured in Chromium, two lines pasted at the
  * start of a decision's `## ` heading stored it as a heading of two lines, `Two\`, `lines...` and
  * `---` under them. A heading's `id` is no attribute the reader edits: Milkdown derives it from the
@@ -500,8 +513,9 @@ function blockStart(
 
 /** Whether `transaction`, one of the editor's own in `state`, keeps to `blockId`'s block, found
  *  from `guess`: the block stands after it where the mapping puts it, one node of the type and
- *  attributes it had, with no more line breaks in its headings; what stands before it and after
- *  it reads as it did; and the selection is inside it. */
+ *  attributes it had, with no more line breaks in its headings and each block inside it it left
+ *  standing of the type and attributes it had (`innerBlocksKept`); what stands before it and
+ *  after it reads as it did; and the selection is inside it. */
 function keepsToBlock(
   transaction: Transaction,
   state: EditorState,
@@ -526,11 +540,46 @@ function keepsToBlock(
     kept.hasMarkup(block.type, attributesAsRead(block, kept), block.marks) &&
     (unchanged ||
       (headingBreaks(kept) <= headingBreaks(block) &&
+        innerBlocksKept(transaction, block, from) &&
         sameReading(state.doc.content.cut(0, from), transaction.doc.content.cut(0, start)) &&
         sameReading(state.doc.content.cut(to), transaction.doc.content.cut(end)))) &&
     selection.from > start &&
     selection.to < end
   );
+}
+
+/** Whether every block inside `block`, which starts at `from` in the document before
+ *  `transaction`, that the transaction leaves standing is still a block of the type and the
+ *  attributes it was (`ownAttributes`): the block that holds the place where its content started,
+ *  wherever the transaction put that place - the paragraph before it, for a paragraph a join put
+ *  there, or the heading a paragraph was made into. A block the transaction deleted whole stands
+ *  nowhere, and one it made had nothing to keep (`holdEditsToBlock`). */
+function innerBlocksKept(transaction: Transaction, block: ProseMirrorNode, from: number): boolean {
+  let kept = true;
+  block.descendants((inner, offset) => {
+    if (!kept || !inner.isBlock) return false;
+    // `offset` counts from the block's content, one past its start, and the inner block's own
+    // content starts one past the inner block. That place is gone only where a deletion took it
+    // in (`deletedAcross`): one that starts or ends there - the first letter deleted as `# `
+    // makes a heading, or the boundary a join takes - leaves it standing.
+    const place = transaction.mapping.mapResult(from + 1 + offset + 1, 1);
+    if (!place.deletedAcross) {
+      const now = transaction.doc.resolve(place.pos).parent;
+      kept = now.hasMarkup(inner.type, ownAttributes(inner, now), inner.marks);
+    }
+    return kept && !inner.isTextblock;
+  });
+  return kept;
+}
+
+/** `node`'s attributes, but for those no edit of the reader's sets, which read as `other`'s: the
+ *  block's id, which the editor mints for a block a split or a sink makes or moves, and a
+ *  heading's `id` (`attributesAsRead`). */
+function ownAttributes(node: ProseMirrorNode, other: ProseMirrorNode): ProseMirrorNode["attrs"] {
+  const attributes = attributesAsRead(node, other);
+  return BLOCK_ID_PROPERTY in attributes
+    ? { ...attributes, [BLOCK_ID_PROPERTY]: other.attrs[BLOCK_ID_PROPERTY] }
+    : attributes;
 }
 
 /** `node`'s attributes, but for a heading's `id`, which reads as `other`'s: Milkdown derives it

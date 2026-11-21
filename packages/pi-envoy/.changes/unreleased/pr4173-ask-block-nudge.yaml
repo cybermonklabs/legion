@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    The nudge for a design question says to open an ask block in the document it concerns.
+time: 2026-11-17T17:20:07.000000000Z
+custom:
+    Issue: pr4173

@@ -435,8 +435,7 @@ func (s *Service) forkLive(ctx context.Context, write *liveWrite) (*crdt.Doc, er
 // appended and the room has committed since the transaction read it, so the state its appends were
 // made on is no longer anywhere to be read. It is ErrServiceUnavailable, which is what it is for a
 // caller - this transaction cannot serve the write, and the retry that follows reads the room
-// afresh - rather than the 500 an error that maps to no status becomes (SetBlockAttributes
-// retries in the same transaction, and reaches this when the room has committed since its read).
+// afresh - rather than the 500 an error that maps to no status becomes.
 var errForkReleased = fmt.Errorf("%w: the transaction can no longer write this document: the write has ended, or an operation failed after it changed the document and the document has changed since", ErrServiceUnavailable)
 
 // rebuildFork builds write's fork again, after an operation abandoned it (applyLive), on the state
@@ -645,6 +644,14 @@ func (s *Service) coldFork(ctx context.Context, write *liveWrite, head int64) (*
 			return nil, err
 		}
 		s.failRoom(write.artifactID, err)
+		if errors.Is(err, ErrDocumentUnloadable) {
+			// A history that does not even merge (mergedThrough) is the one a decode refuses
+			// below: the state a rebuild repairs, which every retry meets again, and not a fault
+			// of the server. Its writer answers it as it answers that decode, so a close, reopen or
+			// repair writing every document of an issue goes on without this one
+			// (writeDocumentAskStates) whatever number of stored updates the history holds.
+			return nil, err
+		}
 		return nil, fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
 	}
 	if live := s.srv.GetDoc(write.artifactID); live != nil && !closedIssueCommentMark(ctx, write) && !s.roomBehindHead(ctx, write.artifactID, live, head) {

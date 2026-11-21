@@ -93,6 +93,8 @@ export const NODE_TYPE_NAMES = freeze({
   issue: "issue",
   message: "message",
   plan_task: "plan task",
+  /** A `reading`: an agent's reading of a person's answer, inside the ask it reads. */
+  reading: "reading",
   /** A `requirement` block, drawn by his word for it (R22, the Design's "The words"): a
    *  sentence that must be true of the software. */
   requirement: "statement",
@@ -626,7 +628,8 @@ export const STATE_LINES = freeze({
    *  that stands failed, beside that read's Retry (`outline-reads.ts`): the names the rows cite,
    *  which checks serve each statement, the issue's decisions, the checks' results, the
    *  questions, the comments, the messages, and each document whose blocks it draws, named by
-   *  the part the document plays. */
+   *  the part the document plays: the spec, the plan or Verification, since a decision is a block
+   *  of a document and no document of its own. */
   names_unreadable: "Could not load the names this issue's rows cite.",
   coverage_unreadable: "Could not load which checks serve each statement.",
   issue_decisions_unreadable: "Could not load this issue's decisions.",
@@ -637,7 +640,6 @@ export const STATE_LINES = freeze({
   spec_unreadable: "Could not load the spec.",
   plan_unreadable: "Could not load the plan.",
   verification_unreadable: "Could not load the verification document.",
-  decisions_document_unreadable: "Could not load the decisions document.",
 } as const);
 
 /**
@@ -1131,9 +1133,10 @@ export const CONTROL_LABELS = freeze({
    *  identifier (R9, R22), so the page says what it is rather than which one
    *  (`AgentText.author`, `features/refs/AgentName.tsx`). */
   unnamed_author: "An agent",
-  /** Who made a node the model holds no author for (R9): a requirement, a check, a plan task,
-   *  a note and a decision, whose reads carry none. It is the page's own word, drawn with a
-   *  shape of its own (`AuthorKind`), so no reader takes it for somebody's name. */
+  /** Who made a node the model holds no author for (R9): a requirement, a check, a plan task
+   *  and a note, whose reads carry none, and a decision whose entry in the decisions read names
+   *  no decider (`DecisionEntry.decided_by`). It is the page's own word, drawn with a shape of
+   *  its own (`AuthorKind`), so no reader takes it for somebody's name. */
   unknown_author: "Author unknown",
   /** What the claim says of a holder that has missed its heartbeats without ending: it has not
    *  gone, it still holds the issue, and it may yet answer (R11, row four). */
@@ -1171,20 +1174,35 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   ci_check: "CI check",
   copied_from: "copied from",
   copied_from_document: "copied from document",
+  /** The author of a decision, which the server writes from who wrote the block. */
+  decided_by: "decided by",
+  /** The question an agent's decision settles. An ask is drawn as a question (R34). */
+  from_ask: "from question",
   /** Why the block cannot be answered as written; "invalid" names a verdict, not the reason. */
   invalid: "problem",
+  /** The person who kept the decision as it reads; the server writes it. */
+  kept_by: "kept by",
+  /** The sum of the words that person kept, which the server compares with the words now. */
+  kept_text_sum: "sum of the kept words",
   kind: "kind",
   /** Whether the reader may choose more than one option. */
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  /** Whether a newer decision stands in this one's place. */
+  replaced: "replaced",
   run: "run",
   selected: "selected",
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
   serves: "serves",
+  /** The spec blocks a decision, or the answer of an ask, shaped. */
+  shaped: "shaped",
   state: "state",
   surface: "surface",
   title: "title",
+  /** How unsure the agent was of a decision, and in the next one why. */
+  uncertainty: "uncertainty",
+  uncertainty_reason: "why unsure",
   urgency: "urgency",
   when: "when",
 } as const);
@@ -1345,6 +1363,7 @@ export const GLYPH_TOKENS = freeze({
     issue: "issue",
     message: "message",
     plan_task: "plan-task",
+    reading: "reading",
     requirement: "requirement",
     result: "result",
   },

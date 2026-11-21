@@ -139,11 +139,15 @@ const slowWithdrawal = 4 * time.Second
 
 // A close's transaction writes closed_at, then withdraws the issue's open asks, writing their blocks
 // into the issue's documents under each document's advisory lock, which it holds until it commits.
-// A browser's keystroke in a room of such a document on another process waits on that lock, so it
-// reaches the append gate only after the close committed. The keystroke was made before the close
-// took effect, so it is stored however long the withdrawal took: the gate measures closeMargin from
-// the close's commit (the close stamps closed_at again just before it commits), not from the start
-// of its transaction. The commit's notification then closes the room, and the browser reconnects
+// It writes each block's state (docs.WriteIssueAskStates): while another build serves the
+// attributes that build's pages read, and on a fleet of one build the ones a version keeps, since a
+// close writes one version that changes only the server-owned attributes of the asks' blocks (R3).
+// The test registers a process of each of two builds. A browser's
+// keystroke in a room of such a document on another process waits on that lock, so it reaches the
+// append gate only after the close committed. The keystroke was made before the close took effect,
+// so it is stored however long the withdrawal took: the gate measures closeMargin from the close's
+// commit (the close stamps closed_at again just before it commits), not from the start of its
+// transaction. The commit's notification then closes the room, and the browser reconnects
 // read-only, holding the keystroke. Here the close holds its transaction open for longer than
 // closeMargin after writing the withdrawn block, and the browser types then.
 func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
@@ -156,6 +160,7 @@ func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 		return wrapper
 	})
 	runDocumentRoomSync(t, database, documentService)
+	registerTwoBuilds(t, database)
 	issue := createInteractionIssue(t, handler, "TEST", "A slow close", closeDecision)
 	awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, "close-decision", "Ship it?")
 	awaitSettled(t, database, issue.PrimaryArtifactID)

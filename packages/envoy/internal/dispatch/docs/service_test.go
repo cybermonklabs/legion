@@ -463,8 +463,12 @@ func TestSettlementWritingNoVersionNamesTheOneItLeavesTheDocumentAt(t *testing.T
 	}
 }
 
+// While another build serves (serveTwoBuilds), settlement repairs an ask block's server-owned
+// attributes into step with its answered row for that build's pages (rollWindowAskAttributes),
+// once per version: the settlement after the repair finds the block in step and repairs nothing.
 func TestSettlementRepairsServerOwnedAskAttributesOncePerVersion(t *testing.T) {
 	service, artifactID := newTestService(t)
+	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n")
 	service.settleRoom(artifactID, 0)
@@ -1916,7 +1920,9 @@ func TestSetAskBlockTextRefusalOfNestedDecisionsNamesOnlyWhatBreaksTheRule(t *te
 		})
 		settleCurrentGeneration(t, service, artifactID)
 		before := liveTree(t, service, artifactID)
-		if state := blockByID(before, "ask-lists").Attrs["state"]; state != "answered" {
+		// The holder is decided on its ask, which holds its answer state;
+		// no attribute of its block in the document does.
+		if state := blockAskOn(t, service, artifactID, "ask-lists").State; state != "answered" {
 			t.Fatalf("the decision holding it is %v, want it answered", state)
 		}
 		err := editAskUrgency(service, artifactID, "ask-nested")
@@ -2312,7 +2318,7 @@ func followEmptyQuestionStep(
 // build, so the decision and its ask row are read for them afterwards.
 const askRepairQuestion = "Which way now?"
 
-// emptyQuestionStep is why an ask edit of the decision blockID is refused while no paragraph of
+// emptyQuestionStep is why an ask edit of the ask blockID is refused while no paragraph of
 // it holds text: the one step that repairs it, this same ask edit again carrying a question,
 // which the route writes into the block whatever its content rule says.
 func emptyQuestionStep(blockID string) string {
@@ -2320,7 +2326,7 @@ func emptyQuestionStep(blockID string) string {
 		"which writes it into the block", blockID)
 }
 
-// askEditRefusal is err, the refusal of an ask edit of the decision blockID, as the caller reads
+// askEditRefusal is err, the refusal of an ask edit of the ask blockID, as the caller reads
 // it, held to what no refusal may do: send the caller to edit something else before this decision
 // (sendsTheCallerOn), or name a decision of before that already reads as one, which would send a
 // caller nowhere. A decision it names that is not the one being edited must break the content
@@ -3406,7 +3412,9 @@ func answerIndexedAsk(t *testing.T, service *Service, artifactID, blockID string
 }
 
 // A decided ask given a second list is marked invalid and keeps its decided row; once the second
-// list is gone, settlement clears invalid and the block carries its decided wording again.
+// list is gone, settlement clears invalid and the block carries its decided wording again. Its
+// decided state is its ask's, on its node and its row, and no attribute
+// of the block holds it.
 func TestSettlementMarksADecidedAskWithASecondBulletListInvalid(t *testing.T) {
 	service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 	answerIndexedAsk(t, service, artifactID, "ask-lists")
@@ -3456,8 +3464,11 @@ func TestSettlementMarksADecidedAskWithASecondBulletListInvalid(t *testing.T) {
 		t.Fatalf("parse repaired ask: %v", err)
 	}
 	want := []model.AskOption{{Label: "Ship", Description: "Release it"}, {Label: "Hold", Description: "Wait for review"}}
-	if block.question != "Should we ship?" || !slices.Equal(block.options, want) || ask.Attrs["state"] != "answered" {
-		t.Fatalf("repaired decided ask = state=%v question=%q options=%#v, want the decided wording", ask.Attrs["state"], block.question, block.options)
+	if block.question != "Should we ship?" || !slices.Equal(block.options, want) {
+		t.Fatalf("repaired decided ask = question=%q options=%#v, want the decided wording", block.question, block.options)
+	}
+	if state, held := ask.Attrs["state"]; held {
+		t.Fatalf("repaired decided ask holds state %v in the document, want none: its ask's row holds it", state)
 	}
 }
 
@@ -5970,12 +5981,6 @@ func joinedRejectSuggestion(service *Service, artifactID, id string, actor model
 	})
 }
 
-func joinedSetBlockAttributes(service *Service, artifactID, blockID string, attributes map[string]any, actor model.Actor) error {
-	return joinedWrite(service, func(ctx context.Context) error {
-		return service.SetBlockAttributes(ctx, artifactID, blockID, attributes, actor)
-	})
-}
-
 // namedVersion names a version the way every caller does: inside a transaction joined with
 // Service.Join, whose commit credits the version's authors and publishes its events. It
 // returns NamedVersion's own error, which several tests assert on, and commits only without
@@ -6220,6 +6225,26 @@ func waitForDocumentText(t *testing.T, service *Service, artifactID, want string
 	}
 	got, err := service.Text(context.Background(), artifactID)
 	t.Fatalf("document text = %q (%v), want %q", got, err, want)
+}
+
+// waitForAgentText waits for the document as an agent reads it (TextWithAsks) to be markdown, with
+// asks the lines of its asks member (askLines).
+func waitForAgentText(t *testing.T, service *Service, artifactID, markdown, asks string) {
+	t.Helper()
+	read := func() (string, error) {
+		text, err := service.TextWithAsks(context.Background(), artifactID, false)
+		return text.Markdown + "\nasks:\n" + askLines(text.Asks), err
+	}
+	want := markdown + "\nasks:\n" + asks
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if got, err := read(); err == nil && got == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	got, err := read()
+	t.Fatalf("document text with its asks = %q (%v), want %q", got, err, want)
 }
 
 func waitForDocumentVersion(t *testing.T, database *store.Store, artifactID string, number int) model.Version {

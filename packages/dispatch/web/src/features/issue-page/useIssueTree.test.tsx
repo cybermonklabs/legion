@@ -168,7 +168,7 @@ function stubTreeReads(
     }),
     spyOn(api, "getIssueDecisions").mockImplementation(async () => {
       await answered("decisions");
-      return { decisions: [], document: null, open_questions: [] };
+      return { decisions: [], document: null, entries: [], open_questions: [] };
     }),
     spyOn(api, "getIssueResults").mockImplementation(async () => {
       await answered("results");
@@ -1077,21 +1077,23 @@ test("a failed one more read's kept answer stands over no name the first read no
 });
 
 // One block read for every document of the issue was 25 of a first load's 47
-// requests. The tree reads the blocks of the spec and of the plan, Verification and decisions
-// documents, whose typed blocks the page draws, and of no other document: each the one the issue
-// read names by its id, as the server answers which document plays which part.
-test("Only the spec and the plan, Verification and decisions documents have their blocks read", async () => {
+// requests. The tree reads the blocks of the spec and of the plan and Verification documents,
+// whose typed blocks the page draws, and of no other document: each the one the issue read names
+// by its id, as the server answers which document plays which part. A decision is a block of the
+// spec, so no decisions document plays a part: one an earlier release stored, which the issue
+// read still names while it stands, has its blocks read no more than any other document.
+test("Only the spec and the plan and Verification documents have their blocks read", async () => {
   const notes = issueDocument("artifact-notes", "notes-md");
+  const decisions = issueDocument("artifact-decisions", "decisions-md", { role: "decisions" });
   const read = [
     issueDocument("artifact-spec", "spec", { primary: true }),
     plan,
     issueDocument("artifact-verification", "verification-md", { role: "verification" }),
-    issueDocument("artifact-decisions", "decisions-md", { role: "decisions" }),
   ];
   const withDocuments: IssueDetails = {
     ...issue,
-    artifacts: [...read, notes],
-    decisions_artifact_id: "artifact-decisions",
+    artifacts: [...read, decisions, notes],
+    decisions_artifact_id: decisions.id,
     plan_artifact_id: plan.id,
     primary_artifact_id: "artifact-spec",
     verification_artifact_id: "artifact-verification",
@@ -1113,6 +1115,7 @@ test("Only the spec and the plan, Verification and decisions documents have thei
     for (const one of read) {
       expect(api.getArtifactBlocks).toHaveBeenCalledWith(one.id);
     }
+    expect(api.getArtifactBlocks).not.toHaveBeenCalledWith(decisions.id);
     expect(api.getArtifactBlocks).not.toHaveBeenCalledWith(notes.id);
     view.unmount();
   } finally {

@@ -323,7 +323,10 @@ type inboxQuery struct {
 	Assignee string `query:"assignee"`
 }
 
-// myAnswersQuery is GET /api/v1/me/answers's query: the offset page it always answers.
+// myAnswersQuery is the offset page GET /api/v1/me/answers and
+// GET /api/v1/people/{login}/nodes each answer: the page, and nothing else. Neither route
+// takes a kind, a filter or a traversal from its caller, so this struct is the whole of what
+// either reads (answers.go's parseMyAnswersPage, which both parse their page with).
 type myAnswersQuery struct {
 	// Limit is the page size, 1 to 200, default 50.
 	Limit int `query:"limit"`
@@ -791,6 +794,7 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []inboxAsk{}, Params: inboxQuery{}},
 	"GET /api/v1/me/answers":           {Status: http.StatusOK, Response: model.MyAnswersResponse{}, Params: myAnswersQuery{}},
+	"GET /api/v1/people/{login}/nodes": {Status: http.StatusOK, Response: personNodes{}, Params: myAnswersQuery{}},
 	"GET /api/v1/me/replies":           {Status: http.StatusOK, Response: model.MyRepliesResponse{}, Params: myRepliesQuery{}},
 	"PUT /api/v1/me/threads/{id}/read": {Status: http.StatusNoContent, Request: threadReadInput{}},
 	"POST /api/v1/me/inbox/read": {
@@ -1088,6 +1092,7 @@ var routeShapes = map[string]routeShape{
 		OptionalRequest: true,
 	},
 	"GET /api/v1/artifacts/_test/rooms":                          {Status: http.StatusOK, Response: residentRooms{}},
+	"GET /api/v1/artifacts/{id}/_test/ask-attributes":            {Status: http.StatusOK, Response: liveAskAttributes{}},
 	"GET /api/v1/artifacts/{id}/_test/room-counters":             {Status: http.StatusOK, Response: docs.RoomCounters{}},
 	"POST /api/v1/artifacts/{id}/_test/hold-persistence":         {Status: http.StatusNoContent, Request: holdPersistenceInput{}},
 	"PUT /api/v1/artifacts/{id}/_test/live-write-pauses/{point}": {Status: http.StatusNoContent},

@@ -536,13 +536,13 @@ export const DISPATCH_ITEM_BLOCKS = 32768;
 export const DISPATCH_EVENT_BODY_MAX = 32000;
 
 /** What a tool that writes a body says about the two bounds the server holds it to and about the
- *  decision block it refuses in one, written once so every such tool says it the same way. */
+ *  ask block it refuses in one, written once so every such tool says it the same way. */
 const BODY_BLOCK_RULE =
   `Each block (a paragraph, list, quote, table or code block) holds at most ${DISPATCH_BLOCK_UNITS} ` +
   `characters and a body at most ${DISPATCH_ITEM_BLOCKS} blocks; Dispatch refuses a longer one and ` +
-  "names it, and `dispatch limits` prints the bounds. A body holding a decision block (`:::ask`) " +
+  "names it, and `dispatch limits` prints the bounds. A body holding an ask block (`:::ask`) " +
   "is refused however short it is, since nobody can answer a question put in a comment or a " +
-  "message: ask the question in the issue's own document, as a decision block there, or open an " +
+  "message: ask the question in the issue's own document, as an ask block there, or open an " +
   "ask with `dispatch ask`.";
 
 /** What dispatch_ask and dispatch_edit_ask say about the bound on a question. It carries no
@@ -1087,7 +1087,7 @@ export const dispatchToolSpecs = [
       `${ASK_IS_FOR_A_PERSON} ${ASK_WAITS_ON_THE_ASSIGNEE} ` +
       "Open a to-do or permission only a human can give, or a decision that has no document to " +
       "live in. A question about the design an issue's document records is not this tool: write " +
-      "it into that document as a decision block (dispatch doc-edit inserting an ask block at the " +
+      "it into that document as an ask block (dispatch doc-edit inserting an ask block at the " +
       "end of the section it concerns), at every phase, approved spec or not; the block reaches " +
       "the Inbox and its answer lands next to its context. Never give an ask an Approve option: a " +
       "document is approved through dispatch request-approval. Do not use this tool for a status " +
@@ -1396,7 +1396,8 @@ export const dispatchToolSpecs = [
     description:
       "Post a note humans must read now: a reply to a human's message or a deliverable that landed. A to-do only a human can " +
       "complete is an ask (dispatch ask), so it reaches their inbox. Never progress or status updates - Dispatch is a high-signal " +
-      "record, not a log. Not a design decision (write it as a decision block in the document) or document feedback (dispatch comment). " +
+      "record, not a log. Not a design question (write it as an ask block in the document), a design decision you made (write it as a " +
+      "`decision` block in the spec's `## Decisions` part), or document feedback (dispatch comment). " +
       "To answer a human's direct message to this session - one sent from the Agents page, which names no issue - pass that message's bare id as " +
       "in_reply_to and no issue; the reply lands in that conversation. Another call with the same in_reply_to and new text posts a follow-up, " +
       "threaded under this session's first reply; the same text again posts nothing. dispatch read --message <id> reads " +
@@ -1494,13 +1495,14 @@ export const dispatchToolSpecs = [
       "The blocks a with writes are refused, with the document unchanged, where the block holding the match cannot hold them: a heading and any cell of a table, which hold one line of text, and a typed block whose content rule they break - write that block's new text alone, and insert the blocks beside it. A hard break in with is INVALID_OP when the matched text is in a heading or a table cell, which are written on one line. In a table cell, with is the cell's text: write a | in it bare, in code too, since code whose text has an odd run of backslashes right before a | cannot be stored in a cell and is INVALID_OP, naming the cell. " +
       "A delete whose find is a block's entire text removes the block (a list emptied of its items goes too); delete with block removes any block by id, and move with block relocates one. A delete or retype that would take an ask block out of the document while its ask is open is refused, with nothing sent. delete_row and delete_column take a table block and a zero-based index, preserving the table block id and refusing to remove cells with open asks or unresolved comments. " +
       'Insert and move anchors also accept "start", "end", "heading:<exact heading text>", and "block:<id>"; dispatch doc-read --blocks lists every block\'s id, type, opening words and token, and each table\'s rows and cells with the indexes delete_row and delete_column take (GET /api/v1/artifacts/{artifact UUID}/blocks serves the same list). ' +
+      'An insert writes inside a block instead with into, "block:<id>", after that block\'s last child: that is how a reading goes into a decision or an answered ask. ' +
       "Optionally require the state just read: precondition selects exactly one of a document token from dispatch doc-read, or block {id, token} values from dispatch doc-read --blocks. A block guard must include every block the batch changes; Dispatch resolves quote targets and rejects an uncovered batch rather than applying it. Use a document token for insert or move, which depend on document order. Prefer block tokens when the covered content blocks are independent sections. Tokens include inline marks, so a fresh human comment also makes a stale edit fail. PRECONDITION_FAILED means re-read; EDIT_QUEUE_FULL means back off before retrying. " +
       `${CI_CHECK_RULE} ` +
       "The result carries the document token this edit produced, so a chain of guarded edits passes each result's token as the next edit's precondition with no dispatch doc-read between them. " +
       "A batch that leaves the document exactly as it was mints no version, named or not, and the result says nothing changed and names each operation that did nothing. " +
       "A change a browser removes while the edit is in flight is never reported as applied: EDIT_LOST_TO_CONCURRENT_CHANGE means the write was refused and nothing was written, so re-read the document and decide again, as with PRECONDITION_FAILED; lost_ops on a successful result names operations whose text the live document no longer has, because the deletion landed after the version was written. " +
       "Several paragraphs, or a list, go in one replace, since with writes the blocks its markdown names; blocks beside a block go in one insert, since two inserts at one anchor come out reversed. The result prints the markdown of each block the edit wrote, so read that rather than the document again. " +
-      "Each decision block the edit adds gets the related-item check dispatch ask gets, waiting at most five seconds for all of them together: the result prints, after its first line, `Decision block <id>:` and what that check found, that it found nothing, or that it was not made and why. " +
+      "Each ask block the edit adds gets the related-item check dispatch ask gets, waiting at most five seconds for all of them together: the result prints, after its first line, `Ask block <id>:` and what that check found, that it found nothing, or that it was not made and why. " +
       "A block id written as {#id} longer than 256 bytes is stored, but its block is no graph node, so no reference reaches it. " +
       `The spec holds requirements, design, and decisions - never progress, status, or timestamps; a record of open items or progress is a document of its own. ${OWNER_REFERENCE} ${SPEC_WRITING_POINTER}`,
     arguments: (z) => ({
@@ -1555,6 +1557,12 @@ export const dispatchToolSpecs = [
                   'Insert or move before this anchor: a quote of the neighbouring block\'s text, or one of "start", "end", "heading:<exact heading text>", "block:<id>".'
                 )
                 .optional(),
+              into: z
+                .string()
+                .describe(
+                  'Insert inside this block, after its last child: "block:<id>" is the one form it takes. The markdown is read as that block\'s content, so it may hold what only that block holds, such as a reading closing a decision or an answered ask: {"op":"insert","into":"block:a1","markdown":":::reading{#r1}\\nThe agent reads the answer as REST for every service.\\n:::"}. An insert names exactly one of after, before and into. A Dispatch server older than into ignores it and refuses that insert with INVALID_OP naming after or before, writing nothing.'
+                )
+                .optional(),
               block: z
                 .string()
                 .describe(
@@ -1592,6 +1600,7 @@ export const dispatchToolSpecs = [
       "Do not use it for issue status, asks, or events; " +
       "use dispatch read instead. Supply ref, issue, or project plus artifact; issue plus an omitted artifact reads the primary document. " +
       "A live read returns its document token for an optional dispatch doc-edit precondition. With blocks it lists the live document's blocks instead of its markdown, in document order: each block's id, type, token, anchored comments and asks, and opening words, a typed block's serves and needs under it, and under a table each row by the index delete_row takes and each cell by its row and the column delete_column takes; block ids, block tokens and those indexes are what dispatch doc-edit takes. " +
+      "A live read's markdown holds no ask block's state or answer, so it uploads back unchanged; beside its document token it prints one `Answered <block id> by <answerer> at <time>: <answer>` line per answered ask block, with the options chosen, read from the server's asks. The approval line's content sha256 names the approved version's stored bytes, which differ from a live read's text where they still hold ask attributes; a version read prints those stored bytes and no Answered line. " +
       "After the markdown it prints every open thread anchored on the document in full: an open ask with its id and question and each reply's author, time and text, and a comment thread with its root's id, author, time, quote and text and each reply's author, time and text, in order; a resolved thread, and an ask that is answered or resolved, is not printed. " +
       "A picture (an uploaded PNG, JPEG, GIF or WebP of at most 3,750,000 bytes, 5 MB once base64-encoded) comes back as an image you see, with its name, type, size and version, every time you ask, including one a read already showed this session; " +
       "any other file that is not UTF-8 text is described, with the route that serves its bytes. " +
@@ -1643,20 +1652,23 @@ export const dispatchToolSpecs = [
       "nothing, and a different one is refused, since it would rewrite the card the human is " +
       "reading. Approve and Request changes each close the request, so the next call opens a new " +
       "one. Call it once per revision, when the revision is complete, never after each edit. An " +
-      "approval goes stale when the document changes outside its decision blocks after it, until " +
+      "approval goes stale when the document changes outside its ask blocks after it, until " +
       "a later version's text is exactly the approved version's again, as when an accidental " +
-      "edit is undone exactly, and no decision block in it was decided since: that version " +
+      "edit is undone exactly, and no ask block in it was decided since: that version " +
       "carries the approval and the document reads approved at it, so nothing is requested for " +
       "it. When the document does not read approved, request approval again once that revision " +
       "is complete and " +
       HUMAN_AGREED_TO_DOCUMENT +
       ", with a one-sentence summary naming what changed since the earlier approval: the card " +
       "names that approval (version, date, reviewer) and its Show diff control carries the detail. " +
-      "A human's own answer to a decision block carries the approval to the version it writes when " +
-      "that answer is the whole change since the approved version, so nothing is requested for " +
-      "it. A new version of a Legion root spec closes its armed design gate until a human " +
-      "approves it; a carried approval reopens it too. " +
-      "Refused, with nothing sent, while the document holds an open decision block, even when a " +
+      "A human's answer, resolve, decline, close or reopen of an ask writes one version, which " +
+      "changes only the server-owned attributes of the ask's block: its state, and who answered " +
+      "and when. An approval carries across the version an answer, a resolve or a decline writes, " +
+      "and the request keeps whoever held its turn; a close's version carries none, so the " +
+      "approval reads stale until the reopen's version carries it. A new " +
+      "version of a Legion root spec closes its armed design gate until a human approves it; a " +
+      "carried approval reopens it too. " +
+      "Refused, with nothing sent, while the document holds an open ask block, even when a " +
       "human asked for approval: the refusal names each block; ask the human to answer or waive " +
       "it first. " +
       "Refused 409 PLAN_APPROVED_BY_REVIEW on an issue's plan, which its plan review approves " +
@@ -2108,7 +2120,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_related",
     example: { project: "CORE", title: "Retry failed webhook deliveries" },
     description:
-      "Run the related-item check that dispatch issue, dispatch ask and a new decision block in " +
+      "Run the related-item check that dispatch issue, dispatch ask and a new ask block in " +
       "dispatch doc-edit run on their own write, and write nothing: it lists the three items of " +
       "one project most like a title and a text (at most one per issue or document, open ones " +
       "first), each ask with whether it is answered. Use it to check a draft before filing it. " +

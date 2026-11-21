@@ -386,9 +386,9 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     version: { type: "number" },
     step: {
       type: "string",
-      enum: ["decisions", "criteria", "spec"],
+      enum: ["criteria", "spec"],
       description:
-        "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes the registration without it",
+        "register_gate's design-gate step: criteria for the issue's Verification document, spec for its primary document. A deployment that gates one step takes the registration without it",
     },
     issues: { type: "array", items: { type: "string" } },
     to: {

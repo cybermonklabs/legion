@@ -2,6 +2,7 @@ import { expect, jest, test } from "bun:test";
 import { act, screen, waitFor } from "@testing-library/react";
 
 import { onRealTurns, realClock, tick } from "./__tests__/fake-clock";
+import { wholeText } from "./__tests__/whole-text";
 import { ApiError } from "./api/client";
 import { aliceWrite, keptWrites, otherTab, renderApp } from "./app-sign-out-fixture";
 import { SIGN_OUT_SETTLE_MS } from "./features/shell/sign-in-channel";
@@ -28,7 +29,7 @@ test("the writes held for a tab that went are discarded once whoami says the sig
   });
   const signer = otherTab("tab-2");
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await waitFor(() =>
       expect(signer.told).toContainEqual(expect.objectContaining({ here: true }))
     );
@@ -67,7 +68,7 @@ test("the writes held for a tab that went go on once whoami still names the pers
   });
   const signer = otherTab("tab-2");
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await waitFor(() =>
       expect(signer.told).toContainEqual(expect.objectContaining({ here: true }))
     );
@@ -94,7 +95,7 @@ test("the writes held for a tab that went go on once whoami still names the pers
         .rows()
         .map((row) => row.label)
     ).toEqual(["CORE-1 set to done"]);
-    expect(screen.getByText("Signed in as alice")).toBeTruthy();
+    expect(screen.getByText(wholeText("Signed in as alice"))).toBeTruthy();
   } finally {
     realClock();
     signer.close();
@@ -125,7 +126,7 @@ async function holdingForAnotherTab() {
     },
   });
   const signer = otherTab("tab-2");
-  await screen.findByText("Signed in as alice");
+  await screen.findByText(wholeText("Signed in as alice"));
   await waitFor(() => expect(signer.told).toContainEqual(expect.objectContaining({ here: true })));
   const attempts: string[] = [];
   void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
@@ -291,7 +292,7 @@ test("a tab holding writes for another tab's sign-out resumes them once its leas
   });
   const signer = otherTab("tab-2");
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await waitFor(() =>
       expect(signer.told).toContainEqual(expect.objectContaining({ here: true }))
     );

@@ -119,15 +119,15 @@ const ASK_RULE =
 const characterCount = /\d[\d,]*[\s-]*characters?\b/iu;
 
 /**
- * The sentence `BODY_BLOCK_RULE` gives about a decision block in a body, written once in
+ * The sentence `BODY_BLOCK_RULE` gives about an ask block in a body, written once in
  * `dispatch-tools.ts` and carried by every tool that writes one: Dispatch refuses such a body
  * (400 DECISION_BLOCK_IN_BODY), since the card it draws is one nobody can answer where it
  * stands (INFRA-1201).
  */
 const DECISION_BLOCK_RULE =
-  "A body holding a decision block (`:::ask`) is refused however short it is, since nobody can " +
+  "A body holding an ask block (`:::ask`) is refused however short it is, since nobody can " +
   "answer a question put in a comment or a message: ask the question in the issue's own " +
-  "document, as a decision block there, or open an ask with `dispatch ask`.";
+  "document, as an ask block there, or open an ask with `dispatch ask`.";
 
 /** The same rule as the Dispatch skill words it, in `## Asks and ask blocks`. */
 const SKILL_DECISION_BLOCK_RULE =
@@ -1620,7 +1620,7 @@ describe("dispatchToolSpecs", () => {
   // R4 (INFRA-1201): the rule stands where the writer reads it, before the write. The skill a
   // session reads before its first `dispatch` command says it too, in the section the ask blocks
   // are defined in.
-  test("the Dispatch skill says a body holding a decision block is refused", () => {
+  test("the Dispatch skill says a body holding an ask block is refused", () => {
     expect(dispatchSkill(), "skills/dispatch/SKILL.md").toContain(SKILL_DECISION_BLOCK_RULE);
   });
 
@@ -1640,7 +1640,7 @@ describe("dispatchToolSpecs", () => {
 
   test.each(
     BODY_WRITING_TOOLS
-  )("%s says a decision block in its %s is refused, and where the question belongs", (name, field) => {
+  )("%s says an ask block in its %s is refused, and where the question belongs", (name, field) => {
     const fields = specFor(name).arguments(schemaApi) as unknown as Record<
       string,
       { description?: string; unwrap?: () => { description?: string } }

@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -90,6 +91,11 @@ type Deps struct {
 	// EditNoticeQuiet is how long a document stays quiet after a person's last settled version
 	// before its edit notice goes (recordEditNotice, RunEditNotices); zero means 30 s.
 	EditNoticeQuiet time.Duration
+	// BuildCommit is the commit this process's binary was built from (cmd/dispatch's buildCommit),
+	// the empty string for an unstamped build. The block-index tick keys its build's event cursor
+	// on it, and compares it with the commit of every live server process to report whether
+	// another build serves beside this one (readEventsAfterCursor).
+	BuildCommit string
 	// RoomIdleTimeout is how long an idle room stays resident before ygo's idle sweeper evicts it
 	// (Server.RoomIdleTimeout); zero means roomIdleTimeout, a minute. The sweeper runs on the real
 	// clock, which nothing a test hands the service reaches, so a test whose verdict needs a room
@@ -155,6 +161,22 @@ type Service struct {
 	unrecordedMarkTTL time.Duration
 	// editNoticeQuiet is Deps.EditNoticeQuiet, with its default applied.
 	editNoticeQuiet time.Duration
+	// buildCommit is Deps.BuildCommit.
+	buildCommit string
+	// markingRule is the block index's marking rule this build applies, refs.BlockIndexMarkingRule
+	// as New sets it: the rule its marks, its event cursor and its index passes carry
+	// (markVersionedDocuments, readEventsAfterCursor, refs.PlanBlocks). A test sets another to run
+	// a build of that rule beside this one.
+	markingRule int
+	// eventHorizon is the event log's safe horizon the block-index tick reads, which
+	// blockIndexHorizon builds under horizonOnce on the first tick that asks for it.
+	horizonOnce  sync.Once
+	eventHorizon *events.Horizon
+	// objectPassFinished is when this process's last object pass finished with nothing left, in
+	// Unix nanoseconds by the service's clock (now), and zero before one has: a block-index tick
+	// owes the pass on the process's first tick and once objectPassInterval has passed since
+	// (readEventsAfterCursor).
+	objectPassFinished atomic.Int64
 	// maxPendingItems is the pending queue the service's rooms decode their stored state under
 	// (Server.MaxPendingItems, which New sets from it and ygo reads as each room loads) and the
 	// queue the check a room's load is compared with takes (validateUpdate). New sets it to
@@ -277,6 +299,11 @@ type Service struct {
 	// version's own event; the write phase has not run. Nil outside tests; tests return an error from
 	// it to force the settlement to abandon after its version write, before its commit.
 	afterSettleVersionWrite func(room string) error
+	// afterBlockIndexWrite runs inside the block-index tick's transaction once that tick has
+	// written one document's node, its tuples and its projection rows, and before its commit.
+	// Nil outside tests; tests return an error from it to kill that transaction and find that
+	// none of the three survived it.
+	afterBlockIndexWrite func(artifactID string) error
 	// beforeSettleCommit runs once a settlement's room has taken in the versions the settlement
 	// appended and before the settlement's transaction commits (commitSettlement). Nil outside
 	// tests; tests use it to find the room ahead of the store's head in that window.
@@ -365,6 +392,11 @@ type Service struct {
 	// loads the document's tree (loadTree). Nil outside tests; tests use it to close the issue
 	// while the socket loads.
 	afterSocketIssueRead func(room string)
+	// afterSocketAdmitted runs in a document socket's admission (ServeHTTP) once its admission has
+	// read the document and decided it, and before the socket is held where the schema switch
+	// closes it (holdDocumentSocket). Nil outside tests; tests run a switch there, the gap the
+	// count of switches covers (schemaSwitches).
+	afterSocketAdmitted func(room string)
 	// afterSocketPreload runs in a cold document socket's admission (ServeHTTP) once it has offered
 	// the durable state it loaded to the room's load (offerPreload), and before it hands the socket
 	// to ygo. Nil outside tests; tests use it to hold two cold sockets of one room until both have
@@ -404,7 +436,8 @@ type Service struct {
 	// between the mutation's read of it and its write, where a peer's update can land: Apply runs
 	// the mutation outside the document's lock and takes the lock for each transaction alone.
 	inServiceTransaction func(txn *crdt.Transaction)
-	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks).
+	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks), and the
+	// block-index tick times its object pass by (objectPassInterval).
 	now      func() time.Time
 	settleWG sync.WaitGroup
 	// evictWG counts the forced evictions failRoomLocked spawns. They flush the room through
@@ -481,6 +514,15 @@ type Service struct {
 	roomSlots     roomSlots
 	residentRooms atomic.Int64
 	connections   atomic.Int64
+	// documentSockets holds the close of every document socket this process is serving, keyed by
+	// the record the socket holds (holdDocumentSocket): the schema switch closes them all
+	// (CloseDocumentSockets), and each socket forgets its own as it ends.
+	documentSockets sync.Map
+	// schemaSwitches counts the schema switches this process has run (CloseDocumentSockets). A
+	// socket's admission reads it before it reads the document and again once the socket is
+	// held, so a switch between the two, whose close found nothing to close, closes the socket
+	// all the same (ServeHTTP).
+	schemaSwitches atomic.Uint64
 	// residentBytes is the encoded bytes the loads ygo holds took, each load's own history and
 	// every update the room it left behind has committed since (residentLoad), for the room
 	// figures: loaded state only. The bytes a commit parks after the load - structs and deletions
@@ -878,6 +920,8 @@ func New(deps Deps) *Service {
 		timers:            make(map[uint64]*time.Timer),
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		editNoticeQuiet:   editNoticeQuiet,
+		buildCommit:       deps.BuildCommit,
+		markingRule:       refs.BlockIndexMarkingRule,
 		reads:             newDocumentReads(readBudget),
 		roomCap:           roomCap,
 		connectionCap:     connectionCap,

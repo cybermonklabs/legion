@@ -10,11 +10,16 @@
 #               reads its ask.opened and each ask.handed_back as hand-backs, never an ask.edited,
 #               which only rewords it.
 # open_in_version: the version a hand-back named in requested_version, the version the agent handed
-# to the human, still held one of the spec's blocks open. The version records each block's state;
-# the block's ask cannot order that, since Dispatch indexes a block as an ask when it settles the
-# document, after the edit that wrote it. Only a block whose id is one of the spec's block asks
-# counts, so an :::ask quoted in code (a fence, or a list item that opens with one) is never read as
-# a block. It judges every hand-back, answered or not.
+# to the human, held one of the spec's blocks while the block was still open at the hand-back. A
+# block the version holds counts as open when its ask held no answer and no resolution at the
+# hand-back's time: the ask row's answer.at and resolution.at are each absent or later. A person's
+# answer is held on the ask alone, so a version this release writes records a block's state only
+# once its ask is answered or resolved, and none while it is open; a version the release before
+# wrote records it always, and a block it records state="open" counts as
+# open whatever its ask's times. The ask's own created_at is never read, since Dispatch indexes a
+# block as an ask when it settles the document, after the edit that wrote it. Only a block whose
+# id is one of the spec's block asks counts, so an :::ask quoted in code (a fence, or a list item
+# that opens with one) is never read as a block. It judges every hand-back, answered or not.
 # answered_after: a hand-back came before a human answered one of the spec's blocks, and that block
 # was raised before the human's first turn on the hand-back: an answer to its request, or a human's
 # reply in the request's thread, before the agent handed the same request back again. That covers
@@ -31,10 +36,12 @@ def ts: (capture("^(?<s>[0-9-]+T[0-9:]+)(\\.(?<f>[0-9]+))?Z$") // error("not an 
 | [$asks[] | select(.kind == "question" and .block_id != null and .block_artifact.id == $artifact)] as $blocks
 | ($events | approval_requests($artifact)) as $requests
 | ([$requests[] | select(.approval.requested_version == $version)] | last | .question) as $request
-| def open_in_version: .approval.requested_version as $v
+| def held_at($at): any(.answer, .resolution; . != null and (.at | ts) <= $at);
+  def open_in_version: .approval.requested_version as $v | (.created_at | ts) as $at
     | ([$versions[] | select(.number == $v)] | first // error("version \($v) of the spec was not read"))
-    | .markdown | match(":::ask\\{(?:#(?<id>[^\\s}]+))?[^}\\n]*\\bstate=\"open\""; "g") | .captures[0].string as $id
-    | $blocks[] | select(.block_id == $id) | .question;
+    | .markdown | match(":::ask\\{#(?<id>[^\\s}]+)[^}\\n]*"; "g")
+    | .captures[0].string as $id | (.string | test("\\bstate=\"open\"")) as $marked_open
+    | $blocks[] | select(.block_id == $id) | select($marked_open or (held_at($at) | not)) | .question;
   def first_turn: .id as $id | (.created_at | ts) as $at
     | ([$requests[] | select(.id == $id) | .created_at | ts | select(. > $at)] | min) as $next
     | [$events[]

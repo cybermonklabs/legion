@@ -124,8 +124,8 @@ func TestResponseShapes(t *testing.T) {
 		},
 		{
 			name:   "artifactText",
-			named:  artifactText{Markdown: "# Spec", Token: "tok-1", Version: new(7)},
-			before: map[string]any{"markdown": "# Spec", "version": new(7), "token": "tok-1"},
+			named:  artifactText{Asks: []model.TextAsk{}, Markdown: "# Spec", Token: "tok-1", Version: new(7)},
+			before: map[string]any{"asks": []model.TextAsk{}, "markdown": "# Spec", "version": new(7), "token": "tok-1"},
 		},
 		{
 			name: "editArtifactResponse",

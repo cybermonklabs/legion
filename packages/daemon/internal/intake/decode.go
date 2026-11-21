@@ -419,7 +419,7 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		if err != nil {
 			return nil, err
 		}
-		// Settlement restoring a decision block it retracted appends ask.opened with the block's
+		// Settlement restoring an ask block it retracted appends ask.opened with the block's
 		// original author: nobody asked anything, so it is the ask's state alone.
 		if ask.Restored {
 			return DispatchAskRestored{Key: event.IssueKey, Ask: ask.ID, Kind: ask.kind, Artifact: ask.artifact(), Open: true, Mark: event.mark()}, nil
@@ -439,7 +439,7 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		if err != nil {
 			return nil, err
 		}
-		// Settlement restoring a decision block it retracted appends ask.answered with the answer
+		// Settlement restoring an ask block it retracted appends ask.answered with the answer
 		// given before the retraction, credited to the editor who restored the block: nobody
 		// answered anything, so it is the ask's state alone.
 		if ask.Restored {

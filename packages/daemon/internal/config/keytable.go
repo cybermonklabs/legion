@@ -466,7 +466,7 @@ func (g memberGroup) topLevel() string {
 var nestedKeys = []memberGroup{
 	{Path: "gates", Members: []member{
 		{Name: "design", Default: "`[spec]`, the root issue's primary document, which the word `root-issues` also means", RequiredBy: "no",
-			Description: "The design gate's steps, in the order a person approves them: `decisions` (the root issue's decisions document), `criteria` (its Verification document) and `spec` (its primary document); the empty list skips the approval, which the word `off` also means, and any other word, or a step named twice, is refused."},
+			Description: "The design gate's steps, in the order a person approves them: `criteria` (the root issue's Verification document) and `spec` (its primary document); the empty list skips the approval, which the word `off` also means, and any other word, or a step named twice, is refused. `decisions` is refused by name: the step is gone, and decisions are nodes of the spec, which `spec` gates."},
 	}},
 	{Path: repositoryRenamesKey + "[]", Members: []member{
 		{Name: "from", Default: "none: a pair that names no `from` is refused", RequiredBy: "yes",

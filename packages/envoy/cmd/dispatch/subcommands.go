@@ -19,6 +19,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -40,20 +42,32 @@ var subcommands = []subcommand{
 	{"backfill-anchor-blocks", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
 		return backfillAnchorBlocks(ctx, env.get("DATABASE_URL"), stdout)
 	}},
+	{"backfill-graph-store", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
+		return backfillGraphStore(ctx, env.get("DATABASE_URL"), stdout)
+	}},
+	{"restore-answered-asks", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
+		return runDecisionsStep(ctx, "restore-answered-asks", false, args, env, stdout, stderr)
+	}},
+	{"convert-decisions", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
+		return runDecisionsStep(ctx, "convert-decisions", true, args, env, stdout, stderr)
+	}},
 	{"rebuild-refs", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
 		return rebuildRefs(ctx, env.get("DATABASE_URL"), loadServerURL(env), stdout)
 	}},
 	{"redeliver-webhooks", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return redeliverWebhooks(ctx, args, env, stdout)
 	}},
-	{"census", func(ctx context.Context, _ []string, env settingValues, stdout, stderr io.Writer) int {
-		return census(ctx, env.get("DATABASE_URL"), stdout, stderr)
+	{"census", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
+		return census(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
 	}},
 	{"versions", func(ctx context.Context, _ []string, env settingValues, stdout, stderr io.Writer) int {
 		return versions(ctx, env.get("DATABASE_URL"), stdout, stderr)
 	}},
 	{"backfill-files", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return backfillFiles(ctx, args, env.get("DATABASE_URL"), strings.TrimSpace(env.get("DISPATCH_FILE_STORE_BUCKET")), stdout)
+	}},
+	{"erase", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
+		return erase(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
 	}},
 	{"stored-order", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return storedOrder(ctx, args, env.get("DATABASE_URL"), stdout)
@@ -186,10 +200,31 @@ func committedOpenAPIPath() (string, error) {
 	}
 }
 
-// openMigrated opens the database a DB subcommand works on and brings it to the current
-// schema, reporting each failure on out under the subcommand's label. The caller closes the
-// returned store's pool.
+// openMigrated opens the database a document subcommand works on, brings it to the current
+// schema (openMigratedWithoutBlockSchema) and installs the block schema the store's type nodes
+// build (schemanodes.InstallFromStore), as the server's boot does beside its own migration run,
+// so a subcommand that parses, renders or writes a document holds it to the store's types rather
+// than to the file this binary embeds. It reports each failure on out under the subcommand's
+// label. The caller closes the returned store's pool.
 func openMigrated(ctx context.Context, label, databaseURL string, out io.Writer) (*store.Store, bool) {
+	database, ok := openMigratedWithoutBlockSchema(ctx, label, databaseURL, out)
+	if !ok {
+		return nil, false
+	}
+	if err := schemanodes.InstallFromStore(ctx, database.Pool); err != nil {
+		fmt.Fprintf(out, "%s: install the block schema from the store: %v\n", label, err)
+		database.Pool.Close()
+		return nil, false
+	}
+	return database, true
+}
+
+// openMigratedWithoutBlockSchema opens the database a DB subcommand works on and brings it to the
+// current schema, and installs no block schema. backfill-files opens its database here: it moves
+// file bytes and parses no document, so the store's types are nothing it reads, and a store whose
+// types this build cannot install is no reason for it to refuse. It reports each failure on out
+// under the subcommand's label. The caller closes the returned store's pool.
+func openMigratedWithoutBlockSchema(ctx context.Context, label, databaseURL string, out io.Writer) (*store.Store, bool) {
 	if strings.TrimSpace(databaseURL) == "" {
 		fmt.Fprintln(out, label+": DATABASE_URL is required")
 		return nil, false
@@ -207,6 +242,50 @@ func openMigrated(ctx context.Context, label, databaseURL string, out io.Writer)
 	return database, true
 }
 
+// openUnmigrated opens the database a dry run works on without writing to it: where this
+// binary's migrations are not all applied (store.Census, which migrates nothing and reads in a
+// read-only transaction), it refuses on out under the subcommand's label, since applying them is a
+// write; otherwise it opens the store and installs its block schema, as openMigrated does after
+// its migration run. The caller closes the returned store's pool.
+func openUnmigrated(ctx context.Context, label, databaseURL string, out io.Writer) (*store.Store, bool) {
+	if strings.TrimSpace(databaseURL) == "" {
+		fmt.Fprintln(out, label+": DATABASE_URL is required")
+		return nil, false
+	}
+	report, err := store.Census(ctx, databaseURL)
+	if err != nil {
+		fmt.Fprintf(out, "%s: read which migrations the database has still to apply: %v\n", label, err)
+		return nil, false
+	}
+	if report.Fresh || len(report.Pending) > 0 {
+		owed := "every migration of this build"
+		if !report.Fresh {
+			names := make([]string, len(report.Pending))
+			for index, entry := range report.Pending {
+				names[index] = entry.Migration.Name
+			}
+			owed = strings.Join(names, ", ")
+		}
+		fmt.Fprintf(out, "%s: --dry-run writes nothing, and the database has %s still to apply; run %s without --dry-run, or boot a server of this build, first\n",
+			label, owed, label)
+		return nil, false
+	}
+	database, err := store.Open(ctx, databaseURL)
+	if err != nil {
+		fmt.Fprintf(out, "%s: open database: %v\n", label, err)
+		return nil, false
+	}
+	if err := schemanodes.InstallFromStore(ctx, database.Pool); err != nil {
+		fmt.Fprintf(out, "%s: install the block schema from the store: %v\n", label, err)
+		database.Pool.Close()
+		return nil, false
+	}
+	return database, true
+}
+
+// backfillBlockIDs runs `envoy-dispatch backfill-block-ids`: it prints one line for each document
+// it read (writeBlockIDBackfillReport), and where it read none, one line saying so (`documents=0`),
+// so a run that owed nothing reads apart from one that printed nothing.
 func backfillBlockIDs(ctx context.Context, databaseURL string, out io.Writer) int {
 	database, ok := openMigrated(ctx, "backfill-block-ids", databaseURL, out)
 	if !ok {
@@ -220,6 +299,9 @@ func backfillBlockIDs(ctx context.Context, databaseURL string, out io.Writer) in
 		fmt.Fprintf(out, "backfill-block-ids: %v\n", err)
 		return 1
 	}
+	if len(reports) == 0 {
+		fmt.Fprintln(out, "backfill-block-ids: documents=0")
+	}
 	exitCode := 0
 	for _, report := range reports {
 		if !writeBlockIDBackfillReport(out, report) {
@@ -227,6 +309,153 @@ func backfillBlockIDs(ctx context.Context, databaseURL string, out io.Writer) in
 		}
 	}
 	return exitCode
+}
+
+// backfillGraphStore runs `envoy-dispatch backfill-graph-store`: it writes the nodes and
+// tuples of every comment, document block and block reference written before the node and
+// tuple store existed, the node of every issue, document, ask and message written before its
+// kind's writer wrote one, and the project of every comment and block node written before a node
+// named its project, in batches, one transaction each (graphcensus.Backfill). It appends no
+// event of its own: a fact whose row's own event cannot be found carries the store's sentinel
+// as its cause. It is safe to run again: a row that already names its node is left alone, so a
+// run interrupted anywhere carries on from where it stopped.
+//
+// A block's parent is left to the block index: the run marks each document it touched owed
+// one, and `census --store` reads a difference on every backfilled block until that
+// reconciliation has drained the mark, since the reconciliation is the one writer of
+// document_blocks.parent_block_id.
+func backfillGraphStore(ctx context.Context, databaseURL string, out io.Writer) int {
+	database, ok := openMigrated(ctx, "backfill-graph-store", databaseURL, out)
+	if !ok {
+		return 1
+	}
+	defer database.Pool.Close()
+	report, err := graphcensus.Backfill(ctx, database, out)
+	if err != nil {
+		fmt.Fprintf(out, "backfill-graph-store: %v\n", err)
+		return 1
+	}
+	for _, kind := range report.Kinds {
+		if kind.Skipped > 0 || kind.Remaining > 0 {
+			return 1
+		}
+	}
+	return 0
+}
+
+// runDecisionsStep runs `envoy-dispatch restore-answered-asks --project <KEY> [--dry-run]` (name,
+// convert false) and `envoy-dispatch convert-decisions --project <KEY> [--dry-run]` (convert
+// true): the decisions step by hand (docs.DecisionStep.RunByHand) over the issues of one project.
+// Each migrates the database as every database subcommand does (openMigrated), waits for the
+// step's lock, runs the step's first two phases - the backfill of the rows the release before
+// wrote and the catch-up of what another build appended - and then its third phase for the
+// project, whatever DISPATCH_TEST_HOLD_DECISIONS_STEP says, and only on a fleet of this binary's
+// own build (buildCommit), as a server's step compares its own commit: the restore of every
+// answered ask that left an issue's spec alone, or, for convert-decisions, the rewrite of the
+// project's gated steps without `decisions`, that restore, and the conversion of each issue's
+// decisions document into the spec, which retires the document once it holds no section.
+//
+// --dry-run writes nothing: it applies no migration and refuses, with exit 1, a database that
+// has one of this build's migrations still to apply (openUnmigrated), refuses one whose rows the
+// step's first phase has still to state (docs.ErrDryRunOwesBackfill), runs no catch-up, and runs
+// the third phase with the rewrite of the gated steps and each issue's transaction rolled back.
+//
+// It prints one line for each issue it touched (writeDecisionIssue), and one for each issue whose
+// transaction failed, and where it touched none and none failed, one line saying so
+// (`issues=0`), so a run that owed nothing reads apart from one that printed nothing. It exits 1
+// on such a failure, on another build live, or on any other error, 2 on a usage error or a
+// --project the projects table holds no row of under that exact key, which it refuses before any
+// phase runs, and 0 otherwise.
+func runDecisionsStep(ctx context.Context, name string, convert bool, args []string, env settingValues, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet(name, flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	project := flags.String("project", "", "the key of the project whose issues the step runs over (required)")
+	dryRun := flags.Bool("dry-run", false, "print what the step would do and write nothing; refused while a migration or the step's first phase is owed")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() > 0 || strings.TrimSpace(*project) == "" {
+		fmt.Fprintf(stderr, "%s: usage: envoy-dispatch %s --project <KEY> [--dry-run]\n", name, name)
+		return 2
+	}
+	open := openMigrated
+	if *dryRun {
+		open = openUnmigrated
+	}
+	database, ok := open(ctx, name, env.get("DATABASE_URL"), stdout)
+	if !ok {
+		return 1
+	}
+	defer database.Pool.Close()
+	key := strings.TrimSpace(*project)
+	var known bool
+	if err := database.Pool.QueryRow(ctx, `select exists(select 1 from projects where key = $1)`, key).Scan(&known); err != nil {
+		fmt.Fprintf(stdout, "%s: read the project %q: %v\n", name, key, err)
+		return 1
+	}
+	if !known {
+		fmt.Fprintf(stderr, "%s: the database holds no project %q; --project takes a project's key as the projects table holds it\n", name, key)
+		return 2
+	}
+	documents := docs.New(docs.Deps{Store: database, Events: events.NewBroker(), ServerURL: loadServerURL(env)})
+	defer documents.Shutdown(context.Background())
+	step := docs.NewDecisionStep(database, buildCommit, slog.New(slog.NewTextHandler(stderr, nil)))
+	step.UseDocuments(documents)
+	issues, failures, err := step.RunByHand(ctx, key, convert, *dryRun)
+	for _, issue := range issues {
+		writeDecisionIssue(stdout, name, issue, *dryRun)
+	}
+	for _, failure := range failures {
+		fmt.Fprintf(stdout, "%s: issue=%s failed: %v\n", name, failure.Issue, failure.Err)
+	}
+	if err != nil {
+		fmt.Fprintf(stdout, "%s: %v\n", name, err)
+		return 1
+	}
+	if len(failures) > 0 {
+		return 1
+	}
+	if len(issues) == 0 {
+		fmt.Fprintf(stdout, "%s: issues=0 project=%s dry_run=%t\n", name, key, *dryRun)
+	}
+	return 0
+}
+
+// writeDecisionIssue prints the one line of what the decisions step did to issue: how many
+// answered asks it restored, how many of them it moved out of the decisions document and how many
+// took a new block id; how many it declined to restore because a person removed their block from
+// the spec, each as ask@person@v<version>; what became of the document's sections; whether it
+// retired the document; the versions it wrote; what became of the spec's approval; and each
+// approval it superseded, with the asks, as their nodes and their blocks, whose restore superseded
+// it.
+func writeDecisionIssue(w io.Writer, name string, issue docs.DecisionIssue, dryRun bool) {
+	moved, renamed := 0, 0
+	for _, ask := range issue.Restored {
+		if ask.From != "" {
+			moved++
+		}
+		if ask.NewID {
+			renamed++
+		}
+	}
+	declined := make([]string, 0, len(issue.Declined))
+	for _, ask := range issue.Declined {
+		declined = append(declined, fmt.Sprintf("%s@%s@v%d", ask.Ask, ask.Person, ask.Version))
+	}
+	superseded := make([]string, 0, len(issue.Superseded))
+	for _, approval := range issue.Superseded {
+		superseded = append(superseded, fmt.Sprintf("%s/review=%s/approved_version=%d/asks=%s/nodes=%s",
+			approval.Document, approval.Approval.ReviewID, approval.Approval.ApprovedVersion,
+			strings.Join(approval.Asks, ","), strings.Join(approval.Nodes, ",")))
+	}
+	approval := issue.SpecApproval
+	if approval == "" {
+		approval = "none"
+	}
+	fmt.Fprintf(w, "%s: issue=%s restored=%d moved=%d new_ids=%d declined=%d declined_asks=%s decisions=%d readings=%d dropped=%d removed=%d left=%d retired=%t spec_version=%d decisions_version=%d other_versions=%d spec_approval=%s superseded=%s dry_run=%t\n",
+		name, issue.Issue, len(issue.Restored), moved, renamed, len(issue.Declined), strings.Join(declined, ","),
+		issue.Decisions, issue.Readings, issue.Dropped, issue.Removed, issue.Left,
+		issue.Retired, issue.SpecVersion, issue.DecisionsVersion, issue.OtherVersions, approval, strings.Join(superseded, ";"), dryRun)
 }
 
 func backfillAnchorBlocks(ctx context.Context, databaseURL string, out io.Writer) int {
@@ -266,6 +495,8 @@ func backfillAnchorBlocks(ctx context.Context, databaseURL string, out io.Writer
 // when any failed, and can be run again at any time; the server serves a row from its bytes
 // whenever it holds them. The move refuses, with exit 1 and before it touches a row, while a live
 // server process has no bucket (bucketlessProcesses): that process serves a file only from its row.
+// It reads and writes file versions alone, never a document's, so it installs no block schema
+// (openMigratedWithoutBlockSchema).
 func backfillFiles(ctx context.Context, args []string, databaseURL, bucket string, out io.Writer) int {
 	flags := flag.NewFlagSet("backfill-files", flag.ContinueOnError)
 	flags.SetOutput(out)
@@ -286,7 +517,7 @@ func backfillFiles(ctx context.Context, args []string, databaseURL, bucket strin
 		fmt.Fprintln(out, "backfill-files: DISPATCH_FILE_STORE_BUCKET is required")
 		return 1
 	}
-	database, ok := openMigrated(ctx, "backfill-files", databaseURL, out)
+	database, ok := openMigratedWithoutBlockSchema(ctx, "backfill-files", databaseURL, out)
 	if !ok {
 		return 1
 	}

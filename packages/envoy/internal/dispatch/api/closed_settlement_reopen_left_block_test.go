@@ -132,10 +132,12 @@ const rewordedDecisionSpec = "Context\n\n" +
 // it does for a decided ask. alice's browser, connected before the close, rewords the decision's
 // question once the close has withdrawn the ask and swept the document, and the resumption
 // settles the document on the closed issue: the version holds the person's question, and the ask
-// stays withdrawn with the question it was asked. The reopen restores the ask and writes its block
-// open, which leaves the document owed, and the resumption after the reopen settles it on the
-// open issue, which takes the block's question into the open ask, as settlement takes the
-// rewording of any open ask's block.
+// stays withdrawn with the question it was asked. The reopen restores the ask and leaves the
+// document owed (docs.MarkReopenOwedAskDocuments), and the resumption after the reopen settles it
+// on the open issue, which takes the block's question into the open ask, as settlement takes the
+// rewording of any open ask's block. The newest version holds the person's question and, as every
+// version written on a fleet of one build, none of the ask's state,
+// which the text an agent reads shows open.
 func TestAWithdrawnAsksBlockRewordedInsideTheCloseMarginRewordsItsAskAtTheReopen(t *testing.T) {
 	f := rewordWithdrawnDecisionWhileClosed(t)
 	ctx := context.Background()
@@ -150,9 +152,11 @@ func TestAWithdrawnAsksBlockRewordedInsideTheCloseMarginRewordsItsAskAtTheReopen
 	}
 	awaitRewordedAsk(t, f)
 	version := awaitSettledVersionHolding(t, f.handler, f.database, f.spec, rewordedQuestion)
-	if open := `#rewording-decision urgency="med" multiple="false" state="open"`; !strings.Contains(version, open) || strings.Contains(version, askedQuestion) {
-		t.Fatalf("the reopened issue's newest version reads:\n%s\nwant the block open (%s) asking %q, not %q", version, open, rewordedQuestion, askedQuestion)
+	if strings.Contains(version, askedQuestion) {
+		t.Fatalf("the reopened issue's newest version reads:\n%s\nwant the block asking %q, not %q", version, rewordedQuestion, askedQuestion)
 	}
+	requireNoAnswerAttributes(t, "the reopened issue's newest version", version)
+	requireLiveText(t, f.handler, f.spec, `#rewording-decision state="open"`, rewordedQuestion)
 }
 
 // The rewording a person gives a withdrawn ask's block inside the close margin reaches the ask
@@ -195,7 +199,7 @@ func TestAMarginRewordReachesTheAskInTheEditorsNameAfterTheReopen(t *testing.T) 
 const askedQuestion, rewordedQuestion = "Ship it on Friday?", "Ship it on Monday instead?"
 
 // rewordedWhileClosed is an issue whose spec holds rewordedDecisionSpec's decision, closed through
-// PATCH, whose decision block alice's browser reworded once the close had withdrawn its ask, and
+// PATCH, whose ask block alice's browser reworded once the close had withdrawn its ask, and
 // whose document a settlement saved on the closed issue.
 type rewordedWhileClosed struct {
 	handler   http.Handler

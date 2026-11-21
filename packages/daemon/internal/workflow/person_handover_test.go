@@ -115,7 +115,7 @@ func TestAPersonsApprovalOfAnUnrecordedParkedRootsSpecIsQueuedByTheDaemon(t *tes
 // queue. Each writes nothing and wakes nobody.
 func TestOnlyAPersonsApprovalOfAParkedLabelledRootsPrimaryDocumentQueuesIt(t *testing.T) {
 	carried := approvalOf(askPerson, parkedRootView("backlog"))
-	carried.Reason = intake.CarriedApprovalReasonPrefix + " 2: the answer to the decision block was the whole change"
+	carried.Reason = intake.CarriedApprovalReasonPrefix + " 2: this version's text is that version's, unchanged."
 	changes := approvalOf(askPerson, parkedRootView("backlog"))
 	changes.Kind, changes.Reason = intake.DispatchArtifactChangesRequested, "tighten it"
 	child := parkedRootView("backlog")
