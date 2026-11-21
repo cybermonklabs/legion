@@ -46,17 +46,20 @@ func answerOf(t *testing.T, status int, answer func(auth string) string) redact.
 }
 
 // TestAnAnswersDecodeErrorQuotesNoValue: a 200 answer echoes the request's bearer into a member
-// the client decodes as a time, as a number, or into nothing JSON at all. encoding/json's error,
-// and time.Time's, quote the value; Decode's names the member and the destination's type and
-// quotes none of it. Captures redact.answer-decode/<case>.
+// the client decodes as a time, as a number, or into nothing JSON at all, or answers a number
+// where the client holds the box. encoding/json's error, and time.Time's, quote the value;
+// Decode's names the member and the destination's type and quotes none of it, the box's member
+// among them, whose own type error names no field. Captures redact.answer-decode/<case>.
 func TestAnAnswersDecodeErrorQuotesNoValue(t *testing.T) {
 	type renewed struct {
-		LeaseExpiresAt time.Time `json:"lease_expires_at"`
-		Seconds        int       `json:"seconds"`
+		LeaseExpiresAt time.Time         `json:"lease_expires_at"`
+		Seconds        int               `json:"seconds"`
+		Code           redact.RemoteText `json:"code"`
 	}
 	for _, c := range []struct{ name, body, names string }{
 		{"time", `{"lease_expires_at":"renewed with {auth}"}`, `"lease_expires_at"`},
 		{"number", `{"seconds":"renewed with {auth}"}`, `"seconds"`},
+		{"box", `{"code":7}`, `"code"`},
 		{"not-json", `renewed with {auth}`, "not JSON"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
