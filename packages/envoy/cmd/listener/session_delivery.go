@@ -155,6 +155,10 @@ type sessionDelivery struct {
 	// consumers has one (startSessionRelays sets it before /v1 opens, and main's start ends when
 	// that relay cannot start), so a registration answered consumer is relayed.
 	relay sessionRelay
+	// admissions is, on an edge listener, the projects of the token each session's latest
+	// registration here was admitted on (subscribeHandler), which the relay holds the session's
+	// frames to (edge_frames.go). Every other listener records none.
+	admissions edgeAdmissions
 	// marks is the last mark taken (mark).
 	marks atomic.Uint64
 	// now is the clock of the no-grant backoff; time.Now unless a test sets it.
@@ -532,7 +536,13 @@ func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps,
 	if ackFloor > 0 {
 		start = max(start, ackFloor+1)
 	}
-	return registeredConsumer{filter: m.storedRowFilter(d.registry, sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
+	filter, err := m.storedRowFilter(ctx, d.registry, sessionID, topics)
+	if err != nil {
+		m.logger.Warn("listener could not judge the topics of a session whose consumer it is repairing",
+			slog.String("session_id", sessionID), slog.String("error", err.Error()))
+		return registeredConsumer{}, registeredReadFailed
+	}
+	return registeredConsumer{filter: filter, start: start, revision: revision}, registeredTargetBuilt
 }
 
 // mark returns the next of the marks that order registrations against the relay's restarts: a
@@ -1005,13 +1015,24 @@ func (m *sessionDelivery) sessionConsumerFilter(sessionID string, topics []strin
 }
 
 // storedRowFilter is sessionConsumerFilter of topics, sessionID's interest row as read from
-// registry, and counts each topic of the filter that is in the old form of its name
-// (store.Registry.CountStoredLegacyTopics): a stored row read into a filter is a reader of the old
-// form for as long as the row holds one. Every read of a stored row into a filter comes through
-// here (registeredTarget, storedFilterStep, sessionRelays.storedFilter); a registration's own plan
-// does not, since the subscribe route counted its old forms as it took them.
-func (m *sessionDelivery) storedRowFilter(registry *store.Registry, sessionID string, topics []string) []string {
+// registry, less each topic reaching a private stream subject that is not the session's own
+// (store.Registry.FollowableTopics), and counts each topic of the filter that is in the old form of
+// its name (store.Registry.CountStoredLegacyTopics): a stored row read into a filter is a reader of
+// the old form for as long as the row holds one. Every read of a stored row into a filter comes
+// through here (registeredTarget, storedFilterStep, sessionRelays.storedFilter); a registration's
+// own plan does not, since the subscribe route judged its topics and counted their old forms as
+// it took them (store.MergedTopics). A row is a record any writer of the bucket can store, so the
+// rule a registration applies is applied to what is read here again: a row under the session's own
+// key that names another session's inbox would otherwise put that session's messages in this
+// session's consumer at its next restart. The controller roles that rule reads are read within
+// ctx, and an error is returned for a read that did not answer or failed: the caller builds no
+// filter then.
+func (m *sessionDelivery) storedRowFilter(ctx context.Context, registry *store.Registry, sessionID string, topics []string) ([]string, error) {
+	topics, err := registry.FollowableTopics(ctx, sessionID, topics)
+	if err != nil {
+		return nil, err
+	}
 	filter := m.sessionConsumerFilter(sessionID, topics)
 	registry.CountStoredLegacyTopics(sessionID, filter)
-	return filter
+	return filter, nil
 }

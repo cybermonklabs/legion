@@ -1970,7 +1970,7 @@ func TestSessionsHandler_ReportsSelfSubscribedSession(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, map[string][]string{
 		"ses_omp": {"notifications.test.>"},
 	}, nil)
-	if err := sessions.Put("ses_omp", session.SessionEntry{SelfSubscribed: true}); err != nil {
+	if err := sessions.Put("ses_omp", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
 		t.Fatalf("register self-subscribed session: %v", err)
 	}
 	handler := sessionsHandler(registry, sessions, nil)

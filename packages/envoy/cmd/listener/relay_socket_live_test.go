@@ -567,7 +567,10 @@ func TestARelaySocketRefusesAnotherSessionsSubjects(t *testing.T) {
 			t.Errorf("a sub to %s was answered nothing within 3 s, want err %s", subject, relayErrSubjectNotGranted)
 		}
 	}
-	stray := &natsgo.Msg{Subject: bus.DeliverSubject(other), Reply: bus.RelayReplyPrefix + "stray.1", Header: natsgo.Header{}, Data: []byte(`{"stray":true}`)}
+	// The frame names an event of the token's project, which the edge's rule passes to this
+	// socket (edgeFrameVerdict), so only the socket's subscriptions keep it away.
+	stray := &natsgo.Msg{Subject: bus.DeliverSubject(other), Reply: bus.RelayReplyPrefix + "stray.1", Data: []byte(`{"stray":true}`),
+		Header: natsgo.Header{relayHeaderSubject: {"notifications.dispatch.issue." + relayLiveProject + "." + relayLiveProject + "-1.comment.created"}}}
 	if err := rig.dispatch.Connection().PublishMsg(stray); err != nil {
 		t.Fatalf("publish a frame of %s: %v", other, err)
 	}

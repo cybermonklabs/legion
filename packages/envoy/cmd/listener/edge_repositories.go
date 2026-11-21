@@ -116,10 +116,12 @@ func newEdgeRepositories(brokerURL string, account brokertoken.Account, projects
 	}
 }
 
-// newEdgeWithheldCounter registers envoy_edge_github_withheld_total.
+// newEdgeWithheldCounter registers envoy_edge_github_withheld_total, which counts every frame the
+// edge withholds: a GitHub frame by the repository rule, and any frame of a project the session's
+// token does not list (withheldProjectNotHeld, edge_frames.go).
 func newEdgeWithheldCounter(met *metrics.Registry) *metrics.Counter {
 	return met.NewCounter("envoy_edge_github_withheld_total",
-		"GitHub frames the edge listener acknowledged undelivered, by reason (not_in_project, answer_unknown)")
+		"Frames the edge listener acknowledged undelivered, by reason (not_in_project, answer_unknown, project_not_held)")
 }
 
 // read asks the broker for project's repositories now, and keeps the answer when it is a whole
