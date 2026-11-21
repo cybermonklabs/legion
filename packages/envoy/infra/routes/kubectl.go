@@ -85,8 +85,10 @@ func (k *kubectlSource) args(args ...string) []string {
 	return append(append(all, "--namespace", k.Namespace), args...)
 }
 
-// Pods reads the StatefulSet's replica count and then each of its pods by name, <statefulset>-<i>,
-// as a Role that names the pods allows; a list of the namespace's pods would need more.
+// Pods reads the StatefulSet's replica count and the state of its latest roll, and then each of its
+// pods by name, <statefulset>-<i>, as a Role that names the pods allows; a list of the namespace's
+// pods would need more. A pod is Updated when the roll has finished, every replica updated and the
+// current revision the update revision, and the pod's controller-revision-hash is that revision.
 func (k *kubectlSource) Pods(ctx context.Context) ([]Pod, error) {
 	out, err := k.kubectl(ctx, "get", "statefulset", k.StatefulSet, "--output", "json")
 	if err != nil {
@@ -96,6 +98,11 @@ func (k *kubectlSource) Pods(ctx context.Context) ([]Pod, error) {
 		Spec struct {
 			Replicas *int `json:"replicas"`
 		} `json:"spec"`
+		Status struct {
+			UpdatedReplicas int    `json:"updatedReplicas"`
+			CurrentRevision string `json:"currentRevision"`
+			UpdateRevision  string `json:"updateRevision"`
+		} `json:"status"`
 	}
 	if err := json.Unmarshal(out, &sts); err != nil {
 		return nil, fmt.Errorf("decode the StatefulSet %s: %w", k.StatefulSet, err)
@@ -104,6 +111,7 @@ func (k *kubectlSource) Pods(ctx context.Context) ([]Pod, error) {
 	if sts.Spec.Replicas != nil {
 		replicas = *sts.Spec.Replicas
 	}
+	rolled := sts.Status.UpdateRevision != "" && sts.Status.CurrentRevision == sts.Status.UpdateRevision && sts.Status.UpdatedReplicas == replicas
 	pods := make([]Pod, 0, replicas)
 	for i := range replicas {
 		name := fmt.Sprintf("%s-%d", k.StatefulSet, i)
@@ -111,24 +119,42 @@ func (k *kubectlSource) Pods(ctx context.Context) ([]Pod, error) {
 		if err != nil {
 			return nil, err
 		}
-		pod, err := decodePod(out)
+		pod, revision, err := decodePod(out)
 		if err != nil {
 			return nil, fmt.Errorf("decode the pod %s: %w", name, err)
 		}
+		pod.Updated = rolled && revision == sts.Status.UpdateRevision
 		pods = append(pods, pod)
 	}
 	return pods, nil
 }
 
+// The nats container's route variables, gcp:ClusteredNatsHub's routeAuthorization gives it from
+// its env stage on: the password from the Secret, and the route URLs that carry it.
+const (
+	routePasswordEnv = "NATS_ROUTE_PASSWORD"
+	routeURLsEnv     = "NATS_ROUTE_URLS"
+)
+
 // decodePod is the Pod a `kubectl get pod --output json` answer describes: its Ready condition,
-// and its nats container's restart count and running start, zero when that container is not
-// running.
-func decodePod(body []byte) (Pod, error) {
+// whether its nats container names both route variables, and its nats container's restart count
+// and running start, zero when that container is not running; and the pod's revision, its
+// controller-revision-hash label.
+func decodePod(body []byte) (Pod, string, error) {
 	var pod struct {
 		Metadata struct {
-			Name string `json:"name"`
-			UID  string `json:"uid"`
+			Name   string            `json:"name"`
+			UID    string            `json:"uid"`
+			Labels map[string]string `json:"labels"`
 		} `json:"metadata"`
+		Spec struct {
+			Containers []struct {
+				Name string `json:"name"`
+				Env  []struct {
+					Name string `json:"name"`
+				} `json:"env"`
+			} `json:"containers"`
+		} `json:"spec"`
 		Status struct {
 			PodIP      string `json:"podIP"`
 			Conditions []struct {
@@ -147,13 +173,23 @@ func decodePod(body []byte) (Pod, error) {
 		} `json:"status"`
 	}
 	if err := json.Unmarshal(body, &pod); err != nil {
-		return Pod{}, err
+		return Pod{}, "", err
 	}
 	p := Pod{Name: pod.Metadata.Name, UID: pod.Metadata.UID, IP: pod.Status.PodIP}
 	for _, c := range pod.Status.Conditions {
 		if c.Type == "Ready" {
 			p.Ready = c.Status == "True"
 		}
+	}
+	for _, c := range pod.Spec.Containers {
+		if c.Name != natsContainer {
+			continue
+		}
+		names := map[string]bool{}
+		for _, e := range c.Env {
+			names[e.Name] = true
+		}
+		p.RouteEnv = names[routePasswordEnv] && names[routeURLsEnv]
 	}
 	found := false
 	for _, c := range pod.Status.ContainerStatuses {
@@ -169,7 +205,7 @@ func decodePod(body []byte) (Pod, error) {
 	if !found {
 		p.Ready = false
 	}
-	return p, nil
+	return p, pod.Metadata.Labels["controller-revision-hash"], nil
 }
 
 // forwardLine is the line `kubectl port-forward --address 127.0.0.1 :<port>` prints once it

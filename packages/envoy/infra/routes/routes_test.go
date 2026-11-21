@@ -248,7 +248,7 @@ func cleanHub() *fakeHub {
 		infos: map[string]string{}, answers: map[string]string{}, refused: map[string]error{}, onLog: map[string]func(){}, unstamped: map[string]bool{}}
 	for i := range 3 {
 		name := fmt.Sprintf("envoy-nats-%d", i)
-		h.pods = append(h.pods, routes.Pod{Name: name, UID: "uid-" + name, IP: fmt.Sprintf("10.0.0.%d", 10+i), Ready: true, StartedAt: started})
+		h.pods = append(h.pods, routes.Pod{Name: name, UID: "uid-" + name, IP: fmt.Sprintf("10.0.0.%d", 10+i), Ready: true, Updated: true, RouteEnv: true, StartedAt: started})
 		h.ids[name] = fmt.Sprintf("NSERVER%d", i)
 		h.infos[name] = authInfo(h.ids[name], true)
 	}
@@ -328,7 +328,7 @@ func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 	}
 	// formed is the close line of a route whose peer named a server.
 	formed := func(address, rid string) string { return closedAs(address, rid, "Client Closed - Remote: rogue") }
-	newPod := routes.Pod{Name: "envoy-nats-3", UID: "uid-envoy-nats-3", IP: "10.0.0.13", Ready: true, StartedAt: started}
+	newPod := routes.Pod{Name: "envoy-nats-3", UID: "uid-envoy-nats-3", IP: "10.0.0.13", Ready: true, Updated: true, RouteEnv: true, StartedAt: started}
 	// restartOnLog restarts envoy-nats-2 when its log is read, after the check read the pods, with a
 	// new log that begins at its new start, as the new container's does.
 	restartOnLog := func(h *fakeHub) {
@@ -717,11 +717,20 @@ func TestTakeRecordsOnlyAFinishedRoll(t *testing.T) {
 	_, err = routes.Take(context.Background(), h, "envoy", "envoy-nats", started)
 	require.ErrorContains(t, err, "whether authorization is in force is not known on envoy-nats-1 (its route port's INFO could not be read: refused)")
 	delete(h.refused, "envoy-nats-1 info")
+	// Between two pods of the roll every pod can be Ready while one still runs the revision before:
+	// a record then is of a container the roll replaces next.
+	h.pods[1].Updated = false
+	_, err = routes.Take(context.Background(), h, "envoy", "envoy-nats", started)
+	require.ErrorContains(t, err, "envoy-nats-1 not on the update revision of a finished roll of the StatefulSet; record once the env stage's roll has finished on every pod")
+	h.pods[1].Updated = true
+	h.pods[2].RouteEnv = false
+	_, err = routes.Take(context.Background(), h, "envoy", "envoy-nats", started)
+	require.ErrorContains(t, err, "envoy-nats-0 has no route variables in its nats container: apply routeAuthorization's env stage")
+	h.pods[2].RouteEnv = true
 	h.pods[0].Ready = false
 	h.pods[2].StartedAt = time.Time{}
 	_, err = routes.Take(context.Background(), h, "envoy", "envoy-nats", started)
 	require.ErrorContains(t, err, "envoy-nats-2, envoy-nats-0 not Ready with a running nats container")
-
 	h.podsErr = errors.New("forbidden")
 	_, err = routes.Take(context.Background(), h, "envoy", "envoy-nats", started)
 	require.ErrorContains(t, err, "read the pods: forbidden")

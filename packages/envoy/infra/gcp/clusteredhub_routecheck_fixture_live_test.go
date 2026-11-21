@@ -331,7 +331,8 @@ func (h *stagedHub) server(name string) *stagedServer {
 func (h *stagedHub) Pods(context.Context) ([]routes.Pod, error) {
 	var pods []routes.Pod
 	for _, s := range h.servers {
-		pods = append(pods, routes.Pod{Name: s.name, UID: "uid-" + s.name, IP: "127.0.0.1", Ready: true, RestartCount: s.restarts, StartedAt: s.startedAt})
+		pods = append(pods, routes.Pod{Name: s.name, UID: "uid-" + s.name, IP: "127.0.0.1", Ready: true, Updated: true, RouteEnv: true,
+			RestartCount: s.restarts, StartedAt: s.startedAt})
 	}
 	return pods, nil
 }

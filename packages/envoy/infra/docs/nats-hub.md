@@ -1183,8 +1183,13 @@ envoy-infra routes check --namespace envoy --statefulset envoy-nats --record rou
 ```
 
 `routes record` saves each pod's `uid`, its nats container's `restartCount` and `startedAt`, and
-the time, and refuses while any pod is not Ready with a running nats container, and while any
-pod's route port already requires authorization: the record vouches that each log reaches back
+the time, and refuses until the `env` roll has finished: while any pod is not Ready with a running
+nats container, is not on the update revision of a finished roll of the StatefulSet (its
+`controller-revision-hash`, and the StatefulSet's `updatedReplicas`, `currentRevision` and
+`updateRevision`), or names no route variables in its nats container, since between two pods of a
+roll every pod can be Ready while one still runs the revision before, and a pod the roll replaces
+after the record has a log the record does not cover. It refuses as well while any pod's route
+port already requires authorization: the record vouches that each log reaches back
 to `env`, and one taken later can follow a restart whose log holds none of the routes opened at
 `env` or `routes`. `routes check` reads, in one pass over the pods, each pod's IP from the API
 server, each server's `server_id` from its `/varz` and its routes from its `/routez` through a

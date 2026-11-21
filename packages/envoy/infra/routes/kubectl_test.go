@@ -52,8 +52,9 @@ echo "unexpected: $args" >&2
 exit 3
 `
 
-// kubePod is a pod as `kubectl get pod --output json` prints it, of what the Source reads: its Ready
-// condition, and the nats container's restart count and running start beside the reloader's.
+// kubePod is a pod as `kubectl get pod --output json` prints it, of what the Source reads: its
+// revision, the StatefulSet's update revision; its nats container's route variables; its Ready
+// condition; and the nats container's restart count and running start beside the reloader's.
 func kubePod(name, uid, ip string, ready bool, restarts int, startedAt time.Time) map[string]any {
 	status := "False"
 	if ready {
@@ -61,7 +62,15 @@ func kubePod(name, uid, ip string, ready bool, restarts int, startedAt time.Time
 	}
 	return map[string]any{
 		"kind":     "Pod",
-		"metadata": map[string]any{"name": name, "namespace": "envoy", "uid": uid},
+		"metadata": map[string]any{"name": name, "namespace": "envoy", "uid": uid, "labels": map[string]any{"controller-revision-hash": "envoy-nats-new"}},
+		"spec": map[string]any{"containers": []any{
+			map[string]any{"name": "reloader"},
+			map[string]any{"name": "nats", "env": []any{
+				map[string]any{"name": "GOMEMLIMIT", "value": "1638MiB"},
+				map[string]any{"name": "NATS_ROUTE_PASSWORD", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "envoy-nats-route", "key": "route"}}},
+				map[string]any{"name": "NATS_ROUTE_URLS", "value": "[nats://route:$(NATS_ROUTE_PASSWORD)@envoy-nats-0.envoy-nats-headless.envoy.svc.cluster.local.:6222]"},
+			}},
+		}},
 		"status": map[string]any{
 			"podIP":      ip,
 			"conditions": []any{map[string]any{"type": "PodScheduled", "status": "True"}, map[string]any{"type": "Ready", "status": status}},
@@ -87,7 +96,8 @@ func fakeKubeHub(t *testing.T, h *fakeHub) (routes.Source, string) {
 	}
 	write("kubectl", []byte(fakeKubectl))
 	require.NoError(t, os.Chmod(filepath.Join(dir, "kubectl"), 0o700))
-	sts, err := json.Marshal(map[string]any{"kind": "StatefulSet", "spec": map[string]any{"replicas": len(h.pods)}})
+	sts, err := json.Marshal(map[string]any{"kind": "StatefulSet", "spec": map[string]any{"replicas": len(h.pods)},
+		"status": map[string]any{"replicas": len(h.pods), "updatedReplicas": len(h.pods), "currentRevision": "envoy-nats-new", "updateRevision": "envoy-nats-new"}})
 	require.NoError(t, err)
 	write("statefulset.json", sts)
 	for _, p := range h.pods {

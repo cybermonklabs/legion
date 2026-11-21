@@ -62,13 +62,18 @@ func (v Verdict) String() string {
 }
 
 // Pod is one pod of the hub's StatefulSet, as the API server reports it: its name, its uid, its IP
-// and its Ready condition, and its nats container's restart count and the time the running
-// container started.
+// and its Ready condition; whether it is on the update revision of a finished roll of the
+// StatefulSet, its controller-revision-hash the update revision once the StatefulSet's status shows
+// every replica updated and the current revision the update revision; whether its nats container
+// names the route variables routeAuthorization's env stage gives it; and its nats container's
+// restart count and the time the running container started.
 type Pod struct {
 	Name         string
 	UID          string
 	IP           string
 	Ready        bool
+	Updated      bool
+	RouteEnv     bool
 	RestartCount int32
 	StartedAt    time.Time
 }
@@ -107,9 +112,11 @@ type PodRecord struct {
 	StartedAt    time.Time `json:"startedAt"`
 }
 
-// Take reads src's pods and returns their record, timed now. It refuses while any pod is not
-// Ready or its nats container is not running, since a record must be taken when the env stage's
-// roll has finished: a pod that starts after it would have a log the record does not cover. It
+// Take reads src's pods and returns their record, timed now. It refuses until the env stage's roll
+// has finished: while any pod is not Ready or its nats container is not running, is not on the
+// update revision of a finished roll of the StatefulSet, or names no route variables in its nats
+// container, since a pod the roll replaces after the record has a log the record does not cover.
+// Between two pods of a roll every pod can be Ready while one still runs the revision before. It
 // refuses as well while any pod's route port requires authorization, or its INFO cannot be read:
 // the record vouches that each log reaches back to env, and one taken once authorization is in
 // force can follow a restart whose new log holds none of the routes a process joined by at env or
@@ -122,18 +129,32 @@ func Take(ctx context.Context, src Source, namespace, statefulSet string, now ti
 	if len(pods) == 0 {
 		return Record{}, fmt.Errorf("the StatefulSet %s/%s has no pods", namespace, statefulSet)
 	}
-	var notReady []string
+	var notReady, notUpdated, noRouteEnv []string
 	rec := Record{Namespace: namespace, StatefulSet: statefulSet, RecordedAt: now.UTC()}
 	for _, p := range pods {
 		if !p.Ready || p.UID == "" || p.StartedAt.IsZero() {
 			notReady = append(notReady, p.Name)
 			continue
 		}
+		if !p.Updated {
+			notUpdated = append(notUpdated, p.Name)
+		}
+		if !p.RouteEnv {
+			noRouteEnv = append(noRouteEnv, p.Name)
+		}
 		rec.Pods = append(rec.Pods, PodRecord{Name: p.Name, UID: p.UID, RestartCount: p.RestartCount, StartedAt: p.StartedAt.UTC()})
 	}
 	if len(notReady) > 0 {
 		return Record{}, fmt.Errorf("%s not Ready with a running nats container; record once the env stage's roll has finished on every pod",
 			strings.Join(notReady, ", "))
+	}
+	if len(notUpdated) > 0 {
+		return Record{}, fmt.Errorf("%s not on the update revision of a finished roll of the StatefulSet; record once the env stage's roll has "+
+			"finished on every pod", strings.Join(notUpdated, ", "))
+	}
+	if len(noRouteEnv) > 0 {
+		return Record{}, fmt.Errorf("%s has no route variables in its nats container: apply routeAuthorization's env stage, then record once its "+
+			"roll has finished on every pod", strings.Join(noRouteEnv, ", "))
 	}
 	var authorized, unread []string
 	for _, p := range pods {
