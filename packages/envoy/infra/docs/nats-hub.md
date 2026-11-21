@@ -1239,7 +1239,10 @@ since which of its lines the server wrote cannot be told, and is exit 2; `routes
 reads with `--timestamps`.
 
 - **Every route is the hub's own.** Every route's `ip` is one of the pod IPs and every `remote_id`
-  another pod's `server_id`, and each pod has a route to each of its peers. A route's
+  another pod's `server_id`, from that pod's own IP, and each pod has a route to each of its
+  peers. The `ip` is the TCP peer's address, which the peer does not choose; the `remote_id` is
+  the id the peer sends (`server/route.go:820`), and every route port's INFO shows its server's
+  id, so a `remote_id` counts only from the IP of the pod whose server answers it. A route's
   `remote_name` proves nothing: a peer chooses its own name, and nats-server refuses an accepted
   route's name only when it equals the accepting server's own (`server/route.go:745-751`;
   `isDuplicateServerName` runs for gateways alone, `gateway.go:1090`, `:1166`), so the process
@@ -1326,7 +1329,8 @@ reads with `--timestamps`.
 Exit 1 means: treat the password as read, cut the reach of any process the check names, and
 change the password, below. One process neither read can see: one in a hub pod's own network
 namespace, such as the reloader or the exporter, has that pod's IP, so the log check passes it,
-and `remote_id` catches it only while it holds a route. A change of the password goes back to
+and `remote_id` catches it only while it holds a route under an id other than its own pod's
+server's, which it can send as its own. A change of the password goes back to
 `env`, which drops `authorization` from `nats.conf`, so the routes are open again during its `env`
 and `routes` applies, and its rollout runs `routes record` and `routes check` again. The component
 cannot make that check, since it runs at an apply and reads no pod; the rollout that applies the

@@ -406,10 +406,12 @@ type server struct {
 // rec saved, so the container's log reaches back to the record, and it reads the pod's IP and its
 // server id (/varz). Then, for each pod:
 //
-//   - its /routez: every route's ip a pod IP and its remote_id the server id of another pod, and a
-//     route to each of its peers. It never trusts a route's remote_name, which the peer chooses:
-//     nats-server refuses an accepted route's name only when it equals the accepting server's own
-//     (route.go:745-751).
+//   - its /routez: every route's ip a pod IP and its remote_id the server id of another pod, from
+//     that pod's own IP, and a route to each of its peers. A route's remote_id is the id its peer
+//     sends (route.go:820), which every route port's INFO shows of its server, so it counts only
+//     from the IP of the pod whose server answers it. It never trusts a route's remote_name, which
+//     the peer chooses: nats-server refuses an accepted route's name only when it equals the
+//     accepting server's own (route.go:745-751).
 //   - its route port: its INFO has auth_required, and it refuses a route login with no user and
 //     one with the route user and no password, so authorization is in force with a password.
 //   - its log, by the lines the server wrote (serversLines: in the logger's form, with the start
@@ -442,7 +444,8 @@ type server struct {
 //
 // What it cannot see: a process in a hub pod's own network namespace, such as the chart's config
 // reloader or its exporter, has that pod's IP or its loopback, so its route reads as the pod's, and
-// remote_id tells it apart only while it holds the route.
+// remote_id tells it apart only while it holds the route under an id other than its own pod's
+// server's, which it can send as its own.
 func Check(ctx context.Context, src Source, rec Record) Report {
 	var r Report
 	pods, err := src.Pods(ctx)
@@ -493,17 +496,17 @@ func Check(ctx context.Context, src Source, rec Record) Report {
 		return r
 	}
 	ips := map[string]bool{}
-	ids := map[string]string{}
+	ids := map[string]server{}
 	for _, s := range servers {
 		ips[s.pod.IP] = true
 		if s.id == "" {
 			continue
 		}
 		if other, taken := ids[s.id]; taken {
-			r.add(s.pod.Name, Unknown, "answered the server id %s that %s answered too", s.id, other)
+			r.add(s.pod.Name, Unknown, "answered the server id %s that %s answered too", s.id, other.pod.Name)
 			idsKnown = false
 		}
-		ids[s.id] = s.pod.Name
+		ids[s.id] = s
 	}
 	if !idsKnown {
 		r.add("", Unknown, "the hub's server ids are not all known, so routes are judged by IP alone")
@@ -563,9 +566,9 @@ func checkUnchanged(ctx context.Context, r *Report, src Source, before []Pod) ma
 }
 
 // checkRoutes judges s's /routez: every route's ip a pod IP and, when ids holds every pod's server
-// id, its remote_id another pod's, and a route to each of s's peers. It returns whether s's routes
-// are known not to reach all its peers.
-func checkRoutes(ctx context.Context, r *Report, src Source, s server, ips map[string]bool, ids map[string]string, peerCount int) bool {
+// id, its remote_id another pod's, from that pod's own IP, and a route to each of s's peers. It
+// returns whether s's routes are known not to reach all its peers.
+func checkRoutes(ctx context.Context, r *Report, src Source, s server, ips map[string]bool, ids map[string]server, peerCount int) bool {
 	body, err := src.Monitor(ctx, s.pod.Name, "/routez")
 	if err != nil {
 		r.add(s.pod.Name, Unknown, "its /routez could not be read: %v", err)
@@ -583,7 +586,10 @@ func checkRoutes(ctx context.Context, r *Report, src Source, s server, ips map[s
 	peers := map[string]bool{}
 	for _, route := range routez.Routes {
 		// A route's remote_id and remote_name are what its peer sent (route.go:820), so each is
-		// quoted: a peer can put a newline or a terminal escape in either.
+		// quoted: a peer can put a newline or a terminal escape in either. A route's ip is the
+		// TCP peer's address, which the peer does not choose, so a remote_id counts only from the
+		// IP of the pod whose server answers it: every route port's INFO shows its server's id,
+		// which a process at another pod's address could send as its own.
 		if !ips[route.IP] {
 			r.add(s.pod.Name, PasswordRead, "has a route from an address that is no pod of the hub: ip %s, remote_id %q, remote_name %q",
 				route.IP, route.RemoteID, route.RemoteName)
@@ -592,9 +598,15 @@ func checkRoutes(ctx context.Context, r *Report, src Source, s server, ips map[s
 		if ids == nil {
 			continue
 		}
-		if owner, hub := ids[route.RemoteID]; !hub || owner == s.pod.Name {
+		owner, hub := ids[route.RemoteID]
+		if !hub || owner.pod.Name == s.pod.Name {
 			r.add(s.pod.Name, PasswordRead, "has a route to a server that is none of the hub's others: ip %s, remote_id %q, remote_name %q",
 				route.IP, route.RemoteID, route.RemoteName)
+			continue
+		}
+		if route.IP != owner.pod.IP {
+			r.add(s.pod.Name, PasswordRead, "has a route from another pod's address than the server it names: ip %s, remote_id %q of %s, whose pod IP is %s, "+
+				"remote_name %q", route.IP, route.RemoteID, owner.pod.Name, owner.pod.IP, route.RemoteName)
 			continue
 		}
 		peers[route.RemoteID] = true

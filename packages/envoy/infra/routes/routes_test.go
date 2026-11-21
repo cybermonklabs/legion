@@ -360,6 +360,12 @@ func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 		{"a route to the server itself", func(h *fakeHub) {
 			h.routes["envoy-nats-1"] = append(h.routes["envoy-nats-1"], routes.Route{RemoteID: "NSERVER1", RemoteName: "envoy-nats-0", IP: "10.0.0.10"})
 		}, routes.PasswordRead, "envoy-nats-1", `remote_id "NSERVER1"`},
+		// A route's remote_id is what its peer sends, so a process at one pod's address can name
+		// itself by another pod's server id, which that server's route port INFO shows anyone; a
+		// hub server's routes come from its own pod's IP.
+		{"a route from one pod's IP under another pod's server id", func(h *fakeHub) {
+			h.routes["envoy-nats-0"] = append(h.routes["envoy-nats-0"], routes.Route{RemoteID: "NSERVER2", RemoteName: "envoy-nats-2", IP: "10.0.0.11"})
+		}, routes.PasswordRead, "envoy-nats-0", `ip 10.0.0.11, remote_id "NSERVER2" of envoy-nats-2, whose pod IP is 10.0.0.12`},
 		{"a route with another address since authorization that formed a route, and none in /routez", func(h *fakeHub) {
 			h.logs["envoy-nats-1"] += created("10.9.9.8:6222") + "\n" + created("10.9.9.8:6222") + "\n" + formed("10.9.9.8:6222", "9") + "\n"
 		}, routes.PasswordRead, "envoy-nats-1", `2 route connection(s) with "10.9.9.8" since it loaded authorization, and`},
