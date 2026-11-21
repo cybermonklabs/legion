@@ -1,6 +1,7 @@
 package gcp_test
 
 import (
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -102,16 +103,34 @@ func TestClusteredNatsHubRouteURLsNameTheStatefulSetsPods(t *testing.T) {
 // Kubernetes expands $(NATS_ROUTE_PASSWORD) in NATS_ROUTE_URLS only when the password's variable
 // comes first in the container's env, and the chart writes container.env in its keys' order
 // (templates/_helpers.tpl, nats.env, ranges over the map, which a Go template does in key order).
-// So the password's name sorts first, and the URLs reference it by that name and by no other.
-// TestClusteredNatsHubRouteAuthorizationRendersAndRuns reads the order in the rendered StatefulSet.
+// So in the env the component renders, the variable that holds the password by its secretKeyRef
+// sorts before the one that holds the route URLs, and the URLs reference the password's variable
+// by its name, once each, and no other variable. TestClusteredNatsHubRouteAuthorizationRendersAndRuns
+// reads the order in the rendered StatefulSet.
 func TestClusteredNatsHubRouteEnvKeepsThePasswordFirst(t *testing.T) {
-	names := make([]string, 0, len(wantRouteEnv()))
-	for name := range wantRouteEnv() {
-		names = append(names, name)
+	args := clusteredArgs()
+	args.RouteAuthorization = routeAuthorization("env")
+	env := chartValues(t, runClusteredHub(t, args))["container"].(map[string]any)["env"].(map[string]any)
+	var password, urls string
+	for name, value := range env {
+		switch value := value.(type) {
+		case map[string]any:
+			if from, ok := value["valueFrom"].(map[string]any); ok && from["secretKeyRef"] != nil {
+				require.Empty(t, password, "one variable holds the password")
+				password = name
+			}
+		case string:
+			if strings.Contains(value, "nats://") {
+				require.Empty(t, urls, "one variable holds the route URLs")
+				urls = name
+			}
+		}
 	}
-	slices.Sort(names)
-	require.Less(t, slices.Index(names, "NATS_ROUTE_PASSWORD"), slices.Index(names, "NATS_ROUTE_URLS"))
-	urls := wantRouteEnv()["NATS_ROUTE_URLS"].(string)
-	require.Equal(t, 3, strings.Count(urls, "$(NATS_ROUTE_PASSWORD)"))
-	require.Equal(t, 3, strings.Count(urls, "$("), "the URLs reference no other variable")
+	require.NotEmpty(t, password, "a variable holds the password: %v", env)
+	require.NotEmpty(t, urls, "a variable holds the route URLs: %v", env)
+	names := slices.Sorted(maps.Keys(env))
+	require.Less(t, slices.Index(names, password), slices.Index(names, urls), "the password's variable %s sorts before the URLs' %s: %v", password, urls, names)
+	value := env[urls].(string)
+	require.Equal(t, 3, strings.Count(value, "$("+password+")"), "each route URL references the password's variable: %s", value)
+	require.Equal(t, 3, strings.Count(value, "$("), "the URLs reference no other variable: %s", value)
 }
