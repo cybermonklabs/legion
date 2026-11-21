@@ -233,6 +233,89 @@ func TestSendCoreGivesNoVerdictAndDrainsASendItsConnectionReconnectedUnder(t *te
 	}
 }
 
+// A drained attempt is not sent again by a reconnect during its drain. nats.go keeps a draining
+// subscription in its set until the handler has taken what it holds, so a reconnect in that time
+// sends it again, and checkDrained then removes it with no UNSUB ever written: the server would
+// hold a member of the attempt's queue group that the client no longer reads. The drain is watched
+// (watchDrain), so the reconnect finds it unsubscribed.
+//
+// As in the test above, a restart inside the send leaves the attempt with two messages, the
+// handler holding the first, and sendCore drains it. While the handler still holds it, the server
+// restarts again. Once the client has reconnected, the server must hold no subscription in the
+// attempt's queue group.
+func TestAReleasedAttemptIsNotSentAgainByAReconnectDuringItsDrain(t *testing.T) {
+	const (
+		subject = "notifications.>"
+		queue   = "send-core-drain-reconnect"
+		topic   = "notifications.team.send-core-drain-reconnect"
+	)
+	seed, public := testnats.User(t)
+	granting := testnats.SubscribeGrantConfig(public, subject, "_INBOX.>")
+	server, uri := testnats.StartConfig(t, granting, []string{"-DV", "-js"}, false)
+	t.Setenv("NATS_NKEY_SEED", seed)
+	var conn *nats.Conn
+	restartAndReconnect := func(what string) {
+		reconnects := conn.Stats().Reconnects
+		server.Restart(t, granting)
+		testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, what, func() bool {
+			return conn.Status() == nats.CONNECTED && conn.Stats().Reconnects > reconnects
+		})
+		// nats.go reads CONNECTED before it sends the subscriptions again, under the connection's
+		// lock, so this flush's PONG comes once the server holds every subscription it was sent.
+		if err := conn.Flush(); err != nil {
+			t.Fatalf("flush the reconnected connection: %v", err)
+		}
+	}
+	client, err := Connect([]string{uri}, WithBeforeCoreSendFlush(func() {
+		restartAndReconnect("the connection to reconnect inside the send")
+		publisher, err := Dial("send-core-publisher", []string{uri}, os.LookupEnv)
+		if err != nil {
+			t.Fatalf("connect the publisher: %v", err)
+		}
+		defer publisher.Close()
+		for range 2 {
+			if err := publisher.Publish(topic, []byte("{}")); err != nil {
+				t.Fatalf("publish %s: %v", topic, err)
+			}
+		}
+		if err := publisher.Flush(); err != nil {
+			t.Fatalf("flush the publishes: %v", err)
+		}
+	}))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	conn = client.Conn
+	release := make(chan struct{})
+	var free sync.Once
+	let := func() { free.Do(func() { close(release) }) }
+	t.Cleanup(let)
+	entered := make(chan struct{}, 2)
+	handler := func(*nats.Msg) {
+		entered <- struct{}{}
+		<-release
+	}
+
+	start := conn.Stats().Reconnects
+	sub, _, err := client.sendCore(recoverableSubscription{transport: coreSubscription, subject: subject, queue: queue, handler: handler}, conn, client.js, start)
+	if !errors.Is(err, errSendSuperseded) || sub != nil {
+		t.Fatalf("sendCore answered error %v, subscription %v; want errSendSuperseded and no subscription, the drain this test needs", err, sub)
+	}
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the handler was handed no message; the drain has nothing pending and the test proves nothing")
+	}
+
+	restartAndReconnect("the connection to reconnect during the drain")
+	trace := server.Log()
+	trace = trace[strings.LastIndex(trace, "Starting nats-server"):]
+	if resent := strings.Count(trace, "<<- [SUB "+subject+" "+queue+" "); resent != 0 {
+		t.Fatalf("the server restarted during the drain received the drained attempt's subscription %d times; it holds a queue-group member the client no longer reads", resent)
+	}
+}
+
 // A send whose connection drops after the server's answer arrived, and before it is read, gives no
 // verdict. nats.go turns the connection RECONNECTING and then clears its last error, and it counts
 // the reconnect only once a dial succeeds, so with the server gone the count has not moved: the

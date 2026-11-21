@@ -1153,7 +1153,7 @@ func (c *Client) DrainSubscription(sub *nats.Subscription) (*nats.Subscription, 
 // holds to its flush's round trip plus passes of 100 ms.
 const drainWatchStep = 10 * time.Millisecond
 
-// watchDrain turns the drain DrainSubscription began on a live link into an unsubscribe at the
+// watchDrain turns the drain DrainSubscription (or releaseAttempt) began on a live link into an unsubscribe at the
 // client's next connection event, while the handle is still valid: a drain still in the
 // connection's subscription list when a reconnect lands is re-sent by resendSubscriptions and then
 // dropped by checkDrained with no UNSUB ever written, which is what DrainSubscription's doc
@@ -1394,6 +1394,15 @@ func (c *Client) ResendRefusedCore() error {
 		_ = sub.Unsubscribe()
 		sub, err = nil, errNoQueueAccepted
 	}
+	if err == nil {
+		// The registration takes the accepted subscription's queue group before endBind installs
+		// it, so a refusal of it after a reconnect in between names the queue group the
+		// registration holds and is marked (onAsyncError). Should endBind then install nothing, the
+		// client is stopped, and no refusal is read again.
+		c.subscriptionsMu.Lock()
+		subscription.queue = queue
+		c.subscriptionsMu.Unlock()
+	}
 	if err := c.endBind(subscription, sub, err, false); err != nil {
 		// No group accepted it, or a reconnect overtook the send (errSendSuperseded): the refused
 		// subscription the client held stays in place, and so does its mark. After a reconnect,
@@ -1409,7 +1418,6 @@ func (c *Client) ResendRefusedCore() error {
 	c.mu.Lock()
 	c.subscriptionsMu.Lock()
 	if subscription.active == sub {
-		subscription.queue = queue
 		// A reconnect during the send has cleared the mark (onReconnect), and the new server's
 		// answer to the subscriptions nats.go sent it again is the one that counts.
 		if c.Conn == conn && reconnectsOf(conn) == reconnects {
@@ -1482,7 +1490,7 @@ func (c *Client) sendCore(registration recoverableSubscription, conn *nats.Conn,
 		hook()
 	}
 	if err := conn.FlushTimeout(coreSendAnswerWait); err != nil {
-		releaseAttempt(conn, sub)
+		c.releaseAttempt(conn, sub)
 		return nil, false, err
 	}
 	if hook := c.afterCoreSendFlush; hook != nil {
@@ -1490,7 +1498,7 @@ func (c *Client) sendCore(registration recoverableSubscription, conn *nats.Conn,
 	}
 	after := conn.LastError()
 	if conn.Status() != nats.CONNECTED || reconnectsOf(conn) != reconnects {
-		releaseAttempt(conn, sub)
+		c.releaseAttempt(conn, sub)
 		return nil, false, errSendSuperseded
 	}
 	return sub, sameError(after, before), nil
@@ -1500,18 +1508,28 @@ func (c *Client) sendCore(registration recoverableSubscription, conn *nats.Conn,
 // accepted and delivered to: a reconnect sends it again with every other subscription, and the new
 // server may accept it. On a connection that reads CONNECTED it drains it: nats.go sends the UNSUB
 // at once and hands the messages the subscription holds to its handler before it removes it, where
-// Unsubscribe would drop them. On one that does not it unsubscribes it: a draining subscription
-// stays in nats.go's set until its drain's flush returns, and the reconnect sends every
-// subscription in that set again with no UNSUB (resendSubscriptions), which would leave the server
-// a member of the queue group that the client no longer reads, taking a share of the group's
-// messages. The messages it holds then are lost with the session that delivered them. A reconnect
-// before a drain ends sends the subscription again as well, as it does for any drain nats.go runs.
-func releaseAttempt(conn *nats.Conn, sub *nats.Subscription) {
-	if conn.Status() == nats.CONNECTED {
-		_ = sub.Drain()
+// Unsubscribe would drop them. A drain keeps the subscription in nats.go's set until the handler
+// has taken what it holds, and a reconnect in that time sends it again, after which checkDrained
+// removes it with no UNSUB ever written (resendSubscriptions, checkDrained). That would leave the
+// server a member of the queue group that the client no longer reads, taking a share of the
+// group's messages. So the drain is watched, as DrainSubscription's is (watchDrain): at the
+// client's next connection event, while the subscription is still valid, the watch unsubscribes it,
+// and the reconnect's resend finds nothing to send. The event is taken (ConnectionChanged) before
+// the status is read, so a drop between the read and the drain wakes the watch too. On a
+// connection that does not read CONNECTED it unsubscribes it at once, for the same reason. Either
+// way, the messages it still holds when it is unsubscribed are lost with the session that
+// delivered them.
+func (c *Client) releaseAttempt(conn *nats.Conn, sub *nats.Subscription) {
+	changed := c.ConnectionChanged()
+	if conn.Status() != nats.CONNECTED {
+		_ = sub.Unsubscribe()
 		return
 	}
-	_ = sub.Unsubscribe()
+	if err := sub.Drain(); err != nil {
+		_ = sub.Unsubscribe()
+		return
+	}
+	go c.watchDrain(sub, changed)
 }
 
 // reconnectsOf is conn's reconnect count, 0 for no connection: the session of a subscription's

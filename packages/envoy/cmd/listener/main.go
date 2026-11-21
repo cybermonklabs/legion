@@ -439,12 +439,18 @@ func runSelfHealthMonitor(
 				} else {
 					logger.Info("self-health rebuild started", slog.Int("consecutive", terminalFailures))
 					// Whatever this probe reads, transient or terminal, the count keeps its
-					// increment: only a healthy read is a recovery.
+					// increment: only a healthy read is a recovery. A failure of the role lane alone
+					// is the one exception: the rebuild repaired what it rebuilds, and the lane is
+					// neither rebuilt nor a cause of a restart (checkSelfHealth), so such a read
+					// ends the count as a healthy one would, while failures keeps counting and
+					// `self-health recovered` waits for the lane.
 					if err = probe(); err != nil {
 						logger.Warn("self-health probe after rebuild failed", slog.Int("consecutive", terminalFailures), slog.String("error", err.Error()))
 						if readsDisconnected() {
 							// The connected branch above reset the count, so this probe starts it.
 							disconnectedFailures = 1
+						} else if errors.Is(err, errRoleLaneInactive) {
+							terminalFailures = 0
 						}
 					}
 				}

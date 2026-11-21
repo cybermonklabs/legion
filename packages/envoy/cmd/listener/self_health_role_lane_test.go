@@ -39,7 +39,9 @@ const roleLaneInactiveText = "role lane subscription inactive"
 // lane's subject, in either queue group, under granted, and not under revoked, and the test changes
 // that grant by a reload or a restart. The server traces every protocol line, so the test counts the
 // subscriptions the lane sends and the server's refusals of them. busLogs holds what the bus logs
-// through the default logger, the lane's line for a change of queue group among it.
+// through the default logger, the lane's line for a change of queue group among it. Each probe runs
+// under gate, so a test that holds it orders a change of the grant against the probes
+// (reloadBetweenProbes).
 type roleLaneHealthRig struct {
 	server           *testnats.Server
 	uri, seed        string
@@ -55,6 +57,7 @@ type roleLaneHealthRig struct {
 	terminated       atomic.Bool
 	get              func() (int, map[string]any)
 	stop             func()
+	gate             sync.Mutex
 }
 
 func newRoleLaneHealthRig(t *testing.T, consumer string) *roleLaneHealthRig {
@@ -97,6 +100,8 @@ func newRoleLaneHealthRig(t *testing.T, consumer string) *roleLaneHealthRig {
 		defer close(done)
 		runSelfHealthMonitor(ctx, logging.NewWithWriter("test", rig.logs),
 			func() error {
+				rig.gate.Lock()
+				defer rig.gate.Unlock()
 				err := probe()
 				rig.probes.Add(1)
 				return err
@@ -118,6 +123,20 @@ func newRoleLaneHealthRig(t *testing.T, consumer string) *roleLaneHealthRig {
 	}
 	t.Cleanup(rig.stop)
 	return rig
+}
+
+// reloadBetweenProbes reloads the server with config while no probe runs. A probe that sent the
+// lane's subscription during the reload could have its shared queue group's send refused under the
+// old grant and its machine group's send accepted under the new one, and the lane would then keep
+// the machine's group: the test orders the reload against the probes so it reads the reload's own
+// outcome, which in production is one round trip in each 30 s probe.
+func (r *roleLaneHealthRig) reloadBetweenProbes(t *testing.T, config string) {
+	t.Helper()
+	r.gate.Lock()
+	defer r.gate.Unlock()
+	if err := r.server.Reload(t, config); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
 }
 
 // failures counts the monitor's `self-health probe failed` lines that name the role lane.
@@ -260,9 +279,7 @@ func TestTheSelfHealthProbeFailsWhileTheRoleLaneIsRefusedAndStopsOnceItIsBack(t 
 		rig.revoke(t)
 		rig.requireFailing(t)
 
-		if err := rig.server.Reload(t, rig.granted); err != nil {
-			t.Fatalf("reload with the role lane's grant: %v", err)
-		}
+		rig.reloadBetweenProbes(t, rig.granted)
 		rig.requireStopped(t)
 		rig.requireDelivers(t)
 		if reconnects := rig.lane.Conn.Stats().Reconnects; reconnects != 0 {
