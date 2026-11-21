@@ -409,133 +409,157 @@ func appliedNothing(t *testing.T, w *workflowRuntime, logs *syncBuffer) {
 	}
 }
 
-// A labelled triage root the daemon does not record whose Dispatch event log the daemon cannot
-// read is left out of the boot listing's decision, with one ERROR line naming the issue, the
-// event's place in the log (3) and its sequence (9), and the boot goes on: the rest of the listing
-// is decided as ever, so another such root a person labelled is queued as that person's handover
-// and an unrecorded labelled todo root is recorded. The root left out has no record and no outbox
-// row, and its row in the copy of Dispatch's issues is still written. The log is one the daemon
-// read and cannot decode, whose third and last event, a person's edit at Dispatch sequence 9,
-// carries a `null` payload, or one whose page the Dispatch client cannot read
-// (dispatch.EventLogError), whose third event repeats sequence 9.
+// unreadableLog is one way the daemon cannot read leftOutRoot's Dispatch event log: the log
+// Dispatch serves, or the error the read fails with (readErr). The line that leaves the root out
+// names the event's place in the log (event), the event's Dispatch sequence (seq, 0 for an event
+// that does not decode) and an error that says cause.
+type unreadableLog struct {
+	name    string
+	log     []json.RawMessage
+	readErr error
+	event   int
+	seq     int64
+	cause   string
+}
+
+// nonAscending is the error EventsAfter gives for leftOutRoot's log when its third event repeats
+// sequence 9.
+const nonAscending = "page issue events for " + leftOutRoot + ": non-ascending sequence 9 after 9"
+
+// unreadableLogs are the logs and the log pages the daemon cannot read. In the first two rows the
+// daemon reads the log and cannot decode its third and last event: an event that is a JSON array
+// and not a Dispatch event, or a person's edit at Dispatch sequence 9 whose payload is `null`. In
+// the third row the Dispatch client cannot read a page of the log, because its third event repeats
+// sequence 9: the read fails with the *dispatch.EventLogError that EventsAfter makes for a seq
+// that does not ascend.
+var unreadableLogs = []unreadableLog{
+	{name: "an event that does not decode as a Dispatch event", log: append(labelledBy(leftOutRoot, "user"), json.RawMessage(`[9]`)),
+		event: 3, seq: 0, cause: "decode Dispatch event 3 of 3: json: cannot unmarshal array"},
+	{name: "a payload that is no JSON object", log: append(labelledBy(leftOutRoot, "user"), json.RawMessage(fmt.Sprintf(
+		`{"id":3,"issue_key":%q,"seq":9,"type":"issue.updated","actor":{"kind":"user","id":"user-1"},"notify":true,"payload":null}`, leftOutRoot))),
+		event: 3, seq: 9, cause: "decode Dispatch issue payload of event 3 of 3: the payload is not a JSON object"},
+	{name: "a page whose seq does not ascend", readErr: &dispatch.EventLogError{Event: 3, Seq: 9, Err: errors.New(nonAscending)},
+		event: 3, seq: 9, cause: nonAscending},
+}
+
+// namesTheEvent checks the line that left leftOutRoot out against tc.
+func namesTheEvent(t *testing.T, line map[string]any, tc unreadableLog) {
+	t.Helper()
+	if line["event"] != float64(tc.event) || line["seq"] != float64(tc.seq) || !strings.Contains(fmt.Sprint(line["error"]), tc.cause) {
+		t.Fatalf("the line leaving %s out = %v, want event %d (its place in the log), seq %d (its Dispatch sequence) and the error %q",
+			leftOutRoot, line, tc.event, tc.seq, tc.cause)
+	}
+}
+
+// A labelled triage root the daemon does not record, whose Dispatch event log or log page the
+// daemon cannot read (unreadableLogs), is left out of the boot listing's decision. The daemon logs
+// one ERROR line that names the issue, the event's place in the log and the event's sequence, and
+// the boot goes on: the rest of the listing is decided as ever. So another such root a person
+// labelled is queued as that person's handover, and an unrecorded labelled todo root is recorded.
+// The root left out has no record and no outbox row, and its row in the copy of Dispatch's issues
+// is still written.
 func TestBootReconcileLeavesOutATriageRootWhoseEventLogCannotBeRead(t *testing.T) {
-	nullEdit := json.RawMessage(fmt.Sprintf(`{"id":3,"issue_key":%q,"seq":9,"type":"issue.updated","actor":{"kind":"user","id":"user-1"},"notify":true,"payload":null}`, leftOutRoot))
-	repeated := fmt.Sprintf("page issue events for %s: non-ascending sequence 9 after 9", leftOutRoot)
-	for _, tc := range []struct {
-		name    string
-		log     []json.RawMessage
-		readErr error
-		// cause is what the line's error says of the event.
-		cause string
-	}{
-		{name: "a log the daemon read and cannot decode", log: append(labelledBy(leftOutRoot, "user"), nullEdit),
-			cause: "decode Dispatch issue payload of event 3 of 3: the payload is not a JSON object"},
-		{name: "a page of the log the Dispatch client cannot read", readErr: &dispatch.EventLogError{Event: 3, Seq: 9, Err: errors.New(repeated)},
-			cause: repeated},
-	} {
+	for _, tc := range unreadableLogs {
 		t.Run(tc.name, func(t *testing.T) {
 			w, logs := leftOutBoard(t, tc.log, tc.readErr)
 			if err := w.reconcile(context.Background()); err != nil {
 				t.Fatalf("reconcile with one unreadable event log = %v, want the boot to go on without that issue", err)
 			}
-			line := appliedWithout(t, w, logs)
-			if line["event"] != 3.0 || line["seq"] != 9.0 || !strings.Contains(fmt.Sprint(line["error"]), tc.cause) {
-				t.Fatalf("the line leaving %s out = %v, want event 3 (its place in the log), seq 9 (its Dispatch sequence) and the error %q",
-					leftOutRoot, line, tc.cause)
-			}
+			namesTheEvent(t, appliedWithout(t, w, logs), tc)
 		})
 	}
 }
 
-// readRefusals are the answers a read of leftOutRoot's event log gets in the refusal tests below.
-// Dispatch refuses the read for good only with a coded 4xx that dispatch.PermanentRefusal calls
-// permanent, here a handler's 404 NOT_FOUND for an issue it does not know. Each other answer can
-// change on a later read: Dispatch out of reach (a transport failure, or a 503), a credential
-// answer (403), and the 404 NOT_FOUND "no route for …" of a Dispatch without the events route
-// (dispatch.NoRoute), which fails every issue's read alike.
-var readRefusals = []struct {
+// refusedReads are refusals of the read of leftOutRoot's event log. waits is whether
+// dispatch.Unreachable calls the refusal an outage, which the boot waits out. Three refusals do
+// not clear: the 400 INVALID_QUERY of a query the route does not take, the 404 "no route for …" of
+// a Dispatch without the route, and Dispatch's coded 404 for an issue it does not know, which the
+// events route gives for no issue today (it answers 200 for a key no issue holds). The others are
+// outages: a credential answer (401, 403), a 5xx, and no answer.
+var refusedReads = []struct {
 	name    string
 	readErr error
-	// leftOut is whether the listing leaves leftOutRoot out and applies the rest; else it fails.
-	leftOut bool
+	waits   bool
 }{
-	{name: "a refusal Dispatch makes again", readErr: &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "issue " + leftOutRoot + " not found"},
-		leftOut: true},
-	{name: "Dispatch out of reach", readErr: &dispatch.TransientError{Err: errors.New("dial tcp 10.0.0.7:443: connect: connection refused")}},
-	{name: "Dispatch unavailable", readErr: &dispatch.Error{Status: http.StatusServiceUnavailable, Code: "DATABASE_UNAVAILABLE", Message: "database unavailable"}},
-	{name: "a credential answer", readErr: &dispatch.Error{Status: http.StatusForbidden, Code: "FORBIDDEN", Message: "token revoked"}},
-	{name: "a Dispatch without the route", readErr: &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND",
+	{name: "400 INVALID_QUERY", readErr: &dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_QUERY",
+		Message: "after cannot be combined with before or order=desc"}},
+	{name: "404 no route", readErr: &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND",
 		Message: "no route for GET /api/v1/issues/" + leftOutRoot + "/events"}},
+	{name: "404 issue not found", readErr: &dispatch.Error{Status: http.StatusNotFound, Code: dispatch.IssueNotFound,
+		Message: "no issue " + leftOutRoot}},
+	{name: "401 UNAUTHORIZED", readErr: &dispatch.Error{Status: http.StatusUnauthorized, Code: "UNAUTHORIZED",
+		Message: "invalid bearer token"}, waits: true},
+	{name: "403 FORBIDDEN", readErr: &dispatch.Error{Status: http.StatusForbidden, Code: "FORBIDDEN",
+		Message: "token revoked"}, waits: true},
+	{name: "503 DATABASE_UNAVAILABLE", readErr: &dispatch.Error{Status: http.StatusServiceUnavailable, Code: "DATABASE_UNAVAILABLE",
+		Message: "database unavailable"}, waits: true},
+	{name: "no answer", readErr: &dispatch.TransientError{Err: errors.New("dial tcp 10.0.0.7:443: connect: connection refused")},
+		waits: true},
 }
 
-// refusedLine checks the line that left leftOutRoot out for a refusal of its log's read: it names
-// the refusal's status (404), its code (NOT_FOUND) and the refusal, and no event of the log.
-func refusedLine(t *testing.T, line map[string]any) {
-	t.Helper()
-	if line["status"] != 404.0 || line["code"] != "NOT_FOUND" || line["event"] != nil ||
-		!strings.Contains(fmt.Sprint(line["error"]), "NOT_FOUND: issue "+leftOutRoot+" not found") {
-		t.Fatalf("the line leaving %s out = %v, want status 404, code NOT_FOUND and the refusal, with no event", leftOutRoot, line)
-	}
-}
-
-// A labelled triage root the daemon does not record whose Dispatch event log read Dispatch
-// refuses for good is left out of the boot listing's decision as a log the daemon cannot decode
-// is, with one ERROR line naming the issue, the refusal's status and its code, and the rest of the
-// listing applies. Every other answer (readRefusals) fails the boot's listing, naming the issue,
-// so the boot reads it again, and the listing queues nothing.
-func TestBootReconcileLeavesOutATriageRootWhoseEventLogReadIsRefused(t *testing.T) {
-	for _, tc := range readRefusals {
+// A refused read of the Dispatch event log of a labelled triage root the daemon does not record
+// (refusedReads) fails the boot's listing, with an error that names the issue. No root is left
+// out, and the listing records nothing and queues nothing. The boot waits and reads the listing
+// again on an error that dispatch.Unreachable calls an outage (waits), and it stops on the others
+// (readinessAttempt). A refusal of this read says nothing about one issue, so to leave each root
+// out would pass over every labelled triage root and show no failure.
+func TestBootReconcileFailsTheListingOnARefusedEventLogRead(t *testing.T) {
+	for _, tc := range refusedReads {
 		t.Run(tc.name, func(t *testing.T) {
 			w, logs := leftOutBoard(t, labelledBy(leftOutRoot, "user"), tc.readErr)
 			err := w.reconcile(context.Background())
-			if !tc.leftOut {
-				if err == nil || !strings.Contains(err.Error(), leftOutRoot) {
-					t.Fatalf("reconcile with the read of %s's log answered %v = %v; want the listing to fail, naming %s", leftOutRoot, tc.readErr, err, leftOutRoot)
-				}
-				appliedNothing(t, w, logs)
-				return
+			if err == nil || !strings.Contains(err.Error(), leftOutRoot) {
+				t.Fatalf("reconcile with the read of %s's log answered %v = %v; want the listing to fail, naming %s", leftOutRoot, tc.readErr, err, leftOutRoot)
 			}
-			if err != nil {
-				t.Fatalf("reconcile with the read of %s's log refused for good = %v, want the boot to go on without that issue", leftOutRoot, err)
+			if waits := dispatch.Unreachable(err); waits != tc.waits {
+				t.Fatalf("dispatch.Unreachable(%v) = %t, want %t", err, waits, tc.waits)
 			}
-			refusedLine(t, appliedWithout(t, w, logs))
+			appliedNothing(t, w, logs)
 		})
 	}
 }
 
-// A repository recovery's listing (recoverRepositories) treats a refused read of a root's
-// Dispatch event log as the boot's does. With a refusal Dispatch makes again, the pass leaves the
-// root out with the one ERROR line, applies the rest of its listing, and recovers the repository,
-// with no warning that its issues were not recovered. With every other answer (readRefusals), the
-// pass logs that warning naming the root, queues nothing, and keeps the repository to recover, so
-// a later pass reads the listing again.
-func TestARepositoryRecoveryLeavesOutATriageRootWhoseEventLogReadIsRefused(t *testing.T) {
+// A repository recovery's listing (recoverRepositories) reads a root's Dispatch event log as the
+// boot's listing does. For a log or a log page the daemon cannot read (unreadableLogs), the pass
+// leaves the root out with the one ERROR line, applies the rest of its listing and recovers the
+// repository, with no warning that its issues were not recovered. For a refused read
+// (refusedReads), the pass logs that warning naming the root, queues nothing and keeps the
+// repository to recover, so a later pass reads the listing again.
+func TestARepositoryRecoveryLeavesOutAnUnreadableEventLogAndFailsOnARefusal(t *testing.T) {
 	const notRecovered = "workflow: the issues of the repositories to recover were not recovered from Dispatch's listing"
-	for _, tc := range readRefusals {
+	// pass runs one recovery pass over the board, with leftOutRoot's log served as log or its read
+	// failed with readErr. It returns the daemon, its logs and the pass's warnings that the issues
+	// were not recovered.
+	pass := func(t *testing.T, log []json.RawMessage, readErr error) (*workflowRuntime, *syncBuffer, []map[string]any) {
+		t.Helper()
+		w, logs := leftOutBoard(t, log, readErr)
+		// GitHub answered for acme/widgets again (readAnswered), so the pass lists the issues on it.
+		w.recovering = map[string]bool{"acme/widgets": true}
+		w.recoverRepositories(context.Background())
+		return w, logs, loggedMessages(t, logs.String(), notRecovered)
+	}
+	for _, tc := range unreadableLogs {
 		t.Run(tc.name, func(t *testing.T) {
-			w, logs := leftOutBoard(t, labelledBy(leftOutRoot, "user"), tc.readErr)
-			// GitHub answered for acme/widgets again (readAnswered), so the pass lists the
-			// issues on it.
-			w.recovering = map[string]bool{"acme/widgets": true}
-			w.recoverRepositories(context.Background())
-			warnings := loggedMessages(t, logs.String(), notRecovered)
-			if !tc.leftOut {
-				if len(warnings) != 1 || !strings.Contains(fmt.Sprint(warnings[0]["error"]), leftOutRoot) {
-					t.Fatalf("the pass logged %v, want one warning %q naming %s:\n%s", warnings, notRecovered, leftOutRoot, logs.String())
-				}
-				if !w.recovering["acme/widgets"] {
-					t.Fatalf("acme/widgets is no longer to recover after a pass whose listing failed, want it kept for the next pass")
-				}
-				appliedNothing(t, w, logs)
-				return
-			}
+			w, logs, warnings := pass(t, tc.log, tc.readErr)
 			if len(warnings) != 0 {
 				t.Fatalf("the pass logged %v, want no warning %q: it leaves %s out and recovers the rest", warnings, notRecovered, leftOutRoot)
 			}
 			if w.recovering["acme/widgets"] {
 				t.Fatalf("acme/widgets is still to recover after the pass, want it recovered")
 			}
-			refusedLine(t, appliedWithout(t, w, logs))
+			namesTheEvent(t, appliedWithout(t, w, logs), tc)
+		})
+	}
+	for _, tc := range refusedReads {
+		t.Run(tc.name, func(t *testing.T) {
+			w, logs, warnings := pass(t, labelledBy(leftOutRoot, "user"), tc.readErr)
+			if len(warnings) != 1 || !strings.Contains(fmt.Sprint(warnings[0]["error"]), leftOutRoot) {
+				t.Fatalf("the pass logged %v, want one warning %q naming %s:\n%s", warnings, notRecovered, leftOutRoot, logs.String())
+			}
+			if !w.recovering["acme/widgets"] {
+				t.Fatalf("acme/widgets is no longer to recover after a pass whose listing failed, want it kept for the next pass")
+			}
+			appliedNothing(t, w, logs)
 		})
 	}
 }

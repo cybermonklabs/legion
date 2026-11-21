@@ -1880,15 +1880,12 @@ Dispatch event log cannot be read` with four fields:
   not.
 - `error`: the error, which names the issue and the cause.
 
-When Dispatch refused the read of the log, the line has `status` and `code` in place of `event`
-and `seq`: the HTTP status and the Dispatch error code of the refusal.
-
 The boot's listing of Dispatch's issues, or the listing of a repository recovery
 ([Running Legion](/legion/legion/running-legion/#the-projects-repositories)), found a root in
 `triage` that carries the `legion` label and that the daemon does not record. For such a root,
 the daemon reads the issue's whole Dispatch event log to learn who set the label: the daemon moves
 the root to `todo` itself only for a label a person set. The daemon could not read this log, for
-one of three causes:
+one of two causes:
 
 - The log holds an event that the daemon cannot decode. It is an event that does not decode as a
   Dispatch event, or an `issue.created`, `issue.updated` or `issue.closed` event whose payload is
@@ -1897,15 +1894,11 @@ one of three causes:
 - A page of the log holds an event that the daemon cannot read: the event does not decode as an
   object with a whole-number `seq`, or its `seq` is not above the `seq` before it (0 before the
   first event). Its `error` holds `page issue events for <KEY>:`.
-- Dispatch refused the read with a 4xx that carries a Dispatch error code, other than the answers
-  the last paragraph of this section lists, for example a `404` for an issue that Dispatch does
-  not know.
 
 So the daemon cannot tell who set the label. It leaves the root out of admission: it records
 nothing, queues nothing and writes nothing to Dispatch. The rest of the listing applies. The line
 comes back at every boot and at every recovery of the root's repository, because the daemon reads
-the whole log from its start, Dispatch never rewrites a log, and Dispatch refuses the read the
-same way while the cause of the refusal stays.
+the whole log from its start and Dispatch never rewrites a log.
 
 While the daemon does not record the root, a live event that still shows the root labelled and in
 `triage` reads the log too. Its preparation fails the same way, with the warning `prepare the
@@ -1918,16 +1911,24 @@ A person ends the line, whatever its cause. Either the person moves the issue to
 admission takes without reading the log, or the person takes the `legion` label off. Any other
 move out of `triage` ends the line too.
 
-Any other failed read of the log is not this line: it fails the whole listing, and a recovery
-reads the listing again later. The boot waits and reads it again when the daemon's Dispatch
-client reads Dispatch as out of reach: no answer, a 5xx, a `401`, `403`, `408` or `429`, a 4xx
-without a Dispatch error code, and the three coded answers the client reads as a write it can
-retry (`ISSUE_CHANGED`, `409 PARENT_CONTENDED`, and a `400 INVALID_JSON` that names a field an
-older Dispatch did not know). The boot stops, naming the error, on every other failed read: a
-refusal of the transport (for example a TLS alert), and the `404` with the message
-`no route for …` from a Dispatch that does not have the events route yet. The `no route` answer
-comes for the log of every issue, so the daemon does not leave each issue out: it fails the
-listing, and the failure shows.
+Any other failed read of the log, every refusal of it included, is not this line: it fails the
+whole listing and leaves no root out. A recovery reads the listing again later. The boot does one
+of two things:
+
+- It waits and reads the listing again when Dispatch is out of reach: no answer, a 5xx, a `401`,
+  `403`, `408` or `429`, or a 4xx without a Dispatch error code.
+- It stops and names the error on every other failed read: the `400 INVALID_QUERY` of a query
+  out of the route's bounds, the `404` with the message `no route for …` from a Dispatch that
+  does not have the events route yet, any other 4xx with a Dispatch error code, a refusal of the
+  transport (for example a TLS alert), or an answer whose body is not a page of events.
+
+Dispatch's events route answers `200` for an issue that it does not hold, and it makes its
+refusals (the credential answers, the `400 INVALID_QUERY`, the `no route` 404) for every request
+alike, so those refusals are not about one issue. A 5xx can be about one issue: an ask event in
+its log whose stored payload Dispatch cannot read answers `500` for that log alone. The boot then
+waits on that issue, and the error it logs at each attempt names it (`prepare who set the label of
+<KEY> for admission: …`). To let the boot complete, move that issue out of `triage`, to `todo`,
+or take its `legion` label off: the next attempt reads no log for it, and the listing applies.
 
 ## An architect is told `pull-request-missing`
 

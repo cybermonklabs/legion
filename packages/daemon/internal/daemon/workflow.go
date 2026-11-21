@@ -1361,33 +1361,31 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		case labelledTriageRoot && records[summary.Key] == nil:
 			// The listing carries no actor, so the setter is read from the log as an event's is;
 			// a recorded root a person moved back to triage is never queued again, so its log is
-			// not read. Three failures of that read leave the issue out of admission's decision,
-			// so one such issue does not stop the listing: no record, no queue, no handover. They
-			// are a log the daemon read and cannot decode and a page of the log the Dispatch
-			// client cannot read, each a *dispatch.EventLogError, and a refusal Dispatch will make
-			// again (dispatch.PermanentRefusal, other than dispatch.NoRoute). The log is read from
-			// sequence 0, Dispatch never rewrites a log, and Dispatch makes the same refusal while
-			// its cause stays, so every boot, and every pass of a repository recovery whose scope
-			// holds the root, leaves the same root out with the same line until a person moves it
-			// out of triage or takes the label off. Every other failed read fails the listing: the
-			// boot waits out and reads again Dispatch out of reach (dispatch.Unreachable: no
-			// answer, and every refusal dispatch.PermanentRefusal does not call permanent) and
-			// stops on the rest, a refusal of the transport (dispatch.TransportRefusal) and the 404
-			// of a Dispatch without the events route (dispatch.NoRoute) among them, and a recovery
-			// tries again. That 404 fails the read of every issue alike, so leaving each issue out
-			// would pass over every labelled triage root with no failure to see. An event that
-			// still shows the issue an unrecorded labelled triage root reads the log again, and its
-			// preparation fails the same way. A move to todo reads no log, and admission takes the
-			// root.
-			const leftOut = "workflow: the listing leaves out of admission an issue whose Dispatch event log cannot be read"
+			// not read. A log the daemon cannot read leaves the issue out of admission's decision,
+			// so one such issue does not stop the listing: no record, no queue, no handover. That
+			// is a log the daemon read and cannot decode, or a page of the log the Dispatch client
+			// cannot read (an event whose seq does not decode, or a seq that does not ascend), each
+			// a *dispatch.EventLogError. The log is read from sequence 0, and Dispatch never
+			// rewrites a log, so every boot, and every pass of a repository recovery whose scope
+			// holds the root, leaves the same root out with a line naming the same event until a
+			// person moves it out of triage or takes the label off. Every other failed read fails
+			// the listing, every refusal of the read included: the boot waits out Dispatch out of
+			// reach (dispatch.Unreachable) and reads again, it stops on every other failure and
+			// names it (readinessAttempt), and a recovery tries again. The events route answers 200
+			// for a key no issue holds, and it makes its refusals for every request alike (the
+			// credential answers, 400 INVALID_QUERY, the no-route 404), so those say nothing about
+			// one issue, and to leave the issue out would pass over every labelled triage root in
+			// silence. A 5xx can be about one issue: an ask event in its log whose stored payload
+			// Dispatch cannot read answers 500 for that log alone, and the boot waits on it until a
+			// person moves the issue out of triage or takes the label off, after which the next
+			// attempt reads no log for it. An event that still shows the issue an unrecorded
+			// labelled triage root reads the log again, and its preparation fails the same way. A
+			// move to todo reads no log, and admission takes the root.
 			fact.LabelSetter, err = w.labelSetter(ctx, summary.Key)
 			var unreadable *dispatch.EventLogError
 			if errors.As(err, &unreadable) {
-				w.log.Error(leftOut, "issue", summary.Key, "event", unreadable.Event, "seq", unreadable.Seq, "error", err)
-				continue
-			}
-			if refusal, refused := dispatch.PermanentRefusal(err); refused && !dispatch.NoRoute(err) {
-				w.log.Error(leftOut, "issue", summary.Key, "status", refusal.Status, "code", refusal.Code, "error", err)
+				w.log.Error("workflow: the listing leaves out of admission an issue whose Dispatch event log cannot be read",
+					"issue", summary.Key, "event", unreadable.Event, "seq", unreadable.Seq, "error", err)
 				continue
 			}
 			if err != nil {
