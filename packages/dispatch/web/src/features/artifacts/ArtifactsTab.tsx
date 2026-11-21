@@ -128,21 +128,24 @@ function nodeKey(node: ReferenceLink["node"]): string {
   return node.ref ?? `${node.kind} ${node.id}`;
 }
 
-/** The section's disclosure, collapsed by default: the issue's references are background context
- *  for it, not something worth scrolling past on every visit to the tab. */
+/** One of the section's disclosures, collapsed by default: the issue's references are background
+ *  context for it, not something worth scrolling past on every visit to the tab. Its summary names
+ *  its list and counts the list's rows, so the count shows while it is closed. */
 function ReferencesDisclosure({
   children,
   count,
+  label,
 }: {
   children: ReactNode;
   count: number;
+  label: "References" | "Referenced by";
 }): ReactNode {
   return (
     <details className={`rounded-lg border p-3 ${borderDefault}`}>
       <summary
         className={`min-h-11 cursor-pointer text-sm font-semibold ${textSecondaryOnSurface}`}
       >
-        References ({count})
+        {label} ({count})
       </summary>
       {children}
     </details>
@@ -199,16 +202,18 @@ function ReferenceLinkRow({
   );
 }
 
-// The issue's references read, one hop in each direction: under References, each node the
-// issue's own content links to, and under Referenced by, each node that links to the issue or to
-// its own content. A node of both is drawn once, under References, marked as one that also
-// references the issue. Each row's node and name come in the answer, so the section reads nothing
-// to draw them, and a one-hop read cuts no walk, so no row has a depth. This is not the issue
-// header's "Referenced by" toggle, which reads the edges into the issue's own node alone. An
-// answer without `links`, from a build before the one-hop read, is drawn as that build's walk
-// always was: the documents of its `members`, each with its depth, and a line when the walk was
-// cut at 8 hops. It is memoized: a keystroke in the tab's filter renders the tab again, and the
-// answer, the one prop, is the same object until the read answers anew.
+// The issue's references read, one hop in each direction, drawn as two disclosures, each collapsed
+// by default and each counting its rows in its summary, so each count shows while it is closed:
+// References, each node the issue's own content links to, and under it Referenced by, each node
+// that links to the issue or to its own content. A disclosure with no row is not drawn. A node of
+// both is drawn once, under References, marked as one that also references the issue. Each row's
+// node and name come in the answer, so the section reads nothing to draw them, and a one-hop read
+// cuts no walk, so no row has a depth. This is not the issue header's "Referenced by" toggle,
+// which reads the edges into the issue's own node alone. An answer without `links`, from a build
+// before the one-hop read, is drawn as that build's walk always was: one References disclosure
+// over the documents of its `members`, each with its depth, and a line when the walk was cut at 8
+// hops. It is memoized: a keystroke in the tab's filter renders the tab again, and the answer, the
+// one prop, is the same object until the read answers anew.
 const References = memo(function References({
   references,
 }: {
@@ -220,7 +225,7 @@ const References = memo(function References({
       return null;
     }
     return (
-      <ReferencesDisclosure count={members.length}>
+      <ReferencesDisclosure count={members.length} label="References">
         <section aria-label="References" className="mt-3 space-y-2">
           <ul className="space-y-2">
             {members.map(({ artifact, depth, via }) => (
@@ -255,39 +260,40 @@ const References = memo(function References({
   }
 
   return (
-    <ReferencesDisclosure count={links.length}>
+    <div className="space-y-3">
       {links.length === 0 ? null : (
-        <section aria-label="References" className="mt-3">
-          <ul className="space-y-2">
-            {links.map((row) => (
-              <ReferenceLinkRow
-                alsoReferences={linking.has(nodeKey(row.node))}
-                key={nodeKey(row.node)}
-                near="via"
-                row={row}
-              />
-            ))}
-          </ul>
-        </section>
+        <ReferencesDisclosure count={links.length} label="References">
+          <section aria-label="References" className="mt-3">
+            <ul className="space-y-2">
+              {links.map((row) => (
+                <ReferenceLinkRow
+                  alsoReferences={linking.has(nodeKey(row.node))}
+                  key={nodeKey(row.node)}
+                  near="via"
+                  row={row}
+                />
+              ))}
+            </ul>
+          </section>
+        </ReferencesDisclosure>
       )}
       {referencedBy.length === 0 ? null : (
-        <section aria-label="Referenced by" className="mt-3 space-y-2">
-          <p className={`text-sm font-semibold ${textSecondaryOnSurface}`}>
-            Referenced by ({referencedBy.length})
-          </p>
-          <ul className="space-y-2">
-            {referencedBy.map((row) => (
-              <ReferenceLinkRow
-                alsoReferences={false}
-                key={nodeKey(row.node)}
-                near="to"
-                row={row}
-              />
-            ))}
-          </ul>
-        </section>
+        <ReferencesDisclosure count={referencedBy.length} label="Referenced by">
+          <section aria-label="Referenced by" className="mt-3">
+            <ul className="space-y-2">
+              {referencedBy.map((row) => (
+                <ReferenceLinkRow
+                  alsoReferences={false}
+                  key={nodeKey(row.node)}
+                  near="to"
+                  row={row}
+                />
+              ))}
+            </ul>
+          </section>
+        </ReferencesDisclosure>
       )}
-    </ReferencesDisclosure>
+    </div>
   );
 });
 
