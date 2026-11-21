@@ -36,8 +36,8 @@
 // own, and a refresh for each would rotate the login's refresh token at every command.
 
 import { createPrivateKey, generateKeyPairSync, type KeyObject, randomUUID } from "node:crypto";
-import type { Stats } from "node:fs";
-import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
+import { constants, type Stats } from "node:fs";
+import { access, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { holdSecret, holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { isHttpUrl, urlForText } from "@legion/contracts/log-text";
@@ -306,8 +306,9 @@ async function checkLoginDirectory(dir: string): Promise<void> {
 
 /**
  * Makes the directory of the login at `path`, 0700, where it is absent, and refuses one another
- * user could replace the login in ({@link checkLoginDirectory}). `dispatch login --device` runs it
- * before it asks for a code, so no person approves a login this machine could not keep.
+ * user could replace the login in ({@link checkLoginDirectory}) or one this user cannot write to.
+ * `dispatch login --device` runs it before it asks for a code, so no person approves a login this
+ * machine could not keep there.
  */
 export async function deviceLoginPlace(path: string): Promise<void> {
   const dir = dirname(path);
@@ -317,6 +318,13 @@ export async function deviceLoginPlace(path: string): Promise<void> {
     throw new Error(`make the directory of ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
   }
   await checkLoginDirectory(dir);
+  try {
+    await access(dir, constants.W_OK);
+  } catch {
+    throw new Error(
+      `this user cannot write to the directory of ${DEVICE_LOGIN_FILE_NAMED}; run chmod 700 on it`
+    );
+  }
 }
 
 /**
@@ -406,8 +414,9 @@ export async function readDeviceLogin(path: string): Promise<DeviceLogin> {
  * one another user could replace the login in ({@link checkLoginDirectory}): through a new
  * temporary file beside it (a fresh name, created exclusively and 0600, so no file or link already
  * there is followed), synced, then renamed over `path`, so the file is always one whole login, the
- * old or the new. A save that fails removes its temporary file, and its error names the file by
- * its setting. It first removes what a save or a take-over that died left beside the file: a
+ * old or the new. A save that fails, or whose lock is no longer the caller's, removes its
+ * temporary file, and its error names the file by its setting. It first removes what a save or a
+ * take-over that died left beside the file: a
  * temporary copy of a login, which holds its key and refresh token, and a lock moved aside, each
  * untouched for the lock's stale bound, as the Go helper's `RemoveLeftoverMachineTemps` removes its
  * own; a younger one may be a live caller's. A caller holds the login's lock
@@ -438,27 +447,27 @@ async function saveDeviceLogin(
   await removeUntouched(dir, isTemporaryCopy);
   await removeLeftLocks(path);
   const temp = join(dir, `.device-login-${randomUUID()}.json.tmp`);
+  const saveFailed = (error: unknown): Error =>
+    new Error(`save ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
   try {
-    const handle = await open(temp, "wx", 0o600);
+    const handle = await open(temp, "wx", 0o600).catch((error: unknown) => {
+      throw saveFailed(error);
+    });
     try {
       await handle.writeFile(data);
       await handle.sync();
+    } catch (error) {
+      throw saveFailed(error);
     } finally {
       await handle.close();
     }
-  } catch (error) {
+    if (!(await held())) throw lockLost();
+    await rename(temp, path).catch((error: unknown) => {
+      throw saveFailed(error);
+    });
+  } finally {
+    // After the rename there is no temporary file, and this removes nothing.
     await rm(temp, { force: true });
-    throw new Error(`save ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
-  }
-  if (!(await held())) {
-    await rm(temp, { force: true });
-    throw lockLost();
-  }
-  try {
-    await rename(temp, path);
-  } catch (error) {
-    await rm(temp, { force: true });
-    throw new Error(`save ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
   }
   // The rename is what readers see; syncing the directory is what keeps it across a power cut.
   // A directory this platform cannot sync still holds the whole login, so that failure is no
@@ -752,14 +761,6 @@ export interface DeviceLoginIdentityOptions {
   readonly brokerUrl: string;
 }
 
-/** Whether `error` is the broker's refusal of a trade's subject token as one it no longer
- *  honours (`BrokerRefusedError.subjectNotHonoured`): a revoked or lapsed access token, or a
- *  login that ended. The broker answers a trade's session or projects with the same codes, and a
- *  refresh cures none of those. */
-function subjectRefused(error: unknown): boolean {
-  return error instanceof BrokerRefusedError && error.subjectNotHonoured;
-}
-
 /**
  * A machine's device login as the subject of the broker's exchange
  * (`AGENT_SECRETS_MACHINE_IDENTITY=device-login`): the access token the login holds, presented
@@ -818,8 +819,8 @@ export class DeviceLoginIdentity implements TokenSource {
    *
    * An access token with under a minute left is refreshed first ({@link refreshDeviceLogin}), and
    * the login it answers is kept before `trade` runs. A kept access token the broker refuses as one
-   * it no longer honours ({@link subjectRefused}) is refreshed at once and traded once more: a
-   * revoke ends a login before its token lapses, and only the refresh tells that, as
+   * it no longer honours (`BrokerRefusedError.subjectNotHonoured`) is refreshed at once and traded
+   * once more: a revoke ends a login before its token's expiry, and only the refresh tells that, as
    * `DeviceLoginEndedError`, which names {@link DEVICE_LOGIN_COMMAND}. A refresh is made only while
    * the lock is still this process's (`refreshDeviceLogin`'s `held`).
    *
@@ -859,7 +860,7 @@ export class DeviceLoginIdentity implements TokenSource {
           try {
             return await trade({ token: login.accessToken, tokenType: SUBJECT_TYPE_ACCESS });
           } catch (error) {
-            if (!subjectRefused(error)) throw error;
+            if (!(error instanceof BrokerRefusedError) || !error.subjectNotHonoured) throw error;
             if (!(await held())) throw lockLost();
             if (refreshed) throw error;
             login = await refresh();

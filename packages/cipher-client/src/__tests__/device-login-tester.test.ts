@@ -6,9 +6,9 @@
 // 1. A trade waits for the login's lock inside its own attempt (`TRADE_ATTEMPT_MS`, 30 s), and a
 //    wait that outlasts the attempt is reported as "the secrets broker did not answer the trade",
 //    while the broker was never asked: another process of this machine held the lock. On the dev
-//    stack a session waiting on a holder that a SIGINT ended (a SIGINT leaves the lock, and the
-//    stale bound was then 30 s from its last touch; it is 15 s now) failed `dispatch whoami` with
-//    exit 1 and that text, and the broker minted nothing for its session.
+//    stack a session waiting on a holder that stayed alive (it ran as a background job of a
+//    non-interactive shell, which ignores SIGINT, so the SIGINT meant to end it did not) failed
+//    `dispatch whoami` with exit 1 and that text, and the broker minted nothing for its session.
 // 2. Once a login's launcher credential is revoked, the broker answers the trade of the access
 //    token the file still keeps `400 invalid_request` ("Token is not valid or has expired."), and
 //    the client prints that refusal with its text withheld and no cure, until the kept token is

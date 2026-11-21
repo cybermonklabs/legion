@@ -65,17 +65,6 @@ export interface DeviceLoginLockOptions {
   /** Runs at each step of a take-over where another caller can act between this caller's look
    *  and what it does next ({@link TakeOverStep}). Only a test holds a caller there. */
   readonly at?: ((step: TakeOverStep) => Promise<void>) | undefined;
-  /** Starts the holder's beats, which call `touch`, and answers what stops them: every
-   *  {@link LOCK_HEARTBEAT_MS} unless a test drives them by hand. */
-  readonly beats?: ((touch: () => Promise<void>) => () => void) | undefined;
-}
-
-/** The holder's beats: `touch` every {@link LOCK_HEARTBEAT_MS}, on a timer that holds no process
- *  open. */
-function everyHeartbeat(touch: () => Promise<void>): () => void {
-  const timer = setInterval(touch, LOCK_HEARTBEAT_MS);
-  timer.unref();
-  return () => clearInterval(timer);
 }
 
 /**
@@ -208,8 +197,9 @@ async function takeStale(
  * answers. A lock another process holds is tried again every 100 ms until it is free, `signal`
  * ends (rejecting with `LockHeldError`, which names the lock, with the signal's reason as its
  * cause, and `work` never run), or it is stale and this caller alone takes it ({@link takeStale}).
- * The holder touches the lock at each beat ({@link LOCK_HEARTBEAT_MS}) while `work` runs, so a
- * holder that is slow is never taken for dead, and removes it when `work` settles, only while it
+ * The holder touches the lock every {@link LOCK_HEARTBEAT_MS} while `work` runs, on a timer that
+ * holds no process open, so a holder that is slow is never taken for dead, and removes it when
+ * `work` settles, only while it
  * still holds its own value. `work` is handed `held`, which reads the lock again and says whether
  * it still holds this call's value: false once another caller took it from a holder that was
  * stopped. `named` names the login in an error.
@@ -236,15 +226,17 @@ export async function withLoginLock<T>(
     if (await takeStale(lock, mine, named, options)) continue;
     await wait(LOCK_RETRY_MS, options.signal);
   }
-  const stopBeats = (options.beats ?? everyHeartbeat)(async () => {
+  // Each beat is the touch itself, so a caller of the timer's callback can await the touch.
+  const beat = setInterval(async () => {
     const now = new Date();
     // A touch that fails leaves the lock as it was; the holder is still the one working.
     await utimes(lock, now, now).catch(() => {});
-  });
+  }, LOCK_HEARTBEAT_MS);
+  beat.unref();
   try {
     return await work(async () => (await readFile(lock, "utf8").catch(() => "")) === mine);
   } finally {
-    stopBeats();
+    clearInterval(beat);
     await removeOwn(lock, mine);
   }
 }

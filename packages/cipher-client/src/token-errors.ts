@@ -36,7 +36,7 @@ const INVALID_GRANT = "invalid_grant";
 const MEMBERSHIP_HELD = "membership_held";
 
 /** How the broker's OAuth library ends its `invalid_request` to a subject token it no longer
- *  honours: one revoked, or one past its expiry. */
+ *  honours: one revoked, or one whose record is already removed. */
 const TOKEN_NOT_VALID = "Token is not valid or has expired.";
 
 /** The hint that ends the broker's `invalid_grant` to a trade of a machine login's access token
@@ -67,11 +67,12 @@ export class BrokerRefusedError extends Error {
    *  Read from the description as the broker sent it, which is then kept nowhere. */
   readonly podSessionUnregistered: boolean;
   /** Whether this is the broker's refusal of a subject token it no longer honours, and of nothing
-   *  else: `400 invalid_request` ending "Token is not valid or has expired." (a revoked or lapsed
-   *  token), or `400 invalid_grant` ending "The machine login the subject token belongs to has
-   *  ended.", each after the library's own sentence. A refusal of the trade's session or projects
-   *  uses the same codes and is not one. Read from the description as the broker sent it, which is
-   *  then kept nowhere. */
+   *  else: `400 invalid_request` ending "Token is not valid or has expired." (a token revoked, or
+   *  already removed), or `400 invalid_grant` ending "The machine login the subject token belongs
+   *  to has ended.", each after the library's own sentence. A token past its expiry whose record
+   *  still stands is `401 invalid_token`, which is not one: the refresh margin before the expiry
+   *  exists to avoid it. A refusal of the trade's session or projects uses the same codes and is
+   *  not one either. Read from the description as the broker sent it, which is then kept nowhere. */
   readonly subjectNotHonoured: boolean;
 
   /** `refused` names the identity traded, as its source describes it: this machine's, or a

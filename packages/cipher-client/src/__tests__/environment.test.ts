@@ -2,13 +2,23 @@
 //
 // What a deployment's variables name, and what a deployment that names half of one is told.
 
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import { writeDeviceLoginFile } from "../../test/device-logins";
-import { DEVICE_LOGIN_FILE_VAR } from "../device-login";
+import {
+  type DeviceLoginBroker,
+  stubDeviceLoginBroker,
+  writeDeviceLoginFile,
+} from "../../test/device-logins";
+import {
+  DEVICE_LOGIN_FILE_VAR,
+  DeviceLoginIdentity,
+  deviceLoginFile,
+  deviceLoginSessionName,
+  startDeviceLogin,
+} from "../device-login";
 import {
   BROKER_URL_VAR,
   brokerTokenClient,
@@ -19,6 +29,7 @@ import {
   MAX_PROJECTS,
   machineIdentity,
   PROJECTS_VAR,
+  SESSION_VAR,
   tradeProjects,
   tradeSession,
 } from "../environment";
@@ -30,6 +41,26 @@ import {
 } from "../wire";
 
 const makeDirectory = temporaryDirectories("broker-environment");
+
+const PERSON = "ada@example.com";
+const HOST = "adas-laptop.local";
+
+const stops: (() => void)[] = [];
+afterEach(() => {
+  for (const stop of stops.splice(0)) stop();
+});
+
+/** A device login's stand-in broker, stopped after the test. */
+function broker(): DeviceLoginBroker {
+  const stub = stubDeviceLoginBroker();
+  stops.push(stub.stop);
+  return stub;
+}
+
+/** A device login file's path in a directory of this test's own. */
+function loginPath(): string {
+  return join(makeDirectory(), "legion", "device-login.json");
+}
 
 test("a machine that names no identity trades nothing, and that is no error", async () => {
   expect(machineIdentity({})).toBeUndefined();
@@ -224,4 +255,86 @@ test("a process that turns the person trade off is refused a device login's trad
   );
   expect(refusal?.message).toContain(`${PERSON_TRADE_VAR}=off`);
   expect(refusal?.message).toContain(`${IDENTITY_VAR}=${IDENTITY_DEVICE_LOGIN}`);
+});
+
+test("device-login is an identity of its own, named with its variables", () => {
+  expect(() => machineIdentity({ [IDENTITY_VAR]: IDENTITY_DEVICE_LOGIN })).toThrow(
+    `${BROKER_URL_VAR} is required by ${IDENTITY_VAR}=device-login`
+  );
+  const named = machineIdentity({
+    [IDENTITY_VAR]: IDENTITY_DEVICE_LOGIN,
+    [BROKER_URL_VAR]: "https://broker.test",
+    HOME: "/home/ada",
+  });
+  expect(named?.describe()).toContain(DEVICE_LOGIN_FILE_VAR);
+  // The file is ~/.config/legion/device-login.json unless the variable names another.
+  expect(deviceLoginFile({ HOME: "/home/ada" })).toBe("/home/ada/.config/legion/device-login.json");
+  expect(deviceLoginFile({ HOME: "/home/ada", [DEVICE_LOGIN_FILE_VAR]: "/x/login.json" })).toBe(
+    "/x/login.json"
+  );
+});
+
+test("a caller acting as no session trades under the session variable, else the login's own name", async () => {
+  const stub = broker();
+  const path = loginPath();
+  const written = await writeDeviceLoginFile(path, stub.url, {
+    access_token: fixtureSecret("access"),
+    access_expires_at: new Date(Date.now() + 600_000).toISOString(),
+  });
+  const env = {
+    [BROKER_URL_VAR]: stub.url,
+    [IDENTITY_VAR]: IDENTITY_DEVICE_LOGIN,
+    [DEVICE_LOGIN_FILE_VAR]: path,
+  };
+  for (const [extra, session] of [
+    [{ [SESSION_VAR]: "example-terminal" }, "example-terminal"],
+    [{}, deviceLoginSessionName(written.thumbprint)],
+  ] as const) {
+    const made = await brokerTokenClient({ ...env, ...extra });
+    await made?.client.token();
+    made?.client.close();
+    expect(stub.trades.at(-1)?.form.get("session")).toBe(session);
+  }
+  // The name's form, held apart from the function that makes it.
+  expect(deviceLoginSessionName("abcdefghijklmnopqrstuvwxyz0123456789-_ABCDEFG")).toBe(
+    "device-login-abcdefghijkl"
+  );
+});
+
+test("a device login takes an http broker on this machine's loopback alone", async () => {
+  // The login's refresh token and access tokens cross this connection, so a broker off this
+  // machine is https; a dev stack's broker on the loopback is http.
+  const sent: string[] = [];
+  const recording = (async (input: string | URL | Request) => {
+    sent.push(String(input));
+    return new Response("{}", { status: 500 });
+  }) as typeof fetch;
+  for (const brokerUrl of ["http://broker.test", "http://10.0.0.5:8080"]) {
+    const refusal = await startDeviceLogin({
+      brokerUrl,
+      person: PERSON,
+      host: HOST,
+      fetch: recording,
+    }).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(refusal?.message, brokerUrl).toContain("loopback");
+    expect(refusal?.message, brokerUrl).toContain(BROKER_URL_VAR);
+    expect(() => new DeviceLoginIdentity({ path: loginPath(), brokerUrl }), brokerUrl).toThrow(
+      "loopback"
+    );
+  }
+  expect(sent).toEqual([]);
+  for (const brokerUrl of [
+    "https://broker.test",
+    "http://127.0.0.1:1",
+    "http://localhost:1",
+    "http://[::1]:1",
+  ]) {
+    expect(
+      () => new DeviceLoginIdentity({ path: loginPath(), brokerUrl }),
+      brokerUrl
+    ).not.toThrow();
+  }
 });

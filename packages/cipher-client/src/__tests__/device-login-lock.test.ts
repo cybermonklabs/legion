@@ -3,8 +3,8 @@
 // The device login's lock (`device-login-lock.ts`), through `withDeviceLoginLock`: a live holder
 // is waited for, a stale lock is taken by one caller alone, each removal is of the very file the
 // caller looked at, and a holder can tell it still holds its lock. No row sends anything to a
-// broker. Each row holds a caller at one step of the protocol (`at`, `sleep`, `beats`), so no row
-// is decided by a clock.
+// broker. Each row holds a caller at one step of the protocol (`at`, `sleep`), or runs the
+// holder's timer callback by hand, so no row is decided by a clock.
 
 import { expect, spyOn, test } from "bun:test";
 import { readFile, stat, utimes, writeFile } from "node:fs/promises";
@@ -38,8 +38,8 @@ test("the holder's beat is a timer every LOCK_HEARTBEAT_MS that touches its lock
   const path = loginPath();
   await writeDeviceLoginFile(path, "http://127.0.0.1:1");
   const lock = `${path}.lock`;
-  // The real beat, with no `beats` option: the timer it sets is read, and its callback run here
-  // instead of after LOCK_HEARTBEAT_MS.
+  // The real beat: the timer the lock sets is read, and its callback run here instead of after
+  // LOCK_HEARTBEAT_MS.
   const timers = spyOn(globalThis, "setInterval");
   try {
     await withDeviceLoginLock(path, async () => {
@@ -125,34 +125,30 @@ test("the lock tells its holder whether it still holds it, and its holder keeps 
   const path = loginPath();
   await writeDeviceLoginFile(path, "http://127.0.0.1:1");
   const lock = `${path}.lock`;
-  // The holder's beats, driven here one by one instead of every LOCK_HEARTBEAT_MS.
-  let beat: (() => Promise<void>) | undefined;
-  let stopped = false;
-  await withDeviceLoginLock(
-    path,
-    async (held) => {
+  // The holder's timer, read here, and its beat run by hand instead of every LOCK_HEARTBEAT_MS.
+  const timers = spyOn(globalThis, "setInterval");
+  const cleared = spyOn(globalThis, "clearInterval");
+  try {
+    await withDeviceLoginLock(path, async (held) => {
       expect(await held()).toBe(true);
       // A lock its holder last touched a while ago is touched again at its next beat, so a
       // holder that is slow is never taken for dead.
       const old = new Date(Date.now() - 12_000);
       await utimes(lock, old, old);
-      await beat?.();
+      const [beat] = timers.mock.calls[0] as unknown as [() => Promise<void>];
+      await beat();
       expect(Date.now() - (await stat(lock)).mtimeMs).toBeLessThan(LOCK_HEARTBEAT_MS);
       // Another caller took it over.
       await writeFile(lock, "another process that took the lock over");
       expect(await held()).toBe(false);
-    },
-    {
-      beats: (touch) => {
-        beat = touch;
-        return () => {
-          stopped = true;
-        };
-      },
-    }
-  );
-  expect(beat).toBeDefined();
-  expect(stopped).toBe(true);
+    });
+    // The holder stopped its timer when its work settled.
+    const timer = timers.mock.results[0]?.value as ReturnType<typeof setInterval>;
+    expect(cleared.mock.calls.map(([stopped]) => stopped)).toContain(timer);
+  } finally {
+    timers.mockRestore();
+    cleared.mockRestore();
+  }
   // The lock is the new holder's, and stays where it is.
   expect(await readFile(lock, "utf8")).toBe("another process that took the lock over");
   await Bun.file(lock).delete();

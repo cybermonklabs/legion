@@ -10,7 +10,6 @@
 
 import { afterEach, expect, test } from "bun:test";
 import { createPrivateKey, createPublicKey } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { chmod, mkdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
@@ -24,12 +23,11 @@ import {
   stubDeviceLoginBroker,
   writeDeviceLoginFile,
 } from "../../test/device-logins";
+import { sentAs } from "../../test/refusal-corpus";
 import {
   DEVICE_LOGIN_FILE_VAR,
   DeviceLoginIdentity,
-  deviceLoginFile,
   deviceLoginHost,
-  deviceLoginSessionName,
   finishDeviceLogin,
   readDeviceLogin,
   refreshDeviceLogin,
@@ -42,9 +40,7 @@ import {
   brokerTokenClient,
   IDENTITY_DEVICE_LOGIN,
   IDENTITY_VAR,
-  machineIdentity,
   PROJECTS_VAR,
-  SESSION_VAR,
 } from "../environment";
 import { TRADE_ATTEMPT_MS } from "../token-client";
 import {
@@ -80,27 +76,6 @@ function loginPath(): string {
 
 /** A sleep that waits for nothing, so a poll's interval costs a test no time. */
 const noSleep = async (): Promise<void> => {};
-
-/** The broker's refusals as its OAuth library writes them on the wire, the library's sentence
- *  first: the Go broker's refusal corpus. */
-const refusalCorpus: string[] = JSON.parse(
-  readFileSync(
-    join(
-      import.meta.dir,
-      "../../../envoy/internal/cipher/oauth/testdata/refusal-descriptions.json"
-    ),
-    "utf8"
-  )
-);
-
-/** The one refusal of the corpus that ends with `hint`, as the broker sends it. */
-function sentAs(hint: string): string {
-  const found = refusalCorpus.filter((one) => one.endsWith(hint));
-  if (found.length !== 1) {
-    throw new Error(`the refusal corpus holds ${found.length} refusals ending "${hint}"`);
-  }
-  return found[0] as string;
-}
 
 test("the device authorization signs the request object the broker's verifyPersonLogin verifies", async () => {
   const stub = broker();
@@ -324,12 +299,18 @@ test("a code is polled once a second to once a minute, every 5 s where the broke
 test("a code and an access token are taken to live an hour at most, whatever the broker says", async () => {
   const stub = broker({ expiresIn: 3_000_000, accessSeconds: 3_000_000 });
   const path = loginPath();
+  const hour = 3_600_000;
+  // Each lifetime is read between the call's start and its end, so no clock decides the row.
   const began = Date.now();
   const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
-  expect(started.expiresAt.getTime() - began).toBeLessThanOrEqual(3_600_000 + 1_000);
+  const startedEnded = Date.now();
+  expect(started.expiresAt.getTime()).toBeGreaterThanOrEqual(began + hour);
+  expect(started.expiresAt.getTime()).toBeLessThanOrEqual(startedEnded + hour);
+  const polled = Date.now();
   const login = await finishDeviceLogin(started, { path, sleep: noSleep });
-  expect((login.accessExpiresAt?.getTime() ?? 0) - began).toBeLessThanOrEqual(3_600_000 + 1_000);
-  expect(login.accessExpiresAt?.getTime() ?? 0).toBeGreaterThan(began);
+  const ended = Date.now();
+  expect(login.accessExpiresAt?.getTime() ?? 0).toBeGreaterThanOrEqual(polled + hour);
+  expect(login.accessExpiresAt?.getTime() ?? 0).toBeLessThanOrEqual(ended + hour);
 });
 
 test("a complete page the broker sends is checked as the page is", async () => {
@@ -890,6 +871,51 @@ test("a trade refused after its holder lost the lock is one a later trade cures,
   }
 });
 
+test("a trade refused under a lock still held after a refresh just made is final", async () => {
+  // Once with no kept token, refreshed before the first trade; once with a kept token refused,
+  // refreshed, and refused again. Either way the broker refused a token it had just minted, so
+  // no second refresh can cure it. The trade would go through a third time, so a loop that
+  // refreshed again would end in a token, not the refusal.
+  for (const [kept, refusals] of [
+    [false, 1],
+    [true, 2],
+  ] as const) {
+    const stub = broker();
+    const path = loginPath();
+    await writeDeviceLoginFile(
+      path,
+      stub.url,
+      kept
+        ? {
+            access_token: fixtureSecret("access"),
+            access_expires_at: new Date(Date.now() + 600_000).toISOString(),
+          }
+        : {}
+    );
+    const identity = new DeviceLoginIdentity({ path, brokerUrl: stub.url });
+    let trades = 0;
+    const refusal = await identity
+      .spend(async () => {
+        trades += 1;
+        if (trades > refusals) return "traded";
+        throw new BrokerRefusedError(
+          400,
+          "invalid_request",
+          "Token is not valid or has expired.",
+          "this machine's device login"
+        );
+      })
+      .then(
+        () => null,
+        (error: unknown) => error as Error
+      );
+    expect(trades, `kept: ${kept}`).toBe(refusals);
+    expect(stub.refreshes, `kept: ${kept}`).toHaveLength(1);
+    expect(refusal, `kept: ${kept}`).toBeInstanceOf(BrokerRefusedError);
+    expect(isFinalRefusal(refusal), `kept: ${kept}`).toBe(true);
+  }
+});
+
 test("a trade traded again after a refusal is retryable too when the lock was lost meanwhile", async () => {
   // The kept token is refused under the holder's own lock, so the holder refreshes and trades
   // again; it stopped before that second answer, and another process took the lock and
@@ -956,88 +982,6 @@ test("a kept access token the broker refuses is refreshed at once, and traded ag
   expect(stub.revokedTrades).toHaveLength(1);
   expect(stub.refreshes).toHaveLength(2);
   expect(token?.accessToken).toBe(stub.tradeTokens[0] as string);
-});
-
-test("device-login is an identity of its own, named with its variables", () => {
-  expect(() => machineIdentity({ [IDENTITY_VAR]: IDENTITY_DEVICE_LOGIN })).toThrow(
-    `${BROKER_URL_VAR} is required by ${IDENTITY_VAR}=device-login`
-  );
-  const named = machineIdentity({
-    [IDENTITY_VAR]: IDENTITY_DEVICE_LOGIN,
-    [BROKER_URL_VAR]: "https://broker.test",
-    HOME: "/home/ada",
-  });
-  expect(named?.describe()).toContain(DEVICE_LOGIN_FILE_VAR);
-  // The file is ~/.config/legion/device-login.json unless the variable names another.
-  expect(deviceLoginFile({ HOME: "/home/ada" })).toBe("/home/ada/.config/legion/device-login.json");
-  expect(deviceLoginFile({ HOME: "/home/ada", [DEVICE_LOGIN_FILE_VAR]: "/x/login.json" })).toBe(
-    "/x/login.json"
-  );
-});
-
-test("a device login takes an http broker on this machine's loopback alone", async () => {
-  // The login's refresh token and access tokens cross this connection, so a broker off this
-  // machine is https; a dev stack's broker on the loopback is http.
-  const sent: string[] = [];
-  const recording = (async (input: string | URL | Request) => {
-    sent.push(String(input));
-    return new Response("{}", { status: 500 });
-  }) as typeof fetch;
-  for (const brokerUrl of ["http://broker.test", "http://10.0.0.5:8080"]) {
-    const refusal = await startDeviceLogin({
-      brokerUrl,
-      person: PERSON,
-      host: HOST,
-      fetch: recording,
-    }).then(
-      () => null,
-      (error: unknown) => error as Error
-    );
-    expect(refusal?.message, brokerUrl).toContain("loopback");
-    expect(refusal?.message, brokerUrl).toContain(BROKER_URL_VAR);
-    expect(() => new DeviceLoginIdentity({ path: loginPath(), brokerUrl }), brokerUrl).toThrow(
-      "loopback"
-    );
-  }
-  expect(sent).toEqual([]);
-  for (const brokerUrl of [
-    "https://broker.test",
-    "http://127.0.0.1:1",
-    "http://localhost:1",
-    "http://[::1]:1",
-  ]) {
-    expect(
-      () => new DeviceLoginIdentity({ path: loginPath(), brokerUrl }),
-      brokerUrl
-    ).not.toThrow();
-  }
-});
-
-test("a caller acting as no session trades under the session variable, else the login's own name", async () => {
-  const stub = broker();
-  const path = loginPath();
-  const written = await writeDeviceLoginFile(path, stub.url, {
-    access_token: fixtureSecret("access"),
-    access_expires_at: new Date(Date.now() + 600_000).toISOString(),
-  });
-  const env = {
-    [BROKER_URL_VAR]: stub.url,
-    [IDENTITY_VAR]: IDENTITY_DEVICE_LOGIN,
-    [DEVICE_LOGIN_FILE_VAR]: path,
-  };
-  for (const [extra, session] of [
-    [{ [SESSION_VAR]: "example-terminal" }, "example-terminal"],
-    [{}, deviceLoginSessionName(written.thumbprint)],
-  ] as const) {
-    const made = await brokerTokenClient({ ...env, ...extra });
-    await made?.client.token();
-    made?.client.close();
-    expect(stub.trades.at(-1)?.form.get("session")).toBe(session);
-  }
-  // The name's form, held apart from the function that makes it.
-  expect(deviceLoginSessionName("abcdefghijklmnopqrstuvwxyz0123456789-_ABCDEFG")).toBe(
-    "device-login-abcdefghijkl"
-  );
 });
 
 test("the host a login names is this machine's name in the broker's hostname form", () => {

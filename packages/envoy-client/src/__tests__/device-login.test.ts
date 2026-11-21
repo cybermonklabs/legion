@@ -136,6 +136,18 @@ test("dispatch login refuses a call it cannot make, and says why", async () => {
   expect(openDirectory.code, openDirectory.stdout).toBe(2);
   expect(openDirectory.stdout).toContain("chmod 700");
   expect(stub.authorizations).toHaveLength(0);
+  // So is a directory of this user's own that this user cannot write to.
+  const closed = path.join(tempDir(), "closed", "device-login.json");
+  mkdirSync(path.dirname(closed));
+  chmodSync(path.dirname(closed), 0o555);
+  const closedDirectory = await dispatch(["login", "--device", "--person", PERSON], {
+    ...env,
+    AGENT_SECRETS_DEVICE_LOGIN_FILE: closed,
+  });
+  chmodSync(path.dirname(closed), 0o700);
+  expect(closedDirectory.code, closedDirectory.stdout).toBe(2);
+  expect(closedDirectory.stdout).toContain("cannot write");
+  expect(stub.authorizations).toHaveLength(0);
 
   const denied = await dispatch(["login", "--device", "--person", PERSON], env);
   expect(denied.code).toBe(1);
