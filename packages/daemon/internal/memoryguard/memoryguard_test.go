@@ -9485,6 +9485,93 @@ func TestMemoryGuardEndsAtAnUrgentReadingOfTheWaitTheSetsItReadAgainBeforeItRead
 	}
 }
 
+// At an urgent reading of the wait after a kill, the urgent rule's kills of the stay's sets that
+// the reads again read before their first kill go with that kill, before the next read and before
+// the full read: the reading before ranks the new tier by size, so a process new to the stay and
+// flat can come before the first process that grew since the kill (endKnown; INFRA-3531 R1 of spec
+// version 48; INFRA-3368's architect, 2026-11-21T08:54Z, item 1: "The early kills at the wait's
+// urgent reading must not wait for the full read"). The deep review's probe of thread
+// PRRT_kwDORFy7ds66UWBx of review round 5 of cybermonklabs/legion#4273 ranks pid 401 after pid
+// 400; this is the other order. As
+// TestMemoryGuardEndsAtAnUrgentReadingOfTheWaitTheSetsItReadAgainBeforeItReadsOneNotNewToTheStayBeforeTheFullRead,
+// whose stay and timing this is, but pid 401, python3 worker.py, holds 350 MiB, more than pid
+// 400's 300 MiB, so the reading at 3600 MiB ranks them [401 400 300]. At the urgent reading, 3800
+// MiB, the reads again read pid 401, new to the stay and flat, then pid 400, grown since the kill,
+// and end pid 400 first; the guard ends pid 401 by rule=urgent with it, at pid 400's time, before
+// the full read reads pid 302. Where endKnown ended by the urgent rule only the processes it read
+// after its first kill, the full read's endUrgent ended pid 401 200 ms after pid 400, with 2 kills
+// sent before it read pid 302.
+func TestMemoryGuardEndsAtAnUrgentReadingOfTheWaitTheSetsItReadAgainBeforeTheFirstKillWithThatKill(t *testing.T) {
+	// fullRead is what the full read's smaps read of pid 302 takes of the guard's clock.
+	const fullRead = 200 * time.Millisecond
+	pod := newFakePod(t)
+	first := fakeProcess{pid: 301, ppid: 100, start: 5100, args: []string{"python3", "grow.py"}, anon: 300 * mib}
+	old := fakeProcess{pid: 300, ppid: 100, start: 5000, args: []string{"python3", "parent.py"}, anon: 600 * mib}
+	pod.add(agent(2*gib), old, first)
+	pod.setAnon(3100 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 0)
+	reads := recordReads(h)
+	record := h.g.smapsRead
+	h.g.smapsRead = func(pid int) {
+		record(pid)
+		if pid == 302 {
+			h.clock.advance(fullRead)
+		}
+	}
+	h.run()
+	for _, r := range []uint64{3200, 3300, 3400} {
+		pod.resize(&first, first.anon+10*mib)
+		pod.setAnon(r * mib)
+		h.tick()
+	}
+	h.requireKilled()
+	pod.resize(&first, first.anon+10*mib)
+	pod.setAnon(3523 * mib)
+	h.tick()
+	h.requireKilled(301)
+	grower := fakeProcess{pid: 400, ppid: 100, start: 7000, args: []string{"python3", "grow.py", "b"}, anon: 300 * mib}
+	pod.add(grower, fakeProcess{pid: 401, ppid: 100, start: 7100, args: []string{"python3", "worker.py"}, anon: 350 * mib})
+	pod.setAnon(3600 * mib)
+	h.tick()
+	h.requireKilled(301)
+	// Pid 400 steps after the reading at 3600 MiB, and pid 302, which the full read alone reads,
+	// starts.
+	pod.resize(&grower, grower.anon+50*mib)
+	pod.add(fakeProcess{pid: 302, ppid: 300, start: 7200, args: []string{"python3", "parent.py"}, anon: 600 * mib})
+	before := len(reads())
+	pod.setAnon(3800 * mib)
+	h.tick()
+	log := strings.Join(h.log.all(), "\n")
+	if got := h.signal.kills(); !slices.Equal(got, []int{301, 400, 401}) {
+		t.Fatalf("the guard killed %v, want [301 400 401]; it ended %+v; the log:\n%s", got, endedChoices(h), log)
+	}
+	h.requireKilled(301, 400, 401)
+	var order []int
+	sentBefore := -1
+	for _, r := range reads()[before:] {
+		if r.scan {
+			continue
+		}
+		order = append(order, r.pid)
+		if r.pid == 302 {
+			sentBefore = r.killsBefore
+		}
+	}
+	if worker, grew := slices.Index(order, 401), slices.Index(order, 400); worker < 0 || grew < 0 || worker > grew {
+		t.Fatalf("at the urgent reading the guard read the smaps of %v in that order, want pid 401 before pid 400: the reading at 3600 MiB ranked pid 401, the larger of the two new to the stay, first; the log:\n%s",
+			order, log)
+	}
+	if sentBefore < 0 {
+		t.Fatalf("at the urgent reading the full read did not read pid 302's smaps; the log:\n%s", log)
+	}
+	kills := h.killed()
+	if grew, set := kills[1], kills[2]; set.Rule != ruleUrgent || !set.At.Equal(grew.At) || sentBefore != 3 {
+		t.Fatalf("pid 401's kill by rule=%s went +%s after pid 400's, and the full read read pid 302's smaps with %d kills sent before it; want pid 401's kill by rule=urgent at pid 400's time, and 3 kills sent before that read: the reads again read pid 401, of the stay's sets, before pid 400, the first they ended; the log:\n%s",
+			set.Rule, set.At.Sub(grew.At), sentBefore, log)
+	}
+}
+
 // A fork that the search at a later mark reads before its parent, where the budget stops the
 // search before that parent and the kill goes, has its size as of that kill from a fork's read, as
 // where the search reads the parent after it: the reads at the kill's reading are a fork's reads
