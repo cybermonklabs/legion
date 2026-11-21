@@ -243,34 +243,38 @@ curl -sf -o /dev/null "$issuer_url/.well-known/openid-configuration" || {
 # Playwright, and no home directory. BROKER_DRAIN_SECONDS=0 stops it at once, with no load
 # balancer to drain from. BROKER_MACHINE_LOGIN_URL is the harness Dispatch's machine-login page.
 # BROKER_METRICS_LISTEN_ADDR is a port the kernel picks, since each stack of the harness runs a
-# broker of its own and nothing here scrapes it.
+# broker of its own and nothing here scrapes it. The settings reach the broker through this
+# shell's environment, which it execs into (exec_broker), and through no process's arguments: the
+# database URL keeps DATABASE_URL's password, and env's arguments would carry it.
 mapfile -t inherited < <(compgen -e)
 for name in "${inherited[@]}"; do
   case "$name" in
     BROKER_*) unset "$name" ;;
   esac
 done
-exec env \
-  BROKER_DATABASE_URL="$broker_database_url" \
-  BROKER_LISTEN_ADDR="127.0.0.1:$broker_port" \
-  BROKER_PUBLIC_URL="http://127.0.0.1:$broker_port" \
-  BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" \
-  BROKER_MACHINE_LOGIN_URL="http://127.0.0.1:$e2e_port/credentials/machine" \
-  BROKER_SECRETS_PREFIX="$secrets_prefix" \
-  BROKER_SECRETS_KMS_KEY_ARN="$secrets_kms_key_arn" \
-  BROKER_FAKE_SECRETS_FILE="$fake_secrets_file" \
-  BROKER_DRAIN_SECONDS=0 \
-  BROKER_K8S_OIDC_ISSUER="$issuer_url" \
-  BROKER_K8S_OIDC_AUDIENCE="$pod_audience" \
-  BROKER_SERVICE_LOGINS="$launcher_service=$launcher_account" \
-  BROKER_SERVICES="$launcher_service=$pod_account" \
-  BROKER_API_ACCOUNTS="dispatch=$dispatch_account" \
-  BROKER_SIGNIN_ISSUER="$issuer_url" \
-  BROKER_SIGNIN_CLIENT_ID="$signin_client" \
-  BROKER_SIGNIN_CLIENT_SECRET_FILE="$signin_secret_file" \
-  BROKER_SIGNIN_DOMAIN="$signin_domain" \
-  HOME=/nonexistent \
-  XDG_CACHE_HOME=/nonexistent \
-  XDG_CONFIG_HOME=/nonexistent \
-  XDG_DATA_HOME=/nonexistent \
-  "$work/broker"
+exec_broker() {
+  export BROKER_DATABASE_URL="$broker_database_url" \
+    BROKER_LISTEN_ADDR="127.0.0.1:$broker_port" \
+    BROKER_PUBLIC_URL="http://127.0.0.1:$broker_port" \
+    BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" \
+    BROKER_MACHINE_LOGIN_URL="http://127.0.0.1:$e2e_port/credentials/machine" \
+    BROKER_SECRETS_PREFIX="$secrets_prefix" \
+    BROKER_SECRETS_KMS_KEY_ARN="$secrets_kms_key_arn" \
+    BROKER_FAKE_SECRETS_FILE="$fake_secrets_file" \
+    BROKER_DRAIN_SECONDS=0 \
+    BROKER_K8S_OIDC_ISSUER="$issuer_url" \
+    BROKER_K8S_OIDC_AUDIENCE="$pod_audience" \
+    BROKER_SERVICE_LOGINS="$launcher_service=$launcher_account" \
+    BROKER_SERVICES="$launcher_service=$pod_account" \
+    BROKER_API_ACCOUNTS="dispatch=$dispatch_account" \
+    BROKER_SIGNIN_ISSUER="$issuer_url" \
+    BROKER_SIGNIN_CLIENT_ID="$signin_client" \
+    BROKER_SIGNIN_CLIENT_SECRET_FILE="$signin_secret_file" \
+    BROKER_SIGNIN_DOMAIN="$signin_domain" \
+    HOME=/nonexistent \
+    XDG_CACHE_HOME=/nonexistent \
+    XDG_CONFIG_HOME=/nonexistent \
+    XDG_DATA_HOME=/nonexistent
+  exec "$work/broker"
+}
+exec_broker

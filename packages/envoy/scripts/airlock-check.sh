@@ -69,6 +69,10 @@ source "$SCRIPT_DIR/airlock/k7-consumers.sh"
 # psql is given a database URL without its password, and the password in PGPASSWORD.
 # shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
 source "$SCRIPT_DIR/lib/pg-url.sh"
+# A broker this script starts gets the stack broker's environment through its own environment,
+# never through a process's arguments (exec_with_env, broker_env_of, with_broker_env).
+# shellcheck source-path=SCRIPTDIR source=lib/exec-env.sh
+source "$SCRIPT_DIR/lib/exec-env.sh"
 
 usage() {
 	cat <<'EOF'
@@ -309,40 +313,17 @@ stop_stack() {
 }
 
 # broker_env answers, in BROKER_ENV, the environment of a broker like the stack's own with the
-# caller's overrides on top, one NAME=value entry each. It is read out of the first stack broker's
-# /proc/<pid>/environ rather than spelled here, so that a broker this script starts can never
-# lack a setting dev-airlock.sh gave the stack's. That script's own launcher is the one that has to
-# spell the environment: it starts the first broker and has nothing to copy from. The entries are
-# NUL-separated, so a value holding a space or a quote reaches the broker unchanged; the overrides
-# come last, so an override the caller names replaces the copy.
+# caller's overrides on top, one NAME=value entry each (lib/exec-env.sh's broker_env_of). It is
+# read out of the first stack broker's /proc/<pid>/environ rather than spelled here, so that a
+# broker this script starts can never lack a setting dev-airlock.sh gave the stack's. That
+# script's own launcher is the one that has to spell the environment: it starts the first broker
+# and has nothing to copy from. A broker is started with it through lib/exec-env.sh's
+# with_broker_env, in its own environment and in no process's arguments, since the stack broker's
+# environment holds its database URL, password and all.
 broker_env() { # <VAR=value>...
 	local pid
 	pid="$(sed -n 's/^  broker [0-9]*:.*pid \([0-9]*\),.*/\1/p' "$STACK_LOG" | head -n 1)"
-	BROKER_ENV=()
-	mapfile -d '' -t BROKER_ENV <"/proc/$pid/environ"
-	BROKER_ENV+=("$@")
-}
-
-# with_broker_env COMMAND [ARG...] execs COMMAND with exactly BROKER_ENV as its environment, in
-# place of the subshell its caller runs it in, so `( with_broker_env CMD ) &` makes $! COMMAND's
-# pid. The entries reach COMMAND through that subshell's environment, which first loses every
-# variable and function this script exports, and never through a process's arguments: env -i took
-# them as arguments, which are in the process list for any user of the machine, and the stack
-# broker's environment holds its database URL, password and all. An entry whose name no shell can
-# export (an exported function's BASH_FUNC_name%%) is left out.
-with_broker_env() {
-	local -a exported
-	local entry flags name
-	mapfile -t exported < <(compgen -e)
-	unset "${exported[@]}" 2>/dev/null || true
-	while read -r _ flags name; do
-		if [[ "$flags" == *x* ]]; then unset -f "$name"; fi
-	done < <(declare -F)
-	# shellcheck disable=SC2163 # each entry is NAME=value, which export sets as it exports
-	for entry in "${BROKER_ENV[@]}"; do
-		if [[ "${entry%%=*}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then export "$entry"; fi
-	done
-	exec "$@"
+	broker_env_of "$pid" "$@"
 }
 
 # start_extra_broker starts one more broker process beside the stack's, on its database, rules

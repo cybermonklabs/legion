@@ -231,7 +231,10 @@ done
 [[ "$(stand_in_cmdline)" == sleep* ]] ||
   { printf 'FAIL: the stand-in broker is not sleep after 5 s: %s\n' "$(stand_in_cmdline)"; exit 1; }
 eval "$(grep -m1 '^contains() {' "$script_dir/airlock-check.sh")"
-for function in broker_env with_broker_env k8a_start_broker; do
+# with_broker_env is lib/exec-env.sh's, which airlock-check.sh sources, as this test does.
+# shellcheck source-path=SCRIPTDIR source=lib/exec-env.sh
+. "$script_dir/lib/exec-env.sh"
+for function in broker_env k8a_start_broker; do
   definition="$(sed -n "/^${function}() {/,/^}/p" "$script_dir/airlock-check.sh")"
   [[ -n "$definition" ]] || { printf 'FAIL: airlock-check.sh defines no %s()\n' "$function"; exit 1; }
   eval "$definition"

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -190,3 +190,81 @@ test("acceptance/ci-check.sh hands psql DATABASE_URL without its password, and t
   expect(args.filter((argument) => argument.includes("not-a-secret"))).toEqual([]);
   expect(pgpassword).toBe("not-a-secret!");
 });
+
+/** The corpus the three splits share, packages/envoy/scripts/fixtures/pg-url.json, which
+ *  scripts/search-measure/pg_test.py and packages/envoy/scripts/dev-broker.test.sh read too, so the
+ *  three are held to one table; each case was checked against libpq's own PQconninfoParse. */
+const corpus = (await Bun.file(
+  new URL("../../../envoy/scripts/fixtures/pg-url.json", import.meta.url)
+).json()) as {
+  accepted: { url: string; password: string | null; bare: string }[];
+  refused: { url: string; fault: string }[];
+};
+
+test("the shared corpus has accepted and refused cases", () => {
+  expect([corpus.accepted.length > 0, corpus.refused.length > 0]).toEqual([true, true]);
+});
+
+test.each(corpus.accepted)("the shared corpus: splits $url as libpq does", ({
+  url,
+  password,
+  bare,
+}) => {
+  expect(splitDatabaseUrl(url)).toEqual({ url: bare, password: password ?? undefined });
+});
+
+test.each(corpus.refused)("the shared corpus: refuses $url, naming $fault", ({ url, fault }) => {
+  expect(() => splitDatabaseUrl(url)).toThrow(
+    `refused a Postgres URL: ${fault} (the URL is not printed)`
+  );
+});
+
+test.skipIf(process.platform !== "linux")(
+  "run-broker.sh execs its broker with the database URL in its environment and in no process's arguments",
+  () => {
+    const e2e = join(import.meta.dir, "..");
+    const work = join(standIn, "broker-work");
+    mkdirSync(join(work, "bin"), { recursive: true });
+    // A stand-in broker that writes its own arguments and the database URL it was given, and an
+    // env first on PATH that records its arguments before it runs, as env would carry settings.
+    writeFileSync(
+      join(work, "broker"),
+      [
+        "#!/bin/sh",
+        `tr '\\0' ' ' </proc/$$/cmdline >'${work}/cmdline'`,
+        `printf '%s' "$BROKER_DATABASE_URL" >'${work}/database-url'`,
+        "",
+      ].join("\n"),
+      { mode: 0o755 }
+    );
+    writeFileSync(
+      join(work, "bin", "env"),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >>'${work}/env-args'\nexec ${Bun.which("env")} "$@"\n`,
+      { mode: 0o755 }
+    );
+    const url = "postgres://tester:not-a-secret%40broker@127.0.0.1:5999/dispatch_broker";
+    const run = Bun.spawnSync(
+      [
+        "bash",
+        "-c",
+        `eval "$(sed -n '/^exec_broker() {$/,/^}$/p' '${join(e2e, "run-broker.sh")}')"\nexec_broker`,
+      ],
+      {
+        env: {
+          PATH: `${join(work, "bin")}${delimiter}${process.env.PATH ?? ""}`,
+          broker_database_url: url,
+          work,
+        },
+      }
+    );
+    expect(run.stderr.toString()).toBe("");
+    const envArgs = existsSync(join(work, "env-args"))
+      ? readFileSync(join(work, "env-args"), "utf8")
+      : "";
+    expect({
+      envArgs: envArgs.includes("not-a-secret"),
+      cmdline: readFileSync(join(work, "cmdline"), "utf8").includes("not-a-secret"),
+      databaseUrl: readFileSync(join(work, "database-url"), "utf8"),
+    }).toEqual({ envArgs: false, cmdline: false, databaseUrl: url });
+  }
+);

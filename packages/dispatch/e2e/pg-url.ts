@@ -17,8 +17,10 @@ export class DatabaseUrlRefused extends Error {}
  *  - every other character of the URL is kept as it is, and a URL with no password is kept whole.
  *  It throws `DatabaseUrlRefused` for what libpq refuses in a password (a `%` that starts no `%XX`
  *  escape, and `%00`), for a password whose bytes are not UTF-8 (no environment value can carry
- *  them), for a host in `[ ]` libpq cannot read, and for anything but a `postgres://` or
- *  `postgresql://` URL, since a key=value string can hold a password this does not take out. */
+ *  them), for a host in `[ ]` libpq cannot read, for a raw `@` in the hosts (the text past a
+ *  password's raw `@`, which libpq would print in its host error), and for anything but a
+ *  `postgres://` or `postgresql://` URL, since a key=value string can hold a password this does
+ *  not take out. */
 export function splitDatabaseUrl(url: string): { url: string; password: string | undefined } {
   const scheme = /^postgres(ql)?:\/\//.exec(url)?.[0];
   if (scheme === undefined) refuse("it is not a postgres:// or postgresql:// URL");
@@ -37,6 +39,9 @@ export function splitDatabaseUrl(url: string): { url: string; password: string |
       user = `${credentials.slice(0, colon)}@`;
     }
   }
+  // libpq takes the credentials to the first `@` and reads a second one as part of a host, whose
+  // error then prints it: a password's `@` that is not written `%40` leaves its tail there.
+  if (location.split(/[/?]/, 1)[0].includes("@")) refuse("a host holds a raw @");
   // The query string starts at the first `?` past the hosts, read as libpq reads them: a host in
   // `[ ]` runs to its `]`, every other host and each port to a `:`, `/`, `?` or the `,` before the
   // next host, and the database to a `?`. `tail` is what is left past each step.

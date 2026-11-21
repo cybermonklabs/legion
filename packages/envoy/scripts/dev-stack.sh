@@ -170,6 +170,10 @@ HELD_PORT="$REPO_ROOT/scripts/e2e/lib/held-port.py"
 # psql is given a database URL without its password, and the password in PGPASSWORD.
 # shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
 . "$SCRIPT_DIR/lib/pg-url.sh"
+# Each process this script starts with a secret in its settings gets them through its own
+# environment, never through a process's arguments (start_with_only, below).
+# shellcheck source-path=SCRIPTDIR source=lib/exec-env.sh
+. "$SCRIPT_DIR/lib/exec-env.sh"
 
 usage() {
   cat <<'EOF'
@@ -800,27 +804,15 @@ project_access_broker_setup
 # start_with_only LOG SETTING... -- COMMAND [ARG...] starts COMMAND in the background, its standard
 # output and error to LOG, with exactly the SETTINGs (NAME=value) as its environment, which env -i
 # gave the processes this script starts, and sets started_pid. The settings reach it through the
-# environment of a subshell that unsets every variable and function this script exports and then
-# execs it, never through a process's arguments: env -i takes them as arguments, which are in the
-# process list for any user of the machine to read, and a database URL's password must not be.
+# environment of a subshell that execs it (lib/exec-env.sh's exec_with_env, which first takes the
+# export off every variable and function this script exports), never through a process's
+# arguments: env -i takes them as arguments, which are in the process list for any user of the
+# machine to read, and a database URL's password or a bearer token must not be.
 started_pid=""
 start_with_only() {
-  local log="$1" settings=()
+  local log="$1"
   shift
-  while [ "$1" != -- ]; do
-    settings+=("$1")
-    shift
-  done
-  shift
-  (
-    mapfile -t exported < <(compgen -e)
-    unset "${exported[@]}" 2>/dev/null || true
-    while read -r _ flags name; do
-      if [[ "$flags" == *x* ]]; then unset -f "$name"; fi
-    done < <(declare -F)
-    export "${settings[@]}"
-    exec "$@"
-  ) >"$log" 2>&1 &
+  (exec_with_env "$@") >"$log" 2>&1 &
   started_pid=$!
 }
 # start_broker starts one broker logging to $1 and sets started_pid: every broker of a run, as
@@ -917,25 +909,32 @@ await 'the listener port keeper' "$LISTENER_KEEPER_PID" "$LISTENER_KEEPER_LOG" \
 # (ENVOY_DISPATCH_PRINCIPAL), as a deployment's listener does. A verifier closes /v1 to a caller
 # with no bearer, so the shared token is exported in the banner (ENVOY_TOKEN).
 LISTENER_API_TOKEN="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
+# The listener's settings, its bearer token among them, reach held-port.py as start_with_only
+# gives them, and the listener as held-port.py hands on the ones it names with --pass, so the
+# token is in no process's arguments; ENVOY_LISTEN_FD and ENVOY_PUBLIC_URL, which hold the port,
+# are held-port.py's own (--fd-env, --env).
 start_listener() {
-  : >"$LISTENER_LOG"
-  python3 "$HELD_PORT" exec --from "$LISTENER_KEEPER_SOCKET" --fd-env ENVOY_LISTEN_FD -- \
-    env -i PATH="$PATH" \
-    ENVOY_LISTEN_FD=3 \
-    ENVOY_LISTEN_HOST=127.0.0.1 \
-    ENVOY_API_TOKEN="$LISTENER_API_TOKEN" \
-    ENVOY_OIDC_ISSUER="$ISSUER_URL" \
-    ENVOY_OIDC_AUDIENCE="$LISTENER_AUDIENCE" \
-    ENVOY_DISPATCH_PRINCIPAL="$API_ACCOUNT" \
-    ENVOY_MACHINE_ID="$LISTENER_MACHINE_ID" \
-    ENVOY_HOST_BRIDGE=127.0.0.1 \
-    ENVOY_PUBLIC_URL="http://127.0.0.1:{port}" \
-    ENVOY_AGENT_SECRETS_URL="$BROKER_URL" \
-    ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$LISTENER_TOKEN_FILE" \
-    NATS_URLS="$NATS_URL" \
-    "${callout_listener_env[@]}" \
-    "$BIN_DIR/listener" >"$LISTENER_LOG" 2>&1 &
-  LISTENER_PID=$!
+  local -a listener_settings=(PATH="$PATH"
+    ENVOY_LISTEN_HOST=127.0.0.1
+    ENVOY_API_TOKEN="$LISTENER_API_TOKEN"
+    ENVOY_OIDC_ISSUER="$ISSUER_URL"
+    ENVOY_OIDC_AUDIENCE="$LISTENER_AUDIENCE"
+    ENVOY_DISPATCH_PRINCIPAL="$API_ACCOUNT"
+    ENVOY_MACHINE_ID="$LISTENER_MACHINE_ID"
+    ENVOY_HOST_BRIDGE=127.0.0.1
+    ENVOY_AGENT_SECRETS_URL="$BROKER_URL"
+    ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$LISTENER_TOKEN_FILE"
+    NATS_URLS="$NATS_URL"
+    "${callout_listener_env[@]}")
+  local -a listener_passed=()
+  local setting
+  for setting in "${listener_settings[@]}"; do
+    listener_passed+=(--pass "${setting%%=*}")
+  done
+  start_with_only "$LISTENER_LOG" "${listener_settings[@]}" -- \
+    python3 "$HELD_PORT" exec --from "$LISTENER_KEEPER_SOCKET" --fd-env ENVOY_LISTEN_FD \
+    --env 'ENVOY_PUBLIC_URL=http://127.0.0.1:{port}' "${listener_passed[@]}" -- "$BIN_DIR/listener"
+  LISTENER_PID=$started_pid
   await listener "$LISTENER_PID" "$LISTENER_LOG" "$LISTENER_LOG" 'its address' listener_addr_in
   LISTENER_ADDRESS="$awaited"
   await listener "$LISTENER_PID" "$LISTENER_LOG" "http://$LISTENER_ADDRESS/healthz" \

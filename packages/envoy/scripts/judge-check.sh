@@ -73,6 +73,10 @@ ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # psql is given a database URL without its password, and the password in PGPASSWORD.
 # shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
 . "$SCRIPT_DIR/lib/pg-url.sh"
+# A broker this script starts gets the stack broker's environment through its own environment,
+# never through a process's arguments (exec_with_env, broker_env_of, with_broker_env).
+# shellcheck source-path=SCRIPTDIR source=lib/exec-env.sh
+. "$SCRIPT_DIR/lib/exec-env.sh"
 
 usage() {
 	cat <<'EOF'
@@ -305,17 +309,15 @@ stop_stack() {
 	STACK_PID=""
 }
 
-# broker_env answers, in BROKER_ENV, the command prefix that runs a program with the environment
-# of a broker like the stack's own and the caller's overrides on top. It is read out of the first
-# stack broker's /proc/<pid>/environ rather than spelled here, so that a broker this script starts
-# can never lack a setting dev-airlock.sh gave the stack's. The entries are NUL-separated, and
-# each becomes one argument of env, so a value holding a space or a quote reaches the broker
-# unchanged; env applies its assignments in order, so an override the caller names replaces the
-# copy.
+# broker_env answers, in BROKER_ENV, the environment of a broker like the stack's own with the
+# caller's overrides on top, one NAME=value entry each (lib/exec-env.sh's broker_env_of). It is
+# read out of the first stack broker's /proc/<pid>/environ rather than spelled here, so that a
+# broker this script starts can never lack a setting dev-airlock.sh gave the stack's. A broker is
+# started with it through lib/exec-env.sh's with_broker_env, in its own environment and in no
+# process's arguments, since the stack broker's environment holds its database URL, password and
+# all.
 broker_env() { # <VAR=value>...
-	local entries=()
-	mapfile -d '' -t entries <"/proc/${BROKER_PIDS[0]}/environ"
-	BROKER_ENV=(env -i "${entries[@]}" "$@")
+	broker_env_of "${BROKER_PIDS[0]}" "$@"
 }
 
 # start_extra_broker starts one more broker process beside the stack's, on its database, rules
@@ -334,7 +336,7 @@ start_extra_broker() { # <name> <VAR=value>...
 	: >"$log"
 	# Three ports the system picks, so this one never collides with the broker it was copied from.
 	broker_env BROKER_LISTEN_ADDR="127.0.0.1:0" BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" "$@"
-	"${BROKER_ENV[@]}" "${EXTRA_BROKER_BIN:-$BROKER_BIN}" >"$log" 2>&1 &
+	( with_broker_env "${EXTRA_BROKER_BIN:-$BROKER_BIN}" ) >"$log" 2>&1 &
 	local pid=$!
 	EXTRA_BROKER_PIDS+=("$pid")
 	await "the $name broker" 120 "$log" '"message":"airlock proxy listening"' "$pid"

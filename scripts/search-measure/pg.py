@@ -25,7 +25,8 @@ def split_dsn(dsn):
     out with its &, and the last one wins. Every other byte of the DSN is kept as it is. It refuses,
     with a `SystemExit` that names the fault and prints nothing of the DSN, what libpq refuses in a
     password (a % that starts no %XX escape, and %00), a host whose [ has no ] or whose ] is
-    followed by anything but :, /, ? or ,, and any DSN but a postgres:// or postgresql:// URL,
+    followed by anything but :, /, ? or ,, a raw @ in the hosts (the text past a password's raw @,
+    which libpq would print in its host error), and any DSN but a postgres:// or postgresql:// URL,
     since a key=value string can hold a password this does not take out. The same rules are the
     shell's packages/envoy/scripts/lib/pg-url.sh and the TypeScript packages/dispatch/e2e/pg-url.ts,
     which change with this one.
@@ -43,6 +44,10 @@ def split_dsn(dsn):
         if colon and given:
             password = _decode(given, "its password")
             user = name + "@"
+    # libpq takes the credentials to the first @ and reads a second one as part of a host, whose
+    # error then prints it: a password's @ that is not written %40 leaves its tail there.
+    if "@" in re.split(r"[/?]", location, maxsplit=1)[0]:
+        _refuse("a host holds a raw @")
     # The query string starts at the first ? past the hosts, read as libpq reads them: a host in
     # [ ] runs to its ], every other host and each port to a :, /, ? or the , before the next host,
     # and the database to a ?.

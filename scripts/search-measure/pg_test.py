@@ -79,5 +79,33 @@ class RunTest(unittest.TestCase):
         self.assertFalse(self.calls.exists())
 
 
+# The corpus the three splits share: packages/dispatch/e2e/__tests__/psql-password.test.ts and
+# packages/envoy/scripts/dev-broker.test.sh read it too, so the three are held to one table, each
+# case of which was checked against libpq's own PQconninfoParse.
+CORPUS = pathlib.Path(__file__).resolve().parents[2] / "packages/envoy/scripts/fixtures/pg-url.json"
+
+
+class CorpusTest(unittest.TestCase):
+    def setUp(self):
+        self.corpus = json.loads(CORPUS.read_text())
+
+    def test_the_corpus_has_accepted_and_refused_cases(self):
+        self.assertTrue(self.corpus["accepted"])
+        self.assertTrue(self.corpus["refused"])
+
+    def test_each_accepted_case_splits_as_libpq_does(self):
+        for case in self.corpus["accepted"]:
+            with self.subTest(url=case["bare"]):
+                self.assertEqual(pg.split_dsn(case["url"]), (case["bare"], case["password"]))
+
+    def test_each_refused_case_is_refused_naming_its_fault(self):
+        for case in self.corpus["refused"]:
+            with self.subTest(fault=case["fault"]):
+                with self.assertRaises(SystemExit) as refused:
+                    pg.split_dsn(case["url"])
+                self.assertEqual(str(refused.exception),
+                                 f"pg: refused a Postgres URL: {case['fault']} (the URL is not printed)")
+
+
 if __name__ == "__main__":
     unittest.main()

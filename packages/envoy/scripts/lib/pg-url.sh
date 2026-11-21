@@ -33,35 +33,64 @@
 #     query parameter) is kept as it is, and a URL that holds no password is kept whole.
 # It refuses what libpq refuses in a password (a % that starts no %XX escape, and %00, which libpq
 # quotes in its error), a host in [ ] that libpq cannot read (no ], or a ] followed by anything but
-# :, /, ? or ,), and anything but a postgres:// or postgresql:// URL, since a key=value connection
-# string can hold a password this file does not take out. A refusal names what it refused on
-# standard error, prints nothing of the URL, runs nothing and returns 2.
+# :, /, ? or ,), a raw @ in the hosts (the text past a password's raw @, which libpq would print in
+# its host error), and anything but a postgres:// or postgresql:// URL, since a key=value
+# connection string can hold a password this file does not take out. A refusal names what it
+# refused on standard error, prints nothing of the URL, runs nothing and returns 2.
+#
+# Under xtrace (set -x) each of the three functions below turns tracing off as it starts and back
+# on as it returns, after COMMAND, keeping COMMAND's status: bash traces every expansion of the
+# password, and a PGPASSWORD=... prefix with its value, and a trace goes wherever the script's
+# standard error goes. A caller's own call line is traced before any of them runs, URL and all;
+# no function can take that back.
 
 # pg_url_run URL COMMAND [ARG...]: see the header.
 pg_url_run() {
-  local pg_url_split_url pg_url_split_password pg_url_split_given
-  pg_url_split "$1" || return
-  shift
-  if [ "$pg_url_split_given" = true ]; then
-    PGPASSWORD="$pg_url_split_password" "$1" "$pg_url_split_url" "${@:2}"
+  local pg_url_xtrace="" pg_url_status=0 pg_url_split_url pg_url_split_password pg_url_split_given
+  [[ $- != *x* ]] || { pg_url_xtrace=1 && { set +x; } 2>/dev/null; }
+  if pg_url_split_into "$1"; then
+    shift
+    if [ "$pg_url_split_given" = true ]; then
+      PGPASSWORD="$pg_url_split_password" "$1" "$pg_url_split_url" "${@:2}" || pg_url_status=$?
+    else
+      "$1" "$pg_url_split_url" "${@:2}" || pg_url_status=$?
+    fi
   else
-    "$1" "$pg_url_split_url" "${@:2}"
+    pg_url_status=$?
   fi
+  [ -z "$pg_url_xtrace" ] || set -x
+  return "$pg_url_status"
 }
 
 # pg_url_without_password URL: see the header.
 pg_url_without_password() {
-  local pg_url_split_url pg_url_split_password pg_url_split_given
-  pg_url_split "$1" || return
-  printf '%s\n' "$pg_url_split_url"
+  local pg_url_xtrace="" pg_url_status=0 pg_url_split_url pg_url_split_password pg_url_split_given
+  [[ $- != *x* ]] || { pg_url_xtrace=1 && { set +x; } 2>/dev/null; }
+  if pg_url_split_into "$1"; then
+    printf '%s\n' "$pg_url_split_url"
+  else
+    pg_url_status=$?
+  fi
+  [ -z "$pg_url_xtrace" ] || set -x
+  return "$pg_url_status"
 }
 
 # pg_url_split URL sets its callers' pg_url_split_url (the URL without its password),
 # pg_url_split_password (the password, decoded) and pg_url_split_given (true when the URL holds a
 # password; an empty password= in the query string is one, which libpq takes over PGPASSWORD).
-# The two functions above declare the three local, so nothing of them outlives a call. Bytes are
-# bytes here (LC_ALL=C), as they are to libpq: in a multibyte locale one character can hide an @.
+# The two functions above declare the three local and call pg_url_split_into, the split itself,
+# with tracing already off; a caller of pg_url_split gets the same guard.
 pg_url_split() {
+  local pg_url_xtrace="" pg_url_status=0
+  [[ $- != *x* ]] || { pg_url_xtrace=1 && { set +x; } 2>/dev/null; }
+  pg_url_split_into "$1" || pg_url_status=$?
+  [ -z "$pg_url_xtrace" ] || set -x
+  return "$pg_url_status"
+}
+
+# pg_url_split_into URL is pg_url_split without the guard. Bytes are bytes here (LC_ALL=C), as
+# they are to libpq: in a multibyte locale one character can hide an @.
+pg_url_split_into() {
   local LC_ALL=C
   local url="$1" scheme rest credentials user="" location tail head query param key kept="" removed=false
   pg_url_split_password=""
@@ -89,6 +118,12 @@ pg_url_split() {
       user="${credentials%%:*}@"
       pg_url_split_given=true
     fi
+  fi
+  # libpq takes the credentials to the first @ and reads a second one as part of a host, whose
+  # error then prints it: a password's @ that is not written %40 leaves its tail there.
+  if [[ "${location%%[/?]*}" == *@* ]]; then
+    pg_url_refuse "a host holds a raw @"
+    return 2
   fi
   # The query string starts at the first ? past the hosts, read as libpq reads them: a host in
   # [ ] runs to its ], every other host and each port runs to a :, /, ? or the , before the next

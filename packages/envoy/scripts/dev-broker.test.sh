@@ -322,6 +322,67 @@ if [[ "$helper_status" -ne 2 || -s "$helper_calls" ]] || grep -qF 'not-a-secret'
   exit 1
 fi
 printf 'PASS: pg_url_run, a password with a %% that starts no escape: refused with 2 before psql runs, printing nothing of the URL\n'
+# The shared corpus, fixtures/pg-url.json, which scripts/search-measure/pg_test.py and
+# packages/dispatch/e2e/__tests__/psql-password.test.ts read too, so the three splits are held to
+# one table, each case of which was checked against libpq's own PQconninfoParse. Each accepted
+# case goes through helper_case; each refused one must exit 2 before psql runs, naming its fault
+# and printing nothing of the URL.
+readonly corpus="${project_root}/packages/envoy/scripts/fixtures/pg-url.json"
+corpus_cases=0
+while IFS= read -r -d '' url && IFS= read -r -d '' bare && IFS= read -r -d '' password; do
+  corpus_cases=$((corpus_cases + 1))
+  if [[ "$password" == none ]]; then want="PGPASSWORD=$callers_own"; else want="PGPASSWORD=${password#=}"; fi
+  helper_case "the shared corpus's accepted case ${corpus_cases} (${bare})" "$url" "$bare" "$want"
+done < <(jq -j '.accepted[] | .url, "\u0000", .bare, "\u0000", (if .password == null then "none" else "=" + .password end), "\u0000"' "$corpus")
+while IFS= read -r -d '' url && IFS= read -r -d '' fault; do
+  corpus_cases=$((corpus_cases + 1))
+  : >"$helper_calls"
+  helper_status=0
+  PATH="${fake_bin_dir}:${PATH}" DEV_BROKER_TEST_DOCKER_CALL_FILE="$helper_calls" \
+    pg_url_run "$url" psql -Atqc 'select 1' 2>"${helper_calls}.err" || helper_status=$?
+  if [[ "$helper_status" -ne 2 || -s "$helper_calls" ]] || grep -qF 'not-a-secret' "${helper_calls}.err" ||
+    ! grep -qF "refused a Postgres URL: ${fault} (the URL is not printed)" "${helper_calls}.err"; then
+    cat "$helper_calls" "${helper_calls}.err" >&2
+    echo "FAIL: pg_url_run, the shared corpus's refused case ${corpus_cases} (${fault}): exited ${helper_status}; want 2, no psql call, and a refusal that names the fault and prints nothing of the URL" >&2
+    exit 1
+  fi
+  printf 'PASS: pg_url_run, the shared corpus'"'"'s refused case %d: %s\n' "$corpus_cases" "$fault"
+done < <(jq -j '.refused[] | .url, "\u0000", .fault, "\u0000"' "$corpus")
+if [[ "$corpus_cases" -eq 0 ]]; then
+  echo "FAIL: fixtures/pg-url.json gave no case" >&2
+  exit 1
+fi
+
+# Under xtrace, pg-url.sh traces neither the password nor the URL that holds it. A caller run
+# under bash -x hands pg_url_run and pg_url_without_password a URL whose password is
+# percent-encoded, from its environment; the trace may hold neither the decoded password nor
+# its encoded form, but in the caller's own call lines, which bash traces with their arguments
+# before any function runs. The caller also shows that pg_url_run returned COMMAND's status and
+# that tracing was back on after it.
+readonly trace_dir="${temporary_dir}/xtrace"
+mkdir -p "$trace_dir"
+cat >"${trace_dir}/caller" <<'EOF'
+#!/usr/bin/env bash
+. "$PG_URL_LIB"
+set -x
+stand_in() { return 3; }
+pg_url_run "$TRACE_URL" stand_in -c 'select 1'
+status=$?
+[[ $- == *x* ]] && traced=again
+pg_url_without_password "$TRACE_URL" >/dev/null
+set +x
+printf 'status=%s traced=%s\n' "$status" "${traced:-off}"
+EOF
+trace_said="$(PG_URL_LIB="${project_root}/packages/envoy/scripts/lib/pg-url.sh" \
+  TRACE_URL='postgres://tester:not-a-secret%40%2Ftrace@127.0.0.1:5999/postgres?sslmode=disable' \
+  bash "${trace_dir}/caller" 2>"${trace_dir}/trace")"
+traced_secret="$(grep -n -e 'not-a-secret@/trace' -e 'not-a-secret%40%2Ftrace' "${trace_dir}/trace" |
+  grep -v -E '^[0-9]+:\++ (pg_url_run|pg_url_without_password) ' || true)"
+if [[ "$trace_said" != "status=3 traced=again" || -n "$traced_secret" ]]; then
+  echo "FAIL: pg-url.sh under xtrace: the caller said '${trace_said}' (want 'status=3 traced=again'), and these trace lines hold the password: ${traced_secret:-none}" >&2
+  exit 1
+fi
+printf 'PASS: pg-url.sh under xtrace traces neither the password nor its encoded form, returns COMMAND'"'"'s status and turns tracing back on\n'
 
 # Sets the global instance_pid array (never wrapped in a subshell: the EXIT trap's safety-net
 # kill must see the same variable this assignment updates). The log is emptied here, before the

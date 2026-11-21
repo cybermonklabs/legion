@@ -272,7 +272,7 @@ case "$mode" in
     wait "$sleeper"
     ;;
   exec)
-    held="" passed=()
+    held="" passed=() pairs=()
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --)
@@ -283,7 +283,15 @@ case "$mode" in
           held="$(cat "$2")"
           shift 2
           ;;
-        --host | --port-file | --fd-env | --env)
+        --host | --port-file)
+          shift 2
+          ;;
+        --fd-env)
+          pairs+=("$2=3")
+          shift 2
+          ;;
+        --env)
+          pairs+=("$2")
           shift 2
           ;;
         --pass)
@@ -303,16 +311,21 @@ case "$mode" in
         command+=("${argument//\{port\}/$held}")
       done
       set -- "${command[@]}"
+      for i in "${!pairs[@]}"; do
+        pairs[i]="${pairs[i]//\{port\}/$held}"
+      done
     fi
-    # With --pass, the command's environment is exactly the variables named, as the real
-    # held-port.py gives it (DISPATCH_LISTEN_FD among them here, as the real one sets it): the
-    # real python3 execs it with those values, read from its own environment and in no process's
-    # arguments. A bash exec of its own would add SHLVL.
+    # With --pass, the command's environment is exactly the variables named, each --env pair and
+    # the --fd-env name, as the real held-port.py gives it: the real python3 execs it with those
+    # values, read from its own environment and in no process's arguments. A bash exec of its own
+    # would add SHLVL.
     if [[ ${#passed[@]} -gt 0 ]]; then
       exec "$real_python3" -c 'import os, sys
 env = {name: os.environ[name] for name in sys.argv[1].split()}
-os.execve(sys.argv[2], sys.argv[2:], env)' "${passed[*]}" "$@"
+env.update(pair.split("=", 1) for pair in sys.argv[2].split("\n") if pair)
+os.execve(sys.argv[3], sys.argv[3:], env)' "${passed[*]}" "$(printf '%s\n' "${pairs[@]}")" "$@"
     fi
+    [[ ${#pairs[@]} -eq 0 ]] || export "${pairs[@]}"
     exec "$@"
     ;;
   *)
@@ -497,6 +510,8 @@ NATSD
 printf '{"level":"INFO","msg":"listener API auth: none","nats":"%s"}\n' "${NATS_URLS:-}" >&2
 echo "fake listener: machine=${ENVOY_MACHINE_ID:-} nats-token=${NATS_SERVICE_TOKEN_FILE:-}" >&2
 echo "fake listener: pid=$$ public=${ENVOY_PUBLIC_URL:-} listen-fd=${ENVOY_LISTEN_FD:-}" >&2
+echo "fake listener: environ=$(tr '\0' '\n' </proc/$$/environ | sed 's/=.*//' | sort | tr '\n' ' ')" >&2
+echo "fake listener: cmdline=$(tr '\0' ' ' </proc/$$/cmdline)" >&2
 # It serves the socket it was handed, whose port held-port.py put in ENVOY_PUBLIC_URL; its own PID
 # stands for a port only where it was handed none.
 port="${ENVOY_PUBLIC_URL##*:}"
@@ -990,27 +1005,35 @@ grep -q -- '-callout-keys' "${work_dir1}/logs/natsd.log" && fail "instance 1, ru
 grep -q 'nats-token=$' "${work_dir1}/logs/listener.log" || fail "instance 1, run without --callout, gave its listener a NATS token"
 [[ -z "$(exported "$log1" DEV_STACK_CALLOUT)" ]] || fail "instance 1, run without --callout, exported DEV_STACK_CALLOUT"
 printf 'PASS: a run without --callout runs no auth service, no second broker and no NATS token\n'
-# (u2) The broker and Dispatch are started with exactly the settings env -i gave them, and the
-# database URL, whose password is s3cret, in no process's arguments: not the broker's or
-# Dispatch's own (each stub reads its /proc/<pid>/cmdline), and not those of any env or python3 the
-# run started along the way (the fakes of both record theirs), where env -i put every setting.
+# (u2) The broker, the listener and Dispatch are started with exactly the settings env -i gave
+# them, and neither the database URL, whose password is s3cret, nor the listener's bearer token
+# (the banner's ENVOY_TOKEN) is in any process's arguments: not the broker's, the listener's or
+# Dispatch's own (each stub reads its /proc/<pid>/cmdline), and not those of any env or python3
+# the run started along the way (the fakes of both record theirs), where env -i put every
+# setting.
 declare -A want_environ=(
   [broker]="BROKER_ACCESS_TOKEN_SECONDS BROKER_API_ACCOUNTS BROKER_DATABASE_URL BROKER_DRAIN_SECONDS BROKER_EXCHANGE_ACCOUNTS BROKER_EXCHANGE_K8S_AUDIENCE BROKER_FAKE_SECRETS_FILE BROKER_GOOGLE_OIDC_AUDIENCE BROKER_GOOGLE_OIDC_ISSUER BROKER_K8S_OIDC_AUDIENCE BROKER_K8S_OIDC_ISSUER BROKER_LISTEN_ADDR BROKER_MACHINE_LOGIN_URL BROKER_METRICS_LISTEN_ADDR BROKER_POD_REGISTRARS BROKER_PUBLIC_URL BROKER_SECRETS_KMS_KEY_ARN BROKER_SECRETS_PREFIX BROKER_SERVICE_LOGINS BROKER_SIGNIN_CLIENT_ID BROKER_SIGNIN_CLIENT_SECRET_FILE BROKER_SIGNIN_DEVICE_AUDIENCE BROKER_SIGNIN_DOMAIN BROKER_SIGNIN_ISSUER BROKER_VM_EXCHANGE_ACCOUNTS BROKER_VM_SERVICES PATH "
+  [listener]="ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE ENVOY_AGENT_SECRETS_URL ENVOY_API_TOKEN ENVOY_DISPATCH_PRINCIPAL ENVOY_HOST_BRIDGE ENVOY_LISTEN_FD ENVOY_LISTEN_HOST ENVOY_MACHINE_ID ENVOY_OIDC_AUDIENCE ENVOY_OIDC_ISSUER ENVOY_PUBLIC_URL NATS_URLS PATH "
   [dispatch]="DATABASE_URL DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE DISPATCH_AGENT_SECRETS_URL DISPATCH_AGENT_TOKEN DISPATCH_DEV_SIGNIN DISPATCH_IDENTITY DISPATCH_INSECURE_COOKIE DISPATCH_LISTEN_FD DISPATCH_LISTEN_HOST DISPATCH_SERVER_URL DISPATCH_WEB_DIST ENVOY_ACCOUNT_TOKEN_FILE ENVOY_TOKEN ENVOY_URL HOME NATS_URLS PATH XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME "
 )
-for server in broker dispatch; do
+listener_token="$(exported "$log1" ENVOY_TOKEN)"
+[[ -n "$listener_token" ]] || fail "instance 1 exported no ENVOY_TOKEN, so (u2) cannot look for the listener's token"
+for server in broker listener dispatch; do
   got="$(sed -n "s/^fake ${server}: environ=//p" "${work_dir1}/logs/${server}.log" | head -n1 || true)"
   [[ "$got" == "${want_environ[$server]}" ]] ||
     fail "instance 1 started its ${server} with the environment '${got}', not exactly '${want_environ[$server]}'"
   cmdline="$(sed -n "s/^fake ${server}: cmdline=//p" "${work_dir1}/logs/${server}.log" | head -n1 || true)"
-  [[ -n "$cmdline" && "$cmdline" != *s3cret* ]] ||
-    fail "instance 1's ${server} read no arguments of its own, or holds the database URL's password in them: '${cmdline}'"
+  [[ -n "$cmdline" && "$cmdline" != *s3cret* && "$cmdline" != *"$listener_token"* ]] ||
+    fail "instance 1's ${server} read no arguments of its own, or holds the database URL's password or the listener's token in them: '${cmdline}'"
 done
 [[ -s "$argv1" ]] || fail "instance 1 recorded no argument list of its env or python3, so (u2) reads nothing"
 if grep -n s3cret "$argv1" >&2; then
   fail "instance 1 handed the database URL's password to a process's arguments (above, from its fake env and python3)"
 fi
-printf 'PASS: instance 1 started its broker and Dispatch with exactly the settings env -i gave them, and the database URL'"'"'s password in no process'"'"'s arguments\n'
+if grep -qF -- "$listener_token" "$argv1"; then
+  fail "instance 1 handed the listener's bearer token to a process's arguments: $(grep -F -- "$listener_token" "$argv1" | cut -c1-80 | head -n 1)"
+fi
+printf 'PASS: instance 1 started its broker, listener and Dispatch with exactly the settings env -i gave them, and neither the database URL'"'"'s password nor the listener'"'"'s token in any process'"'"'s arguments\n'
 
 assert_instance_ready 'instance 2' "$log2" "$psql_calls2" "$curl_calls2"
 work_dir2="$work_dir"
