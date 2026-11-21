@@ -22,7 +22,8 @@ function advancesSent(press: unknown): readonly string[] | undefined {
     : undefined;
 }
 
-/** Whether `a` and `b` hold the same members, each matched by `same`, in any order. */
+/** Whether `a` and `b`, lists that hold no member twice (a set's ids, a set's id and inheritance
+ *  pairs), hold the same members, each matched by `same`, in any order. */
 function sameMembers<T>(a: readonly T[], b: readonly T[], same: (x: T, y: T) => boolean): boolean {
   return a.length === b.length && a.every((x) => b.some((y) => same(x, y)));
 }
