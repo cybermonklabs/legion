@@ -74,7 +74,7 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 	} else {
 		fmt.Fprintln(stdout, "enter it on the Dispatch credential page")
 	}
-	backoff := 2 * time.Second
+	backoff := firstBackoff
 	for {
 		resp, err := helper.Call(sock, helper.Request{Op: "login-status"}, 10*time.Second)
 		if err != nil {

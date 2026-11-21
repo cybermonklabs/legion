@@ -14,7 +14,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 )
 
 func TestAConfigPathThatIsNotARegularFileIsRefused(t *testing.T) {
@@ -34,21 +33,15 @@ func TestAConfigPathThatIsNotARegularFileIsRefused(t *testing.T) {
 				t.Fatal(err)
 			}
 			// A FIFO with no writer holds an open for reading until one comes: should the
-			// read block, this test's cleanup is that writer, and the wait below fails it first.
+			// read block, this test's cleanup is that writer, and the shared wait below
+			// (returns, through testwait) fails it first.
 			t.Cleanup(func() {
 				if f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
 					f.Close()
 				}
 			})
 
-			done := make(chan error, 1)
-			go func() { done <- loadClientConfig() }()
-			var err error
-			select {
-			case err = <-done:
-			case <-time.After(5 * time.Second):
-				t.Fatalf("loadClientConfig did not return within 5s for %s at %s", name, path)
-			}
+			err := returns(t, "loadClientConfig's answer for "+name+" at "+path, loadClientConfig)
 			if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "is not a regular file") {
 				t.Fatalf("loadClientConfig = %v; want an error naming %s as not a regular file", err, path)
 			}

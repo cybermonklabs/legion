@@ -348,6 +348,22 @@ func runSecret(args ...string) (stdout, stderr string, code int) {
 	return out.String(), errOut.String(), code
 }
 
+// runSecretEnds is runSecret on a goroutine of its own (returns): a form that never ends fails t
+// naming its arguments, rather than holding the package until go test's own timeout. A row whose
+// verdict is what the form said, and not how long it took, guards its wait with it.
+func runSecretEnds(t *testing.T, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
+	type ran struct {
+		stdout, stderr string
+		code           int
+	}
+	got := returns(t, "the end of `secret "+strings.Join(args, " ")+"`", func() ran {
+		stdout, stderr, code := runSecret(args...)
+		return ran{stdout, stderr, code}
+	})
+	return got.stdout, got.stderr, got.code
+}
+
 // TestSecretFormsRefuseProfileFlag: --profile is gone from every secret form, on both backends.
 // A form given it is a usage error, before any broker call, naming the environment variables that
 // choose a credential instead - never a flag.

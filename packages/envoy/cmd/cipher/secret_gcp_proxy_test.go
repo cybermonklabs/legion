@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The one grant of this file: a Google login whose access token the proxy holds and whose
@@ -160,7 +161,7 @@ func TestGCPSecretListReachesSecretManagerThroughTheAirlockOverGRPC(t *testing.T
 	proxyURL := (&url.URL{Scheme: "http", Host: proxyListener.Addr().String(), User: url.UserPassword("agent-secrets", gcpAirlockPlaceholder)}).String()
 
 	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, time.Minute, time.Second))
 	defer cancel()
 	command := exec.CommandContext(ctx, binary, "secret", "list")
 	command.Env = append(os.Environ(),

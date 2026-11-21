@@ -24,8 +24,9 @@ import (
 
 // helperConnectPatience is how long cmdRegister retries connecting to a still-starting helper
 // before giving up (or, under --exec, warning and launching anyway) — the launch-ordering case
-// tmux-resurrect hits at boot.
-const helperConnectPatience = 10 * time.Second
+// tmux-resurrect hits at boot. Tests lengthen it, so a register that waited on it could only
+// answer once the test had ended.
+var helperConnectPatience = 10 * time.Second
 
 func cmdRegister(args []string, stdout, stderr io.Writer) int {
 	flags := newFlagSet("register", stderr)

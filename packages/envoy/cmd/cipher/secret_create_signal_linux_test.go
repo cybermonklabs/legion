@@ -232,15 +232,11 @@ func (p *createProcess) signal(sig syscall.Signal) {
 	}
 }
 
-// endedBy waits for the process and fails the test unless sig ended it, the create never having
-// returned, within the wait the test binary's own deadline leaves (testwait).
+// endedBy waits for the process and fails the test, killing the process, unless sig ended it, the
+// create never having returned, within the wait the test binary's own deadline leaves (testwait).
+// A row whose store call is held for an hour reads "at once" as ended by the signal before that
+// call's answer, which only the signal can bring about, never as a span.
 func (p *createProcess) endedBy(sig syscall.Signal) string {
-	p.t.Helper()
-	return p.endedByWithin(sig, testwait.Bounded(p.t, time.Minute, time.Second))
-}
-
-// endedByWithin is endedBy, failing the test, and killing the process, unless it ended within limit.
-func (p *createProcess) endedByWithin(sig syscall.Signal, limit time.Duration) string {
 	p.t.Helper()
 	waited := make(chan struct{})
 	go func() {
@@ -249,10 +245,10 @@ func (p *createProcess) endedByWithin(sig syscall.Signal, limit time.Duration) s
 	}()
 	select {
 	case <-waited:
-	case <-time.After(limit):
+	case <-time.After(testwait.Bounded(p.t, time.Minute, time.Second)):
 		_ = p.cmd.Process.Kill()
 		<-waited
-		p.t.Fatalf("the create had not ended %s on, output %q; want it ended by %s by then", limit, p.out.String(), sig)
+		p.t.Fatalf("the create had not ended, output %q; want it ended by %s", p.out.String(), sig)
 	}
 	out := p.out.String()
 	if ws := p.cmd.ProcessState.Sys().(syscall.WaitStatus); !ws.Signaled() || ws.Signal() != sig || strings.Contains(out, "RETURNED") {
@@ -276,14 +272,15 @@ func TestCreateSignalBeforeTheCreateAnswerDeletesTheEmptySecret(t *testing.T) {
 
 // A second signal while the first waits on a CreateSecret the store never answers ends the
 // process at once, naming the empty secret that may stay and the command that clears it. The
-// second is sent only once the process has received the first, so the two cannot merge.
+// second is sent only once the process has received the first, so the two cannot merge. The
+// call's deadline is a day, so nothing but the second signal can end the process in the test.
 func TestCreateSecondSignalBeforeTheCreateAnswerNamesWhatMayStay(t *testing.T) {
-	p := startCreate(t, helperCommand(), "AGENT_SECRETS_CREATE_HOLD=CreateSecret:1h")
+	p := startCreate(t, helperCommand(), "AGENT_SECRETS_CREATE_HOLD=CreateSecret:1h", "AGENT_SECRETS_CREATE_DEADLINE=24h")
 	p.waitFor("CREATED")
 	p.signal(syscall.SIGINT)
 	p.waitFor("SIGNALLED interrupt")
 	p.signal(syscall.SIGTERM)
-	out := p.endedByWithin(syscall.SIGTERM, 5*time.Second)
+	out := p.endedBy(syscall.SIGTERM)
 	if !strings.Contains(out, "a second signal") || !strings.Contains(out, clearEmptySecret) {
 		t.Fatalf("output %q; want the interrupted create's empty secret and its cleanup command", out)
 	}
@@ -437,7 +434,8 @@ func TestCreateSignalWaitsOnAnAddTheStoreNeverAnswersNoLongerThanItsDeadline(t *
 // holding the value, which `secret show` tells apart and gcloud clears; while the delete of the
 // empty secret is in flight, that empty secret may stay, which gcloud clears; on AWS, while the
 // one CreateSecret is in flight, the store may hold the secret with its value or nothing at all,
-// which `secret show` tells apart. The same signal twice and two different ones both do.
+// which `secret show` tells apart. The same signal twice and two different ones both do. Each
+// call's deadline is a day, so nothing but the second signal can end the process in the test.
 func TestCreateSecondSignalEndsAtOnceNamingWhatMayStay(t *testing.T) {
 	for _, row := range []struct {
 		name          string
@@ -458,7 +456,7 @@ func TestCreateSecondSignalEndsAtOnceNamingWhatMayStay(t *testing.T) {
 			[]string{"REREAD"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			p := startCreate(t, helperCommand(), row.env...)
+			p := startCreate(t, helperCommand(), append(row.env, "AGENT_SECRETS_CREATE_DEADLINE=24h")...)
 			p.waitFor("READING")
 			if row.piped {
 				_, _ = io.WriteString(p.stdin, "shh")
@@ -472,7 +470,7 @@ func TestCreateSecondSignalEndsAtOnceNamingWhatMayStay(t *testing.T) {
 				p.waitFor(row.hung)
 			}
 			p.signal(row.second)
-			out := p.endedByWithin(row.second, 5*time.Second)
+			out := p.endedBy(row.second)
 			for _, want := range row.want {
 				if !strings.Contains(out, want) {
 					t.Fatalf("output %q; want %q", out, want)

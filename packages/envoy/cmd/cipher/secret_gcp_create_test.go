@@ -613,24 +613,18 @@ func TestGCPSecretCreateValueReadEndsAtItsWindow(t *testing.T) {
 	secretStdin = blockedStdin{}
 	t.Cleanup(func() { secretStdin = restoreStdin })
 
-	done := make(chan struct {
+	// Nothing ever comes on the create's standard input, so the create ending at all says the
+	// window ended its read (returns).
+	type result struct {
 		stderr string
 		code   int
-	}, 1)
-	go func() {
+	}
+	got := returns(t, "the create's end at its value window", func() result {
 		_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "agent")
-		done <- struct {
-			stderr string
-			code   int
-		}{stderr, code}
-	}()
-	select {
-	case got := <-done:
-		if got.code != 1 || !strings.Contains(got.stderr, "300ms") || !strings.Contains(got.stderr, "agent-secrets secret create NEW_TEST") {
-			t.Fatalf("exit %d, stderr %q; want 1 naming the window and the command to run again", got.code, got.stderr)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the create was still reading its value 10s on, past its 300ms window")
+		return result{stderr, code}
+	})
+	if got.code != 1 || !strings.Contains(got.stderr, "300ms") || !strings.Contains(got.stderr, "agent-secrets secret create NEW_TEST") {
+		t.Fatalf("exit %d, stderr %q; want 1 naming the window and the command to run again", got.code, got.stderr)
 	}
 	requireNothingLeft(t, fake, broker, "NEW_TEST")
 }

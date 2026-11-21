@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestPromptJobBackgroundThenForegroundKeepsValueHidden(t *testing.T) {
@@ -244,13 +246,17 @@ func TestPromptJobInheritedIgnoredStopStaysIgnored(t *testing.T) {
 	s.noShellValue("head", "tail")
 }
 
+// A control byte inside a bracketed paste refuses the value, and the reader drains the paste
+// through its closing mark, its rest arriving in a later write while the reader waits for it with
+// the open paste's bound (requirePasteBound), so none of it is left for the shell or echoed.
 func TestPromptControlByteInsideBracketedPasteDrainsThroughEnd(t *testing.T) {
 	for _, control := range []string{"\x00", "\t", "\x01", "\x7f"} {
-		controller, terminal, got := typeAtPromptInWrites(t, 300*time.Millisecond,
+		controller, terminal, got, asked := typeAtPromptInWrites(t,
 			"\x1b[200~prefix"+control, "private-tail\n\x1b[201~")
 		if got.err == nil || !strings.Contains(got.err.Error(), "control byte") || got.line != nil {
 			t.Fatalf("control %q: got %q, %v", control, got.line, got.err)
 		}
+		requirePasteBound(t, asked)
 		if unread(t, terminal) != 0 || bytes.Contains(shown(t, controller), []byte("private-tail")) {
 			t.Fatal("paste tail leaked")
 		}
@@ -816,16 +822,12 @@ func TestPromptHangupRestoresAndAbortCannotDumpTheValue(t *testing.T) {
 					}
 				}
 			}()
-			exitWithin := 10 * time.Second
-			if sig == syscall.SIGABRT {
-				// Go's GOTRACEBACK=crash relays SIGQUIT between threads. A
-				// SIGQUIT subscriber can make that relay wait for its 10s
-				// watchdog before the runtime raises the fatal SIGABRT.
-				exitWithin = 30 * time.Second
-			}
+			// GOTRACEBACK=crash relays SIGQUIT between threads, and a SIGQUIT subscriber can make
+			// that relay wait for its 10s watchdog before the runtime raises the fatal SIGABRT, so
+			// the wait for the end is testwait's shared bound, past that watchdog.
 			select {
 			case <-done:
-			case <-time.After(exitWithin):
+			case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 				_ = controller.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 				state, _ := os.ReadFile(fmt.Sprintf("/proc/%d/status", cmd.Process.Pid))
 				t.Fatalf("signal did not end the prompt; process: %s; terminal: %q", state, <-output)

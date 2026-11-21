@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestLoginStatusFollowsTheCredentialTheHelperHolds: an approved machine login, then a re-login
@@ -71,7 +72,7 @@ func TestLoginStatusFollowsTheCredentialTheHelperHolds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrolled, err := helper.Call(sock, helper.Request{Op: "enroll-session-key", RuntimeID: "self-box-" + t.Name(), Thumbprint: thumbprint}, 10*time.Second)
+	enrolled, err := helper.Call(sock, helper.Request{Op: "enroll-session-key", RuntimeID: "self-box-" + t.Name(), Thumbprint: thumbprint}, testwait.Bounded(t, time.Minute, time.Second))
 	if err != nil || !enrolled.OK {
 		t.Fatalf("enroll-session-key with the approved login's credential: %+v %v", enrolled, err)
 	}
@@ -166,7 +167,7 @@ func machineLoginThen(t *testing.T, rig *ciphertest.Rig, binary, sock, action st
 
 	select {
 	case <-waited:
-	case <-time.After(30 * time.Second):
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 		_ = cmd.Process.Kill()
 		<-waited
 		t.Fatalf("machine login never read the %s decision; stderr %q", action, errOut.String())
@@ -195,7 +196,7 @@ func refuseTheHeldCredential(t *testing.T, rig *ciphertest.Rig, srv *helper.Serv
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp, err := helper.Call(sock, helper.Request{Op: "enroll-session-key", RuntimeID: "box-" + t.Name(), Thumbprint: thumbprint}, 10*time.Second); err != nil || resp.OK {
+	if resp, err := helper.Call(sock, helper.Request{Op: "enroll-session-key", RuntimeID: "box-" + t.Name(), Thumbprint: thumbprint}, testwait.Bounded(t, time.Minute, time.Second)); err != nil || resp.OK {
 		t.Fatalf("enroll-session-key with an expired credential: %+v %v; want the broker's refusal", resp, err)
 	}
 	if srv.Broker.HasCredential() {

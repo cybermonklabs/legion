@@ -178,7 +178,9 @@ func TestKeygenNamesKeyPemByItsFlagNeverItsPath(t *testing.T) {
 // ${XDG_STATE_HOME:-$HOME/.local/state}/agent-secrets/machine, holds the machine session's key, so
 // a key there that cannot be read or holds no key, and a key that cannot be written there, are
 // refused naming key.pem in the machine cache, never its path. A cache that holds a session still
-// signs, and one that can be written still keeps the key (the controls).
+// signs, asking neither a broker nor a metadata server that stand by, and one that can be written
+// still keeps the key (the controls). An empty cache asks them (the control that the count sees a
+// call).
 func TestTheMachineCacheKeyIsNamedByTheCacheNeverItsPath(t *testing.T) {
 	const secret = "hunter2pw-statehome-9d61c2"
 	useCache := func(t *testing.T) string {
@@ -220,6 +222,16 @@ func TestTheMachineCacheKeyIsNamedByTheCacheNeverItsPath(t *testing.T) {
 		}
 		wantNamedNotPrinted(t, "the error", err.Error(), []string{"write key.pem in the machine cache", "rename: "}, []string{secret}...)
 	})
+	// signsAsking signs with what the machine cache holds, a broker naming an exchange audience and
+	// a metadata server standing by, and answers the sign's outcome and how many calls the two saw.
+	signsAsking := func(t *testing.T) (stdout, stderr string, code, calls int) {
+		t.Helper()
+		broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
+		t.Setenv("AGENT_SECRETS_URL", broker.URL())
+		metadata := startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
+		stdout, stderr, code = runIn(signArgs...)
+		return stdout, stderr, code, broker.callCount() + metadata.totalRequests()
+	}
 	t.Run("control: a cache that holds a session", func(t *testing.T) {
 		useCache(t)
 		key, err := proof.NewKey()
@@ -229,14 +241,20 @@ func TestTheMachineCacheKeyIsNamedByTheCacheNeverItsPath(t *testing.T) {
 		if err := writeMachineCache(machineCacheDir(), key, "enr-machine"); err != nil {
 			t.Fatal(err)
 		}
-		started := time.Now()
-		stdout, stderr, code := runIn(signArgs...)
+		stdout, stderr, code, calls := signsAsking(t)
 		if code != 0 || strings.Count(strings.TrimSpace(stdout), ".") != 2 {
 			t.Fatalf("exit %d, stdout %q, stderr %q; want 0 and a compact JWS", code, stdout, stderr)
 		}
-		// A cached session signs with no network call, so the sign is quick.
-		if took := time.Since(started); took > 10*time.Second {
-			t.Fatalf("the sign took %s, more than the 10 s bound a cached session's sign, which makes no network call, is held to", took)
+		// A cached session signs with no network call: neither the broker nor the metadata
+		// server is asked anything, however long the sign took.
+		if calls != 0 {
+			t.Fatalf("the sign with a cached session made %d calls to the broker and the metadata server; want none", calls)
+		}
+	})
+	t.Run("control: an empty cache asks them", func(t *testing.T) {
+		useCache(t)
+		if _, stderr, _, calls := signsAsking(t); calls == 0 {
+			t.Fatalf("a sign with nothing in the cache asked neither the broker nor the metadata server (stderr %q), so the count above could not see a call", stderr)
 		}
 	})
 }

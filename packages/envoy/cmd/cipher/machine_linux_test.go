@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // tableRows splits a table the CLI printed into its header's columns and each row's fields.
@@ -52,12 +53,8 @@ func loggedInElsewhere(t *testing.T, rig *ciphertest.Rig, host string) (*helper.
 		t.Fatalf("log %s in: %v", host, err)
 	}
 	id := rig.DecideMachineLogin(t, code, true)
-	deadline := time.Now().Add(20 * time.Second)
-	for !b.HasCredential() {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s's login never issued: %+v", host, b.LoginStatus())
-		}
-		time.Sleep(50 * time.Millisecond)
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, b.HasCredential) {
+		t.Fatalf("%s's login never issued: %+v", host, b.LoginStatus())
 	}
 	return b, id
 }
@@ -161,7 +158,7 @@ func TestGrantListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimeID := "grant-box-" + t.Name()
-	enrolled, err := helper.Call(sock, helper.Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: thumbprint}, 10*time.Second)
+	enrolled, err := helper.Call(sock, helper.Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: thumbprint}, testwait.Bounded(t, time.Minute, time.Second))
 	if err != nil || !enrolled.OK {
 		t.Fatalf("enroll-session-key: %+v %v", enrolled, err)
 	}
@@ -283,9 +280,9 @@ type grantSession struct {
 }
 
 // startGrantSession launches `register --exec -- <this test binary> -test.run TestGrantSessionHelper`
-// against the helper at sock and the broker at url, waiting for the session to enrol, so the
-// helper's sign op answers OK for every command the session runs (the in-session identity R4's
-// chain signs with).
+// against the helper at sock and the broker at url, waiting for the session to enrol (enrollWaitArg),
+// so the helper's sign op answers OK for every command the session runs (the in-session identity
+// R4's chain signs with).
 func startGrantSession(t *testing.T, binary, sock, url string) *grantSession {
 	t.Helper()
 	self, err := os.Executable()
@@ -297,7 +294,7 @@ func startGrantSession(t *testing.T, binary, sock, url string) *grantSession {
 	if err := os.WriteFile(results, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(binary, "register", "--exec", "--wait", "5", "--", self, "-test.run", "^TestGrantSessionHelper$")
+	cmd := exec.Command(binary, "register", "--exec", "--wait", enrollWaitArg(t), "--", self, "-test.run", "^TestGrantSessionHelper$")
 	cmd.Env = append(os.Environ(),
 		"AGENT_SECRETS_GRANT_HELPER=1",
 		"AGENT_SECRETS_GRANT_BINARY="+binary,

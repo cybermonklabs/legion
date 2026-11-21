@@ -34,6 +34,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // unknownAuthority is crypto/x509's words for a certificate no root this machine trusts signed,
@@ -201,12 +202,12 @@ func TestASecretManagerCallThatDidNotReachItSaysSo(t *testing.T) {
 // Unavailable, through the interceptor every Secret Manager call goes through, is tried once where
 // the TLS handshake failed with unknownAuthority, since gax reads that phrase in the error the
 // interceptor words. Control: a refused connection, also Unavailable, is tried again. No row reads
-// the clock: the call's deadline is a minute, far past gax's first backoff, and a second attempt
-// ends the call (its context is cancelled once that attempt returns), so a retry is counted, not
-// timed, and a row ends as soon as it has its answer.
+// the clock: the call's deadline is testwait's shared bound, far past gax's first backoff, and a
+// second attempt ends the call (its context is cancelled once that attempt returns), so a retry is
+// counted, not timed, and a row ends as soon as it has its answer.
 func TestGaxStillStopsRetryingACertificateNoRootHereTrusts(t *testing.T) {
 	attempts := func(t *testing.T, to unreachedTarget) (int32, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, time.Minute, time.Second))
 		defer cancel()
 		var tries atomic.Int32
 		count := func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {

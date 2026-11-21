@@ -6,10 +6,11 @@
 // (runGcloud), a child that holds gcloud's output among them.
 // These tests read /proc to see a stub gcloud's child running while the call runs and gone once
 // the call has ended, through readProcStat, so they build where it does: Linux on amd64 or arm64.
+// No call here ends before its child has been seen running: each deadline is one the test passes
+// once it has seen the child (cuedDeadline), and each other end waits on the test's cue too.
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -29,10 +31,44 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// gcloudTestDeadline is the deadline on each store call (storeCallDeadline) these tests give a
-// gcloud call: room for the stub gcloud's child to start and be seen running before it. A machine
-// too loaded for that fails the test as unable to tell (callEnds), never passes it.
-const gcloudTestDeadline = time.Second
+// cuedDeadline is a context whose deadline passes when the test passes it, not at a time: the
+// deadline of a gcloud call these tests give, passed once the stub gcloud's child has been seen
+// running (callEnds), so the child has started before the deadline however loaded the machine.
+// A call under it reads its end as a deadline (context.DeadlineExceeded), as it reads its own.
+type cuedDeadline struct {
+	context.Context
+	done chan struct{}
+	pass func()
+}
+
+func newCuedDeadline() *cuedDeadline {
+	d := &cuedDeadline{Context: context.Background(), done: make(chan struct{})}
+	d.pass = sync.OnceFunc(func() { close(d.done) })
+	return d
+}
+
+func (d *cuedDeadline) Done() <-chan struct{} { return d.done }
+
+func (d *cuedDeadline) Err() error {
+	select {
+	case <-d.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+// awaitCue lengthens the deadline on each store call (storeCallDeadline) and gcloud's settings
+// read (gcloudSettingsDeadline) to a day for the rest of t, and answers the deadline the test
+// passes instead, so only the test's cue ends a call these tests give.
+func awaitCue(t *testing.T) *cuedDeadline {
+	t.Helper()
+	useStoreCallDeadline(t, 24*time.Hour)
+	restore := gcloudSettingsDeadline
+	gcloudSettingsDeadline = 24 * time.Hour
+	t.Cleanup(func() { gcloudSettingsDeadline = restore })
+	return newCuedDeadline()
+}
 
 // gcloudChildFile is the variable that names the file the stub gcloud's child writes its pid to
 // (useGcloudWhoseChildHoldsItsOutput). The child inherits it, so it also marks the child's
@@ -80,7 +116,7 @@ func gcloudStubIn(t *testing.T, dir, last string) (gcloudCommand, gcloudChild) {
 func (c gcloudChild) cleanUp(t *testing.T) {
 	t.Helper()
 	pid := c.pid()
-	if pid == 0 && !testwait.Holds(2*time.Second, testwait.Poll, func() bool { pid = c.pid(); return pid != 0 }) {
+	if pid == 0 && !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool { pid = c.pid(); return pid != 0 }) {
 		t.Errorf("the stub gcloud's child never named itself in %s: where it started, it may still run", c.pidFile)
 		return
 	}
@@ -119,11 +155,12 @@ func (c gcloudChild) runs(pid int) (bool, error) {
 // ours reports whether pid's environment holds this child's pid file, so that no process the
 // kernel has given the pid since is killed for the child. A process that is exiting can refuse a
 // read of its environment for a moment (permission denied, seen once in twenty runs), so ours
-// asks again for up to two seconds before it answers that error.
-func (c gcloudChild) ours(pid int) (bool, error) {
+// asks again, within testwait's shared bound, before it answers that error.
+func (c gcloudChild) ours(t *testing.T, pid int) (bool, error) {
+	t.Helper()
 	var answer bool
 	var readErr error
-	testwait.Holds(2*time.Second, testwait.Poll, func() bool {
+	testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
 		environ, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
 		switch {
 		case errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH):
@@ -153,7 +190,7 @@ func (c gcloudChild) kill(t *testing.T, pid int) {
 	running, err := c.runs(pid)
 	if err == nil && running {
 		var mine bool
-		if mine, err = c.ours(pid); err == nil && mine {
+		if mine, err = c.ours(t, pid); err == nil && mine {
 			if err := process.Signal(syscall.SIGKILL); err != nil && !errors.Is(err, os.ErrProcessDone) {
 				t.Errorf("kill the stub gcloud's child, pid %d: %v", pid, err)
 			}
@@ -164,13 +201,16 @@ func (c gcloudChild) kill(t *testing.T, pid int) {
 	}
 }
 
-// callEnds is call's error. It fails t where call has not returned within 10s, ten times the
-// deadline it runs under, and where the child was not seen running while call ran: then /proc
-// does not show this test the child, and its absence afterwards would prove nothing. Where it
-// fails t before call has returned, t ends by killing the child (cleanUp), which lets a call held
-// by the child's open output return, and then waits up to 10s for call, failing where it has not
-// returned by then.
-func (c gcloudChild) callEnds(t *testing.T, what string, call func() error) error {
+// callEnds is call's error. call runs until cue, which callEnds calls once it has seen the child
+// running: the deadline the test passes (cuedDeadline), or the go-ahead a stub gcloud waits on
+// before it exits. So the child has started, and been seen running, before anything can end the
+// call, however loaded the machine. A call that ended before the child was seen fails t: then
+// /proc does not show this test the child, and its absence afterwards would prove nothing. Where
+// t fails before call has returned, t ends by cueing the end and killing the child (cleanUp),
+// which lets a call held by the child's open output return, and then waits for call within
+// testwait's shared bound, failing where it has not returned by then. A call that never returns
+// fails t at that bound too.
+func (c gcloudChild) callEnds(t *testing.T, what string, cue func(), call func() error) error {
 	t.Helper()
 	done, finished := make(chan error, 1), make(chan struct{})
 	go func() {
@@ -183,14 +223,15 @@ func (c gcloudChild) callEnds(t *testing.T, what string, call func() error) erro
 			return
 		default:
 		}
+		cue()
 		c.cleanUp(t)
 		select {
 		case <-finished:
-		case <-time.After(10 * time.Second):
-			t.Errorf("%s was still waiting on gcloud 10s after its test ended", what)
+		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+			t.Errorf("%s was still waiting on gcloud after its test ended", what)
 		}
 	})
-	giveUp := time.After(10 * time.Second)
+	giveUp := time.After(testwait.Bounded(t, time.Minute, time.Second))
 	poll := time.NewTicker(testwait.Poll)
 	defer poll.Stop()
 	seen := false
@@ -198,11 +239,11 @@ func (c gcloudChild) callEnds(t *testing.T, what string, call func() error) erro
 		select {
 		case err := <-done:
 			if !seen {
-				t.Fatalf("the stub gcloud's child was never seen running while %s ran, so this run cannot say whether the kill at the deadline reaches it", what)
+				t.Fatalf("the stub gcloud's child was never seen running while %s ran, so this run cannot say whether the kill at its end reaches it", what)
 			}
 			return err
 		case <-giveUp:
-			t.Fatalf("%s was still waiting on gcloud 10s on, past the %s deadline", what, gcloudTestDeadline)
+			t.Fatalf("%s was still waiting on gcloud (child seen running: %t)", what, seen)
 			return nil
 		case <-poll.C:
 			if pid := c.pid(); !seen && pid != 0 {
@@ -210,20 +251,22 @@ func (c gcloudChild) callEnds(t *testing.T, what string, call func() error) erro
 				if err != nil {
 					t.Fatalf("reading the stub gcloud's child, pid %d: %v", pid, err)
 				}
-				seen = running
+				if seen = running; seen {
+					cue()
+				}
 			}
 		}
 	}
 }
 
-// requireGone fails t unless the child, seen running while the call ran (callEnds), is gone
-// within two seconds of the call's end: the kill at the deadline reached it, not the stub gcloud
-// alone.
+// requireGone fails t unless the child, seen running while the call ran (callEnds), is gone once
+// the call has ended, within testwait's shared bound: the kill at the call's end reached it, not
+// the stub gcloud alone.
 func (c gcloudChild) requireGone(t *testing.T) {
 	t.Helper()
 	pid := c.pid()
 	var readErr error
-	gone := testwait.Holds(2*time.Second, testwait.Poll, func() bool {
+	gone := testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
 		running, err := c.runs(pid)
 		readErr = err
 		return err != nil || !running
@@ -232,26 +275,27 @@ func (c gcloudChild) requireGone(t *testing.T) {
 		t.Fatalf("reading the stub gcloud's child, pid %d: %v", pid, readErr)
 	}
 	if !gone {
-		t.Fatalf("the stub gcloud's child, pid %d, still runs 2s after the call that started it ended", pid)
+		t.Fatalf("the stub gcloud's child, pid %d, still runs after the call that started it ended", pid)
 	}
 }
 
 // TestGcloudTokenRefreshAtItsDeadlineKillsGcloudsChild: a refresh of an expired gcloud token
 // (gcloudToken.Token, `gcloud auth print-access-token`) that gcloud never answers ends at the
 // deadline on each store call (storeCallDeadline), naming the account and the deadline, and the
-// child that held gcloud's output is gone with it, not left running. The deadline and its error
-// alone, on every platform, are TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline's.
+// child that held gcloud's output is gone with it, not left running. The deadline passes once the
+// child runs (awaitCue). The deadline's own timer and its error alone, on every platform, are
+// TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline's.
 func TestGcloudTokenRefreshAtItsDeadlineKillsGcloudsChild(t *testing.T) {
-	useStoreCallDeadline(t, gcloudTestDeadline)
+	deadline := awaitCue(t)
 	gcloud, child := useGcloudWhoseChildHoldsItsOutput(t)
 	expired := &oauth2.Token{AccessToken: "old", TokenType: "Bearer", Expiry: time.Now().Add(-time.Minute)}
-	source := oauth2.ReuseTokenSource(expired, gcloudToken{ctx: context.Background(), gcloud: gcloud, account: "ada@example.com"})
-	err := child.callEnds(t, "the refresh of an expired token", func() error {
+	source := oauth2.ReuseTokenSource(expired, gcloudToken{ctx: deadline, gcloud: gcloud, account: "ada@example.com"})
+	err := child.callEnds(t, "the refresh of an expired token", deadline.pass, func() error {
 		_, err := source.Token()
 		return err
 	})
-	if err == nil || !strings.Contains(err.Error(), "ada@example.com") || !strings.Contains(err.Error(), "did not answer within 1s") {
-		t.Fatalf("Token() = %v; want a failure naming the account and the 1s deadline", err)
+	if want := "did not answer within " + storeCallDeadlineText(); err == nil || !strings.Contains(err.Error(), "ada@example.com") || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Token() = %v; want a failure naming the account and %q", err, want)
 	}
 	child.requireGone(t)
 }
@@ -259,15 +303,16 @@ func TestGcloudTokenRefreshAtItsDeadlineKillsGcloudsChild(t *testing.T) {
 // TestGcloudLoginListAtItsDeadlineKillsGcloudsChild: `gcloud auth list` (gcloudLogins) runs under
 // storeCallDeadline as the token's refresh does, so a gcloud that never answers ends at that
 // deadline, naming it, and the child that held gcloud's output is gone with it, not left running.
+// The deadline passes once the child runs (awaitCue).
 func TestGcloudLoginListAtItsDeadlineKillsGcloudsChild(t *testing.T) {
-	useStoreCallDeadline(t, gcloudTestDeadline)
+	deadline := awaitCue(t)
 	gcloud, child := useGcloudWhoseChildHoldsItsOutput(t)
-	err := child.callEnds(t, "`gcloud auth list`", func() error {
-		_, _, err := gcloudLogins(context.Background(), gcloud)
+	err := child.callEnds(t, "`gcloud auth list`", deadline.pass, func() error {
+		_, _, err := gcloudLogins(deadline, gcloud)
 		return err
 	})
-	if err == nil || !strings.Contains(err.Error(), "`gcloud auth list` did not answer within 1s") {
-		t.Fatalf("gcloudLogins() = %v; want a failure naming the 1s deadline", err)
+	if want := "`gcloud auth list` did not answer within " + storeCallDeadlineText(); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("gcloudLogins() = %v; want a failure naming %q", err, want)
 	}
 	child.requireGone(t)
 }
@@ -276,13 +321,14 @@ func TestGcloudLoginListAtItsDeadlineKillsGcloudsChild(t *testing.T) {
 // signals: `secret list` against a fake broker serving the GCP store, with no other source of a
 // Google credential, so its sign-in runs `gcloud auth list` through the stub gcloud of
 // gcloudStubIn, written beside the pid file AGENT_SECRETS_GCLOUD_SIGNAL_HELPER names, which never
-// answers. The deadline on each store call stays 60s, so the signal comes while the call runs. It
-// prints RETURNED <exit code> should the form return.
+// answers. The deadline on each store call is a day, so only the signal ends the call, whenever it
+// comes. It prints RETURNED <exit code> should the form return.
 func TestGcloudSignInSignalHelper(t *testing.T) {
 	pidFile := os.Getenv("AGENT_SECRETS_GCLOUD_SIGNAL_HELPER")
 	if pidFile == "" {
 		t.Skip("subprocess helper")
 	}
+	useStoreCallDeadline(t, 24*time.Hour)
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
 	useNoADC(t)
@@ -297,14 +343,15 @@ func TestGcloudSignInSignalHelper(t *testing.T) {
 // TestGcloudSignInEndedByASignalKillsGcloudsChild: a sign-in whose gcloud never answers, ended by
 // an interrupt sent to agent-secrets alone (gcloud, in a group of its own, gets no signal sent to
 // agent-secrets' group, a terminal's Ctrl-C included), ends as the interrupt ends it - by SIGINT,
-// a shell's status 130 - and the child that held gcloud's output is gone with it.
+// a shell's status 130 - and the child that held gcloud's output is gone with it. Each wait here
+// waits on its fact (the child running, the helper's end) within testwait's shared bound.
 func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 	dir := t.TempDir()
 	child := gcloudChild{pidFile: filepath.Join(dir, "child.pid")}
 	t.Cleanup(func() { child.cleanUp(t) })
 	helper := exec.Command(os.Args[0], "-test.run=^TestGcloudSignInSignalHelper$", "-test.count=1")
 	helper.Env = append(os.Environ(), "AGENT_SECRETS_GCLOUD_SIGNAL_HELPER="+child.pidFile)
-	var out bytes.Buffer
+	var out syncWriter
 	helper.Stdout, helper.Stderr = &out, &out
 	if err := helper.Start(); err != nil {
 		t.Fatal(err)
@@ -314,19 +361,19 @@ func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 		_ = helper.Wait()
 		close(waited)
 	}()
-	ended := func(within time.Duration) bool {
+	ended := func() bool {
 		select {
 		case <-waited:
 			return true
-		case <-time.After(within):
+		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 			return false
 		}
 	}
 	t.Cleanup(func() {
 		_ = helper.Process.Kill()
-		ended(10 * time.Second)
+		ended()
 	})
-	seen := testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
+	seen := testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
 		pid := child.pid()
 		if pid == 0 {
 			return false
@@ -336,16 +383,16 @@ func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 	})
 	if !seen {
 		_ = helper.Process.Kill()
-		ended(10 * time.Second)
+		ended()
 		t.Fatalf("the stub gcloud's child was never seen running; the helper said %q", out.String())
 	}
 	if err := helper.Process.Signal(syscall.SIGINT); err != nil {
 		t.Fatal(err)
 	}
-	if !ended(10 * time.Second) {
+	if !ended() {
 		_ = helper.Process.Kill()
-		ended(10 * time.Second)
-		t.Fatalf("agent-secrets was still running 10s after its interrupt; it said %q", out.String())
+		ended()
+		t.Fatalf("agent-secrets was still running after its interrupt; it said %q", out.String())
 	}
 	status := helper.ProcessState.Sys().(syscall.WaitStatus)
 	if !(status.Signaled() && status.Signal() == syscall.SIGINT) && status.ExitStatus() != 130 {
@@ -356,10 +403,18 @@ func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 
 // TestGcloudThatExitsLeavingAChildTakesTheChildWithIt: a gcloud that exits by itself and leaves
 // a child holding its output, which gcloudWaitDelay stops the wait for but does not kill, has
-// that child killed once runGcloud has waited for gcloud, whatever the call's outcome.
+// that child killed once runGcloud has waited for gcloud, whatever the call's outcome. The stub
+// exits only once the test has seen its child running (callEnds' cue, a file it waits for).
 func TestGcloudThatExitsLeavingAChildTakesTheChildWithIt(t *testing.T) {
-	gcloud, child := gcloudStubIn(t, t.TempDir(), "exit 0")
-	_ = child.callEnds(t, "a gcloud that exited leaving its child", func() error {
+	dir := t.TempDir()
+	goAhead := filepath.Join(dir, "go")
+	gcloud, child := gcloudStubIn(t, dir, "until [ -e "+shellWord(goAhead)+" ]; do sleep 0.01; done; exit 0")
+	cue := sync.OnceFunc(func() {
+		if err := os.WriteFile(goAhead, nil, 0o600); err != nil {
+			t.Error(err)
+		}
+	})
+	_ = child.callEnds(t, "a gcloud that exited leaving its child", cue, func() error {
 		_, err := runGcloud(context.Background(), gcloud, "auth", "list", "--format=json")
 		return err
 	})
@@ -367,13 +422,14 @@ func TestGcloudThatExitsLeavingAChildTakesTheChildWithIt(t *testing.T) {
 }
 
 // TestGcloudSettingsReadAtItsDeadlineKillsGcloudsChild: `gcloud config list`
-// (readGcloudSettings) runs under gcloudSettingsDeadline, 5s, so a gcloud that never answers
-// ends at that deadline as a failed read, and the child that held gcloud's output is gone with
-// it, not left running.
+// (readGcloudSettings) runs under gcloudSettingsDeadline, so a gcloud that never answers ends at
+// that deadline as a failed read, and the child that held gcloud's output is gone with it, not
+// left running. The deadline passes once the child runs (awaitCue).
 func TestGcloudSettingsReadAtItsDeadlineKillsGcloudsChild(t *testing.T) {
+	deadline := awaitCue(t)
 	gcloud, child := useGcloudWhoseChildHoldsItsOutput(t)
-	err := child.callEnds(t, "`gcloud config list`", func() error {
-		_, err := readGcloudSettings(context.Background(), gcloud)
+	err := child.callEnds(t, "`gcloud config list`", deadline.pass, func() error {
+		_, err := readGcloudSettings(deadline, gcloud)
 		return err
 	})
 	if err == nil || !strings.Contains(err.Error(), "`gcloud config list` failed") {

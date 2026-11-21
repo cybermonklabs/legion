@@ -271,8 +271,8 @@ type gcloudSettings struct {
 // gcloudSettingsDeadline bounds readGcloudSettings. The read only names whom a login's token acts
 // as, which R2 makes best effort, so a gcloud that has not answered by then leaves the principal
 // unknown (unreadPrincipal) and the command goes on; each gcloud run starts a Python interpreter,
-// which on a loaded machine takes seconds, so the bound leaves room for that.
-const gcloudSettingsDeadline = 5 * time.Second
+// which on a loaded machine takes seconds, so the bound leaves room for that. Tests lengthen it.
+var gcloudSettingsDeadline = 5 * time.Second
 
 // readGcloudSettings runs `gcloud config list` under gcloudSettingsDeadline. Its error is never
 // the command's (signInWithGcloud).

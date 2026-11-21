@@ -26,6 +26,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // peerRequest is one connection fakeHelperWithPids answered: the pid the kernel names for its
@@ -92,7 +93,7 @@ func TestRegisterExecStillPinsTheReplacedProcess(t *testing.T) {
 		if strings.Contains(seen.line, `"root_pid"`) || strings.Contains(seen.line, `"attach"`) {
 			t.Fatalf("register --exec sent %s; want neither root_pid nor attach", strings.TrimSpace(seen.line))
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 		t.Fatal("the helper saw no register")
 	}
 }
@@ -115,11 +116,19 @@ func serveRealHelper(t *testing.T, brokerURL, operator string) (*helper.Server, 
 
 func helperSessions(t *testing.T, sock string) []helper.SessionInfo {
 	t.Helper()
-	resp, err := helper.Call(sock, helper.Request{Op: "sessions"}, 5*time.Second)
+	resp, err := helper.Call(sock, helper.Request{Op: "sessions"}, testwait.Bounded(t, time.Minute, time.Second))
 	if err != nil || !resp.OK {
 		t.Fatalf("sessions: %+v %v", resp, err)
 	}
 	return resp.Sessions
+}
+
+// enrollWaitArg is a `register --wait` that waits on the enrollment itself rather than on a span
+// of its own: the seconds of testwait's shared bound, so a register on a loaded machine answers
+// once its helper has enrolled it, and one whose enrollment never comes answers "not enrolled
+// yet" at that bound.
+func enrollWaitArg(t *testing.T) string {
+	return strconv.Itoa(int(testwait.Bounded(t, time.Minute, time.Second) / time.Second))
 }
 
 // TestIdentityAsksARealHelperWithoutRegistering runs identity against the real helper from a
@@ -157,9 +166,10 @@ type launcherReport struct {
 
 // TestRegisterLauncherHelper is the session launcher the test below runs: this same test binary,
 // started through a symlink named `omp`, so the kernel's comm for it is `omp` exactly as a real
-// session launcher's is, and no session registered it. It runs `register --session-id` and then
-// `identity` as its own children, reports both, and stays alive until its parent closes its
-// stdin, so the parent can read the helper's sessions while the launcher is still there.
+// session launcher's is, and no session registered it. It runs `register --session-id`, waiting
+// AGENT_SECRETS_LAUNCHER_WAIT seconds, and then `identity` as its own children, reports both, and
+// stays alive until its parent closes its stdin, so the parent can read the helper's sessions
+// while the launcher is still there.
 func TestRegisterLauncherHelper(t *testing.T) {
 	if os.Getenv("AGENT_SECRETS_LAUNCHER_HELPER") == "" {
 		t.Skip("subprocess helper")
@@ -174,7 +184,7 @@ func TestRegisterLauncherHelper(t *testing.T) {
 	}
 	report := launcherReport{PID: os.Getpid()}
 	report.RegisterCode, report.RegisterOut, report.RegisterErr =
-		run("register", "--session-id", os.Getenv("AGENT_SECRETS_LAUNCHER_SESSION"), "--wait", "5")
+		run("register", "--session-id", os.Getenv("AGENT_SECRETS_LAUNCHER_SESSION"), "--wait", os.Getenv("AGENT_SECRETS_LAUNCHER_WAIT"))
 	report.IdentityCode, _, report.IdentityErr = run("identity")
 	line, err := json.Marshal(report)
 	if err != nil {
@@ -210,6 +220,7 @@ func TestRegisterSessionIDInsideAnUnregisteredOmpAttachesTheOmpTree(t *testing.T
 		"AGENT_SECRETS_LAUNCHER_HELPER=1",
 		"AGENT_SECRETS_LAUNCHER_BINARY="+binary,
 		"AGENT_SECRETS_LAUNCHER_SESSION=s-3890",
+		"AGENT_SECRETS_LAUNCHER_WAIT="+enrollWaitArg(t),
 		"AGENT_SECRETS_HELPER_SOCK="+sock,
 		"AGENT_SECRETS_URL="+rig.URL,
 		"AGENT_SECRETS_KEY_DIR=",
@@ -254,7 +265,7 @@ func TestRegisterSessionIDInsideAnUnregisteredOmpAttachesTheOmpTree(t *testing.T
 	var report launcherReport
 	select {
 	case report = <-reports:
-	case <-time.After(60 * time.Second):
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 		t.Fatalf("the launcher never reported; stderr %q", stderr.String())
 	}
 
@@ -311,7 +322,7 @@ func TestRegisterSessionIDInsideAnExecSessionWithNoOmpNamesIt(t *testing.T) {
 	}
 	code, stdout, stderr := runWithNoLauncherAbove(t, binary,
 		[]string{"AGENT_SECRETS_HELPER_SOCK=" + sock, "AGENT_SECRETS_URL=" + rig.URL, "AGENT_SECRETS_KEY_DIR=", "HOME=" + t.TempDir(), "XDG_RUNTIME_DIR=" + t.TempDir()},
-		"register", "--exec", "--", "sh", "-c", `"$0" register --session-id s-exec --wait 5 || exit $?; "$0" identity >/dev/null || exit 10`, binary)
+		"register", "--exec", "--", "sh", "-c", `"$0" register --session-id s-exec --wait `+enrollWaitArg(t)+` || exit $?; "$0" identity >/dev/null || exit 10`, binary)
 	if code != 0 || !strings.HasPrefix(stdout, "session-s-exec\t") || !strings.HasSuffix(strings.TrimSpace(stdout), "enrolled") {
 		t.Fatalf("register --session-id inside an --exec session with no omp: exit %d (10: identity refused), stdout %q, stderr %q; want 0 and session-s-exec enrolled", code, stdout, stderr)
 	}
@@ -523,7 +534,7 @@ func TestRegisterSendsTheNearestLauncherAsRoot(t *testing.T) {
 		if req.Op != "register" || !req.Attach || req.RootPID != launcher {
 			t.Fatalf("the request the helper saw: %+v; want register, attach, root_pid %d", req, launcher)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 		t.Fatal("the fake helper saw no request")
 	}
 	wire, err := json.Marshal(helper.Request{Op: "register", Attach: true, RootPID: 4242})
@@ -551,7 +562,7 @@ func TestRegisterWithNoLauncherStillAsksTheHelper(t *testing.T) {
 		if req.Op != "register" || !req.Attach || req.RootPID != 0 {
 			t.Fatalf("the request the helper saw: %+v; want register, attach, no root_pid", req)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 		t.Fatal("the fake helper saw no request")
 	}
 }
@@ -657,7 +668,7 @@ func TestRegisterFindsTheHelperOnItsDefaultSocket(t *testing.T) {
 		if req.Op != "register" {
 			t.Fatalf("request sent to the default socket: %+v", req)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 		t.Fatal("the helper on the default socket never saw a request")
 	}
 }

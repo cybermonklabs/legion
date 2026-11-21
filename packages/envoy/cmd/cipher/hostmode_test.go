@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestBuildSignerSelectsMode covers the Signer abstraction's mode selection: file mode when
@@ -302,7 +303,7 @@ func TestHelperSignerSignsRequestObjects(t *testing.T) {
 		if req.Op != "sign-request" || !reflect.DeepEqual(req.Secrets, []string{"DEEL_API_KEY", "OTHER_KEY"}) || req.Reason != "why" || req.LifetimeSeconds == nil || *req.LifetimeSeconds != lifetime {
 			t.Fatalf("request sent to the helper: %+v", req)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 		t.Fatal("the fake never saw a request")
 	}
 
@@ -316,19 +317,20 @@ func TestHelperSignerSignsRequestObjects(t *testing.T) {
 // TestRegisterRefusesWithNoHelperSocket pins the agent box's answer: with
 // AGENT_SECRETS_HELPER_SOCK unset and no socket at the default path (a box's runtime dir holds its
 // key dir, never a helper), register is a usage error at once, naming the variable and the path,
-// rather than waiting out the connect patience for a helper that is not there.
+// rather than waiting out the connect patience for a helper that is not there. The patience is a
+// day here, so a register that dialled before it refused could only answer once it ran out: the
+// refusal arriving at all (returns) is the order the row reads, whatever the machine's load.
 func TestRegisterRefusesWithNoHelperSocket(t *testing.T) {
 	runtimeDir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
+	restore := helperConnectPatience
+	helperConnectPatience = 24 * time.Hour
+	t.Cleanup(func() { helperConnectPatience = restore })
 	var stdout, stderr bytes.Buffer
-	start := time.Now()
-	code := cmdRegister(nil, &stdout, &stderr)
+	code := returns(t, "register's refusal, which waits on no helper", func() int { return cmdRegister(nil, &stdout, &stderr) })
 	if code != exitUsageError {
 		t.Fatalf("register with no helper socket: exit %d, want %d; stderr %q", code, exitUsageError, stderr.String())
-	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("register waited %s for a helper that is not there", elapsed)
 	}
 	sock := filepath.Join(runtimeDir, "agent-secrets", "helper.sock")
 	if msg := stderr.String(); !strings.Contains(msg, "AGENT_SECRETS_HELPER_SOCK is unset") || !strings.Contains(msg, sock) ||
@@ -529,6 +531,9 @@ func TestSignEnrollmentRefusedInHelperMode(t *testing.T) {
 // whose stdout is the caller's.
 // Every case runs twice: once with the paths named by AGENT_SECRETS_KEY_DIR and
 // AGENT_SECRETS_HELPER_SOCK, once with both unset and the files at the $XDG_RUNTIME_DIR defaults.
+// No row reads how long identity took past what identity's own clock decides: a silent helper is
+// given up on no sooner than identityDeadline, and every row must answer at all (returns), which a
+// row that waited on anything else could not, since its enrollment wait is a day (identityPaths).
 func TestIdentity(t *testing.T) {
 	for _, mode := range []string{"named", "defaults"} {
 		for _, tc := range identityCases() {
@@ -538,7 +543,7 @@ func TestIdentity(t *testing.T) {
 
 				var stdout, stderr bytes.Buffer
 				start := time.Now()
-				code := cmdIdentity(nil, &stdout, &stderr)
+				code := returns(t, "identity's answer", func() int { return cmdIdentity(nil, &stdout, &stderr) })
 				elapsed := time.Since(start)
 				if code != tc.exit {
 					t.Fatalf("exit %d, want %d (stderr %q)", code, tc.exit, stderr.String())
@@ -556,11 +561,8 @@ func TestIdentity(t *testing.T) {
 				if want == "" && stderr.Len() != 0 {
 					t.Fatalf("stderr %q, want nothing", stderr.String())
 				}
-				if tc.slow && (elapsed < 1500*time.Millisecond || elapsed > 4*time.Second) {
-					t.Fatalf("a helper that never answers is given up on after about 2 s, took %s", elapsed)
-				}
-				if !tc.slow && elapsed > 5*time.Second {
-					t.Fatalf("identity took %s; only a silent helper may hold it up", elapsed)
+				if tc.slow && elapsed < identityDeadline {
+					t.Fatalf("a helper that never answers was given up on after %s, before identity's own %s bound", elapsed, identityDeadline)
 				}
 			})
 		}
@@ -630,7 +632,8 @@ type identityCase struct {
 
 // identityPaths gives one row a home, a runtime directory and a state directory of its own, with
 // the key dir and the helper socket named by AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK
-// (mode "named") or left at the $XDG_RUNTIME_DIR defaults with both unset (mode "defaults").
+// (mode "named") or left at the $XDG_RUNTIME_DIR defaults with both unset (mode "defaults"). Its
+// enrollment wait is a day, so a row that waited on a launcher still enrolling never answers.
 func identityPaths(t *testing.T, mode string) identityRowPaths {
 	t.Helper()
 	runtime := shortTempDir(t)
@@ -639,6 +642,7 @@ func identityPaths(t *testing.T, mode string) identityRowPaths {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("XDG_RUNTIME_DIR", runtime)
 	t.Setenv("XDG_STATE_HOME", p.state)
+	t.Setenv("AGENT_SECRETS_ENROLL_WAIT", "24h")
 	if mode == "named" {
 		p.keyDir = filepath.Join(t.TempDir(), "keys")
 		p.sock = filepath.Join(shortTempDir(t), "h.sock")

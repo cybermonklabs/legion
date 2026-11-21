@@ -741,7 +741,10 @@ func writeVerbatim(w io.Writer, raw []byte) {
 // address lets its answer print (cipheraddr.Address.Words). The flag asks for the body by name.
 const jsonFlag = "print the broker's response body verbatim: every field as the broker wrote it, none withheld, even beside an AGENT_SECRETS_URL that is not a plain http(s) URL"
 
-// nextBackoff advances the backoff the poll loops of this package keep: two seconds, doubling
+// firstBackoff is the first sleep of the poll loops nextBackoff advances.
+const firstBackoff = 2 * time.Second
+
+// nextBackoff advances the backoff the poll loops of this package keep: firstBackoff, doubling
 // to a ten-second cap. `machine login` sleeps it between reads of its helper; the exec form's
 // wait sleeps it only after a read the broker did not hold (a broker from before ?wait=, or a
 // failed read). The renewer's own step is leasetime.NextBackoff, which the broker's lease bound
@@ -1240,7 +1243,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		// that wait passes, so a pending answer that comes sooner is from a broker before ?wait=,
 		// which answers every read at once; a failed read that comes back sooner gets the same
 		// sleep. Without it the loop would ask such a broker as fast as it answers.
-		backoff := 2 * time.Second
+		backoff := firstBackoff
 		for state == "pending" {
 			remaining := time.Until(deadline)
 			if remaining <= 0 {
