@@ -1524,7 +1524,8 @@ export function AgentsPage(): ReactNode {
     ) {
       focusAfterPin.current = sessionID;
     }
-    writePin(sessionID, !pinned.includes(sessionID));
+    // The write never rejects and answers only for the shell's migration (`useAgentPinWrite`).
+    void writePin(sessionID, !pinned.includes(sessionID));
   };
   const select = (sessionID: string, next: boolean) => {
     setSelected((current) => {

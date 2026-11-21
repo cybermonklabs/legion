@@ -22,12 +22,12 @@ export interface PictureDelivery {
  * `shown` once the host took it. `named` appends the `Pictures:` lines that say which image is
  * which and name the rest, a card whose every picture was shown earlier included; a person's own
  * turn keeps their text exactly as they sent it. A picture Dispatch cannot serve, or no Dispatch
- * configuration (`client` answers undefined or throws), leaves the delivery its text.
+ * configuration (`client` answers undefined or rejects), leaves the delivery its text.
  */
 export async function withDeliveredPictures(
   text: string,
   addresses: readonly string[],
-  client: () => DispatchClient | undefined,
+  client: () => Promise<DispatchClient | undefined>,
   named: boolean,
   shown: ReadonlySet<string>
 ): Promise<PictureDelivery> {
@@ -35,7 +35,7 @@ export async function withDeliveredPictures(
   if (addresses.length === 0) return textAlone;
   let dispatch: DispatchClient | undefined;
   try {
-    dispatch = client();
+    dispatch = await client();
   } catch {
     // A Dispatch configuration that cannot be read costs the delivery its pictures, never its text.
     return textAlone;

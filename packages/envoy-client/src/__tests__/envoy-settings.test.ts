@@ -46,7 +46,7 @@ const FILE_TOKEN = fixtureSecret("file");
 const POINTER_TOKEN = fixtureSecret("pointer");
 
 /** The configuration read from a file holding `contents`, with no checkout file beside it. */
-function configFrom(contents: unknown) {
+async function configFrom(contents: unknown) {
   const file = path.join(tempDir(), "envoy.json");
   writeFileSync(file, JSON.stringify(contents));
   return readEnvoyConfig(file, { HOME: tempDir() }, { cwd: tempDir() });
@@ -67,9 +67,9 @@ const listener = {
 };
 
 describe("envoySettings", () => {
-  test("takes url, natsUrls, token and natsSeed from the file", () => {
-    const config = configFrom({ envoy: listener });
-    expect(envoyAsToken(envoySettings({}, config))).toEqual({
+  test("takes url, natsUrls, token and natsSeed from the file", async () => {
+    const config = await configFrom({ envoy: listener });
+    expect(envoyAsToken(await envoySettings({}, config))).toEqual({
       enabled: true,
       url: "http://listener.internal.example:9020",
       token: FILE_TOKEN,
@@ -88,11 +88,11 @@ describe("envoySettings", () => {
     });
   });
 
-  test("each variable overrides its own field", () => {
-    const config = configFrom({ envoy: listener });
+  test("each variable overrides its own field", async () => {
+    const config = await configFrom({ envoy: listener });
     expect(
       envoyAsToken(
-        envoySettings(
+        await envoySettings(
           {
             ENVOY_URL: "http://other-listener.internal.example:9020/",
             ENVOY_NATS_URL: "nats://one.internal.example:4222, nats://two.internal.example:4222",
@@ -120,7 +120,7 @@ describe("envoySettings", () => {
 
     const tokenFile = secretFile(`  ${POINTER_TOKEN}\n`);
     const seedFile = secretFile("\nSUPOINTERSEED\n");
-    const pointers = envoySettings(
+    const pointers = await envoySettings(
       {
         ENVOY_TOKEN: ENVIRONMENT_TOKEN,
         ENVOY_TOKEN_FILE: tokenFile,
@@ -144,41 +144,41 @@ describe("envoySettings", () => {
   // A deadline shorter than the refresh interval abandons every pass before the next tick, so the
   // heartbeat's `healing` latch is false at every tick and the registration backstop that runs
   // under it never fires: a pane wedged before `registerSession` would never register at all.
-  test("an ENVOY_PASS_DEADLINE_MS below the heartbeat is raised to the heartbeat", () => {
-    const config = configFrom({ envoy: listener });
-    expect(envoySettings({ ENVOY_PASS_DEADLINE_MS: "7500" }, config)).toMatchObject({
+  test("an ENVOY_PASS_DEADLINE_MS below the heartbeat is raised to the heartbeat", async () => {
+    const config = await configFrom({ envoy: listener });
+    expect(await envoySettings({ ENVOY_PASS_DEADLINE_MS: "7500" }, config)).toMatchObject({
       heartbeatMs: 90_000,
       passDeadlineMs: 90_000,
     });
     // The 25 ms interval floor cannot shorten it below the heartbeat either.
     expect(
-      envoySettings({ ENVOY_HEARTBEAT_MS: "5000", ENVOY_PASS_DEADLINE_MS: "10" }, config)
+      await envoySettings({ ENVOY_HEARTBEAT_MS: "5000", ENVOY_PASS_DEADLINE_MS: "10" }, config)
     ).toMatchObject({ heartbeatMs: 5000, passDeadlineMs: 5000 });
   });
 
   // A deadline longer than the heartbeat is the caller's to name: a pass that legitimately takes
   // longer than one refresh interval — a slow listener, a NATS dial — must not be abandoned at the
   // interval, or no pass ever finishes.
-  test("an ENVOY_PASS_DEADLINE_MS above the heartbeat is used as given", () => {
-    const config = configFrom({ envoy: listener });
+  test("an ENVOY_PASS_DEADLINE_MS above the heartbeat is used as given", async () => {
+    const config = await configFrom({ envoy: listener });
     expect(
-      envoySettings({ ENVOY_HEARTBEAT_MS: "5000", ENVOY_PASS_DEADLINE_MS: "7500" }, config)
+      await envoySettings({ ENVOY_HEARTBEAT_MS: "5000", ENVOY_PASS_DEADLINE_MS: "7500" }, config)
     ).toMatchObject({ heartbeatMs: 5000, passDeadlineMs: 7500 });
-    expect(envoySettings({ ENVOY_PASS_DEADLINE_MS: "120000" }, config)).toMatchObject({
+    expect(await envoySettings({ ENVOY_PASS_DEADLINE_MS: "120000" }, config)).toMatchObject({
       heartbeatMs: 90_000,
       passDeadlineMs: 120_000,
     });
   });
 
-  test("an unusable ENVOY_PASS_DEADLINE_MS falls back to the resolved heartbeat's deadline", () => {
-    const config = configFrom({ envoy: listener });
+  test("an unusable ENVOY_PASS_DEADLINE_MS falls back to the resolved heartbeat's deadline", async () => {
+    const config = await configFrom({ envoy: listener });
     for (const value of ["soon", "0", "-5000"]) {
       expect(
-        envoySettings({ ENVOY_HEARTBEAT_MS: "5000", ENVOY_PASS_DEADLINE_MS: value }, config)
+        await envoySettings({ ENVOY_HEARTBEAT_MS: "5000", ENVOY_PASS_DEADLINE_MS: value }, config)
       ).toMatchObject({ heartbeatMs: 5000, passDeadlineMs: 30_000 });
     }
     // A pane given a long heartbeat gets a deadline at least that long.
-    expect(envoySettings({ ENVOY_HEARTBEAT_MS: "45000" }, config)).toMatchObject({
+    expect(await envoySettings({ ENVOY_HEARTBEAT_MS: "45000" }, config)).toMatchObject({
       heartbeatMs: 45_000,
       passDeadlineMs: 45_000,
     });
@@ -187,44 +187,46 @@ describe("envoySettings", () => {
   // The raise is the resolver's own decision, so the resolver is where it is recorded: the start
   // notice reads this field rather than testing ENVOY_PASS_DEADLINE_MS a second time
   // (`startNotice`, session-settings.ts), and the two cannot drift apart.
-  test("a raised ENVOY_PASS_DEADLINE_MS is reported, and nothing else is", () => {
-    const config = configFrom({ envoy: listener });
-    const raisedFrom = (env: EnvoyEnvironment): number | undefined => {
-      const settings = envoySettings(env, config);
+  test("a raised ENVOY_PASS_DEADLINE_MS is reported, and nothing else is", async () => {
+    const config = await configFrom({ envoy: listener });
+    const raisedFrom = async (env: EnvoyEnvironment): Promise<number | undefined> => {
+      const settings = await envoySettings(env, config);
       if (!settings.enabled) throw new Error(`Envoy is off: ${settings.notice ?? settings.error}`);
       return settings.passDeadlineRaisedFrom;
     };
     // Raised: the value the variable named, as written, not the deadline in force.
-    expect(raisedFrom({ ENVOY_PASS_DEADLINE_MS: "7500" })).toBe(7500);
-    expect(raisedFrom({ ENVOY_HEARTBEAT_MS: "5000", ENVOY_PASS_DEADLINE_MS: "1500" })).toBe(1500);
+    expect(await raisedFrom({ ENVOY_PASS_DEADLINE_MS: "7500" })).toBe(7500);
+    expect(await raisedFrom({ ENVOY_HEARTBEAT_MS: "5000", ENVOY_PASS_DEADLINE_MS: "1500" })).toBe(
+      1500
+    );
     // Used as given, at the interval or above it: nothing was raised.
     expect(
-      raisedFrom({ ENVOY_HEARTBEAT_MS: "5000", ENVOY_PASS_DEADLINE_MS: "5000" })
+      await raisedFrom({ ENVOY_HEARTBEAT_MS: "5000", ENVOY_PASS_DEADLINE_MS: "5000" })
     ).toBeUndefined();
-    expect(raisedFrom({ ENVOY_PASS_DEADLINE_MS: "120000" })).toBeUndefined();
+    expect(await raisedFrom({ ENVOY_PASS_DEADLINE_MS: "120000" })).toBeUndefined();
     // Unusable, so the fallback applies: no deadline of the operator's was overridden.
     for (const value of ["soon", "0", "-5000", ""]) {
       expect(
-        raisedFrom({ ENVOY_HEARTBEAT_MS: "5000", ENVOY_PASS_DEADLINE_MS: value })
+        await raisedFrom({ ENVOY_HEARTBEAT_MS: "5000", ENVOY_PASS_DEADLINE_MS: value })
       ).toBeUndefined();
     }
-    expect(raisedFrom({})).toBeUndefined();
+    expect(await raisedFrom({})).toBeUndefined();
   });
 
   // A delay past 2_147_483_647 ms overflows the host timer's 32-bit field and fires *at once*, so
   // an unclamped value turns each setting into its opposite with nothing logged: a heartbeat that
   // ticks continuously instead of hourly, and a pass deadline that abandons every pass the moment
   // it is queued.
-  test("a heartbeat or pass deadline past the timer's ceiling is clamped to it", () => {
-    const config = configFrom({ envoy: listener });
+  test("a heartbeat or pass deadline past the timer's ceiling is clamped to it", async () => {
+    const config = await configFrom({ envoy: listener });
     for (const value of ["2147483648", "99999999999"]) {
-      expect(envoySettings({ ENVOY_HEARTBEAT_MS: value }, config)).toMatchObject({
+      expect(await envoySettings({ ENVOY_HEARTBEAT_MS: value }, config)).toMatchObject({
         heartbeatMs: 2_147_483_647,
         // The deadline is never shorter than the heartbeat, so it cannot escape over the ceiling
         // by that route either.
         passDeadlineMs: 2_147_483_647,
       });
-      expect(envoySettings({ ENVOY_PASS_DEADLINE_MS: value }, config)).toMatchObject({
+      expect(await envoySettings({ ENVOY_PASS_DEADLINE_MS: value }, config)).toMatchObject({
         heartbeatMs: 90_000,
         passDeadlineMs: 2_147_483_647,
       });
@@ -234,13 +236,13 @@ describe("envoySettings", () => {
   // The ceiling is the largest delay a timer takes as asked, so a value just under it is a
   // legitimate configuration and must come back untouched: clamping low would shorten a deadline
   // its caller chose and abandon passes that were meant to run on.
-  test("a heartbeat or pass deadline just below the ceiling is used as given", () => {
-    const config = configFrom({ envoy: listener });
-    expect(envoySettings({ ENVOY_HEARTBEAT_MS: "2147483646" }, config)).toMatchObject({
+  test("a heartbeat or pass deadline just below the ceiling is used as given", async () => {
+    const config = await configFrom({ envoy: listener });
+    expect(await envoySettings({ ENVOY_HEARTBEAT_MS: "2147483646" }, config)).toMatchObject({
       heartbeatMs: 2_147_483_646,
       passDeadlineMs: 2_147_483_646,
     });
-    expect(envoySettings({ ENVOY_PASS_DEADLINE_MS: "2147483646" }, config)).toMatchObject({
+    expect(await envoySettings({ ENVOY_PASS_DEADLINE_MS: "2147483646" }, config)).toMatchObject({
       heartbeatMs: 90_000,
       passDeadlineMs: 2_147_483_646,
     });
@@ -248,29 +250,31 @@ describe("envoySettings", () => {
 
   // The cache spares a shared tmux server one call per session per event; a test that shortens
   // the heartbeat shortens this with it, so it is held to the same bounds the heartbeat is.
-  test("ENVOY_TMUX_PLACE_CACHE_MS names the tmux place cache, inside the interval bounds", () => {
-    const config = configFrom({ envoy: listener });
-    expect(envoySettings({}, config)).toMatchObject({ tmuxPlaceCacheMs: 30_000 });
-    expect(envoySettings({ ENVOY_TMUX_PLACE_CACHE_MS: "50" }, config)).toMatchObject({
+  test("ENVOY_TMUX_PLACE_CACHE_MS names the tmux place cache, inside the interval bounds", async () => {
+    const config = await configFrom({ envoy: listener });
+    expect(await envoySettings({}, config)).toMatchObject({ tmuxPlaceCacheMs: 30_000 });
+    expect(await envoySettings({ ENVOY_TMUX_PLACE_CACHE_MS: "50" }, config)).toMatchObject({
       tmuxPlaceCacheMs: 50,
     });
-    expect(envoySettings({ ENVOY_TMUX_PLACE_CACHE_MS: "10" }, config)).toMatchObject({
+    expect(await envoySettings({ ENVOY_TMUX_PLACE_CACHE_MS: "10" }, config)).toMatchObject({
       tmuxPlaceCacheMs: 25,
     });
-    expect(envoySettings({ ENVOY_TMUX_PLACE_CACHE_MS: "99999999999" }, config)).toMatchObject({
-      tmuxPlaceCacheMs: 2_147_483_647,
-    });
+    expect(await envoySettings({ ENVOY_TMUX_PLACE_CACHE_MS: "99999999999" }, config)).toMatchObject(
+      {
+        tmuxPlaceCacheMs: 2_147_483_647,
+      }
+    );
     for (const value of ["soon", "0", "-5000", ""]) {
-      expect(envoySettings({ ENVOY_TMUX_PLACE_CACHE_MS: value }, config)).toMatchObject({
+      expect(await envoySettings({ ENVOY_TMUX_PLACE_CACHE_MS: value }, config)).toMatchObject({
         tmuxPlaceCacheMs: 30_000,
       });
     }
   });
 
-  test("a section with enabled: false is off whatever the variables say, and the notice says so", () => {
-    const config = configFrom({ envoy: { ...listener, enabled: false } });
+  test("a section with enabled: false is off whatever the variables say, and the notice says so", async () => {
+    const config = await configFrom({ envoy: { ...listener, enabled: false } });
     expect(
-      envoySettings(
+      await envoySettings(
         {
           ENVOY_URL: "http://listener.internal.example:9020",
           ENVOY_NATS_URL: "nats://nats.internal.example:4222",
@@ -285,15 +289,17 @@ describe("envoySettings", () => {
     });
   });
 
-  test("no envoy section and no variables is off, as a missing ENVOY_NATS_URL is", () => {
-    const config = configFrom({ dispatch: { enabled: false } });
-    const settings = envoySettings({}, config);
+  test("no envoy section and no variables is off, as a missing ENVOY_NATS_URL is", async () => {
+    const config = await configFrom({ dispatch: { enabled: false } });
+    const settings = await envoySettings({}, config);
     expect(settings.enabled).toBe(false);
     expect(settings).toMatchObject({ error: null });
 
     // The variables alone still name an Envoy: how a Legion pane gets the one its daemon names.
     expect(
-      envoyAsToken(envoySettings({ ENVOY_NATS_URL: "nats://nats.internal.example:4222" }, config))
+      envoyAsToken(
+        await envoySettings({ ENVOY_NATS_URL: "nats://nats.internal.example:4222" }, config)
+      )
     ).toEqual({
       enabled: true,
       url: "http://127.0.0.1:9020",
@@ -310,20 +316,20 @@ describe("envoySettings", () => {
     });
   });
 
-  test("a missing file is off with the file's notice", () => {
+  test("a missing file is off with the file's notice", async () => {
     const home = tempDir();
     const file = path.join(home, ".config", "legion", "envoy.json");
-    const config = readEnvoyConfig(file, { HOME: home }, { cwd: tempDir() });
-    expect(envoySettings({}, config)).toEqual({
+    const config = await readEnvoyConfig(file, { HOME: home }, { cwd: tempDir() });
+    expect(await envoySettings({}, config)).toEqual({
       enabled: false,
       notice: `no envoy.json at ${file}: Envoy is off`,
       error: null,
     });
   });
 
-  test("an invalid file is off with its error", () => {
-    const config = configFrom({ envoy: { enabled: true, bogus: 1 } });
-    expect(envoySettings({}, config)).toEqual({
+  test("an invalid file is off with its error", async () => {
+    const config = await configFrom({ envoy: { enabled: true, bogus: 1 } });
+    expect(await envoySettings({}, config)).toEqual({
       enabled: false,
       notice: null,
       error: errorOf(config),
@@ -334,13 +340,13 @@ describe("envoySettings", () => {
   // An empty variable reads as unset everywhere, as a launcher that writes `X=` means; the two
   // seed variables alone refuse it, since a set seed is authoritative. A seed is for NATS alone, so
   // its refusal turns off inbound messages and leaves the listener on.
-  test("an empty ENVOY_* variable reads as unset; an empty seed variable is refused, inbound alone", () => {
-    const config = configFrom({ envoy: listener });
-    const fromFile = envoyAsToken(envoySettings({}, config));
+  test("an empty ENVOY_* variable reads as unset; an empty seed variable is refused, inbound alone", async () => {
+    const config = await configFrom({ envoy: listener });
+    const fromFile = envoyAsToken(await envoySettings({}, config));
     if (!fromFile.enabled) throw new Error(`the file's Envoy is off: ${fromFile.error}`);
     expect(
       envoyAsToken(
-        envoySettings(
+        await envoySettings(
           { ENVOY_URL: "", ENVOY_NATS_URL: "", ENVOY_TOKEN: "", ENVOY_TOKEN_FILE: "" },
           config
         )
@@ -350,25 +356,25 @@ describe("envoySettings", () => {
       [{ NATS_NKEY_SEED_FILE: "" }, "NATS_NKEY_SEED_FILE is set but empty"],
       [{ NATS_NKEY_SEED: "" }, "NATS_NKEY_SEED is set but empty"],
     ] as const) {
-      expect(envoyAsToken(envoySettings(env, config))).toEqual({
+      expect(envoyAsToken(await envoySettings(env, config))).toEqual({
         ...fromFile,
         inbound: { off: refusal },
       });
     }
   });
 
-  test("an empty envoy.token is refused, as an empty dispatch.token is", () => {
-    const config = configFrom({ envoy: { enabled: true, token: "" } });
-    expect(envoySettings({}, config)).toEqual({
+  test("an empty envoy.token is refused, as an empty dispatch.token is", async () => {
+    const config = await configFrom({ envoy: { enabled: true, token: "" } });
+    expect(await envoySettings({}, config)).toEqual({
       enabled: false,
       notice: null,
       error: `envoy.token in ${config.path} must be a non-empty bearer token`,
     });
   });
 
-  test("a plain ENVOY_TOKEN with whitespace inside is refused without echoing it", () => {
-    const config = configFrom({ envoy: listener });
-    const settings = envoySettings(
+  test("a plain ENVOY_TOKEN with whitespace inside is refused without echoing it", async () => {
+    const config = await configFrom({ envoy: listener });
+    const settings = await envoySettings(
       {
         ENVOY_TOKEN: "S3CRET\nnotes", // fixture-secret: bearerSource refuses its newline (sendable) before any holdSecret
       },
@@ -381,10 +387,10 @@ describe("envoySettings", () => {
     });
   });
 
-  test("an ENVOY_URL that is not an http or https URL is refused", () => {
-    const config = configFrom({ envoy: { enabled: true } });
+  test("an ENVOY_URL that is not an http or https URL is refused", async () => {
+    const config = await configFrom({ envoy: { enabled: true } });
     for (const url of ["listener:9020", "nats://listener.internal.example:4222", "not a url"]) {
-      expect(envoySettings({ ENVOY_URL: url }, config)).toEqual({
+      expect(await envoySettings({ ENVOY_URL: url }, config)).toEqual({
         enabled: false,
         notice: null,
         error: "ENVOY_URL must be an http or https URL",
@@ -392,23 +398,25 @@ describe("envoySettings", () => {
     }
   });
 
-  test("a section without enabled lends its values, and a seed with no server to use it is not run", () => {
+  test("a section without enabled lends its values, and a seed with no server to use it is not run", async () => {
     const home = tempDir();
     const ran = path.join(home, "ran");
-    const notEnabled = configFrom({
+    const notEnabled = await configFrom({
       envoy: { url: "http://listener.internal.example:9020", token: FILE_TOKEN },
     });
     expect(
       envoyAsToken(
-        envoySettings({ ENVOY_NATS_URL: "nats://nats.internal.example:4222" }, notEnabled)
+        await envoySettings({ ENVOY_NATS_URL: "nats://nats.internal.example:4222" }, notEnabled)
       )
     ).toMatchObject({
       enabled: true,
       url: "http://listener.internal.example:9020",
       token: FILE_TOKEN,
     });
-    const noServers = configFrom({ envoy: { enabled: true, natsSeed: `!touch ${ran}; echo SU` } });
-    expect(envoySettings({ PATH: process.env.PATH }, noServers)).toMatchObject({
+    const noServers = await configFrom({
+      envoy: { enabled: true, natsSeed: `!touch ${ran}; echo SU` },
+    });
+    expect(await envoySettings({ PATH: process.env.PATH }, noServers)).toMatchObject({
       enabled: true,
       inbound: { off: "Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL)" },
     });
@@ -417,10 +425,10 @@ describe("envoySettings", () => {
 
   // A caller that opens no NATS connection (`nats: false`; `envoySettings` names which they are):
   // a seed it would never send must neither run a command nor turn its Envoy off.
-  test("nats: false resolves no NATS server and no seed", () => {
+  test("nats: false resolves no NATS server and no seed", async () => {
     const home = tempDir();
     const ran = path.join(home, "ran");
-    const config = configFrom({
+    const config = await configFrom({
       envoy: { ...listener, natsSeed: `!touch ${ran}; exit 1` },
     });
     for (const env of [
@@ -428,7 +436,7 @@ describe("envoySettings", () => {
       { PATH: process.env.PATH, NATS_NKEY_SEED_FILE: path.join(home, "missing") },
       { PATH: process.env.PATH, ENVOY_NATS_URL: "nats://elsewhere.internal.example:4222" },
     ]) {
-      expect(envoyAsToken(envoySettings(env, config, { nats: false }))).toEqual({
+      expect(envoyAsToken(await envoySettings(env, config, { nats: false }))).toEqual({
         enabled: true,
         url: "http://listener.internal.example:9020",
         token: FILE_TOKEN,
@@ -442,8 +450,8 @@ describe("envoySettings", () => {
     expect(existsSync(ran)).toBe(false);
   });
 
-  test("an unusable ENVOY_TOKEN_FILE is an error naming it, never a fallback", () => {
-    const config = configFrom({ envoy: listener });
+  test("an unusable ENVOY_TOKEN_FILE is an error naming it, never a fallback", async () => {
+    const config = await configFrom({ envoy: listener });
     const dir = tempDir();
     const missing = path.join(dir, "missing");
     const blank = secretFile(" \n");
@@ -456,7 +464,7 @@ describe("envoySettings", () => {
       [{ ENVOY_TOKEN_FILE: blank }, "ENVOY_TOKEN_FILE names a file that is empty"],
     ];
     for (const [env, message] of cases) {
-      const settings = envoySettings(env, config);
+      const settings = await envoySettings(env, config);
       expect(settings).toMatchObject({ enabled: false, notice: null });
       if (settings.enabled) throw new Error(`accepted ${JSON.stringify(env)}`);
       expect(settings.error).toContain(message);
@@ -465,8 +473,8 @@ describe("envoySettings", () => {
     }
   });
 
-  test("an unusable seed pointer turns off inbound messages alone, naming it, never a fallback", () => {
-    const config = configFrom({ envoy: listener });
+  test("an unusable seed pointer turns off inbound messages alone, naming it, never a fallback", async () => {
+    const config = await configFrom({ envoy: listener });
     const missing = path.join(tempDir(), "missing");
     for (const [env, message] of [
       [
@@ -475,7 +483,7 @@ describe("envoySettings", () => {
       ],
       [{ NATS_NKEY_SEED: "  " }, "NATS_NKEY_SEED is set but empty"],
     ] as const) {
-      const settings = envoySettings(env, config);
+      const settings = await envoySettings(env, config);
       expect(envoyAsToken(settings)).toMatchObject({
         enabled: true,
         url: "http://listener.internal.example:9020",
@@ -489,15 +497,19 @@ describe("envoySettings", () => {
     }
   });
 
-  test("refuses ENVOY_URL at another origin than the file's listener when the token is the file's", () => {
-    const config = configFrom({ envoy: listener });
-    expect(envoySettings({ ENVOY_URL: "http://other.internal.example:9020" }, config)).toEqual({
+  test("refuses ENVOY_URL at another origin than the file's listener when the token is the file's", async () => {
+    const config = await configFrom({ envoy: listener });
+    expect(
+      await envoySettings({ ENVOY_URL: "http://other.internal.example:9020" }, config)
+    ).toEqual({
       enabled: false,
       notice: null,
       error: `ENVOY_URL names http://other.internal.example:9020, but ${config.path}'s envoy.token is for http://listener.internal.example:9020; set ENVOY_TOKEN or ENVOY_TOKEN_FILE for it`,
     });
     expect(
-      envoyAsToken(envoySettings({ ENVOY_URL: "http://listener.internal.example:9020/v1" }, config))
+      envoyAsToken(
+        await envoySettings({ ENVOY_URL: "http://listener.internal.example:9020/v1" }, config)
+      )
     ).toMatchObject({
       enabled: true,
       url: "http://listener.internal.example:9020/v1",
@@ -509,19 +521,19 @@ describe("envoySettings", () => {
       "http://listener.internal.example:9021",
       "http://listener.internal.example",
     ]) {
-      expect(envoySettings({ ENVOY_URL: url }, config)).toMatchObject({ enabled: false });
+      expect(await envoySettings({ ENVOY_URL: url }, config)).toMatchObject({ enabled: false });
     }
   });
 
-  test("a file's token with no listener of its own goes only to the default listener", () => {
-    const bare = configFrom({ envoy: { enabled: true, token: FILE_TOKEN } });
-    expect(envoySettings({ ENVOY_URL: "http://other.internal.example:9020" }, bare)).toEqual({
+  test("a file's token with no listener of its own goes only to the default listener", async () => {
+    const bare = await configFrom({ envoy: { enabled: true, token: FILE_TOKEN } });
+    expect(await envoySettings({ ENVOY_URL: "http://other.internal.example:9020" }, bare)).toEqual({
       enabled: false,
       notice: null,
       error: `ENVOY_URL names http://other.internal.example:9020, but ${bare.path}'s envoy.token is for http://127.0.0.1:9020; set ENVOY_TOKEN or ENVOY_TOKEN_FILE for it`,
     });
     expect(
-      envoyAsToken(envoySettings({ ENVOY_URL: "http://127.0.0.1:9020/v1" }, bare))
+      envoyAsToken(await envoySettings({ ENVOY_URL: "http://127.0.0.1:9020/v1" }, bare))
     ).toMatchObject({
       enabled: true,
       token: FILE_TOKEN,
@@ -535,15 +547,15 @@ describe("envoySettings", () => {
 describe("the NATS seed in envoy.json", () => {
   const fileServers = ["nats://one.internal.example:4222", "nats://two.internal.example:4222"];
 
-  test("a lone file's seed goes with its own servers, trimmed as read", () => {
-    const config = configFrom({
+  test("a lone file's seed goes with its own servers, trimmed as read", async () => {
+    const config = await configFrom({
       envoy: {
         enabled: true,
         natsUrls: ["nats://one.internal.example:4222 "],
         natsSeed: "SUFILESEED",
       },
     });
-    expect(envoySettings({}, config)).toMatchObject({
+    expect(await envoySettings({}, config)).toMatchObject({
       enabled: true,
       inbound: {
         natsUrls: ["nats://one.internal.example:4222"],
@@ -557,10 +569,10 @@ describe("the NATS seed in envoy.json", () => {
   });
 
   // A refused seed turns off inbound messages alone: the listener, its bearer and its tools stay.
-  test("goes with ENVOY_NATS_URL only when it names the file's servers, and its command does not run otherwise", () => {
+  test("goes with ENVOY_NATS_URL only when it names the file's servers, and its command does not run otherwise", async () => {
     const home = tempDir();
     const runs = path.join(home, "runs");
-    const config = configFrom({
+    const config = await configFrom({
       envoy: {
         enabled: true,
         url: "http://listener.internal.example:9020",
@@ -573,7 +585,7 @@ describe("the NATS seed in envoy.json", () => {
       PATH: process.env.PATH,
       ENVOY_NATS_URL: "nats://elsewhere.internal.example:4222",
     };
-    expect(envoyAsToken(envoySettings(other, config))).toEqual({
+    expect(envoyAsToken(await envoySettings(other, config))).toEqual({
       enabled: true,
       url: "http://listener.internal.example:9020",
       token: FILE_TOKEN,
@@ -593,7 +605,7 @@ describe("the NATS seed in envoy.json", () => {
       "nats://one.internal.example:4222,nats://two.internal.example:4222,nats://elsewhere.internal.example:4222",
     ]) {
       expect(
-        envoySettings({ PATH: process.env.PATH, ENVOY_NATS_URL: mixed }, config)
+        await envoySettings({ PATH: process.env.PATH, ENVOY_NATS_URL: mixed }, config)
       ).toMatchObject({ enabled: true, inbound: { off: expect.any(String) } });
     }
     expect(existsSync(runs)).toBe(false);
@@ -603,7 +615,7 @@ describe("the NATS seed in envoy.json", () => {
       ENVOY_NATS_URL:
         " nats://two.internal.example:4222,nats://one.internal.example:4222, nats://two.internal.example:4222",
     };
-    expect(envoySettings(same, config)).toMatchObject({
+    expect(await envoySettings(same, config)).toMatchObject({
       enabled: true,
       inbound: {
         natsCredential: {
@@ -616,8 +628,8 @@ describe("the NATS seed in envoy.json", () => {
 
   // Two spellings of one server pair: scheme and host lower-cased, a trailing `/` dropped, and the
   // default port 4222 written when none is.
-  test("compares ENVOY_NATS_URL with the file's servers normalised", () => {
-    const config = configFrom({
+  test("compares ENVOY_NATS_URL with the file's servers normalised", async () => {
+    const config = await configFrom({
       envoy: { natsUrls: ["nats://one.internal.example:4222"], natsSeed: "SUFILESEED" },
     });
     for (const named of [
@@ -625,26 +637,26 @@ describe("the NATS seed in envoy.json", () => {
       "NATS://One.Internal.Example:4222",
       "nats://one.internal.example",
     ]) {
-      expect(envoySettings({ ENVOY_NATS_URL: named }, config)).toMatchObject({
+      expect(await envoySettings({ ENVOY_NATS_URL: named }, config)).toMatchObject({
         enabled: true,
         inbound: { natsUrls: [named], natsCredential: { seed: { value: "SUFILESEED" } } },
       });
     }
     for (const other of ["nats://one.internal.example:4223", "tls://one.internal.example:4222"]) {
-      expect(envoySettings({ ENVOY_NATS_URL: other }, config)).toMatchObject({
+      expect(await envoySettings({ ENVOY_NATS_URL: other }, config)).toMatchObject({
         enabled: true,
         inbound: { off: expect.stringContaining("ENVOY_NATS_URL names other servers") },
       });
     }
   });
 
-  test("a seed from the variables goes with whatever servers ENVOY_NATS_URL names", () => {
-    const config = configFrom({
+  test("a seed from the variables goes with whatever servers ENVOY_NATS_URL names", async () => {
+    const config = await configFrom({
       envoy: { enabled: true, natsUrls: fileServers, natsSeed: "SUFILESEED" },
     });
     const seedFile = secretFile("SUPOINTERSEED\n");
     expect(
-      envoySettings(
+      await envoySettings(
         {
           ENVOY_NATS_URL: "nats://elsewhere.internal.example:4222",
           NATS_NKEY_SEED_FILE: seedFile,
@@ -664,7 +676,7 @@ describe("the NATS seed in envoy.json", () => {
     });
   });
 
-  test("a checkout's servers are not read, and a seed in the variables goes with the pane's servers", () => {
+  test("a checkout's servers are not read, and a seed in the variables goes with the pane's servers", async () => {
     const userToken = fixtureSecret("user");
     const user = path.join(tempDir(), "envoy.json");
     writeFileSync(
@@ -681,15 +693,15 @@ describe("the NATS seed in envoy.json", () => {
       JSON.stringify({ envoy: { natsUrls: ["nats://repo.internal.example:4222"] } })
     );
     const env = { HOME: tempDir(), NATS_NKEY_SEED: "SUENVSEED" };
-    const config = readEnvoyConfig(user, env, { cwd });
-    expect(envoySettings(env, config)).toMatchObject({
+    const config = await readEnvoyConfig(user, env, { cwd });
+    expect(await envoySettings(env, config)).toMatchObject({
       enabled: true,
       inbound: {
         natsUrls: fileServers,
         natsCredential: { kind: "seed", seed: { value: "SUENVSEED", source: "NATS_NKEY_SEED" } },
       },
     });
-    expect(dispatchAsToken(dispatchSettings(env, config))).toEqual({
+    expect(dispatchAsToken(await dispatchSettings(env, config))).toEqual({
       enabled: true,
       url: "https://dispatch.example",
       token: userToken,

@@ -24,7 +24,7 @@ const listener = {
 const makeDirectory = temporaryDirectories("session-timing");
 
 /** A configuration naming that listener, read from a file with no checkout file beside it. */
-function listenerConfig() {
+async function listenerConfig() {
   const dir = makeDirectory();
   const file = path.join(dir, "envoy.json");
   writeFileSync(file, JSON.stringify({ envoy: listener }));
@@ -35,8 +35,8 @@ function listenerConfig() {
  * of its own: the interval a pane refreshes its listener registration at, and what one whole
  * listener call costs. Three intervals plus one call fall strictly inside the live window,
  * which holds only while the client reads these numbers rather than numbers of its own. */
-test("CLIENTTEST the client resolves the declared refresh interval and call budget", () => {
-  const settings = envoySettings({}, listenerConfig());
+test("CLIENTTEST the client resolves the declared refresh interval and call budget", async () => {
+  const settings = await envoySettings({}, await listenerConfig());
   if (!settings.enabled) {
     throw new Error(`Envoy resolved as off: ${JSON.stringify(settings)}`);
   }

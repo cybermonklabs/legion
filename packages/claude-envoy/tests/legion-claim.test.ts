@@ -67,9 +67,9 @@ function daemonAnswering(answer: (path: string) => Response): {
   return { posted, fetch: stub }
 }
 
-test("a session with no boot token is no Legion pane", () => {
-  expect(legionPane({ LEGION_DAEMON_URL: "http://daemon.test" })).toBeUndefined()
-  expect(legionPane({ LEGION_BOOT_TOKEN: " " })).toBeUndefined()
+test("a session with no boot token is no Legion pane", async () => {
+  expect(await legionPane({ LEGION_DAEMON_URL: "http://daemon.test" })).toBeUndefined()
+  expect(await legionPane({ LEGION_BOOT_TOKEN: " " })).toBeUndefined()
 })
 
 test("a Legion pane reads its boot token from the file the daemon named, and needs its address and directory", async () => {
@@ -78,7 +78,7 @@ test("a Legion pane reads its boot token from the file the daemon named, and nee
   const bootToken = fixtureSecret("boot")
   await writeFile(tokenFile, `${bootToken}\n`)
   expect(
-    legionPane({
+    await legionPane({
       LEGION_BOOT_TOKEN_FILE: tokenFile,
       LEGION_BOOT_TOKEN: "ignored",
       LEGION_DAEMON_URL: "http://daemon.test",
@@ -90,19 +90,19 @@ test("a Legion pane reads its boot token from the file the daemon named, and nee
     configDir: dir,
     launcherSaves: false,
   })
-  expect(() => legionPane({ LEGION_BOOT_TOKEN: "t", CLAUDE_CONFIG_DIR: dir })).toThrow(
+  await expect(legionPane({ LEGION_BOOT_TOKEN: "t", CLAUDE_CONFIG_DIR: dir })).rejects.toThrow(
     "LEGION_DAEMON_URL is required for Legion",
   )
-  expect(() =>
+  await expect(
     legionPane({ LEGION_BOOT_TOKEN: "t", LEGION_DAEMON_URL: "http://daemon.test" }),
-  ).toThrow("CLAUDE_CONFIG_DIR is required for Legion")
-  expect(() =>
+  ).rejects.toThrow("CLAUDE_CONFIG_DIR is required for Legion")
+  await expect(
     legionPane({
       LEGION_BOOT_TOKEN_FILE: join(dir, "missing"),
       LEGION_DAEMON_URL: "http://daemon.test",
       CLAUDE_CONFIG_DIR: dir,
     }),
-  ).toThrow("LEGION_BOOT_TOKEN_FILE")
+  ).rejects.toThrow("LEGION_BOOT_TOKEN_FILE")
 })
 
 test("the transcript wait answers the file Claude Code wrote under any project, and stops when aborted", async () => {
@@ -565,7 +565,7 @@ async function bootOn(env: Record<string, string>): Promise<{
   readonly booted: Promise<void>
 }> {
   const configDir = await tempDir()
-  const pane = legionPane({
+  const pane = await legionPane({
     LEGION_BOOT_TOKEN: "boot-1",
     LEGION_DAEMON_URL: "http://daemon.test",
     CLAUDE_CONFIG_DIR: configDir,

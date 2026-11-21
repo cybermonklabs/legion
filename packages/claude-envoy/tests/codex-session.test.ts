@@ -491,7 +491,7 @@ describe("the Codex router of a person's messages", () => {
       deliver: async (item) => {
         delivered.push(item)
       },
-      dispatch: () =>
+      dispatch: async () =>
         ({
           acceptMessageDelivery: async (id: string) => ({
             body,

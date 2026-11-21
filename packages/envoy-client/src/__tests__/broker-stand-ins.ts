@@ -65,7 +65,7 @@ export function brokerStandIns(prefix: string) {
   const { servers, tempDir } = standInScope(prefix);
 
   /** The config a caller with no envoy.json reads: the neutral file, which does not exist. */
-  function noFile(env: DispatchEnvironment) {
+  async function noFile(env: DispatchEnvironment) {
     return readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, { cwd: tempDir() });
   }
 

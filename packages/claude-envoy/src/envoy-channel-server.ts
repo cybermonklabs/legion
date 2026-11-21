@@ -507,10 +507,12 @@ export async function postDispatchReply(
   delivery: DispatchDelivery,
   result: { readonly body?: string; readonly error?: string; readonly followUp?: boolean },
 ): Promise<void> {
-  const config = sessionDispatchSettings(configFile, process.env, {
-    cwd: identity.directory,
-    session: () => identity.id,
-  }).dispatch
+  const config = (
+    await sessionDispatchSettings(configFile, process.env, {
+      cwd: identity.directory,
+      session: () => identity.id,
+    })
+  ).dispatch
   if (!config.enabled) throw new Error(config.error ?? config.notice)
   await postDeliveryReply(config, identity.id, delivery, result)
 }
@@ -2419,7 +2421,7 @@ function pluginStateDirectory(): string {
  * notifications (`./legion-inbox`). */
 export async function runEnvoyChannelServer(): Promise<void> {
   const directory = projectDirectory()
-  const pane = legionPane(process.env)
+  const pane = await legionPane(process.env)
   // The session's envoy.json, by Claude Code's rule (`$CLAUDE_CONFIG_DIR/envoy.json` when that is
   // set), worked out once as the server starts; Dispatch's URL and token are re-read from it on each
   // use, so a file that moved its server takes effect without a restart.
@@ -2427,7 +2429,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // The session this server drives, read at every broker trade: Claude Code mints a new id on
   // /clear and `identity` is set to it, so a token this session presents names this session.
   const currentSessionId = (): string => identity.id
-  const { dispatch, envoy, notice } = sessionSettings(configFile, process.env, {
+  const { dispatch, envoy, notice } = await sessionSettings(configFile, process.env, {
     cwd: directory,
     session: currentSessionId,
   })
@@ -2737,9 +2739,9 @@ export async function runEnvoyChannelServer(): Promise<void> {
    */
   const router = (state: UserTurnState): UserTurnRouter => {
     const options: UserTurnRouterOptions = {
-      dispatch: (ms) => {
+      dispatch: async (ms) => {
         const active = activeDispatchSettings(
-          sessionDispatchSettings(configFile, process.env, { cwd: directory }).dispatch,
+          (await sessionDispatchSettings(configFile, process.env, { cwd: directory })).dispatch,
         )
         return active === null
           ? undefined

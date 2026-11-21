@@ -358,7 +358,7 @@ export async function runDispatchCli(
     const settings =
       file.path === null
         ? null
-        : sessionDispatchSettings(file, env, { cwd: io.cwd, session: sessionId }).dispatch;
+        : (await sessionDispatchSettings(file, env, { cwd: io.cwd, session: sessionId })).dispatch;
     const { problems } = await checkDispatchCall({
       tool: parsed.tool,
       args: parsed.args,
@@ -377,7 +377,7 @@ export async function runDispatchCli(
   }
   // The session this call acts as is the session a broker trade writes under, so the token this
   // call presents names it rather than naming none or another of this machine's.
-  const { dispatch: resolution, warnings } = sessionDispatchSettings(file, env, {
+  const { dispatch: resolution, warnings } = await sessionDispatchSettings(file, env, {
     cwd: io.cwd,
     session: sessionId,
   });
@@ -533,7 +533,7 @@ export async function runDispatchCli(
   let topics: Promise<readonly string[] | null> | undefined;
   const readTopics = async (): Promise<readonly string[] | null> => {
     try {
-      const envoy = sessionEnvoySettings(file, env, {
+      const envoy = await sessionEnvoySettings(file, env, {
         cwd: io.cwd,
         nats: false,
         session: sessionId,

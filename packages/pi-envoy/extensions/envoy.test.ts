@@ -41,7 +41,7 @@ import {
   MARKER_MAX_AGE_MS,
   STORE_BEAT_MS,
 } from "@legion/envoy-client/askgate-marker";
-import { forgetBrokerClients } from "@legion/envoy-client/broker-credential";
+import { brokerTokenFor, forgetBrokerClients } from "@legion/envoy-client/broker-credential";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import type {
   DeliveryLedgerHost,
@@ -49,11 +49,11 @@ import type {
 } from "@legion/envoy-client/delivery-ledger";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import type { ExecFn } from "@legion/envoy-client/dispatch-cwd";
-import { natsFailureReason } from "@legion/envoy-client/errors";
 import { forgetKeyedLayerMemory } from "@legion/envoy-client/dispatch-http";
 import { shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { appendResult, readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
+import { natsFailureReason } from "@legion/envoy-client/errors";
 import { machineID } from "@legion/envoy-client/machine";
 import { NATS_DIAL_PLAN } from "@legion/envoy-client/nats-connection";
 import {
@@ -98,11 +98,14 @@ import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
 import { type ConnectionOptions, ErrorCode, NatsError, nkeys, connect as realConnect } from "nats";
 import { z } from "zod";
-import envelopeWithoutRole from "../../contracts/fixtures/envelope-without-role.json" with { type: "json" };
+import envelopeWithoutRole from "../../contracts/fixtures/envelope-without-role.json" with {
+  type: "json",
+};
 import { version as packageVersion } from "../package.json" with { type: "json" };
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
 import { REPLAY_DELIVERED_ENTRY, REPLAY_STATE_ENTRY } from "../src/missed-messages";
 import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
+import type { EnvoyModule } from "../test/envoy-module";
 import { runSessionPod } from "../test/session-pod-report";
 import {
   type BranchEntry,
@@ -1297,7 +1300,16 @@ async function bootDirectSession(
           if (replies.length >= waiter.count) waiter.resolve();
           else replyWaiters.push(waiter);
         }
-        return new Response(JSON.stringify({}), { status: 201 });
+        // Typed JSON carrying the request's key back, as Dispatch's keyed layer answers every
+        // keyed write (`acceptResponse`): this Dispatch says it runs that layer, and an answer
+        // with neither is something in Dispatch's place (`foreign-2xx`, dispatch-http.ts), so the
+        // reply would fail and the session would post its failure as a second reply after the row
+        // had read the first.
+        const key = new Headers(init?.headers).get("Idempotency-Key");
+        return Response.json(
+          {},
+          { status: 201, ...(key !== null && { headers: { "Idempotency-Key": key } }) }
+        );
       }
       const read = await options.dispatch?.(url, init);
       if (read !== undefined) return read;
@@ -1309,7 +1321,7 @@ async function bootDirectSession(
   };
   // Query-string isolation gives each caller its own instance of this stateful extension, and a
   // restart its second one; the specifier is the caller's, so it cannot be a static import.
-  const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+  const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
   const fixture = createPi();
   const waiters: { readonly count: number; readonly resolve: () => void }[] = [];
   const recordedWhenDelivered: number[] = [];
@@ -1327,7 +1339,7 @@ async function bootDirectSession(
     }
   };
   const run = options.sendUserInput;
-  envoyExtension({
+  await envoyExtension({
     ...fixture.pi,
     sendMessage: (message: never, sendOptions: unknown) => {
       options.beforeSend?.(message.content);
@@ -1501,18 +1513,28 @@ function stubBroker(label: string) {
   };
 }
 
+/** One turn of the real event loop, from before any test fakes the timers: a file read the
+ *  settings make lands in such a turn, which no microtask flush reaches. */
+const realSetImmediate = globalThis.setImmediate;
+const realTurn = () => new Promise<void>((resolve) => realSetImmediate(() => resolve()));
+
 /**
  * Settles `pending` on the test's clock (`jest.useFakeTimers`, on for the call), moving it a
  * second at a time: a write Dispatch keeps failing is asked again under its key until the
  * accept's 10 s bound, and those pauses and that bound pass at once rather than in real time.
+ * The clock stands still until `waiting` says the work is waiting on it: before its first
+ * request, the accept reads the session's envoy.json, which is real I/O, while the accept's bound
+ * (an `AbortSignal.timeout`, on the test's clock) already runs, and a second moved then would be
+ * one the code under test never waited.
  */
-async function onTestClock<T>(pending: () => Promise<T>): Promise<T> {
+async function onTestClock<T>(pending: () => Promise<T>, waiting: () => boolean): Promise<T> {
   jest.useFakeTimers();
   try {
     let settled = false;
     const watched = pending().finally(() => {
       settled = true;
     });
+    while (!settled && !waiting()) await realTurn();
     for (let second = 0; second < 60 && !settled; second++) {
       for (let flush = 0; flush < 50 && !settled; flush++) await Promise.resolve();
       jest.advanceTimersByTime(1_000);
@@ -1726,7 +1748,7 @@ async function bootSessionPod(
     if (launch.session !== undefined) process.env.ENVOY_SESSION_ROLE_SESSION = launch.session;
   }
   // Each caller's own query loads an instance of its own, so the specifier cannot be static.
-  const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+  const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
   const fixture = createPi();
   const intervals: (() => void)[] = [];
   const notices: string[] = [];
@@ -1746,7 +1768,7 @@ async function bootSessionPod(
       notify: (message: string, level: string) => notices.push(`${level}: ${message}`),
     },
   };
-  envoyExtension(fixture.pi);
+  await envoyExtension(fixture.pi);
   await fixture.handlers.get("session_start")?.({}, context);
   return {
     fixture,
@@ -1902,7 +1924,7 @@ const ASK_REMINDER_TYPE = "dispatch-ask-reminder";
  * only verdict that reaches the visible steer.
  */
 async function bootAskNudge(
-  envoyExtension: (pi: TestPi) => void,
+  envoyExtension: (pi: TestPi) => Promise<void>,
   sessionID: string,
   snapshot: (since: string | undefined) => {
     readonly as_of?: string;
@@ -2017,7 +2039,7 @@ async function bootAskNudge(
     asked.push(input);
     return selfCheck === undefined ? Promise.resolve({ replyText: "WAITING" }) : selfCheck(input);
   };
-  envoyExtension(fixture.pi);
+  await envoyExtension(fixture.pi);
   // A fresh TUI has no session yet at `session_start`; the host mints the id before the first
   // turn, and the extension's own `sessionID` heals only on the next heartbeat.
   let live = options.lazySessionID === true ? "" : sessionID;
@@ -2187,10 +2209,10 @@ async function until(condition: () => boolean, what: string, timeoutMs = 2_000):
 
 describe("envoy OMP extension", () => {
   test("discovers the bundled envoy skill from the repository root", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?resources-discover");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?resources-discover");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const resourcesDiscover = fixture.handlers.get("resources_discover");
     if (resourcesDiscover === undefined) throw new Error("resources_discover was not registered");
 
@@ -2231,9 +2253,9 @@ describe("envoy OMP extension", () => {
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?open-ask-summary");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?open-ask-summary");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = withSelfCheck(sessionContext("ses_reminder"));
     await fixture.handlers.get("session_start")?.({}, context);
     const beforeAgentStart = fixture.handlers.get("before_agent_start");
@@ -2254,9 +2276,11 @@ describe("envoy OMP extension", () => {
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?open-ask-unavailable");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?open-ask-unavailable"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = withSelfCheck({
       ...sessionContext("ses_unknown"),
       ui: {
@@ -2297,9 +2321,11 @@ describe("envoy OMP extension", () => {
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?open-ask-availability-latch");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?open-ask-availability-latch"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = withSelfCheck({
       ...sessionContext(),
       sessionManager: { ...topLevelSession, getSessionId: () => activeSessionID },
@@ -2332,7 +2358,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("nudges a WAITING stop, and its own reply-only continuation nudges nothing", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-fires");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-fires");
     const session = await bootAskNudge(envoyExtension, "ses_nudge_fires", () => ({}));
 
     await session.userTurn();
@@ -2596,7 +2622,9 @@ describe("envoy OMP extension", () => {
   }
 
   test("runs the stop-time check on the managed timer, after agent_end has returned", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-after-handler");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-after-handler"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_after_handler", () => ({}), {
       holdTimers: true,
     });
@@ -2614,7 +2642,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a user turn between a stop and its timer leaves that stop unchecked", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-turn-before-timer");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-turn-before-timer"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_turn_before_timer", () => ({}), {
       holdTimers: true,
     });
@@ -2640,7 +2670,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a woken run between a stop and its timer leaves that stop unchecked", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-run-before-timer");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-run-before-timer"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_run_before_timer", () => ({}), {
       holdTimers: true,
     });
@@ -2656,7 +2688,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("stays silent when the self-check answers PROCEEDING", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-proceeding");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-proceeding"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_proceeding", () => ({}), {
       selfCheck: async () => ({ replyText: "PROCEEDING" }),
     });
@@ -2670,7 +2704,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("the agent's next real work owes the period another check", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-rearm");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-rearm");
     const session = await bootAskNudge(envoyExtension, "ses_nudge_rearm", () => ({}), {
       selfCheck: async () => ({ replyText: "PROCEEDING" }),
     });
@@ -2705,7 +2739,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("neither a dispatch command nor a failed tool call re-arms the check", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-rearm-excluded");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-rearm-excluded"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_rearm_no", () => ({}), {
       selfCheck: async () => ({ replyText: "PROCEEDING" }),
     });
@@ -2741,7 +2777,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a rebutted dispatch command, recorded with its override as a trailing comment, does not re-arm the check", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-rearm-rebutted");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-rearm-rebutted"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_rearm_rebutted", () => ({}), {
       selfCheck: async () => ({ replyText: "PROCEEDING" }),
     });
@@ -2770,7 +2808,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("a bash command that is not a dispatch command owes a check, ledger or not", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-rearm-ls");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-rearm-ls");
     const session = await bootAskNudge(envoyExtension, "ses_nudge_rearm_ls", () => ({}), {
       selfCheck: async () => ({ replyText: "PROCEEDING" }),
     });
@@ -2801,7 +2839,9 @@ describe("envoy OMP extension", () => {
       tool: "dispatch_ask",
       details: { ask: "ask-old" },
     });
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-resumed-ledger");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-resumed-ledger"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_resumed_ledger", () => ({}));
 
     await session.userTurn();
@@ -2817,7 +2857,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a malformed ledger line is logged with its file and line and never stalls the check", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-malformed-ledger");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-malformed-ledger"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_malformed_ledger", () => ({}), {
       selfCheck: async () => ({ replyText: "PROCEEDING" }),
     });
@@ -2856,7 +2898,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("one armed period pays for at most five checks however much work happens", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-rearm-cap");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-rearm-cap");
     const session = await bootAskNudge(envoyExtension, "ses_nudge_rearm_cap", () => ({}), {
       selfCheck: async () => ({ replyText: "PROCEEDING" }),
     });
@@ -2882,7 +2924,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("a host that never answers the self-check is bounded by the extension's own clock", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-hangs");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-hangs");
     // A host that ignores the AbortSignal: the call it started never settles, ever. Without a
     // bound of its own the handler would hold the in-flight latch — and every later check with
     // it — for as long as that call hung.
@@ -2917,7 +2959,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("checks a fresh TUI whose session id the extension has not healed to yet", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-lazy-id");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-lazy-id");
     // `session_start` ran before the host minted an id, so the extension's own `sessionID` is
     // empty until the registration heartbeat heals it — up to 90 seconds of a brand-new
     // terminal. The period carries the id that armed it, which is the live one.
@@ -2932,7 +2974,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("work re-arms the check in a fresh TUI too", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-lazy-rearm");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-lazy-rearm"
+    );
     // The same drift window as above, now on the edge that re-arms: a `tool_result` that read
     // the module's own `sessionID` would match nothing until the heartbeat healed it, so a
     // brand-new terminal got one check for the whole window and none of the re-arming this
@@ -2958,7 +3002,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("the heartbeat's drift heal leaves a fresh TUI's armed period alone", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-drift-heal");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-drift-heal"
+    );
     // The heal re-establishes the session the extension is already in — it is how a fresh TUI's
     // id reaches the registry at all — so it must not count as a session change. It fires every
     // `ENVOY_HEARTBEAT_MS` (90 s), and a first turn routinely runs longer than that.
@@ -2977,7 +3023,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("the drift heal names the live id for the dispatch command and reads that id's ledger", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-drift-ledger");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-drift-ledger"
+    );
     // The host minted the id after `session_start` (a fresh TUI's first, or one it moved the
     // session file off to), with no session event after which it refreshes the shell's
     // environment: the heal names the id and refreshes that environment itself.
@@ -3005,7 +3053,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("re-establishing the same session during an Envoy outage keeps the armed period", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-nats-retry");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-nats-retry"
+    );
     // NATS is down when the session starts, so the extension retries `establishSession` every
     // `NATS_RETRY_INTERVAL_MS` for the whole outage, each attempt re-entering the restore path
     // a `/fork` uses. The nudge is not an Envoy feature — it reads Dispatch — so an outage must
@@ -3022,7 +3072,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("a session change resets the period and aborts the check it invalidated", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-switch");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-switch");
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const started = Promise.withResolvers<void>();
     const session = await bootAskNudge(envoyExtension, "ses_nudge_switch", () => ({}), {
@@ -3084,10 +3134,12 @@ describe("envoy OMP extension", () => {
         }
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-subagent");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?ask-nudge-subagent"
+      );
       const asked: string[] = [];
       const parent = createPi();
-      envoyExtension(parent.pi);
+      await envoyExtension(parent.pi);
       await parent.handlers.get("session_start")?.(
         {},
         {
@@ -3096,7 +3148,7 @@ describe("envoy OMP extension", () => {
         }
       );
       const child = createPi();
-      envoyExtension(child.pi);
+      await envoyExtension(child.pi);
       const childContext: SessionContext = {
         ...sessionWithTranscript("ses_child", childFile, []),
         runEphemeralTurn: async () => {
@@ -3120,7 +3172,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("stays silent when the self-check answers anything but WAITING", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-unparsed");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-unparsed");
     let verdict = "I think I am probably waiting on Sami here.";
     const session = await bootAskNudge(envoyExtension, "ses_nudge_unparsed", () => ({}), {
       selfCheck: async () => ({ replyText: verdict }),
@@ -3149,7 +3201,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("stays silent when the self-check fails, and logs it once per session", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-selfcheck-fails");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-selfcheck-fails"
+    );
     const warnings: { readonly message: string; readonly context?: unknown }[] = [];
     const stopSink = logger.registerLogSink((entry) => {
       if (entry.level === "warn") warnings.push({ message: entry.message, context: entry.context });
@@ -3186,7 +3240,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("never nudges on a host that cannot ask ephemerally", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-no-ephemeral");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-no-ephemeral"
+    );
     // The same OMP builds that cannot serve a Dispatch BTW: with no self-check there is no
     // trigger, so the session does not pay the arming round trip either.
     const session = await bootAskNudge(envoyExtension, "ses_nudge_no_ephemeral", () => ({}), {
@@ -3200,7 +3256,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("stays silent when a new user turn arrives while the self-check is in flight", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-selfcheck-stale");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-selfcheck-stale"
+    );
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const started = Promise.withResolvers<void>();
     const session = await bootAskNudge(envoyExtension, "ses_nudge_selfcheck_stale", () => ({}), {
@@ -3226,7 +3284,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("drops the verdict when the agent opened the ask itself while the check was in flight", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-ask-midflight");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-ask-midflight"
+    );
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const started = Promise.withResolvers<void>();
     const session = await bootAskNudge(envoyExtension, "ses_nudge_midflight", () => ({}), {
@@ -3256,7 +3316,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a slow arming query does not let a superseded check steer the turn just typed", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-slow-arming");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-slow-arming"
+    );
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const started = Promise.withResolvers<void>();
     const session = await bootAskNudge(envoyExtension, "ses_nudge_slow_arming", () => ({}), {
@@ -3297,7 +3359,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a run that starts while the check is open is not steered, and its own settle is checked", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-run-midflight");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-run-midflight"
+    );
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const started = Promise.withResolvers<void>();
     const session = await bootAskNudge(envoyExtension, "ses_nudge_run_midflight", () => ({}), {
@@ -3328,7 +3392,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a run that settles while the check is open is checked once the open check ends", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-settle-midflight");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-settle-midflight"
+    );
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const started = Promise.withResolvers<void>();
     const session = await bootAskNudge(envoyExtension, "ses_nudge_settle_midflight", () => ({}), {
@@ -3358,7 +3424,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a recorded settle that a newer turn has overtaken is not re-checked into that turn", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-settle-overtaken");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-settle-overtaken"
+    );
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const started = Promise.withResolvers<void>();
     const session = await bootAskNudge(envoyExtension, "ses_nudge_settle_overtaken", () => ({}), {
@@ -3401,7 +3469,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a recorded settle is not re-checked while the turn that overtook it is still arming", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-settle-arming");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-settle-arming"
+    );
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const started = Promise.withResolvers<void>();
     const session = await bootAskNudge(envoyExtension, "ses_nudge_settle_arming", () => ({}), {
@@ -3444,7 +3514,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a run that starts while Dispatch answers the stop pays for no check", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-run-during-query");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-run-during-query"
+    );
     const query = Promise.withResolvers<void>();
     const queryOut = Promise.withResolvers<void>();
     const session = await bootAskNudge(envoyExtension, "ses_nudge_run_during_query", () => ({}), {
@@ -3471,7 +3543,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a check this extension aborts is not logged as a failure", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-abort-quiet");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-abort-quiet"
+    );
     const warnings: { readonly message: string; readonly context?: unknown }[] = [];
     const stopSink = logger.registerLogSink((entry) => {
       if (entry.level === "warn") warnings.push({ message: entry.message, context: entry.context });
@@ -3516,7 +3590,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("nudges a WAITING session even when it already holds an open ask", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-held-waiting");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-held-waiting"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_held_waiting", () => ({
       asks: [{ question: "Which deployment window should I use?" }],
     }));
@@ -3531,7 +3607,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("leaves a held ask silent when the self-check answers PROCEEDING", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-held-proceeding");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-held-proceeding"
+    );
     const session = await bootAskNudge(
       envoyExtension,
       "ses_nudge_held_proceeding",
@@ -3547,7 +3625,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("names no open asks or the first five held ask questions in the self-check", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-prompt-asks");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-prompt-asks"
+    );
     const longQuestion = `A held question that exceeds the prompt limit: ${"x".repeat(130)}`;
     const heldQuestions = [
       "First held question",
@@ -3587,7 +3667,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("the ask the agent opens itself spends the check the period owed", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-opens-ask");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-opens-ask");
     const session = await bootAskNudge(envoyExtension, "ses_nudge_opens", () => ({}));
 
     await session.userTurn();
@@ -3616,7 +3696,9 @@ describe("envoy OMP extension", () => {
   // opener is a block depends on where it lands, as code or inside a blockquote or a list item.
   test("a dispatch doc-edit spends the check exactly when the server reports a decision block it added", async () => {
     // The query creates a fresh extension module with isolated module-level awareness state.
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-document-block");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-document-block"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_document_block", () => ({}));
     const editThenStop = async (
       markdown: string,
@@ -3663,7 +3745,7 @@ describe("envoy OMP extension", () => {
   test("an eval cell during which the ledger grew owes no check, and an ask it opened spends one", async () => {
     // An eval cell reaches `dispatch` only through a shell its code starts, which no scan of the
     // code can read, so the ledger growing during the cell is what says it ran one.
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-eval");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-eval");
     const session = await bootAskNudge(envoyExtension, "ses_nudge_eval", () => ({}), {
       selfCheck: async () => ({ replyText: "PROCEEDING" }),
     });
@@ -3707,7 +3789,9 @@ describe("envoy OMP extension", () => {
   // call opens no ask: it must not spend the check the turn owes.
   test("dispatch ask --help or dispatch request-approval --help spends no check", async () => {
     for (const command of ["ask", "request-approval"]) {
-      const { default: envoyExtension } = await import(`./envoy.ts?ask-nudge-help-${command}`);
+      const { default: envoyExtension }: EnvoyModule = await import(
+        `./envoy.ts?ask-nudge-help-${command}`
+      );
       const session = await bootAskNudge(envoyExtension, `ses_nudge_help_${command}`, () => ({}));
       await session.userTurn();
       await session.toolResult({
@@ -3726,7 +3810,9 @@ describe("envoy OMP extension", () => {
 
   test("a document written through dispatch issue or dispatch artifact spends the check only when it holds a decision block", async () => {
     // The query creates a fresh extension module with isolated module-level awareness state.
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-document-upload");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-document-upload"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_document_upload", () => ({}));
 
     // The server's count, which a `--path` upload carries too, not the command's text.
@@ -3761,7 +3847,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("the five-check period budget applies while the session holds open asks", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-held-budget");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-held-budget"
+    );
     const session = await bootAskNudge(
       envoyExtension,
       "ses_nudge_held_budget",
@@ -3786,7 +3874,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("waits for the real stop when OMP has already scheduled a continuation", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-will-continue");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-will-continue"
+    );
     const session = await bootAskNudge(envoyExtension, "ses_nudge_continue", () => ({}));
 
     await session.userTurn();
@@ -3798,7 +3888,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("never nudges a Legion-managed session", async () => {
-    const extension = await import("./envoy.ts?ask-nudge-legion");
+    const extension: EnvoyModule = await import("./envoy.ts?ask-nudge-legion");
     const session = await bootAskNudge(extension.default, "ses_nudge_legion", () => ({}));
     await claimEnvoyRole("ses_nudge_legion", "legion-project-issue-worker", session.context);
 
@@ -3822,7 +3912,9 @@ describe("envoy OMP extension", () => {
     // transcript into a newly minted id while the session stays Legion-driven, so the entry is
     // never matched against the id the guard runs under.
     for (const recordedID of ["ses_nudge_restored", "ses_nudge_before_the_fork"]) {
-      const extension = await import(`./envoy.ts?ask-nudge-legion-resume-${recordedID}`);
+      const extension: EnvoyModule = await import(
+        `./envoy.ts?ask-nudge-legion-resume-${recordedID}`
+      );
       const session = await bootAskNudge(extension.default, "ses_nudge_restored", () => ({}), {
         branch: [
           {
@@ -3842,7 +3934,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("stays silent when Dispatch could not be reached this turn", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-unreachable");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?ask-nudge-unreachable"
+    );
     let reachable = false;
     const session = await bootAskNudge(envoyExtension, "ses_nudge_offline", () => {
       if (!reachable) throw new Error("network offline");
@@ -3857,7 +3951,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("does not arm a period for a turn that carries no user text", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-synthetic");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-synthetic");
     const session = await bootAskNudge(envoyExtension, "ses_nudge_synthetic", () => ({}));
 
     await session.userTurn();
@@ -3872,7 +3966,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("a session that starts cold cannot nudge until a user turn arms a period", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-resume");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-resume");
     // The arming period never reaches the transcript, so a resumed session restores none: it
     // begins at period 0, which the stop guard refuses outright — it does not even ask
     // Dispatch. A prior process's own nudge in the branch changes nothing.
@@ -3897,7 +3991,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("a second stop inside one Dispatch round trip is one nudge and one query", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-race");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-race");
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const session = await bootAskNudge(envoyExtension, "ses_nudge_race", () => ({}), {
       holdStopQuery: () => held,
@@ -3922,7 +4016,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("never nudges a headless run the host gave no UI context", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-headless");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-headless");
     // `omp -p`: the host disposes the session when its one run ends and has already printed its
     // output, so a steered continuation is either aborted or billed for text nobody reads.
     const session = await bootAskNudge(envoyExtension, "ses_nudge_headless", () => ({}), {
@@ -3939,7 +4033,7 @@ describe("envoy OMP extension", () => {
   });
 
   test("never nudges a stop the run did not settle normally", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-unsettled");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?ask-nudge-unsettled");
     const session = await bootAskNudge(envoyExtension, "ses_nudge_unsettled", () => ({}));
 
     await session.userTurn();
@@ -4004,10 +4098,10 @@ describe("envoy OMP extension", () => {
         trace_id: "trace_1",
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext());
 
     expect(
@@ -4283,8 +4377,10 @@ describe("envoy OMP extension", () => {
     const fixture = createPi({ zod: injected });
     process.env.DISPATCH_URL = "http://127.0.0.1:8767";
     process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
-    const { default: envoyExtension } = await import("./envoy.ts?injected-zod-identity");
-    envoyExtension(fixture.pi);
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?injected-zod-identity"
+    );
+    await envoyExtension(fixture.pi);
 
     for (const tool of fixture.tools) {
       const parameters = tool.parameters as z.ZodObject<z.ZodRawShape>;
@@ -4297,9 +4393,11 @@ describe("envoy OMP extension", () => {
   });
 
   test("uses the shared metadata schema to reject an invalid urgency", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?shared-metadata-validation");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?shared-metadata-validation"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const send = fixture.tools.find((tool) => tool.name === "envoy_send");
     const spec = envoyToolSpecs.find((candidate) => candidate.name === "envoy_send");
     if (send === undefined || spec === undefined) throw new Error("envoy_send was not registered");
@@ -4315,9 +4413,11 @@ describe("envoy OMP extension", () => {
   test("registers every Envoy tool with lenient host validation so execute is the one error surface", async () => {
     process.env.DISPATCH_URL = "http://127.0.0.1:8767";
     process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
-    const { default: envoyExtension } = await import("./envoy.ts?lenient-arg-validation");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?lenient-arg-validation"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
 
     expect(fixture.tools.map((tool) => tool.name)).toEqual(envoyToolSpecs.map((spec) => spec.name));
     expect(fixture.tools.filter((tool) => tool.lenientArgValidation !== true)).toEqual([]);
@@ -4329,9 +4429,9 @@ describe("envoy OMP extension", () => {
       requests += 1;
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?envoy-tool-one-pass");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?envoy-tool-one-pass");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext());
     requests = 0;
     const send = fixture.tools.find((tool) => tool.name === "envoy_send");
@@ -4370,9 +4470,11 @@ describe("envoy OMP extension", () => {
         status: 404,
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?missing-target-error");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?missing-target-error"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext());
     const send = fixture.tools.find((tool) => tool.name === "envoy_send");
     if (send === undefined) throw new Error("envoy_send was not registered");
@@ -4407,9 +4509,9 @@ describe("envoy OMP extension", () => {
         { status: 429, headers: { "Content-Type": "application/json", "Retry-After": "15" } }
       );
     };
-    const { default: envoyExtension } = await import("./envoy.ts?sender-rate-limited");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?sender-rate-limited");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext());
     const send = fixture.tools.find((tool) => tool.name === "envoy_send");
     const publish = fixture.tools.find((tool) => tool.name === "envoy_publish");
@@ -4457,9 +4559,11 @@ describe("envoy OMP extension", () => {
     process.env.PATH = `${dir}${delimiter}${process.env.PATH ?? ""}`;
     process.env.SLACK_POST_API_URL = `http://127.0.0.1:${slack.port}/api`;
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
-    const { default: envoyExtension } = await import(`./envoy.ts?slack-post-${slack.port}`);
+    const { default: envoyExtension }: EnvoyModule = await import(
+      `./envoy.ts?slack-post-${slack.port}`
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext());
     const tool = fixture.tools.find((candidate) => candidate.name === "slack_post");
     if (tool === undefined) throw new Error("slack_post was not registered");
@@ -4522,10 +4626,12 @@ describe("envoy OMP extension", () => {
 
   test("rejects malformed wildcard bases before opening subscriptions", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
-    const { default: envoyExtension } = await import("./envoy.ts?malformed-wildcard-base");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?malformed-wildcard-base"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext());
     const subscribe = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
     if (subscribe === undefined) throw new Error("subscription tool was not registered");
@@ -4566,10 +4672,10 @@ describe("envoy OMP extension", () => {
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?interest-recovery");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?interest-recovery");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const resumed = {
       ...sessionContext(),
       sessionManager: { ...sessionContext().sessionManager, getBranch: () => [{}] },
@@ -4637,12 +4743,12 @@ describe("envoy OMP extension", () => {
       };
       // A fresh module per row, as every test here loads one: the extension keeps its state in
       // module scope, so a static import would carry one row's hold into the next.
-      const { default: envoyExtension } = await import(
+      const { default: envoyExtension }: EnvoyModule = await import(
         `./envoy.ts?old-form-role-record-${rewrite ? "rewritten" : "kept"}`
       );
       const fixture = createPi();
 
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const resumed = {
         ...sessionContext(),
         sessionManager: { ...sessionContext().sessionManager, getBranch: () => [{}] },
@@ -4679,10 +4785,10 @@ describe("envoy OMP extension", () => {
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?role-rebind");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?role-rebind");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_before"));
     const roleTool = fixture.tools.find((tool) => tool.name === "envoy_role_set");
     await roleTool?.execute("", { role: "release-captain" });
@@ -4740,10 +4846,10 @@ describe("envoy OMP extension", () => {
       }
       return response({});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?role-memory-rebind");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?role-memory-rebind");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_before_memory"));
     const roleTool = fixture.tools.find((tool) => tool.name === "envoy_role_set");
     await roleTool?.execute("", { role: "release-captain" });
@@ -4789,10 +4895,12 @@ describe("envoy OMP extension", () => {
       }
       return response({});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?role-new-resume-switch");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?role-new-resume-switch"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_outgoing"));
     const roleTool = fixture.tools.find((tool) => tool.name === "envoy_role_set");
     await roleTool?.execute("", { role: "release-captain" });
@@ -4842,16 +4950,16 @@ describe("envoy OMP extension", () => {
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: firstLife } = await import("./envoy.ts?role-reaped-life-1");
+    const { default: firstLife }: EnvoyModule = await import("./envoy.ts?role-reaped-life-1");
     const first = createPi();
-    firstLife(first.pi);
+    await firstLife(first.pi);
     await first.handlers.get("session_start")?.({}, sessionContext("ses_reaped"));
     await first.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role: "sre" });
     expect(roleClaims).toEqual([{ session_id: "ses_reaped", role: "sre" }]);
 
-    const { default: secondLife } = await import("./envoy.ts?role-reaped-life-2");
+    const { default: secondLife }: EnvoyModule = await import("./envoy.ts?role-reaped-life-2");
     const second = createPi();
-    secondLife(second.pi);
+    await secondLife(second.pi);
     const resumed = {
       ...sessionContext("ses_reaped"),
       sessionManager: {
@@ -4899,9 +5007,9 @@ describe("envoy OMP extension", () => {
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?role-no-steal");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?role-no-steal");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const resumedParent = {
       ...sessionContext("ses_fork_parent"),
       sessionManager: {
@@ -4934,10 +5042,10 @@ describe("envoy OMP extension", () => {
   test("registers no dispatch_* tool where Dispatch is configured: agents run the dispatch command", async () => {
     process.env.DISPATCH_URL = "http://127.0.0.1:8767";
     process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
-    const { default: envoyExtension } = await import("./envoy.ts?no-dispatch-tools");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?no-dispatch-tools");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
 
     expect(fixture.tools.filter((tool) => tool.name.startsWith("dispatch_"))).toEqual([]);
     expect(fixture.tools.map((tool) => tool.name)).toEqual(envoyToolSpecs.map((spec) => spec.name));
@@ -4974,9 +5082,9 @@ describe("envoy OMP extension", () => {
 
   test("names the top-level session in DISPATCH_SESSION_ID at start and after a switch", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?dispatch-session-id");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?dispatch-session-id");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
 
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_dispatch_env"));
     expect(process.env.DISPATCH_SESSION_ID).toBe("ses_dispatch_env");
@@ -5002,7 +5110,7 @@ describe("envoy OMP extension", () => {
       const { createStandInHost } = await import(${JSON.stringify(join(import.meta.dir, "..", "test", "stand-in-host.ts"))});
       const { default: envoyExtension } = await import(${JSON.stringify(join(import.meta.dir, "envoy.ts"))});
       const { handlers, pi } = createStandInHost();
-      envoyExtension(pi);
+      await envoyExtension(pi);
       await handlers.get("session_start")?.({}, {
         cwd: process.cwd(),
         hasUI: true,
@@ -5061,9 +5169,9 @@ describe("envoy OMP extension", () => {
 
   test("the main agent's tool call finds the session's current title in its title file", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?title-file-main");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?title-file-main");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     let title: string | undefined = "Saved carts";
     const context = titledContext("main", () => title);
     await fixture.handlers.get("session_start")?.({}, context);
@@ -5093,9 +5201,9 @@ describe("envoy OMP extension", () => {
 
   test("a task subagent's shell command writes no title file: the session it names is its parent's", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?title-file-sub");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?title-file-sub");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.(
       {},
       titledContext("main", () => "Parent")
@@ -5112,9 +5220,11 @@ describe("envoy OMP extension", () => {
 
   test("a registration heartbeat writes the session's title file with no tool call at all", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?title-file-heartbeat");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?title-file-heartbeat"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const heartbeats: (() => void)[] = [];
     const context: SessionContext = {
       ...titledContext("main", () => "Saved carts"),
@@ -5135,9 +5245,9 @@ describe("envoy OMP extension", () => {
 
   test("a heartbeat while the host answers no name leaves the title file standing", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?title-file-no-name");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?title-file-no-name");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     let name: string | undefined = "Saved carts";
     const heartbeats: (() => void)[] = [];
     const context: SessionContext = {
@@ -5177,9 +5287,11 @@ describe("envoy OMP extension", () => {
         },
       })
     );
-    const { default: envoyExtension } = await import("./envoy.ts?title-file-envoy-off");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?title-file-envoy-off"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const heartbeats: (() => void)[] = [];
     const context: SessionContext = {
       ...titledContext("main", () => "Saved carts"),
@@ -5206,9 +5318,11 @@ describe("envoy OMP extension", () => {
       }
       return responseWithRegistration(input, init, []);
     };
-    const { default: envoyExtension } = await import("./envoy.ts?title-file-write-throws");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?title-file-write-throws"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const heartbeats: (() => void)[] = [];
     const context: SessionContext = {
       ...titledContext("main", () => "Saved carts"),
@@ -5230,9 +5344,11 @@ describe("envoy OMP extension", () => {
 
   test("a title write that throws leaves the main agent's tool call returning", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?title-file-tool-call-throws");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?title-file-tool-call-throws"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = titledContext("main", () => "Saved carts");
     await fixture.handlers.get("session_start")?.({}, context);
     const toolCall = fixture.handlers.get("tool_call");
@@ -5252,9 +5368,11 @@ describe("envoy OMP extension", () => {
     delete process.env.DISPATCH_TOKEN;
     process.env.HOME = "/nonexistent-home-for-dispatch-gating";
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
-    const { default: envoyExtension } = await import("./envoy.ts?native-dispatch-disabled");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?native-dispatch-disabled"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
 
     expect(fixture.tools.map((tool) => tool.name)).toEqual(envoyToolSpecs.map((spec) => spec.name));
     const notifications: string[] = [];
@@ -5305,9 +5423,11 @@ describe("envoy OMP extension", () => {
         return new Response("no request belongs here", { status: 500 });
       };
       try {
-        const { default: envoyExtension } = await import("./envoy.ts?envoy-json-profile");
+        const { default: envoyExtension }: EnvoyModule = await import(
+          "./envoy.ts?envoy-json-profile"
+        );
         const fixture = createPi();
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         const file = join(agentDirectory, "envoy.json");
         const notifications: string[] = [];
         const context = notifying("ses_profile", notifications);
@@ -5357,9 +5477,11 @@ describe("envoy OMP extension", () => {
         hosts.push(new URL(input.toString()).host);
         return responseWithRegistration(input, init, []);
       };
-      const { default: envoyExtension } = await import("./envoy.ts?envoy-json-envoy-only");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?envoy-json-envoy-only"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       await fixture.handlers.get("session_start")?.({}, notifying("ses_envoy_only", notifications));
 
@@ -5398,9 +5520,11 @@ describe("envoy OMP extension", () => {
         auth.push(new Headers(init?.headers).get("Authorization"));
         return responseWithRegistration(input, init, []);
       };
-      const { default: envoyExtension } = await import("./envoy.ts?envoy-json-credentials");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?envoy-json-credentials"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, sessionContext("ses_credentials"));
 
       expect(auth.length).toBeGreaterThan(0);
@@ -5423,9 +5547,11 @@ describe("envoy OMP extension", () => {
         auth.push(new Headers(init?.headers).get("Authorization"));
         return responseWithRegistration(input, init, []);
       };
-      const { default: envoyExtension } = await import("./envoy.ts?envoy-json-pane-credentials");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?envoy-json-pane-credentials"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, sessionContext("ses_pane_credentials"));
 
       expect(auth.length).toBeGreaterThan(0);
@@ -5450,9 +5576,9 @@ describe("envoy OMP extension", () => {
         })
       );
       process.env.ENVOY_CONFIG_FILE = handed;
-      const { default: envoyExtension } = await import("./envoy.ts?envoy-json-handed");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?envoy-json-handed");
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
 
       expect(process.env.ENVOY_CONFIG_FILE).toBe(handed);
       expect(fixture.tools).toEqual([]);
@@ -5466,9 +5592,11 @@ describe("envoy OMP extension", () => {
     test("envoy.json: a relative XDG_CONFIG_HOME still loads the plugin, with both sections off and said once", async () => {
       delete process.env.ENVOY_CONFIG_FILE;
       process.env.XDG_CONFIG_HOME = "relative/config";
-      const { default: envoyExtension } = await import("./envoy.ts?envoy-json-relative-xdg");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?envoy-json-relative-xdg"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       await fixture.handlers.get("session_start")?.({}, notifying("ses_relative", notifications));
 
@@ -5595,9 +5723,9 @@ console.log(JSON.stringify(args));
       process.env.DISPATCH_URL = "http://dispatch.test";
       process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-on");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?askgate-on");
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       const context = gateContext(notifications);
       await fixture.handlers.get("session_start")?.({}, context);
@@ -5630,9 +5758,11 @@ console.log(JSON.stringify(args));
       process.env.DISPATCH_URL = "http://dispatch.test";
       process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-no-envoy-json");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-no-envoy-json"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       const context = gateContext(notifications);
       await fixture.handlers.get("session_start")?.({}, context);
@@ -5661,9 +5791,11 @@ console.log(JSON.stringify(args));
       process.env.DISPATCH_URL = "http://dispatch.test";
       process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-rules-notice");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-rules-notice"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       const context = gateContext(notifications);
       await fixture.handlers.get("session_start")?.({}, context);
@@ -5746,9 +5878,9 @@ console.log(JSON.stringify(args));
     // a shell or kernel started before it still acts as the old session, and removed at shutdown.
     test("session_start writes the session's record, a switch writes the new one's and keeps the old, and shutdown removes both", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-record");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?askgate-record");
       const fixture = allHandlers();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       await fixture.handlers.get("session_start")?.({}, gateContext(notifications));
       const first = recordOf("ses_askgate");
@@ -5784,9 +5916,11 @@ console.log(JSON.stringify(args));
     // process removed it, and stops at shutdown.
     test("while it keeps a record, the instance touches its store every beat and makes it again when it is gone", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-record-beat");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-record-beat"
+      );
       const fixture = allHandlers();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const context = gateContext([]);
       jest.useFakeTimers();
       try {
@@ -5815,9 +5949,11 @@ console.log(JSON.stringify(args));
     // posted in that window. A rebind of the same session id keeps the block that session recorded.
     test("a rebind of the same session keeps a block it recorded, never turning it back to warn", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-record-rebind");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-record-rebind"
+      );
       const fixture = allHandlers();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       const context = gateContext(notifications);
       await fixture.handlers.get("session_start")?.({}, context);
@@ -5836,9 +5972,11 @@ console.log(JSON.stringify(args));
     // the user is told at once, as at session start, and not only in the log.
     test("a record that cannot be written after a switch reaches the user as a notice", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-record-switch-fails");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-record-switch-fails"
+      );
       const fixture = allHandlers();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       await fixture.handlers.get("session_start")?.({}, gateContext(notifications));
       expect(notifications).toEqual([]);
@@ -5870,18 +6008,18 @@ console.log(JSON.stringify(args));
       process.env.DISPATCH_URL = "http://dispatch.test";
       process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
-      const off = await import("./envoy.ts?askgate-record-off");
+      const off: EnvoyModule = await import("./envoy.ts?askgate-record-off");
       const offFixture = createPi();
-      off.default(offFixture.pi);
+      await off.default(offFixture.pi);
       await offFixture.handlers.get("session_start")?.({}, gateContext([]));
       expect(recordOf("ses_askgate")).toBeNull();
       // Dispatch off.
       writeFileSync(process.env.ENVOY_CONFIG_FILE ?? "", "{}\n");
       delete process.env.DISPATCH_URL;
       delete process.env.DISPATCH_TOKEN;
-      const noDispatch = await import("./envoy.ts?askgate-record-no-dispatch");
+      const noDispatch: EnvoyModule = await import("./envoy.ts?askgate-record-no-dispatch");
       const noDispatchFixture = createPi();
-      noDispatch.default(noDispatchFixture.pi);
+      await noDispatch.default(noDispatchFixture.pi);
       await noDispatchFixture.handlers.get("session_start")?.({}, gateContext([]));
       expect(recordOf("ses_askgate")).toBeNull();
       // A task subagent: its instance binds no session id, so it writes no record.
@@ -5890,16 +6028,16 @@ console.log(JSON.stringify(args));
       try {
         const parentFile = transcripts.transcript("2026-09-23T00-00-00-000Z_ses_parent.jsonl");
         const childFile = transcripts.transcript("2026-09-23T00-00-00-000Z_ses_parent/Scout.jsonl");
-        const sub = await import("./envoy.ts?askgate-record-subagent");
+        const sub: EnvoyModule = await import("./envoy.ts?askgate-record-subagent");
         const child = createPi();
-        sub.default(child.pi);
+        await sub.default(child.pi);
         await child.handlers.get("session_start")?.(
           {},
           sessionWithTranscript("ses_child", childFile, [])
         );
         expect(recordOf("ses_child")).toBeNull();
         const parent = createPi();
-        sub.default(parent.pi);
+        await sub.default(parent.pi);
         await parent.handlers.get("session_start")?.(
           {},
           sessionWithTranscript("ses_parent", parentFile, [])
@@ -5919,9 +6057,11 @@ console.log(JSON.stringify(args));
         delete process.env.DISPATCH_STATE_DIR;
         process.env.XDG_STATE_HOME = stateHome;
         gateOn();
-        const { default: envoyExtension } = await import("./envoy.ts?askgate-state-dir");
+        const { default: envoyExtension }: EnvoyModule = await import(
+          "./envoy.ts?askgate-state-dir"
+        );
         const fixture = allHandlers();
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, gateContext([]));
         const root = join(stateHome, "dispatch");
         expect(process.env.DISPATCH_STATE_DIR).toBe(root);
@@ -5934,9 +6074,9 @@ console.log(JSON.stringify(args));
         await fixture.handlers.get("session_shutdown")?.({}, gateContext([]));
 
         process.env.DISPATCH_STATE_DIR = preset;
-        const again = await import("./envoy.ts?askgate-state-dir-set");
+        const again: EnvoyModule = await import("./envoy.ts?askgate-state-dir-set");
         const fixtureAgain = allHandlers();
-        again.default(fixtureAgain.pi);
+        await again.default(fixtureAgain.pi);
         await fixtureAgain.handlers.get("session_start")?.({}, gateContext([]));
         expect(process.env.DISPATCH_STATE_DIR).toBe(preset);
         expect(askgateState(sessionDirectory(process.env, "ses_askgate")).kind).toBe("on");
@@ -5949,9 +6089,9 @@ console.log(JSON.stringify(args));
     }, 30_000);
     test("a gated write the CLI logged as unmarked becomes an advisor-gate entry the report counts", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-unmarked");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?askgate-unmarked");
       const fixture = allHandlers();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const context = gateContext([]);
       await fixture.handlers.get("session_start")?.({}, context);
       const dir = sessionDirectory(process.env, "ses_askgate");
@@ -6086,12 +6226,12 @@ console.log(JSON.stringify(args));
      * appended.
      */
     const unmarkedRun = async (
-      envoyExtension: (pi: TestPi) => void,
+      envoyExtension: (pi: TestPi) => Promise<void>,
       argv: readonly string[],
       wanted = 1
     ) => {
       const fixture = allHandlers();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const context = gateContext([]);
       await fixture.handlers.get("session_start")?.({}, context);
       standInRecordProject();
@@ -6155,7 +6295,9 @@ console.log(JSON.stringify(args));
     // token and nothing else counts the asks that went out, or were refused, unreviewed.
     test("an unmarked dispatch ask in warn mode publishes one record of it, with its ask count and no ask text", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?unmarked-record-warn");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?unmarked-record-warn"
+      );
       const run = await unmarkedRun(envoyExtension, UNMARKED_ASK);
       expect(run.records).toMatchObject([
         {
@@ -6183,7 +6325,9 @@ console.log(JSON.stringify(args));
       process.env.OMP_ASKGATE = "block";
       try {
         gateOn();
-        const { default: envoyExtension } = await import("./envoy.ts?unmarked-record-block");
+        const { default: envoyExtension }: EnvoyModule = await import(
+          "./envoy.ts?unmarked-record-block"
+        );
         const run = await unmarkedRun(envoyExtension, UNMARKED_ASK);
         expect(run.records).toMatchObject([
           {
@@ -6203,7 +6347,9 @@ console.log(JSON.stringify(args));
 
     test("an unmarked dispatch comment publishes no record: no person waits on it", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?unmarked-record-comment");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?unmarked-record-comment"
+      );
       const run = await unmarkedRun(
         envoyExtension,
         ["comment", "--issue", "DSP-1", "--body", "The rollout landed."],
@@ -6222,7 +6368,9 @@ console.log(JSON.stringify(args));
         asks,
         ":::ask{#window}\nWhich deployment window?\n:::\n\n:::ask{#owner}\nWho owns the rollout?\n:::\n"
       );
-      const { default: envoyExtension } = await import("./envoy.ts?unmarked-record-upload");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?unmarked-record-upload"
+      );
       const run = await unmarkedRun(envoyExtension, [
         "artifact",
         "--issue",
@@ -6260,9 +6408,9 @@ console.log(JSON.stringify(args));
       return { reached: reached.promise };
     };
     /** The session's gate bound, an unmarked `dispatch ask` logged, and nothing read yet. */
-    const unmarkedWriteLogged = async (envoyExtension: (pi: TestPi) => void) => {
+    const unmarkedWriteLogged = async (envoyExtension: (pi: TestPi) => Promise<void>) => {
       const fixture = allHandlers();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const context = gateContext([]);
       await fixture.handlers.get("session_start")?.({}, context);
       const dispatch = hangingRecordProject();
@@ -6302,7 +6450,9 @@ console.log(JSON.stringify(args));
 
     test("an unmarked write's tool result returns while its record still waits on Dispatch", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?unmarked-record-hangs");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?unmarked-record-hangs"
+      );
       const run = await unmarkedWriteLogged(envoyExtension);
       const handled = run.readLedger();
       // The record is in flight against a Dispatch that will never answer it.
@@ -6321,7 +6471,9 @@ console.log(JSON.stringify(args));
 
     test("a record the session could not write lands as an advisor-gate-record follow-up keyed on the unmarked entry", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?unmarked-record-follow-up");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?unmarked-record-follow-up"
+      );
       const run = await unmarkedWriteLogged(envoyExtension);
       await run.readLedger();
       await run.reached;
@@ -6346,7 +6498,9 @@ console.log(JSON.stringify(args));
     // by replacing it: the first recorder's records are dropped. One recorder serves both.
     test("an unmarked ask and a gated call in one session share the decision document: it is created once and both records append", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?record-one-document");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?record-one-document"
+      );
       standInDispatch();
       const run = await unmarkedRun(envoyExtension, UNMARKED_ASK);
       expect(run.records).toMatchObject([{ outcome: "unmarked", asksCarried: 1 }]);
@@ -6404,9 +6558,11 @@ console.log(JSON.stringify(args));
     // neither an allow that resets a target's revises nor a verdict that resets the halt's count.
     test("an unmarked entry leaves the breaker as it was: the third attempt after two revises still trips it", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-unmarked-breaker");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-unmarked-breaker"
+      );
       const fixture = allHandlers();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const context = gateContext([]);
       await fixture.handlers.get("session_start")?.({}, context);
       standInDispatch();
@@ -6424,9 +6580,11 @@ console.log(JSON.stringify(args));
     }, 30_000);
     test("an unmarked entry leaves the halt's count as it was: the third call without a verdict still halts", async () => {
       gateOn();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-unmarked-halt");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-unmarked-halt"
+      );
       const fixture = allHandlers();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const context = gateContext([]);
       await fixture.handlers.get("session_start")?.({}, context);
       standInDispatch();
@@ -6465,9 +6623,11 @@ console.log(JSON.stringify(args));
         cfgSkills: { get: () => ({}) },
         cfgExtensionHandlersToolCallTimeoutMs: { get: () => 30_000 },
       }));
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-short-deadline");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-short-deadline"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       await fixture.handlers.get("session_start")?.({}, gateContext(notifications));
 
@@ -6493,9 +6653,11 @@ console.log(JSON.stringify(args));
         );
         process.chdir(checkout);
         standInHost();
-        const { default: envoyExtension } = await import("./envoy.ts?askgate-checkout-disable");
+        const { default: envoyExtension }: EnvoyModule = await import(
+          "./envoy.ts?askgate-checkout-disable"
+        );
         const fixture = createPi();
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         const notifications: string[] = [];
         const context = gateContext(notifications);
         await fixture.handlers.get("session_start")?.({}, context);
@@ -6521,9 +6683,9 @@ console.log(JSON.stringify(args));
       process.env.DISPATCH_URL = "http://dispatch.test";
       process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-off");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?askgate-off");
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       const context = gateContext(notifications);
       await fixture.handlers.get("session_start")?.({}, context);
@@ -6546,9 +6708,11 @@ console.log(JSON.stringify(args));
       delete process.env.DISPATCH_URL;
       delete process.env.DISPATCH_TOKEN;
       standInHost();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-no-dispatch");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-no-dispatch"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       const context = gateContext(notifications);
       await fixture.handlers.get("session_start")?.({}, context);
@@ -6577,9 +6741,11 @@ console.log(JSON.stringify(args));
       process.env.DISPATCH_URL = "http://dispatch.test";
       process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-unparsable");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-unparsable"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       const context = gateContext(notifications);
       await fixture.handlers.get("session_start")?.({}, context);
@@ -6603,9 +6769,11 @@ console.log(JSON.stringify(args));
       process.env.OMP_ASKGATE_TIMEOUT_MS = "soon";
       try {
         standInHost();
-        const { default: envoyExtension } = await import("./envoy.ts?askgate-load-fails");
+        const { default: envoyExtension }: EnvoyModule = await import(
+          "./envoy.ts?askgate-load-fails"
+        );
         const fixture = createPi();
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         const notifications: string[] = [];
         const context = gateContext(notifications);
         await fixture.handlers.get("session_start")?.({}, context);
@@ -6651,9 +6819,11 @@ console.log(JSON.stringify(args));
       process.env.OMP_ASKGATE_TIMEOUT_MS = "soon";
       try {
         standInHost();
-        const { default: envoyExtension } = await import("./envoy.ts?askgate-load-fails-block");
+        const { default: envoyExtension }: EnvoyModule = await import(
+          "./envoy.ts?askgate-load-fails-block"
+        );
         const fixture = createPi();
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, gateContext([]));
         // The gate did not load, so it records no mode; the record carries the session's choice,
         // and a gated write the gate never saw is refused by the CLI, not posted with a warning.
@@ -6694,9 +6864,11 @@ console.log(JSON.stringify(args));
       process.env.DISPATCH_URL = "http://dispatch.test";
       process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
-      const { default: envoyExtension } = await import("./envoy.ts?askgate-no-config-path");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?askgate-no-config-path"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const notifications: string[] = [];
       const context = gateContext(notifications);
       await fixture.handlers.get("session_start")?.({}, context);
@@ -6731,10 +6903,12 @@ console.log(JSON.stringify(args));
         },
       ]);
     };
-    const { default: envoyExtension } = await import("./envoy.ts?invalid-session-machine");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?invalid-session-machine"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const sessionsTool = fixture.tools.find((tool) => tool.name === "envoy_sessions");
     if (sessionsTool === undefined) throw new Error("envoy_sessions was not registered");
 
@@ -6771,9 +6945,11 @@ console.log(JSON.stringify(args));
       },
     ];
     globalThis.fetch = async () => response(sessions);
-    const { default: envoyExtension } = await import("./envoy.ts?sessions-machine-filter");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?sessions-machine-filter"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const sessionsTool = fixture.tools.find((tool) => tool.name === "envoy_sessions");
     if (sessionsTool === undefined) throw new Error("envoy_sessions was not registered");
     const listed = async (machine: string) => {
@@ -6802,10 +6978,12 @@ console.log(JSON.stringify(args));
       number: 42,
     };
     // Query isolation gives this stateful extension its own NATS subscription.
-    const { default: envoyExtension } = await import("./envoy.ts?toon-structured-payload");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?toon-structured-payload"
+    );
     const fixture = createPi();
     const injected = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -6846,10 +7024,12 @@ console.log(JSON.stringify(args));
 
   test("injects a non-JSON envelope payload as raw text without serializing its envelope", async () => {
     // Query isolation gives this stateful extension its own NATS subscription.
-    const { default: envoyExtension } = await import("./envoy.ts?toon-plain-text-payload");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?toon-plain-text-payload"
+    );
     const fixture = createPi();
     const injected = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -6890,10 +7070,10 @@ console.log(JSON.stringify(args));
 
   test("names the sender and injects a reply instruction for a peer agent message", async () => {
     // Query isolation gives this stateful extension its own NATS subscription.
-    const { default: envoyExtension } = await import("./envoy.ts?sender-reply-hint");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?sender-reply-hint");
     const fixture = createPi();
     const injected = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -6935,10 +7115,10 @@ console.log(JSON.stringify(args));
   });
 
   test("renders a human envelope without reply metadata", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?human-rendering");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?human-rendering");
     const fixture = createPi();
     const injected = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -6977,10 +7157,10 @@ console.log(JSON.stringify(args));
 
   test("renders a message this session sent to itself as an ordinary delivery", async () => {
     // Query isolation gives this stateful extension its own NATS subscription.
-    const { default: envoyExtension } = await import("./envoy.ts?self-echo");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?self-echo");
     const fixture = createPi();
     const injected = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -7020,10 +7200,10 @@ console.log(JSON.stringify(args));
     });
   });
   test("deduplicates a webhook redelivery without suppressing a later envelope", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?dispatch-echo");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?dispatch-echo");
     const fixture = createPi();
     const afterEcho = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -7070,10 +7250,10 @@ console.log(JSON.stringify(args));
   });
 
   test("keeps a valid event id when a frame's dedupe key is empty", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?empty-dedupe-key");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?empty-dedupe-key");
     const fixture = createPi();
     const sentinel = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -7122,10 +7302,10 @@ console.log(JSON.stringify(args));
   });
 
   test("an empty event id identifies nothing, so two distinct frames that carry one both arrive", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?empty-event-id");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?empty-event-id");
     const fixture = createPi();
     const sentinel = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -7156,10 +7336,12 @@ console.log(JSON.stringify(args));
 
   test("never exposes a malformed envelope frame", async () => {
     // Query isolation gives this stateful extension its own NATS subscription.
-    const { default: envoyExtension } = await import("./envoy.ts?toon-malformed-envelope");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?toon-malformed-envelope"
+    );
     const fixture = createPi();
     const injected = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -7207,10 +7389,10 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?role-agent-delivery");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?role-agent-delivery");
     const fixture = createPi();
     const injected = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -7279,9 +7461,11 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?role-set-keeps-bound-role");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?role-set-keeps-bound-role"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext("ses_role_bound");
     await fixture.handlers.get("session_start")?.({}, context);
     await claimEnvoyRole("ses_role_bound", role, context);
@@ -7373,10 +7557,12 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?controller-notice-lane");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?controller-notice-lane"
+    );
     const fixture = createPi();
     let shown = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -7465,9 +7651,11 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?controller-lane-unheld");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?controller-lane-unheld"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext("ses_no_role");
     await fixture.handlers.get("session_start")?.({}, context);
     const subscribe = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
@@ -7499,9 +7687,11 @@ console.log(JSON.stringify(args));
         paths.push(new URL(input.toString()).pathname);
         return responseWithRegistration(input, init, []);
       };
-      const { default: envoyExtension } = await import("./envoy.ts?outage-still-registers");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?outage-still-registers"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       stop = async () => fixture.handlers.get("session_shutdown")?.({}, context);
 
       const reconnecting = Promise.reject(new Error("the connection is reconnecting"));
@@ -7538,9 +7728,11 @@ console.log(JSON.stringify(args));
     let stop: (() => Promise<unknown>) | undefined;
     try {
       globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-      const { default: envoyExtension } = await import("./envoy.ts?background-confirm");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?background-confirm"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       stop = async () => fixture.handlers.get("session_shutdown")?.({}, context);
 
       const reconnecting = Promise.reject(new Error("the connection is reconnecting"));
@@ -7607,9 +7799,11 @@ console.log(JSON.stringify(args));
           });
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import("./envoy.ts?one-bound-per-pass");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?one-bound-per-pass"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
 
       // A connection that answers no round trip at all, rather than rejecting one: every flush
       // this pass takes waits its bound out.
@@ -7656,9 +7850,11 @@ console.log(JSON.stringify(args));
     let stop: (() => Promise<unknown>) | undefined;
     try {
       globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-      const { default: envoyExtension } = await import("./envoy.ts?reconnect-clears-mark");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?reconnect-clears-mark"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
 
       natsState.heldFlush = new Promise<void>(() => undefined);
       stop = async () => fixture.handlers.get("session_shutdown")?.({}, live);
@@ -7702,9 +7898,11 @@ console.log(JSON.stringify(args));
     let stop: (() => Promise<unknown>) | undefined;
     try {
       globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-      const { default: envoyExtension } = await import("./envoy.ts?background-clears-mark");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?background-clears-mark"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       stop = async () => fixture.handlers.get("session_shutdown")?.({}, live);
 
       natsState.heldFlush = new Promise<void>(() => undefined);
@@ -7747,9 +7945,11 @@ console.log(JSON.stringify(args));
     let stop: (() => Promise<unknown>) | undefined;
     try {
       globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-      const { default: envoyExtension } = await import("./envoy.ts?shutdown-stops-asking");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?shutdown-stops-asking"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       stop = async () => fixture.handlers.get("session_shutdown")?.({}, context);
 
       natsState.heldFlush = new Promise<void>(() => undefined);
@@ -8021,9 +8221,9 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import(`./envoy.ts?${label}`);
+    const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${label}`);
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     // The host's one session manager. Every context it hands out reads the manager as it stands:
     // a session event moves its id first, and a `/new` its transcript too, so a reclaim reads the
     // transcript as of its read. The first context to establish keeps the heartbeat the extension
@@ -11606,18 +11806,22 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtensionA } = await import("./envoy.ts?role-agent-takeover-a");
+    const { default: envoyExtensionA }: EnvoyModule = await import(
+      "./envoy.ts?role-agent-takeover-a"
+    );
     const fixtureA = createPi();
-    envoyExtensionA(fixtureA.pi);
+    await envoyExtensionA(fixtureA.pi);
     await fixtureA.handlers.get("session_start")?.({}, sessionContext("ses_role_a"));
     const roleToolA = fixtureA.tools.find((tool) => tool.name === "envoy_role_set");
     if (roleToolA === undefined) throw new Error("role tool was not registered for session A");
     await roleToolA.execute("", { role });
 
-    const { default: envoyExtensionB } = await import("./envoy.ts?role-agent-takeover-b");
+    const { default: envoyExtensionB }: EnvoyModule = await import(
+      "./envoy.ts?role-agent-takeover-b"
+    );
     const fixtureB = createPi();
     const injectedB = Promise.withResolvers<void>();
-    envoyExtensionB({
+    await envoyExtensionB({
       ...fixtureB.pi,
       sendMessage: (message, options) => {
         fixtureB.pi.sendMessage(message, options);
@@ -11665,10 +11869,12 @@ console.log(JSON.stringify(args));
       if (!listenerAvailable) throw new Error("listener API unavailable");
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?role-agent-listener-down");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?role-agent-listener-down"
+    );
     const fixture = createPi();
     const injected = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -11730,7 +11936,9 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?role-claim-heartbeat");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?role-claim-heartbeat"
+    );
     const fixture = createPi();
     const intervals: (() => void)[] = [];
     const context: SessionContext = {
@@ -11738,7 +11946,7 @@ console.log(JSON.stringify(args));
       setInterval: (callback) => intervals.push(callback),
     };
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     expect(intervals).toHaveLength(1);
     expect(registrations).toHaveLength(1);
@@ -12192,14 +12400,16 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?unsubscribe-preserves-role");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?unsubscribe-preserves-role"
+    );
     const fixture = createPi();
     const intervals: (() => void)[] = [];
     const context: SessionContext = {
       ...sessionContext("ses_unsubscribe"),
       setInterval: (callback) => intervals.push(callback),
     };
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
 
     const roleTool = fixture.tools.find((tool) => tool.name === "envoy_role_set");
@@ -12261,9 +12471,11 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?uncaptured-subscribe");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?uncaptured-subscribe"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     // A resumed session, which is what reads its stored interest row again and follows what it
     // holds (`recoverRegisteredInterests`).
     const base = sessionContext("ses_uncaptured");
@@ -12341,9 +12553,11 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?role-subscription-unsubscribe");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?role-subscription-unsubscribe"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext("ses_role_subscription");
     await fixture.handlers.get("session_start")?.({}, context);
 
@@ -12419,7 +12633,7 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?heartbeat-reassert");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?heartbeat-reassert");
     const regained: { readonly role: string; readonly reason: string }[] = [];
     onEnvoyRoleRegained(async (regainedRole: string, reason: string) => {
       regained.push({ role: regainedRole, reason });
@@ -12430,7 +12644,7 @@ console.log(JSON.stringify(args));
       ...sessionContext("ses_reassert"),
       setInterval: (callback) => intervals.push(callback),
     };
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     const roleTool = fixture.tools.find((tool) => tool.name === "envoy_role_set");
     if (roleTool === undefined) throw new Error("role tool was not registered");
@@ -12491,7 +12705,7 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?role-read-404");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?role-read-404");
     const regained: { readonly role: string; readonly reason: string }[] = [];
     const regainFired = Promise.withResolvers<void>();
     onEnvoyRoleRegained(async (regainedRole: string, reason: string) => {
@@ -12504,7 +12718,7 @@ console.log(JSON.stringify(args));
       ...sessionContext("ses_lapsed_read"),
       setInterval: (callback) => intervals.push(callback),
     };
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     const roleTool = fixture.tools.find((tool) => tool.name === "envoy_role_set");
     if (roleTool === undefined) throw new Error("role tool was not registered");
@@ -12544,7 +12758,7 @@ console.log(JSON.stringify(args));
       if (url.pathname === "/v1/interests/subscribe") registrations += 1;
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?heartbeat-quiet");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?heartbeat-quiet");
     const regained: unknown[] = [];
     onEnvoyRoleRegained(async (regainedRole: string, reason: string) => {
       regained.push({ role: regainedRole, reason });
@@ -12555,7 +12769,7 @@ console.log(JSON.stringify(args));
       ...sessionContext("ses_quiet"),
       setInterval: (callback) => intervals.push(callback),
     };
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
     const claimEntries = () =>
@@ -12608,7 +12822,7 @@ console.log(JSON.stringify(args));
       if (url.pathname === "/v1/interests/subscribe") registrations += 1;
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?heartbeat-409");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?heartbeat-409");
     const regained: unknown[] = [];
     onEnvoyRoleRegained(async (regainedRole: string, reason: string) => {
       regained.push({ role: regainedRole, reason });
@@ -12631,7 +12845,7 @@ console.log(JSON.stringify(args));
         },
       },
     };
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
 
@@ -12688,7 +12902,9 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?heartbeat-outage-regain");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?heartbeat-outage-regain"
+    );
     const regained: { readonly role: string; readonly reason: string }[] = [];
     const hooked = Promise.withResolvers<void>();
     onEnvoyRoleRegained(async (regainedRole: string, reason: string) => {
@@ -12710,7 +12926,7 @@ console.log(JSON.stringify(args));
         },
       },
     };
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
 
@@ -12769,7 +12985,7 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?heartbeat-hung-hook");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?heartbeat-hung-hook");
     let hookCalls = 0;
     onEnvoyRoleRegained(async () => {
       hookCalls += 1;
@@ -12783,7 +12999,7 @@ console.log(JSON.stringify(args));
       setInterval: (callback) => intervals.push(callback),
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
     };
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
     expect(registrations).toBe(1);
@@ -12833,7 +13049,9 @@ console.log(JSON.stringify(args));
         }
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import("./envoy.ts?heartbeat-wedged-pass");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?heartbeat-wedged-pass"
+      );
       const fixture = createPi();
       const intervals: (() => void)[] = [];
       const context: SessionContext = {
@@ -12861,7 +13079,7 @@ console.log(JSON.stringify(args));
         }
         return registrations;
       };
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
       expect(registrations).toBe(1);
 
@@ -12916,14 +13134,16 @@ console.log(JSON.stringify(args));
         if (url.pathname === "/v1/interests/subscribe") registrations += 1;
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import("./envoy.ts?heartbeat-wedged-move");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?heartbeat-wedged-move"
+      );
       const fixture = createPi();
       const intervals: (() => void)[] = [];
       const context: SessionContext = {
         ...sessionContext("ses_wedged_move"),
         setInterval: (callback) => intervals.push(callback),
       };
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
       await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
       expect(registrations).toBe(1);
@@ -12959,7 +13179,9 @@ console.log(JSON.stringify(args));
         }
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import("./envoy.ts?heartbeat-stall-said-once");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?heartbeat-stall-said-once"
+      );
       const warnings: string[] = [];
       const stopSink = logger.registerLogSink((entry) => {
         if (entry.level === "warn") warnings.push(entry.message);
@@ -12973,7 +13195,7 @@ console.log(JSON.stringify(args));
           setInterval: (callback) => intervals.push(callback),
           ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
         };
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, context);
 
         // A healthy tick before any stall is silent.
@@ -13043,14 +13265,16 @@ console.log(JSON.stringify(args));
         }
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import("./envoy.ts?heartbeat-stall-new-session");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?heartbeat-stall-new-session"
+      );
       const fixture = createPi();
       const intervals: (() => void)[] = [];
       const context: SessionContext = {
         ...sessionContext("ses_stall_moved"),
         setInterval: (callback) => intervals.push(callback),
       };
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const switched = Promise.withResolvers<void>();
       try {
         await fixture.handlers.get("session_start")?.({}, context);
@@ -13124,7 +13348,9 @@ console.log(JSON.stringify(args));
         }
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import("./envoy.ts?heartbeat-stall-regain");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?heartbeat-stall-regain"
+      );
       const regained: { readonly role: string; readonly reason: string }[] = [];
       const hooked = Promise.withResolvers<void>();
       onEnvoyRoleRegained(async (regainedRole: string, reason: string) => {
@@ -13137,7 +13363,7 @@ console.log(JSON.stringify(args));
         ...sessionContext("ses_stall_regain"),
         setInterval: (callback) => intervals.push(callback),
       };
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
       await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
 
@@ -13207,13 +13433,15 @@ console.log(JSON.stringify(args));
         }
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import("./envoy.ts?abandoned-writes-nothing");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?abandoned-writes-nothing"
+      );
       const fixture = createPi();
       const connected = Promise.withResolvers<void>();
       try {
         // The first session's pass parks here, with its connection half made.
         natsState.heldConnect = connected.promise;
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, sessionContext("ses_fenced_a"));
         natsState.heldConnect = undefined;
 
@@ -13285,11 +13513,11 @@ console.log(JSON.stringify(args));
     // that path. Only a connection closed for good makes the open give up; a rejection on a
     // connection that is not closed leaves it to go on, confirmed in the background.
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
-    const { default: envoyExtension } = await import("./envoy.ts?control-flush-fails");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?control-flush-fails");
     const fixture = createPi();
     const control = "agentstream.ses_control_flush.control";
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext("ses_control_flush");
     natsState.failFlushClosesConnection = true;
     natsState.failFlushOnSubject = control;
@@ -13317,13 +13545,15 @@ console.log(JSON.stringify(args));
     await withEnvoyTimings({ heartbeatMs: 25, passDeadlineMs: 200 }, async () => {
       globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
       // Each row loads its own instance of the extension, as every row in this file does.
-      const { default: envoyExtension } = await import("./envoy.ts?abandoned-dial-closed");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?abandoned-dial-closed"
+      );
       const fixture = createPi();
       const connected = Promise.withResolvers<void>();
       try {
         // The first session's pass parks in its dial and is abandoned at its deadline.
         natsState.heldConnect = connected.promise;
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, sessionContext("ses_dial_a"));
         natsState.heldConnect = undefined;
 
@@ -13377,7 +13607,9 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?heartbeat-role-read-failure");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?heartbeat-role-read-failure"
+    );
     const regained: unknown[] = [];
     onEnvoyRoleRegained(async (regainedRole: string, reason: string) => {
       regained.push({ role: regainedRole, reason });
@@ -13397,7 +13629,7 @@ console.log(JSON.stringify(args));
         },
       },
     };
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
 
@@ -13447,7 +13679,9 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?heartbeat-late-regain");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?heartbeat-late-regain"
+    );
     const regained: { readonly role: string; readonly reason: string }[] = [];
     const hooked = Promise.withResolvers<void>();
     onEnvoyRoleRegained(async (regainedRole: string, reason: string) => {
@@ -13467,7 +13701,7 @@ console.log(JSON.stringify(args));
         },
       },
     };
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
     expect(registrations).toBe(1);
@@ -13514,10 +13748,10 @@ console.log(JSON.stringify(args));
         topics: [],
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?register-session");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?register-session");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_register"));
 
     expect(requests).toContainEqual({
@@ -13555,9 +13789,9 @@ console.log(JSON.stringify(args));
       });
     };
     // Query isolation gives this stateful extension its own module state, as every test here does.
-    const { default: envoyExtension } = await import("./envoy.ts?register-bounded");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?register-bounded");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext("ses_bounded");
     await fixture.handlers.get("session_start")?.({}, context);
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
@@ -13606,11 +13840,11 @@ console.log(JSON.stringify(args));
         topics: ["notifications.agent.ses_target"],
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?targeted-btw");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?targeted-btw");
     const fixture = createPi();
     const asked: string[] = [];
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.(
       {},
       {
@@ -13688,9 +13922,11 @@ console.log(JSON.stringify(args));
       return response({});
     };
     // Query-string isolation gives this stateful extension its own NATS subscription.
-    const { default: envoyExtension } = await import("./envoy.ts?targeted-comment-btw");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?targeted-comment-btw"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.(
       {},
       {
@@ -14055,10 +14291,13 @@ console.log(JSON.stringify(args));
         const { accepts, agent, delivered, fixture, posts, recordedWhenDelivered } =
           await bootDirectSession(`direct-accept-refused-${name}`, { accept: () => answer });
 
-        await onTestClock(() => {
-          agent.push(directDispatchEnvelope("steer", `direct-accept-refused-${name}`));
-          return delivered(1);
-        });
+        await onTestClock(
+          () => {
+            agent.push(directDispatchEnvelope("steer", `direct-accept-refused-${name}`));
+            return delivered(1);
+          },
+          () => accepts.length > 0
+        );
 
         expect(accepts).toHaveLength(attempts);
         expect(new Set(accepts.map((accept) => accept.key)).size).toBe(1);
@@ -14080,10 +14319,13 @@ console.log(JSON.stringify(args));
         { accept: (count) => (count === 1 ? { reject: "fetch failed" } : { accepted: true }) }
       );
 
-      await onTestClock(() => {
-        agent.push(directDispatchEnvelope("steer", "direct-accept-retried"));
-        return delivered(1);
-      });
+      await onTestClock(
+        () => {
+          agent.push(directDispatchEnvelope("steer", "direct-accept-retried"));
+          return delivered(1);
+        },
+        () => accepts.length > 0
+      );
 
       expect(accepts.map((accept) => accept.path)).toEqual([
         `/api/v1/messages/${DIRECT_MESSAGE_ID}/deliveries/1/accept`,
@@ -14182,10 +14424,13 @@ console.log(JSON.stringify(args));
         }
       );
 
-      await onTestClock(() => {
-        agent.push(directDispatchEnvelope("steer", "direct-carded-retry-1"));
-        return delivered(1);
-      });
+      await onTestClock(
+        () => {
+          agent.push(directDispatchEnvelope("steer", "direct-carded-retry-1"));
+          return delivered(1);
+        },
+        () => accepts.length > 0
+      );
       // The person's retry is an attempt of its own, which the session has not delivered.
       agent.push(directDispatchEnvelope("aside", "direct-carded-retry-2", { attempt: 2 }));
       await delivered(2);
@@ -15804,6 +16049,8 @@ console.log(JSON.stringify(args));
           expect(accepts.map((accept) => sessionSignedAs(minted, accept.authorization))).toEqual([
             "ses_delivery",
           ]);
+          // One trade, for this session: a reply under way when the move's pass runs keeps the
+          // client the accept traded for (`underWay`), so the pass forgets it only after.
           expect(traded).toEqual(["ses_delivery"]);
         } finally {
           restore();
@@ -15811,6 +16058,88 @@ console.log(JSON.stringify(args));
           forgetBrokerClients();
         }
       }, 20_000);
+
+      // The window between the accept and the reply: the host leaves while the command runs, and
+      // the move's pass runs to its end before the command does. The session the message was
+      // addressed to is one this process has left by then, and the pass forgets the broker client
+      // of each such session once its role move has run (`leftSessions`); the reply, which signs
+      // as that session, must still go out on the token the accept traded for, rather than trade
+      // again under a session this process no longer runs.
+      test("trades once for the addressed session when the host leaves while its command runs", async () => {
+        const broker = stubBroker("shell-left-while-running");
+        const other = otherSessionDirectory();
+        const gate = mkdtempSync(join(tmpdir(), "envoy-shell-gate-"));
+        workDirectories.push(gate);
+        const started = join(gate, "started");
+        const go = join(gate, "go");
+        // The delivery's own end. Its command's work ends by recording the message as taken and
+        // settling its claim (`runShellCommandTurn`), and the host has left the session by then, so
+        // the record cannot reach that session's transcript, and the last step says so in the log.
+        // (The frame's own answer on its inbox is no such sign here: the move's pass closed the
+        // session's relay, which answered the frame `nak` then.)
+        const ended = Promise.withResolvers<void>();
+        const stopSink = logger.registerLogSink((entry) => {
+          if (
+            entry.level === "warn" &&
+            entry.message ===
+              "envoy: a delivery was not recorded in the session it was addressed to"
+          ) {
+            ended.resolve();
+          }
+        });
+        try {
+          const { agent, fixture, replied, replies } = await bootShellSession(
+            "shell-command-broker-left-while-running",
+            {
+              accept: () => ({
+                accepted: true,
+                body: `!touch '${started}'; while [ ! -e '${go}' ]; do sleep 0.02; done; printf hi`,
+              }),
+              dispatch: broker.trade,
+              dispatchCredential: "broker",
+            }
+          );
+          broker.watch();
+
+          agent.push(directDispatchEnvelope("steer", "shell-command-broker-left-while-running"));
+          // The command is running: the host leaves, and the move's pass runs to its end, before
+          // the command is let go.
+          await until(() => existsSync(started), "the command to be running", 10_000);
+          await moveHost(fixture, other);
+          writeFileSync(go, "");
+          await replied(1);
+
+          // The reply names the session the person wrote to and is signed as it.
+          expect(replies.map((reply) => reply.body.actor)).toEqual([
+            { id: "ses_delivery", kind: "session" },
+          ]);
+          expect(broker.presented.filter((one) => one.path.endsWith("/reply"))).toEqual([
+            {
+              signedAs: "ses_delivery",
+              path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
+            },
+          ]);
+          // And on the one token the accept traded for.
+          expect(broker.traded).toEqual(["ses_delivery"]);
+
+          // Held only while the delivery ran: once it has ended, a later pass forgets the
+          // session's client like any other session this process left, so a call for it trades
+          // afresh. The hold ends with the command's work, in the same run of microtasks as that
+          // log line and with no I/O between, so one turn of the event loop after it runs that
+          // end, and then one pass.
+          await ended.promise;
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          await fixture.handlers.get("session_switch")?.(
+            { reason: "new" },
+            { ...sessionContext("ses_later"), cwd: other }
+          );
+          await brokerTokenFor(process.env, "ses_delivery")();
+          expect(broker.traded.filter((one) => one === "ses_delivery")).toHaveLength(2);
+        } finally {
+          stopSink();
+          broker.stop();
+        }
+      }, 30_000);
 
       // The same credential, on an accept Dispatch answers twice. The row above moves the host
       // after its one accept attempt has gone out, so that attempt traded before the move
@@ -15885,10 +16214,10 @@ console.log(JSON.stringify(args));
               path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
             },
           ]);
-          // Two trades, both under the session the person wrote to: the first attempt's, and
-          // the retry's, since leaving a session drops the key pair and token this process held
-          // for it (`forgetBrokerSession`); the refusal goes out on what the retry traded.
-          expect(broker.traded).toEqual(["ses_delivery", "ses_delivery"]);
+          // One trade, under the session the person wrote to: the accept is under way while the
+          // move's pass runs, so the pass keeps the client its first attempt traded for
+          // (`underWay`), and the retry and the refusal go out on that one token.
+          expect(broker.traded).toEqual(["ses_delivery"]);
         } finally {
           broker.stop();
         }
@@ -16360,6 +16689,46 @@ console.log(JSON.stringify(args));
         });
       }
 
+      // The host runs a person's typed input off the relay (`runTypedInput`) after the delivery
+      // has returned, and leaves while it runs, so the move's pass runs before the reply: the reply
+      // must still go out on the one token the accept traded for.
+      test("trades once for a typed input's session when the host leaves while it runs the input", async () => {
+        const broker = stubBroker("typed-input-moved");
+        const move: { fire?: () => Promise<unknown> } = {};
+        try {
+          const { agent, fixture, replied, replies } = await bootDirectSession(
+            "typed-input-moved",
+            {
+              accept: () => ({ accepted: true, body: "/new" }),
+              dispatch: broker.trade,
+              dispatchCredential: "broker",
+              sendUserInput: async () => {
+                await move.fire?.();
+                return { handled: "terminal-only" };
+              },
+            }
+          );
+          move.fire = async () =>
+            await fixture.handlers.get("session_switch")?.(
+              { reason: "new" },
+              sessionContext("ses_after_typed_input")
+            );
+          broker.watch();
+          agent.push(directDispatchEnvelope("steer", "typed-input-moved"));
+          await replied(1);
+
+          expect(replies.map((reply) => reply.body.actor)).toEqual([
+            { id: "ses_delivery", kind: "session" },
+          ]);
+          expect(
+            broker.presented.filter((one) => one.path.endsWith("/reply")).map((one) => one.signedAs)
+          ).toEqual(["ses_delivery"]);
+          expect(broker.traded).toEqual(["ses_delivery"]);
+        } finally {
+          broker.stop();
+        }
+      }, 30_000);
+
       // Between the accept and the send: the accept itself. The attempt is spent by the time
       // Dispatch answers it, so this one is no release - a re-send of a taken message is
       // refused - and the person is answered instead. The host is handed nothing: the line
@@ -16440,10 +16809,10 @@ console.log(JSON.stringify(args));
           expect(broker.presented.filter((one) => one.path === replyPath)).toEqual([
             { signedAs: "ses_delivery", path: replyPath },
           ]);
-          // Two trades, both under the session the person wrote to: the accept's, and the
-          // refusal's own, since leaving a session drops the key pair and token this process
-          // held for it (`forgetBrokerSession`) and a reply signed as it trades afresh.
-          expect(broker.traded).toEqual(["ses_delivery", "ses_delivery"]);
+          // One trade, under the session the person wrote to: the accept is under way while the
+          // move's pass runs, so the pass keeps the client the accept traded for (`underWay`),
+          // and the refusal goes out on that one token.
+          expect(broker.traded).toEqual(["ses_delivery"]);
         } finally {
           stopSink();
           broker.stop();
@@ -16620,6 +16989,52 @@ console.log(JSON.stringify(args));
           broker.stop();
         }
       });
+
+      // A BTW's whole body is read inside the delivery, and its side turn and answer run off the
+      // relay (`offWorker`) after the delivery has returned. The host leaves inside the side turn,
+      // so the move's pass runs while that work is under way: the answer must still go out on the
+      // one token the whole-body read traded for, rather than trade again under the session the
+      // host has left.
+      test("trades once for a BTW's session when the host leaves inside its side turn, after the delivery returned", async () => {
+        const broker = stubBroker("btw-whole-moved");
+        const move: { fire?: () => Promise<unknown> } = {};
+        try {
+          const { agent, fixture, replied, replies } = await bootDirectSession("btw-whole-moved", {
+            dispatch: async (url, init) => {
+              if (url.pathname === `/api/v1/messages/${DIRECT_MESSAGE_ID}`) {
+                return response({
+                  message: { body: "Can this ship?", id: DIRECT_MESSAGE_ID },
+                  replies: [],
+                });
+              }
+              return broker.trade(url, init);
+            },
+            dispatchCredential: "broker",
+            sideTurn: async () => {
+              await move.fire?.();
+              return "This session's answer.";
+            },
+          });
+          move.fire = async () =>
+            await fixture.handlers.get("session_switch")?.(
+              { reason: "new" },
+              sessionContext("ses_after_btw_whole")
+            );
+          broker.watch();
+          agent.push(directDispatchEnvelope("btw", "btw-whole-moved", { bodyTruncated: true }));
+          await replied(1);
+
+          expect(replies.map((reply) => reply.body.actor)).toEqual([
+            { id: "ses_delivery", kind: "session" },
+          ]);
+          expect(
+            broker.presented.filter((one) => one.path.endsWith("/reply")).map((one) => one.signedAs)
+          ).toEqual(["ses_delivery"]);
+          expect(broker.traded).toEqual(["ses_delivery"]);
+        } finally {
+          broker.stop();
+        }
+      }, 30_000);
     });
 
     // A host without `pi.sendUserInput` would hand a command to the model as words, so the
@@ -17906,9 +18321,9 @@ console.log(JSON.stringify(args));
       await delivered(1);
 
       const forkQuery = "typed-note-acp-fork-instance";
-      const { default: forkExtension } = await import(`./envoy.ts?${forkQuery}`);
+      const { default: forkExtension }: EnvoyModule = await import(`./envoy.ts?${forkQuery}`);
       const fork = createPi();
-      forkExtension(fork.pi);
+      await forkExtension(fork.pi);
       await fork.handlers.get("session_start")?.({}, sessionContext("ses_fork_fresh"));
       await fork.handlers.get("session_switch")?.({}, sessionContext("ses_delivery"));
       await fork.handlers.get("session_switch")?.({}, sessionContext("ses_forked"));
@@ -18201,9 +18616,11 @@ console.log(JSON.stringify(args));
         const [from, to] = [`ses_pictures_${reason}_from`, `ses_pictures_${reason}_to`];
         const addresses = transcriptAddresses(reason);
         globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-        const { default: envoyExtension } = await import(`./envoy.ts?pictures-${reason}`);
+        const { default: envoyExtension }: EnvoyModule = await import(
+          `./envoy.ts?pictures-${reason}`
+        );
         const fixture = createPi();
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, sessionContext(from));
         shownPictures(from).add(`dispatch://LEGION-1/artifact/${reason}-earlier-png@v1`);
 
@@ -18226,9 +18643,9 @@ console.log(JSON.stringify(args));
     test("a session started on its transcript counts the pictures that transcript shows as shown", async () => {
       const addresses = transcriptAddresses("restart");
       globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-      const { default: envoyExtension } = await import("./envoy.ts?pictures-restart");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?pictures-restart");
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
 
       const started = sessionContext("ses_pictures_restarted");
       await fixture.handlers.get("session_start")?.(
@@ -18246,9 +18663,9 @@ console.log(JSON.stringify(args));
 
     test("a session that shuts down forgets the pictures it was shown", async () => {
       globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
-      const { default: envoyExtension } = await import("./envoy.ts?pictures-shutdown");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?pictures-shutdown");
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, sessionContext("ses_pictures_shutdown"));
       shownPictures("ses_pictures_shutdown").add("dispatch://LEGION-1/artifact/shut-png@v1");
 
@@ -18262,9 +18679,11 @@ console.log(JSON.stringify(args));
     // the registry; its shutdown forgets that id, not the empty one.
     test("a subagent instance that shuts down forgets the id its tool calls carried", async () => {
       globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
-      const { default: envoyExtension } = await import("./envoy.ts?pictures-subagent-shutdown");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?pictures-subagent-shutdown"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       shownPictures("ses_pictures_subagent").add("dispatch://LEGION-1/artifact/sub-png@v1");
 
       await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_pictures_subagent"));
@@ -18275,10 +18694,10 @@ console.log(JSON.stringify(args));
 
   test("deduplicates targeted Dispatch frames by dedupe key", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
-    const { default: envoyExtension } = await import("./envoy.ts?targeted-dedupe");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?targeted-dedupe");
     const fixture = createPi();
     const distinctDelivery = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -18314,9 +18733,11 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?targeted-btw-rejection");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?targeted-btw-rejection"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.(
       {},
       {
@@ -18361,10 +18782,10 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?targeted-btw-retry");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?targeted-btw-retry");
     const fixture = createPi();
     let sideTurns = 0;
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.(
       {},
       {
@@ -18420,10 +18841,12 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?targeted-btw-shutdown");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?targeted-btw-shutdown"
+    );
     const fixture = createPi();
     const calls: string[] = [];
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context: SessionContext = {
       ...sessionContext("ses_delivery"),
       runEphemeralTurn: async () => {
@@ -18464,9 +18887,9 @@ console.log(JSON.stringify(args));
       }
       return responseWithRegistration(input, init, {});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?targeted-malformed");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?targeted-malformed");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_delivery"));
     const agent = natsState.controls.get("notifications.agent.ses_delivery");
     if (agent === undefined) throw new Error("agent subject was not subscribed");
@@ -18524,7 +18947,7 @@ console.log(JSON.stringify(args));
       }
       return response({});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?always-register");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?always-register");
     const fixture = createPi();
     const heartbeats: (() => void)[] = [];
     const context: SessionContext = {
@@ -18532,7 +18955,7 @@ console.log(JSON.stringify(args));
       setInterval: (callback) => heartbeats.push(callback),
     };
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
 
     expect(registrations).toHaveLength(1);
@@ -18586,19 +19009,19 @@ console.log(JSON.stringify(args));
       const parentFile = fixture.transcript("2026-09-23T00-00-00-000Z_ses_parent.jsonl");
       const childFile = fixture.transcript("2026-09-23T00-00-00-000Z_ses_parent/Scout.jsonl");
       const registrations = recordingRegistrations();
-      const { default: envoyExtension } = await import("./envoy.ts?subagent-session");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?subagent-session");
       const connectsBefore = natsState.connectedNames.length;
       const heartbeats: (() => void)[] = [];
 
       // The parent and the subagent each load their own instance of the extension.
       const parent = createPi();
-      envoyExtension(parent.pi);
+      await envoyExtension(parent.pi);
       await parent.handlers.get("session_start")?.(
         {},
         sessionWithTranscript("ses_parent", parentFile, heartbeats)
       );
       const child = createPi();
-      envoyExtension(child.pi);
+      await envoyExtension(child.pi);
       await child.handlers.get("session_start")?.(
         {},
         sessionWithTranscript("ses_child", childFile, heartbeats)
@@ -18669,11 +19092,11 @@ console.log(JSON.stringify(args));
     parentID: string,
     transcript: (name: string) => string
   ) {
-    const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+    const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
     const heartbeats: (() => void)[] = [];
     const boot = async (id: string, file: string) => {
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const context = sessionWithTranscript(id, file, heartbeats);
       await fixture.handlers.get("session_start")?.({}, context);
       return { ...fixture, context };
@@ -18822,9 +19245,9 @@ console.log(JSON.stringify(args));
 
   test("the context handler appends what people wrote to the session after the request's last message", async () => {
     const { reads, item } = answeringDispatch("Go the second way.");
-    const { default: envoyExtension } = await import("./envoy.ts?session-answers-top");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?session-answers-top");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext("ses_answers_top");
     await fixture.handlers.get("session_start")?.({}, context);
     const conversation = [
@@ -18887,9 +19310,11 @@ console.log(JSON.stringify(args));
       new URL(input.toString()).host === "dispatch.test"
         ? Response.json({ unexpected: true })
         : responseWithRegistration(input, init, {});
-    const { default: envoyExtension } = await import("./envoy.ts?session-answers-malformed");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?session-answers-malformed"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext("ses_answers_malformed");
     await fixture.handlers.get("session_start")?.({}, context);
     const prompt = { role: "user", content: [{ type: "text", text: "Fix it." }], timestamp: 1 };
@@ -18928,9 +19353,11 @@ console.log(JSON.stringify(args));
         { status: 404 }
       );
     };
-    const { default: envoyExtension } = await import("./envoy.ts?session-answers-no-route");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?session-answers-no-route"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext("ses_answers_no_route");
     await fixture.handlers.get("session_start")?.({}, context);
     const warnings: string[] = [];
@@ -18977,9 +19404,11 @@ console.log(JSON.stringify(args));
       failing && new URL(input.toString()).host === "dispatch.test"
         ? Response.json({ unexpected: true })
         : answering(input, init);
-    const { default: envoyExtension } = await import("./envoy.ts?session-answers-kept-failure");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?session-answers-kept-failure"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = recordingContext(fixture.entries, () => "ses_answers_kept_failure");
     await fixture.handlers.get("session_start")?.({}, context);
     const prompt = {
@@ -19066,9 +19495,9 @@ console.log(JSON.stringify(args));
             { status: 503 }
           );
     };
-    const { default: envoyExtension } = await import("./envoy.ts?session-answers-503");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?session-answers-503");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = recordingContext(fixture.entries, () => id);
     await fixture.handlers.get("session_start")?.({}, context);
     const warnings: string[] = [];
@@ -19165,9 +19594,11 @@ console.log(JSON.stringify(args));
         items: [{ ...item, text }],
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?session-answers-recorded");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?session-answers-recorded"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = recordingContext(fixture.entries, () => live);
     await fixture.handlers.get("session_start")?.({}, context);
     const warnings: string[] = [];
@@ -19331,10 +19762,12 @@ console.log(JSON.stringify(args));
       const posted = recordingMessages();
       // Nothing ever ran a top-level session_start here: no Envoy config, so no identity to
       // inherit. The tool must say so rather than name the subagent's unreachable host id.
-      const { default: envoyExtension } = await import("./envoy.ts?identityless-subagent");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?identityless-subagent"
+      );
       fixture.transcript("2026-09-23T00-00-00-000Z_ses_parent.jsonl");
       const child = createPi();
-      envoyExtension(child.pi);
+      await envoyExtension(child.pi);
       const context = sessionWithTranscript(
         "ses_child",
         fixture.transcript("2026-09-23T00-00-00-000Z_ses_parent/Scout.jsonl"),
@@ -19600,10 +20033,10 @@ console.log(JSON.stringify(args));
       recordBootstrappedSession(fixture.transcript("2026-09-23T00-00-00-000Z_ses_first.jsonl"));
       const rotatedFile = fixture.transcript("2026-09-23T00-01-00-000Z_ses_second.jsonl");
       const registrations = recordingRegistrations();
-      const { default: envoyExtension } = await import("./envoy.ts?rotated-top-level");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?rotated-top-level");
       const heartbeats: (() => void)[] = [];
       const reloaded = createPi();
-      envoyExtension(reloaded.pi);
+      await envoyExtension(reloaded.pi);
       await reloaded.handlers.get("session_start")?.(
         {},
         sessionWithTranscript("ses_second", rotatedFile, heartbeats)
@@ -19629,16 +20062,16 @@ console.log(JSON.stringify(args));
       { id: "Scout", kind: "sub", session: liveSession("ses_sql_child"), sessionFile: childFile }
     );
     const registrations = recordingRegistrations();
-    const { default: envoyExtension } = await import("./envoy.ts?sql-subagent");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?sql-subagent");
     const heartbeats: (() => void)[] = [];
     const parent = createPi();
-    envoyExtension(parent.pi);
+    await envoyExtension(parent.pi);
     await parent.handlers.get("session_start")?.(
       {},
       sessionWithTranscript("ses_sql_parent", parentFile, heartbeats)
     );
     const child = createPi();
-    envoyExtension(child.pi);
+    await envoyExtension(child.pi);
     await child.handlers.get("session_start")?.(
       {},
       sessionWithTranscript("ses_sql_child", childFile, heartbeats)
@@ -19663,10 +20096,10 @@ console.log(JSON.stringify(args));
       }
     );
     const registrations = recordingRegistrations();
-    const { default: envoyExtension } = await import("./envoy.ts?no-session-parent");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?no-session-parent");
     const heartbeats: (() => void)[] = [];
     const parent = createPi();
-    envoyExtension(parent.pi);
+    await envoyExtension(parent.pi);
     await parent.handlers.get("session_start")?.(
       {},
       {
@@ -19675,7 +20108,7 @@ console.log(JSON.stringify(args));
       }
     );
     const child = createPi();
-    envoyExtension(child.pi);
+    await envoyExtension(child.pi);
     await child.handlers.get("session_start")?.(
       {},
       sessionWithTranscript("ses_ephemeral_child", childFile, heartbeats)
@@ -19701,7 +20134,7 @@ console.log(JSON.stringify(args));
         topics: [],
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?register-title");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?register-title");
     const fixture = createPi();
     // Titles are assigned by omp after the first turn, so session_start
     // registers before one exists; the heartbeat must pick it up later.
@@ -19720,7 +20153,7 @@ console.log(JSON.stringify(args));
       ui: { ...sessionContext().ui, notify: () => undefined },
     };
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     expect(subscribeTitles).toEqual([""]);
 
@@ -19762,7 +20195,7 @@ console.log(JSON.stringify(args));
         }
         return responseWithRegistration(input, init, {});
       };
-      const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+      const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
       const fixture = createPi();
       const heartbeats: (() => void)[] = [];
       const context: SessionContext = {
@@ -19771,7 +20204,7 @@ console.log(JSON.stringify(args));
           heartbeats.push(callback);
         },
       };
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
       return {
         places,
@@ -19971,7 +20404,7 @@ console.log(JSON.stringify(args));
       }
       return response({ session_id: "ses_registry", machine_id: "test", dir: "/tmp", topics: [] });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?live-registration");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?live-registration");
     const fixture = createPi();
     const intervals: (() => void)[] = [];
     const context: SessionContext = {
@@ -19979,7 +20412,7 @@ console.log(JSON.stringify(args));
       setInterval: (callback) => intervals.push(callback),
     };
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
     const unsubscribeTool = fixture.tools.find((tool) => tool.name === "envoy_unsubscribe");
@@ -20056,10 +20489,12 @@ console.log(JSON.stringify(args));
       }
       return response({ session_id: "ses_list", machine_id: "test", dir: "/tmp", topics: [] });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?list-live-subscriptions");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?list-live-subscriptions"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_list"));
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
     const listTool = fixture.tools.find((tool) => tool.name === "envoy_list");
@@ -20084,11 +20519,11 @@ console.log(JSON.stringify(args));
   });
 
   test("reports the active session directory through envoy_whoami", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?whoami-directory");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?whoami-directory");
     const fixture = createPi();
     const context = sessionContext("ses_whoami");
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     const whoami = fixture.tools.find((tool) => tool.name === "envoy_whoami");
     if (whoami === undefined) throw new Error("envoy_whoami was not registered");
@@ -20129,11 +20564,11 @@ console.log(JSON.stringify(args));
   });
 
   test("registers /whoami and copies the current session ID to the clipboard", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?whoami-command");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?whoami-command");
     const fixture = createPi();
     const notifications: string[] = [];
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_command"));
     const whoami = fixture.commands.find((command) => command.name === "whoami");
     if (whoami === undefined) throw new Error("/whoami was not registered");
@@ -20146,11 +20581,13 @@ console.log(JSON.stringify(args));
   });
 
   test("copies the new session identity from /whoami after an in-process switch", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?whoami-command-switch");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?whoami-command-switch"
+    );
     const fixture = createPi();
     const notifications: string[] = [];
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_before_command"));
     await fixture.handlers.get("session_switch")?.({}, sessionContext("ses_after_command"));
     const whoami = fixture.commands.find((command) => command.name === "whoami");
@@ -20164,11 +20601,13 @@ console.log(JSON.stringify(args));
   });
 
   test("still displays the current session ID when clipboard copy fails", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?whoami-command-copy-failure");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?whoami-command-copy-failure"
+    );
     const fixture = createPi({ clipboardError: new Error("clipboard unavailable") });
     const notifications: string[] = [];
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_clipboard_unavailable"));
     const whoami = fixture.commands.find((command) => command.name === "whoami");
     if (whoami === undefined) throw new Error("/whoami was not registered");
@@ -20190,10 +20629,10 @@ console.log(JSON.stringify(args));
       setInterval: (callback) => intervals.push(callback),
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
     };
-    const { default: envoyExtension } = await import("./envoy.ts?unconfigured");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?unconfigured");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
 
     expect(notifications).toEqual([
@@ -20216,10 +20655,10 @@ console.log(JSON.stringify(args));
       setInterval: (callback) => intervals.push(callback),
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
     };
-    const { default: envoyExtension } = await import("./envoy.ts?seed-refused");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?seed-refused");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
 
     expect(notifications).toEqual([
@@ -20278,11 +20717,11 @@ console.log(JSON.stringify(args));
     const bothSubscribesRefuse = async (instance: string): Promise<void> => {
       const file = process.env.ENVOY_CONFIG_FILE ?? "";
       configure(file);
-      const { default: envoyExtension } = await import(
+      const { default: envoyExtension }: EnvoyModule = await import(
         `./envoy.ts?inbound-off-${slug}-${instance}`
       );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const context = sessionContext("ses_inbound_off");
       await fixture.handlers.get("session_start")?.({}, context);
       const refusal = `inbound messages are off for this session: ${why(file)}`;
@@ -20354,9 +20793,11 @@ console.log(JSON.stringify(args));
           topics: [`notifications.role.${body.role ?? ""}`],
         });
       };
-      const { default: envoyExtension } = await import(`./envoy.ts?claim-inbound-off-${slug}`);
+      const { default: envoyExtension }: EnvoyModule = await import(
+        `./envoy.ts?claim-inbound-off-${slug}`
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const context = sessionContext("ses_claim_inbound_off");
       await fixture.handlers.get("session_start")?.({}, context);
 
@@ -20379,10 +20820,10 @@ console.log(JSON.stringify(args));
       setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
     };
-    const { default: envoyExtension } = await import("./envoy.ts?retry");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?retry");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
 
     expect(notifications.some((message) => message.includes("retrying in the background"))).toBe(
@@ -20439,9 +20880,9 @@ console.log(JSON.stringify(args));
       setInterval: () => {},
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
     };
-    const { default: envoyExtension } = await import("./envoy.ts?seed-notice");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?seed-notice");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     expect(
       notifications.some((message) =>
@@ -20470,9 +20911,9 @@ console.log(JSON.stringify(args));
         setInterval: () => {},
         ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
       };
-      const { default: envoyExtension } = await import("./envoy.ts?redial-first-dial");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?redial-first-dial");
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
 
       expect(natsState.failConnects).toBe(0);
@@ -20522,9 +20963,11 @@ console.log(JSON.stringify(args));
         setInterval: () => {},
         ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
       };
-      const { default: envoyExtension } = await import("./envoy.ts?redial-resumed-start");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?redial-resumed-start"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
 
       expect(natsState.failConnects).toBe(0);
@@ -20558,9 +21001,9 @@ console.log(JSON.stringify(args));
         setInterval: (callback) => intervals.push(callback),
         ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
       };
-      const { default: envoyExtension } = await import("./envoy.ts?inbound-restored");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?inbound-restored");
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
       const transcript = () =>
         fixture.entries
@@ -20615,9 +21058,11 @@ console.log(JSON.stringify(args));
         setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
         ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
       };
-      const { default: envoyExtension } = await import("./envoy.ts?relay-lost-mid-session");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?relay-lost-mid-session"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const heartbeat = () => {
         for (const { callback, intervalMs } of intervals) if (intervalMs === 45_000) callback();
       };
@@ -20675,9 +21120,9 @@ console.log(JSON.stringify(args));
         );
         await settle();
         for (const part of Object.values(told())) expect(part).toHaveLength(1);
-        expect(transcript().filter((content) => content.includes("Envoy inbound restored"))).toEqual(
-          []
-        );
+        expect(
+          transcript().filter((content) => content.includes("Envoy inbound restored"))
+        ).toEqual([]);
 
         // The hub admits again. The next heartbeat dials a new connection, opens the relay and
         // the control subject on it, registers, and tells the session once that it receives
@@ -20724,9 +21169,11 @@ console.log(JSON.stringify(args));
         ...sessionContext(id),
         setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
       };
-      const { default: envoyExtension } = await import("./envoy.ts?control-lost-mid-session");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?control-lost-mid-session"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       try {
         await fixture.handlers.get("session_start")?.({}, context);
         const first = natsState.controls.get(control);
@@ -20764,9 +21211,9 @@ console.log(JSON.stringify(args));
       setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
     };
-    const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+    const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     const written = (word: string) =>
       fixture.entries
@@ -20903,7 +21350,9 @@ console.log(JSON.stringify(args));
         }
         session.heartbeat();
         await until(
-          () => natsState.controls.get(relay) !== first && natsState.controls.get(relay)?.active() === true,
+          () =>
+            natsState.controls.get(relay) !== first &&
+            natsState.controls.get(relay)?.active() === true,
           "the heartbeat's open of the relay subject"
         );
         await until(() => session.restored().written.length === 1, "the restored notice");
@@ -20941,7 +21390,9 @@ console.log(JSON.stringify(args));
         await settle();
         // The first subscription ended with its connection; the stand-in still calls an ended
         // subscription active, so only those taken after it are counted.
-        const live = (natsState.controlsByTopic.get(control) ?? []).slice(1).filter((c) => c.active());
+        const live = (natsState.controlsByTopic.get(control) ?? [])
+          .slice(1)
+          .filter((c) => c.active());
         expect(live).toHaveLength(1);
       } finally {
         natsState.heldConnect = undefined;
@@ -20969,9 +21420,9 @@ console.log(JSON.stringify(args));
           setInterval: () => {},
           ui: sessionContext().ui,
         };
-        const { default: envoyExtension } = await import("./envoy.ts?pass-budget");
+        const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?pass-budget");
         const fixture = createPi();
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, context);
         // The rest of the pass needs 20.25 s, more than the 7.5 s it has, so no redial fits.
         expect(bounds).toHaveLength(1);
@@ -21013,11 +21464,11 @@ console.log(JSON.stringify(args));
           setInterval: () => {},
           ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
         };
-        const { default: envoyExtension } = await import(
+        const { default: envoyExtension }: EnvoyModule = await import(
           `./envoy.ts?named-failure-${withheld.length}`
         );
         const fixture = createPi();
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, context);
 
         const parts = {
@@ -21101,9 +21552,11 @@ console.log(JSON.stringify(args));
         setTimeout: () => undefined,
         ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
       };
-      const { default: envoyExtension } = await import("./envoy.ts?broker-answers-no-trade");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?broker-answers-no-trade"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
       expect(
         notifications.some((message) => message.includes("the trade for the session's token"))
@@ -21189,9 +21642,11 @@ console.log(JSON.stringify(args));
     const passMs = 30_000;
     await withEnvoyTimings({ heartbeatMs: passMs, passDeadlineMs: passMs }, async () => {
       brokerPod(() => "503");
-      const { default: envoyExtension } = await import("./envoy.ts?broker-answers-503");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?broker-answers-503"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       // Timed from the start itself, not from before the module loads: a module slow to load on a
       // loaded machine is no slower start.
       const { context, notifications } = timedContext("ses_broker_503", Date.now());
@@ -21221,9 +21676,9 @@ console.log(JSON.stringify(args));
     const { minted } = brokerPod((trade) => (trade === 1 ? "503" : "grant"));
     const started = Date.now();
     const { context, notifications } = timedContext("ses_broker_once_away", started);
-    const { default: envoyExtension } = await import("./envoy.ts?broker-away-once");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?broker-away-once");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     expect(
       natsState.presented.map((token) => minted.get(token)),
@@ -21264,9 +21719,11 @@ console.log(JSON.stringify(args));
         expires_in: 900,
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?nats-credential-switch");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?nats-credential-switch"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_switch_from"));
     // Each CONNECT presented a token the broker minted for the session it names here.
     expect(natsState.presented.map((token) => minted.get(token))).toEqual(["ses_switch_from"]);
@@ -21294,9 +21751,9 @@ console.log(JSON.stringify(args));
     // session is told of as every other inbound outage is (the review of 2fa6fbf7cf, M2).
     const { minted } = brokerPod(() => "grant");
     const { context, notifications } = timedContext("ses_keeper_notice", Date.now());
-    const { default: envoyExtension } = await import("./envoy.ts?keeper-notice");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?keeper-notice");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     expect(natsState.presented.map((token) => minted.get(token))).toEqual(["ses_keeper_notice"]);
     const refused = () =>
@@ -21339,9 +21796,9 @@ console.log(JSON.stringify(args));
         return await pod(input, init);
       };
       const before = timedContext("ses_follow_from", started);
-      const { default: envoyExtension } = await import("./envoy.ts?follow-bound");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?follow-bound");
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, before.context);
       const after = timedContext("ses_follow_to", started);
       const switchedAt = Date.now() - started;
@@ -21392,9 +21849,11 @@ console.log(JSON.stringify(args));
         expires_in: 900,
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?nats-credential-failed-switch");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?nats-credential-failed-switch"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_failed_from"));
     const oldControl = "agentstream.ses_failed_from.control";
     expect(natsState.controls.get(oldControl)?.active()).toBe(true);
@@ -21427,9 +21886,11 @@ console.log(JSON.stringify(args));
     // returns to A with no event. Until the next pass runs, A's control subject is closed and B's
     // is still open; what the host records then is A's, and B's viewer must be replayed only B's.
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?agent-stream-ring-per-session");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?agent-stream-ring-per-session"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const first = sessionContext("ses_ring_a");
     await fixture.handlers.get("session_start")?.({}, first);
     const second = sessionContext("ses_ring_b");
@@ -21482,9 +21943,11 @@ console.log(JSON.stringify(args));
         expires_in: 2,
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?nats-credential-keeper");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?nats-credential-keeper"
+    );
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_kept"));
     const [first] = minted;
     expect(first).toBeString();
@@ -21508,10 +21971,10 @@ console.log(JSON.stringify(args));
 
   test("rebinds the direct subscription after an in-process session switch", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?session-switch");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?session-switch");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_before_switch"));
     const beforeSwitch = natsState.controls.get("notifications.agent.ses_before_switch");
     await fixture.handlers.get("session_switch")?.({}, sessionContext("ses_after_switch"));
@@ -21522,10 +21985,12 @@ console.log(JSON.stringify(args));
 
   test("tells the agent its identity changed when a branch re-mints the session id", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?branch-identity-notice");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?branch-identity-notice"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_before_branch"));
     await fixture.handlers.get("session_branch")?.(
       { previousSessionFile: "/tmp/old.jsonl" },
@@ -21542,10 +22007,12 @@ console.log(JSON.stringify(args));
 
   test("tells the agent its identity changed when a fork re-mints the session id", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?fork-identity-notice");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?fork-identity-notice"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_before_fork"));
     await fixture.handlers.get("session_switch")?.(
       { reason: "fork" },
@@ -21560,10 +22027,12 @@ console.log(JSON.stringify(args));
 
   test("tells the agent its identity changed when a handoff re-mints the session id", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?handoff-identity-notice");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?handoff-identity-notice"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     // /handoff carries the agent's own words (and any identity it named)
     // into the new session, so the stale-identity notice must fire.
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_before_handoff"));
@@ -21579,10 +22048,12 @@ console.log(JSON.stringify(args));
 
   test("stays silent about identity when a switch replaces the transcript or keeps the id", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?switch-identity-silent");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?switch-identity-silent"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_original"));
     // A fresh conversation ("new") and a loaded one ("resume") both carry a
     // transcript that already matches its own id — no stale identity to flag.
@@ -21602,10 +22073,12 @@ console.log(JSON.stringify(args));
 
   test("stays silent about identity when the session gains its first id", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?first-identity-silent");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?first-identity-silent"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     // A fresh TUI: session_start fires before any session exists, so the
     // transcript never carried an identity that could go stale.
     await fixture.handlers.get("session_start")?.({}, sessionContext(""));
@@ -21628,7 +22101,9 @@ console.log(JSON.stringify(args));
         topics: [],
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?identity-notice-outage");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?identity-notice-outage"
+    );
     const fixture = createPi();
     const notifications: string[] = [];
     const context: SessionContext = {
@@ -21636,7 +22111,7 @@ console.log(JSON.stringify(args));
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
     };
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
 
     registryDown = true;
@@ -21656,10 +22131,12 @@ console.log(JSON.stringify(args));
   test("an in-process session switch leaves the session it left behind nothing to receive on", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?switch-no-resubscribe");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?switch-no-resubscribe"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_left_behind"));
     const abandoned = natsState.controls.get("notifications.envoy.deliver.ses_left_behind");
     expect(abandoned?.active()).toBe(true);
@@ -21682,10 +22159,10 @@ console.log(JSON.stringify(args));
   test("envoy_unsubscribe is not undone by the resubscribe path", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?unsubscribe-stays");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?unsubscribe-stays");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_unsub"));
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
     const unsubscribeTool = fixture.tools.find((tool) => tool.name === "envoy_unsubscribe");
@@ -21709,10 +22186,12 @@ console.log(JSON.stringify(args));
   test("a subscription.removed notice drops the local follow so dead-connection recovery does not resurrect it", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?subscription-removed-drops-local");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?subscription-removed-drops-local"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext("ses_dropped");
     await fixture.handlers.get("session_start")?.({}, context);
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
@@ -21753,12 +22232,12 @@ console.log(JSON.stringify(args));
   test("a subscription.removed notice naming a different session leaves this session's subscription and emits no notice", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import(
+    const { default: envoyExtension }: EnvoyModule = await import(
       "./envoy.ts?subscription-removed-other-session"
     );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext("ses_other");
     await fixture.handlers.get("session_start")?.({}, context);
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
@@ -21821,10 +22300,12 @@ console.log(JSON.stringify(args));
         }
         return response({});
       };
-      const { default: envoyExtension } = await import("./envoy.ts?unsubscribe-awaiting-retry");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?unsubscribe-awaiting-retry"
+      );
       const fixture = createPi();
 
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, sessionContext("ses_awaiting_retry"));
       const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
       const unsubscribeTool = fixture.tools.find((tool) => tool.name === "envoy_unsubscribe");
@@ -21849,11 +22330,11 @@ console.log(JSON.stringify(args));
   test("a deliberately closed relay subject still recovers from a genuine death once it is back", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?marker-is-consumed");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?marker-is-consumed");
     const fixture = createPi();
     const home = deliverSubject("ses_home");
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_home"));
     await fixture.handlers.get("session_switch")?.({}, sessionContext("ses_away"));
     await new Promise((resolve) => setTimeout(resolve, 60));
@@ -21893,7 +22374,7 @@ console.log(JSON.stringify(args));
   test("permits redelivery after a failed injection and warns with the envelope id", async () => {
     // Query isolation gives this stateful extension its own NATS subscription.
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?deliver-retry");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?deliver-retry");
     const fixture = createPi();
     let throwNext = true;
     const failedInjection = Promise.withResolvers<void>();
@@ -21916,7 +22397,7 @@ console.log(JSON.stringify(args));
     };
 
     try {
-      envoyExtension(pi);
+      await envoyExtension(pi);
       await fixture.handlers.get("session_start")?.({}, sessionContext("ses_pump"));
       const controls = natsState.controls.get("notifications.agent.ses_pump");
       expect(controls).toBeDefined();
@@ -21966,10 +22447,10 @@ console.log(JSON.stringify(args));
   test("deduplicates a redelivery after successful injection", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
     // Query isolation gives this stateful extension its own NATS subscription.
-    const { default: envoyExtension } = await import("./envoy.ts?deliver-dedupe");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?deliver-dedupe");
     const fixture = createPi();
     const deliveryAfterDuplicate = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -22015,10 +22496,12 @@ console.log(JSON.stringify(args));
   test("injects one publish once when two followed subscriptions both carry it", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
     // Query isolation gives this stateful extension its own NATS subscription.
-    const { default: envoyExtension } = await import("./envoy.ts?deliver-overlapping-copies");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?deliver-overlapping-copies"
+    );
     const fixture = createPi();
     const following = Promise.withResolvers<void>();
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -22074,11 +22557,11 @@ console.log(JSON.stringify(args));
   test("an ended subscription iterator resubscribes instead of going deaf", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?resubscribe");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?resubscribe");
     const fixture = createPi();
     const relay = deliverSubject("ses_deaf");
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_deaf"));
     const first = natsState.controls.get(relay);
     expect(first).toBeDefined();
@@ -22117,7 +22600,7 @@ console.log(JSON.stringify(args));
         topics: [],
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?heartbeat-blip");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?heartbeat-blip");
     const fixture = createPi();
     const intervals: (() => void)[] = [];
     const notifications: string[] = [];
@@ -22136,7 +22619,7 @@ console.log(JSON.stringify(args));
       },
     };
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     // The healthy start must land on the heartbeat branch, not the NATS-retry
     // branch; a failed registration here would register the wrong interval.
@@ -22195,7 +22678,7 @@ console.log(JSON.stringify(args));
         topics: [],
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?heartbeat-retry");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?heartbeat-retry");
     const fixture = createPi();
     const intervals: (() => void)[] = [];
     // The host's managed timer, read rather than run: the delay is the assertion, and the call
@@ -22217,7 +22700,7 @@ console.log(JSON.stringify(args));
         },
       },
     };
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     expect(registrations).toBe(1);
 
@@ -22279,7 +22762,7 @@ console.log(JSON.stringify(args));
         topics: [],
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?rebind-blip");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?rebind-blip");
     const fixture = createPi();
     const notifications: string[] = [];
     const context: SessionContext = {
@@ -22289,7 +22772,7 @@ console.log(JSON.stringify(args));
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
     };
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
 
     registryDown = true;
@@ -22321,10 +22804,10 @@ console.log(JSON.stringify(args));
         topics: ["notifications.agent.ses_shutdown"],
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?shutdown-deregister");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?shutdown-deregister");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"));
     await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"));
 
@@ -22337,10 +22820,10 @@ console.log(JSON.stringify(args));
 
   test("session_shutdown resolves within its budget when drain hangs on a dead connection", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?shutdown-hang");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?shutdown-hang");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"));
 
     natsState.drainHangs = true;
@@ -22363,10 +22846,12 @@ console.log(JSON.stringify(args));
       }
       return response({});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?shutdown-parallel-drain");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?shutdown-parallel-drain"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"));
     const shutdown = fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"));
     if (shutdown === undefined) throw new Error("session_shutdown handler was not registered");
@@ -22406,10 +22891,12 @@ console.log(JSON.stringify(args));
       }
       return response({});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?shutdown-settles-registration");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?shutdown-settles-registration"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"));
     const subscribing = fixture.tools
       .find((tool) => tool.name === "envoy_subscribe")
@@ -22460,10 +22947,12 @@ console.log(JSON.stringify(args));
       }
       return response({});
     };
-    const { default: envoyExtension } = await import("./envoy.ts?shutdown-bounds-settle");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?shutdown-bounds-settle"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"));
     const subscribing = fixture.tools
       .find((tool) => tool.name === "envoy_subscribe")
@@ -22499,10 +22988,12 @@ console.log(JSON.stringify(args));
       requests.push(`${init?.method ?? "GET"} ${new URL(input.toString()).pathname}`);
       return responseWithRegistration(input, init, []);
     };
-    const { default: envoyExtension } = await import("./envoy.ts?switch-deregisters-old-id");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?switch-deregisters-old-id"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_before"));
     await fixture.handlers.get("session_switch")?.({ reason: "new" }, sessionContext("ses_after"));
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -22533,10 +23024,12 @@ console.log(JSON.stringify(args));
         },
       ]);
     };
-    const { default: envoyExtension } = await import("./envoy.ts?sessions-render-state");
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?sessions-render-state"
+    );
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_lister"));
     const listed = await fixture.tools
       .find((tool) => tool.name === "envoy_sessions")
@@ -22560,10 +23053,10 @@ console.log(JSON.stringify(args));
         dir: "/tmp",
         topics: [],
       });
-    const { default: envoyExtension } = await import("./envoy.ts?whoami-live-id");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?whoami-live-id");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     // A fresh TUI: session_start fires before any session exists.
     await fixture.handlers.get("session_start")?.({}, sessionContext(""));
     const whoami = fixture.commands.find((command) => command.name === "whoami");
@@ -22595,7 +23088,7 @@ console.log(JSON.stringify(args));
         topics: [],
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?heartbeat-drift");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?heartbeat-drift");
     const fixture = createPi();
     const intervals: (() => void)[] = [];
     let liveSessionID = "";
@@ -22606,7 +23099,7 @@ console.log(JSON.stringify(args));
       ui: { ...sessionContext().ui, notify: () => undefined },
     };
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     // A fresh TUI has no direct subject and no registry row until the host
     // assigns an id, but it still starts the heartbeat that observes that id.
     await fixture.handlers.get("session_start")?.({}, context);
@@ -22648,10 +23141,10 @@ console.log(JSON.stringify(args));
         delivery: consumerDelivery(body.session_id ?? "ses_omp", { streamID: TEST_STREAM_ID }),
       });
     };
-    const { default: envoyExtension } = await import("./envoy.ts?subscribe-warnings");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?subscribe-warnings");
     const fixture = createPi();
 
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext());
     const subscribe = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
     expect(subscribe).toBeDefined();
@@ -22667,11 +23160,11 @@ console.log(JSON.stringify(args));
 
   test("returns the 50 newest rendered deliveries from envoy_inbox", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
-    const { default: envoyExtension } = await import("./envoy.ts?inbox");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?inbox");
     const fixture = createPi();
     const delivered = Promise.withResolvers<void>();
     let deliveryCount = 0;
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message, options) => {
         fixture.pi.sendMessage(message, options);
@@ -22715,9 +23208,9 @@ console.log(JSON.stringify(args));
   });
 
   test("registers a plain-text renderer for envoy-message so inbound content never renders as a markdown code block", async () => {
-    const { default: envoyExtension } = await import("./envoy.ts?message-renderer");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?message-renderer");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
 
     const renderer = fixture.renderers.get("envoy-message");
     if (renderer === undefined) throw new Error("envoy-message renderer was not registered");
@@ -22914,7 +23407,7 @@ describe("consumer delivery", () => {
       const data = natsState.published.at(-1)?.data;
       events.push(data === undefined ? subject : `${subject} ${new TextDecoder().decode(data)}`);
     };
-    const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+    const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
     const fixture = createPi();
     const intervals: (() => void)[] = [];
     const written: unknown[] = [];
@@ -22933,7 +23426,7 @@ describe("consumer delivery", () => {
         context
       );
     };
-    envoyExtension({
+    await envoyExtension({
       ...fixture.pi,
       sendMessage: (message: SentCard, sendOptions: unknown) => {
         if (options.refuseCard?.(message) === true) throw new Error("the host refused the card");
@@ -23243,9 +23736,9 @@ describe("consumer delivery", () => {
   test("a connection probe on the relay subject is answered, follows a session-id change, and the relay subscription closes when the session moves or shuts down", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?connection-probe");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?connection-probe");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     let inboxes = 0;
     /** Probes `controls` as the listener does; answers what the session replied on the inbox. */
     const probe = async (
@@ -24009,9 +24502,9 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
     natsState.realConnect = true;
     const sessionID = `ses_stall_${crypto.randomUUID().replaceAll("-", "")}`;
     // A module instance of its own per mode: the extension keeps its session's state.
-    const { default: envoyExtension } = await import("./envoy.ts?nats-stall");
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?nats-stall");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext(sessionID);
     try {
       await fixture.handlers.get("session_start")?.({}, context);
@@ -24077,9 +24570,9 @@ describe("the send and publish answers", () => {
   async function bootTool(query: string, answer: unknown) {
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
       responseWithRegistration(input, init, answer)) as typeof fetch;
-    const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+    const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext(SESSION);
     await fixture.handlers.get("session_start")?.({}, context);
     return { fixture, stop: () => fixture.handlers.get("session_shutdown")?.({}, context) };
@@ -24208,9 +24701,9 @@ describe("an envelope that carries the role field", () => {
           })
         : responseWithRegistration(input, init, answer)) as typeof fetch;
     // Each caller's own query loads an instance of its own, so the specifier cannot be static.
-    const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+    const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext(SESSION);
     await fixture.handlers.get("session_start")?.({}, context);
     const agent = natsState.controls.get(AGENT);

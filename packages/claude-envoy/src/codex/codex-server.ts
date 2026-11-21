@@ -452,7 +452,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
     RECORD_POLL_MS,
   )
   const id = new SessionIdentity(bound.session_id, bound.cwd)
-  const { dispatch, envoy, notice } = sessionSettings(configFile, process.env, {
+  const { dispatch, envoy, notice } = await sessionSettings(configFile, process.env, {
     cwd: bound.cwd,
     session: () => id.id,
   })
@@ -600,9 +600,10 @@ export async function runCodexEnvoyServer(): Promise<void> {
           createCodexUserTurnRouter({
             ask: (question) => askSideQuestion(command(), id.id, question),
             deliver: (item) => codexDelivery.deliver(item),
-            dispatch: (ms) => {
+            dispatch: async (ms) => {
               const active = activeDispatchSettings(
-                sessionDispatchSettings(configFile, process.env, { cwd: bound.cwd }).dispatch,
+                (await sessionDispatchSettings(configFile, process.env, { cwd: bound.cwd }))
+                  .dispatch,
               )
               return active === null
                 ? undefined

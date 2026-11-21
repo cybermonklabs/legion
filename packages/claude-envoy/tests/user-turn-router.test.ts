@@ -165,7 +165,7 @@ async function harness(input: {
     ...(input.commandOutputMs === undefined ? {} : { commandOutputMs: input.commandOutputMs }),
   })
   const router = createUserTurnRouter({
-    dispatch: () =>
+    dispatch: async () =>
       ({
         acceptMessageDelivery: async (id: string, attempt: number) => {
           accepts.push({ id, attempt })

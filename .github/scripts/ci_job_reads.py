@@ -2729,6 +2729,7 @@ GATES = [
         ("scripts/priorities-seed.test.ts", at("test", "Test the priorities seed")),
         ("scripts/priorities-seed.ts", "scripts/priorities-seed.test.ts:4 imports it"),
         ("scripts/e2e/**", f"{at('test', 'bun test scripts/e2e/lib')} (lib/script-functions.test.ts:105-108 scans scripts/e2e/*.sh and lib/*); "
+                           + at("test", "Typecheck the live proofs' libraries") + " (lib/tsconfig.json); "
                            f"{at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
         (CONTRACTS_SRC, "scripts/e2e/lib/envoy-bridge.ts:9-10, session-settings-services.ts:6; scripts/dispatch/ask-census.ts:3-9 (tsc -p scripts/dispatch); "
                         "scripts/priorities-seed.ts:29"),

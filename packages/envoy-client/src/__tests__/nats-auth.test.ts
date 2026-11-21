@@ -31,8 +31,8 @@ function seedFile(contents: string): string {
 }
 
 /** The credential the environment's seed variables name, or none. */
-function seedCredential(env: NodeJS.ProcessEnv): NatsCredential {
-  const seed = natsSeedFromEnvironment(env);
+async function seedCredential(env: NodeJS.ProcessEnv): Promise<NatsCredential> {
+  const seed = await natsSeedFromEnvironment(env);
   return seed === undefined ? { kind: "none" } : { kind: "seed", seed };
 }
 
@@ -42,7 +42,7 @@ async function connectWith(url: string, env: NodeJS.ProcessEnv) {
   const connection = await connect({
     servers: [url],
     name: "nats-auth-test",
-    ...natsAuthOptions(seedCredential(env)),
+    ...natsAuthOptions(await seedCredential(env)),
     reconnect: false,
   });
   await connection.flush();
@@ -89,8 +89,8 @@ describe.skipIf(process.env.LEGION_E2E !== "1")("natsAuthOptions against a real 
 describe("natsAuthOptions", () => {
   const user = createUser();
 
-  test("is no option for no credential", () => {
-    expect(natsSeedFromEnvironment({})).toBeUndefined();
+  test("is no option for no credential", async () => {
+    expect(await natsSeedFromEnvironment({})).toBeUndefined();
     expect(natsAuthOptions({ kind: "none" })).toEqual({});
   });
 
@@ -129,7 +129,7 @@ describe("natsAuthOptions", () => {
     expect(asked).toEqual(["server-nonce"]);
   });
 
-  test("refuses an unusable seed naming its variable, never its path, never falling back", () => {
+  test("refuses an unusable seed naming its variable, never its path, never falling back", async () => {
     const dir = makeDirectory();
     const missing = path.join(dir, "missing");
     const blank = seedFile(" \n");
@@ -156,7 +156,7 @@ describe("natsAuthOptions", () => {
     for (const [env, message] of cases) {
       let thrown: unknown;
       try {
-        natsAuthOptions(seedCredential(env));
+        natsAuthOptions(await seedCredential(env));
       } catch (error) {
         thrown = error;
       }

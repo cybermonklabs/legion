@@ -256,6 +256,7 @@ import {
   operandPath,
   uploadIsDocument,
 } from "@legion/envoy-client/askgate-marker";
+import { spawnWatched } from "@legion/envoy-client/process-group";
 import type { DispatchSession } from "../../src/dispatch-session";
 import requestTemplate from "./askgate-request.md" with { type: "text" };
 import systemTemplate from "./askgate-system.md" with { type: "text" };
@@ -654,7 +655,7 @@ interface Deps {
     directory: string,
     signal: AbortSignal,
     deadlineMs?: number
-  ) => DispatchSession | undefined;
+  ) => Promise<DispatchSession | undefined>;
   /**
    * The session's decision recorder, shared with the host's record of unmarked writes: the gate
    * builds none of its own. Two recorders would each upload the session's document under its name,
@@ -1795,42 +1796,37 @@ export interface UnreadableCommand {
   file: { flag: string; path: string; reason: string; inMessage?: true };
 }
 
-/** Runs `script` under bash in a process group of its own, which is killed at the limit or on the signal. */
+/** Runs `script` under bash in a process group of its own, which is killed at the limit, on the
+ *  signal and once the script's own shell exits, and which ends with this process however it ends
+ *  (`spawnWatched`): a helper the script left running neither outlives the dry run nor holds its
+ *  pipes, and so its answer, open until the limit. */
 export async function spawnDryRun(
   script: string,
   { cwd, env, timeoutMs, signal }: DryRunOptions
 ): Promise<DryRunResult> {
-  const child = Bun.spawn(["bash", "-c", script], {
+  const { child, endGroup } = spawnWatched(["bash", "-c", script], {
     cwd,
     env,
-    stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
-    detached: true,
   });
   let timedOut = false;
-  const kill = () => {
-    try {
-      process.kill(-child.pid, "SIGKILL");
-    } catch {
-      // The group already exited.
-    }
-  };
   const timer = setTimeout(() => {
     timedOut = true;
-    kill();
+    endGroup();
   }, timeoutMs);
-  signal?.addEventListener("abort", kill, { once: true });
+  signal?.addEventListener("abort", endGroup, { once: true });
   try {
     const [stdout, stderr] = await Promise.all([
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
+      child.exited.finally(endGroup),
     ]);
-    await child.exited;
     return { exitCode: child.exitCode, stdout, stderr, timedOut };
   } finally {
     clearTimeout(timer);
-    signal?.removeEventListener("abort", kill);
+    signal?.removeEventListener("abort", endGroup);
+    endGroup();
   }
 }
 

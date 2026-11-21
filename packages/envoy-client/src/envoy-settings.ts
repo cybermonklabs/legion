@@ -149,17 +149,20 @@ export interface NatsSeed {
 }
 
 /** The seed the environment names: the trimmed contents of the file `NATS_NKEY_SEED_FILE` names,
- * else `NATS_NKEY_SEED`. A set variable is authoritative, and the file pointer wins over the seed:
- * an empty pointer, or a missing, unreadable or blank file, throws naming the variable and the path
- * (`readSecretFile`), never a fallback to `NATS_NKEY_SEED` or to no credential; so does a blank
- * `NATS_NKEY_SEED`. Neither set is undefined. No error carries the seed. The Go clients read the
- * same two variables (`packages/envoy/internal/bus/nkey.go`, `packages/daemon/internal/natsauth`). */
-export function natsSeedFromEnvironment(env: EnvoyEnvironment): NatsSeed | undefined {
+ * read without holding the event loop, else `NATS_NKEY_SEED`. A set variable is authoritative,
+ * and the file pointer wins over the seed: an empty pointer, or a missing, unreadable or blank
+ * file, rejects naming the variable and the path (`readSecretFile`), never a fallback to
+ * `NATS_NKEY_SEED` or to no credential; so does a blank `NATS_NKEY_SEED`. Neither set is
+ * undefined. No error carries the seed. The Go clients read the same two variables
+ * (`packages/envoy/internal/bus/nkey.go`, `packages/daemon/internal/natsauth`). */
+export async function natsSeedFromEnvironment(
+  env: EnvoyEnvironment
+): Promise<NatsSeed | undefined> {
   const { NATS_NKEY_SEED_FILE: file, NATS_NKEY_SEED: plain } = env;
   if (file !== undefined) {
     if (file === "") throw new Error("NATS_NKEY_SEED_FILE is set but empty");
     return {
-      value: readSecretFile("NATS_NKEY_SEED_FILE", file),
+      value: await readSecretFile("NATS_NKEY_SEED_FILE", file),
       source: "the file NATS_NKEY_SEED_FILE names",
     };
   }
@@ -261,25 +264,25 @@ function requireFileServers(
 }
 
 /** The NATS user's seed: `NATS_NKEY_SEED_FILE` or `NATS_NKEY_SEED`, else the section's
- * `natsSeed`, which goes only with the section's own servers (`requireFileServers`). Throws naming
+ * `natsSeed`, which goes only with the section's own servers (`requireFileServers`). Rejects naming
  * what could not be read or used. */
-function natsSeed(
+async function natsSeed(
   env: EnvoyEnvironment,
   section: EnvoyFileSettings,
   namedNatsUrls: readonly string[],
   filePath: string
-): NatsSeed | undefined {
-  const fromEnvironment = natsSeedFromEnvironment(env);
+): Promise<NatsSeed | undefined> {
+  const fromEnvironment = await natsSeedFromEnvironment(env);
   if (fromEnvironment !== undefined || section.natsSeed === undefined) return fromEnvironment;
   requireFileServers(section, namedNatsUrls, filePath, "NATS_NKEY_SEED_FILE");
   return {
-    value: fileValue(section.natsSeed, "envoy.natsSeed", filePath, env),
+    value: await fileValue(section.natsSeed, "envoy.natsSeed", filePath, env),
     source: `envoy.natsSeed in ${filePath}`,
   };
 }
 
 /**
- * The credential a session's NATS connection presents, or a throw naming why it has none it can
+ * The credential a session's NATS connection presents, or a rejection naming why it has none it can
  * use. A seed (`natsSeed`) is presented as it always was. Otherwise `NATS_AUTH`, else the
  * section's `natsAuth` (an empty variable counts as unset), says which: `broker` is the session's
  * broker token (`brokerNatsCredential`), refused naming the gap where this machine has no broker
@@ -297,13 +300,13 @@ function natsSeed(
  * messages. `broker` beside a seed is refused naming both, rather than one of the two silently
  * winning; `none` beside one leaves the seed the credential, as a seed is wherever it is set.
  */
-function natsCredential(
+async function natsCredential(
   env: EnvoyEnvironment,
   section: EnvoyFileSettings,
   namedNatsUrls: readonly string[],
   filePath: string,
   session: BrokerSessionName | undefined
-): NatsCredential {
+): Promise<NatsCredential> {
   const named = nonEmpty(env.NATS_AUTH);
   const auth =
     named !== undefined
@@ -314,7 +317,7 @@ function natsCredential(
   if (auth !== undefined && auth.value !== "broker" && auth.value !== "none") {
     throw new Error(`${auth.source} is neither broker nor none`);
   }
-  const seed = natsSeed(env, section, namedNatsUrls, filePath);
+  const seed = await natsSeed(env, section, namedNatsUrls, filePath);
   if (seed !== undefined) {
     if (auth?.value === "broker") {
       throw new Error(
@@ -369,7 +372,7 @@ function natsCredential(
  * `envoy-send`, pi-legion's `legion.ts` extension) takes no inbound messages and resolves no NATS
  * credential, so a seed it would never send can neither run a command nor turn it off.
  */
-export function envoySettings(
+export async function envoySettings(
   env: EnvoyEnvironment,
   config: EnvoyConfig,
   options: {
@@ -379,7 +382,7 @@ export function envoySettings(
      * token. A bearer or seed route resolves the same whatever it says. */
     readonly session?: BrokerSessionName | undefined;
   } = {}
-): EnvoySettings {
+): Promise<EnvoySettings> {
   if (config.kind === "failed") return offWithError(config.error);
   const section = config.envoy;
   if (section.enabled === false) {
@@ -410,7 +413,7 @@ export function envoySettings(
   const url = namedUrl ?? listener;
   let credential: RequestCredential | undefined;
   try {
-    const source = bearerSource(env, "ENVOY", () =>
+    const source = await bearerSource(env, "ENVOY", () =>
       section.token === undefined
         ? undefined
         : {
@@ -431,7 +434,7 @@ export function envoySettings(
         : undefined;
     } else {
       credential = bearerCredential(
-        source.kind === "variable" ? source.token : fileBearer(source, url, "ENVOY", env)
+        source.kind === "variable" ? source.token : await fileBearer(source, url, "ENVOY", env)
       );
     }
   } catch (error) {
@@ -447,7 +450,13 @@ export function envoySettings(
         natsUrls,
         natsServersSetting:
           namedNatsUrls.length > 0 ? "ENVOY_NATS_URL" : `envoy.natsUrls in ${config.path}`,
-        natsCredential: natsCredential(env, section, namedNatsUrls, config.path, options.session),
+        natsCredential: await natsCredential(
+          env,
+          section,
+          namedNatsUrls,
+          config.path,
+          options.session
+        ),
       };
     } catch (error) {
       inbound =

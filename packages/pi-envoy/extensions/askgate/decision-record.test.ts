@@ -107,7 +107,7 @@ function harness(
   const deps: RecordDeps = {
     env: opts.env ?? { OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
     now: () => NOW,
-    dispatchClient: (directory, signal) => {
+    dispatchClient: async (directory, signal) => {
       asked.push({ directory, signal });
       if (opts.unconfigured) return undefined;
       return { client: opts.client ?? fakeRecord().client };

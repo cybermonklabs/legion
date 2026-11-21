@@ -254,7 +254,11 @@ describe("a failed Dispatch read never prints the bearer", () => {
 describe("an interrupted run cleans up and actually stops", () => {
   /** A daemon stub whose state read answers only once `release` is called, and whose `reached`
    *  resolves the moment the observer's fetch arrives. */
-  function heldStateDaemon(): { port: number; reached: Promise<void>; release: () => void } {
+  function heldStateDaemon(): {
+    port: number | undefined;
+    reached: Promise<void>;
+    release: () => void;
+  } {
     const arrival = Promise.withResolvers<void>();
     const held = Promise.withResolvers<void>();
     const server = servers.track(

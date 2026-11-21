@@ -298,7 +298,7 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   // manifest — to prove claimEnvoyRole's bridge waits rather than binding to
   // a claim function that was never set.
   legionExtension(legionPi as never);
-  envoyExtension(envoyPi as never);
+  await envoyExtension(envoyPi as never);
   const sessionStart = handlers.get("session_start")?.[0];
   if (sessionStart === undefined) {
     throw new Error("Legion lifecycle handlers were not registered");

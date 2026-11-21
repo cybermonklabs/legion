@@ -106,9 +106,11 @@ function podEnvironment(brokerUrl: string, dispatchUrl: string): DispatchEnviron
 }
 
 /** A Dispatch client of `env` for a caller acting as `session`. */
-function dispatchOf(env: DispatchEnvironment, session: string): DispatchClient {
-  const config = readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, { cwd: tempDir() });
-  const resolution = dispatchSettings(env, config, { session });
+async function dispatchOf(env: DispatchEnvironment, session: string): Promise<DispatchClient> {
+  const config = await readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, {
+    cwd: tempDir(),
+  });
+  const resolution = await dispatchSettings(env, config, { session });
   if (!resolution.enabled) throw new Error(`Dispatch is off: ${resolution.error}`);
   return new DispatchClient(resolution.url, resolution.credential);
 }
@@ -144,7 +146,7 @@ test("membership_held keeps a sign-in broker credential", async () => {
   };
 
   // A call that fails fast is told the hold while the retry loop trades on, never as final.
-  const during = await failureOf(dispatchOf(env, "ses_01a9").listAllIssues({}));
+  const during = await failureOf((await dispatchOf(env, "ses_01a9")).listAllIssues({}));
   expect(during).toBeInstanceOf(TradeRetryingError);
   expect(String(during)).toContain(`HTTP 400 membership_held: ${HELD}`);
   expect(
@@ -177,7 +179,9 @@ test("membership_held keeps a sign-in broker credential", async () => {
     state,
     each: () => {
       if (calling !== undefined) return;
-      calling = failureOf(dispatchOf(env, "ses_01a9").listAllIssues({})).then((failure) => {
+      calling = failureOf(
+        dispatchOf(env, "ses_01a9").then((client) => client.listAllIssues({}))
+      ).then((failure) => {
         after = failure;
         settled = failure === null || !(failure instanceof TradeRetryingError);
         calling = undefined;

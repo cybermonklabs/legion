@@ -25,7 +25,9 @@ import type { CodexInboxItem } from "./codex-inbox"
 export interface CodexUserTurnOptions {
   readonly sessionId: () => string
   readonly state: UserTurnState
-  readonly dispatch: (ms: number) => DispatchClient | undefined
+  /** The session's Dispatch for one request, with `ms` to answer; undefined when Dispatch is not
+   *  configured, and a rejection when its configuration cannot be read. */
+  readonly dispatch: (ms: number) => Promise<DispatchClient | undefined>
   readonly reply: (
     delivery: DispatchDelivery,
     result: { readonly body?: string; readonly error?: string },

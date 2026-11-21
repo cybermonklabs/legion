@@ -561,10 +561,10 @@ jobs:
       - name: Test the approval-eval statistics
         run: bun test scripts/approval-eval
 
-      # scripts/e2e/lib is no workspace either: its tsconfig.json holds the plan ratings read's
-      # test, whose answer is typed to the contract, and the root package pins its TypeScript and
-      # Bun types. The test itself runs in this job's bun test of scripts/e2e/lib.
-      - name: Typecheck the plan ratings read test
+      # scripts/e2e/lib is no workspace either; the root package pins its TypeScript and Bun types,
+      # and its tsconfig.json maps @legion/contracts, to which the plan ratings read's test types
+      # its answer. Its suite runs below, after setup-go; the typecheck needs no Go.
+      - name: Typecheck the live proofs' libraries
         run: bunx tsc --noEmit -p scripts/e2e/lib
 
       # Go, but no Actions cache: the go-daemon entry holds what compiling packages/daemon
