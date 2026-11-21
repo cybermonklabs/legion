@@ -98,7 +98,7 @@ func TestMarkAnchorVerifiesBrowserMark(t *testing.T) {
 // follows is that client's next update, which the persisted document can only integrate once this
 // mark is persisted too. Committing the mark in its own transaction makes it durable first, where
 // ygo's persistence worker would otherwise store it on its own schedule.
-func writeBrowserMark(t *testing.T, database *store.Store, documentService *docs.Service, artifactID string, mark docs.MarkSpec, quote string) {
+func writeBrowserMark(t testing.TB, database *store.Store, documentService *docs.Service, artifactID string, mark docs.MarkSpec, quote string) {
 	t.Helper()
 	tx, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -203,8 +203,8 @@ func browserDocumentService(t *testing.T) (*docs.Service, http.Handler, *store.S
 }
 
 // browserDocumentServer is browserDocumentService, answering also the server it registered, for a
-// test that sets one of the fields only a test sets (server.deleteLeavesSettlement).
-func browserDocumentServer(t *testing.T) (*docs.Service, http.Handler, *store.Store, *server) {
+// test or a benchmark that sets one of the fields only test code sets (server.deleteLeavesSettlement).
+func browserDocumentServer(t testing.TB) (*docs.Service, http.Handler, *store.Store, *server) {
 	t.Helper()
 	var documentService *docs.Service
 	handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {

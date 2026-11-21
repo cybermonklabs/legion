@@ -2,9 +2,11 @@ package api
 
 import (
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -16,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/heavybodies"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // The architect's ruling of 2026-11-20 22:18Z on dispatch://INFRA-1523, census class V (a): the
@@ -73,18 +76,14 @@ func TestTheLatestVersionsStoresHoldNoWordOfAPendingInsertOnceItsDeleteCommits(t
 	}
 }
 
-// deleteLatencyRuns is how many deletes each case of the latency test times, and
-// deleteLatencyBound the most the delete's settle may add to the delete's p99: the architect's
-// ruling of 2026-11-20 22:18Z on dispatch://INFRA-1523.
-const (
-	deleteLatencyRuns  = 20
-	deleteLatencyBound = time.Second
-)
+// deleteLatencyRuns is how many deletes each iteration of BenchmarkDeleteOfAPendingInsertSettle
+// times with the settle, and how many it times without it.
+const deleteLatencyRuns = 20
 
 // latencySpec is a spec of a realistic size: sixteen sections, each a heading and nine paragraphs
 // of 42 words of the load harness's vocabulary (docstest.SpecSentence), 160 blocks and about 38 KB.
-// The latency test adds a paragraph for each insert it deletes, which brings it to about 200
-// blocks and 40 KB.
+// BenchmarkDeleteOfAPendingInsertSettle adds a paragraph for each insert it deletes, which brings
+// it to about 200 blocks and 40 KB.
 func latencySpec() string {
 	r := rand.New(rand.NewPCG(1523, 2218))
 	var b strings.Builder
@@ -97,13 +96,15 @@ func latencySpec() string {
 	return b.String()
 }
 
-// The delete of a pending insert settles the document in its own transaction (docs.SettleVersion),
-// which indexes every block of the version it writes in the delete's request. This times the
-// delete with that settle and without it (server.deleteLeavesSettlement, the same delete with the
-// version left to the settlement), each deleteLatencyRuns times and taken in turn, so a box that
-// slows in the middle slows both alike, after one warm-up pair that is not counted. It logs the p50
-// and the p99 of each and what the settle adds to each, and fails only where the settle adds more
-// than deleteLatencyBound to the p99.
+// BenchmarkDeleteOfAPendingInsertSettle measures what the delete of a pending insert pays to settle
+// the document in its own transaction (docs.SettleVersion), which indexes every block of the
+// version it writes in the delete's request. Each iteration times the delete with that settle and
+// without it (server.deleteLeavesSettlement, the same delete with the version left to the
+// settlement), deleteLatencyRuns times each and taken in turn, so a box that slows in the middle
+// slows both alike, after one warm-up pair that is not counted. It logs and reports the p50 and
+// the p99 of each and what the settle adds to each, in milliseconds (with-settle-p99-ms,
+// settle-added-p99-ms and the like), over the deletes of every iteration. ns/op is one whole
+// iteration, its server and its issue included.
 //
 // Two documents: a spec of a realistic size (latencySpec), and the heaviest body the fixtures
 // hold, heavybodies' plain list of 8,000 items, whose 8,001 blocks are the most any of its stored
@@ -111,19 +112,36 @@ func latencySpec() string {
 // measures the same body at 43 µs a block). Each insert is a browser's insert mark on words of a
 // paragraph of their own, suggested by a comment and deleted by its author, as
 // newAnchorsOnAnInsert makes one. A settled delete writes exactly one version, and one left to
-// the settlement writes none, or what is timed would not be the settle.
-func TestTheDeleteOfAPendingInsertSettlesWithinItsLatencyBound(t *testing.T) {
+// the settlement writes none, or what is timed would not be the settle; a delete that writes
+// another count fails the benchmark.
+//
+// The architect's rulings on dispatch://INFRA-1523: on 2026-11-20 22:18Z, that the settle should
+// add no more than about a second to the delete's p99 on the heaviest fixture, measured in a
+// build Job without -race; on 2026-11-21 15:02Z, that this is a measurement and not a CI
+// assertion, since a wall-clock bound on a shared runner is a test defect (the class
+// dispatch://INFRA-3904 removes). Nothing here asserts a time, and no CI step runs it: none passes
+// -bench, and .github/scripts/go-test-step-expansion.py refuses a step that would (:732-734).
+// Run it from packages/envoy against the Postgres DISPATCH_TEST_DATABASE_URL names (storetest.Open
+// skips without it):
+//
+//	go test -run '^$' -bench '^BenchmarkDeleteOfAPendingInsertSettle$' -benchtime=1x ./internal/dispatch/api
+//
+// -benchtime=1x is one iteration, so one measurement, for each document. Without it, B.Loop runs
+// iterations until a second has passed, and the percentiles are over all of their deletes.
+func BenchmarkDeleteOfAPendingInsertSettle(b *testing.B) {
+	// The access log's line for every request would split the benchmark's result line; warnings
+	// and errors still reach stderr.
+	logtest.SetDefault(b, slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	shapes := heavybodies.Shapes()
 	plain := slices.IndexFunc(shapes, func(shape heavybodies.Shape) bool { return shape.ID == "plain-list" })
 	if plain < 0 || shapes[plain].Refusal != "" {
-		t.Fatalf("heavybodies holds no stored plain-list shape: %v", shapes)
+		b.Fatalf("heavybodies holds no stored plain-list shape: %v", shapes)
 	}
 	for _, document := range []struct{ name, body string }{
 		{"a spec of about 200 blocks and 40 KB", latencySpec()},
 		{"the heaviest fixture body, " + shapes[plain].Name, shapes[plain].Grow()},
 	} {
-		t.Run(document.name, func(t *testing.T) {
-			documentService, handler, database, served := browserDocumentServer(t)
+		b.Run(document.name, func(b *testing.B) {
 			runs := 2 * (deleteLatencyRuns + 1)
 			words := func(run int) string { return fmt.Sprintf("zarquonrun%02d", run) }
 			var body strings.Builder
@@ -131,59 +149,72 @@ func TestTheDeleteOfAPendingInsertSettlesWithinItsLatencyBound(t *testing.T) {
 			for run := range runs {
 				fmt.Fprintf(&body, "\nRun %s adds its word here.\n", words(run))
 			}
-			issue := createInteractionIssue(t, handler, "LAT", "Delete latency", body.String())
-			listed := decodeBody[[]model.ArtifactBlock](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/blocks", nil, "alice"))
-			t.Logf("%s: %d blocks, %d bytes", document.name, len(listed), body.Len())
 
+			// One iteration is one whole measurement, on a server of its own: createInteractionIssue
+			// creates the project it names, so a second issue on the same server would fail. B.Loop
+			// runs this function once, so the deletes of every iteration count; a loop to b.N would
+			// have the framework call it again for each count it tries, and the deletes of every
+			// call but the last would be timed and dropped.
 			var settled, unsettled []time.Duration
-			for run := range runs {
-				mark := fmt.Sprintf("m-run-%02d", run)
-				writeBrowserMark(t, database, documentService, issue.PrimaryArtifactID, docs.MarkSpec{
-					Kind:  docs.MarkSuggestion,
-					ID:    mark,
-					Attrs: pmdoc.Attrs{"id": mark, "by": "user:alice", "kind": "insert"},
-				}, words(run)+" ")
-				comment := createThreadComment(t, handler, issue.Key, map[string]any{
-					"body":       "Add this word.",
-					"anchor":     map[string]any{"artifact": "spec", "mark_id": mark},
-					"suggestion": map[string]string{"replace_with": words(run) + " "},
-				}, "alice")
-				settles := run%2 == 0
-				served.deleteLeavesSettlement = !settles
-				before := latestVersion(t, database, issue.PrimaryArtifactID).Number
-				started := time.Now()
-				deleted := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/comments/"+comment.ID, nil, "alice")
-				taken := time.Since(started)
-				if deleted.Code != http.StatusOK {
-					t.Fatalf("delete run %d's insert: status=%d body=%s", run, deleted.Code, deleted.Body.String())
-				}
-				wrote, want := latestVersion(t, database, issue.PrimaryArtifactID).Number-before, 0
-				if settles {
-					want = 1
-				}
-				if wrote != want {
-					t.Fatalf("the delete of run %d's insert (settles: %t) wrote %d versions, want %d", run, settles, wrote, want)
-				}
-				switch {
-				case run < 2:
-					// The warm-up pair, which pays for what every later run finds cached.
-				case settles:
-					settled = append(settled, taken)
-				default:
-					unsettled = append(unsettled, taken)
+			for b.Loop() {
+				documentService, handler, database, served := browserDocumentServer(b)
+				issue := createInteractionIssue(b, handler, "LAT", "Delete latency", body.String())
+				listed := decodeBody[[]model.ArtifactBlock](b, dispatchRequest(b, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/blocks", nil, "alice"))
+				b.Logf("%s: %d blocks, %d bytes", document.name, len(listed), body.Len())
+
+				for run := range runs {
+					mark := fmt.Sprintf("m-run-%02d", run)
+					writeBrowserMark(b, database, documentService, issue.PrimaryArtifactID, docs.MarkSpec{
+						Kind:  docs.MarkSuggestion,
+						ID:    mark,
+						Attrs: pmdoc.Attrs{"id": mark, "by": "user:alice", "kind": "insert"},
+					}, words(run)+" ")
+					comment := createThreadComment(b, handler, issue.Key, map[string]any{
+						"body":       "Add this word.",
+						"anchor":     map[string]any{"artifact": "spec", "mark_id": mark},
+						"suggestion": map[string]string{"replace_with": words(run) + " "},
+					}, "alice")
+					settles := run%2 == 0
+					served.deleteLeavesSettlement = !settles
+					before := latestVersion(b, database, issue.PrimaryArtifactID).Number
+					started := time.Now()
+					deleted := dispatchRequest(b, handler, http.MethodDelete, "/api/v1/comments/"+comment.ID, nil, "alice")
+					taken := time.Since(started)
+					if deleted.Code != http.StatusOK {
+						b.Fatalf("delete run %d's insert: status=%d body=%s", run, deleted.Code, deleted.Body.String())
+					}
+					wrote, want := latestVersion(b, database, issue.PrimaryArtifactID).Number-before, 0
+					if settles {
+						want = 1
+					}
+					if wrote != want {
+						b.Fatalf("the delete of run %d's insert (settles: %t) wrote %d versions, want %d", run, settles, wrote, want)
+					}
+					switch {
+					case run < 2:
+						// The warm-up pair, which pays for what every later run finds cached.
+					case settles:
+						settled = append(settled, taken)
+					default:
+						unsettled = append(unsettled, taken)
+					}
 				}
 			}
 			slices.Sort(settled)
 			slices.Sort(unsettled)
 			with50, with99 := percentileOfDismissedScale(settled, 0.50), percentileOfDismissedScale(settled, 0.99)
 			without50, without99 := percentileOfDismissedScale(unsettled, 0.50), percentileOfDismissedScale(unsettled, 0.99)
-			t.Logf("%s: the delete with its settle: p50 %.1f ms, p99 %.1f ms; without it: p50 %.1f ms, p99 %.1f ms; over %d runs each",
+			b.Logf("%s: the delete with its settle: p50 %.1f ms, p99 %.1f ms; without it: p50 %.1f ms, p99 %.1f ms; over %d runs each",
 				document.name, msOf(with50), msOf(with99), msOf(without50), msOf(without99), len(settled))
-			t.Logf("%s: the settle adds p50 %.1f ms, p99 %.1f ms (bound %v on the p99)",
-				document.name, msOf(with50-without50), msOf(with99-without99), deleteLatencyBound)
-			if added := with99 - without99; added > deleteLatencyBound {
-				t.Errorf("%s: the settle adds %.1f ms to the delete's p99, over the bound of %v", document.name, msOf(added), deleteLatencyBound)
-			}
+			b.Logf("%s: the settle adds p50 %.1f ms, p99 %.1f ms", document.name, msOf(with50-without50), msOf(with99-without99))
+			// Reported after the loop: B.Loop's first call resets the timer, which drops the metrics
+			// reported before it.
+			b.ReportMetric(msOf(with50), "with-settle-p50-ms")
+			b.ReportMetric(msOf(with99), "with-settle-p99-ms")
+			b.ReportMetric(msOf(without50), "without-settle-p50-ms")
+			b.ReportMetric(msOf(without99), "without-settle-p99-ms")
+			b.ReportMetric(msOf(with50-without50), "settle-added-p50-ms")
+			b.ReportMetric(msOf(with99-without99), "settle-added-p99-ms")
 		})
 	}
 }

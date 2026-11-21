@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-func createThreadComment(t *testing.T, handler http.Handler, issueKey string, input map[string]any, login string) model.Comment {
+func createThreadComment(t testing.TB, handler http.Handler, issueKey string, input map[string]any, login string) model.Comment {
 	t.Helper()
 	var response *httptest.ResponseRecorder
 	if login == "" {

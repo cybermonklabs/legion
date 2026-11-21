@@ -39,7 +39,7 @@ func newInteractionDeps(t *testing.T, makeDocs func(*store.Store) docs.API) (htt
 
 // newInteractionServer is newInteractionDeps, answering also the server it registered, for a test
 // that waits out the writes its requests leave running past their answers (awaitBackgroundWrites).
-func newInteractionServer(t *testing.T, makeDocs func(*store.Store) docs.API) (http.Handler, *store.Store, Deps, *server) {
+func newInteractionServer(t testing.TB, makeDocs func(*store.Store) docs.API) (http.Handler, *store.Store, Deps, *server) {
 	t.Helper()
 	database := storetest.Open(t)
 	var docsAPI docs.API
@@ -101,7 +101,7 @@ func replaceDocumentText(database *store.Store, documentService docs.API, artifa
 	return canonical, ledger.Commit(ctx)
 }
 
-func sessionRequest(t *testing.T, handler http.Handler, method, target string, body any) *httptest.ResponseRecorder {
+func sessionRequest(t testing.TB, handler http.Handler, method, target string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -115,7 +115,7 @@ func sessionRequest(t *testing.T, handler http.Handler, method, target string, b
 	return response
 }
 
-func createInteractionIssue(t *testing.T, handler http.Handler, project, title, spec string) struct {
+func createInteractionIssue(t testing.TB, handler http.Handler, project, title, spec string) struct {
 	Key               string `json:"key"`
 	PrimaryArtifactID string `json:"primary_artifact_id"`
 } {

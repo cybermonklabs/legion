@@ -592,8 +592,9 @@ type server struct {
 	// deleteLeavesSettlement has the delete of a comment whose pending insert suggestion it
 	// rejects leave the document's next version to the settlement the reject arms, as the delete
 	// did before it wrote that version itself (deleteComment, docs.SettleVersion); false, which
-	// every server the deployment builds leaves it, settles in the delete. Only a test sets it:
-	// to time the delete without its settle beside the delete with it, and to reach a document
+	// every server the deployment builds leaves it, settles in the delete. Only test code sets it:
+	// a benchmark, to time the delete without its settle beside the delete with it
+	// (BenchmarkDeleteOfAPendingInsertSettle), and a test, to reach a document
 	// whose latest version still holds a deleted insert's words, as one does where a build
 	// without the settle served the delete during a rollout, for the readers that mask them.
 	deleteLeavesSettlement bool
