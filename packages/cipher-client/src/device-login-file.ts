@@ -142,6 +142,20 @@ function checkOnTheWay(info: Stats, what: string): void {
   }
 }
 
+/**
+ * Refuses `info`, a link on the way to `what`, where neither this user nor root owns it: its owner
+ * can remove it and make it again naming another place, in a sticky directory too, between the
+ * walk and the open. StrictModes asks the same of each part of a key's path.
+ */
+function checkLinkOnTheWay(info: Stats, what: string): void {
+  const uid = process.getuid?.();
+  if (uid !== undefined && info.uid !== uid && info.uid !== 0) {
+    throw new Error(
+      `a link on the way to ${what} is owned by uid ${info.uid}, neither this user (uid ${uid}) nor root; keep the login under directories and links of this user's own`
+    );
+  }
+}
+
 /** `path`'s own status, a link's and not what it names, or null where nothing is there. `what`
  *  names the directory it is on the way to in an error. */
 async function lstatOnTheWay(path: string, what: string): Promise<Stats | null> {
@@ -157,11 +171,11 @@ async function lstatOnTheWay(path: string, what: string): Promise<Stats | null> 
  * Refuses `dir`, named as `what` names it, where a directory the system looks a name up in to
  * reach it fails {@link checkOnTheWay}: each one from `/` down, the working directory's own where
  * `dir` is relative, and the one each link on the way is in, since another user who replaces that
- * link picks where the way goes. The names are walked as an open walks them: each by its `lstat`,
- * a link by its `readlink`, from `/` where its target is absolute and else from the directory it
- * is in, and `..` up from the directory reached, which is no link. At most
- * {@link LINKS_FOLLOWED_AT_MOST} links are followed. A name that is not there ends the walk, which
- * the caller's own look at `dir` refuses.
+ * link picks where the way goes; and where a link on the way fails {@link checkLinkOnTheWay}. The
+ * names are walked as an open walks them: each by its `lstat`, a link by its `readlink`, from `/`
+ * where its target is absolute and else from the directory it is in, and `..` up from the
+ * directory reached, which is no link. At most {@link LINKS_FOLLOWED_AT_MOST} looks at a link are
+ * made. A name that is not there ends the walk, which the caller's own look at `dir` refuses.
  */
 async function checkDirectoriesOnTheWay(dir: string, what: string): Promise<void> {
   const names = (isAbsolute(dir) ? dir : `${process.cwd()}/${dir}`).split("/");
@@ -184,6 +198,8 @@ async function checkDirectoriesOnTheWay(dir: string, what: string): Promise<void
       info = here;
       continue;
     }
+    checkLinkOnTheWay(here, what);
+    // Each look at a link is a hop, a look again after its readlink failed included.
     followed += 1;
     if (followed > LINKS_FOLLOWED_AT_MOST) throw notARegularFile("a loop of links");
     let target: string;

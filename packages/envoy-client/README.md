@@ -1101,8 +1101,9 @@ regular file of at most 64 KiB, in a directory it checks before it opens the fil
 setting names a link, it checks the directory of each link on the way and of the file at its end
 as well. Every directory above those, and each one a link on the way sits in, must be one that
 neither its group nor anyone else may write to unless it has the sticky bit, as /tmp has, and that
-this user or root owns, as OpenSSH's StrictModes asks of the directories above a key. It exits 1
-when the broker refuses the login, the person denies it, its code expires, or the broker answers a
+this user or root owns, and each link on the way one this user or root owns, as OpenSSH's
+StrictModes asks of the path to a key. It exits 1 when the broker refuses the login, the person
+denies it, its code expires, or the broker answers a
 poll with any other 4xx, with an OAuth error or without one (a proxy's page, a bare challenge),
 naming its status; a poll the broker did not answer, its 429 and a 5xx are polled again, at the
 broker's interval, from 1 s and at most 60 s before any `slow_down` (each of which adds 5 s), and

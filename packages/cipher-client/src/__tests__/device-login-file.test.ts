@@ -458,6 +458,75 @@ test("a directory others may write with the sticky bit, as /tmp is, is no refusa
   }
 });
 
+test("a link on the way that another user owns is refused, in a sticky directory too", async () => {
+  // Its owner can remove it and make it again naming another place, sticky bit or not, between the
+  // walk and the open. No test can make a link another user owns, so the link reads as owned by
+  // such a user.
+  const stub = broker();
+  const { shared, settings } = await throughADirectoryLink(stub.url);
+  await chmod(shared, 0o1777);
+  const link = join(await fs.realpath(shared), "sub");
+  const other = (process.getuid?.() ?? 0) + 4242;
+  const realLstat = fs.lstat;
+  const lstats = spyOn(fs, "lstat").mockImplementation((async (
+    ...args: Parameters<typeof fs.lstat>
+  ) => {
+    const info = await realLstat(...args);
+    if (String(args[0]) !== link) return info;
+    return new Proxy(info, {
+      get: (seen, key) => (key === "uid" ? other : Reflect.get(seen, key)),
+    });
+  }) as typeof fs.lstat);
+  try {
+    for (const setting of settings) {
+      const refused = await readDeviceLogin(setting).then(
+        () => null,
+        (error: unknown) => error as Error
+      );
+      expect(refused?.message, setting).toContain(`a link on the way to`);
+      expect(refused?.message, setting).toContain(`owned by uid ${other}, neither this user`);
+    }
+  } finally {
+    lstats.mockRestore();
+  }
+  // Control: the same link of this user's own, in the same sticky directory, is read.
+  for (const setting of settings) {
+    expect((await readDeviceLogin(setting)).credentialId).toBe(STAND_IN_CREDENTIAL);
+  }
+});
+
+test("a link on the way whose readlink keeps failing as replaced stops at the bound of links", async () => {
+  // A link replaced between its lstat and its readlink is looked at again, and each look counts
+  // toward the bound, so a link replaced over and over cannot hold the read. The spy gives the
+  // real target after 100 failures, so a walk that counts no look reads the login.
+  const stub = broker();
+  const { shared, settings } = await throughADirectoryLink(stub.url);
+  await chmod(shared, 0o755);
+  const link = join(await fs.realpath(shared), "sub");
+  let reads = 0;
+  const realReadlink = fs.readlink;
+  const readlinks = spyOn(fs, "readlink").mockImplementation((async (
+    ...args: Parameters<typeof fs.readlink>
+  ) => {
+    if (String(args[0]) === link && reads < 100) {
+      reads += 1;
+      throw Object.assign(new Error("not a link"), { code: "EINVAL" });
+    }
+    return await realReadlink(...args);
+  }) as typeof fs.readlink);
+  let refused: Error | null;
+  try {
+    refused = await readDeviceLogin(settings[0] ?? "").then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+  } finally {
+    readlinks.mockRestore();
+  }
+  expect(refused?.message).toContain("is a loop of links, not a regular file");
+  expect(reads).toBe(40);
+});
+
 test("a relative link in a directory reached through a link climbs from where the link really is", async () => {
   // The system resolves a `..` in a link's target from the directory the link is really in. Here
   // the login's directory is a link, so `..` from it is not what the path's own spelling says.
