@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -142,6 +142,68 @@ func TestTheOwnerGivesTheProjectToAFullMember(t *testing.T) {
 	}
 }
 
+// TestTheAccessListWritesNeedTheApproveScope: naming a person or a group on a project's access
+// list, taking one off, setting its visibility and giving it to another owner decide who may see
+// the project, so a credential of the owner's that holds `person` alone - a personal token minted
+// with that scope only, as personOnly is - is 403 OAUTH_SCOPE_REQUIRED naming `approve` on each,
+// and nothing is written. The owner's credential that holds `approve` as well makes each change,
+// and reading the access list still needs `person` alone.
+func TestTheAccessListWritesNeedTheApproveScope(t *testing.T) {
+	handler, database := newAccessServer(t)
+	if made := dispatchRequest(t, handler, http.MethodPut, "/api/v1/access-groups/crew", map[string]any{"members": []string{accessCarol}}, "alice"); made.Code != http.StatusOK {
+		t.Fatalf("alice makes crew: %d %s", made.Code, made.Body.String())
+	}
+	personOnly := personalTokenOwnedBy(t, database, "alice", model.ScopePerson)
+	approving := personalTokenOwnedBy(t, database, "alice", model.ScopePerson, model.ScopeApprove)
+	if read := agentRequest(t, handler, http.MethodGet, "/api/v1/projects/ACC/access", nil, personOnly); read.Code != http.StatusOK {
+		t.Fatalf("alice's person token reads ACC's access: %d %s, want 200", read.Code, read.Body.String())
+	}
+
+	writes := []struct {
+		method, path string
+		body         any
+	}{
+		{http.MethodPut, "/api/v1/projects/ACC/access/people/" + accessCarol, nil},
+		{http.MethodPut, "/api/v1/projects/ACC/access/groups/crew", nil},
+		{http.MethodDelete, "/api/v1/projects/ACC/access/groups/crew", nil},
+		{http.MethodDelete, "/api/v1/projects/ACC/access/people/" + accessCarol, nil},
+		{http.MethodPatch, "/api/v1/projects/ACC/access", map[string]string{"visibility": string(model.ProjectPublic)}},
+		{http.MethodPatch, "/api/v1/projects/ACC/access", map[string]string{"owner": accessDave}},
+	}
+	for _, write := range writes {
+		call := write.method + " " + write.path
+		before, access := allEvents(t, database), readAccess(t, handler, "alice")
+		wantApproveRefusal(t, agentRequest(t, handler, write.method, write.path, write.body, personOnly), call)
+		if after, now := allEvents(t, database), readAccess(t, handler, "alice"); after != before || !slices.Equal(now.People, access.People) ||
+			!slices.Equal(now.Groups, access.Groups) || now.Owner != access.Owner || now.Visibility != access.Visibility {
+			t.Fatalf("the refused %s moved events from %d to %d and the access from %+v to %+v", call, before, after, access, now)
+		}
+
+		if admitted := agentRequest(t, handler, write.method, write.path, write.body, approving); admitted.Code != http.StatusOK {
+			t.Fatalf("%s with alice's approving token: %d %s, want 200", call, admitted.Code, admitted.Body.String())
+		}
+	}
+	if got := readAccess(t, handler, "alice"); got.Owner != accessDave || len(got.People) != 0 || len(got.Groups) != 0 {
+		t.Fatalf("after the approving token's changes ACC's access = %+v, want dave's project with empty lists", got)
+	}
+}
+
+// wantApproveRefusal fails the test unless response is the scope gate's refusal of a credential
+// holding `person` alone on a row that needs `approve`: 403 OAUTH_SCOPE_REQUIRED naming approve,
+// under RFC 6750's insufficient_scope challenge.
+func wantApproveRefusal(t *testing.T, response *httptest.ResponseRecorder, call string) {
+	t.Helper()
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("%s with alice's person token: %d %s, want 403", call, response.Code, response.Body.String())
+	}
+	if body := decodeBody[refusalAnswer](t, response); body.Code != codeScopeRequired || !strings.Contains(body.Error, model.ScopeApprove) {
+		t.Fatalf("%s with alice's person token: the refusal = %+v, want %s naming the approve scope", call, body, codeScopeRequired)
+	}
+	if got, want := response.Header().Get("WWW-Authenticate"), insufficientScopeChallenge(model.ScopeApprove); got != want {
+		t.Fatalf("%s with alice's person token: the challenge = %q, want %q", call, got, want)
+	}
+}
+
 // TestARestrictedMemberCannotCreateAProject: a restricted member's create is 403 RESTRICTED_MEMBER
 // before anything is written. A full member's create answers as it always did, and the creator
 // owns the project; a create by a credential that acts for nobody gives the project its default
@@ -221,7 +283,7 @@ func TestACreateSetsOnlyAnOwnerSetOwnerWouldTake(t *testing.T) {
 	for person, token := range tokens {
 		answer := liveNamedToken(caller.jkt)
 		answer.Person = person
-		answer.ProjectScope, answer.Projects = brokertoken.ProjectScopePerson, nil
+		answer.ProjectScope, answer.Projects = ciphertoken.ProjectScopePerson, nil
 		rig.broker.Says(token, answer)
 	}
 	create := func(token, key string, body map[string]any) *httptest.ResponseRecorder {

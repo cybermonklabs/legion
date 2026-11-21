@@ -2,8 +2,6 @@ package graphstore
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -19,21 +17,12 @@ import (
 // every such caller rather than by its writer.
 //
 // This is the one rule, and every reader and every writer asks it rather than keeping a copy:
-// the going routes' asker (api.createGoingRequest), the visibility a write may ask for
-// (VisibilityFor) and the SQL every author-private read binds (AuthorIsSQL, which states the
-// same test over a stored author).
+// the going routes' asker (api.createGoingRequest), the visibility a test's write reserves a node
+// for its author under (graphstoretest.VisibilityFor, which is handed this answer) and the SQL
+// every author-private read binds (AuthorIsSQL, which states the same test over a stored author).
 func ProvesAuthor(actor model.Actor) bool {
 	_, proved := provedAuthor(actor)
 	return proved
-}
-
-// SameAuthor is the one rule stated in Go over two actors, as AuthorIsSQL states it in SQL: true
-// when the author writer's record proved (provedAuthor) and the author reader's credential proves
-// are one author, and false where either proves none.
-func SameAuthor(writer, reader model.Actor) bool {
-	written, proved := provedAuthor(writer)
-	read, reads := provedAuthor(reader)
-	return proved && reads && written == read
 }
 
 // author is who a credential proved, the one thing an author-private node is read by: the root's
@@ -89,35 +78,6 @@ func provedAuthor(actor model.Actor) (author, bool) {
 // record proves.
 func NamesCredential(actor model.Actor) bool {
 	return actor.ID != "" || (actor.Owner != nil && *actor.Owner != "") || (actor.Service != nil && *actor.Service != "")
-}
-
-// ErrAuthorNamesNobody refuses a node reserved for its author written on a credential that
-// proves none. It is a sentinel so a route can answer it as a refusal of the caller's rather
-// than as a failure of the server's, and its words are the reason itself: they say what is
-// wrong with the credential and what would be wrong with the node.
-var ErrAuthorNamesNobody = errors.New(
-	"this credential names nobody, so a node reserved for its author would be nobody's to read: " +
-		"every holder of the deployment's shared bearer presents the same value, and two such " +
-		"credentials compare as one credential, so write it project-visible or write it under a " +
-		"credential that names a session, a person or a workload")
-
-// VisibilityFor is the visibility a write gets for what it asked for. A write that asks for
-// nothing is project-visible, which is what every node Dispatch writes today is; a write that
-// asks to reserve a node for its author gets that only on a credential that proves one, and is
-// refused with ErrAuthorNamesNobody otherwise. A word that is neither is refused by name, so a
-// misspelling is a failed write rather than a node nobody can read.
-func VisibilityFor(requested string, actor model.Actor) (string, error) {
-	switch requested {
-	case "", VisibilityProject:
-		return VisibilityProject, nil
-	case VisibilityAuthor:
-		if !ProvesAuthor(actor) {
-			return "", ErrAuthorNamesNobody
-		}
-		return VisibilityAuthor, nil
-	}
-	return "", fmt.Errorf("visibility %q is no visibility this store holds, which are %q and %q",
-		requested, VisibilityProject, VisibilityAuthor)
 }
 
 // ActingCredential is the one value an author-private read binds beside its own arguments: the

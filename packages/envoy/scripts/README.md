@@ -137,7 +137,7 @@ Brings up the whole local surface the airlock's checks run on, with no container
 runtime and no cluster, and prints the exports a check needs. It runs
 `dev-broker.sh` for Postgres, `dev-oidc-issuer`, the six built binaries and that
 script's own broker, and reads what it printed, rather than starting any of that a
-second time. On top it starts a `cmd/dev-airlock-stands` of its own (the stand-in
+second time. On top it starts a `cmd/dev-proxy-stands` of its own (the stand-in
 services S and T, the GitHub, Google and Microsoft endpoints and the AWS service,
 and the certificate authority they are signed by), which is a second such process:
 `dev-broker.sh` starts one too, for the GitHub its own `github-app` secrets mint
@@ -231,14 +231,41 @@ consumers (`scripts/az-broker`, `scripts/secret-run`, `shims/gh`,
 model with `lake`, prints its theorem statements and their axioms, runs the comparison
 fuzz test for ten minutes, and runs the six mutants through `airlock-mutants.sh`.
 
+Before starting `k7`, set these operator inputs. An absent or empty input is a usage
+error (exit 2), reported before setup starts, and so is a broker name that is not
+uppercase letters, digits and single underscores starting with a letter, the one form
+the broker reads:
+
+- `AIRLOCK_GCLOUD_SECRET`: the broker name of the operator's gcloud login, which the
+  consumer's `scripts/gcloud-broker` reads, for example `GCLOUD_OPERATOR`.
+- `AIRLOCK_GWS_READ_SECRET`: the broker name of the operator's Google Workspace
+  read login, for example `GWS_OPERATOR_READ_OAUTH`.
+- `AIRLOCK_GWS_ADMIN_SECRET`: the broker name of the operator's Google Workspace
+  administrator login, for example `GWS_OPERATOR_ADMIN_OAUTH`.
+- `AIRLOCK_GWS_TIER_KEY`: the account key in `gws/accounts.json` whose
+  `tiers.read.command` the check reads, for example `operator`.
+
+The check uses fake login values in its local store, each stored under the name the
+broker reads its input's name by (lower-cased, each underscore a hyphen). These inputs
+identify the consumer's existing broker names and account; they do not rename the
+operator's logins. `bash packages/envoy/scripts/airlock-check.test.sh` calls the k7
+fixture and Google consumer boundary directly under fakes. It checks required inputs,
+fake broker rules, store names and consumer results without starting a stack.
+
 The programs the checks drive are files, not text a run writes out. The three Go
-clients are subcommands of `cmd/dev-airlock-stands`, the binary `dev-broker.sh`
+clients are subcommands of `cmd/dev-proxy-stands`, the binary `dev-broker.sh`
 builds and `dev-airlock.sh` runs: `probe-private` is `k4`'s private-address probe,
 `probe-bound` is `k7`'s call to a bound host, and `load` is `k9`'s load driver and
 the plain tunnel its baseline goes through. CI compiles and vets all three with the
-rest of that command. The others are under `scripts/airlock/`: `memscan.py`, `k6`'s
-boto3 steps (`aws-boto3.py`), `k7`'s Slack poster (`slack.ts`) and `k7`'s git
-credential helper.
+rest of that command. The others are under `scripts/airlock/`: `k7-consumers.sh`
+(the fixture and Google consumer boundary), `memscan.py`, `k6`'s boto3 steps
+(`aws-boto3.py`), `k7`'s Slack poster (`slack.ts`) and `k7`'s git credential helper.
+
+The grant's proxy password and placeholder stay out of a command's arguments, which
+every process of the pod reads in `/proc/<pid>/cmdline`. `load` reads the proxy URL from
+`--proxy-file` and the bearer from `--header-file`, and refuses `--proxy` and `--header`;
+curl reads the proxy from a config (`-K`) and the header from standard input; and `k7`'s
+git step reads the proxy from `GIT_CONFIG_*`. Each file is a `<(printf …)` path.
 
 Where a check needs a secret the stack does not hold, the run extends the stack's own
 fake Secrets Manager and makes every broker reread it. A control that needs other
@@ -373,7 +400,7 @@ a hub that never drops the killed broker's connection fails line 6.
 ## backend-count.sh
 
 Counts, for each test it names, the runs that passed on each store backend: the test's
-own `aws` and `gcp` subtests (`onEachStore`, `cmd/agent-secrets/secret_kind_test.go`),
+own `aws` and `gcp` subtests (`onEachStore`, `cmd/cipher/secret_kind_test.go`),
 so a store or use change cannot pass on one backend alone.
 
 ```bash
@@ -391,7 +418,9 @@ cannot stand in for a new test's.
 `GO_TEST_SKIP='^(TestA|TestB)$/^aws$'` makes both lines read `aws=0` and the run exit 1.
 `GO_TEST_TIMEOUT` replaces the 5-minute `-timeout`, which `ci.yaml`'s `envoy-go` job counts
 in its time budget; the job runs it as "Count the store-form rows on each backend", over
-`./cmd/agent-secrets/` and `./internal/broker/api/`.
+`./cmd/cipher/` and `./internal/cipher/api/`, as those tests' one run: the job's unit
+step and its database-skips step skip them by name (`BACKEND_COUNT_TESTS` in
+`.github/scripts/ci_job_reads.py`).
 
 ## database-skips.sh
 
@@ -409,7 +438,7 @@ packages/envoy/scripts/database-skips.sh --report REPORT.json [PACKAGE...]
 ```
 
 A `PACKAGE` is a pattern under `packages/envoy`, `./dir/` or `./dir/...`. With none it runs
-its default table, `./internal/broker/...` and `./cmd/broker/`, less the packages its
+its default table, `./internal/cipher/...` and `./cmd/cipherd/`, less the packages its
 `DEFAULT_EXCEPT` takes out of them: the race lane's packages under the broker's tree, of which the
 auth service's `natscallout`, which opens no database, is the one today (`DATABASE_SKIPS_PATTERN`
 in `.github/scripts/ci_job_reads.py`, which refuses the script when `DEFAULT_EXCEPT` says
@@ -419,12 +448,13 @@ reads that report. `--var NAME` names a variable the packages need, and repeats;
 `database_skips=UNKNOWN` naming it, and nothing runs.
 `--race` adds `-race`, and `--timeout D` replaces the `-timeout`, as `GO_TEST_TIMEOUT` does
 when `--timeout` is not given; it bounds each package's test binary and not the run, since
-the packages run several at a time, so one that starts late ends later. `--report` reads a
-`go test -json` report instead and runs nothing, and refuses the three options that shape a
-run.
+the packages run several at a time, so one that starts late ends later. `--skip PATTERN` adds
+go test's `-skip`; go test reports nothing for a test it leaves out, so that test is neither
+run nor counted as a skip. `--report` reads a `go test -json` report instead and runs nothing,
+and refuses the four options that shape a run.
 
 It names the packages as `go list` does under the run's own flags, so a pattern spelled
-`./cmd/./broker/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
+`./cmd/./cipherd/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
 listed package, then `database_skips=N` and, for a run of its own, `go_test_exit=E`. The tests
 `EXPECTED_SKIPS` names in the script skip by their own design in every CI run, which sets the
 database variables and none of what those tests need (a corpus, a seeded database, a built
@@ -442,11 +472,13 @@ dump and a data race report among them), the build output and, for a run of its 
 stderr. A run of its own also prints each package's `pass|fail PACKAGE <seconds>s` on stderr.
 
 `ci.yaml`'s `envoy-go` job runs it as "Count the database broker suites' skips", with
-`--timeout 20m`, the unit step's own `-timeout`, and a step limit of its own
+`--timeout 20m`, the unit step's own `-timeout`, `--skip` of the one test of
+`./internal/cipher/api/` that the job's "Count the store-form rows on each backend" runs
+(`backend-count.sh`, above), and a step limit of its own
 (`timeout-minutes: 30`) that its time budget counts, and `envoy-go-race-api` runs the
 Dispatch API through it as the second line above.
 `database-skips.test.sh` holds it to five controls, which `envoy-go` runs as "Test the database
-skip counter": a skip planted through a Go overlay in `./internal/broker/api/`, `./cmd/broker/`
+skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`, `./cmd/cipherd/`
 and `./internal/dispatch/api/` is counted; either variable unset or empty is UNKNOWN; a report
 that shows no run (no test ran, only expected skips ran, or one package ran none) is UNKNOWN,
 a failed test fails, a race report filed under a passed subtest is printed, and a skip in a
@@ -458,7 +490,7 @@ a scratch Postgres named by both `BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_D
 ## aws-moto-check.sh
 
 Runs the built `agent-secrets` against moto's AWS, with no AWS account:
-`cmd/agent-secrets/secret_moto_test.go`'s `TestTheBuiltCLIAgainstMoto` (build tag
+`cmd/cipher/secret_moto_test.go`'s `TestTheBuiltCLIAgainstMoto` (build tag
 `moto`), which creates IAM users `writer` and `nobody` in moto, writes them as profiles,
 turns moto's IAM checks on, and runs the secret forms under each source of the AWS SDK's
 own order: access keys in the environment, which outrank `AWS_PROFILE`; `AWS_PROFILE`;
@@ -488,7 +520,7 @@ How many theorems there are is written nowhere: this script and `k15` both count
 model to.
 
 ```bash
-packages/envoy/scripts/airlock-lean-axioms.sh packages/envoy/internal/broker/airlock/lean
+packages/envoy/scripts/airlock-lean-axioms.sh packages/envoy/internal/cipher/proxyrules/lean
 ```
 
 It runs `lake env lean Axioms.lean` in that directory and writes what that printed to
@@ -536,7 +568,7 @@ from that wheel's own requirements.
 ## airlock-mutants.sh
 
 Proves that the airlock's differential fuzz test and the Lean proofs catch a defect
-in the decision code. Each file of `internal/broker/airlock/testdata/mutants` is one
+in the decision code. Each file of `internal/cipher/proxyrules/testdata/mutants` is one
 defect as a unified diff; for each, the script copies `packages/envoy` to a fresh
 directory under `$TMPDIR`, applies that one patch there, and requires the copy to
 fail — a `go-*.patch` under the comparison fuzz test over the committed seed corpus,
@@ -664,29 +696,35 @@ producer that moves first stops the fleet's workflow in silence.
 ```bash
 packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> <commit>
 packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> --listeners <commit>
+packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> --clients [--dotfiles <dir>] <commit>
 ```
 
 `--deployment` names the deployment repository whose Pulumi stacks pin the readers' images; it is
 required, and the gate compiles in no deployment's name. Each stack's config keys are under its
 Pulumi project's name, which the gate reads from that stack's own `Pulumi.yaml` (`name:`): a stack
-whose `Pulumi.yaml` is missing or declares no name prints `UNKNOWN` by name, and no name is guessed.
+whose `Pulumi.yaml` is missing, declares no name, or declares one Pulumi refuses (anything but
+letters, digits, `_`, `.` and `-`) prints `UNKNOWN` by name, and no name is guessed.
 
 The deployment's Legion projects are the files of its `legion/projects/` (`<nn>-<KEY>.yaml`, one
 mapping of a project's settings each, in file-name order), as the deployment's legion program reads
 them. Only a deployment with no such directory (GitHub answers 404) still declares them in the
 projects list of `legion/Pulumi.prod.yaml`, as that program did before the files. Any other failed
-listing, a file that is not one mapping, and a deployment that declares no project print `UNKNOWN`
-naming what the gate read.
+listing, a listing of 1,000 entries or more (GitHub lists no more, so it may have stopped short),
+an entry that is no file (a link or a directory), a file with no download URL (GitHub lists a
+submodule so), a file that is not one mapping, a file that program refuses (a name that is not
+`<nn>-<KEY>.yaml`, or a `key` that is not that KEY), and a deployment that declares no project
+print `UNKNOWN` naming what the gate read. A file GitHub serves with any encoding but base64 (it
+serves a file of 1 to 100 MB with encoding `none` and no content) is a file the gate cannot read,
+never an empty one. A project whose `key` is no project key (`[A-Z][A-Z0-9]*`, which the list is
+held to as the files are), whose `replicas` is no count, whose `daemon` is no boolean, or whose
+image is no plain reference prints `UNKNOWN` by name: it is never skipped, and its image is never
+read cut short.
 
-Without `--listeners` it reads the image each Legion daemon runs: each project's `daemonImage` when
+Without a mode it reads the image each Legion daemon runs: each project's `daemonImage` when
 set, else its `image`; a project at `replicas: 0` or `daemon: false` prints `SKIPPED` by name. An entry at
 `runtime: tmux` runs its daemon on the project's host VM from `host.legionWorker`'s legion, not from
 its `image` (deployment `legion/host.go`), and the gate reads no image for it: it prints `UNKNOWN`
-by name, as does an entry on any runtime but `kubernetes`, the default. With `--listeners`
-it reads the three listener pins: envoy's `listenerImage`, envoy-cluster's `envoyImage`, and
-dispatch's `listenerImage`, which that stack sets on its listener in place of `envoyImage`, the
-Dispatch server's; a dispatch stack that sets none reads `UNKNOWN`, since its deployment requires
-that key (deployment `dispatch/main.go`) and the listener runs no other image. Each pin's
+by name, as does an entry on any runtime but `kubernetes`, the default. Each pin's
 `org.opencontainers.image.source` and `.revision`
 labels are read with `docker buildx imagetools inspect`, an OCI image index one platform at a time
 (its `.Image.Config.Labels` is `null`), its `unknown/unknown` attestation entries left out, every
@@ -699,18 +737,134 @@ is refused by name and never compared. A revision label that is not a commit id,
 hex digits, prints `UNKNOWN` and is never compared: GitHub's compare resolves any ref, so a label
 naming a branch (`main`) would compare as wherever that branch points now.
 
-It prints a line per pin (`PASS`, `GATE SHUT`, `UNKNOWN` or `SKIPPED`) and the verdict on the last:
-`GATE OPEN` (exit 0) only when every pin it read passed and it read at least one, `GATE SHUT`
-(exit 1), or `UNKNOWN` (exit 3) for a pin, file or comparison it could not read. A usage error, a
-missing `--deployment` among them, exits 2 and reads nothing. It needs `gh` with read access to both
-repositories, docker with buildx able to read each pin's
-registry (for ghcr.io, `gh auth token | docker login ghcr.io -u x --password-stdin` into a
-`DOCKER_CONFIG` of your own), `jq` and python3 with PyYAML.
+With `--listeners` it reads the listener pins the same way: envoy-cluster's `envoyImage`,
+dispatch's `listenerImage`, which that stack sets on its listener in place of `envoyImage`, the
+Dispatch server's (a dispatch stack that sets none reads `UNKNOWN`, since its deployment requires
+that key, deployment `dispatch/main.go`, and the listener runs no other image), and envoy's
+`listenerImage` when the deployment declares the VM hub, `gcp:NatsHub`, whose listener is that
+pin's only reader. The hub's removal deletes the pin with it, so the gate decides the hub from the
+deployment's program, never from the pin: it fetches the deployment repository as one archive at
+the head of its default branch and reads every Go file in it that is not a `_test.go`, outside
+comments and strings, a link at its target. GitHub makes the archive as `git archive` does, which
+leaves out each path a `.gitattributes` marks `export-ignore` and rewrites each it marks
+`export-subst`, so the gate also reads the commit's tree (`git/trees/<sha>?recursive=1`) and holds
+the archive to it: each Go and module file the tree holds must be in the archive, and each file it
+reads must be the tree's blob, by git's own hash of it. A use of `NewNatsHub` anywhere but as the
+name of the func that defines it, which Go declares only outside every brace, declares the hub, and
+so does the hub's type token, `envoy-infra:gcp:NatsHub`, written as one string, anywhere but inside
+the generated SDK's own `NewNatsHub` and as a `case` of its switch of the types it rebuilds: the
+gate prints `VM HUB: <file>:<line> at <sha> uses NewNatsHub` (or `registers
+envoy-infra:gcp:NatsHub`) and reads the pin, which, if absent, stays `UNKNOWN`. Used nowhere, every
+file read, it prints `NO VM HUB: envoy/ at <sha> declares no gcp:NatsHub` and reads no VM pin. A
+head, tree, archive or file it cannot read, a tree GitHub lists only in part, a file the archive
+leaves out or changed, a Go or module file that is a Git LFS pointer, a hard link, a link that
+leaves the repository, a submodule (a tree entry of type commit, or a `.gitmodules`), whose code
+GitHub's archive does not hold, a local `replace` or `use` of `envoy/go.mod` or a `go.work` that
+leaves it, and an `envoy/` with no Go file or no `go.mod` print `UNKNOWN`, so a missing pin never
+reads as a hub that is gone. A stack pin that is no plain image reference prints `UNKNOWN` and is
+never read.
 
-`daemon-release-gate.test.sh` proves every verdict behind a fake `gh` and a fake `docker` that
-answers a single image and an index the way the real one does. Its fakes, fixture builders and
-assertion helpers are in `lib/daemon-release-gate-harness.sh`, which it sources; CI runs it in the
-`envoy-go-checks` job of `.github/workflows/ci.yaml`.
+With `--clients` it reads the clients that deliver to a session, each of which must carry the
+client follow filter of `<commit>`, since an older one passes a frame in a form it does not match
+in silence:
+
+- In each `image` a running project names (each read once however many projects name it), and in
+  the agent-session image the deployment's `sessions/` stack pins (`sessions/Pulumi.prod.yaml`
+  `<project>:image`, `<project>` the name `sessions/Pulumi.yaml` declares; that image is built FROM
+  the worker image and links its `/opt/legion/pi-envoy`), the two clients the worker build puts at
+  `/opt/legion`: `/opt/legion/pi-envoy/package.json` and `/opt/legion/claude-envoy/package.json`
+  must both be there, each the package it should be, and the image is judged by the commit its
+  build ran at, which `/opt/legion/bin/legion version` in the same image prints (`legion <version>
+  commit <sha>`). A manifest's version names no build: claude-envoy's keeps its source's static
+  version, and pi-envoy's names a release only when a release build sets it. A `sessions/` stack
+  or pin the gate cannot read prints `UNKNOWN` by name. The gate reads pins, not running pods: a
+  session launched with an image of its own (a per-launch `--image`) runs clients outside them, and
+  a pod keeps the image it started with until it is rolled or repinned, so right after a pin moves,
+  `GATE OPEN` speaks for the pins while running sessions may still load the older pi-envoy.
+- For each running project's daemon, its `daemonImage`, else its `image`. No session loads the
+  clients of the daemon's own container, but the daemon installs `@sjawhar/pi-envoy@<version>` into
+  a kept session pod on a stale-plugin relaunch (`packages/daemon/internal/daemon/kubernetes.go`,
+  `ResolvedPlugins`): the project's `runtime.kubernetes.plugins` when its `legion.yaml` sets one,
+  else the pair linked into the image's legion, which `legion version` prints on its second line
+  (`plugins @sjawhar/pi-legion <v> @sjawhar/pi-envoy <v>`). That version is judged by the commit of
+  its release tag, never by the image's build commit. The gate reads a project's `legion.yaml` from
+  the deployment's rendering of it, `legion/testdata/<key in lower case>-legion.yaml`, which the
+  deployment's `TestCommittedStackConfig` holds byte for byte to what its legion program renders
+  (`renderLegionYAML`); the project files carry no `legion.yaml` key of their own. That program
+  renders no `plugins` key today and refuses a project field it does not know, so the linked pair
+  decides, and reading the rendering keeps the gate right if the program starts to set it. A
+  rendering it cannot read or that sets no `runtime.kubernetes` (every kubernetes project's
+  rendering holds it), a legion that links no pair where the rendering sets none, and a second
+  line that names no pi-envoy version print `UNKNOWN`. A project with no `daemonImage` runs its
+  daemon from its `image`, which is then judged both ways.
+- Each command runs in the image with `docker run --rm --quiet --network none --read-only
+  --cap-drop ALL --security-opt no-new-privileges --entrypoint`, and every text read from an image
+  is printed with its control characters written as `\x<hh>`, so no image can print a line of the
+  gate's own. An image not pinned by digest prints `UNKNOWN` and is never run: under a tag, docker
+  runs whatever image it holds by that name. `docker run` pulls an image docker does not hold, and
+  the gate leaves it there; each worker image is several gigabytes, so remove the ones a run pulled
+  (`docker image rm <ref>@sha256:<digest>`) when you are done. A project on a tmux host prints
+  `UNKNOWN`: its sessions run the host's clients.
+- On this developer box, under `--dotfiles` (default `~/.dotfiles`): the `@sjawhar/pi-envoy` pin of
+  `omp/plugins/package.json` and, where it differs, the copy installed beside it; each
+  `claude-envoy@legion-plugins` install the dotfiles' Claude Code plugin record
+  (`.claude/plugins/installed_plugins.json`) holds, by the manifest at its `installPath`, which must
+  lie inside the dotfiles' `.claude`; and the claude-envoy version the marketplace `legion-plugins`
+  serves to `.claude/settings.json`. The marketplace is read as Claude Code reads it: its GitHub
+  `repo` at its `ref` (sent percent-encoded), the file at its `path`, by default
+  `.claude-plugin/marketplace.json`, and the plugin from its npm `registry` when the entry names
+  one, which must be an `https` URL (`--registry=<url>`); a `path` with an empty, `.` or `..`
+  segment, and any other key of the marketplace source or the npm source, print `UNKNOWN`, since
+  either may move what is installed. The marketplace's `version` is the spec npm installs from, and
+  only a registry spec names a release: npm's own parser (the npm-package-arg npm ships) must call
+  it a range, an exact version or a dist-tag. Any other spec (a directory, a git repository, a
+  tarball URL, an alias) prints `UNKNOWN` before npm fetches it, since npm builds it from its
+  source and runs its `prepare` script even under `--ignore-scripts`. The version is the one npm
+  itself takes on this box: the gate runs `npm pack @sjawhar/claude-envoy@<range> --dry-run
+  --ignore-scripts --json` in a directory with no `package.json` or `.npmrc` of a project, so npm
+  applies every rule of its own pick under the box's npm configuration (the dist-tag its `tag`
+  setting names, `before` and, on npm 11, `min-release-age`, deprecation, and the engines of the
+  node and npm it runs on), and the gate judges the one version npm answers. The dry run fetches
+  the package into npm's cache and writes nothing else. An answer that is not one package named
+  `@sjawhar/claude-envoy` prints `UNKNOWN`.
+  Each version must be an exact release version and is judged by the commit of its release tag,
+  `pi-envoy-v<version>` or `claude-envoy-v<version>`. A settings file that enables no
+  `claude-envoy@legion-plugins` prints `SKIPPED`. A pi-envoy in `~/.omp/plugins` or a profile's
+  plugin tree that is not the dotfiles' copy, a claude-envoy recorded in `~/.claude` or another
+  `CLAUDE_CONFIG_DIR`, a link that does not resolve, a directory the gate may not search, a
+  marketplace entry it cannot read, and a marketplace that names claude-envoy twice print
+  `UNKNOWN`. A session started before a pin moved still runs the plugin it loaded: the gate reads
+  pins and installs, not processes.
+
+It prints a line per pin or surface (`PASS`, `GATE SHUT`, `UNKNOWN`, `SKIPPED`, `VM HUB` or
+`NO VM HUB`) and the verdict on the last: `GATE OPEN` (exit 0) only when every pin it read passed
+and it read at least one, `GATE SHUT` (exit 1), or `UNKNOWN` (exit 3) for a pin, file, package,
+version or comparison it could not read. Every text it reads from outside it (an image, the
+deployment's files and archive, a marketplace, npm, the dotfiles, an error a command printed) is
+printed with its control characters written as `\x<hh>`, so none can start or rewrite a line of
+the gate's own. A usage error, a missing `--deployment`, both modes, or a `--dotfiles` without
+`--clients` among them, exits 2 and reads nothing. It needs `gh` with read access to both
+repositories, docker with buildx able to read each pin's registry, `jq`, python3 with PyYAML and,
+for `--clients`, `npm`. Make each registry login into a `DOCKER_CONFIG` of your own, so the shared
+one is untouched: for ghcr.io, a token holding `read:packages`, such as `gh auth token`, given to
+`docker login ghcr.io -u x --password-stdin`; for the Artifact Registry images
+(`<region>-docker.pkg.dev`), a Google login that may read them, in the same `DOCKER_CONFIG`, for
+example `gcloud auth
+print-access-token | docker login <region>-docker.pkg.dev -u oauth2accesstoken --password-stdin`,
+or `gcloud auth configure-docker <region>-docker.pkg.dev` run with that `DOCKER_CONFIG` set, which
+makes docker ask `docker-credential-gcloud` for each pull. With only the ghcr.io login, every
+Artifact Registry image prints `UNKNOWN`. The VM hub, the images' clients and the developer box
+are read by `lib/daemon-release-gate-read-vm-hub.sh`, `lib/daemon-release-gate-read-image-clients.sh`
+and `lib/daemon-release-gate-read-developer-box.sh`, which the gate sources.
+
+`daemon-release-gate.test.sh` proves every verdict behind a fake `gh`, a fake `docker` that
+answers a single image and an index the way the real one does and runs an image's files, and a
+fake `npm`. Its fakes, fixture builders and assertion helpers are in
+`lib/daemon-release-gate-harness.sh`, and its scenarios of the VM hub, the images' clients, the
+developer box, its versions and a project's fields in `lib/daemon-release-gate-cases-*.sh`, which
+it sources; CI runs it in the `envoy-go-checks` job of `.github/workflows/ci.yaml`. Two controls run
+with it: a copy of the gate whose VM leg reads an absent `listenerImage` as no hub, and one that
+reads pi-envoy alone in an image, must each open on the fixture that exists to catch it.
 
 ## Measuring search on a copy of the corpus
 

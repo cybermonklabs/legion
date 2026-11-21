@@ -21,8 +21,8 @@ import (
 // after it names no node, and the census refuses it until someone runs the backfill again, which
 // nothing tells anyone to do. Every tick of this build reads the events after its cursor, and gives
 // each comment those two events name whose row names no node the backfill's own write for that
-// row, in the tick's transaction (readEventsAfterCursor, through graphcensus.CommentsNamingNoNode
-// and graphcensus.CommentWrite's Queue): the comment's node, the facts its row projects and who
+// row, in the tick's transaction (readEventsAfterCursor, through refs.CommentsNamingNoNode
+// and refs.CommentWrite's Queue): the comment's node, the facts its row projects and who
 // wrote it, with the event that stored it as their cause.
 //
 // The stand-in for that release writes the rows and appends the events as its API does: a
@@ -149,14 +149,8 @@ func commentAsThePreviousRelease(t *testing.T, database *store.Store, author mod
 	if err != nil {
 		t.Fatalf("encode the %s event of %s: %v", kind, written.ID, err)
 	}
-	var event int64
-	if err := tx.QueryRow(ctx, `
-		with bumped as (update issues set last_seq = last_seq + 1 where key = 'CORE-1' returning last_seq)
-		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', bumped.last_seq, $1, $2, $3, false
-		from bumped
-		returning id
-	`, kind, encoded, payload).Scan(&event); err != nil {
+	event, err := recordIssueEvent(ctx, tx, "CORE-1", kind, encoded, payload)
+	if err != nil {
 		t.Fatalf("append the %s event of %s: %v", kind, written.ID, err)
 	}
 	if err := tx.Commit(ctx); err != nil {

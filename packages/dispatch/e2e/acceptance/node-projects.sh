@@ -331,7 +331,39 @@ census_complete "$section" "after the backfill"
 # moved by a tick of this server after it - a cursor an earlier server left on a reused database
 # stands behind it - and with the debt clear there and the message's node written, that tick's
 # pass has finished.
+#
+# The tick reads an event only once the event horizon has passed it (events.Horizon). A
+# transaction of this run's own database that has been open for more than 5 s holding a
+# transaction id (events' horizonStallAfter, and horizontest.OwnHoldBound) holds the server's event
+# readers back, which is the defect the horizon's own test waits fail on (docs/testing.md, "A test
+# that waits for the event feed's first frame"), so it fails the section at once, named; the
+# holders are read as events.StallHolderSQL reads them, the oldest transaction id first, a prepared
+# transaction's as well as a backend's. pg_stat_activity shows a session's xact_start only to a
+# superuser, a member of pg_read_all_stats, or a member of the session's own role; a hold that
+# this role cannot date is named at the tick bound below without its start time. In harness mode
+# the server and this driver share one role, so the server's own holds are dated.
+#
+# The wait is counted in the server's own work, not in time: the block-index tick's passes at its
+# 30 s period. duty records each pass in duty_passes, in the row keyed by the lease and the
+# period that pass served, in nanoseconds (duty's recordPass and passKey). A tick whose batch was
+# full runs the next one at blockIndexStep (2 s) instead, and records it under that period's key,
+# so this counter reads the 30 s row alone: a pass at the 30 s period follows every tick that was
+# not full (duty's ticker). The clock guard, not that row, ends the wait against a tick that steps
+# for ever. A tick reads the event, owes the pass and runs it, so six ticks at the 30 s period with
+# no cure are a server that does not cure the row, and the section fails: six of the tick's 30 s
+# intervals are the 180 s this wait held before it counted ticks. The lease and the tick's interval
+# are read from the source that declares them. The period is read before the cure in each poll, so a
+# pass that cures the row is never counted as one that did not. The clock is a hang guard alone:
+# ten of those intervals with no pass at the 30 s period is a tick that stopped, or one that stepped
+# at blockIndexStep that long, and fails the section naming the last period served.
 section=pass
+readonly docs_source="$script_dir/../../../envoy/internal/dispatch/docs"
+declared "$section" "read the block-index tick's lease" "$docs_source/block_index.go" 's/^const BlockIndexLease = "\(.*\)"$/\1/p'
+readonly tick_lease="$answer"
+declared "$section" "read the block-index tick's interval" "$docs_source/block_index.go" \
+  's/^[[:space:]]*BlockIndexReconcileInterval[[:space:]]*=[[:space:]]*\([0-9][0-9]*\) \* time\.Second$/\1/p'
+readonly tick_seconds="$answer"
+readonly pass_key="$tick_lease/$((tick_seconds * 1000000000))" quiet_ticks=6 stalled_seconds=$((10 * tick_seconds))
 query "$section" "an earlier build sends a direct message with its event and no node" "
   with message as (
     insert into messages (issue_key, author, body, target)
@@ -345,12 +377,49 @@ query "$section" "an earlier build sends a direct message with its event and no 
   )
   select message.id::text || ' ' || event.id from message, event"
 read -r before written <<<"$answer"
-for attempt in $(seq 1 180); do
+boundary="" ticks=0 last_pass=$SECONDS
+while :; do
+  query "$section" "read the period the block-index tick last served" \
+    "select coalesce((select boundary::text from duty_passes where lease = '$pass_key'), '')"
+  if [[ "$answer" != "$boundary" ]]; then
+    [[ -z "$boundary" ]] || ticks=$((ticks + 1))
+    boundary="$answer" last_pass=$SECONDS
+  fi
   query "$section" "read whether the server's object pass has run after event $written" "
     select exists (select 1 from block_index_event_cursors where event_id >= $written and object_nodes_owed_at is null)
        and exists (select 1 from graph_nodes where kind = 'message' and id = '$before')"
   [[ "$answer" == t ]] && break
-  [[ "$attempt" == 180 ]] && fail "$section" "the server's object pass runs" "no cursor past event $written without a debt, and no node of message $before, within 180 s"
+  query "$section" "read the oldest transaction of this run's database that holds the event horizon back" "
+    select coalesce((select name from (
+      select format('backend %s (application %s), open since %s: %s', pid, coalesce(application_name, ''), xact_start,
+          left(coalesce(query, ''), 80)) as name, xact_start as started, age(backend_xid) as age
+      from pg_stat_activity
+      where backend_xid is not null and pid <> pg_backend_pid() and datname = current_database()
+      union all
+      select format('prepared transaction %s, prepared at %s', gid, prepared), prepared, age(transaction)
+      from pg_prepared_xacts where database = current_database()
+    ) holder where started < now() - interval '5 seconds' order by age desc limit 1), '')"
+  [[ -z "$answer" ]] ||
+    fail "$section" "no transaction of this run's database holds the event horizon back" \
+      "$answer has been open for more than 5 s holding a transaction id in this run's database, which holds the server's event readers back"
+  ((ticks < quiet_ticks)) || {
+    query "$section" "read the oldest transaction on the instance that holds the event horizon back" "
+      select coalesce((select name from (
+        select format('backend %s in database %s, open since %s: %s', pid, datname, coalesce(xact_start::text, '<privilege>'),
+            left(coalesce(query, ''), 80)) as name, age(backend_xid) as age
+        from pg_stat_activity
+        where backend_xid is not null and pid <> pg_backend_pid()
+        union all
+        select format('prepared transaction %s in database %s, prepared at %s', gid, database, prepared), age(transaction)
+        from pg_prepared_xacts
+      ) holder order by age desc limit 1), 'none')"
+    fail "$section" "the server's object pass runs" \
+      "no cursor past event $written without a debt and no node of message $before after $ticks block-index ticks; the oldest transaction on the instance: $answer"
+  }
+  if ((SECONDS - last_pass >= stalled_seconds)); then
+    fail "$section" "the server's block-index tick runs" \
+      "no pass at the tick's $tick_seconds s period ($pass_key) for $((SECONDS - last_pass)) s: the tick stopped, or it stepped at blockIndexStep that long; the last period it served began at ${boundary:-(none recorded)}"
+  fi
   sleep 1
 done
 pass "$section" "the server's object pass wrote the node of message $before after event $written and owes nothing"

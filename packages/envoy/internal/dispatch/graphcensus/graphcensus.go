@@ -18,30 +18,9 @@
 // through graphstore, the one package in the tree that writes graph_nodes and graph_tuples.
 package graphcensus
 
-import (
-	"context"
-	"fmt"
-
-	"github.com/jackc/pgx/v5"
-)
-
 // applicationName is how this package's own connection appears in pg_stat_activity: an operator
-// reading the activity of a database the census is being taken of sees which pass holds it.
+// reading the activity of a database the census is being taken of sees which pass holds it. The
+// census opens that one connection (store.Connect) and uses no pool and migrates nothing: it is
+// taken before a deployment rolls, exactly as the pre-deploy census is (store.Census). The
+// backfill writes and holds the server's own pool instead (cmd/dispatch's openMigrated).
 const applicationName = "envoy-dispatch census --store"
-
-// connect opens the census's one connection, named in pg_stat_activity. The census uses no
-// pool and migrates nothing: it is taken before a deployment rolls, exactly as the pre-deploy
-// census is (store.Census). The backfill writes and holds the server's own pool instead
-// (cmd/dispatch's openMigrated).
-func connect(ctx context.Context, databaseURL, name string) (*pgx.Conn, error) {
-	config, err := pgx.ParseConfig(databaseURL)
-	if err != nil {
-		return nil, fmt.Errorf("parse Postgres URL: %w", err)
-	}
-	config.RuntimeParams["application_name"] = name
-	conn, err := pgx.ConnectConfig(ctx, config)
-	if err != nil {
-		return nil, fmt.Errorf("connect: %w", err)
-	}
-	return conn, nil
-}

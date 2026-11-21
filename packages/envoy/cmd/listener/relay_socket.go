@@ -62,8 +62,8 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/nats-io/nats.go"
-	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -77,7 +77,7 @@ const (
 	// relaySocketCheckDefault is how often an open socket pings its client and asks the broker
 	// about its token: inside the 120 s backend timeout of the edge's load balancer, and the 20 s
 	// of a revoke's 25 s bound (the broker's answer is reused for at most
-	// brokertoken.AffirmativeCacheTTL more).
+	// ciphertoken.AffirmativeCacheTTL more).
 	relaySocketCheckDefault = 20 * time.Second
 	// relaySocketReadLimit is the largest frame a client may send; a larger one closes the socket
 	// 1009, which gorilla/websocket writes.
@@ -374,7 +374,7 @@ type relaySocket struct {
 	session string
 	// admitted is the caller the upgrade was admitted as, which every later answer is compared
 	// with.
-	admitted brokertoken.Caller
+	admitted ciphertoken.Caller
 	// expires is when the upgrade's answer said the token stops being live, zero when it named no
 	// expiry.
 	expires time.Time
@@ -848,7 +848,7 @@ func (socket *relaySocket) subscribed() bool {
 }
 
 // verdict asks the broker about the socket's token again, the answer it gave reused for at most
-// brokertoken.AffirmativeCacheTTL and no proof checked a second time, and answers the close code
+// ciphertoken.AffirmativeCacheTTL and no proof checked a second time, and answers the close code
 // and reason the socket ends with, 0 while it stays open:
 //
 //   - the token's expiry has passed and the broker no longer holds it live: 4401, on which the
@@ -871,12 +871,12 @@ func (socket *relaySocket) verdict() (int, string) {
 			return 0, ""
 		}
 		why = "the broker's answer names another caller than the socket was opened as"
-	case errors.Is(err, brokertoken.ErrNotActive):
+	case errors.Is(err, ciphertoken.ErrNotActive):
 		if !socket.expires.IsZero() && !socket.sockets.now().Before(socket.expires) {
 			return relaySocketCloseExpired, relaySocketReasonExpired
 		}
 		why = err.Error()
-	case errors.Is(err, brokertoken.ErrNotASession), errors.Is(err, brokertoken.ErrKeyMismatch):
+	case errors.Is(err, ciphertoken.ErrNotASession), errors.Is(err, ciphertoken.ErrKeyMismatch):
 		why = err.Error()
 	default:
 		socket.sockets.logger.Warn("listener: the relay socket could not ask the broker about its token; it is closed",
@@ -889,7 +889,7 @@ func (socket *relaySocket) verdict() (int, string) {
 }
 
 // sameRelayCaller reports whether a later answer names the caller the socket was admitted as.
-func sameRelayCaller(answer, admitted brokertoken.Caller) bool {
+func sameRelayCaller(answer, admitted ciphertoken.Caller) bool {
 	return answer.Session == admitted.Session && answer.Person == admitted.Person && answer.Service == admitted.Service &&
 		answer.ProjectScope == admitted.ProjectScope && answer.ReadOnly == admitted.ReadOnly &&
 		slices.Equal(answer.Projects, admitted.Projects)

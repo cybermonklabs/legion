@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -326,11 +327,8 @@ func eraseDocumentText(t *testing.T, server *dispatchProcess, document string) s
 // and answers its id.
 func uploadEraseDocument(t *testing.T, server *dispatchProcess, issue, name, markdown string) string {
 	t.Helper()
-	body, err := json.Marshal(map[string]string{"name": name, "content": markdown})
-	if err != nil {
-		t.Fatalf("encode the document: %v", err)
-	}
-	answer := server.send(t, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", string(body), asUser(dispatchTestLogin))
+	body := server.documentUpload(t, issue, name, markdown, dispatchTestLogin)
+	answer := server.send(t, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", body, asUser(dispatchTestLogin))
 	if answer.status != http.StatusCreated && answer.status != http.StatusOK {
 		t.Fatalf("upload %s: %s", name, answer)
 	}
@@ -343,6 +341,34 @@ func uploadEraseDocument(t *testing.T, server *dispatchProcess, issue, name, mar
 		t.Fatalf("read the upload of %s back: %v: %s", name, err, answer.body)
 	}
 	return uploaded.Artifact.ID
+}
+
+// documentUpload is the JSON body of an upload of content as the document issue holds under name,
+// sent as login. An upload replacing a document names the token of the version it replaces, which
+// Dispatch refuses every replacement without (docs.ErrPreconditionRequired), so the body names the
+// token the document carries now; a document's first version replaces nothing and names none.
+func (p *dispatchProcess) documentUpload(t *testing.T, issue, name, content, login string) string {
+	t.Helper()
+	upload := map[string]any{"name": name, "content": content}
+	answer := p.send(t, http.MethodGet, "/api/v1/issues/"+issue+"/artifacts/"+url.PathEscape(name)+"/text", "", asUser(login))
+	switch answer.status {
+	case http.StatusNotFound:
+	case http.StatusOK:
+		var document struct {
+			Token string `json:"token"`
+		}
+		if err := json.Unmarshal(answer.body, &document); err != nil || document.Token == "" {
+			t.Fatalf("read the token of %s's document %s: %v: %s", issue, name, err, answer)
+		}
+		upload["precondition"] = map[string]string{"document": document.Token}
+	default:
+		t.Fatalf("read %s's document %s: %s", issue, name, answer)
+	}
+	body, err := json.Marshal(upload)
+	if err != nil {
+		t.Fatalf("encode the upload of %s: %v", name, err)
+	}
+	return string(body)
 }
 
 // writeEraseComment writes body as a comment of issue, as the test's person, and answers its id.

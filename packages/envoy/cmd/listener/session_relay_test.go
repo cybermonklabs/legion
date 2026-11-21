@@ -340,12 +340,18 @@ func awaitAcked(t *testing.T, consumers *bus.SessionConsumers, sessionID string,
 }
 
 // awaitAckState waits up to 5 s for sessionID's consumer to hold pending messages for an ack with
-// every message through floor acked.
+// every message through floor acked. A consumer that does not exist yet is waited for within the
+// same bound: a registration with a new epoch restarts the session's relay, which deletes its
+// consumer and creates it again at the floor, and a read between the two finds none.
 func awaitAckState(t *testing.T, consumers *bus.SessionConsumers, sessionID string, pending int, floor uint64) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		info, err := consumers.Info(context.Background(), sessionID)
+		if errors.Is(err, bus.ErrSessionConsumerNotFound) && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
 		if err != nil {
 			t.Fatalf("read the consumer of %s: %v", sessionID, err)
 		}

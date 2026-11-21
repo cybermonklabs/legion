@@ -486,7 +486,10 @@ func (s *server) writeBroadcast(
 		if err != nil {
 			return broadcastRead{}, nil, err
 		}
-		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, messageNode) }); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, messageNode)
+			return nil
+		}); err != nil {
 			return broadcastRead{}, nil, err
 		}
 		message, err := scanMessage(tx.QueryRow(ctx, `

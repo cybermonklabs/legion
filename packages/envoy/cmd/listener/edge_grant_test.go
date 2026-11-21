@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -72,7 +73,7 @@ func TestAnEdgeListenerKeepsNoRoleMessageAndHandsNoKeptLaneOver(t *testing.T) {
 	edge.edge = testEdgeGrant(t, harness.metrics)
 
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "edge-kept-handover-"+id.New())
-	if _, kept := keepRoleMessage(shared, role, item); !kept {
+	if _, err := keepRoleMessage(shared, role, item); err != nil {
 		t.Fatalf("keep the copy a shared listener keeps; the listener log says why:\n%s", harness.logs.String())
 	}
 	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
@@ -96,8 +97,8 @@ func TestAnEdgeListenerKeepsNoRoleMessageAndHandsNoKeptLaneOver(t *testing.T) {
 		t.Fatal("the edge started a sweep of the kept role lanes")
 	}
 	otherItem := listenerTestEnvelope(contracts.RoleTopicPrefix+other, "edge-kept-keep-"+id.New())
-	if _, kept := keepForNextHolder(edge, other, otherItem); kept {
-		t.Fatalf("the edge kept a message for role %s's next holder", other)
+	if _, err := keepForNextHolder(edge, other, otherItem); !errors.Is(err, errEdgeKeepsNothing) {
+		t.Fatalf("the edge's keep for role %s's next holder = %v, want errEdgeKeepsNothing", other, err)
 	}
 	assertNothingKept(t, harness.client, other)
 
@@ -115,8 +116,8 @@ func TestAnEdgeListenerKeepsNoRoleMessageAndHandsNoKeptLaneOver(t *testing.T) {
 	if cursor, err := harness.client.ReadKeptRoleCursor(ctx, role); err != nil || cursor.Sequence == 0 {
 		t.Fatalf("role %s's drain cursor after the shared listener's handover is %+v (%v), want one written", role, cursor, err)
 	}
-	if _, kept := keepForNextHolder(shared, other, otherItem); !kept {
-		t.Fatalf("the shared listener kept nothing for role %s, so the rig cannot see a keep:\n%s", other, harness.logs.String())
+	if _, err := keepForNextHolder(shared, other, otherItem); err != nil {
+		t.Fatalf("the shared listener kept nothing for role %s (%v), so the rig cannot see a keep:\n%s", other, err, harness.logs.String())
 	}
 }
 

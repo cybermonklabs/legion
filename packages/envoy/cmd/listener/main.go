@@ -102,6 +102,10 @@ type listenerDeps struct {
 	// resolve to (the broker's GET /v1/project-repositories, edge_repositories.go), nil on every
 	// listener but an edge one.
 	repositories *edgeRepositories
+	// dispatchPrincipal is ENVOY_DISPATCH_PRINCIPAL, Dispatch's own verified principal
+	// (resolveListenerDispatchPrincipal): the one caller whose send may carry a role mark
+	// (sendHandler). Empty names nobody, and every send carrying one is refused.
+	dispatchPrincipal string
 }
 
 // kvCache is what the listener asks of each KV-backed cache it keeps.
@@ -1033,6 +1037,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// Dispatch's own principal is read beside the bearers it is proved by, so a value no
+	// credential this listener takes could prove refuses the start before any issuer is asked.
+	dispatchPrincipal, err := resolveListenerDispatchPrincipal(os.Getenv, oidcIssuer, oidcAccounts, googleAccounts)
+	if err != nil {
+		log.Fatal(err)
+	}
 	apiVerifier, err := oidc.Discover(context.Background(), oidcIssuer, oidcAudience, oidc.DiscoveryTimeout)
 	if err != nil {
 		log.Fatal(err)
@@ -1070,6 +1080,7 @@ func main() {
 	}
 	logger.Info("listener API auth: " + describeListenerAPIAuth(apiAuthConfig, oidcIssuer))
 	logger.Info("listener API hosts: " + describeListenerAPIHosts(apiAuthConfig))
+	logger.Info("listener role marks: " + describeListenerDispatchPrincipal(dispatchPrincipal))
 	// The operator's limit on the messages each agent session sends, read beside the API auth
 	// settings so a value it refuses stops the start before the listener connects to NATS, and
 	// stated in one line either way (sender_limit.go).
@@ -1521,6 +1532,7 @@ func main() {
 		roleDeadLetters:     roleDeadLetters,
 		roleKeptUndecodable: roleKeptUndecodable,
 		publishDeadLetter:   client.PublishStoredAs,
+		keepPublish:         client.PublishStoredAck,
 
 		fanoutUnresponsiveSkips: fanoutUnresponsiveSkips,
 
@@ -1683,6 +1695,7 @@ func main() {
 		senderLimit:         senderMessageLimit,
 		relaySockets:        sockets,
 		repositories:        repositories,
+		dispatchPrincipal:   dispatchPrincipal,
 	}
 	openV1Routes(v1Gate, ready, &v1Deps, cfg.MachineID, logger, listeningAt)
 

@@ -101,19 +101,21 @@ ARG MISE_SHA256=0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
 # Sami's jj fork: what the dogfood daemon runs on the devbox; same 0.45 line as the jj-lib inside OMP.
 ARG JJ_TOOL=github:sjawhar/jj@0.45.1-sami.20260910-043938
 ARG GH_TOOL=gh@2.98.0
-# The pin of the shared public leak check: the tag of the private repository whose leak-check
+# The pin of the shared public leak check: the tag of the repository a deployment names in its
+# leak check setting (legion.yaml's leak_check, or LEGION_LEAK_CHECK_REPOSITORY), whose leak-check
 # directory holds it. The image carries the pin alone. The pod's launcher names this tag to the
-# daemon, which reads the check at it and pushes it to the launcher, and the launcher installs it
-# under the issue's scratch before any role's agent starts (packages/daemon/internal/leakguard's
+# daemon, which, under that setting, reads the check at it and pushes it to the launcher, and the
+# launcher installs it under the issue's scratch before any role's agent starts
+# (packages/daemon/internal/leakguard's
 # Source and InstallServed). R5 of dispatch://INFRA-1527 requires the newest
 # `leak-check-v<n>` tag at the time the pin is written, never a number a spec fixed: this is the
-# newest, read with `gh api repos/example-org/deployment/git/refs/tags` at 2026-11-18T17:12:09Z,
+# newest, read with `gh api repos/example-org/deployment/git/refs/tags` at 2026-11-20T00:45:44Z,
 # and a bump reads that list again. The runtime stage exports it as LEGION_LEAK_CHECK_TAG, which
 # is where the launcher and each role's shim read it. Go holds the same tag once more:
 # ghReadsProvenCheck in packages/daemon/cmd/legion/gh_reads.go, the check `legion gh`'s list of
 # reads was proven against, and TestGhReadsAreProvenAgainstThePinnedCheck holds the two equal, so
 # a bump moves both, by the steps ghReadsProvenCheck's comment gives.
-ARG LEAK_CHECK_TAG=leak-check-v18
+ARG LEAK_CHECK_TAG=leak-check-v21
 # go.work's `go` line: the Go stage builds in workspace mode, and the golang image's GOTOOLCHAIN=local
 # fails the build if go.work moves past this. The toolchain stage ships the same release to the workers
 # (/opt/go), checked against GO_SHA256: the SHA-256 https://go.dev/dl/ publishes for
@@ -237,7 +239,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends jq python3 make
 COPY package.json bun.lock ./
 COPY patches patches
 COPY packages/contracts/package.json packages/contracts/package.json
-COPY packages/broker-client/package.json packages/broker-client/package.json
+COPY packages/cipher-client/package.json packages/cipher-client/package.json
 COPY packages/envoy-client/package.json packages/envoy-client/package.json
 COPY packages/pi-envoy/package.json packages/pi-envoy/package.json
 COPY packages/pi-legion/package.json packages/pi-legion/package.json
@@ -296,7 +298,7 @@ RUN mkdir -p /out \
     && /out/codegraph/node --version > /out/codegraph-node-version
 WORKDIR /repo
 COPY packages/contracts packages/contracts
-COPY packages/broker-client packages/broker-client
+COPY packages/cipher-client packages/cipher-client
 COPY packages/envoy-client packages/envoy-client
 COPY packages/pi-shared packages/pi-shared
 COPY packages/pi-envoy packages/pi-envoy
@@ -464,7 +466,7 @@ WORKDIR /src/packages/daemon
 # (which decides them, with the GOARCH this stage builds for); fails the build when one's license
 # cannot be determined.
 RUN mkdir -p /out && CGO_ENABLED=0 go-third-party-notices.sh /out/go-notices \
-    ./cmd/legion github.com/sjawhar/envoy/cmd/agent-secrets
+    ./cmd/legion github.com/sjawhar/envoy/cmd/cipher
 # Declared here, after the dependency layers, so a new commit re-runs only the compile.
 ARG LEGION_REVISION
 ARG PI_LEGION_VERSION
@@ -473,7 +475,7 @@ RUN test -n "$LEGION_REVISION" \
     && ldflags="-X main.revision=${LEGION_REVISION}" \
     && if [ -n "$PI_LEGION_VERSION" ] && [ -n "$PI_ENVOY_VERSION" ]; then ldflags="$ldflags -X main.piLegionVersion=${PI_LEGION_VERSION} -X main.piEnvoyVersion=${PI_ENVOY_VERSION}"; fi \
     && CGO_ENABLED=0 go build -ldflags "$ldflags" -o /out/legion ./cmd/legion \
-    && CGO_ENABLED=0 go -C /src/packages/envoy build -o /out/agent-secrets ./cmd/agent-secrets
+    && CGO_ENABLED=0 go -C /src/packages/envoy build -o /out/agent-secrets ./cmd/cipher
 
 # ------------------------------------------------------------------------------------------------
 # toolchain: what a worker needs to work a repository that is not Legion's, specific to none: uv (which
@@ -1202,13 +1204,17 @@ WORKDIR /home/legion
 #    first run in the image, so the CodeGraph link also extracts OMP's native module from the
 #    binary (no network) into /home/legion/.omp/natives/<version>/ — the build's success is the
 #    check. From 18.11.0 OMP writes only the variant the CPU selects, so this is the build runner's
-#    (ubuntu-24.04, AVX2), 116 MiB; this layer ships it, so a pod whose node selects the same
+#    (ubuntu-24.04, AVX2), 123 MiB; this layer ships it, so a pod whose node selects the same
 #    variant extracts nothing, while a node that selects the other has each role write that one into
 #    its own home overlay's upper layer, on the pod's role-homes volume, at its first OMP run: up to
 #    six copies in an issue pod. The probes in the final step never wait on it.
-# Any failure fails the build: a broken image never publishes.
+# Any failure fails the build: a broken image never publishes. The pinned omp must list
+# --session-id in its help, which the fork's 18.18.6 builds do from 18.18.6-sami.20261117-074351
+# on: a pin older than that, such as 18.18.6-sami.20261117-013345, fails here. Nothing of Legion's
+# passes the flag yet; the check is a floor on the pin and does not prove the session leases that
+# OMP_SESSION_EXCLUSIVE relies on, which come with 18.18.6-sami.20261118-101239.
 RUN set -eu; \
-    bun --version; omp --version; jj --version; gh --version; git --version; codegraph --version; \
+    bun --version; omp --version; omp --help | grep -q -e '--session-id'; jj --version; gh --version; git --version; codegraph --version; \
     scratch="$(mktemp -d)"; \
     MISE_CACHE_DIR="$scratch/mise-cache" MISE_DATA_DIR="$scratch/mise-data" mise --version; \
     git init --quiet --bare "$scratch/origin.git"; \
@@ -1406,7 +1412,7 @@ COPY --from=notices /out/THIRD_PARTY_NOTICES /usr/share/doc/legion/THIRD_PARTY_N
 # links the commit), so a new commit rebuilds only the layers from here down, never the probe layer and
 # its natives.
 COPY --from=go /out/legion /opt/legion/bin/legion
-# agent-secrets (packages/envoy/cmd/agent-secrets): the pod's secrets client — the shim
+# agent-secrets (packages/envoy/cmd/cipher): the pod's secrets client — the shim
 # runs `keygen` before its hello and `renew` after its enrollment, and the agent's tools call it
 # from PATH, which /opt/legion/bin leads in the image and in every worker container (the PATH
 # mainEnvironment sets in packages/daemon/internal/runtime/sandbox/manifest.go). The daemon's

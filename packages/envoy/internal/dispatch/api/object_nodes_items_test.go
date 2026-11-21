@@ -62,9 +62,11 @@ func TestEveryAskCreateStoresItsNode(t *testing.T) {
 	requireObjectNode(t, database, graphstore.KindAsk, approval, graphstore.SupertagAsk, "ASKN", nil,
 		eventNaming(t, database, "ask.opened", approval))
 
+	// An upload replacing the spec names the token of the version it replaces (main's #3000).
 	uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
 		"actor": sessionActor(), "name": "spec.md",
-		"content": "Before\n\n:::ask{#node-ask urgency=\"high\" multiple=\"false\"}\nShip the decision?\n\n- Ship: Now.\n- Hold: Later.\n:::\n",
+		"content":      "Before\n\n:::ask{#node-ask urgency=\"high\" multiple=\"false\"}\nShip the decision?\n\n- Ship: Now.\n- Hold: Later.\n:::\n",
+		"precondition": uploadBase(t, handler, issue.PrimaryArtifactID),
 	})
 	if uploaded.Code != http.StatusCreated {
 		t.Fatalf("upload a spec holding an ask block: status=%d body=%s", uploaded.Code, uploaded.Body.String())

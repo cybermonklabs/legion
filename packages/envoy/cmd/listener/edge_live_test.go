@@ -22,9 +22,9 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
@@ -66,8 +66,8 @@ type edgeLiveRig struct {
 	uri      string
 	seeds    map[string]string
 	dispatch *bus.Client
-	broker   *brokertokentest.StubBroker
-	caller   *brokertokentest.Caller
+	broker   *ciphertokentest.StubBroker
+	caller   *ciphertokentest.Caller
 	token    string
 	binary   string
 }
@@ -111,16 +111,16 @@ func newEdgeLiveRig(t *testing.T, edge natsgrant.Permissions) *edgeLiveRig {
 	t.Cleanup(client.Close)
 	rig.dispatch = client
 
-	rig.broker = brokertokentest.NewStubBroker(t)
-	rig.caller = brokertokentest.NewCaller(t)
+	rig.broker = ciphertokentest.NewStubBroker(t)
+	rig.caller = ciphertokentest.NewCaller(t)
 	rig.token = "access-token-of-the-edge-session"
-	rig.broker.Says(rig.token, brokertoken.Introspection{
+	rig.broker.Says(rig.token, ciphertoken.Introspection{
 		Active:       true,
 		Session:      edgeLiveSession,
 		Person:       "outside-person@example.test",
-		ProjectScope: brokertoken.ProjectScopeNamed,
+		ProjectScope: ciphertoken.ProjectScopeNamed,
 		Projects:     []string{edgeProject},
-		ClientID:     brokertoken.ExchangeClientID,
+		ClientID:     ciphertoken.ExchangeClientID,
 		Thumbprint:   rig.caller.JKT(),
 		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
 	})

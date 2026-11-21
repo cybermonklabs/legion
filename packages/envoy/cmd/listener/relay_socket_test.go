@@ -13,8 +13,8 @@ import (
 
 	"github.com/gorilla/websocket"
 	natsgo "github.com/nats-io/nats.go"
-	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -211,11 +211,11 @@ func TestAnOpenSocketClosesByTheBrokersAnswer(t *testing.T) {
 		{name: "its token's exp passed", life: 2 * time.Second, want: &expired,
 			later: func(rig *relaySocketRig, session, token string) {
 				rig.clock.advance(3 * time.Second)
-				rig.broker.Says(token, brokertoken.Introspection{})
+				rig.broker.Says(token, ciphertoken.Introspection{})
 			}},
 		{name: "its token was revoked", life: time.Hour, want: &refused,
 			later: func(rig *relaySocketRig, session, token string) {
-				rig.broker.Says(token, brokertoken.Introspection{})
+				rig.broker.Says(token, ciphertoken.Introspection{})
 			}},
 		{name: "its answer binds no key", life: time.Hour, want: &refused,
 			later: func(rig *relaySocketRig, session, token string) {
@@ -247,7 +247,7 @@ func TestAnOpenSocketClosesByTheBrokersAnswer(t *testing.T) {
 			client.stillOpen(5*relaySocketTestCheck, "before the answer changed")
 
 			row.later(rig, session, token)
-			rig.clock.advance(brokertoken.AffirmativeCacheTTL + time.Second)
+			rig.clock.advance(ciphertoken.AffirmativeCacheTTL + time.Second)
 			if row.want == nil {
 				client.stillOpen(10*relaySocketTestCheck, "an answer that stands")
 				return
@@ -387,8 +387,8 @@ func TestARelaySocketWhoseClientReadsNothingClosesWithinTheGrace(t *testing.T) {
 	}{
 		{name: "a revoke", within: 2*relaySocketTestCheck + relaySocketCloseGrace + time.Second,
 			close: func(_ *testing.T, rig *relaySocketRig, token string) {
-				rig.broker.Says(token, brokertoken.Introspection{})
-				rig.clock.advance(brokertoken.AffirmativeCacheTTL + time.Second)
+				rig.broker.Says(token, ciphertoken.Introspection{})
+				rig.clock.advance(ciphertoken.AffirmativeCacheTTL + time.Second)
 			}},
 		{name: "the listener's stop", within: relaySocketCloseGrace + time.Second,
 			close: func(t *testing.T, rig *relaySocketRig, _ string) {
@@ -565,7 +565,7 @@ func TestAnOpenSocketClosesAtItsTokensExpiry(t *testing.T) {
 	rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), 2*time.Second, relaySocketProject))
 	client := rig.openWith(t, session, token)
 	// What the broker answers once the token's life ended.
-	rig.broker.Says(token, brokertoken.Introspection{})
+	rig.broker.Says(token, ciphertoken.Introspection{})
 	if code, text := client.closeCode(4 * time.Second); code != relaySocketCloseExpired || text != relaySocketReasonExpired {
 		t.Fatalf("the socket closed %d %q at its token's expiry, want %d %q\n%s", code, text, relaySocketCloseExpired, relaySocketReasonExpired, rig.logs.String())
 	}

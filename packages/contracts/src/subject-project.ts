@@ -153,6 +153,11 @@ const SUBJECT_PROJECT_ROWS: readonly SubjectProjectRow[] = [
   },
   // Where a deleted session consumer stopped, which names a session and no project.
   { family: "notifications.envoy.resume.>", read: none },
+  // A role a session took from another: the role's own project, as its kept lane reads it.
+  {
+    family: "notifications.envoy.takeover.>",
+    read: (rest) => ({ project: roleProject(rest[0] ?? "") }),
+  },
 ];
 
 /** The families `subjectProject` has a row for, each as the pattern naming all of it. */

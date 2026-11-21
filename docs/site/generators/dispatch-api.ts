@@ -25,7 +25,7 @@ const SCOPES: Record<string, string> = {
   person:
     "this credential acts as its person. A browser sign-in holds it, and so does a personal token unless its owner took it away.",
   approve:
-    "beside `person`, this credential may do what settles work or controls a credential: a document review, the answer of an ask of kind `approval`, a machine-login decision, a credential-grant or machine-login revoke, and minting, changing or revoking a personal token. No credential holds `approve` without `person`.",
+    "beside `person`, this credential may do what settles work or controls a credential: a document review, the answer of an ask of kind `approval`, a machine-login decision, a credential-grant or machine-login revoke, minting, changing or revoking a personal token, and a change to a project's access list, visibility or owner or to a group an access list can name. No credential holds `approve` without `person`.",
 };
 
 interface Route {

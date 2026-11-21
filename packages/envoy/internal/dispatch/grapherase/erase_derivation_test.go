@@ -373,3 +373,142 @@ func TestTheEraseRefusesAPersonACommentNamesUntilItGoes(t *testing.T) {
 	requireErased(t, database, graphstore.KindPerson, "alice")
 	requireCensusZero(t, database, "after the erases")
 }
+
+// R5: a block that holds another holds the other's text inside its own, and the erase of the
+// inner block redacts the outer one's text only at a version the inner block stood in. At version
+// 1 the outer list item is alone and reads `Ship it on Friday.` as its own words; version 2 nests
+// the inner block inside it, holding the same words, under a line of the outer block's own. The
+// erase of the inner block redacts the outer block's text at version 2, where those words are the
+// inner block's, and its excerpt cut from that version, and leaves its text at version 1, where
+// they were the outer block's own. The listing names version 2's text as one the run redacts and
+// version 1's as a row it leaves.
+func TestTheEraseLeavesAnAncestorsTextFromBeforeTheBlockExisted(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedAgreeingStore(t, database)
+	const words = "Ship it on Friday."
+	nested := "Plan for the week:\n  - " + words
+	artifact := seeded.document.artifactID
+	if _, err := database.Pool.Exec(ctx, `
+		insert into artifact_versions (artifact_id, number, markdown, authors)
+		values ($1::uuid, 2, $2, '[{"kind":"user","id":"alice"}]')`, artifact, "- "+nested); err != nil {
+		t.Fatalf("write version 2 of the document: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into document_block_texts (artifact_id, block_id, version, text)
+		values ($1::uuid, 'outer', 1, $2), ($1::uuid, 'outer', 2, $3), ($1::uuid, 'inner', 2, $2)`,
+		artifact, words, nested); err != nil {
+		t.Fatalf("write the blocks' texts at versions 1 and 2: %v", err)
+	}
+	if tag, err := database.Pool.Exec(ctx, `
+		update document_blocks set changed_version = 2, excerpt = case block_id when 'outer' then $2 else $3 end
+		where artifact_id = $1::uuid and block_id in ('outer', 'inner')`, artifact, nested, words); err != nil || tag.RowsAffected() != 2 {
+		t.Fatalf("write the blocks' excerpts at version 2: %d rows, %v", tag.RowsAffected(), err)
+	}
+
+	erasure, err := confirmedErase(t, database, refs.BlockNodeKind, seeded.inner, time.Millisecond)
+	if err != nil {
+		t.Fatalf("erase %s: %v", seeded.inner, err)
+	}
+	if !erasure.Applied {
+		t.Fatalf("the erase of %s removed nothing: %q", seeded.inner, erasure.Blockers)
+	}
+	outerText := func(version int) string {
+		var text string
+		if err := database.Pool.QueryRow(ctx, `
+			select text from document_block_texts where artifact_id = $1::uuid and block_id = 'outer' and version = $2`,
+			artifact, version).Scan(&text); err != nil {
+			t.Fatalf("read the outer block's text at version %d: %v", version, err)
+		}
+		return text
+	}
+	if got := outerText(1); got != words {
+		t.Errorf("after the erase of %s the outer block's text at version 1 reads %q, want it as written, %q: the inner block did not stand in version 1, so those words were the outer block's own",
+			seeded.inner, got, words)
+	}
+	if got, want := outerText(2), "Plan for the week:\n  - "+erasure.marker(); got != want {
+		t.Errorf("after the erase of %s the outer block's text at version 2 reads %q, want %q: the inner block stood in version 2 holding those words",
+			seeded.inner, got, want)
+	}
+	var excerpt string
+	if err := database.Pool.QueryRow(ctx, `select excerpt from document_blocks where artifact_id = $1::uuid and block_id = 'outer'`,
+		artifact).Scan(&excerpt); err != nil {
+		t.Fatalf("read the outer block's excerpt: %v", err)
+	}
+	if strings.Contains(excerpt, words) {
+		t.Errorf("after the erase of %s the outer block's excerpt reads %q: it was cut from version 2, where the words are the inner block's, and holds them still",
+			seeded.inner, excerpt)
+	}
+	outer := seeded.document.refKey + "#outer"
+	if !listed(erasure, "redact document_block_texts "+outer+" version 2") {
+		t.Errorf("the listing does not name the outer block's text at version 2 as one the run redacts:\n%s", strings.Join(erasure.Listing, "\n"))
+	}
+	if listed(erasure, "redact document_block_texts "+outer+" version 1") {
+		t.Errorf("the listing names the outer block's text at version 1 as one the run redacts, a version the inner block did not stand in:\n%s",
+			strings.Join(erasure.Listing, "\n"))
+	}
+	if !listed(erasure, "leave public.document_block_texts", "["+outer+" version 1]", "text") {
+		t.Errorf("the listing does not name the outer block's text at version 1 as a row the run leaves holding the words:\n%s",
+			strings.Join(erasure.Listing, "\n"))
+	}
+}
+
+// R5: the listing names every row the run leaves holding an erased text, the excerpt of a block
+// holding the node's block among them. At version 2 the outer list item holds the inner block,
+// which reads `Ship it on Friday.`, under a line of the outer block's own; version 3 drops the
+// inner block, whose row there holds no text, and the outer item reads the same words as its own.
+// The erase of the inner block redacts the outer block's text at version 2, where those words are
+// the inner block's, and leaves the outer block's excerpt, cut from version 3, where they are the
+// outer block's own. The listing names that excerpt's document_blocks row as a row the run leaves
+// holding the words, although the outer block is one whose text the run rewrites.
+func TestTheEraseListsAnAncestorsExcerptItLeaves(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedAgreeingStore(t, database)
+	const words = "Ship it on Friday."
+	nested := "Plan for the week:\n  - " + words
+	artifact := seeded.document.artifactID
+	if _, err := database.Pool.Exec(ctx, `
+		insert into artifact_versions (artifact_id, number, markdown, authors)
+		values ($1::uuid, 2, $2, '[{"kind":"user","id":"alice"}]'), ($1::uuid, 3, $3, '[{"kind":"user","id":"alice"}]')`,
+		artifact, "- "+nested, "- "+words); err != nil {
+		t.Fatalf("write versions 2 and 3 of the document: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into document_block_texts (artifact_id, block_id, version, text)
+		values ($1::uuid, 'outer', 2, $2), ($1::uuid, 'inner', 2, $3), ($1::uuid, 'outer', 3, $3), ($1::uuid, 'inner', 3, null)`,
+		artifact, nested, words); err != nil {
+		t.Fatalf("write the blocks' texts at versions 2 and 3: %v", err)
+	}
+	if tag, err := database.Pool.Exec(ctx, `
+		update document_blocks set changed_version = case block_id when 'outer' then 3 else 2 end, excerpt = $2
+		where artifact_id = $1::uuid and block_id in ('outer', 'inner')`, artifact, words); err != nil || tag.RowsAffected() != 2 {
+		t.Fatalf("write the blocks' excerpts: %d rows, %v", tag.RowsAffected(), err)
+	}
+
+	erasure, err := confirmedErase(t, database, refs.BlockNodeKind, seeded.inner, time.Millisecond)
+	if err != nil {
+		t.Fatalf("erase %s: %v", seeded.inner, err)
+	}
+	if !erasure.Applied {
+		t.Fatalf("the erase of %s removed nothing: %q", seeded.inner, erasure.Blockers)
+	}
+	outer := seeded.document.refKey + "#outer"
+	if !listed(erasure, "redact document_block_texts "+outer+" version 2") {
+		t.Fatalf("the listing does not name the outer block's text at version 2 as one the run redacts, so the run rewrites nothing of the outer block and this test holds nothing:\n%s",
+			strings.Join(erasure.Listing, "\n"))
+	}
+	var excerpt string
+	if err := database.Pool.QueryRow(ctx, `select excerpt from document_blocks where artifact_id = $1::uuid and block_id = 'outer'`,
+		artifact).Scan(&excerpt); err != nil {
+		t.Fatalf("read the outer block's excerpt: %v", err)
+	}
+	if !strings.Contains(excerpt, words) {
+		t.Errorf("after the erase of %s the outer block's excerpt reads %q, want it as written, %q: it was cut from version 3, which the inner block did not stand in, so those words are the outer block's own",
+			seeded.inner, excerpt, words)
+	}
+	if !listed(erasure, "leave public.document_blocks", "[block:"+outer+"]", "excerpt") {
+		t.Errorf("the listing of the erase of %s names no row left for the excerpt of %s, which still holds the erased text:\n%s",
+			seeded.inner, outer, strings.Join(erasure.Listing, "\n"))
+	}
+}

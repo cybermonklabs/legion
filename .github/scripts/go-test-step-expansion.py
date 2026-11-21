@@ -43,9 +43,12 @@ edit to either step's text is refused (a step whose script is not its pinned tex
 the step and the first line that differs, and on that line each test its -run or -skip names and
 the pin does not, or the other way round) and the two cannot come to name different tests.
 ci_job_reads.py's hold_plugin_pack_tests() refuses, at import, a name in that list that the
-package no longer declares and a test of agentmodels_omp_test.go the list does not name. What CI
-does not see is what this script decides: a (package, function) pair two steps of one run run
-without a declared reason, and one some step compiles while no step runs it.
+package no longer declares and a test of agentmodels_omp_test.go the list does not name. And
+go-test-step-expansion.test.sh runs this script's step reader, with no `go` command, over every
+`go test` step of the head, so a step this script would refuse fails the pull request that makes
+it unreadable rather than the next hand run. What CI does not see is what this script decides: a
+(package, function) pair two steps of one run run without a declared reason, and one some step
+compiles while no step runs it.
 
 It starts no service and needs no Postgres, no NATS, no Docker and no Pulumi: it never runs a
 test. `go test -list` builds the test binary and asks it for its names, and each `TestMain` of the
@@ -104,7 +107,8 @@ How it reads a step:
     behind them: neither changes which test functions run. A value holding `$` and a wrapper that
     tuple does not name are refused rather than guessed at;
   * a step whose run: is the path of a script AUDITED_SCRIPTS names
-    (`packages/envoy/scripts/database-skips.sh`), alone or followed by one of the argument lists
+    (`packages/envoy/scripts/database-skips.sh`, `packages/envoy/scripts/backend-count.sh`), alone
+    or followed by one of the argument lists
     its entry reads, is read as the `go test` command that entry gives for those arguments, in
     the module it names. A step whose run: holds that script's file name anywhere else, or with
     arguments its entry does not list, is refused, since each entry reads its script only as
@@ -117,9 +121,10 @@ How it reads a step:
     of the script, pinned by the script's SHA-256. An edit to the script makes the entry stale,
     and this script refuses the step, naming the file, until someone reads the script again and
     updates the entry. A step that runs any other script is read as before, from its own run:
-    alone, so a `go test` inside that script is not seen: envoy-go's "Count the store-form rows
-    on each backend" runs `packages/envoy/scripts/backend-count.sh`, whose `go test` takes its
-    packages and test names from the step's arguments, and no entry reads it yet;
+    alone, so a `go test` inside that script is not seen: a step that runs a script from the
+    repository root and holds no `go test` of its own is skipped, which is how envoy-go's
+    "Count the store-form rows on each backend" (backend-count.sh) was read as running nothing
+    until its entry below, and its five tests' second run was in neither verdict;
   * a `Benchmark…` name a listing prints is left out of both verdicts: no step passes `-bench`,
     so `go test` builds those functions and runs none of them, and reading every one of them as
     compiled and unrun would say that over and over and name no hole anyone can close.
@@ -214,7 +219,7 @@ EXCEPTIONS = (
             (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
             (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials and the NATS auth service"),
         }),
-        package="github.com/sjawhar/envoy/internal/broker/natscallout",
+        package="github.com/sjawhar/envoy/internal/cipher/natscallout",
         functions=("TestACalloutStormAfterAServerRestartAdmitsEveryConnection",),
         requirement=(
             "c-callout-available (the NATS auth service's verification): five hundred "
@@ -280,7 +285,7 @@ EXCEPTIONS = (
             (".github/workflows/ci-job-airlock-lean.yaml", "Fuzz the Go airlock against the model"),
             (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
         }),
-        package="github.com/sjawhar/envoy/internal/broker/airlock",
+        package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("FuzzAirlock",),
         requirement=(
             "R3 (dispatch://INFRA-1408/spec): airlock-lean holds the Go airlock to its Lean model, "
@@ -300,7 +305,7 @@ EXCEPTIONS = (
             (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
             (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
         }),
-        package="github.com/sjawhar/envoy/internal/broker/airlock",
+        package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("TestModelAgreesOnHostShapes",),
         requirement=(
             "The same reason as FuzzAirlock above: airlock-lean's corpus comparison runs the host "
@@ -318,7 +323,7 @@ EXCEPTIONS = (
             (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
             (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
         }),
-        package="github.com/sjawhar/envoy/internal/broker/airlock",
+        package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("TestTheModelReadsAHostlessEntryWithGuidance",),
         requirement=(
             "The same reason as TestModelAgreesOnHostShapes above: airlock-lean's corpus "
@@ -353,28 +358,56 @@ class AuditedScript:
     sha256: str
 
 
+# The tests envoy-go's "Count the store-form rows on each backend" names, in the order its run:
+# passes them to backend-count.sh; ci_job_reads.BACKEND_COUNT_TESTS, which the unit and
+# database-skips steps' skips of them are built from, holds the same names by package.
+BACKEND_COUNT_TESTS = (
+    "TestEverySecretFormNamesTheSourceItUses",
+    "TestNoSecretFormAsksTheBrokerForACredential",
+    "TestUseCommandOutsideASessionReachesTheMachineSource",
+    "TestTheChainSkipsAbsenceAndStopsOnABrokenSource",
+    "TestSettingsNameTheGoogleExchangeAudienceOnEitherStore",
+)
+
 # Each script a step of ci.yaml's router runs as its whole run: line, read by a person, with the
 # one `go test` it runs for each argument list a step passes it.
 AUDITED_SCRIPTS = {
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1` over its packages, then counts the skips in its report. With no package argument it
-    # runs its DEFAULT_PACKAGES, ./internal/broker/... and ./cmd/broker/, less the import paths its
-    # DEFAULT_EXCEPT's `grep -Ev '/internal/broker/natscallout$'` takes out of `go list` of them (the
+    # runs its DEFAULT_PACKAGES, ./internal/cipher/... and ./cmd/cipherd/, less the import paths its
+    # DEFAULT_EXCEPT's `grep -Ev '/internal/cipher/natscallout$'` takes out of `go list` of them (the
     # race lane's packages under the tree, ci_job_reads.DATABASE_SKIPS_PATTERN), with no -tags,
     # -race, -run or -skip, under -timeout "${GO_TEST_TIMEOUT:-15m}". A package argument replaces
-    # those packages, `--race` adds -race, `--timeout D` sets the -timeout, and `--var NAME`
-    # decides only whether it runs at all. With `--report FILE` it reads a report and runs no test.
-    # envoy-go's count step passes the first argument list below, whose command is that run in the
-    # listing form this script reads, and envoy-go-race-api's race step the second.
+    # those packages, `--race` adds -race, `--skip P` adds -skip P, `--timeout D` sets the -timeout,
+    # and `--var NAME` decides only whether it runs at all. With `--report FILE` it reads a report
+    # and runs no test. envoy-go's count step passes the first argument list below, whose command
+    # is that run in the listing form this script reads, and envoy-go-race-api's race step the
+    # second. The first's --skip leaves out the backend count's test of ./internal/cipher/api/.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         commands={
-            "--timeout 20m": "go list ./internal/broker/... ./cmd/broker/ | grep -Ev '/internal/broker/natscallout$' | "
-                             "xargs go test -json -count=1 -timeout 20m",
+            "--timeout 20m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$'":
+                "go list ./internal/cipher/... ./cmd/cipherd/ | grep -Ev '/internal/cipher/natscallout$' | "
+                "xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' "
+                "-timeout 20m",
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
                 "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
         },
-        sha256="63269be64d58884d1e539a965a2f70e2024d3de79abb7fc4efc98bb5f55b5cb4",
+        sha256="668c7223b926bbad0066b0866b8f308f7c08db55ae4db167ea33bf8769401e6d",
+    ),
+    # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
+    # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
+    # `--`, the -run built from the test names after it, then counts each test's `aws` and `gcp`
+    # passes. GO_TEST_SKIP adds a -skip, which no step sets, and envoy-go's job sets neither
+    # variable. envoy-go's count step passes the argument list below.
+    "packages/envoy/scripts/backend-count.sh": AuditedScript(
+        module="packages/envoy",
+        commands={
+            "./cmd/cipher/ ./internal/cipher/api/ -- " + " ".join(BACKEND_COUNT_TESTS):
+                f"go test -json -count=1 -timeout 5m -run '^({'|'.join(BACKEND_COUNT_TESTS)})$' "
+                "./cmd/cipher/ ./internal/cipher/api/",
+        },
+        sha256="bea62eaf32791a70c86e0350053bda35bae7dfa81685ad3338022849f0587a0e",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.

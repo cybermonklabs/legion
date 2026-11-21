@@ -39,7 +39,7 @@ import type {
   UpdateIssueInput,
 } from "../../api/types";
 import { useBoardMoves } from "../project/board-moves";
-import { MAX_BACKOFF_MS, SEND_DEADLINE_MS } from "../writes/keyed-write";
+import { MAX_BACKOFF_MS, SEND_DEADLINE_MS, stoppedWriteNote } from "../writes/keyed-write";
 import { PendingWritesIndicator } from "../writes/PendingWritesIndicator";
 import { KEPT_SEND_RESUME_MS, resetWriteStorage } from "../writes/write-storage";
 import { plainWrite, type Writes, writesOf } from "../writes/write-store";
@@ -2284,6 +2284,7 @@ function releaseClaim(client: DispatchQueryClient, answer: Promise<Issue>): void
         kind: plainWrite,
         label: `Claim on ${issue.key} released`,
         presentation: "indicator",
+        method: "DELETE",
         write: (bounds) => {
           bounds.sent?.({ method: "DELETE", path: `/api/v1/issues/${issue.key}/claim` });
           return answer;
@@ -4038,7 +4039,13 @@ test("Stop trying on a late pick with a newer pick live behind it keeps the newe
     await user.click(pendingRow("CORE-1 set to P0").getByRole("button", { name: "Stop trying" }));
     await jump(1_000);
     const alert = screen.getByRole("alert");
-    expect(alert).toHaveTextContent("Could not update the priority of CORE-1.");
+    // A pick the reader stopped may have been saved: the picker says so rather than that it
+    // failed, and, with no Retry offered, that the newer pick goes after it.
+    expect(alert).toHaveTextContent(
+      stoppedWriteNote("the priority of CORE-1", "saved", {
+        anew: "The newer change shown goes to Dispatch after it, so that one is stored last.",
+      })
+    );
     expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     expect(select().value).toBe("2");
     expect(cachedPriorities(client)).toEqual({ detail: 2, inbox: 2, list: 2 });

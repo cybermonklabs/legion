@@ -2,6 +2,7 @@ package graphstore
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"testing"
 	"time"
@@ -113,6 +114,58 @@ func TestARestatingWriteKeepsTheValuesItDoesNotOwn(t *testing.T) {
 		requireBaseLog(t, ctx, database, moving, StateLive, VisibilityProject,
 			[]string{laterState, StateLive}, []string{VisibilityProject})
 	})
+}
+
+// TestARestatingWriteKeepsTheStoredAttributes holds a write that restates a node (Node.Restates)
+// to keeping the attributes its row stores, as it keeps the row's visibility (writtenAttributes):
+// a restating writer owns the facts it writes the node again for, not the node's attributes,
+// which another write gave it. A node a plain write made with attributes keeps them when a
+// restating write states other attributes, and when one states none, as every restating writer
+// of this tree writes a node; a plain write still moves them.
+func TestARestatingWriteKeepsTheStoredAttributes(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC)
+	who := model.Actor{Kind: "user", ID: "alice"}
+
+	stored := Node{
+		Kind: KindSession, ID: "restated-attributes", Supertag: KindSession,
+		Visibility: VisibilityProject, State: StateLive,
+		Attributes: map[string]any{"title": "the stored title"},
+		MadeAt:     at, MadeBy: who, SourceEvent: NoEvent,
+	}
+	writeNode(t, ctx, database, stored)
+	requireNodeAttributes(t, ctx, database, stored, stored.Attributes, "the plain write that made it")
+
+	restated := stored
+	restated.Restates, restated.MadeAt = true, at.Add(time.Minute)
+	restated.Attributes = map[string]any{"title": "the restated title"}
+	writeNode(t, ctx, database, restated)
+	requireNodeAttributes(t, ctx, database, stored, stored.Attributes, "a restating write stating other attributes")
+
+	bare := restated
+	bare.Attributes, bare.MadeAt = nil, at.Add(2*time.Minute)
+	writeNode(t, ctx, database, bare)
+	requireNodeAttributes(t, ctx, database, stored, stored.Attributes, "a restating write stating none")
+
+	plain := restated
+	plain.Restates, plain.MadeAt = false, at.Add(3*time.Minute)
+	writeNode(t, ctx, database, plain)
+	requireNodeAttributes(t, ctx, database, stored, plain.Attributes, "a plain write stating other attributes")
+}
+
+// requireNodeAttributes fails unless node's row holds want as its attributes after the write
+// after names.
+func requireNodeAttributes(t *testing.T, ctx context.Context, database *store.Store, node Node, want map[string]any, after string) {
+	t.Helper()
+	row, held, err := ReadNode(ctx, database.Pool, node.Kind, node.ID)
+	if err != nil || !held {
+		t.Fatalf("read node %s/%s after %s: held %t, %v", node.Kind, node.ID, after, held, err)
+	}
+	if !maps.Equal(row.Attributes, want) {
+		t.Errorf("after %s, node %s/%s's row holds the attributes %v, want %v: a restating write keeps the attributes the row stores, and only a plain write moves them",
+			after, node.Kind, node.ID, row.Attributes, want)
+	}
 }
 
 // requireBaseLog fails unless node's row holds state and visibility, the log's newest value of

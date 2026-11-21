@@ -226,15 +226,47 @@ export function SelectedItemLabel(): ReactNode {
   return <output aria-label="Selected margin item">{selectedItemId ?? "none"}</output>;
 }
 
-export function stubMatchMedia(matches: boolean): () => void {
+/** A phone's width in CSS pixels. It sits below `PHONE_VIEWPORT_QUERY`'s 767 px, so the phone and
+ *  compact queries hold there and neither `MD_VIEWPORT_QUERY` nor `READING_PANE_QUERY` does. */
+export const PHONE_WIDTH = 390;
+
+/** A wide desktop's width in CSS pixels. It sits past `READING_PANE_QUERY`'s 80rem (1280 px), so
+ *  the reading pane and `MD_VIEWPORT_QUERY` hold there and neither the phone nor the compact query
+ *  does. */
+export const DESKTOP_WIDTH = 1440;
+
+/** The CSS pixels in a `rem` at the browser's default font size, which the stylesheet's `rem`
+ *  breakpoints assume. */
+const PX_PER_REM = 16;
+
+/** One `(min-width: …)` or `(max-width: …)` clause, in `px` or `rem`. */
+const WIDTH_CLAUSE = /^\(\s*(min|max)-width\s*:\s*(\d*\.?\d+)(px|rem)\s*\)$/;
+
+/** Whether a viewport `widthPx` wide matches `query`, which holds when every clause it joins with
+ *  `and` holds. A clause of any other kind throws, naming the query, because a guessed answer
+ *  would let a row pass on a layout that no real screen draws. */
+function viewportMatches(widthPx: number, query: string): boolean {
+  return query.split(/\s+and\s+/i).every((clause) => {
+    const match = WIDTH_CLAUSE.exec(clause.trim());
+    if (match === null) throw new Error(`stubViewport cannot read the media query "${query}"`);
+    const [, bound, value, unit] = match;
+    const px = Number(value) * (unit === "rem" ? PX_PER_REM : 1);
+    return bound === "min" ? widthPx >= px : widthPx <= px;
+  });
+}
+
+/** Answers each media query as a real viewport `widthPx` wide does, until the restore it returns
+ *  runs. The width never changes meanwhile, so no `change` is ever sent and the listeners do
+ *  nothing. */
+export function stubViewport(widthPx: number): () => void {
   const original = window.matchMedia;
-  window.matchMedia = (() =>
+  window.matchMedia = ((query: string) =>
     ({
       addEventListener: () => {},
       addListener: () => {},
       dispatchEvent: () => true,
-      matches,
-      media: "",
+      matches: viewportMatches(widthPx, query),
+      media: query,
       onchange: null,
       removeEventListener: () => {},
       removeListener: () => {},

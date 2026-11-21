@@ -7,9 +7,9 @@
 # — plus a fake `go build -o <path> ...` that installs
 # a tiny stub script at <path> instead of compiling (dev-broker.sh's own isolation logic lives
 # entirely in the shell driver, never in the Go binaries it starts, so a stub proves the driver's
-# behavior without depending on cmd/agent-secrets-devrelay or cmd/broker compiling or running for
+# behavior without depending on cmd/cipher-devrelay or cmd/cipherd compiling or running for
 # real). The broker stub logs the JSON "broker listening" line, addr 127.0.0.1:<its own PID>,
-# exactly like the real cmd/broker does once it binds — using its own PID as a stand-in for the
+# exactly like the real cmd/cipherd does once it binds — using its own PID as a stand-in for the
 # kernel-assigned port a real Listen would report, since two concurrently running stub processes
 # always have distinct PIDs — and then its "broker metrics listening" line, addr
 # 127.0.0.1:2<its own PID>, for the metrics port bound beside it.
@@ -125,7 +125,7 @@ chmod +x "${fake_bin_dir}/psql"
 # broker stub logs the issuer, the callers, the exchange's account and read entries, the service
 # logins, the services, the pod registrars, the sign-in client and the metrics address it was
 # configured with, then the JSON "broker listening" line with its addr field, exactly like the
-# real cmd/broker does once it binds — using its own PID as a stand-in for the kernel-assigned
+# real cmd/cipherd does once it binds — using its own PID as a stand-in for the kernel-assigned
 # port a real Listen would report, since two concurrently running stub processes always have
 # distinct PIDs — and the "broker metrics listening" line after it, 2<PID> standing in for that
 # port, and then stays alive as the backgrounded "server" process dev-broker.sh waits on and kills
@@ -146,7 +146,7 @@ for arg in "$@"; do
   prev="$arg"
 done
 case "$pkg" in
-  */agent-secrets|*/agent-secrets-helper|*/agent-secrets-devrelay)
+  */cipher|*/cipher-helper|*/cipher-devrelay)
     cat >"$out" <<'DEVRELAY'
 #!/usr/bin/env bash
 exit 0
@@ -192,7 +192,7 @@ echo "dev-oidc-issuer: issuer listening url=http://127.0.0.1:$$" >&2
 exec sleep 999999
 ISSUER
     ;;
-  */dev-airlock-stands)
+  */dev-proxy-stands)
     cat >"$out" <<'STANDS'
 #!/usr/bin/env bash
 dir=""
@@ -231,7 +231,7 @@ echo "dev-airlock-stands: stands listening records=http://127.0.0.1:$$" >&2
 exec sleep 999999
 STANDS
     ;;
-  */broker)
+  */cipherd)
     cat >"$out" <<'BROKER'
 #!/usr/bin/env bash
 if [[ $# -ne 0 ]]; then

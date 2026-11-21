@@ -20,10 +20,10 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sjawhar/envoy/internal/broker/natscallout"
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
-	"github.com/sjawhar/envoy/internal/brokerclient"
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/cipher/natscallout"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testport"
 )
@@ -66,7 +66,7 @@ func newBroker(t *testing.T) *broker {
 		token := fmt.Sprintf("tok-%d", len(b.bound)+1)
 		b.bound[token] = oauthwire.Introspection{
 			Active: true, Session: r.PostForm.Get(oauthwire.FormSession), Person: "person@example.com",
-			ClientID: brokertoken.ExchangeClientID, ProjectScope: brokertoken.ProjectScopePerson,
+			ClientID: ciphertoken.ExchangeClientID, ProjectScope: ciphertoken.ProjectScopePerson,
 			Thumbprint: base64.RawURLEncoding.EncodeToString(sum), ExpiresAt: time.Now().Add(15 * time.Minute).Unix(),
 		}
 		b.mu.Unlock()
@@ -136,10 +136,10 @@ func TestNatsprobeSaysWhatTheHubAnswered(t *testing.T) {
 	require.NoError(t, service.Ready(ctx))
 
 	environment := map[string]string{
-		brokerclient.BrokerURLVar:        stub.server.URL,
-		brokerclient.IdentityVar:         brokerclient.IdentityKubernetes,
-		brokerclient.MachineTokenFileVar: write("pod-token", "pod-token"),
-		brokerclient.SessionVar:          "ses_a",
+		cipherclient.BrokerURLVar:        stub.server.URL,
+		cipherclient.IdentityVar:         cipherclient.IdentityKubernetes,
+		cipherclient.MachineTokenFileVar: write("pod-token", "pod-token"),
+		cipherclient.SessionVar:          "ses_a",
 	}
 	getenv := func(name string) string { return environment[name] }
 	serviceFile := write("service-token", platformToken(daemonAccount, time.Hour))
@@ -172,17 +172,17 @@ func TestNatsprobeSaysWhatTheHubAnswered(t *testing.T) {
 
 // A hub that sends no nonce, as this plain one does, gives the probe nothing to sign a session's
 // proof over: it says so, names the credentials such a hub does take, and exits 1, since the hub
-// refused nothing. The control is the probe printing brokerclient's error without that hint.
+// refused nothing. The control is the probe printing cipherclient's error without that hint.
 func TestNatsprobeNamesTheCredentialsAHubWithNoAuthServiceTakes(t *testing.T) {
 	_, url := testnats.Start(t)
 	stub := newBroker(t)
 	pod := filepath.Join(t.TempDir(), "pod-token")
 	require.NoError(t, os.WriteFile(pod, []byte("pod-token"), 0o600))
 	environment := map[string]string{
-		brokerclient.BrokerURLVar:        stub.server.URL,
-		brokerclient.IdentityVar:         brokerclient.IdentityKubernetes,
-		brokerclient.MachineTokenFileVar: pod,
-		brokerclient.SessionVar:          "ses_a",
+		cipherclient.BrokerURLVar:        stub.server.URL,
+		cipherclient.IdentityVar:         cipherclient.IdentityKubernetes,
+		cipherclient.MachineTokenFileVar: pod,
+		cipherclient.SessionVar:          "ses_a",
 	}
 	var stdout, stderr bytes.Buffer
 	exit := run([]string{"--servers", url, "--wait", "1s", "--subscribe", "notifications.envoy.deliver.ses_a"},

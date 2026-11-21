@@ -21,10 +21,10 @@ import (
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// brokenPipeReadKV is an interest bucket whose reads fail with the raw socket error nats.go v1.50.0
-// returns when a request fills its 32 KiB write buffer on a broken connection: natsWriter.flush
-// passes the socket's own *net.OpError through (nats.go:2118-2119, 2143-2145), and so do publish
-// and requestWithContext (nats.go:4406, context.go:60-62). Every other call goes to the real bucket.
+// brokenPipeReadKV is an interest bucket whose reads fail with a raw socket error. nats.go v1.55.0
+// reconnects after a partial write, but a caller can still receive an unwrapped *net.OpError from
+// another write failure. This double holds the listener's classification of that error. Every
+// other call goes to the real bucket.
 type brokenPipeReadKV struct {
 	nats.KeyValue
 }

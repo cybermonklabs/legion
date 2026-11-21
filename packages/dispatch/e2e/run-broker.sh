@@ -4,10 +4,10 @@ set -euo pipefail
 # as two harness listeners (e2e/harness-listeners.ts):
 #
 #   run-broker.sh issuer   cmd/dev-oidc-issuer, always on a port the OS chooses
-#   run-broker.sh broker   cmd/broker on REAL_BROKER_PORT, or a port the OS chooses with it unset
+#   run-broker.sh broker   cmd/cipherd on REAL_BROKER_PORT, or a port the OS chooses with it unset
 #
 # The issuer stands in for two things: the cluster's ServiceAccount token issuer, whose minted
-# tokens the seeding step (packages/envoy/internal/broker/brokertest/requestseed) logs a service in
+# tokens the seeding step (packages/envoy/internal/cipher/ciphertest/requestseed) logs a service in
 # and enrolls its pods with, and the person's sign-in provider for the broker's own client, signing
 # a person in with no page to fill in. Dispatch's server never reaches this broker: it keeps
 # relaying e2e/fake-broker.ts, whose pending rows a row points at this broker's records, so only
@@ -26,8 +26,8 @@ set -euo pipefail
 # broker takes that URL as its token issuer and its sign-in provider, so a broker started with it
 # unset is refused too. The broker's public URL follows the port it binds, since the approval
 # page refuses a form post from any other origin: with REAL_BROKER_PORT set both name that port,
-# and with it unset both are port 0, which cmd/broker resolves from the address it bound
-# (packages/envoy/cmd/broker/main.go).
+# and with it unset both are port 0, which cmd/cipherd resolves from the address it bound
+# (packages/envoy/cmd/cipherd/main.go).
 #
 # DISPATCH_E2E_BROKER_BIN_DIR names a directory holding broker, dev-oidc-issuer and requestseed
 # that the caller built, which this run execs instead of building them from this checkout (the
@@ -164,7 +164,8 @@ cd "$e2e_dir/../../envoy"
 # over it is the only thing this script still writes there.
 mkdir -p "$work"
 if [ -z "$prebuilt_bin" ]; then
-  flock "$work/.build.lock" go build -o "$work/" ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+  flock "$work/.build.lock" go build -o "$work/" ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
+  flock "$work/.build.lock" go build -o "$work/broker" ./cmd/cipherd
 fi
 
 if [ "$mode" = issuer ]; then

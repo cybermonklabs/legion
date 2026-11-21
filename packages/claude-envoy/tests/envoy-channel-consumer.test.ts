@@ -321,6 +321,29 @@ for (const refusal of [
         for (const write of notifier.pending) write.resolve()
         return notifier.written.some((written) => written.eventId === message.id)
       }, "the frame after the refusal")
+
+      // The accepted registration ends the outage, and the session is told so once.
+      const restored = () =>
+        notices().filter((written) => written.content.includes("Envoy inbound restored"))
+      await waitFor(async () => {
+        for (const write of notifier.pending) write.resolve()
+        return restored().length === 1
+      }, "the restored notice")
+      const told = () =>
+        notices().filter((written) => written.content.includes("Envoy inbound unavailable"))
+      expect(told()).toHaveLength(1)
+
+      // A second outage is told again, and its end too.
+      refusing = true
+      await waitFor(async () => {
+        for (const write of notifier.pending) write.resolve()
+        return told().length === 2
+      }, "the second outage's notice")
+      refusing = false
+      await waitFor(async () => {
+        for (const write of notifier.pending) write.resolve()
+        return restored().length === 2
+      }, "the second restored notice")
     } finally {
       for (const write of notifier.pending) write.resolve()
       await session.shutdown()

@@ -25,31 +25,48 @@ import (
 // because the fence is merged per check name over the settlements of the head it stands at
 // (classify's mergeAttemptSets): each name keeps its highest run id, so the head and the
 // conclusion must be the ones of that run and never a mixture of two runs'. What they answer is
-// which names are red (classify.ApplySettlement derives Failing and Cancelled from them) and
-// whether GitHub has reported a check run on the pull request's current head itself
-// (classify.ChecksConcludedOnHead).
+// which names are red (classify.ApplySettlement derives Failing and Cancelled from them), which
+// names are green on the pull request's current head (classify.GreenContexts), and whether GitHub
+// has reported a check run on that head itself (classify.ChecksConcludedOnHead). A skipped run
+// answers each of them exactly as a succeeded one does (RunConclusion says why).
 //
 // Both are optional in the stored JSON, so a row written before dispatch://INFRA-714 added them
 // still parses, and such a row carries neither. It fails closed on both readings: an empty Head
 // is no head, so the run is never one on the current head, and an empty Conclusion is no
 // conclusion, so it never makes its name red. The names of such a row come to what the stored
 // Failing and Cancelled lists say of them, which is what they came to before.
+//
+// GitHubConclusion is the word GitHub gave the run (success, neutral, skipped, timed_out, or one
+// GitHub adds later), as the listener's settlement carried it, and only once intake's decoder
+// took it for a word (decodeChecks). It decides nothing: every decision reads Conclusion, so two
+// runs that differ only in their word decide alike. It is kept so the texts the roles read name a
+// run by GitHub's own word rather than by the coarser conclusion. It is optional in the stored
+// JSON too: a row written before dispatch://INFRA-4135 added it carries no word and reads as it
+// did, a run named by its conclusion, and a daemon of the release before this one ignores it.
 type AttemptRun struct {
-	Name       string        `json:"name"`
-	ID         int64         `json:"id"`
-	Head       string        `json:"head,omitempty"`
-	Conclusion RunConclusion `json:"conclusion,omitempty"`
+	Name             string        `json:"name"`
+	ID               int64         `json:"id"`
+	Head             string        `json:"head,omitempty"`
+	Conclusion       RunConclusion `json:"conclusion,omitempty"`
+	GitHubConclusion string        `json:"githubConclusion,omitempty"`
 }
 
 // RunConclusion is what one check run concluded, as the settlement reporting it said: the
 // listener names a run that failed and a run that was cancelled, and a run it reports as neither
 // succeeded, since it settles a commit only once every check it has seen there is terminal
-// (classify.ApplySettlement, which reads a candidate's Failing and Cancelled lists for it). ""
-// is a run recorded before the conclusion was kept beside the id.
+// (classify.ApplySettlement, which reads a candidate's Failing and Cancelled lists for it). A run
+// the settlement's skipped group names is skipped: GitHub concluded it skipped, so it ran nothing
+// on that head. Every decision takes a skipped run exactly as a succeeded one
+// (dispatch://INFRA-4135 R2): neither makes its name red, each is a run on the head GitHub
+// reported it on, and each makes its name green there (classify.GreenContexts), since GitHub's
+// branch protection takes a skipped required check as passing. Only the texts the roles read name
+// it differently, so no role is told that a check which never ran passed. "" is a run recorded
+// before the conclusion was kept beside the id.
 type RunConclusion string
 
 const (
 	RunSucceeded RunConclusion = "succeeded"
+	RunSkipped   RunConclusion = "skipped"
 	RunFailed    RunConclusion = "failed"
 	RunCancelled RunConclusion = "cancelled"
 )
@@ -1419,8 +1436,8 @@ func (step DesignStep) Valid() bool {
 
 // Document is the document of its issue the step records, as a refusal or a task names it: the
 // words the architect's own guide uses for the three (skill://legion-architect/references/
-// design-gate.md, "The steps"). The caller supplies the possessive it needs - the issue's, or the
-// architect's own.
+// design-gate.md, "Which steps are gated"). The caller supplies the possessive it needs - the
+// issue's, or the architect's own.
 func (step DesignStep) Document() string {
 	switch step {
 	case DesignStepCriteria:
@@ -1616,7 +1633,8 @@ type OutboxRow struct {
 	ID   int64
 	Kind OutboxKind
 	// Issue is the issue the effect belongs to. A project-level row carries the bare project key
-	// instead — the deployment's gated-steps publish, which belongs to no issue — and the same
+	// instead — the deployment's gated-steps publish, which belongs to no issue, and a project
+	// pause's stop of a claim of another project's issue (SuperviseRequest.Issue) — and the same
 	// split_part(issue, '-', 1) that scopes an issue's row to its own daemon answers that key
 	// itself, since a project key holds no hyphen.
 	Issue      string
@@ -1627,6 +1645,12 @@ type OutboxRow struct {
 	CreatedAt  time.Time
 	LeaseToken string
 	LeaseUntil *time.Time
+	// HeldByPause is the id of the project pause that held the row, and 0 for a row no pause
+	// held. The resume writes it, in its own transaction, on every row the pause it ends holds
+	// (Postgres.MarkPauseHeldRows), whatever the row's kind or due time, and nothing else writes it:
+	// a row that runs after the resume carries it, so the wake the row takes of a released role
+	// is that pause's held wake (internal/daemon's wakeForDelivery, store.Store.TakePodWake).
+	HeldByPause int64
 }
 
 // Handover is a root linger's pending move of one child to an independent tree. It persists from
@@ -1657,20 +1681,18 @@ type HandedOverRoot struct {
 	GateCarried bool
 }
 
-// DispatchIssueRow is one row of the daemon's mirror of Dispatch's issues: what Dispatch last
-// said about an issue of the project, whether or not the daemon records the issue itself. Seq is
-// the Dispatch sequence the observation came from, which fences the write (PutDispatchIssue), and
-// Blockers the keys the issue waits on, in Dispatch's own order. ClaimedBy is who Dispatch showed
-// holding the issue's claim, `<kind>:<id>` ("" for nobody), and ClaimSeq the sequence of the
-// observation that showed it, 0 when none has. The claim is kept apart from the row, with a fence
-// of its own, since a claim event says nothing of the status or the blockers and may arrive before
-// the issue's first mirrored observation (PutDispatchClaim). A row written with ClaimSeq 0 leaves
-// the stored claim as it stands. Parent is the key of the issue's Dispatch parent, "" for none; it
-// is the parent the observation saw, and "" is its observation that the issue has none, which
-// clears a stored one. It is written outside the sequence fence as well as inside it, since a
-// listing at the sequence the row already holds is the only thing that carries the parent of an
-// issue the daemon has never recorded; an observation older than the row writes no parent at all,
-// because the row's own saw it later (PutDispatchIssue).
+// DispatchIssueRow is one row of the daemon's copy of Dispatch's issues: what the readings of
+// Dispatch said about an issue of the project, whether or not the daemon records the issue itself.
+// Each of its five values, Status, Parent, Blockers, Labels and Rank, is the one shown by the
+// reading of the highest sequence that carried it, the first such reading where two share that
+// sequence, and keeps that reading's sequence beside it in the table (PutDispatchIssue); Seq is
+// the highest sequence of any reading the row took. Blockers are the keys the issue waits on, in
+// Dispatch's own order, Parent the key of its Dispatch parent ("" for none), Labels its labels and
+// Rank its board rank. A value no reading has written holds its column's default: "", no parent,
+// or no keys or labels. ClaimedBy is who Dispatch showed holding the issue's claim, `<kind>:<id>`
+// ("" for nobody), and ClaimSeq the sequence of the reading that showed it, 0 when none has. The
+// claim is kept apart from the row, with a fence of its own, since a claim event says nothing of
+// the issue's values and may arrive before the issue's first reading (PutDispatchClaim).
 type DispatchIssueRow struct {
 	Key       string
 	Project   string
@@ -1680,6 +1702,32 @@ type DispatchIssueRow struct {
 	ClaimedBy string
 	ClaimSeq  int64
 	Parent    string
+	Labels    []string
+	Rank      string
+}
+
+// Carried is one value a reading of Dispatch carries; its zero value is a value the reading does
+// not carry, which the write leaves as the copy holds it.
+type Carried[T any] struct {
+	Value   T
+	Carried bool
+}
+
+// Carry is value, carried.
+func Carry[T any](value T) Carried[T] { return Carried[T]{Value: value, Carried: true} }
+
+// DispatchReading is one reading of a Dispatch issue at Seq, the sequence Dispatch had run to when
+// it was read: the values it carries, and the claim it showed (ClaimSeq above zero).
+type DispatchReading struct {
+	Key, Project string
+	Seq          int64
+	Status       Carried[string]
+	Parent       Carried[string] // Value "" is Dispatch showing no parent
+	Blockers     Carried[[]string]
+	Labels       Carried[[]string]
+	Rank         Carried[string]
+	ClaimedBy    string
+	ClaimSeq     int64
 }
 
 // Store contains only transactional operations. The caller owns each transaction so intake can
@@ -1761,19 +1809,23 @@ type Store interface {
 	// PutRepoNote records a note it posts.
 	RepoNote(ctx context.Context, tx pgx.Tx, issue string) (*RepoNote, error)
 	PutRepoNote(ctx context.Context, tx pgx.Tx, note RepoNote) error
-	// PutDispatchIssue writes row into the mirror of Dispatch's issues, fenced on the Dispatch
-	// sequence: a row already holding an observation at least as fresh keeps what it has, so a
-	// slower observation never overwrites a faster one. The claim is fenced apart, on ClaimSeq: a
-	// row carrying a claim (ClaimSeq above zero) writes it only over an older claim, and one
-	// carrying none leaves the stored claim as it stands. The parent is written outside the fence
-	// as well as inside it, and the parent the observation saw is what is written, "" included: an
-	// observation at or below the stored sequence writes the parent alone, leaving the status, the
-	// blockers and the sequence as they stand, so an issue whose live events are older than the
-	// listing that carried its parent still gets it, and a person who takes a parent off clears
-	// the stored one. An observation strictly older than the row writes no parent at all, since
-	// the row's own saw it later. A row whose Seq is zero — a fact the daemon minted from its own
-	// record, which Dispatch never said — writes nothing at all.
-	PutDispatchIssue(ctx context.Context, tx pgx.Tx, row DispatchIssueRow) error
+	// PutDispatchIssue writes reading into the copy of Dispatch's issues. A reading writes only the
+	// values it carries, and each value keeps the sequence of the reading that wrote it: a reading
+	// changes a value only at a higher sequence than that value's own, or where no reading has
+	// written it (sequence 0), so a reading at a value's own sequence replaces and removes nothing,
+	// and an older one changes nothing at all. A value the reading does not carry stays as the copy
+	// holds it, and on a new row takes its column's default at sequence 0, written by no reading.
+	// A parent of "" is Dispatch showing no parent, a value written like any other. The row's Seq
+	// becomes the highest sequence of any reading it took. The claim is fenced apart, on ClaimSeq,
+	// whatever the values did: a reading carrying a claim (ClaimSeq above zero) writes it only over
+	// an older claim, and one carrying none leaves the stored claim as it stands. A reading whose
+	// Seq is zero — a fact the daemon minted from its own record, which Dispatch never said — writes
+	// nothing at all, and one that carries no value is refused, as a fault of its caller.
+	PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading DispatchReading) error
+	// TakeDispatchRefill takes project's refill mark (a dispatch_issue_refills row whose
+	// refilled_at is null): it stamps refilled_at, deletes every dispatch_issues row of project, and
+	// answers the keys it deleted and true. With no mark it changes nothing and answers false.
+	TakeDispatchRefill(ctx context.Context, tx pgx.Tx, project string) (removed []string, refilled bool, err error)
 	// PutDispatchClaim writes holder (`<kind>:<id>`, "" for nobody) as key's claim at seq, over an
 	// older claim only, and touches nothing of the status or the blockers. It is kept whether or not
 	// the mirror has a row of key yet: an event carries the claim as of its own sequence, so a claim
@@ -2441,10 +2493,12 @@ type RoleClaim struct {
 	GivenEntry int64
 	// LastReady is when the claim's agent last said it could be prompted (supervise.Claim.LastReady,
 	// last_ready), and the zero time for a claim whose agent never has. The ready of every launch
-	// writes it, a relaunch's included (supervise's ready). Its reader is the first stall arm
-	// (admit's architectTookNothing): a task a let-go took back from a turn waits for the
-	// relaunched agent, so the arm counts that task from the later of its queueing and this
-	// moment.
+	// writes it, a relaunch's included (supervise's ready). Its readers are the first stall arm
+	// (admit's architectTookNothing): a task waits for an agent that is up to take it, so while
+	// the claim is ready, working or idle the arm counts the task from the later of its entry's
+	// first queueing and this moment; and a production check's look bound after a project's
+	// pause (internal/daemon's lookBoundAfterPause), which counts from no earlier than this moment
+	// where it is after the pause's end.
 	LastReady time.Time
 	// Handshake is the claim's handshake of the last entry it was queued a task of
 	// (supervise.Claim.Handshake): that entry, the run its task was of, when a task of it was
@@ -2452,9 +2506,13 @@ type RoleClaim struct {
 	// claim was queued no task carrying an entry. The claim's machine writes the queued moment
 	// at the first queue of an entry and keeps it through every later task of the same entry and
 	// run, a re-send after an unconfirmed retirement among them (supervise's EntryHandshake
-	// queued), where the task's own QueuedAt is that later task's. Its reader is the first stall
-	// arm (admit's architectTookNothing), which counts the task of an entry from when that entry
-	// was first queued, as R7 says (dispatch://INFRA-2614).
+	// queued), where the task's own QueuedAt is that later task's, and it keeps the first
+	// confirmation through every later relaunch, but for one a refusal or a let-go says no turn
+	// of the worker made (supervise's EntryHandshake unconfirmed). Its readers are the first
+	// stall arm (admit's architectTookNothing), which counts the task of an entry from when that
+	// entry was first queued, as R7 says (dispatch://INFRA-2614), and the third (admit's
+	// architectSlowBeforeGate), which counts its bound from no earlier than that first
+	// confirmation where there is one.
 	Handshake supervise.EntryHandshake
 	Pending   *supervise.Delivery
 }

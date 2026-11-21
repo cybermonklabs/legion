@@ -81,7 +81,7 @@ func TestTheEraseRefusesATupleThatLandedAfterItsListing(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seeded := seedAgreeingStore(t, database)
-	conn, err := connect(ctx, database.Pool.Config().ConnString())
+	conn, err := store.Connect(ctx, database.Pool.Config().ConnString(), eraseApplicationName)
 	if err != nil {
 		t.Fatalf("connect as the erase does: %v", err)
 	}

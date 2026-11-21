@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // controllerGitHubRefreshInterval is how often startControllerGitHubRefresh re-fetches the
@@ -204,7 +205,7 @@ func startControllerGitHubRefresh(daemonURL, secret, dir, defaultOwner, logPath 
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", logPath, err)
 	}
-	log := slog.New(slog.NewTextHandler(logFile, nil))
+	log := slog.New(slog.NewTextHandler(logFile, redact.HandlerOptions(nil)))
 	loopCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {

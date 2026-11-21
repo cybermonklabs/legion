@@ -1,6 +1,6 @@
 /** The collapsed project filters and the compact composer a margin ask draws. The row reads
  *  only what the page draws from one fixed answer, so it runs against a recording rather than
- *  against a harness (packages/dispatch/AGENTS.md, "The stubbed layer").
+ *  against a harness (packages/dispatch/README.md, "The stubbed layer").
  *
  *  Two rows of this family stayed in `polish.e2e.ts`, each with its reason written there.
  */

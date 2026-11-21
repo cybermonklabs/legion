@@ -33,11 +33,11 @@ type ShortID struct {
 // id is then answered by the rule that ResolvePrefix answers by (choosePrefixCandidate), so an
 // id names the same item through either function for the same reader.
 //
-// It answers for who, as resolvePrefix does: an item who may not see is no candidate, its
+// It answers for who, as ResolvePrefix does: an item who may not see is no candidate, its
 // kind's own predicate bound into the statement of that kind ahead of its limit (VisibleKind,
 // through queryArgs.andVisible). So an id that such an item alone carries names nothing, and an
 // id that it shares with one item who may see names that item and is not ambiguous. A nil who
-// is no person, as a write is, and reads every item.
+// is no person and reads every item.
 //
 // The first answer, whole, holds the one item that each id names, under that id. An id that
 // nothing carries has no entry. Nor has an id that ResolvePrefix answers as no match without a

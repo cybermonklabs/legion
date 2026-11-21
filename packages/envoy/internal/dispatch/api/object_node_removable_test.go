@@ -64,7 +64,10 @@ func TestEveryDocumentARemovalCanTakeIsReadByItsCreateEvent(t *testing.T) {
 			}
 			made := graphstore.PlanUncaused([]graphstore.Node{
 				graphstore.ArtifactNode(ref, artifact.Project, deref(artifact.SessionID), alice, at)}, nil)
-			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, made) }); err != nil {
+			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+				graphstore.QueueNodes(b, made)
+				return nil
+			}); err != nil {
 				return err
 			}
 			if err := graphstore.Caused(ctx, tx, made, other); err != nil {

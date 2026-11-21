@@ -53,7 +53,7 @@ Current secret names:
 
 - `ENVOY_GITHUB_WEBHOOK_SECRET`
 
-The secrets broker (`cmd/broker`) supports these types for `agent-secrets secret create --type` and `secret retag --type`:
+The secrets broker (`cmd/cipherd`) supports these types for `agent-secrets secret create --type` and `secret retag --type`:
 
 - `github-app`: stores an App id and private key; releases installation tokens for its listed GitHub owners.
 
@@ -194,7 +194,43 @@ Every other listener answers the path `404`, an upgrade included, so no shared l
   A frame unanswered at a close, or dropped for a slow consumer, is sent again by the owning relay, so a reopen loses nothing.
 
 - **Tests**: `cmd/listener/relay_socket_test.go` runs the socket in one process with a stand-in broker, on the rig of `relay_socket_fixture_test.go`.
-  `cmd/listener/relay_socket_live_test.go` (build tag `natslive`) runs two edge listeners under `natsgrant.Edge` on the hub's NATS image, with the real broker of `internal/broker/brokertest` and 30-second tokens; its binary checks every second (`-ldflags "-X main.relaySocketCheckBuild=1s"`).
+  `cmd/listener/relay_socket_live_test.go` (build tag `natslive`) runs two edge listeners under `natsgrant.Edge` on the hub's NATS image, with the real broker of `internal/cipher/ciphertest` and 30-second tokens; its binary checks every second (`-ldflags "-X main.relaySocketCheckBuild=1s"`).
+
+## Development
+
+Run the Go commands from `packages/envoy`:
+
+```bash
+go build ./cmd/dispatch ./cmd/listener
+go test -timeout 20m ./...
+go test -count=1 -run '^TestName$' ./internal/bus/
+gofmt -l .
+go vet ./...
+```
+
+`internal/dispatch/api` alone takes close to `go test`'s ten-minute default deadline, so a
+run that includes it passes `-timeout 20m` (`docs/testing.md` at the repository root, "Go's
+package deadline").
+
+`./...` here does not build `infra/`, a Go module of its own that imports packages of this
+one (`internal/bus` and `internal/contracts` among them): after a change to one of them,
+vet `infra/` too (`infra/README.md`, "Changing the module").
+
+The Postgres-backed tests read `DISPATCH_TEST_DATABASE_URL` (Dispatch) and
+`BROKER_TEST_DATABASE_URL` (the secrets broker). Without them most of those tests skip, and
+`go test` still prints `ok`. `scripts/dev-postgres.sh` starts a pgvector Postgres and
+prints its URL, and `scripts/database-skips.sh` (`scripts/README.md`) fails a run on any
+skip.
+
+Build tags hold the slow and live suites, which `go test ./...` does not build: among them
+`natslive` (a NATS image, so it needs Docker), `smoke` (the listener image),
+`multiprocess` (Dispatch and the broker), and Dispatch's `twobuild` and `memory`
+(`cmd/dispatch/README.md`, "Tests"). The `ci-job-*.yaml` files in `.github/workflows/` at
+the repository root show how CI runs each.
+
+`internal/dispatch/pmdoc` tests compare with the browser editor through bun scripts in
+`pmdoc/gen`: they need `bun` and a `bun install` at the repository root. Without `bun` they
+skip, except where `CI` is set, where they fail.
 
 ## Local end-to-end
 

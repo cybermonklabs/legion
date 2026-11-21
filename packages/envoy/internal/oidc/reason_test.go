@@ -109,8 +109,8 @@ func TestEndedRequestOutranksTheTokensOwnFault(t *testing.T) {
 	// A token bad by its claims, not its signature: the only fixture that tells
 	// "the context is read first" apart from "the context is read last, in the
 	// residue arm". Both report the forgery above as cancelled; only the first
-	// reports this one that way, and only the first makes AGENTS.md's "a bad
-	// token on a connection that is already gone lands here too" true.
+	// reports this one that way, and only the first makes Reason's "a genuinely
+	// bad token presented on an ended request reads cancelled" true.
 	wrongAudience := issuer.Claims(testSubject, testAudience)
 	wrongAudience["aud"] = []string{"somebody-else"}
 	claimBad := issuer.Mint(t, signing, wrongAudience)

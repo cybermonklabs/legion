@@ -26,7 +26,9 @@
 # contract bump: a bump relaunches every registered claim in every deployment onto the new
 # plugin, and a comment is not worth that. What this gives up: an edit of that header alone is
 # no longer refused, even one that adds a surface to what the contract names. A copy with no
-# history entry is compared whole.
+# history entry is compared whole. The number the `const` line declares must also have its own
+# `// <number>:` entry, so a bump cannot move the declaration and its fixtures while the history
+# stays silent.
 #
 # The commit this checkout was built on is not always the base: a merge group is the base with
 # the group's entries on top, so there the two are one commit, but a pull request is checked out
@@ -99,8 +101,9 @@ FIELDS = {
 # version.go declares.
 SITES = (DECLARATION, *FIELDS)
 DECLARED = re.compile(r"^const\s+DaemonAPIVersion\s*=\s*(\d+)\s*$", re.M)
-# version.go's first history entry: the first line that starts `// <number>:`.
-HISTORY = re.compile(r"^// \d+:", re.M)
+# version.go's history entries: each line that starts `// <number>: `, the number its group. The
+# blank after the colon keeps out an entry's own prose that wraps at a time of day (`// 22:48Z`).
+HISTORY = re.compile(r"^// (\d+):[ \t]", re.M)
 # One page of the open pull requests, each with its number, its draft mark, its head commit and
 # the paths it changes. Drafts are counted: a draft holds the number it declares as firmly as any
 # other open pull request, and one of the collisions this check exists for was a draft's.
@@ -399,6 +402,15 @@ tree_number, line = number_in(
     f"{DECLARATION} in this checkout",
     lambda: f"; the base, {base_is}, carries {base_number}. {renumber(repository, base_number)}",
 )
+
+if str(tree_number) not in HISTORY.findall(tree_text):
+    fatal(
+        DECLARATION,
+        f"{DECLARATION}:{line}: declares daemon API contract {tree_number}, but its history has "
+        f"no `// {tree_number}:` entry. A bump changes the daemon and plugin together, so record "
+        f"the number in that history before the declaration. The base, {base_is}, carries "
+        f"{base_number}. {renumber(repository, base_number)}",
+    )
 
 # The agreement rule of the header: it runs before the pass for a number above the base's.
 for site in FIELDS:
