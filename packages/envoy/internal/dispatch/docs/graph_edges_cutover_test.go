@@ -1205,7 +1205,7 @@ func writeVersionAsAnOlderBuild(t *testing.T, database *store.Store, service *Se
 	ctx := context.Background()
 	browserReplaceText(t, service, artifactID, markdown, model.Actor{Kind: "user", ID: "alice"})
 	waitForLandedAppends(t, service, artifactID)
-	live, _, err := service.TextWithBlocks(ctx, artifactID)
+	live, _, err := service.TextWithBlocks(ctx, serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read the live text of %s: %v", artifactID, err)
 	}

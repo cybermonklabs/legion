@@ -63,7 +63,61 @@ var (
 	// CommitOnBranch, DefaultBranch and delivery's own pull-request reads all classify their
 	// answers by).
 	ErrRepositoryUnreadable = errors.New("the GitHub App cannot read the repository")
+	// ErrRedirectedOffRepository is a request held to one repository (HoldToRepository) that GitHub
+	// redirected anywhere but that same repository: GitHub answers an old name of a renamed or
+	// transferred repository with a redirect to the repository as it is now, which another
+	// repository's name, or none, may name. The redirect is not followed.
+	ErrRedirectedOffRepository = errors.New("GitHub redirected the request away from the repository it named")
 )
+
+// heldRepositoryKey keys the repository HoldToRepository holds a context's requests to.
+type heldRepositoryKey struct{}
+
+// heldRepository is the owner and name HoldToRepository holds a context's requests to.
+type heldRepository struct{ owner, repo string }
+
+// HoldToRepository is ctx with every request the client sends on it held to the repository
+// owner/repo: a redirect GitHub answers one with is followed only to that same repository, owner
+// and name compared without case under the request's own API origin and prefix, and any other
+// redirect fails the request with ErrRedirectedOffRepository before the redirected request is sent.
+// The GitHub proxy holds its reads to the repository its gate passed (githubapi.ProxyREST), so an
+// old name the gate shows never reads the repository GitHub moved it to. A context not held follows
+// GitHub's redirects as the standard client does.
+func HoldToRepository(ctx context.Context, owner, repo string) context.Context {
+	return context.WithValue(ctx, heldRepositoryKey{}, heldRepository{owner: owner, repo: repo})
+}
+
+// checkRedirect is the client's redirect policy: the standard client's (at most ten redirects),
+// and for a request held to a repository (HoldToRepository) a redirect to that repository alone.
+// via[0] is the request the client sent, whose context every redirect carries.
+func checkRedirect(request *http.Request, via []*http.Request) error {
+	if held, ok := request.Context().Value(heldRepositoryKey{}).(heldRepository); ok && !sameRepository(via[0].URL, request.URL, held) {
+		return fmt.Errorf("%w %s/%s", ErrRedirectedOffRepository, held.owner, held.repo)
+	}
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	return nil
+}
+
+// sameRepository reports whether target, a redirect of sent, names the repository held: the same
+// scheme and host, and a path that is sent's own prefix (the API origin's path, empty on
+// api.github.com) then /repos/<owner>/<repo>, alone or followed by "/", owner and name compared
+// without case. A redirect naming the repository by its numeric id names no owner and name, so it
+// is not the same repository.
+func sameRepository(sent, target *url.URL, held heldRepository) bool {
+	if !strings.EqualFold(sent.Scheme, target.Scheme) || !strings.EqualFold(sent.Host, target.Host) {
+		return false
+	}
+	named := strings.ToLower("/repos/" + held.owner + "/" + held.repo)
+	at := strings.Index(strings.ToLower(sent.Path), named)
+	if at < 0 {
+		return false
+	}
+	want := strings.ToLower(sent.Path[:at]) + named
+	path := strings.ToLower(target.Path)
+	return path == want || strings.HasPrefix(path, want+"/")
+}
 
 // responseLimit caps a GitHub API response body; a blob response is read
 // through blobResponseLimit instead, since base64 with GitHub's line wrapping
@@ -375,7 +429,7 @@ func New(app *auth.AppConfig, base string, options ...Option) (*Client, error) {
 		base: strings.TrimSuffix(base, "/"),
 		// No Timeout here: request applies RequestTimeout to each call's own context instead,
 		// so a caller that needs a shorter one sets it on the context it passes.
-		http:           &http.Client{},
+		http:           &http.Client{CheckRedirect: checkRedirect},
 		now:            time.Now,
 		tokens:         map[int64]cachedToken{},
 		installationOf: map[string]mintedToken{},

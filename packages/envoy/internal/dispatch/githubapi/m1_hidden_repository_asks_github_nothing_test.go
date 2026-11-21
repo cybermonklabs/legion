@@ -21,7 +21,9 @@ import (
 // hidden from, is read from GitHub, so the count can see a request.
 func TestTheGitHubProxyAsksGitHubNothingForAHiddenRepository(t *testing.T) {
 	const hiddenRepository, uninstalled = "acme/web", "acme/elsewhere"
-	hides := func(owner, repo string) (bool, error) { return owner+"/"+repo == hiddenRepository, nil }
+	hides := func(owner, repo string) (Gate, error) {
+		return Gate{Hidden: owner+"/"+repo == hiddenRepository, Held: true}, nil
+	}
 	for _, test := range []struct {
 		name   string
 		limits githubapp.Limits

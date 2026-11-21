@@ -71,6 +71,12 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A restricted member sets, changes and clears no issue's repository
+	// (refuseRepoOfRestrictedMember): refused here, before the issue is read and before the
+	// settlement a close runs first, so nothing of the write is made.
+	if refuseRepoOfRestrictedMember(w, who, input.Repo) {
+		return
+	}
 	var blockers []string
 	if input.BlockedBy != nil {
 		var err error
@@ -276,6 +282,13 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			writeError(w, "ISSUE_CLOSED", http.StatusConflict, "issue is closed")
 			return
 		}
+	}
+	// A repository the GitHub proxy hides from the writer is not theirs to name
+	// (refuseRepoHidden): read once the issue is read as the writer reads it, under its owner lock,
+	// and before the first row is written.
+	if err := refuseRepoHidden(r.Context(), tx, who, repo); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	// The `advances` revision rule is decided here, beside the other refusals of this handler
 	// and before the first row is written: a refused write leaves the issue exactly as it was.

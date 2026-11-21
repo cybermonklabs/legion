@@ -161,6 +161,14 @@ var IssueRepoTerms = `repo_chain as (
 const IssueRepoJoin = `left join repo on repo.key = i.key
 	left join repo_projects repo_default on repo_default.project = i.project_key and repo_default.is_default`
 
+// projectDefaultRepoSQL is the default repository of the project projectExpr names, read as
+// IssueRepoJoin reads it (the project's default mapping), null where it has none: the repository an
+// issue of that project resolves to when its chain names none. RepositoryClause's index path
+// (repositorySeen) reads it, so the default comes from this file's one read of it.
+func projectDefaultRepoSQL(projectExpr string) string {
+	return `(select max(repo_default.repo) from repo_projects repo_default where repo_default.project = (` + projectExpr + `) and repo_default.is_default)`
+}
+
 // IssueRepoResolved is the repository an issue resolves to, over IssueRepoJoin: the nearest one
 // its chain names, else its project's default mapping, else null. A statement that holds an
 // issue to a repository rather than reading one — delivery's attributionHeld, which keeps a

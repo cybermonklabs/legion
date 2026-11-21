@@ -792,7 +792,7 @@ func (s *Service) docTree(ctx context.Context, artifactID string) (*pmdoc.Node, 
 		valid, err := s.readForkTree(fork)
 		return valid.Node(), err
 	}
-	head, err := s.readStoredHead(ctx, artifactID)
+	head, err := s.writerStoredHead(ctx, artifactID)
 	if err != nil {
 		return nil, err
 	}

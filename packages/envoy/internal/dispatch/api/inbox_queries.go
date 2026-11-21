@@ -58,17 +58,21 @@ func (s *server) loadInboxAskEdits(ctx context.Context, q queryer, who model.Act
 	return edits, nil
 }
 
-func (s *server) loadInboxAskFollowers(ctx context.Context, q queryer, askIDs []string) (map[string][]model.AskFollower, error) {
+// loadInboxAskFollowers reads each listed ask's followers, in the order they joined, as who may
+// read them (asks.Followers' rule, access.ItemOwnerClause, in the statement itself): an ask who may
+// not read lists none, whatever an earlier read of the ask answered.
+func (s *server) loadInboxAskFollowers(ctx context.Context, q queryer, who model.Actor, askIDs []string) (map[string][]model.AskFollower, error) {
 	followers := make(map[string][]model.AskFollower, len(askIDs))
 	for _, askID := range askIDs {
 		followers[askID] = []model.AskFollower{}
 	}
 	rows, err := q.Query(ctx, `
-		select ask_id::text, session_id, since
-		from ask_followers
-		where ask_id = any($1::uuid[])
-		order by ask_id, since, session_id
-	`, askIDs)
+		select f.ask_id::text, f.session_id, f.since
+		from ask_followers f
+		join asks a on a.id = f.ask_id
+		where f.ask_id = any($1::uuid[]) and `+access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$2")+`
+		order by f.ask_id, f.since, f.session_id
+	`, askIDs, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("load inbox ask followers: %w", err)
 	}
@@ -119,7 +123,7 @@ func (s *server) loadAskThreads(ctx context.Context, who model.Actor, askIDs []s
 	if err != nil {
 		return nil, err
 	}
-	followers, err := s.loadInboxAskFollowers(ctx, q, askIDs)
+	followers, err := s.loadInboxAskFollowers(ctx, q, who, askIDs)
 	if err != nil {
 		return nil, err
 	}

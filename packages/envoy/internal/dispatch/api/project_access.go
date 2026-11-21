@@ -310,7 +310,8 @@ func (s *server) deleteProjectAccessPerson(w http.ResponseWriter, r *http.Reques
 }
 
 // recordMachineLoginRevocation records, in tx, that Dispatch owes the secrets broker the
-// revocation of every machine login person approved for their own machines, when people records
+// revocation of the machine logins person approved for their own machines before this write (the
+// debt's recorded_at; one approved after the person is put back survives it), when people records
 // person as a restricted member (store.RecordMachineLoginRevocation); a full member, a person with
 // no row and a deployment with no broker (Deps.AgentSecrets nil, where no machine login exists) owe
 // nothing. The broker revocation loop pays it after the write commits (revokeOwedMachineLogins), so

@@ -44,18 +44,14 @@ func hnswHiddenCounts(t *testing.T) []int {
 	return counts
 }
 
-// hnswResidual names why TestAMeaningSearchFindsWhatItWouldWithoutNearerHiddenVectors is skipped.
-const hnswResidual = "residual: a meaning search walks one HNSW graph that holds every project's vectors, " +
-	"so vectors its reader may not see change which rows the walk reaches (TestMeasureAMeaningSearchBesideNearerHiddenVectors); " +
-	"one HNSW graph per visibility domain closes it, and this row is switched on with that change"
-
 // TestMeasureAMeaningSearchBesideNearerHiddenVectors (HNSW, a measurement): logs what alice's
 // meaning search answers when hnswHiddenCounts vectors she may not see sit nearer the query than
 // everything she sees, against the same seed without them, under the meaning transaction's own
 // settings and under the scan's budgets raised far past them (hnsw.max_scan_tuples 1,000,000,
 // hnsw.scan_mem_multiplier 64). It passes whatever it measures, and fails only when the seed
 // without hidden vectors answers no hit, where it would measure nothing. The rule the
-// measurement is for is TestAMeaningSearchFindsWhatItWouldWithoutNearerHiddenVectors.
+// measurement is for, that a reader's hits equal those of the seed without the hidden vectors,
+// lands with one HNSW graph per project, beside its own change.
 //
 // The seed is verification v16's with hnswVisible issues of PUB placed at cosine 0.60 down to
 // 0.50 from the query and, in the seed measured, the hidden issues of PRIV at 0.95 down to 0.85.
@@ -89,28 +85,6 @@ func TestMeasureAMeaningSearchBesideNearerHiddenVectors(t *testing.T) {
 			with := hnswSearch(t, seed, scan.settings)
 			t.Logf("%d hidden vectors nearer the query, %s: alice's total %d, %d hits, equal to the seed without them: %t",
 				hidden, scan.name, with.Total, len(with.Results), with.Total == without.Total && slices.Equal(hnswHits(with), hnswHits(without)))
-		}
-	}
-}
-
-// TestAMeaningSearchFindsWhatItWouldWithoutNearerHiddenVectors (HNSW): a meaning search answers a
-// reader what it would answer were the vectors the reader may not see absent, even when every one
-// of them is nearer the query than everything the reader sees: over the seeds
-// TestMeasureAMeaningSearchBesideNearerHiddenVectors reads, alice's total and hits with the hidden
-// vectors equal those without them. It is skipped while hnswResidual stands: the candidate arms
-// already hold their rows to the reader inside the iterative scan, before each arm's LIMIT, and
-// still the hidden vectors change what the walk of the one shared graph reaches.
-func TestAMeaningSearchFindsWhatItWouldWithoutNearerHiddenVectors(t *testing.T) {
-	t.Skip(hnswResidual)
-	without := hnswSearch(t, hnswSeed(t, 0), nil)
-	if len(without.Results) == 0 {
-		t.Fatalf("alice's search of the seed without hidden vectors holds no hit of PUB's %d: the comparison proves nothing", hnswVisible)
-	}
-	for _, hidden := range hnswHiddenCounts(t) {
-		with := hnswSearch(t, hnswSeed(t, hidden), nil)
-		if with.Total != without.Total || !slices.Equal(hnswHits(with), hnswHits(without)) {
-			t.Errorf("with %d hidden vectors nearer the query, alice's search answers a total %d and hits\n\t%v\nwant what the seed without them answers, a total %d and hits\n\t%v",
-				hidden, with.Total, hnswHits(with), without.Total, hnswHits(without))
 		}
 	}
 }

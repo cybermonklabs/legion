@@ -3,7 +3,8 @@ body: |-
   A restricted member's machine login is held to one project. Its trade asks Dispatch what kind of
   member the login's approver is, and a restricted member's is minted project scope `named` with
   exactly the one project the trade names (`AGENT_SECRETS_PROJECTS`), its token living the lesser
-  of 270 seconds and `BROKER_ACCESS_TOKEN_SECONDS`. Dispatch gives such a token neither the
+  of 270 seconds and `BROKER_ACCESS_TOKEN_SECONDS`, counted from the moment the trade's check of
+  that project against Dispatch returned. Dispatch gives such a token neither the
   `person` nor the `approve` scope, so an outside person's agents act in the one project they work
   on and mint no personal token and decide no credential. A trade of theirs naming no project or
   several is refused `invalid_request` naming the rule. While Dispatch cannot be asked, every

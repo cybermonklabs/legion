@@ -8,7 +8,6 @@ import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
-import { runFocusFixup } from "../../__tests__/focus-fixup";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
@@ -21,6 +20,7 @@ import type {
   Message,
 } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import type { AgentText } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
@@ -2102,7 +2102,7 @@ test("a send by Ctrl+Enter keeps the focus in the box, which takes no key and se
   const createComment = spyOn(api, "createComment").mockReturnValueOnce(sent.promise);
   const user = userEvent.setup();
   const { view } = renderComposer();
-  const stopFocusFixup = runFocusFixup();
+  const stopFocusFixup = emulateChromiumFocusFixup();
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
@@ -2140,7 +2140,7 @@ test("a send by Space on Send keeps the focus on Send, and a second Space sends 
   const createComment = spyOn(api, "createComment").mockReturnValueOnce(sent.promise);
   const user = userEvent.setup();
   const { view } = renderComposer();
-  const stopFocusFixup = runFocusFixup();
+  const stopFocusFixup = emulateChromiumFocusFixup();
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");

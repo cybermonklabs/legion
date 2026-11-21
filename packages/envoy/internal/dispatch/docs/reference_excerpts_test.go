@@ -56,7 +56,7 @@ func TestTheExcerptLeaseHolderPassesOverDocumentsHoldingNewerContent(t *testing.
 		if err := service.Evict(ctx, document); err != nil {
 			t.Fatalf("evict %s: %v", document, err)
 		}
-		if _, _, err := service.TextWithBlocks(ctx, document); !errors.Is(err, ErrDocNewerContent) {
+		if _, _, err := service.TextWithBlocks(ctx, serverReader, document); !errors.Is(err, ErrDocNewerContent) {
 			t.Fatalf("read %s: %v, want ErrDocNewerContent", document, err)
 		}
 	}
@@ -118,12 +118,12 @@ func newUnreadableDocumentStore(database *store.Store, unreadable ...string) unr
 	return unreadableDocumentStore{VersionedStore: NewPgVersioned(database), unreadable: documents, reads: &failedReads{}}
 }
 
-func (s unreadableDocumentStore) DocumentStamp(ctx context.Context, room string) (DocumentStamp, error) {
+func (s unreadableDocumentStore) DocumentStamp(ctx context.Context, room string, viewer any) (DocumentStamp, error) {
 	if s.unreadable[room] {
 		s.reads.record(room)
 		return DocumentStamp{}, errors.New("injected: the store cannot read this document")
 	}
-	return s.VersionedStore.DocumentStamp(ctx, room)
+	return s.VersionedStore.DocumentStamp(ctx, room, viewer)
 }
 
 func (s unreadableDocumentStore) LoadDocument(ctx context.Context, room string) (LoadedDocument, error) {

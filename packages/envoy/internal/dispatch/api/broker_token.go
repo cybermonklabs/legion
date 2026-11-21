@@ -470,9 +470,13 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		}
 	}
 	// Both scopes go to a token the broker scoped to its person: that token is the person's own
-	// agent acting for them, so it may do what they may, approvals included. A token scoped to a
-	// project gets none, because the deployment mapped that token to a project and not to the
-	// person: it proves a session, not that any person stands behind the request. A token that
+	// agent acting for them, so it may do what they may, approvals included. A token held to one
+	// project (named) gets none, whichever made it. An operator's entry maps one to a project and not
+	// to a person, so it proves a session, not that any person stands behind the request. A
+	// restricted member's machine login trades for one too: a person's own credential made that
+	// one, and it is held to that person's account (brokerPersonAdmitted, personCredential), but it
+	// is the outside person's agent held to the one project they work on, which acts in that
+	// project and settles nothing of the person's own, so it holds no scope either. A token that
 	// names a service and no person gets none either, whatever scope the broker answered: there
 	// is no person for it to act as, and a scope that said otherwise would let it act as the
 	// session's own id on the routes that read what belongs to a person. A read-only token is
@@ -505,16 +509,16 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// (internal/dispatch/access), and what the list holds while the deployment holds no private
 	// project is what the token did before projects could be private (R9); once one is private,
 	// every list holds the token's reads and writes (R3). A token held to one project names that
-	// project, today's named-scope rule (brokertoken refuses a named token naming two): one an
-	// operator's entry mapped, and a restricted member's machine login's (the broker's
-	// exchange.Set.Machine); it held the token's writes, and still does, and no read
-	// (model.ListHoldsWrites), a restricted member's reads being held by their member kind. A token
-	// acting as its person carries the list its trade asked for (brokertoken.Caller.Projects), which
-	// held nothing, since a dev box session's person writes wherever they may
-	// (model.ListHoldsNothing). Every other token carries no list: a named token naming none (the
-	// shared public-session account's), which reads and writes as a token naming no project does;
-	// the token of a machine naming a service and no person, which names no project at all; and a
-	// read-only token, whose project scope none names no project and writes none.
+	// project: one an operator's entry mapped, today's named-scope rule, and a restricted member's
+	// machine login's (the broker's exchange.Set.Machine); brokertoken refuses a named token naming
+	// two. It holds the token's writes, and no read (model.ListHoldsWrites); a restricted member's
+	// reads are held by their viewer besides. A token acting as its person carries the list its
+	// trade asked for (brokertoken.Caller.Projects), which held nothing, since a dev box session's
+	// person writes wherever they may (model.ListHoldsNothing). Every other token carries no list: a
+	// named token naming none (the shared public-session account's), which reads and writes as a
+	// token naming no project does; the token of a machine naming a service and no person, which
+	// names no project at all; and a read-only token, whose project scope none names no project and
+	// writes none.
 	switch {
 	case caller.ProjectScope == brokertoken.ProjectScopeNamed && len(caller.Projects) == 1:
 		actor.Credential.Projects = caller.Projects

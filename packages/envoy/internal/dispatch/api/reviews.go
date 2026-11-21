@@ -94,7 +94,10 @@ var latestReviewsStatement = `
 // document of each open request naming one of these documents, so a request that covers a spec
 // and its Verification document is found by either and reported on both. A row is read only for
 // a document the reader whose visibility argument is $2 may read: the document is one of $1, by
-// the uuid index, and the one the row names.
+// the uuid index, and the one the row names. The request itself is read only where that reader
+// may read it as the ask of its own issue or document (access.ItemOwnerClause), and its newest
+// reply through it: a request a store holds naming a document of another project names nothing
+// on that document to a reader who may not see the request's own.
 var openApprovalAsksStatement = `
 		select a.id::text, a.author, document ->> 'artifact_id', a.approval -> 'documents', ` + waitingOnExpression + `
 		from asks a` + lastReplyJoin + `
@@ -102,6 +105,7 @@ var openApprovalAsksStatement = `
 		where a.kind = 'approval' and a.state = 'open'
 		  and ` + docs.ApprovalDocumentsJSONPath + ` ?| $1::text[]
 		  and document ->> 'artifact_id' = any($1::text[])
+		  and ` + access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$2") + `
 		  and exists (select 1 from artifacts named_document
 		              where named_document.id = any($1::text[]::uuid[]) and named_document.id::text = document ->> 'artifact_id'
 		                and ` + access.DocumentClause("named_document", "$2") + `)

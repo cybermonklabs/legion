@@ -500,6 +500,9 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 		p.writeError(ctx, w, request, err)
 		return
 	}
+	// A lifetime the decision held the token to counts from here, the last answer of Dispatch that
+	// admitted it, and not from the mint, which waits on the transaction below.
+	session.StartAccessLifetime(time.Now())
 	txCtx, err := p.store.BeginTX(ctx)
 	if err != nil {
 		p.writeError(ctx, w, request, oauth2.ErrServerError.WithWrap(err).WithDebugError(err))

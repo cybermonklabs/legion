@@ -56,9 +56,6 @@ func TestARestrictedMemberListsAndRevokesOnlyTheirOwnMachineLogins(t *testing.T)
 		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
 	}
 	rig.bodyByRoute["GET /v1/launcher-credentials"] = machineLoginsAnswered
-	revokes := func() []string {
-		return slices.DeleteFunc(slices.Clone(rig.routes), func(route string) bool { return !strings.HasSuffix(route, "/revoke-by-approver") })
-	}
 
 	listed := dispatchRequest(t, served, http.MethodGet, "/api/v1/machine-logins", nil, accessErin)
 	if listed.Code != http.StatusOK || !slices.Equal(credentialIDs(t, listed), []string{"cred-erin"}) {
@@ -76,16 +73,16 @@ func TestARestrictedMemberListsAndRevokesOnlyTheirOwnMachineLogins(t *testing.T)
 	} {
 		rig.routes = nil
 		refused := dispatchRequest(t, served, http.MethodPost, "/api/v1/machine-logins/"+other.id+"/revoke", nil, accessErin)
-		if refused.Code != http.StatusForbidden || !strings.Contains(refused.Body.String(), `"code":"RESTRICTED_MEMBER"`) || len(revokes()) != 0 {
-			t.Errorf("erin's revoke of %s = %d %s with %v sent to the broker, want 403 RESTRICTED_MEMBER and no revoke", other.name, refused.Code, refused.Body.String(), revokes())
+		if refused.Code != http.StatusForbidden || !strings.Contains(refused.Body.String(), `"code":"RESTRICTED_MEMBER"`) || len(rig.revokes()) != 0 {
+			t.Errorf("erin's revoke of %s = %d %s with %v sent to the broker, want 403 RESTRICTED_MEMBER and no revoke", other.name, refused.Code, refused.Body.String(), rig.revokes())
 		}
 	}
 
 	rig.routes = nil
 	revoked := dispatchRequest(t, served, http.MethodPost, "/api/v1/machine-logins/cred-erin/revoke", nil, accessErin)
-	if revoked.Code != http.StatusOK || !slices.Equal(revokes(), []string{"POST /v1/launcher-credentials/cred-erin/revoke-by-approver"}) ||
+	if revoked.Code != http.StatusOK || !slices.Equal(rig.revokes(), []string{"POST /v1/launcher-credentials/cred-erin/revoke-by-approver"}) ||
 		!strings.Contains(rig.lastBody, `"approver":"erin@other.example"`) {
-		t.Errorf("erin's revoke of her own login = %d %s, sent %v with body %s; want 200 and one revoke naming her", revoked.Code, revoked.Body.String(), revokes(), rig.lastBody)
+		t.Errorf("erin's revoke of her own login = %d %s, sent %v with body %s; want 200 and one revoke naming her", revoked.Code, revoked.Body.String(), rig.revokes(), rig.lastBody)
 	}
 
 	// Every other caller, as before.
@@ -94,19 +91,21 @@ func TestARestrictedMemberListsAndRevokesOnlyTheirOwnMachineLogins(t *testing.T)
 		t.Errorf("alice's GET /api/v1/machine-logins = %d %s, want the broker's four", everyone.Code, everyone.Body.String())
 	}
 	rig.routes = nil
-	if service := dispatchRequest(t, served, http.MethodPost, "/api/v1/machine-logins/cred-service/revoke", nil, "alice"); service.Code != http.StatusOK || len(revokes()) != 1 {
-		t.Errorf("alice's revoke of a service's login = %d %s with %v sent, want 200 and one revoke", service.Code, service.Body.String(), revokes())
+	if service := dispatchRequest(t, served, http.MethodPost, "/api/v1/machine-logins/cred-service/revoke", nil, "alice"); service.Code != http.StatusOK || len(rig.revokes()) != 1 {
+		t.Errorf("alice's revoke of a service's login = %d %s with %v sent, want 200 and one revoke", service.Code, service.Body.String(), rig.revokes())
 	}
 }
 
 // TestARestrictedMembersTokensListAndRevokeNoMachineLogin: the list and the revoke of a restricted
 // member's own machine logins are their browser's alone. erin's personal token, and a broker token
-// acting for her, are each 403 RESTRICTED_MEMBER on GET /api/v1/machine-logins and on the revoke of
-// her own login, and no call reaches the broker; her browser is answered, so the refusal is the
-// tokens'.
+// acting for her, are each refused GET /api/v1/machine-logins and the revoke of her own login, and
+// no call reaches the broker; her browser is answered, so the refusal is the tokens'. Each refusal
+// is the one the token's own scopes give (tokenRefusal): 403 RESTRICTED_MEMBER from a token that
+// holds the row's scopes, 403 OAUTH_SCOPE_REQUIRED from one that does not, whichever scopes a
+// broker token acting for its person is given.
 //
-// Control: let any credential of a restricted member through (atBrowser answering true), and both
-// tokens are answered, each named.
+// Control: let any credential of a restricted member through (atBrowser answering true), and each
+// token that holds the row's scopes is answered, named.
 func TestARestrictedMembersTokensListAndRevokeNoMachineLogin(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	stub := brokertokentest.NewStubBroker(t)
@@ -128,18 +127,25 @@ func TestARestrictedMembersTokensListAndRevokeNoMachineLogin(t *testing.T) {
 	answer := liveNamedToken(caller.jkt)
 	answer.Person, answer.ProjectScope, answer.Projects = accessErin, brokertoken.ProjectScopePerson, nil
 	stub.Says(erinsBrokerToken, answer)
+	brokerWhoami := httptest.NewRecorder()
+	served.ServeHTTP(brokerWhoami, caller.presenting(t, http.MethodGet, "/api/v1/whoami", erinsBrokerToken, nil))
+	held := map[string][]string{
+		"her personal token":            heldScopes(t, agentRequest(t, served, http.MethodGet, "/api/v1/whoami", nil, personal)),
+		"a broker token acting for her": heldScopes(t, brokerWhoami),
+	}
 
-	for _, call := range []struct{ method, path string }{
-		{http.MethodGet, "/api/v1/machine-logins"},
-		{http.MethodPost, "/api/v1/machine-logins/cred-erin/revoke"},
+	for _, call := range []struct{ method, path, pattern string }{
+		{http.MethodGet, "/api/v1/machine-logins", "/api/v1/machine-logins"},
+		{http.MethodPost, "/api/v1/machine-logins/cred-erin/revoke", "/api/v1/machine-logins/{id}/revoke"},
 	} {
 		rig.routes = nil
 		byToken := agentRequest(t, served, call.method, call.path, nil, personal)
 		byBroker := httptest.NewRecorder()
 		served.ServeHTTP(byBroker, caller.presenting(t, call.method, call.path, erinsBrokerToken, nil))
 		for credential, response := range map[string]*httptest.ResponseRecorder{"her personal token": byToken, "a broker token acting for her": byBroker} {
-			if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"RESTRICTED_MEMBER"`) {
-				t.Errorf("%s %s with %s = %d %s, want 403 RESTRICTED_MEMBER", call.method, call.path, credential, response.Code, response.Body.String())
+			want := tokenRefusal(call.method, call.pattern, held[credential])
+			if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"`+want+`"`) {
+				t.Errorf("%s %s with %s = %d %s, want 403 %s", call.method, call.path, credential, response.Code, response.Body.String(), want)
 			}
 		}
 		if len(rig.routes) != 0 {

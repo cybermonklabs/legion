@@ -71,11 +71,9 @@ export function MachineLoginsSection({ ownOnly = false }: { ownOnly?: boolean })
             : "Every agent session it started loses its secrets at once, and the machine needs a new login."
         }`
       }
-      description={
-        ownOnly
-          ? "Every machine logged in as you, while its login is unexpired or a session it started still runs: a session outlives its login's expiry. Revoking one ends it now: it starts no more sessions, and every session it started loses its secrets."
-          : "Every machine logged in as you, and every service's login, which anyone signed in may revoke, while its login is unexpired or a session it started still runs: a session outlives its login's expiry. Revoking one ends it now: it starts no more sessions, and every session it started loses its secrets."
-      }
+      description={`Every machine logged in as you, ${
+        ownOnly ? "" : "and every service's login, which anyone signed in may revoke, "
+      }while its login is unexpired or a session it started still runs: a session outlives its login's expiry. Revoking one ends it now: it starts no more sessions, and every session it started loses its secrets.`}
       empty="No live machine logins."
       heading="Machine logins"
       headingId="machine-logins-heading"

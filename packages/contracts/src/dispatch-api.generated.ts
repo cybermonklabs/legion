@@ -1077,7 +1077,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Resolve a pending machine login by its typed confirmation code, returning its facts. A restricted member looks up at their browser alone, and is answered only a machine login of their own, whose approver is them and which names no service; any other record, and any lookup by their tokens, is 403 RESTRICTED_MEMBER, naming none of its facts. */
+    /** @description Resolve a pending machine login by its typed confirmation code, returning its facts. A restricted member looks up at their browser alone, and is answered only a machine login of their own, whose approver is them and which names no service; any other record is 403 RESTRICTED_MEMBER, naming none of its facts, and a lookup through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token does, and 403 RESTRICTED_MEMBER otherwise. */
     post: operations["postApiV1CredentialRequestsMachineLookup"];
     delete?: never;
     options?: never;
@@ -1094,7 +1094,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Approve a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A restricted member approves at their browser alone, and only a machine login of their own, the one their typed code looks up, whose approver is them and which names no service; every other decision of theirs, and any by their tokens, is 403 RESTRICTED_MEMBER. */
+    /** @description Approve a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A restricted member approves at their browser alone, and only a machine login of their own, the one their typed code looks up, whose approver is them and which names no service; every other decision of theirs is 403 RESTRICTED_MEMBER, and one through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token does, and 403 RESTRICTED_MEMBER otherwise. */
     post: operations["postApiV1CredentialRequestsByIdApprove"];
     delete?: never;
     options?: never;
@@ -1111,7 +1111,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A restricted member denies at their browser alone, and only a machine login of their own, the one their typed code looks up, whose approver is them and which names no service; every other decision of theirs, and any by their tokens, is 403 RESTRICTED_MEMBER. */
+    /** @description Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A restricted member denies at their browser alone, and only a machine login of their own, the one their typed code looks up, whose approver is them and which names no service; every other decision of theirs is 403 RESTRICTED_MEMBER, and one through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token does, and 403 RESTRICTED_MEMBER otherwise. */
     post: operations["postApiV1CredentialRequestsByIdDeny"];
     delete?: never;
     options?: never;
@@ -1297,7 +1297,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository: 200 {installed}, false when GitHub answers 404; 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure. A repository that a private project hidden from the caller owns, or, for a caller that is not an open viewer, that no project the caller sees owns, answers as one the App is not installed on (200 installed:false, or the held rate limit's 502), and GitHub is not asked. */
+    /** @description Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository: 200 {installed}, false when GitHub answers 404; 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure. A repository the GitHub proxy would not show the caller (no issue the caller sees resolves to it, and the caller is not an open viewer or an issue of a private project hidden from the caller resolves to it) answers exactly as one the App is not installed on (200 installed:false, or the held rate limit's 502), and GitHub is not asked. */
     get: operations["getApiV1GithubAppInstallationByOwnerByRepo"];
     put?: never;
     post?: never;
@@ -1419,7 +1419,7 @@ export interface paths {
     /** @description List issues; filters project, status (repeatable: the issues standing in any of those statuses; a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue: alone it answers none, and beside another status it adds nothing), parent, label, priority (repeatable: 0-3, or none for unset), advances (repeatable: a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited; several are a union), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. ?moved=true adds moved_at and moved_by to each issue standing in backlog or icebox: when it was moved there and who moved it, read from its newest issue.updated event that set one of the two statuses, as GET /api/v1/priorities' parked work reads them; an issue standing elsewhere, or whose events do not reach back to the move, carries neither, and a listing without moved=true carries neither on any issue. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY. */
     get: operations["getApiV1Issues"];
     put?: never;
-    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
+    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A restricted member, or a credential acting for one, that names repo, a string or null, is 403 RESTRICTED_MEMBER before the body's project, parent or external ref is read and before anything is written: their issues take the repository they resolve to, their nearest parent's or their project's default. A repo the caller cannot read through Dispatch's GitHub proxy is 403 REPOSITORY_NOT_AVAILABLE, naming no project, once the body's project and parent are read as the caller reads them and before anything is written: for an open caller, a repository that only issues of private projects it does not see resolve to; for a credential that lists projects, any repository no issue of its projects resolves to. null is never refused, and with no private project nothing is. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
     post: operations["postApiV1Issues"];
     delete?: never;
     options?: never;
@@ -1458,7 +1458,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. */
+    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. repo is the issue's own repository, "owner/name", or null to clear it; a restricted member, or a credential acting for one, that names it is 403 RESTRICTED_MEMBER before the issue is read and before anything is written, so only a full member sets, changes or clears an issue's own repository. A repo the caller cannot read through Dispatch's GitHub proxy is 403 REPOSITORY_NOT_AVAILABLE in the create's words, once the issue is read as the caller reads it and before anything is written; null is never refused. */
     patch: operations["patchApiV1IssuesByKey"];
     trace?: never;
   };
@@ -2037,7 +2037,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, and for the caller's own machines, unexpired or expired with a session still running, each naming who approved it. A restricted member lists at their browser alone, and is answered their own machine logins and no service's; through any token they are 403 RESTRICTED_MEMBER. */
+    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, and for the caller's own machines, unexpired or expired with a session still running, each naming who approved it. A restricted member lists at their browser alone, and is answered their own machine logins and no service's; through their personal token or a person-scope broker token they are 403 RESTRICTED_MEMBER, and through their agent's named token, which holds no scope, 403 OAUTH_SCOPE_REQUIRED. */
     get: operations["getApiV1MachineLogins"];
     put?: never;
     post?: never;
@@ -2056,7 +2056,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Revoke a machine login, expired or not, ending every session it enrolled, a service's pods included: anyone signed in revokes a service's login, and only the person who approved a person's machine login revokes that one. A restricted member revokes at their browser alone, and only a machine login of their own, whose approver is them and which names no service; any other id, and any revoke through their tokens, is 403 RESTRICTED_MEMBER. */
+    /** @description Revoke a machine login, expired or not, ending every session it enrolled, a service's pods included: anyone signed in revokes a service's login, and only the person who approved a person's machine login revokes that one. A restricted member revokes at their browser alone, and only a machine login of their own, whose approver is them and which names no service; any other id is 403 RESTRICTED_MEMBER, and a revoke through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token does, and 403 RESTRICTED_MEMBER otherwise. */
     post: operations["postApiV1MachineLoginsByIdRevoke"];
     delete?: never;
     options?: never;
@@ -3244,7 +3244,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Map a GitHub repository to a project {project, default?, renamed_to?}; default true makes it the project's one default. renamed_to is the owner/name this repository is called today, which every comparison of a repository canonicalises through: absent or null leaves the stored one alone, "" clears it, and a pair naming this repository, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is 400 INVALID_REPO_PROJECT. */
+    /** @description Map a GitHub repository to a project {project, default?, renamed_to?}; default true makes it the project's one default. renamed_to is the owner/name this repository is called today, which every comparison of a repository canonicalises through: absent or null leaves the stored one alone, "" clears it, and a pair naming this repository, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is 400 INVALID_REPO_PROJECT. A write that leaves the mapping its project's default is 403 REPOSITORY_NOT_AVAILABLE, naming no project, when the caller cannot read the repository through Dispatch's GitHub proxy. */
     put: operations["putApiV1SettingsRepoProjectsByOwnerByRepo"];
     post?: never;
     /** @description Remove a repository mapping, whether or not an issue names the repository as its repo: an issue's own repository needs no mapping, so such an issue keeps it. An issue that resolved to the mapping as its project's default resolves to no repository until the project has another default. */
@@ -3482,8 +3482,6 @@ export interface components {
       last_seen: number;
       machine_id: string;
       open_asks: number;
-      /** @description Never in an answer: the projects of the session's token (K6), which Dispatch reads to filter the agents list and serves to no caller (R4, R9) */
-      projects?: string[];
       roles: string[] | null;
       session_id: string;
       state: string;

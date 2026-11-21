@@ -75,6 +75,8 @@ type openAPIEmitter struct {
 	rawFragments map[rawFieldKeyOf]map[string]any
 	// rawFieldsSeen is every rawFieldSchemas row a reflected field matched.
 	rawFieldsSeen map[rawFieldKeyOf]bool
+	// unservedSeen is every unservedFields row a reflected field matched.
+	unservedSeen map[rawFieldKeyOf]bool
 	// requestBodies are the Go types the document reflects as a request body and nowhere else,
 	// whose required set is the fields that tag themselves required rather than the fields Go's
 	// marshaller always writes (openAPIRequestBodyTypes).
@@ -93,6 +95,7 @@ func newOpenAPIEmitter() (*openAPIEmitter, []reflect.Type) {
 		schemaOwners:  map[string]reflect.Type{},
 		rawFragments:  map[rawFieldKeyOf]map[string]any{},
 		rawFieldsSeen: map[rawFieldKeyOf]bool{},
+		unservedSeen:  map[rawFieldKeyOf]bool{},
 		requestBodies: bodies,
 		schemas:       map[reflect.Type]map[string]any{},
 	}
@@ -160,6 +163,12 @@ func openAPIDocument() (*openapi31.Spec, error) {
 	for key := range rawFieldSchemas {
 		if !emitter.rawFieldsSeen[key] {
 			emitter.fail("rawFieldSchemas names %s, which is no field of any type the document "+
+				"describes: drop the row or name the field it meant", key)
+		}
+	}
+	for key := range unservedFields {
+		if !emitter.unservedSeen[key] {
+			emitter.fail("unservedFields names %s, which is no field of any type the document "+
 				"describes: drop the row or name the field it meant", key)
 		}
 	}
@@ -382,6 +391,14 @@ func (e *openAPIEmitter) interceptProp(p jsonschema.InterceptPropParams) error {
 	if !p.Processed {
 		return nil
 	}
+	// A field no answer carries is no property of the object: the document leaves it out, so no
+	// client is told of a member it will never read (unservedFields).
+	if key, keyed := e.propertyKey(p); keyed {
+		if _, unserved := unservedFields[key]; unserved {
+			e.unservedSeen[key] = true
+			return jsonschema.ErrSkipProperty
+		}
+	}
 	if named, key := e.rawFieldKey(p); named {
 		e.rawFieldsSeen[key] = true
 		if p.Field.Type != reflect.TypeOf(json.RawMessage{}) {
@@ -492,16 +509,25 @@ func openAPIAllowNullEnum(schema *jsonschema.Schema) {
 // rawFieldKey answers the rawFieldSchemas key of one property, the rawFieldKeyOf of the owning
 // struct's reflect.Type and the property's json name, and whether that table names it.
 func (e *openAPIEmitter) rawFieldKey(p jsonschema.InterceptPropParams) (bool, rawFieldKeyOf) {
-	if p.ParentSchema == nil || p.ParentSchema.ReflectType == nil {
+	key, keyed := e.propertyKey(p)
+	if !keyed {
 		return false, rawFieldKeyOf{}
+	}
+	_, named := rawFieldSchemas[key]
+	return named, key
+}
+
+// propertyKey is the rawFieldKeyOf of one property, the owning struct's reflect.Type and the
+// property's json name, and false where the reflector names no owning struct.
+func (e *openAPIEmitter) propertyKey(p jsonschema.InterceptPropParams) (rawFieldKeyOf, bool) {
+	if p.ParentSchema == nil || p.ParentSchema.ReflectType == nil {
+		return rawFieldKeyOf{}, false
 	}
 	owner := openAPIStructOf(p.ParentSchema.ReflectType)
 	if owner == nil {
-		return false, rawFieldKeyOf{}
+		return rawFieldKeyOf{}, false
 	}
-	key := rawFieldKeyOf{Owner: owner, Field: p.Name}
-	_, named := rawFieldSchemas[key]
-	return named, key
+	return rawFieldKeyOf{Owner: owner, Field: p.Name}, true
 }
 
 // resolveRawFields turns every rawFieldSchemas row into the schema its field carries, before any

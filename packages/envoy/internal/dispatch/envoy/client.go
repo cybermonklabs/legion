@@ -182,8 +182,9 @@ type Session struct {
 	// no projects key and [] as "projects":[] (omitzero), and the session rule passes a session with
 	// no history and no stored list to no viewer but its own while a project is private
 	// (access.SessionClause). Dispatch reads it there and serves it to no caller: agentResponse
-	// shadows it with a field nothing sets.
-	Projects []string `json:"projects,omitzero" description:"Never in an answer: the projects of the session's token (K6), which Dispatch reads to filter the agents list and serves to no caller (R4, R9)"`
+	// shadows it with a field nothing sets, and the OpenAPI document declares neither
+	// (api.unservedFields).
+	Projects []string `json:"projects,omitzero"`
 	LastSeen int64    `json:"last_seen"`
 	// State is StateLive, StateUnresponsive or StateGone, as the listener judged this record
 	// when it answered, or StateStopped, which only SessionIncludingStopped reads. A listener

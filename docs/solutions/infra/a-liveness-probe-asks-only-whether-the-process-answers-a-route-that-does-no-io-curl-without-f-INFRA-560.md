@@ -31,8 +31,8 @@ related_issues:
 ## Evidence
 
 - sjawhar/legion#2368's plan probed `/healthz` with curl and no `-f`. The simplify pass at
-  `b2c39930` moved liveness and startup to a new `/livez` (served today by `routes.Process` in
-  `packages/envoy/internal/dispatch/routes/process.go`) because the listener's `/healthz` can
+  `b2c39930` moved liveness and startup to a new `/livez`
+  (`packages/envoy/cmd/dispatch/main.go`, `dispatchHandler`) because the listener's `/healthz` can
   take longer than curl's 8 s on a slow NATS hub, and three failures in a row would restart the
   listener.
 - `answersProbe` and `readyProbe` are in `packages/envoy/infra/gcp/dispatch_kube.go`; the app's

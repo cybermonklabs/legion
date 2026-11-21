@@ -221,14 +221,18 @@ func excerptColumns(excerpts map[Target]model.GraphExcerpt) (kinds, ids, blockID
 //
 // It answers for who: a citing document who may not see stores no excerpt here, and nor does a
 // mention whose excerpt is a block who may not see, so its text is never answered and the route
-// shows the document's name as it does for a mention with no excerpt. The citing document is
-// read by its uuid through artifacts' primary key, since the store keys it by ref_key.
+// shows the document's name as it does for a mention with no excerpt. The node cited is held to
+// who in the statement as well (the registry's predicate over $2, which names only parameters, so
+// Postgres tests it once): a node who may not see is cited by nothing here, whatever the caller
+// read of it before. The citing document is read by its uuid through artifacts' primary key,
+// since the store keys it by ref_key.
 func StoredExcerpts(ctx context.Context, q Queryer, who model.Actor, toKind, toID string) (map[string]model.GraphExcerpt, error) {
 	rows, err := q.Query(ctx, `
 		select r.from_id, coalesce(r.excerpt_block_id, ''), r.excerpt_text from refs r
 		join artifacts a on a.id = r.from_id::uuid
 		where r.to_kind = $1 and r.to_id = $2 and r.from_kind = 'artifact'
 		  and r.excerpt_text is not null and r.excerpt_version is not null
+		  and `+VisibleKind(toKind, "$2", "$3")+`
 		  and `+VisibleKind("artifact", "a.ref_key", "$3")+`
 		  and `+VisibleKind("block", `a.ref_key || '#' || r.excerpt_block_id`, "$3")+`
 	`, toKind, toID, VisibilityArg(who))

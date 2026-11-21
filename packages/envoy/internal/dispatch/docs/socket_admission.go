@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	gws "github.com/gorilla/websocket"
+	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
 
@@ -329,7 +330,13 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.afterSocketIssueRead(room)
 	}
 	switches := s.schemaSwitches.Load()
-	withdraw, documentSince, err := s.admitDocument(ctx, room)
+	withdraw, documentSince, err := s.admitDocument(ctx, reader, room)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The person may not read the document as the admission's own read of it found
+		// (readStoredHead): it answers as readIssue answers a room it may not read.
+		refuseHiddenRoom(w)
+		return
+	}
 	if errors.Is(err, ErrDocNewerContent) {
 		refuseNewerContent(w, r, room, err)
 		return
@@ -510,12 +517,12 @@ func (c *upgradeHeadersConn) Write(p []byte) (int, error) {
 // document and makes no query of the stored history (heldTree). A cold socket offers the state it
 // read, and what it rendered of it, to the room's load (offerPreload), and withdraw is what the
 // socket's end runs to take that offer back.
-func (s *Service) admitDocument(ctx context.Context, room string) (withdraw func(), documentSince int, err error) {
+func (s *Service) admitDocument(ctx context.Context, reader model.Actor, room string) (withdraw func(), documentSince int, err error) {
 	verdict := s.residentVerdict(room)
 	if verdict == verdictOutsideSchema {
 		return nil, 0, ErrDocOutsideSchema
 	}
-	tree, loaded, err := s.loadTree(ctx, room)
+	tree, loaded, err := s.loadTree(ctx, reader, room)
 	rendered := admissionRendering{tree: tree}
 	if err == nil && tree != nil && verdict != verdictInsideSchema {
 		if s.admissionRendered != nil {

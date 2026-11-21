@@ -234,6 +234,10 @@ type bootConfig struct {
 	// and /healthz says only that one exists, naming none (reportPrivateProjects,
 	// unprovisionedPrivateProjectReason).
 	PrivateProjects []string
+	// PrivateProjectsIgnored is each entry of DISPATCH_PRIVATE_PROJECTS that is no project key, in
+	// the order given: never read as a key, and logged at boot as one ERROR line each
+	// (reportIgnoredPrivateProjects).
+	PrivateProjectsIgnored []string
 	// AgentSecretsURL is DISPATCH_AGENT_SECRETS_URL, the secrets broker's API; empty means the
 	// credential-request feature is off. AgentSecretsTokenFile is
 	// DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, the file holding Dispatch's own projected
@@ -301,6 +305,7 @@ func main() {
 		slog.Error("dispatch: resolve boot config", "error", err)
 		os.Exit(1)
 	}
+	reportIgnoredPrivateProjects(boot.PrivateProjectsIgnored)
 	// The registry's pace, before anything registers or reads what is live. The live window stays
 	// three beats, as processes.LiveWindow is of processes.HeartbeatInterval, so a run cannot give
 	// itself a window shorter than its own heartbeat, and the wait a refused process makes
@@ -1212,6 +1217,7 @@ func main() {
 	// clear-broker-revocation settles it).
 	go api.RunBrokerRevocations(ctx, background.RevokeBrokerCredentials, brokerRevocationsWake)
 	api.RegisterBrokerRevocationMetrics(met, database.Pool)
+	api.RegisterMachineLoginRevocationMetrics(met, database.Pool)
 	// /healthz names each GitHub read this process runs, from the copy of the record kept above. A
 	// loop this process did not start, for want of NATS or of the App's private key, is a read it
 	// does not run.
@@ -1512,9 +1518,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
 		return bootConfig{}, err
 	}
-	if boot.PrivateProjects, err = privateProjectsSetting(env.get("DISPATCH_PRIVATE_PROJECTS")); err != nil {
-		return bootConfig{}, err
-	}
+	boot.PrivateProjects, boot.PrivateProjectsIgnored = privateProjectsSetting(env.get("DISPATCH_PRIVATE_PROJECTS"))
 	for _, setting := range []struct {
 		name   string
 		target *bool

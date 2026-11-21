@@ -508,8 +508,8 @@ func MarkPullRequestUnfetchable(ctx context.Context, pool *store.Pool, repo stri
 // its issue_key: a pull request whose issue the viewer bound at viewerParam sees
 // (access.ProjectClause), and one that names no issue, or a key no issue row holds, for an open
 // viewer alone (access.OpenClause), and only when its repository is not hidden from that viewer
-// (refs.RepositoryClause), so a pull request of a repository a project the viewer does not see
-// holds is never shown for naming no issue.
+// (refs.RepositoryClause), so a pull request of a repository a private project the viewer does
+// not see owns is never shown for naming no issue.
 func pullRequestShownSQL(prAlias, issueAlias, viewerParam string) string {
 	return `case when ` + issueAlias + `.key is null then (` + access.OpenClause(viewerParam) + ` and ` + refs.RepositoryClause(prAlias+`.repo`, viewerParam) + `)` +
 		` else ` + access.ProjectClause(issueAlias+`.project_key`, viewerParam) + ` end`

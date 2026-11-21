@@ -8,15 +8,22 @@ body: |-
   `GET /api/v1/machine-logins` and `POST /api/v1/machine-logins/{id}/revoke` serve them too, at
   their browser: the list answers their own machine logins and no service's, and the revoke ends
   only one of those.
-  Every other record, a shared one included, and every decision through their personal token or a
-  broker token stays `403 RESTRICTED_MEMBER`, and the broker is asked to decide nothing. A broker
+  Every other record, a shared one included, stays `403 RESTRICTED_MEMBER`, and every decision
+  through a token of theirs is refused: `403 OAUTH_SCOPE_REQUIRED` from a token that lacks the
+  route's scopes, their agent's `named` token among them, and `403 RESTRICTED_MEMBER` from any
+  other; the broker is asked to decide nothing. A broker
   token of project scope `named` that records the credential a person made, the account it was
   approved by or when it was made, is held to that account as a `person` token is; an operator
   entry's, which records neither, is held to none, as before. Taking a restricted member off a
   project's access list that names them now records that Dispatch owes the broker the revocation of
-  every machine login they approved, and Dispatch pays it after the removal commits, again until the
-  broker confirms (table `machine_login_revocations`, migration 20261120150130); the removal never
-  waits on the broker, and a removal from a list that does not name the person owes nothing.
+  every machine login they approved before the removal, and Dispatch pays it after the removal
+  commits, again until the broker confirms (table `machine_login_revocations`, migration
+  20261120150130); a login they approve after the owner puts them back survives it. The removal
+  never waits on the broker, and a removal from a list that does not name the person owes nothing.
+  `/metrics` carries `envoy_dispatch_machine_login_revocations_owed` and
+  `envoy_dispatch_machine_login_revocation_oldest_owed_seconds`, so a revocation the broker never
+  confirms shows; the runbook's recovery of a broker database restored alone owes again each such
+  revocation settled since the backup.
 time: 2026-11-20T10:37:31Z
 custom:
     Issue: restricted-agent-tokens-named

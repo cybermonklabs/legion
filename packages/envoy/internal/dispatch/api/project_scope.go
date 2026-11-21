@@ -32,18 +32,19 @@ package api
 // rather than the path, the issue create and the going request (scopeProjectInBody), refuse a
 // project outside the list by name, since the name is the caller's own.
 //
-// One credential is held otherwise while the deployment holds no private project: a broker token
-// an operator's entry mapped to one project (model.ListHoldsWrites), whose list held its writes
-// and no read before projects could be private. It reads and writes as an open viewer then
-// (access.Resolve), exactly as it did, and the writes it made are held to its project by the
+// One credential is held otherwise while the deployment holds no private project: a full member's
+// broker token an operator's entry mapped to one project (model.ListHoldsWrites), whose list held
+// its writes and no read before projects could be private. It reads and writes as an open viewer
+// then (access.Resolve), exactly as it did, and the writes it made are held to its project by the
 // checks it was held by (writesHeldTo): a deployment's row is 403 PROJECT_SCOPE_DEPLOYMENT, a
 // project's row whose object is of another project, of none, or of no row at all is 403
 // PROJECT_SCOPE naming what the object resolved to (writeOutsideTheBrokerProject), a body's
 // project outside it is 403 PROJECT_SCOPE (refuseOutsideCallerProjects), and a blocked_by target
 // outside it is 403 PROJECT_SCOPE (writeBlockedBy), each in the words it was answered before (R9).
 // Nothing is private then, so no refusal names an object a reader may not see, and no answer of a
-// write it makes reads anything an open viewer would not; once a project is private it reads and
-// writes within its list, and an object outside it answers as missing.
+// write it makes reads anything an open viewer would not; once a project is private, and for a
+// restricted member's token whatever the deployment holds, it reads and writes within its list,
+// and an object outside it answers as missing.
 
 import (
 	"context"
@@ -75,7 +76,8 @@ const (
 	codeSessionScope = "SESSION_SCOPE"
 	// codeSessionNotFound answers a write to a session the caller may not see as one nobody holds.
 	codeSessionNotFound = "SESSION_NOT_FOUND"
-	// codeRestrictedMember refuses a restricted member a write that belongs to the deployment.
+	// codeRestrictedMember refuses a restricted member a write that belongs to the deployment, and
+	// an issue write that names repo (refuseRepoOfRestrictedMember).
 	codeRestrictedMember = "RESTRICTED_MEMBER"
 )
 
@@ -119,10 +121,11 @@ func (s *server) callerProjects(r *http.Request) ([]string, bool) {
 // writesHeldTo is the list credential's writes are held to, given viewer, what access.Resolve
 // answered it may read: the viewer's own list where Resolve held it to one, and, for a credential
 // whose list holds its writes and no read while no project is private (model.ListHoldsWrites, a
-// broker token an operator's entry mapped to one project), its list then too, as it was before
-// projects could be private. Every other credential's writes are held to no list: the open viewer's
-// of a credential that lists none, and a broker token's acting as its person while no project is
-// private, whose list held nothing before.
+// full member's broker token an operator's entry mapped to one project, which Resolve leaves open
+// then), its list then too, as it was before projects could be private. Every other credential's
+// writes are held to no list: the open viewer's of a credential that lists none, and a full
+// member's broker token's acting as its person while no project is private, whose list held
+// nothing before.
 func writesHeldTo(viewer *model.Viewer, credential *model.Credential) []string {
 	switch {
 	case viewer == nil || viewer.All:
@@ -161,8 +164,8 @@ func (s *server) callerSession(r *http.Request) (string, bool) {
 // personsOwnAtTheBroker names end what is the caller's own at the secrets broker, so a restricted
 // member makes them as a full member does, and only a credential that lists projects, or whose
 // writes are held to a list, is refused them; the broker decides whose each grant or sign-in is, for
-// every caller alike. A restricted member at a browser also reaches the rows that decide, list or
-// end a machine login (restrictedOwnLoginRoutes), whose handlers hold that member to a login of
+// every caller alike. The rows that decide, list or end a machine login (restrictedOwnLoginRoutes)
+// are a restricted member's at a browser alone, whose handlers hold that member to a login of
 // their own: never their personal token and never a broker token, so no agent of theirs decides or
 // ends a credential. Every other row reaches its handler, whose loaders answer an object the
 // viewer does not see as missing (the file comment), but for a broker token scoped to one project
@@ -185,7 +188,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 		if deployment {
 			held := writesHeldTo(reader.Viewer, resolvedCredential(r.Context()))
 			ownWithNoList := theirOwn && len(reader.Viewer.Lists) == 0 && len(held) == 0
-			ownLoginAtBrowser := ownLogin && reader.Viewer.Restricted && atBrowser(r)
+			ownLoginAtBrowser := ownLogin && reader.Viewer.Restricted && len(held) == 0 && atBrowser(r)
 			if (!reader.Viewer.Open || len(held) > 0) && !ownWithNoList && !ownLoginAtBrowser {
 				refuseDeploymentWrite(w, route, reader.Viewer.Restricted && !theirOwn, held)
 				return
@@ -207,6 +210,13 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 		}
 		handler(w, r.WithContext(withReader(r.Context(), reader)))
 	}
+}
+
+// atBrowser reports whether the caller withCallerResolved resolved is a person at a browser, whose
+// sign-in proved them, rather than any credential an agent holds.
+func atBrowser(r *http.Request) bool {
+	caller, ok := r.Context().Value(resolvedCallerKey{}).(resolvedCaller)
+	return ok && caller.err == nil && caller.human
 }
 
 // brokerProjectWhileNoPrivate is the one project the writes of ctx's caller are held to while it
@@ -233,13 +243,6 @@ func resolvedCredential(ctx context.Context) *model.Credential {
 		return nil
 	}
 	return resolved.actor.Credential
-}
-
-// atBrowser reports whether the caller withCallerResolved resolved is a person at a browser, whose
-// sign-in proved them, rather than any credential an agent holds.
-func atBrowser(r *http.Request) bool {
-	caller, ok := r.Context().Value(resolvedCallerKey{}).(resolvedCaller)
-	return ok && caller.err == nil && caller.human
 }
 
 // withCallerResolved is r with its caller resolved once (optionalActor) and kept in its context,
@@ -455,21 +458,28 @@ func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) ht
 // sessionHiddenFromReader reports whether the request's reader - the one a check put in ctx
 // (withReader) - may not see session id (sessionHiddenFrom, access.SessionClause): a session that
 // is not its own and has acted in a project it does not see, or, for a restricted member's or a
-// listing credential's reader, in none it sees. Work with no reader in ctx, which the server does
-// for itself, sees every session.
+// listing credential's reader, in none it sees. A context with no reader is answered hidden,
+// failing closed: every request's check puts its reader in ctx, and the server's own work names
+// the server's reader (everyReader) where it reads every session, as the delivery's resolve of a
+// session route does (resolveDeliveryTarget).
 func (s *server) sessionHiddenFromReader(ctx context.Context, id string) (bool, error) {
 	reader, ok := readerFromContext(ctx)
 	if !ok {
-		return false, nil
+		return true, nil
 	}
 	return s.sessionHiddenFrom(ctx, reader, id)
 }
 
 // personHiddenFromReader reports, through q, whether the request's reader may not see the person
-// login names (access.PersonClause), as sessionHiddenFromReader does for a session.
+// login names (access.PersonClause), as sessionHiddenFromReader does for a session: a context with
+// no reader is answered hidden, and a reader with no viewer reads as the closed viewer it binds
+// (refs.VisibilityArg). An open reader sees every person and costs no read.
 func personHiddenFromReader(ctx context.Context, q queryer, login string) (bool, error) {
 	reader, ok := readerFromContext(ctx)
-	if !ok || reader.Viewer == nil || reader.Viewer.Open {
+	if !ok {
+		return true, nil
+	}
+	if reader.Viewer != nil && reader.Viewer.Open {
 		return false, nil
 	}
 	var sees bool

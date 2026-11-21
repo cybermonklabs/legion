@@ -63,7 +63,7 @@ func TestApplyOpsReportsABatchThatWroteNoUpdatesAsUnchanged(t *testing.T) {
 func TestApplyOpsReportsABatchThatWroteUpdatesAndNoMarkdownAsUnchanged(t *testing.T) {
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
-	blocksBefore, err := service.Blocks(context.Background(), artifactID)
+	blocksBefore, err := service.Blocks(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read blocks: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestApplyOpsReportsABatchThatWroteUpdatesAndNoMarkdownAsUnchanged(t *testin
 		t.Fatalf("round-trip edit = %#v, want 2 applied and unchanged", result)
 	}
 	waitForDocumentText(t, service, artifactID, "before\n")
-	blocksAfter, err := service.Blocks(context.Background(), artifactID)
+	blocksAfter, err := service.Blocks(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read blocks: %v", err)
 	}

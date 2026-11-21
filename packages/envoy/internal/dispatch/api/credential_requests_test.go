@@ -167,7 +167,9 @@ func TestListCredentialPendingWithAndWithoutABroker(t *testing.T) {
 }
 
 // fakeBrokerRig is a fake broker recording the last request it served, and the "METHOD path" of
-// every request in order, answering canned status/body pairs keyed by "METHOD path".
+// every request in order, answering canned status/body pairs keyed by "METHOD path". A hook in
+// beforeAnswer under that key runs as the request arrives, before it is answered, as a slow broker
+// call would leave the world while it is in flight.
 type fakeBrokerRig struct {
 	server        *httptest.Server
 	lastAuth      string
@@ -177,11 +179,12 @@ type fakeBrokerRig struct {
 	routes        []string
 	statusByRoute map[string]int
 	bodyByRoute   map[string]string
+	beforeAnswer  map[string]func()
 }
 
 func newFakeBrokerRig(t *testing.T) *fakeBrokerRig {
 	t.Helper()
-	rig := &fakeBrokerRig{statusByRoute: map[string]int{}, bodyByRoute: map[string]string{}}
+	rig := &fakeBrokerRig{statusByRoute: map[string]int{}, bodyByRoute: map[string]string{}, beforeAnswer: map[string]func(){}}
 	rig.server = httptest.NewServer(approvetimingtest.Broker(func() string { return rig.server.URL }, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rig.calls++
 		rig.lastAuth = r.Header.Get("Authorization")
@@ -190,6 +193,9 @@ func newFakeBrokerRig(t *testing.T) *fakeBrokerRig {
 		rig.lastBody = string(body)
 		key := r.Method + " " + r.URL.Path
 		rig.routes = append(rig.routes, key)
+		if hook := rig.beforeAnswer[key]; hook != nil {
+			hook()
+		}
 		status, ok := rig.statusByRoute[key]
 		if !ok {
 			status = http.StatusOK

@@ -259,7 +259,7 @@ func (a *loadAgent) editToken() {
 // uploadToken reads the document's text, changes its revision token and uploads the whole text.
 func (a *loadAgent) uploadToken() {
 	a.t.Helper()
-	text, err := a.service.Text(context.Background(), a.artifactID)
+	text, err := a.service.Text(context.Background(), serverReader, a.artifactID)
 	if err != nil {
 		a.t.Fatal(err)
 	}

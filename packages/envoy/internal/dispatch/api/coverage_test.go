@@ -259,7 +259,7 @@ func (d *unreadableSpecDocs) restoreReads() int {
 	return d.failed
 }
 
-func (d *unreadableSpecDocs) Text(ctx context.Context, artifactID string) (string, error) {
+func (d *unreadableSpecDocs) Text(ctx context.Context, who model.Actor, artifactID string) (string, error) {
 	d.mu.Lock()
 	broken := d.broken != "" && artifactID == d.broken
 	if broken {
@@ -269,7 +269,7 @@ func (d *unreadableSpecDocs) Text(ctx context.Context, artifactID string) (strin
 	if broken {
 		return "", errors.New("the document this test stands on is unreadable")
 	}
-	return d.API.Text(ctx, artifactID)
+	return d.API.Text(ctx, who, artifactID)
 }
 
 // A coverage read that fails refuses nothing: the request is recorded as it always was — it

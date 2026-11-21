@@ -20,23 +20,35 @@ import (
 
 // privateProjectsSetting reads DISPATCH_PRIVATE_PROJECTS: the comma-separated keys of the projects
 // this deployment has provisioned as private (the infrastructure repository's privateprojects.Projects()), each entry
-// trimmed and empty ones dropped, deduplicated and sorted. An entry that is no project key is a
-// malformed setting and refuses the boot naming it, the old on/off value 1 included, so it is never
-// read as a list. Unset or empty is no project that can be made private.
-func privateProjectsSetting(value string) ([]string, error) {
-	var keys []string
+// trimmed and empty ones dropped, deduplicated and sorted. An entry that is no project key, the old
+// on/off value 1 included, is never read as a key: it is answered in ignored, in the order given,
+// and the boot logs it (reportIgnoredPrivateProjects). Ignoring it fails closed, since the project
+// it meant is never provisioned and its switch to private stays 409 PRIVATE_PROJECT_NOT_PROVISIONED;
+// refusing the boot would stop every project for one bad entry. Unset or empty is no project that
+// can be made private.
+func privateProjectsSetting(value string) (keys, ignored []string) {
 	for entry := range strings.SplitSeq(value, ",") {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
 			continue
 		}
 		if !contracts.ValidProjectKey(entry) {
-			return nil, fmt.Errorf("DISPATCH_PRIVATE_PROJECTS names project keys; %q is not a project key: %s", entry, contracts.ProjectKeyRule)
+			ignored = append(ignored, entry)
+			continue
 		}
 		keys = append(keys, entry)
 	}
 	slices.Sort(keys)
-	return slices.Compact(keys), nil
+	return slices.Compact(keys), ignored
+}
+
+// reportIgnoredPrivateProjects logs one ERROR line for each entry of DISPATCH_PRIVATE_PROJECTS
+// that is no project key (privateProjectsSetting), naming it and what it costs.
+func reportIgnoredPrivateProjects(ignored []string) {
+	for _, entry := range ignored {
+		slog.Error("dispatch: DISPATCH_PRIVATE_PROJECTS names project keys, and this entry is not one, so it is ignored: no project is provisioned by it, and its project's switch to private stays 409 PRIVATE_PROJECT_NOT_PROVISIONED",
+			"entry", entry, "rule", contracts.ProjectKeyRule)
+	}
 }
 
 // reportPrivateProjects is the boot's report of what the state's first read (state) says of

@@ -87,7 +87,10 @@ func QueueBacklinkCounts(b *pgx.Batch, who model.Actor, toKind string, ids, excl
 //
 // The acting credential is bound as $3, which every arm's visibility predicate names: an edge
 // whose source who may not see raises no count, by the same test the list of those edges binds
-// (readEdgeRows), so a count and its list cannot disagree.
+// (readEdgeRows), so a count and its list cannot disagree. Every arm binds the same registry's
+// predicate over the node it counts too (backlinkTarget.seen), so the count holds on its own: a
+// node who may not see counts nothing, whatever an earlier statement of the caller's read of it
+// answered.
 //
 // A count of one address binds that address itself and not an array of one, which is the
 // statement every page read of a single node runs (the issue read's own count). An array tells
@@ -149,7 +152,7 @@ func scanBacklinkCounts(rows pgx.Rows, toKind string, counts map[string]int) err
 // to_kind predicate is; only a kind backlinkArms declares reaches that, so nothing a caller names
 // is ever written into a statement.
 func backlinkCountSQL(toKind string, excludeKinds []string, one bool) (string, bool) {
-	arms, ok := backlinkTargetArms(backlinkTarget{kind: toKind, one: one}, excludeKinds)
+	arms, ok := backlinkTargetArms(backlinkTarget{kind: toKind, counts: toKind, one: one}, excludeKinds)
 	if !ok {
 		return "", false
 	}
@@ -159,7 +162,7 @@ func backlinkCountSQL(toKind string, excludeKinds []string, one bool) (string, b
 	// so it is refused for the same reason the counted kind's own are.
 	if item := ItemKind(toKind); slices.Contains(itemKinds, item) {
 		tables, _ := item.tables()
-		target := backlinkTarget{kind: item.BlockKind(), blocks: tables.blocks, item: tables.item, one: one}
+		target := backlinkTarget{kind: item.BlockKind(), counts: toKind, blocks: tables.blocks, item: tables.item, one: one}
 		atBlocks, ok := backlinkTargetArms(target, excludeKinds)
 		if !ok {
 			return "", false
@@ -193,9 +196,11 @@ func backlinkTargetArms(target backlinkTarget, excludeKinds []string) ([]string,
 // at, written into each mention arm as a literal. The address counted is the edge's own to_id,
 // unless blocks names an item's blocks table and item the column of it that names the item, when
 // each arm counts the item holding the current block its edge points at instead, because that
-// item's own read lists the edge (readEdgeRows).
+// item's own read lists the edge (readEdgeRows). counts is the node kind of the address counted:
+// kind, or the item's kind for an arm over its blocks.
 type backlinkTarget struct {
 	kind   string
+	counts string
 	blocks string
 	item   string
 	// one says the count is over a single address, bound as itself rather than as an array
@@ -206,20 +211,35 @@ type backlinkTarget struct {
 
 // read is how an arm whose rows point at the address toID is written for the target: the address
 // the arm counts, the join that reaches it, the predicate that keys the arm on the addresses
-// bound as $1, and the expression the arm's own test of the address is written over. An arm over
-// an item's blocks is keyed on the item's id as text and reaches the block by its node id, the
-// two columns the blocks table is indexed on, so the pair is one lookup each way whichever end
-// the planner starts from; its test of the address is written over the blocks table's own node
-// id, the same value, which leaves the arm's other relation keyed on the join alone.
+// bound as $1 and holds the node it points at to the reader (seen), and the expression the arm's
+// own test of the address is written over. An arm over an item's blocks is keyed on the item's id
+// as text and reaches the block by its node id, the two columns the blocks table is indexed on,
+// so the pair is one lookup each way whichever end the planner starts from; its test of the
+// address is written over the blocks table's own node id, the same value, which leaves the arm's
+// other relation keyed on the join alone. The block an edge of such an arm points at is held to
+// the reader over the edge's own address (the registry's block predicate, its item's project
+// rule), so the edge's row is bound by its own column and not only through the block's row.
 func (t backlinkTarget) read(toID string) (counted, join, keyed, address string) {
 	if t.blocks == "" {
-		return toID, "", toID + t.addressed(), toID
+		return toID, "", toID + t.addressed() + ` and ` + t.seen(toID), toID
 	}
 	counted = `part.` + t.item + `::text`
 	return counted,
 		` join ` + t.blocks + ` part on part.node_id = ` + toID,
-		counted + t.addressed() + ` and part.position is not null`,
+		counted + t.addressed() + ` and part.position is not null and ` + t.seen(counted) + ` and ` + VisibleKind(t.kind, toID, backlinkSeen),
 		`part.node_id`
+}
+
+// seen is the registry's predicate over the node an arm counts, whose address is counted: the
+// count of a node the acting credential may not see is no count, as the list of its edges is no
+// list (readEdgeRows' own test of the node is the read of it). One address is tested as the
+// parameter itself, which Postgres reads once for the whole arm; each address of an array is
+// tested on the row that carries it, by the node's primary key.
+func (t backlinkTarget) seen(counted string) string {
+	if t.one {
+		counted = `$1`
+	}
+	return VisibleKind(t.counts, counted, backlinkSeen)
 }
 
 // addressed is the test every arm is keyed on: the one address bound as $1, or membership of

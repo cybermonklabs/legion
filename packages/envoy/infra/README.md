@@ -1463,9 +1463,10 @@ one. Unset, nothing renders.
 `privateProjects` (a list of project keys) is the keys of the projects whose private namespace,
 stores and grants the deployment has provisioned (the infrastructure repository passes `privateprojects.Projects()`);
 only these can be made private. It renders `DISPATCH_PRIVATE_PROJECTS=<KEY>,<KEY>`, sorted and each
-key once; empty or unset renders nothing, so the pod is the one it always was. A key that is not a
-project key is an input error naming it, raised at `pulumi preview`, since Dispatch refuses to
-start on it. Set it only with an `envoyImage` whose `envoy-dispatch` reads the list: a binary that
+key once; empty or unset renders nothing, so the pod is the one it always was. An entry that is not a
+project key is ignored: it does not render, and `pulumi preview` prints a warning naming it, as
+Dispatch's boot ignores and logs one, so the project it meant is never provisioned. Set it only
+with an `envoyImage` whose `envoy-dispatch` reads the list: a binary that
 does not know the setting ignores it, and no project of that deployment can be made private.
 
 `appClientId`, `appId` (the App's numeric ID, as a string of digits), `appPrivateKeySecretName`

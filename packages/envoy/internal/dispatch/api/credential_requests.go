@@ -44,9 +44,11 @@ import (
 // browser alone (withinProjectScope for the writes, withinReadScope for the read): the lookup of a
 // machine login by the code its machine shows and that login's approve and deny, and the list of
 // their machine logins and the revoke of one. Each handler then holds the member to a machine login
-// of their own (ownMachineLogin for a pending one, ownMachineLogins for an issued one). A personal
-// token and a broker token acting for a restricted member are refused every one of them 403
-// RESTRICTED_MEMBER (restrictedOwnLoginRefusal), so no agent of theirs decides, lists or ends any
+// of their own (ownMachineLogin for a pending one, ownMachineLogins for an issued one). Through a
+// token a restricted member is refused every one of them: 403 OAUTH_SCOPE_REQUIRED where the token
+// lacks the row's scopes (gateRouteScopes, which runs first), as their agent's named token holds
+// none, and 403 RESTRICTED_MEMBER otherwise (refuseDeploymentWrite for the writes,
+// restrictedOwnLoginRefusal for the read), so no agent of theirs decides, lists or ends any
 // credential, their own machine's included.
 var restrictedOwnLoginRoutes = map[string]bool{
 	"POST /api/v1/credential-requests/machine-lookup": true,
@@ -56,8 +58,9 @@ var restrictedOwnLoginRoutes = map[string]bool{
 	"POST /api/v1/machine-logins/{id}/revoke":         true,
 }
 
-// restrictedOwnLoginRefusal answers a restricted member's call of one of restrictedOwnLoginRoutes
-// through anything but their browser: 403 RESTRICTED_MEMBER, naming the row.
+// restrictedOwnLoginRefusal answers a restricted member's read of a row of restrictedOwnLoginRoutes
+// through a token rather than their browser: 403 RESTRICTED_MEMBER, naming the row. A write of one is
+// refused by withinProjectScope instead (refuseDeploymentWrite).
 func restrictedOwnLoginRefusal(w http.ResponseWriter, method, pattern string) {
 	writeError(w, codeRestrictedMember, http.StatusForbidden, fmt.Sprintf(
 		"a restricted member reaches %s %s at their browser alone, for a machine login of their own, and never through a token", method, pattern))
@@ -99,7 +102,7 @@ func ownMachineLogin(w http.ResponseWriter, r *http.Request, client *agentsecret
 	}
 	var looked wire.RecordResponse
 	own := json.Unmarshal(answer, &looked) == nil &&
-		looked.Kind == machineLoginKind && (looked.Service == nil || *looked.Service == "") &&
+		looked.Kind == machineLoginKind && namesNoService(looked.Service) &&
 		model.CanonicalLogin(looked.Approver) == login &&
 		(recordID == "" || looked.RecordID == recordID)
 	if !own {
@@ -108,6 +111,12 @@ func ownMachineLogin(w http.ResponseWriter, r *http.Request, client *agentsecret
 		return nil, false
 	}
 	return answer, true
+}
+
+// namesNoService reports whether a broker record's service field names no service, as a person's
+// own machine login does; a service's login, which anyone signed in may decide or revoke, names one.
+func namesNoService(service *string) bool {
+	return service == nil || *service == ""
 }
 
 // noteActingAgent names the agent behind a decision on this request's access-log line: the
@@ -544,12 +553,13 @@ func (s *server) listMachineLogins(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	login := model.CanonicalLogin(actor.ID)
 	if !restricted {
-		body, err := client.MachineLogins(r.Context(), model.CanonicalLogin(actor.ID))
+		body, err := client.MachineLogins(r.Context(), login)
 		relayBrokerResponse(w, body, err)
 		return
 	}
-	own, err := ownMachineLogins(r.Context(), client, model.CanonicalLogin(actor.ID))
+	own, err := ownMachineLogins(r.Context(), client, login)
 	if err != nil {
 		relayBrokerResponse(w, nil, err)
 		return
@@ -610,7 +620,7 @@ func ownMachineLogins(ctx context.Context, client *agentsecrets.Client, person s
 	}
 	own := []wire.LauncherCredentialResp{}
 	for _, login := range logins.Credentials {
-		if (login.Service == nil || *login.Service == "") && model.CanonicalLogin(login.ApprovedBy) == person {
+		if namesNoService(login.Service) && model.CanonicalLogin(login.ApprovedBy) == person {
 			own = append(own, login)
 		}
 	}
