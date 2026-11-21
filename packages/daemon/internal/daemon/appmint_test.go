@@ -786,9 +786,16 @@ func TestABootWaitsAsLongAsGitHubAsksAtMostTheMaximum(t *testing.T) {
 
 // Refusals of one call of the start that name no time wait a minute, then two (c-boot-mint-rate-limit
 // case 5, second half, at the production minute, on the key proof): GitHub answers every read of the
-// App's installations with a 429 and no rate-limit header. The first wait line says a minute; the
-// second, a minute later, says two minutes, until a time two minutes ahead. A stop during that
-// wait ends the start at once.
+// App's installations with a 429 and no rate-limit header. The start's count of its waits (waited)
+// is a minute at the first wait line and three at the second, so the second wait is two minutes; the
+// second wait begins only once the first has ended, and ends two minutes after it begins, so its
+// until is two minutes or more past the first's and at most two minutes past its own line. A stop
+// during that wait ends the start at once.
+//
+// Each bound below is one the start's own decisions fix, whatever the machine's load. A line is
+// written some time after its wait was decided, so its wait left can be any amount under the wait
+// decided, and an until (whole seconds) any amount under two minutes past its line; bounds on those
+// gaps failed on a loaded machine.
 func TestABootWaitsOneMinuteThenTwoForRefusalsOfOneCallThatNameNoTime(t *testing.T) {
 	quickAppMints(t)
 	tokens, _ := appTokensWith(t, discoveredOnAcme, func(w http.ResponseWriter, r *http.Request) bool {
@@ -810,18 +817,26 @@ func TestABootWaitsOneMinuteThenTwoForRefusalsOfOneCallThatNameNoTime(t *testing
 	if len(waits) != 2 {
 		t.Fatalf("rate-limit wait lines = %v, want two", waits)
 	}
-	// Each line gives the wait left when it is written, to a tenth of a second, so a slow runner can
-	// show a little under the wait decided; never more.
-	if first, second := loggedDuration(t, waits[0], "wait"), loggedDuration(t, waits[1], "wait"); first <= time.Minute-time.Second || first > time.Minute ||
-		second <= 2*time.Minute-time.Second || second > 2*time.Minute {
-		t.Errorf("the waits = %s and %s, want 1m0s and then 2m0s", first, second)
+	if first, second := loggedDuration(t, waits[0], "waited"), loggedDuration(t, waits[1], "waited"); first != time.Minute || second != 3*time.Minute {
+		t.Errorf("the start's waits so far = %s and then %s, want 1m0s and then 3m0s: a wait of a minute, then one of two", first, second)
 	}
-	if gap := loggedAt(t, waits[1]).Sub(loggedAt(t, waits[0])); gap < time.Minute || gap > time.Minute+10*time.Second {
-		t.Errorf("the second wait came %s after the first, want about a minute", gap)
+	if first, second := loggedDuration(t, waits[0], "wait"), loggedDuration(t, waits[1], "wait"); first <= 0 || first > time.Minute || second <= 0 || second > 2*time.Minute {
+		t.Errorf("the waits left = %s and %s, want each above nothing and at most its wait, 1m0s and then 2m0s", first, second)
 	}
-	until, err := time.Parse(time.RFC3339, fmt.Sprint(waits[1]["until"]))
-	if ahead := until.Sub(loggedAt(t, waits[1])); err != nil || ahead < 2*time.Minute-time.Second || ahead > 2*time.Minute+time.Second {
-		t.Errorf("the second wait's until = %v (%v), want two minutes after its line", waits[1]["until"], err)
+	untils := make([]time.Time, len(waits))
+	for i, wait := range waits {
+		until, err := time.Parse(time.RFC3339, fmt.Sprint(wait["until"]))
+		if err != nil {
+			t.Fatalf("wait line %d's until = %v: %v", i+1, wait["until"], err)
+		}
+		untils[i] = until
+	}
+	if first := loggedAt(t, waits[0]); untils[0].After(first.Add(time.Minute)) {
+		t.Errorf("the first wait's until = %s, want at most a minute after its line, %s", untils[0], first)
+	}
+	if second := loggedAt(t, waits[1]); second.Before(untils[0]) || untils[1].Before(untils[0].Add(2*time.Minute)) || untils[1].After(second.Add(2*time.Minute)) {
+		t.Errorf("the second wait's line at %s and until %s, want both past the first wait's until %s, and the until two minutes or more past it and at most two minutes past the line",
+			second, untils[1], untils[0])
 	}
 }
 
