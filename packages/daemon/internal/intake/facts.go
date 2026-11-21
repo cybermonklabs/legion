@@ -1442,6 +1442,19 @@ type PodBackstopDue struct {
 
 func (f PodBackstopDue) namedIssue() (string, bool) { return f.Issue, true }
 
+// WorkHoldOpened is the work hold of tree Tree found ended under a claim it stopped (`gates.hold:
+// work`): the outbox ran the hold's stop of a phase worker in a turn, the gate opened again while
+// the stop was held for that turn, and the turn ended after the opening committed, which made the
+// stop. The opening read the claim live and started nothing of it, so the workflow starts each
+// claim of the tree the hold stopped that no opening start covers, with the opening's task. It is
+// never decoded from an event: the outbox applies it from the stop's row, under the row's id, so a
+// retried row applies it once. It names the whole tree rather than one issue.
+type WorkHoldOpened struct {
+	Tree string
+}
+
+func (WorkHoldOpened) namedIssue() (string, bool) { return "", false }
+
 // WorkerSilent is one claim the daemon's minute sweep read as a silent phase worker: up and
 // between turns, in no update round, its last step older than Bound (config.Config.WorkerSilence),
 // and its session's report explaining none of that quiet. The sweep applies it from the live

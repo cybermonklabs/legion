@@ -289,14 +289,16 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		}
 	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
 		AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
-		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume:
+		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
+		AnswerClaimApproval:
 		// The identity, one row each: every contract this daemon serves one of these answers
 		// reads the body it writes. No key has arrived on any of them since that answer arrived.
 		// One key has gone: AnswerHandoffComplete lost its `note` at stateMachineContract, and
 		// no reader from ServingFloor to 85 requires it, so no stand-in is written for it
-		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract, and
-		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, so no older
-		// contract records any of the three at all.
+		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract,
+		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, and
+		// AnswerClaimApproval arrived whole at approvalRouteContract, so no older contract
+		// records any of the four at all.
 		return body, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -586,6 +588,7 @@ var valueStrips = []valueStrip{
 	{state: withoutUnadmittedStrandedStates, dropped: droppedStrandedState},
 	{issue: withoutUnadmittedWaitAnswer, dropped: droppedWaitAnswer},
 	{issue: withoutWaitingOnIssue, dropped: droppedLineKind},
+	{issue: withoutUnadmittedWhy, dropped: droppedWhy},
 }
 
 // recordShaping writes the daemon's own record of what it left out of the state it answered: one
@@ -643,15 +646,16 @@ func (s *server) recordShaping(r *http.Request, id AnswerID, at placement, took 
 // carries it too, since that decision follows restore as a value strip does (refusedAfterTheStop).
 const followsRestore = "the contract the caller states, else its pod's lowest, which a value follows where a key follows the stated contract, else the pod's highest"
 
-// droppedStrandedState, droppedWaitAnswer and droppedLineKind are what the rows of valueStrips
-// name as dropped. They are named rather than written in the rows because the tests that read
-// the daemon's log and the mixed pod's body name a row by them (narrowing_test.go,
+// droppedStrandedState, droppedWaitAnswer, droppedLineKind and droppedWhy are what the rows of
+// valueStrips name as dropped. They are named rather than written in the rows because the tests
+// that read the daemon's log and the mixed pod's body name a row by them (narrowing_test.go,
 // shaped_answers_test.go). Each names what its row takes by the table's rule rather than by
 // today's value, so the line stays true of a value the table declares later.
 const (
 	droppedStrandedState = "the entries of strandedClaims in a state this caller does not admit"
 	droppedWaitAnswer    = "the answeredAt and answeredBy of each wait answered by a value this caller does not admit"
 	droppedLineKind      = "the waiting line's kind of every member of a kind this caller does not admit"
+	droppedWhy           = "the why of every issue whose why.state this caller does not admit"
 )
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -971,9 +975,30 @@ const pauseContract = 178
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract this block arrived at stays where it is. It moves only
-// with this change's own number, and it is the last number of answers.go's SupportedContracts,
-// which names the constant rather than its number for that reason.
+// with this change's own number, and answers.go's SupportedContracts names the constant rather
+// than its number for that reason.
 const repositoriesLiveContract = 202
+
+// approvalRouteContract is the daemon contract of the approval route (version.go's 210). It
+// added one answer whole with its route, `POST /legion/v1/claims/approval` (answers.go's
+// AnswerClaimApproval), which no contract below it records, and the route's request, which
+// request-shapes.json records from it on. A plugin of an earlier contract never calls the route,
+// so shapeAnswer serves the answer as written. It added no key to any other answer. The one value
+// it added to an enumerated field is the work hold's (workHoldContract).
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract the route arrived at stays where it is. It moves only with
+// this change's own number, as shapedAnswersContract moves with its own change's.
+const approvalRouteContract = 210
+
+// workHoldContract is the daemon contract that added `held` to an issue's `why.state`: an issue
+// whose work the work hold holds (`gates.hold: work`, WhyHeld). It is the entry that added the
+// approval route (version.go's 210), so it is that constant and moves with it. A reader from
+// whyAndLineFieldsContract up to it reads `state` with an enumeration of the four words before
+// it, which refuses `held` and with it the whole body, so a caller whose restore is below it is
+// served such an issue with no `why` (withoutUnadmittedWhy). The number is written once, in the
+// declared table (answers.go's whyStates), and the strip reads it from there.
+const workHoldContract = approvalRouteContract
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
@@ -1396,6 +1421,34 @@ func withoutWaitingOnIssue(issue Issue, restore int) (Issue, bool) {
 	return issue, true
 }
 
+// withoutUnadmittedWhy is the issue with no `why` where that answer's `state` is a word
+// restore's reader does not admit. It follows the declared table (answers.go's whyStates) and
+// takes any word the table holds back from restore (fieldArrivals.heldBack says which words and
+// why): today the `held` of workHoldContract, and tomorrow any word the table gives a later
+// arrival.
+//
+// The answer goes whole and the issue stays, which is where this parts company with
+// withoutWaitingOnIssue. A reader from whyAndLineFieldsContract up to the contract before
+// shapedAnswersContract requires `state` and `reason` together, so a `why` with no `state` is
+// refused by that reader as surely as the word is, and `why` itself is optional at every contract
+// that knows it (`legionWhyView` in packages/contracts/src/legion-api.ts). No older word stands
+// for the one taken, so none is written in its place: the issue reads as one the projection gave
+// no rendered answer, a shape every reader already parses.
+//
+// The four words of whyAndLineFieldsContract arrived with the field, so they are no strip's: they
+// ride the band of that contract (withoutWhyAndLineFields), which takes `why` whole from a caller
+// whose strip is below 85, so this finds nothing to take there and writes no line.
+//
+// The issue is a value of its own, so the state the source answered is left as it was. It reports
+// whether it took the answer, which is what the log line of this strip is written from (tookOff).
+func withoutUnadmittedWhy(issue Issue, restore int) (Issue, bool) {
+	if issue.Why == nil || !whyStateArrivals.heldBack(string(issue.Why.State), restore) {
+		return issue, false
+	}
+	issue.Why = nil
+	return issue, true
+}
+
 // fieldArrivals is one enumerated field of the declared table as a value strip reads it: the
 // contract the field itself arrived at, and the contract each of its values did (arrivalsOf).
 type fieldArrivals struct {
@@ -1442,16 +1495,17 @@ func (f fieldArrivals) heldBack(value string, restore int) bool {
 	return arrival > f.field && restore < arrival
 }
 
-// strandedStateArrivals, waitAnswerArrivals and lineKindArrivals are the arrivals of
-// `strandedClaims[].state`, of `answeredBy` and of the waiting line's `kind`, read once from the
-// list the table itself is written from (answers.go's strandedStates, waitAnswers and
-// lineKinds). The state's row answers for the record's too: an issue's field is one field at
-// two key paths (answers.go's enumeratedFields), both rows take the one list, and shapeIssue
-// shapes the issue behind both answers.
+// strandedStateArrivals, waitAnswerArrivals, lineKindArrivals and whyStateArrivals are the
+// arrivals of `strandedClaims[].state`, of `answeredBy`, of the waiting line's `kind` and of
+// `why.state`, read once from the list the table itself is written from (answers.go's
+// strandedStates, waitAnswers, lineKinds and whyStates). The state's row answers for the
+// record's too: an issue's field is one field at two key paths (answers.go's enumeratedFields),
+// both rows take the one list, and shapeIssue shapes the issue behind both answers.
 var (
 	strandedStateArrivals = arrivalsOf(strandedStates)
 	waitAnswerArrivals    = arrivalsOf(waitAnswers)
 	lineKindArrivals      = arrivalsOf(lineKinds)
+	whyStateArrivals      = arrivalsOf(whyStates)
 )
 
 // arrivalsOf is one list of the declared table as the arrivals of its field: each value under

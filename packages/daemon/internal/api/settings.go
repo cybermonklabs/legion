@@ -472,9 +472,11 @@ type RepositoryRenameSettings struct {
 }
 
 // GatesSettings is `gates`. Design is the design-gate steps the deployment gates, in the order
-// `gates.design` named them, and `[]` for a deployment that gates none.
+// `gates.design` named them, and `[]` for a deployment that gates none. Hold is the word of
+// `gates.hold`, `merge` for a deployment that names none.
 type GatesSettings struct {
 	Design []record.DesignStep `json:"design"`
+	Hold   config.Hold         `json:"hold"`
 }
 
 // GitHubAppsSettings is `github_apps`, each App its id and installations alone: never a private
@@ -553,7 +555,7 @@ func SettingsOf(cfg config.Config) Settings {
 		NatsURLs:                                make([]string, len(cfg.NatsURLs)),
 		DispatchURL:                             endpointOf(cfg.DispatchURL),
 		Projects:                                make(map[string]ProjectSettings, len(cfg.Projects)),
-		Gates:                                   GatesSettings{Design: append([]record.DesignStep{}, cfg.Gates.Steps()...)},
+		Gates:                                   GatesSettings{Design: append([]record.DesignStep{}, cfg.Gates.Steps()...), Hold: cfg.Gates.Holds()},
 		LingerHours:                             cfg.Linger.Hours(),
 		ProductionCheckHours:                    cfg.ProductionCheckBound.Hours(),
 		PodUpdateGraceMinutes:                   cfg.PodUpdateGrace.Minutes(),

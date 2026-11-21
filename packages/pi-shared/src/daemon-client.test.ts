@@ -52,6 +52,22 @@ function daemon(respond: (url: URL) => Response): {
   return { fetch: stub, requests };
 }
 
+/** A daemon that never answers: each request waits until its signal aborts, then fails with the
+ *  signal's reason. `handed` holds the signal each request was handed. */
+function hungDaemon(): {
+  readonly fetch: typeof fetch;
+  readonly handed: (AbortSignal | null | undefined)[];
+} {
+  const handed: (AbortSignal | null | undefined)[] = [];
+  const stub = (async (_input, init) => {
+    handed.push(init?.signal);
+    const { promise, reject } = Promise.withResolvers<Response>();
+    init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+    return promise;
+  }) as typeof fetch;
+  return { fetch: stub, handed };
+}
+
 /** The contract the build under test speaks. Every request states it, and the refusal cases
  * below set the contract the daemon states against it. */
 const CONTRACT = 60;
@@ -266,6 +282,60 @@ test("the release records are read by a POST carrying the claim's token and secr
   await expect(partial.releaseRecords(window)).rejects.toBeInstanceOf(LegionDaemonContractError);
 });
 
+test("the approval is read by a POST carrying the claim, through its caller's signal, and an answer with no approval key is refused", async () => {
+  // The goldens are what the daemon's route writes (internal/api's TestApprovalRoute…Golden).
+  const standing = daemonFixture("claim-approval.json");
+  const read = {
+    claimToken: "legion-acme-2694-architect",
+    sessionId: "ses_architect_2694",
+    secret: CLAIM_SECRET,
+  };
+  const { fetch, requests } = daemon(() => Response.json(standing));
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch,
+  });
+
+  await expect(client.approval(read)).resolves.toEqual(standing as never);
+  expect(requests).toEqual([
+    { method: "POST", url: "http://daemon.test/legion/v1/claims/approval", body: read },
+  ]);
+
+  const none = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: daemon(() => Response.json(daemonFixture("claim-approval-none.json"))).fetch,
+  });
+  await expect(none.approval(read)).resolves.toEqual({ approval: null });
+  // pi-legion reads the approval and all three of its fields (LEGION_ANSWER_READS), so an answer
+  // that names no approval is refused, as is one whose fields hold values of another type: neither
+  // is an answer of this contract.
+  const silent = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: daemon(() => Response.json({})).fetch,
+  });
+  await expect(silent.approval(read)).rejects.toBeInstanceOf(LegionDaemonContractError);
+  const malformed = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: daemon(() => Response.json({ approval: { version: 0, message: "" } })).fetch,
+  });
+  await expect(malformed.approval(read)).rejects.toBeInstanceOf(LegionDaemonContractError);
+
+  // The plugin reads under a deadline of its own: the signal reaches fetch, and its abort ends a
+  // read the daemon never answers.
+  const { fetch: hung, handed } = hungDaemon();
+  const controller = new AbortController();
+  const late = new Error("the deadline passed");
+  const pending = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: hung,
+  }).approval(read, {
+    signal: controller.signal,
+  });
+  controller.abort(late);
+  await expect(pending).rejects.toBe(late);
+  expect(handed).toEqual([controller.signal]);
+});
+
 test("a ready carrying the capability report is the daemon's golden ReadyRequest, field for field", async () => {
   // ready.json is what the daemon's golden test wrote of a `claim.ReadyRequest` with a report, so
   // sending it as the client's input and recording the body it posts pins both sides to it.
@@ -345,13 +415,7 @@ test("a state from a daemon a release ahead parses without its unknown top-level
 });
 
 test("a state read hands fetch its caller's signal, and an abort ends a read the daemon never answers", async () => {
-  const handed: (AbortSignal | null | undefined)[] = [];
-  const hung = (async (_input, init) => {
-    handed.push(init?.signal);
-    const { promise, reject } = Promise.withResolvers<Response>();
-    init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
-    return promise;
-  }) as typeof fetch;
+  const { fetch: hung, handed } = hungDaemon();
   const controller = new AbortController();
   const late = new Error("the reader stopped waiting");
 

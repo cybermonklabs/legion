@@ -159,6 +159,11 @@ import {
   type AgentStreamSettingsState,
   modelReference,
 } from "@legion/pi-shared/agent-stream";
+import {
+  type LiveAgentSession,
+  liveAgentSession,
+  sessionCompacting,
+} from "@legion/pi-shared/approval-message";
 import { transcriptPictures, withDeliveredPictures } from "@legion/pi-shared/delivery-pictures";
 import { currentSessionID } from "@legion/pi-shared/dispatch-session-id";
 import {
@@ -276,21 +281,6 @@ void import("@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-
   },
   () => undefined
 );
-
-/** The host's live `AgentSession`, as far as this extension reads it. */
-type LiveAgentSession = NonNullable<host.AgentRef["session"]>;
-
-// The live `AgentSession` under `session`, its live id, found in the host's roster
-// (`AgentRegistry`) at every call, since the host keeps one `AgentSession` across `/new`, `/resume`
-// and a fork and changes its id. Undefined on a host without the registry export, or listing no
-// live session under that id.
-function liveAgentSession(session: string): LiveAgentSession | undefined {
-  return (
-    host.AgentRegistry?.global()
-      .list()
-      .find((ref) => ref.session?.sessionManager.getSessionId() === session)?.session ?? undefined
-  );
-}
 
 // The model and thinking level the live session reports, read through the same getters the host's
 // `/model` and `/effort` read: `model`, `getAvailableModels()`, `configuredThinkingLevel()` (what
@@ -2897,7 +2887,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     if (typeof pi.sendUserInput !== "function") return;
     const builtins = hostBuiltinCommands?.() ?? [];
     const reserved = new Set(builtins.flatMap((builtin) => [builtin.name, ...builtin.aliases]));
-    const live = liveAgentSession(session);
+    const live = liveAgentSession(host.AgentRegistry, session);
     const commands: AgentStreamCommand[] = builtins.map((builtin) => ({
       description: builtin.description,
       name: builtin.name,
@@ -2935,7 +2925,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     try {
       agentStreamOf(session).setSettings(
         agentStreamFramesSubject(session),
-        liveSessionSettings(liveAgentSession(session))
+        liveSessionSettings(liveAgentSession(host.AgentRegistry, session))
       );
     } catch (error) {
       logger.warn("envoy: could not refresh agent stream settings", {
@@ -4707,14 +4697,15 @@ export default function envoyExtension(hostApi: PiApi): void {
     // included, also carries the dispatch-first skill on every request at the head, where its
     // bytes never change, and on every request of its main loop what people wrote to it: every
     // answers message an earlier request sent, which the session records and each request
-    // rebuilds at its old place with its old bytes, and a new one after the last message when the
-    // read shows a change (`withSessionAnswers`). The host runs this handler on its side turns,
-    // its handoff prompt and a remote compaction's conversions too; `withSessionAnswers` leaves
-    // the answers off those and records nothing for them. Oh My Pi hands this handler no abort
-    // signal: it races the handler against the run's own and drops what an aborted handler
-    // returns, and the handler goes on to its read, which it shares and which goes on to fill the
-    // cache, and to its decision and its record, which come after those of every earlier request
-    // of the session, so the request after it rebuilds what it recorded (`withSessionAnswers`).
+    // rebuilds at its old place with its old bytes, and a new one after the last message, before
+    // a trailing approval message pi-legion placed, when the read shows a change
+    // (`withSessionAnswers`). The host runs this handler on its side turns, its handoff prompt and
+    // a remote compaction's conversions too; `withSessionAnswers` leaves the answers off those and
+    // records nothing for them. Oh My Pi hands this handler no abort signal: it races the handler
+    // against the run's own and drops what an aborted handler returns, and the handler goes on to
+    // its read, which it shares and which goes on to fill the cache, and to its decision and its
+    // record, which come after those of every earlier request of the session, so the request after
+    // it rebuilds what it recorded (`withSessionAnswers`).
     pi.on("context", async (event, context) => {
       // The host's own live id, as `message_end` reads it: this one process serves one session at
       // a time and moves between them, and a session that followed the same topic reads the same
@@ -4740,22 +4731,11 @@ export default function envoyExtension(hostApi: PiApi): void {
             : undefined,
         session: context.sessionManager,
         id,
-        // Read off the live `AgentSession` (18.12.2), whose getters the declared host surface
-        // leaves out: `get isCompacting() { return this.#C.isCompacting; }` and
-        // `get compactionSpeculation() { return this.#C.speculationState; }`, the compaction
-        // controller's `this.#i !== undefined || this.#u !== undefined || this.#l !== undefined`
-        // (an automatic or manual compaction, or a handoff) and `e.armed ? "armed" : "running"`
-        // for a speculative one. A session the registry does not list reads as not compacting. It
-        // is read after the read too, so it asks about `id`, the session the request was built
-        // from, and not the one the host may have moved to while the read waited.
-        compacting: () => {
-          const live = liveAgentSession(id);
-          return (
-            live !== undefined &&
-            (("isCompacting" in live && live.isCompacting === true) ||
-              ("compactionSpeculation" in live && live.compactionSpeculation === "running"))
-          );
-        },
+        // Whether Oh My Pi is compacting the session the request was built from: its live
+        // `AgentSession`'s `isCompacting`, or its speculative compaction running
+        // (`sessionCompacting`). It is read after the read too, so it asks about `id`, and not the
+        // session the host may have moved to while the read waited.
+        compacting: () => sessionCompacting(host.AgentRegistry, id),
         read: () => sessionAnswersText(context),
         // The answers message this request appends goes into the session file as it is sent, so
         // every later request, and the first of a process that resumes the session, rebuilds it

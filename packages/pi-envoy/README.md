@@ -233,9 +233,17 @@ same bytes. So a request changes no byte that an earlier request sent, with two 
 request made while a compaction runs (below), and a message the session file did not record,
 because the host moved to another session while the read waited or the write failed. The
 session's next request does not carry such a message again, and adds the list anew after its own
-last message when its read still shows it. A request whose read shows nothing new adds nothing
-and ends with its own last message, so the model does not take a list with nothing new in it
-for a new turn.
+last message when its read still shows it. A request whose read shows nothing new adds nothing,
+and no answers message follows its own last message, so the model does not take a list with
+nothing new in it for a new turn.
+
+In a Legion pane, pi-legion can put one or more approval messages at the end of a request. This
+copy of the extension then reads the message before those approval messages as the last message
+of the request. It adds its answers message after that message and before the approval messages.
+It records that message as the place of the answers message, and never an approval message: the
+session file does not keep approval messages, and a later request holds one only where pi-legion
+puts it again. So the approval message stays the last message of the request, whichever plugin
+changes the request first.
 
 A request adds an answers message after its last message when its read gives a list or the
 failure line and the request holds no answers message. Otherwise it adds one only when the read

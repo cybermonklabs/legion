@@ -1088,6 +1088,45 @@ func (s *Postgres) DropReadmittedApproval(ctx context.Context, tx pgx.Tx, root s
 	return nil
 }
 
+// PutClearedSpecApproval writes the record a mark places, so a record with no mark, which would
+// name an approval Dispatch never placed, is refused here and by the table's check.
+func (s *Postgres) PutClearedSpecApproval(ctx context.Context, tx pgx.Tx, approval ClearedSpecApproval) error {
+	if approval.Mark.IsZero() {
+		return fmt.Errorf("record the spec approval cleared from %s: the approval of version %d carries no mark", approval.Issue, approval.Version)
+	}
+	seq, at := markValues(approval.Mark)
+	if _, err := tx.Exec(ctx, `insert into cleared_spec_approvals (issue, artifact_id, approved_version, approved_seq, approved_at) values ($1, $2, $3, $4, $5)
+		on conflict (issue) do update set artifact_id = excluded.artifact_id, approved_version = excluded.approved_version,
+		approved_seq = excluded.approved_seq, approved_at = excluded.approved_at`,
+		approval.Issue, approval.ArtifactID, approval.Version, seq, at); err != nil {
+		return fmt.Errorf("record the spec approval cleared from %s at version %d: %w", approval.Issue, approval.Version, err)
+	}
+	return nil
+}
+
+func (s *Postgres) ClearedSpecApproval(ctx context.Context, tx pgx.Tx, root string) (*ClearedSpecApproval, error) {
+	approval := ClearedSpecApproval{Issue: root}
+	var seq *int64
+	var at *time.Time
+	err := tx.QueryRow(ctx, `select artifact_id, approved_version, approved_seq, approved_at from cleared_spec_approvals where issue = $1`, root).Scan(
+		&approval.ArtifactID, &approval.Version, &seq, &at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read the spec approval cleared from %s: %w", root, err)
+	}
+	approval.Mark = scannedMark(seq, at)
+	return &approval, nil
+}
+
+func (s *Postgres) DeleteClearedSpecApproval(ctx context.Context, tx pgx.Tx, root string) error {
+	if _, err := tx.Exec(ctx, "delete from cleared_spec_approvals where issue = $1", root); err != nil {
+		return fmt.Errorf("delete the spec approval cleared from %s: %w", root, err)
+	}
+	return nil
+}
+
 // TellChildrenFirst records that the architect that owns issue has been told, for the run
 // generation of tree, that the issue waits for its own Dispatch children, and reports whether
 // this call is the telling: a second call for the same tree and generation changes nothing and
@@ -1441,10 +1480,15 @@ func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue string,
 
 // ClearTreeGeneration empties them for every issue of the tree. A root set back to todo starts a
 // new generation of the whole tree, and its children carried the old one's pull request, gate and
-// handoffs into it — a child re-entered at the new generation read a handoff of the last.
+// handoffs into it — a child re-entered at the new generation read a handoff of the last. The work
+// hold of the generation that ended goes with its gate rows (WorkHold), so it never holds the
+// newer one: the gate the next generation registers closes and opens a hold of its own.
 func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error {
-	return s.clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", "tree = $1", tree,
-		fmt.Sprintf("clear the generation of tree %s", tree), now)
+	if err := s.clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", "tree = $1", tree,
+		fmt.Sprintf("clear the generation of tree %s", tree), now); err != nil {
+		return err
+	}
+	return s.DeleteWorkHold(ctx, tx, tree)
 }
 
 // clearGeneration runs each statement with key as $1: where selects the cleared issues' rows by

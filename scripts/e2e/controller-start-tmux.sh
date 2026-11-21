@@ -244,9 +244,9 @@ EOF
 # ---- legion config check ---------------------------------------------------------------------------
 begin config-check-passes
 out=$(legion config check --config "$work/legion.yaml")
-# The OK line names the design-gate steps the file resolved to; this file sets no gates key, which
-# is the single step spec.
-[ "$(head -1 <<<"$out")" = "Config OK: project=$project design-gate-steps=spec" ] || fail "got $out"
+# The OK line names the design-gate steps the file resolved to and what a closed gate holds; this
+# file sets no gates key, which is the single step spec and the merge hold.
+[ "$(head -1 <<<"$out")" = "Config OK: project=$project design-gate-steps=spec design-gate-hold=merge" ] || fail "got $out"
 # After the OK line, one line per deployment capability the file alone leaves open, in boot's words
 # (LEGION-578): under tmux the secrets and resource-limits rows, each ending with the legion.yaml
 # line that records a decision. Then the line that says this daemon cannot pause its project and

@@ -157,5 +157,13 @@
     ],
     "since": 178,
     "noBody": false
+  },
+  {
+    "id": "claim-approval",
+    "routes": [
+      "POST /legion/v1/claims/approval"
+    ],
+    "since": 210,
+    "noBody": false
   }
 ]

@@ -54,8 +54,10 @@ import {
 } from "@legion/pi-shared/stall-watchdog";
 import { clearStartupTurn } from "@legion/pi-shared/startup-turn";
 import { subagentSessionCheck } from "@legion/pi-shared/subagent-session";
+import * as host from "@oh-my-pi/pi-coding-agent";
 import { logger } from "@oh-my-pi/pi-utils";
 import pkg from "../package.json";
+import { createApprovalMessage } from "../src/approval-message";
 import {
   type CapabilityBudgets,
   type CapabilityHost,
@@ -408,6 +410,21 @@ export default function legionExtension(pi: PiApi): void {
     exitProcess: (code) => exitProcess(code),
   });
 
+  // The approval message a root architect's own session carries while a person's approval of its
+  // spec stands (`src/approval-message.ts`): the route is read at session_start and before the next
+  // request after an entry that is not the model's or a tool's, each request places or rebuilds
+  // the message in the `context` handler below, a saved answer records the copy it answered, and
+  // the `before_provider_request` handler moves Oh My Pi's date reminder off a new placement. The
+  // host's roster tells a remote compaction's own conversions apart.
+  const approvalMessage = createApprovalMessage({
+    claim: (sessionID) => claimSession.capability(sessionID),
+    daemon: roleDaemon,
+    appendEntry: (customType, data) => pi.appendEntry(customType, data),
+    registry: host.AgentRegistry,
+    now: Date.now,
+    log: logger,
+  });
+
   /**
    * INFRA-1274: the worker's watch on its own tool calls, and the ladder it drives when one of
    * them stops. The detector is `@legion/pi-shared/stall-watchdog`, which holds the open calls
@@ -664,6 +681,9 @@ export default function legionExtension(pi: PiApi): void {
         });
       }
       await claimSession.bootstrap(context);
+      // A root architect reads the approval route now, so its first request knows whether an
+      // approval stands; any other session reads nothing (`src/approval-message.ts`).
+      await approvalMessage.sessionStart(context);
       // The claim is registered. A phase worker relaunched into an open phase gets its reminder
       // from a timer, since nothing else would wake it. The guard drops that timer when any turn
       // started meanwhile, which is exactly the case to drop — the daemon re-sending an
@@ -782,16 +802,40 @@ export default function legionExtension(pi: PiApi): void {
   // Every provider request of this session passes here, which makes it one of the triggers of the
   // model fallback's return; `ModelFallback.maybeRestore` (src/model-fallback.ts) states the rule.
   //
-  // The rest of the handler is the recreated-workspace notice: the recovery kept the saved copy
-  // in the process's live context, so once it is sent again every later request of this process
-  // would carry it twice: the first copy, where the history put it, is the one each request
-  // keeps.
+  // Then the recreated-workspace notice: the recovery kept the saved copy in the process's live
+  // context, so once it is sent again every later request of this process would carry it twice:
+  // the first copy, where the history put it, is the one each request keeps.
+  //
+  // Last, a root architect's approval message (`src/approval-message.ts`): every copy rebuilt
+  // before its answer, and a new placement after every other message. It edits the array it is
+  // handed and hands that same array on, so a later copy of pi-envoy still finds the request it
+  // decided; only the notice's removal makes a new one.
   pi.on("context", async (event, context) => {
     if (await modelFallbackSession(context)) await modelFallback.maybeRestore(context);
-    if (resentNoticeId === undefined) return undefined;
-    const messages = withoutRepeatedWorkspaceRecreatedNotice(event.messages, resentNoticeId);
-    return messages === undefined ? undefined : { messages };
+    const withoutNotice =
+      resentNoticeId === undefined
+        ? undefined
+        : withoutRepeatedWorkspaceRecreatedNotice(event.messages, resentNoticeId);
+    const messages = withoutNotice ?? event.messages;
+    const placed = await approvalMessage.context(messages, context);
+    return withoutNotice !== undefined || placed ? { messages } : undefined;
   });
+
+  // A saved answer records the approval message's new placement it answered, and an entry that is
+  // not the model's or a tool's has the route read again before the next request; so does a
+  // compaction's summary.
+  pi.on("message_end", async (event, context) => {
+    approvalMessage.messageEnd(event.message, context);
+  });
+  pi.on("session_compact", async (_event, context) => {
+    approvalMessage.sessionCompact(context);
+  });
+
+  // The one request whose new approval message Oh My Pi's date reminder follows: the reminder goes
+  // where the next request has it, so the approval message stays last and `system`.
+  pi.on("before_provider_request", async (event, context) =>
+    approvalMessage.beforeProviderRequest(event.payload, context)
+  );
 
   // The host walked this session's own fallback chain: the plugin owns the return, since the
   // host's restore never comes for a refusal it pinned (dispatch://INFRA-956). The event's own

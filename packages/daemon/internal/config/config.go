@@ -996,7 +996,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		AdmissionCap:         defaultAdmissionCap,
 		WorkerWakesPerMinute: defaultWorkerWakesPerMinute,
 		EnvoyURL:             defaultEnvoyURL,
-		Gates:                Gates{Design: DesignGateRootIssues.Steps()},
+		Gates:                Gates{Design: DesignGateRootIssues.Steps(), Hold: HoldMerge},
 		Linger:               72 * time.Hour,
 		ProductionCheckBound: 336 * time.Hour,
 		PodUpdateGrace:       defaultPodUpdateGrace,

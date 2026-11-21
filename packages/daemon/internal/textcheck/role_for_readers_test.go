@@ -58,6 +58,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/daemon/daemon.go", fn: "serve"}:                              {calls: 1, test: "TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine"},
 	{file: "internal/phase/phase.go", fn: "Of"}:                                   {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/projection/project.go", fn: "Project"}:                       {calls: 1, test: "TestProjectShowsARootsArchitectHandshake"},
+	{file: "internal/projection/why.go", fn: "workHeld"}:                          {calls: 1, test: "TestWorkHoldShowsWhyInTheState"},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}:       {calls: 1, test: "TestTheArchitectTaskOfEachShape"},
 	{file: "internal/workflow/catch_up.go", fn: "Engine.readyWorkerTask"}:         {calls: 1, test: "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted"},
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}:                      {calls: 1, test: "TestACarriedRootResumesFromTheApprovedHeadAndTheHold"},
@@ -80,6 +81,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/steps.go", fn: "endOfTransition"}:                   {calls: 1, test: "TestAnIssueAtAdmittedRunsNoStep"},
 	{file: "internal/workflow/stranded.go", fn: "Stranded"}:                       {calls: 1, test: "TestStrandedNamesTheClaimsNothingWillWake"},
 	{file: "internal/workflow/wake.go", fn: "OpenPhaseRole"}:                      {calls: 1, test: "TestAnArchitectGetsNoBackstop"},
+	{file: "internal/workflow/work_hold.go", fn: "Engine.openHeldClaims"}:         {calls: 1, test: "TestWorkHoldOpensAWorkerOfAnIssueAtAdmittedWithNoPhase"},
 }
 
 // R2: the reader list is complete and nothing reads RoleFor that this test does not hold. The

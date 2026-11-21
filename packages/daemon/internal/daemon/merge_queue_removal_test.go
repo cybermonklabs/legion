@@ -141,7 +141,7 @@ const dequeueRetry = 20 * time.Millisecond
 //     failed merger stands with its issue in merging only once the architect's retry of that
 //     phase has put the issue back, and only while the start the retry writes, which relaunches
 //     the claim, waits. The test applies that retry as the API applies it, and the issue's closed
-//     design gate holds the start (the outbox's mergerWaitsForTheDesignGate), so the claim is
+//     design gate holds the start (the outbox's startWaitsForTheHold), so the claim is
 //     still failed when the row reads it.
 //  9. The design gate closed and the merger's pod released: a merger the gate holds may not know
 //     the gate closed, and woken by the message it could enqueue the pull request again against

@@ -820,8 +820,10 @@ func (c roundClock) pastBound(group []supervise.Claim, round string) bool {
 // (dispatch://INFRA-4109 R1). It is the one statement of that rule: roundAsks leaves such a claim
 // out of both of the round's sets, and notWaitedFor and passedOverClaims name it. It is every
 // claim supervise's Claim.PassedOverByRound names, a suspension by the daemon's own rule, by a
-// root's exit, by an idle release or by an unknown source, but the one exception: a claim that a
-// project's pause still keeps (podHolds.owes, which reads the round for the claim's answer).
+// root's exit, by an idle release, by the work hold or by an unknown source, but the one
+// exception: a claim that a project's pause still keeps (podHolds.owes, which reads the round for
+// the claim's answer). A claim the work hold stopped is never that exception: the hold takes a
+// pause's stop over (supervise's suspensionRank), and the claim it holds is not released.
 //
 // A pause's stop suspends each role it stops as released (supervise.SuspendedByReleased) and
 // keeps the pod for the work on its disk (decision 12 of dispatch://INFRA-3759). So such a claim
@@ -3190,16 +3192,19 @@ func awaitsAnswer(c supervise.Claim, round string, clock roundClock) bool {
 //     another pod. The ask names work that died with that pod, and no process the claim runs now
 //     holds any of it.
 //   - A claim the round passes over (roundClock.passesOver): one the daemon suspended, by the
-//     daemon's own rule, by a root's exit, by an idle release, or by an unknown source
-//     (supervise's Claim.PassedOverByRound), but not the one exception, a claim that a project's
-//     pause still keeps (podHolds.owes). Such a claim runs no process and no turn in the pod
-//     (dispatch://INFRA-4109 R1). An ask would reach no session. A wake or a resume would
+//     daemon's own rule, by a root's exit, by an idle release, by the work hold, or by an unknown
+//     source (supervise's Claim.PassedOverByRound), but not the one exception, a claim that a
+//     project's pause still keeps (podHolds.owes). Such a claim runs no process and no turn in the
+//     pod (dispatch://INFRA-4109 R1). An ask would reach no session. A wake or a resume would
 //     override the reason the daemon stopped the claim: an idle-released pod is not woken to be
-//     asked, because it holds no turn to interrupt (dispatch://INFRA-2981). The outbox's row
-//     refuses the ask of such a claim too (supervise's Machine.PublishUpdateAsk), so a row queued
-//     before the suspension publishes nothing. It refuses the ask of a claim the pause keeps as
-//     well, since a publish to a role with no holder raises a role wake; the sweep asks that
-//     claim only once its agent is ready, and a ready claim is no longer suspended.
+//     asked, because it holds no turn to interrupt (dispatch://INFRA-2981), and a claim the work
+//     hold stopped starts only at the hold's end or at an operator's resume or retry (supervise's
+//     Machine.EndHold). A claim whose work hold stop is still held for its agent's turn is not
+//     passed over: that agent still runs in the pod and can answer. The outbox's row refuses the
+//     ask of a claim the round passes over too (supervise's Machine.PublishUpdateAsk), so a row
+//     queued before the suspension publishes nothing. It refuses the ask of a claim the pause
+//     keeps as well, since a publish to a role with no holder raises a role wake; the sweep asks
+//     that claim only once its agent is ready, and a ready claim is no longer suspended.
 //
 // Work that a claim left out of the round left unpushed on the pod's disk goes with the pod, unless
 // that disk is a kept volume the issue's next pod mounts (roundKeptVolume). The

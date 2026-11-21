@@ -175,6 +175,7 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/claims/turn-outcome":                    reads("message"),
 		"POST /legion/v1/claims/activity":                        reads("sessionId"),
 		"POST /legion/v1/claims/release-records":                 reads("since"),
+		"POST /legion/v1/claims/approval":                        reads("sessionId"),
 		"POST /legion/v1/grants":                                 reads("sessionId"),
 		"POST /legion/v1/controller/secret":                      noString,
 		"POST /legion/v1/controller/github-credential":           reads("secret"),

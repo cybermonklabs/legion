@@ -694,7 +694,7 @@ func deploysIgnoredLine(key string) string {
 // line, which is what every check here prints before its first capability line.
 var demoProductionCheck = productionCheckTesterLine("DEMO")
 
-var demoCheckConfigOK = "Config OK: project=DEMO design-gate-steps=spec\n" + demoProductionCheck
+var demoCheckConfigOK = "Config OK: project=DEMO design-gate-steps=spec design-gate-hold=merge\n" + demoProductionCheck
 
 // tmuxCheckKeys are the top-level keys of a tmux legion.yaml `legion config check`
 // passes: the Stage 1 keys, the operator bearer and the github_apps a file with projects must
@@ -790,7 +790,7 @@ func TestConfigCheckWarnsForEveryProjectThatStillSetsDeploys(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
-	want := "Config OK: project=DEMO design-gate-steps=spec\n" + deploysIgnoredLine("DEMO") + deploysIgnoredLine("OTHER") +
+	want := "Config OK: project=DEMO design-gate-steps=spec design-gate-hold=merge\n" + deploysIgnoredLine("DEMO") + deploysIgnoredLine("OTHER") +
 		demoProductionCheck + productionCheckTesterLine("OTHER") + tmuxCapabilityGaps + tmuxPauseUnavailable
 	if code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
@@ -829,12 +829,48 @@ func TestConfigCheckPrintsEachProjectsProductionCheck(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
-	want := "Config OK: project=DEMO design-gate-steps=spec\n" + demoProductionCheck +
+	want := "Config OK: project=DEMO design-gate-steps=spec design-gate-hold=merge\n" + demoProductionCheck +
 		"projects.OTHER.production_check: off — a merge that closes one of its issues opens no production check\n" +
 		tmuxCapabilityGaps + tmuxPauseUnavailable
 	if code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
+}
+
+// `legion config check` names on its OK line what a closed design gate holds, the word of
+// `gates.hold`: `merge` for a file that names no hold, and the word the file names otherwise. A
+// value the key does not take is refused with exit 1 and no OK line.
+func TestGatesHoldPrintedByConfigCheck(t *testing.T) {
+	legionState(t)
+	for _, tc := range []struct{ name, gates, hold string }{
+		{name: "no gates key", gates: "", hold: "merge"},
+		{name: "the word merge", gates: "gates:\n  hold: merge\n", hold: "merge"},
+		{name: "the word work", gates: "gates:\n  hold: work\n", hold: "work"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := projectsConfig(t, "projects:\n  DEMO: {}\n"+tc.gates)
+
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+			want := "Config OK: project=DEMO design-gate-steps=spec design-gate-hold=" + tc.hold + "\n" + demoProductionCheck +
+				tmuxCapabilityGaps + tmuxPauseUnavailable
+			if code != 0 || out.String() != want || errb.Len() != 0 {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+			}
+		})
+	}
+	t.Run("a word the key does not take", func(t *testing.T) {
+		config := projectsConfig(t, "projects:\n  DEMO: {}\ngates:\n  hold: drain\n")
+
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+		const want = `legion config check: gates.hold must be merge or work (got "drain")` + "\n"
+		if code != 1 || out.Len() != 0 || errb.String() != want {
+			t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, no stdout and %q", code, out.String(), errb.String(), want)
+		}
+	})
 }
 
 // `legion config check` validates the file the way boot does, says so, and exits: no App
@@ -977,7 +1013,7 @@ func TestConfigCheckWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 	warning := "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)\n"
-	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProductionCheck + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
+	if want := "Config OK: project=DEMO design-gate-steps=spec design-gate-hold=merge\n" + warning + demoProductionCheck + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
@@ -1163,7 +1199,7 @@ func TestConfigCheckReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 			}
 			want := demoCheckConfigOK
 			if tc.key == seedKey {
-				want = "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + public + "\n" + demoProductionCheck
+				want = "Config OK: project=DEMO design-gate-steps=spec design-gate-hold=merge nats-nkey-user=" + public + "\n" + demoProductionCheck
 			}
 			want += tmuxCapabilityGaps + tmuxPauseUnavailable
 			if tc.refusal == nil {
@@ -1224,7 +1260,7 @@ func TestConfigCheckReadsTheDaemonNATSSeedAsBootDoes(t *testing.T) {
 				t.Fatalf("the check printed a seed: stdout %q stderr %q", out.String(), errb.String())
 			}
 			if tc.refusal == nil {
-				if want := "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + paneUser + " nats-daemon-nkey-user=" + daemonUser + "\n" + demoProductionCheck + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
+				if want := "Config OK: project=DEMO design-gate-steps=spec design-gate-hold=merge nats-nkey-user=" + paneUser + " nats-daemon-nkey-user=" + daemonUser + "\n" + demoProductionCheck + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
 					t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 				}
 			} else if want := "legion config check: " + tc.refusal(path); code != 1 || out.Len() != 0 || !strings.HasPrefix(errb.String(), want) {

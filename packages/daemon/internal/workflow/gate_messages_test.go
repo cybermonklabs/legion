@@ -70,7 +70,7 @@ func TestAGateEventThatMovesNothingTellsNobody(t *testing.T) {
 
 // Under more than one gated step, the message is of the standing of every step the deployment
 // gates, not of the one row the event names. The merger merges on it, and the merger's own start
-// is held while any required step is closed (the outbox's designGateClosed over
+// is held while any required step is closed (the outbox's treeGate over
 // classify.StandingGate), so an "opened" message sent while another document is still under
 // review would merge a head whose design nobody has approved (dispatch://INFRA-714/spec R5,
 // under the steps INFRA-1272 gates).
@@ -108,7 +108,7 @@ func TestTheGateMessageIsOfEveryGatedStepAndNotTheOneTheEventNames(t *testing.T)
 }
 
 // The message and the merger's start hold ask one question, so they read one predicate
-// (classify.StandingGate, the outbox's designGateClosed). A step the deployment gates that
+// (classify.StandingGate, the outbox's treeGate). A step the deployment gates that
 // nothing has registered names no document, so the hold passes it over; a message decided over a
 // predicate that let such a step hold the work would say nothing at all while the hold moved,
 // which is what a step list that grew left behind (dispatch://INFRA-714/spec R5).
@@ -194,14 +194,19 @@ func seedMergingRoot(t *testing.T, pool *pgxpool.Pool) {
 // gateMovedBody is the whole message a role is sent for one move of LEGION-208's design gate
 // (workflow's tellGateMoved).
 func gateMovedBody(step record.DesignStep, document string, version int, open bool) string {
+	return gateMovedBodyOf("LEGION-208", step, document, version, open)
+}
+
+// gateMovedBodyOf is gateMovedBody for the design gate of tree.
+func gateMovedBodyOf(tree string, step record.DesignStep, document string, version int, open bool) string {
 	if open {
-		return fmt.Sprintf("The design gate of LEGION-208 opened: a person approved version %d of its %s document (%s), "+
+		return fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
 			"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
-			"A merge the closed gate held is released.", version, step, document)
+			"A merge the closed gate held is released.", tree, version, step, document)
 	}
-	return fmt.Sprintf("The design gate of LEGION-208 closed: version %d of its %s document (%s) is with its reviewer, "+
+	return fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
 		"so the design you are working to may change. Your phase goes on; the merge waits until every gated step "+
-		"stands open again.", version, step, document)
+		"stands open again.", tree, version, step, document)
 }
 
 // treeRoleToken is the Envoy role token of one issue's role, the address a role message carries.

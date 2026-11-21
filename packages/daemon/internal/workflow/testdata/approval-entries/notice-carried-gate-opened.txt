@@ -1,0 +1,2 @@
+carried-gate-opened on ACME-950
+{"kind":"carried-gate-opened","version":12,"reason":"a human approved ACME-900's spec document at version 12, which opens the gate ACME-950 carried; any child waiting on it starts","actor":"user:person@example.com","ref":"dispatch://ACME-900/spec"}

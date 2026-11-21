@@ -7,7 +7,7 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 202,
+    "daemon": 210,
     "caller": 199
   },
   "admission": {
@@ -1077,7 +1077,8 @@
     "gates": {
       "design": [
         "spec"
-      ]
+      ],
+      "hold": "merge"
     },
     "github_apps": {
       "implement": {

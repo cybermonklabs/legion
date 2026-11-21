@@ -580,7 +580,8 @@ func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 
 // sendOwedEntry is the body SendOwedEntry, the builder of the boot's resume by rule and of the
 // cutover's repair of a merger the `awaiting_merge` cutover left released (resume.go's
-// startSuspendedOwner) and the silence repair (silence.go's repairSilence) share, with the marks
+// startSuspendedOwner), the silence repair (silence.go's repairSilence) and the work hold's
+// opening of a claim it stopped (work_hold.go's startHeldPhase) share, with the marks
 // of the door the start comes through (startMarks). A mark names that door and not the task's
 // text, so what a claim behind its entry is sent is composed in one place however the start is
 // made, and the boot's resume of a claim the daemon suspended goes on telling the outbox whose
@@ -589,7 +590,8 @@ func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // Every start it writes is a re-assertion (startMarks.reasserts), whichever door it came
 // through: the admission pass's sweep of the claims behind their entry, on every pass and on the
 // sweep of its own each minute, its repair of a slot whose worker has no task, readyWorkerTask,
-// the boot's resume by rule, the cutover's repair and the silence repair. Each of them sends work the record already
+// the boot's resume by rule, the cutover's repair, the silence repair and the work hold's opening.
+// Each of them sends work the record already
 // owes the role — the entry and its task were written by the fact that raised the number, and
 // that fact marked the issue moved where it wrote them (enter's two callers, start and
 // StartPromotedWorker, both come through started as news of the issue) — so the movement is the
@@ -647,8 +649,9 @@ type startMarks struct {
 	// already holds a task of this generation and phase is given it once it is ready and the
 	// start delivers none (record.SuperviseRequest.ResumeTask). The promotion's start of a
 	// mid-phase worker sets it (StartPromotedWorker), and so do the boot's resume, the cutover's
-	// repair and the silence repair of a claim level with the entry its phases row names
-	// (startSuspendedOwner, which booted and cutoverMergerRepair share, and repairSilence).
+	// repair, the silence repair and the work hold's opening of a claim level with the entry its
+	// phases row names (startSuspendedOwner, which booted and cutoverMergerRepair share,
+	// repairSilence and startHeldPhase).
 	resumeTask bool
 	// stored says the task is the stored task of the entry the start carries
 	// (record.PhaseRow.EntryTask), sent as enter stored it, so the queue adds no sentence of the
@@ -680,22 +683,29 @@ type startMarks struct {
 	// a fact new to the record, so it marks no movement of the issue (reassertion, startOrOwe). It
 	// rides on no request: started reads it to tell startOrOwe which movement the start is, and
 	// the outbox never sees it. sendOwedEntry sets it on every start it writes, which is where
-	// the rule for the sends of an owed entry stands, and the three doors that send a claim level
+	// the rule for the sends of an owed entry stands, and the four doors that send a claim level
 	// with its entry the phase's resume task set it too, the boot's resume by rule, the cutover's
-	// repair of a merger the `awaiting_merge` cutover left stopped and the silence repair
-	// (startSuspendedOwner, which booted and cutoverMergerRepair share, and repairSilence), since
-	// that resume is the same work sent again. The other three starts are news of the issue and
-	// leave it unset: a transition's start and the promotion's start of a mid-phase worker, each
-	// raising the entry it hands (enter), and the held phase's retry, which an architect's or an
-	// operator's own request brings (restart).
+	// repair of a merger the `awaiting_merge` cutover left stopped, the silence repair and the
+	// work hold's opening of a claim it stopped (startSuspendedOwner, which booted and
+	// cutoverMergerRepair share, repairSilence and startHeldPhase), since that resume is the same
+	// work sent again. The other three starts are
+	// news of the issue and leave it unset: a transition's start and the promotion's start of a
+	// mid-phase worker, each raising the entry it hands (enter), and the held phase's retry, which
+	// an architect's or an operator's own request brings (restart).
 	reasserts bool
+	// opening is the work hold's opening sentences (record.SuperviseRequest.Opening), set on the
+	// one start the hold's opening gives a claim the hold stopped that holds its issue's phase:
+	// started puts them, then a blank line, in front of the task, and carries them apart on the
+	// request for supervise.Machine.EndHold. Every other start leaves it empty.
+	opening string
 }
 
-// started enqueues the start each of its six callers makes, each of which has held role to one
+// started enqueues the start each of its seven callers makes, each of which has held role to one
 // that works a phase and composed the task itself, at the entry that task is of — 0 for a
-// resume that hands the role no new work, which is the boot's resume, the cutover's repair and
-// the silence repair of a claim level with the entry its phases row names (startSuspendedOwner,
-// which booted and cutoverMergerRepair share, and repairSilence) — and each of which names its
+// resume that hands the role no new work, which is the boot's resume, the cutover's repair, the
+// silence repair and the work hold's opening of a claim level with the entry its phases row names
+// (startSuspendedOwner, which booted and cutoverMergerRepair share, repairSilence and
+// startHeldPhase) — and each of which names its
 // own marks. It is the one place a start of a phase worker is built, so a reader
 // asking what such a row carries reads this request and no other, and a field added here
 // reaches every one of those starts. It goes through startOrOwe, so the worker comes back on
@@ -706,14 +716,15 @@ type startMarks struct {
 // start is news of its issue is marks.reasserts, handed on as the movement startOrOwe marks or
 // leaves unmarked.
 //
-// One of the six is called from outside the engine's own transitions: sendOwedEntry, which
+// One of the seven is called from outside the engine's own transitions: sendOwedEntry, which
 // admission calls through SendOwedEntry for the claims it sweeps and for the slot it repairs
 // (admit's owedEntryRoles and resumeSlottedWorkers), which readyWorkerTask calls for a worker
 // whose agent has just reported ready while its claim stands below the entry its phases row
 // names (catch_up.go), which the boot's resume by rule and the cutover's repair call for a
 // suspended claim standing below it (startSuspendedOwner, for booted's claims and for the
-// released mergers of cutoverMergerRepair), and which the silence repair calls for a silent claim
-// standing below it (repairSilence). A ready worker level with that row is given the phase's
+// released mergers of cutoverMergerRepair), which the silence repair calls for a silent claim
+// standing below it (repairSilence), and which the work hold's opening calls for a claim it
+// stopped standing below it (startHeldPhase). A ready worker level with that row is given the phase's
 // resume task instead, and that one start is enqueued directly rather than built here, for the
 // reason StartOrOwe's own comment gives.
 func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, entry int64, marks startMarks) error {
@@ -721,9 +732,13 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if marks.reasserts {
 		move = reassertion
 	}
+	if marks.opening != "" {
+		task = supervise.OpeningTask(marks.opening, task)
+	}
 	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
 		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
-		RoundNamed: marks.stored && role == claim.RoleReviewer, RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, e.now(), move)
+		RoundNamed: marks.stored && role == claim.RoleReviewer, RuleResume: marks.ruleResume, FreshSession: marks.freshSession,
+		Opening: marks.opening}, e.now(), move)
 }
 
 // movement says whether a start of a phase worker is news of its issue, which startOrOwe marks

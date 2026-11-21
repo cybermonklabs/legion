@@ -48,11 +48,13 @@ const ServingFloor = 46
 //
 // 193 is the constant rather than its number, because the entry that added the shaped answers
 // names it: a renumber of that entry moves shapedAnswersContract and this list with it, and moving
-// one of the two alone would describe a shape at a contract no entry declares. The last is
-// repositoriesLiveContract rather than its number for the same reason: it is this daemon's own
+// one of the two alone would describe a shape at a contract no entry declares. 202 is
+// repositoriesLiveContract rather than its number for the same reason: it is the live repositories'
 // contract, dispatch://INFRA-4401's, and a renumber of that change moves the constant and this
-// list with it.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract}
+// list with it. The last is approvalRouteContract for the same reason too: it is this daemon's own
+// contract, and a renumber of the entry that added the approval route and the work hold's `held`
+// moves approvalRouteContract, and this list with it.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, approvalRouteContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -78,6 +80,7 @@ const (
 	AnswerRefusal            AnswerID = "refusal"
 	AnswerProjectPause       AnswerID = "project-pause"
 	AnswerProjectResume      AnswerID = "project-resume"
+	AnswerClaimApproval      AnswerID = "claim-approval"
 )
 
 // Answer is one response schema a plugin parses, with every route that answers it and the
@@ -198,6 +201,11 @@ var Answers = []Answer{
 	// version.go's 178: the pause the controller's resume ended and how many held rows it let out
 	// (`api.ProjectResumeResponse`), arrived with its route as the pause's answer did.
 	{ID: AnswerProjectResume, Routes: []string{"POST /legion/v1/project/resume"}, Since: pauseContract},
+	// version.go's 210: whether a person's approval of a spec stands for a root architect's claim
+	// (`api.ClaimApprovalResponse`), which pi-legion reads before a model call of that
+	// architect's own conversation. The route arrives with the answer, so no contract below 210
+	// records either.
+	{ID: AnswerClaimApproval, Routes: []string{"POST /legion/v1/claims/approval"}, Since: approvalRouteContract},
 }
 
 // EnumeratedField is one field of one answer that a plugin parses with a strict enumeration,
@@ -253,10 +261,11 @@ type EnumeratedValue struct {
 // The first reading is measured rather than guessed: `legion-api.ts` and `legion-roles.ts` were
 // read at the commit that declared each contract of SupportedContracts, and the members of
 // every `z.enum` diffed. The lists below that ever grew are `answeredBy`, which gained
-// `declined` at 68, `strandedClaims[].state`, which gained `retired` at 56, and
-// `waitingLine.kind`, which gained `waiting_on_issue` at 132, so every other list is recorded
-// whole at its own field's arrival. (`suspendedBy` gained `released` at 48 and is no row here:
-// the operator claim answers carry it and no plugin parses them.)
+// `declined` at 68, `strandedClaims[].state`, which gained `retired` at 56,
+// `waitingLine.kind`, which gained `waiting_on_issue` at 132, and `why.state`, which gained
+// `held` at 210, so every other list is recorded whole at its own field's arrival.
+// (`suspendedBy` gained `released` at 48 and `hold` at 210 and is no row here: the operator
+// claim answers carry it and no plugin parses them.)
 var EnumeratedFields = enumeratedFields()
 
 // enumeratedFields is every row the table holds: the state's own, the record's taken from them,
@@ -393,8 +402,10 @@ var stateEnumeratedFields = []EnumeratedField{
 	{Answer: AnswerState, KeyPath: "issues.*.waitingLine.part", Values: lineParts},
 	{Answer: AnswerState, KeyPath: "issues.*.waitingLine.kind", Values: lineKinds},
 	// `state` of the one rendered answer an issue that is not working now carries, which of the
-	// four facts holds it (api.WhyView.State). It arrived beside the line's own fields and is
-	// served down with them.
+	// five facts holds it (api.WhyView.State). It arrived beside the line's own fields and is
+	// served down with them. Its list grew: `held` arrived at workHoldContract, after the field,
+	// and an issue whose answer carries it is served without its `why` below that contract
+	// (shaping.go's withoutUnadmittedWhy).
 	{Answer: AnswerState, KeyPath: "issues.*.why.state", Values: whyStates},
 	// All three words of `architectStalls` arrived with the key at 146, riding its band: no strip.
 	{Answer: AnswerState, KeyPath: "issues.*.architectStalls.*", Values: valuesFrom(entryTimesContract, record.ArchitectTookNothing, record.ArchitectClaimUnreachable, record.ArchitectSlowBeforeGate)},
@@ -488,13 +499,23 @@ var failureCauses = valuesFrom(recordFieldsContract,
 	supervise.CauseStalePlugin, supervise.CausePromptRetiresExhausted, supervise.CauseProviderError,
 	supervise.CauseUnrecorded)
 
-// lineParts is every part of the admission's waiting line a member can stand in, and whyStates
-// every fact that holds an issue that is not working now. Both arrived at
-// whyAndLineFieldsContract, so each list is recorded there. lineParts stays literal:
-// record.LinePart is a numbered constant (`int`) whose words come from its String method, so no
-// string constant of the tree spells them.
+// lineParts is every part of the admission's waiting line a member can stand in. It arrived at
+// whyAndLineFieldsContract, so the list is recorded there. It stays literal: record.LinePart is a
+// numbered constant (`int`) whose words come from its String method, so no string constant of
+// the tree spells them.
 var lineParts = valuesFrom(whyAndLineFieldsContract, "returned", "starting")
-var whyStates = valuesFrom(whyAndLineFieldsContract, WhyClaimStopped, WhyWaiting, WhyBlocked, WhyUnlisted)
+
+// whyStates is every fact that holds an issue that is not working now. The field arrived at
+// whyAndLineFieldsContract with four words, and its list grew once: `held`, an issue whose work
+// the work hold holds (`gates.hold: work`), arrived at workHoldContract (version.go's 210,
+// WhyHeld). So it is written out value by value, sorted by value, as lineKinds is.
+var whyStates = []EnumeratedValue{
+	{Value: string(WhyBlocked), Since: whyAndLineFieldsContract},
+	{Value: string(WhyClaimStopped), Since: whyAndLineFieldsContract},
+	{Value: string(WhyHeld), Since: workHoldContract},
+	{Value: string(WhyUnlisted), Since: whyAndLineFieldsContract},
+	{Value: string(WhyWaiting), Since: whyAndLineFieldsContract},
+}
 
 // lineKinds is every reason a member stands in the waiting line. The field arrived at
 // whyAndLineFieldsContract with four words, and its list grew once: `waiting_on_issue`, a

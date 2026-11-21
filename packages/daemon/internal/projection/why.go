@@ -25,16 +25,19 @@ import (
 // `admission.waiting` and `admission.blocked` are all filled and whose members of the line
 // carry the sentence already rendered for them (api.WaitingLineView.Reason); own are this
 // project's own records; running are the roots whose trees run (record.RunningRoots), which is
-// what says the work of an issue past its review is going on; stranded are the claims the
+// what says the work of an issue past its review is going on; held are the trees the work hold
+// holds, by root, each with the record of its hold (heldTrees); stranded are the claims the
 // daemon judges nothing will wake, handed to Project because this package may not read
 // internal/workflow; rows is the Dispatch mirror this pass judged the links from and
 // childWaits the children-first judgement it made (record.ChildWaitsOf).
 //
-// The four states are read in one order, so no issue carries two answers: claim_stopped, then
-// waiting, then blocked, then unlisted. claim_stopped is first because its fact is about the
-// issue's worker rather than its place in a queue, and an issue at work whose worker stopped is
-// the commonest question a reader brings. An issue that matches none of the four carries no
-// answer at all: an issue of `admission.active` whose worker is running, an issue at
+// The five states are read in one order, so no issue carries two answers: claim_stopped, then
+// held, then waiting, then blocked, then unlisted. claim_stopped is first because its fact is
+// about the issue's worker rather than its place in a queue, and an issue at work whose worker
+// stopped is the commonest question a reader brings. held comes next: the work hold stops the
+// phase worker of every member of the tree it holds (`gates.hold: work`), so that is why such an
+// issue does not work, whatever list places it (workHeld). An issue that matches none of the five
+// carries no answer at all: an issue of `admission.active` whose worker is running, an issue at
 // phase.Held whose hold came from a phase that keeps a slot and which holds that slot, which
 // stands in that same list, and an issue whose work is running past its own review, which holds
 // no slot since dispatch://INFRA-2560 and so stands in none of the three lists that place an
@@ -61,8 +64,8 @@ import (
 // things only it says: which issues something holds, which is the `blocked` state's own
 // membership, and what a member of the line a link holds waits on where the links half names
 // nothing for it, the one fallback in this file (the waiting arm below).
-func whyStates(state *api.State, own []record.Issue, running map[string]struct{}, stranded []supervise.Claim,
-	rows map[string]blockers.Row, childWaits map[string]record.ChildWait,
+func whyStates(state *api.State, own []record.Issue, running map[string]struct{}, holds map[string]record.WorkHold,
+	stranded []supervise.Claim, rows map[string]blockers.Row, childWaits map[string]record.ChildWait,
 ) {
 	// The stranded claim each issue's answer names. The set reports two kinds of claim and no
 	// others (workflow.Stranded) — the worker of the issue's phase, and the tree's architect —
@@ -134,6 +137,8 @@ func whyStates(state *api.State, own []record.Issue, running map[string]struct{}
 		switch {
 		case stoppedClaim:
 			why = &api.WhyView{State: api.WhyClaimStopped, Reason: claimStoppedReason(issue, stopped)}
+		case workHeld(issue, running, holds):
+			why = &api.WhyView{State: api.WhyHeld, Reason: workHeldReason(issue, holds[issue.Tree])}
 		case waiting:
 			// The member's own sentence, and one more clause where a link holds it as well as
 			// the line. The clause is added here and never inside the line's own `reason`: the
@@ -214,6 +219,51 @@ func claimStoppedReason(issue record.Issue, stopped supervise.Claim) string {
 	}
 	return fmt.Sprintf("Its phase is %s and the %s's claim is stranded at %s, so nothing will wake it.",
 		issue.Phase, stopped.Role, stopped.State)
+}
+
+// heldTrees is the trees the work hold holds now, by root, each with the record of its hold: the
+// records holds names (record.Store.WorkHolds) whose root is one of own at the generation the
+// record was written at. A record of an older generation of its root is of a run that has ended,
+// whose hold the newer run is not held by.
+func heldTrees(own []record.Issue, holds []record.WorkHold) map[string]record.WorkHold {
+	if len(holds) == 0 {
+		return nil
+	}
+	generations := make(map[string]uint64, len(own))
+	for _, issue := range own {
+		if claim.IsTreeRoot(issue.Key, issue.Tree) {
+			generations[issue.Key] = issue.Generation
+		}
+	}
+	held := make(map[string]record.WorkHold, len(holds))
+	for _, hold := range holds {
+		if generation, recorded := generations[hold.Tree]; recorded && generation == hold.RootGeneration {
+			held[hold.Tree] = hold
+		}
+	}
+	return held
+}
+
+// workHeld is whether the work hold holds issue's work (api.WhyHeld): its tree runs and
+// the hold holds it (heldTrees), and its phase is a phase worker's, whom the hold stops. An issue
+// whose phase is its architect's — a root writing its design, a member in accepting — or that has
+// not started is no issue the hold stops, and is answered as it would be without the hold.
+func workHeld(issue record.Issue, running map[string]struct{}, holds map[string]record.WorkHold) bool {
+	if _, held := holds[issue.Tree]; !held {
+		return false
+	}
+	if _, runs := running[issue.Tree]; !runs {
+		return false
+	}
+	role := phase.RoleFor(issue.Phase)
+	return role != "" && role != claim.RoleArchitect
+}
+
+// workHeldReason is the sentence of an issue the work hold holds (api.WhyHeld): its phase, its
+// tree, and the version of the gated document that closed the tree's design gate.
+func workHeldReason(issue record.Issue, hold record.WorkHold) string {
+	return fmt.Sprintf("Its phase is %s, and the work hold holds the work of its tree %s until every gated step stands open again: "+
+		"version %d of its %s document (%s) closed the design gate.", issue.Phase, hold.Tree, hold.Version, hold.Step, hold.ArtifactID)
 }
 
 // blockedReason is the sentence of an issue something holds where it stands (api.WhyBlocked),

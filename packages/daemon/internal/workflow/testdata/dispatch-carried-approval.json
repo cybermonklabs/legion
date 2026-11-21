@@ -1,0 +1,32 @@
+{
+  "command": "curl -sS -H @<auth header> \"$DISPATCH_URL/api/v1/issues/<KEY>/events?limit=200&after=1400\", keeping the element whose seq is 1457",
+  "captured": "2026-11-20T20:13:22Z",
+  "event": {
+    "id": 739896,
+    "issue_key": "ACME-2694",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 1457,
+    "type": "artifact.approved",
+    "actor": {
+      "kind": "user",
+      "id": "person@example.com"
+    },
+    "notify": true,
+    "created_at": "2026-11-18T16:57:23.006998Z",
+    "payload": {
+      "kind": "person",
+      "name": "spec.md",
+      "actor": {
+        "id": "person@example.com",
+        "kind": "user"
+      },
+      "ask_id": null,
+      "reason": "Carried forward from the approval of version 24: this version's text is that version's, unchanged.",
+      "version": 46,
+      "artifact_id": "aec8fb48-fd46-458a-99a3-a1b199a46b38",
+      "content_sha256": "3e936fc68e4471deab108b0777383ef3d62e726bad2cfd61980f81fb1c9ab1a0",
+      "content_sha256_source": "insert"
+    }
+  }
+}

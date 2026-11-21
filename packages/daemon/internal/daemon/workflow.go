@@ -973,11 +973,13 @@ func (w *workflowRuntime) agentText(token claim.Token, field, text string) strin
 // login from its boot lease: its own project's production_check is the role that works the checks
 // a merge opens (empty, it opens none), and its own project's declared experiments are what each
 // issue the engine records is drawn for. hookPrompts are the words boot read for the hooks that
-// name a file (readBoot), which engineHooks puts in the place of each such hook's path.
+// name a file (readBoot), which engineHooks puts in the place of each such hook's path. The hold
+// is `gates.hold` as the configuration resolves it (config.Gates.Holds): what a closed standing
+// design gate holds of its tree.
 func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[string]string) workflow.Config {
 	project := cfg.Projects[cfg.Project]
 	return workflow.Config{
-		Project: cfg.Project, Steps: cfg.Gates.Steps(), ReviewRoundCap: cfg.ReviewRoundCap,
+		Project: cfg.Project, Steps: cfg.Gates.Steps(), Hold: cfg.Gates.Holds(), ReviewRoundCap: cfg.ReviewRoundCap,
 		Linger: cfg.Linger, ProductionCheckBound: cfg.ProductionCheckBound,
 		ProductionCheckRole: project.ProductionCheck,
 		ReviewAppLogin:      reviewAppLogin,
@@ -1588,8 +1590,10 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // the base's rules read with it on a conflicting answer, and wait this runtime's wait before they
 // read again (readPullRequest, applyMergeability, mergeStateWait); a second read whose last
 // attempt read no answer hands the head to this runtime's merge-state reader to follow
-// (queueMergeStateFollow). All are set before the records' wake can reach the outbox
-// (outboxWake). Whether an issue still holds its workspace, which a repository kept for an
+// (queueMergeStateFollow). The outbox's hold is `gates.hold` as the configuration resolves it
+// (config.Gates.Holds), the engine's own (engineConfig), which its fence of every start of a
+// phase worker reads (startWaitsForTheHold). All are set before the records' wake can reach the
+// outbox (outboxWake). Whether an issue still holds its workspace, which a repository kept for an
 // unrecorded issue is answered while (keptRepository), is read from the runtime (workspaceHeldBy),
 // and so is the rule the end of an issue's pod runs the rename pass under, the outbox's podEnded,
 // which also drops that repository (podEndsOn).
@@ -1601,6 +1605,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
+	w.outbox.hold = supervision.cfg.Gates.Holds()
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits

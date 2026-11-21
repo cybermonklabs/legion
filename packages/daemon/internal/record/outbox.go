@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // OutboxKind names one durable side effect.
@@ -1240,6 +1241,32 @@ type SuperviseRequest struct {
 	// a moved phase took the role over while the row waited (decision 10).
 	// A start that is no wake, and every request of another op, carries none.
 	WakeKind string `json:"wakeKind,omitempty"`
+	// SuspendedBy, Deadline and TurnAfter are the work hold's stop (`gates.hold: work`), and a
+	// suspend alone carries them. SuspendedBy is the source the stop records:
+	// supervise.SuspendedByHold and no other, so a suspend that names none is the daemon's own stop
+	// as it always was. Deadline is when a turn still running is cut
+	// (supervise.RequestSuspend.Deadline), and TurnAfter the moment the close message reached the
+	// claim, which holds the stop of a ready or idle claim for the turn the message starts
+	// (supervise.RequestSuspend.TurnAfter). The workflow writes neither of the two: the stop a
+	// close message carries (RoleMessage.Stop) is posted by the outbox once the message reached its
+	// claim, which names both from that moment and writes them on the row, so a restart posts the
+	// stop again with the deadline it stored; and the stop of a released worker that is not a
+	// merger, which no message reaches, names neither and stops the claim at once. A TurnAfter with
+	// no Deadline is refused, as supervise refuses it.
+	//
+	// The release before decodes strictly (DisallowUnknownFields), so the way back of
+	// migrations/20261121000254_work_holds.up.sql deletes the hold's stops and takes the hold's
+	// keys off every other row before that release boots.
+	SuspendedBy supervise.SuspendSource `json:"suspendedBy,omitempty"`
+	Deadline    time.Time               `json:"deadline,omitzero"`
+	TurnAfter   time.Time               `json:"turnAfter,omitzero"`
+	// Opening is the work hold's opening sentences, on the start the hold's opening writes for a
+	// claim the hold stopped (workflow's openHeldClaims). Task is those sentences, a blank line and
+	// the claim's work, and the outbox hands the sentences apart to supervise.Machine.EndHold, which
+	// puts them in front of a task the claim kept instead where that kept task is the one task the
+	// opening gives: a claim the hold stopped is given one task, never a second. Every other start,
+	// and every other op, carries none.
+	Opening string `json:"opening,omitempty"`
 }
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
@@ -1348,13 +1375,28 @@ func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemov
 // each would start a pod for every CI settlement and every gate move, once per released role.
 // Published, the message would meet a released role as one nobody holds: the listener answers
 // holder_lapsed, or unclaimed once the reaper has freed the claim, and raises the role's wake
-// beside either, so the pod would come back for a message the row had already dropped. The one
-// exception is a row a project's pause held for a role a pause stopped: without the pause the role
+// beside either, so the pod would come back for a message the row had already dropped. Two
+// exceptions stand. One is a row marked Wake, the design gate's close message to a merger whose
+// claim was released when the gate closed (workflow's tellGateMoved). The other is a row a
+// project's pause held for a role a pause stopped: without the pause the role
 // would have had the message, so the row is published to the role after the resume, and that
 // publish wakes it (internal/daemon's outbox.roleMessage, R4 of dispatch://INFRA-3759).
 type RoleMessage struct {
 	Role string `json:"role"`
 	Body string `json:"body"`
+	// Wake marks the design gate's close message to a merger whose claim was released when the
+	// gate closed, under either hold: the outbox wakes the released merger for the message rather
+	// than dropping it, so the merger can take its pull request out of GitHub's merge queue. It is
+	// the one start of a merger the closed gate lets through, and every other message carries none.
+	Wake bool `json:"wake,omitempty"`
+	// Stop is the work hold's stop of the role the message tells to end its turn (`gates.hold:
+	// work`, workflow's workHoldClose): a suspend of the source hold that names no deadline and no
+	// turn. The outbox posts it once the message reached the claim, naming both from that moment
+	// (SuperviseRequest.Deadline, TurnAfter), and posts nothing where the tree no longer holds
+	// work by then (record.TreeGate.HoldsWork), so a stop not yet made when the gate opens again is
+	// not made. Every other message carries none. The release before decodes strictly, so the way
+	// back of migrations/20261121000254_work_holds.up.sql takes both keys off every role message.
+	Stop *SuperviseRequest `json:"stop,omitempty"`
 }
 
 func (RoleMessage) OutboxKind() OutboxKind { return OutboxKindRoleMessage }
@@ -2350,12 +2392,20 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.WakeKind == pods.WakePause && value.Pause == 0 {
 			return fmt.Errorf("a start for a %s wake names the pause that owed it", value.WakeKind)
 		}
+		if err := validateWorkHoldRequest(value); err != nil {
+			return err
+		}
 	case RoleMessage:
 		if value.Role == "" {
 			return fmt.Errorf("role message requires role")
 		}
 		if value.Body == "" {
 			return fmt.Errorf("role message requires body")
+		}
+		if stop := value.Stop; stop != nil && !holdStopToPost(*stop) {
+			return fmt.Errorf("a role message's stop is the work hold's suspend of a role of a tree, of the source %s, naming no deadline and no turn, "+
+				"which the outbox names once the message reached the claim; it is %s %q of %q by %q, deadline %s, turn %s",
+				supervise.SuspendedByHold, stop.Op, stop.Role, stop.Tree, stop.SuspendedBy, stop.Deadline, stop.TurnAfter)
 		}
 	case GatedStepsPublish:
 		if value.Project == "" {
@@ -2564,6 +2614,13 @@ func validNoticeKind(kind NoticeKind) bool {
 	return slices.Contains(validNoticeKinds, kind)
 }
 
+// NoticeKinds is every notice kind an architect is told, in the order validNoticeKinds lists them,
+// as a copy a caller may change: the roster a test that must classify each kind reads, so a kind
+// added here reaches it.
+func NoticeKinds() []NoticeKind {
+	return slices.Clone(validNoticeKinds)
+}
+
 // validateNoticeFailure holds a notice's failure record to the two kinds that report a claim's
 // failure: the hold a phase worker's failed claim puts its issue in and the worker-died that
 // names the death (workflow's claimFailed). Both arms of the switch above call it, because the
@@ -2624,6 +2681,44 @@ func validSuperviseOp(op SuperviseOp) bool {
 	default:
 		return false
 	}
+}
+
+// validateWorkHoldRequest holds the work hold's keys of a supervise request to the rows the hold
+// writes (`gates.hold: work`): a source on a suspend alone, and only the hold's; a deadline and a
+// turn on the hold's stop alone, and no turn without a deadline, which supervise refuses as a stop
+// that is never made; and opening sentences on a start alone, whose task begins with them, so the
+// one task the claim is given and the sentences the outbox hands supervise apart are the same words.
+func validateWorkHoldRequest(value SuperviseRequest) error {
+	if value.SuspendedBy != "" && value.Op != "suspend" {
+		return fmt.Errorf("a supervise %s names the source %q; only a suspend names one", value.Op, value.SuspendedBy)
+	}
+	if value.SuspendedBy != "" && value.SuspendedBy != supervise.SuspendedByHold {
+		return fmt.Errorf("a supervise suspend names the source %q; the one source a row names is the work hold's, %s",
+			value.SuspendedBy, supervise.SuspendedByHold)
+	}
+	if (!value.Deadline.IsZero() || !value.TurnAfter.IsZero()) && value.SuspendedBy != supervise.SuspendedByHold {
+		return fmt.Errorf("a supervise %s of the source %q names a deadline or a turn; only the work hold's stop names them, of the source %s",
+			value.Op, value.SuspendedBy, supervise.SuspendedByHold)
+	}
+	if !value.TurnAfter.IsZero() && value.Deadline.IsZero() {
+		return fmt.Errorf("the work hold's stop waits for the turn of a message that reached the claim at %s and names no deadline, so it would never be made",
+			value.TurnAfter.UTC().Format(time.RFC3339))
+	}
+	if value.Opening != "" && value.Op != "start" {
+		return fmt.Errorf("a supervise %s carries the work hold's opening sentences; only a start of the hold's opening carries them", value.Op)
+	}
+	if value.Opening != "" && !strings.HasPrefix(value.Task, supervise.OpeningTask(value.Opening, "")) {
+		return fmt.Errorf("a start carries the work hold's opening sentences, and its task does not begin with them: the one task the opening gives is those sentences and then the work")
+	}
+	return nil
+}
+
+// holdStopToPost is whether stop is the work hold's stop as a close message carries it
+// (RoleMessage.Stop): a valid suspend of a role of a tree, of the source hold, that names no
+// deadline and no turn, both of which the outbox names once the message reached the claim.
+func holdStopToPost(stop SuperviseRequest) bool {
+	return stop.Op == "suspend" && stop.Tree != "" && claim.IsRole(stop.Role) && stop.SuspendedBy == supervise.SuspendedByHold &&
+		stop.Deadline.IsZero() && stop.TurnAfter.IsZero() && validateOutboxPayload(stop.Tree, stop) == nil
 }
 
 // validWakeKind says whether kind is one of the pods wake kinds a resume records, the one

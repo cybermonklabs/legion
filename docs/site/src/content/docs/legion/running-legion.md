@@ -654,6 +654,21 @@ What each part is for:
   resolved list at `settings.gates.design`, and the daemon publishes it onto the project's row in
   Dispatch, which `GET /api/v1/projects` answers as
   `gated_steps`.
+- **`gates.hold`**: what a new version of an approved document of a gated step holds until a person
+  approves that version, or until Dispatch carries the approval after an exact undo. `merge`, the
+  default, holds the merger's start and the first phase of each issue that has not started, and
+  every running phase goes on. `work` also holds the tree's running work: no phase starts, and the
+  daemon stops each phase worker of the tree when its turn ends or 2 minutes after the close message
+  reached it. A stopped worker keeps its session, its phase and its task, the daemon keeps its pod,
+  and `legion claims list` shows it as `suspended:hold`. The architects go on. When the gate opens,
+  the daemon starts each worker it stopped. Under either word, the daemon wakes a merger whose idle
+  pod it released for the close message, so that the merger can take its pull request out of
+  GitHub's merge queue. Any other value is refused at load:
+  `gates.hold must be merge or work (got "<value>")`. A daemon release before this key refuses it
+  as an unknown key of `gates`, so set it only once the daemon carries it. `legion state --json`
+  answers the word at `settings.gates.hold`, and `legion config check` prints it as
+  `design-gate-hold=<word>`. [The design gate](/legion/legion/concepts/#the-design-gate) says what
+  each hold does.
 - **`instructions`** (optional) names a Markdown file of your standing rules (required checks,
   deploy and smoke commands, scope) that is appended to every agent's system prompt. It must hold no
   secret.
@@ -1100,6 +1115,23 @@ To change a role's model later, edit its line under `modelRoles` in your `overla
 same `apply.sh` command. Pods started after that use it; a running pod keeps its files until it is
 relaunched.
 
+A root architect's approval message ([The design gate](/legion/legion/concepts/#the-design-gate))
+reaches the model as a `system` message inside the conversation only where the model takes one.
+Oh My Pi's model catalogue gives that to Opus 4.8 and later, Fable 5 and later, Mythos 5 and later,
+Sonnet 5.5 and later, and Haiku 5.5, on the `anthropic` provider whatever its base URL, and on the
+`google-vertex` and `cloudflare-ai-gateway` providers. On any other model, after a fallback for
+example, Oh My Pi sends the message as a user message at the same place. pi-legion then logs one
+line for each session and model, which names the model:
+`legion: session <id> runs on <provider>/<model>, which takes no system message inside the
+conversation, so Oh My Pi sends the approval message as a user message`.
+
+Oh My Pi adds a date reminder at the end of a request when the date or the working directory
+changed since the conversation's last request. On the request that places a new approval message,
+the reminder would follow that message and make it a user message. On that one request, pi-legion
+moves the reminder to where Oh My Pi puts it on the next request: right after the last message the
+session holds, before the messages added for that request alone. So the approval message stays last
+and `system`, and the next request repeats the same messages before the model's answer.
+
 ## Check and start the daemon
 
 Validate the file first. `legion config check` makes every refusal boot would make from the
@@ -1108,7 +1140,7 @@ command or writing a file:
 
 ```sh
 legion config check --config legion.yaml
-# Config OK: project=WIDGETS design-gate-steps=spec
+# Config OK: project=WIDGETS design-gate-steps=spec design-gate-hold=merge
 ```
 
 Then start it:
@@ -1576,12 +1608,13 @@ Closing the terminal leaves the project without one, and the daemon logs
   the moment a `returned` issue's work came back; `rootRank`, `ownRank` and `rootKey`, the two
   Dispatch ranks that placed a `starting` issue and the key of its tree root; and `reason`, the
   sentence the block above prints. Beside them, on every issue that is not working now,
-  `why`, one answer with a `state` — `claim_stopped`, a claim nothing will wake; `waiting`, the
-  line; `blocked`, a Dispatch link or an open child below it; `unlisted`, an issue the record
-  holds in the workflow that stands in none of the three lists — and a `reason` sentence; an
-  issue holding an admission slot carries no `why` unless it also stands in `admission.waiting`
-  or `admission.blocked`, or a stranded claim names it: an answered root reads `waiting`, and an issue at work whose
-  worker runs, one `held` and a root whose ask a person has not answered yet, which `waitingOn`
+  `why`, one answer with a `state` — `claim_stopped`, a claim nothing will wake; `held`, an issue
+  whose phase worker the work hold holds, whose `reason` names the version that closed the gate;
+  `waiting`, the line; `blocked`, a Dispatch link or an open child below it; `unlisted`, an issue
+  the record holds in the workflow that stands in none of the three lists — and a `reason`
+  sentence; an issue holding an admission slot carries no `why` unless it also stands in
+  `admission.waiting` or `admission.blocked`, a stranded claim names it or the work hold holds it: an answered root reads `waiting`, and an issue at work whose
+  worker runs, one whose phase is `held` and a root whose ask a person has not answered yet, which `waitingOn`
   answers for, read nothing. Neither does an issue the record does not hold in the workflow. A caller from a pod whose claims record a contract below 85 is
   served every issue without `why`, and the `waitingLine` of each member of the line with its
   `place` and its `length` alone, and no `partPlace`. Then, for a closed

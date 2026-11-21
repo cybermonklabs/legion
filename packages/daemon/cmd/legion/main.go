@@ -214,8 +214,9 @@ func pluginsLine(cfg config.Config) string {
 // names a mise tool. Each refusal is written to stderr through printRefusal, as `legion start`
 // writes its own, so a URL a refusal quotes loses its query and its userinfo in both commands.
 // The OK line names the design-gate steps the file resolved to, in the order it named them
-// (`design-gate-steps=`, `none` for a deployment that gates none), and each NATS nkey seed's
-// public key when there is one, never the seed.
+// (`design-gate-steps=`, `none` for a deployment that gates none), then what a closed gate holds
+// (`design-gate-hold=`, the `gates.hold` word, `merge` for a file that names none), and each NATS
+// nkey seed's public key when there is one, never the seed.
 // Right after it comes one line per loader warning (config.Config.Warnings) — a key the file
 // still sets that this daemon no longer reads, whether a project sets it or the file does at its
 // top level — in the words boot logs it with: what the key would have been refused for, and what
@@ -265,7 +266,8 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 		printRefusal(stderr, "legion config check", err)
 		return 1
 	}
-	ok := "Config OK: project=" + cfg.Project + " design-gate-steps=" + designGateSteps(cfg.Gates.Steps())
+	ok := "Config OK: project=" + cfg.Project + " design-gate-steps=" + designGateSteps(cfg.Gates.Steps()) +
+		" design-gate-hold=" + string(cfg.Gates.Holds())
 	if paneNatsUser != "" {
 		ok += " nats-nkey-user=" + paneNatsUser
 	}

@@ -337,8 +337,8 @@ approves the new version. Your own answer to a decision block in the approved sp
 exception: when that answer is the whole change since the version you approved, Dispatch records
 your approval at the new version and the gate reopens, so the architect asks you for nothing; when
 the answer means the spec's text changes too, the architect rewrites it and asks you to approve
-again, naming what changed since your approval. Work already in flight carries on, through its
-merge: the gate holds a tree's start, and nothing after it. The daemon only reads approvals;
+again, naming what changed since your approval. What the closed gate holds of a tree that has
+already started is the deployment's `gates.hold` setting (below). The daemon only reads approvals;
 nothing in Legion approves a spec on a person's behalf, and the approval Dispatch records at your
 answer is yours, in your name.
 
@@ -348,6 +348,59 @@ its primary document. The daemon keeps one gate record for each step listed, and
 only once a person has approved every one of them; each closes on its own document's next
 version. A deployment that does not want the gate sets `gates.design: []`, and the tree starts as
 soon as the architect has written its spec.
+
+`gates.hold` says what a closed gate holds once the tree has started. Under `merge`, the default,
+the merge waits: no merger starts, and no issue of the tree starts its first phase. Every phase that
+runs goes on. The daemon tells each phase worker of the tree and the root's architect that the gate
+closed, and that the merge waits until every gated step stands open again. Under `work`, the gate
+also holds the tree's running work, and no phase starts. The daemon tells every architect and phase
+worker of the tree that the gate closed, and tells each phase worker to end its turn. It stops each
+phase worker, with its session kept, when its turn ends or 2 minutes after the message reached it.
+The architects go on. While the hold stands, the daemon keeps the pod of each worker it stopped, and
+the `why` in the state of each issue at a phase worker's phase names the hold and the version that
+closed the gate. When the gate opens again, the daemon starts each worker it stopped. The worker's
+task names the version that closed the gate, and tells it to check what its cut turn already did.
+
+Under both holds, the daemon wakes a merger whose idle pod it released for the close message, so
+that the merger can take its pull request out of GitHub's merge queue. This wake is the one start
+of a merger that the closed gate lets through. Under `work`, a released worker that is not a merger
+is not woken: the daemon records the hold on it, and only the gate's opening starts it.
+
+Dispatch records your approval of a new version in the same write as that version when the version
+holds nothing new to you: your own answer to a decision block, as above, or text that is the
+approved text, byte for byte. Such a write closes and opens the gate at once, so under `work` the
+gate opens before the daemon makes most of the stops. An edit undone exactly is two writes: the
+edit closes the gate, and the undo opens it only when the undo is written. Under `work`, the edit
+stops the tree's work until the undo. To see the work hold act, write the undo only after the
+stops: up to 2 minutes after the edit.
+
+**The approval message.** While a person's approval of a root's spec stands, each model request of
+the root architect's own conversation carries the approval message. Its first sentence names the
+version and the document. The rest says that the architect's top responsibility is now to deliver
+that spec and no other, at the highest standard, and to be prepared to refuse the team's reasons to
+change it. It also says that a change to what the spec delivers goes to the person as one decision
+before any work on it, and that a requirement the work missed goes back to the work. The words are
+the daemon's (`packages/daemon/internal/prompts/approval.md`). A tree that carries a copy of another
+root's gate gets the carried form of the message. It names that root's spec at the version that
+opened the copy, says that this tree carries its work, and asks the architect to deliver what that
+spec asks of this tree.
+
+The architect's plugin, pi-legion, reads the message from the daemon
+(`POST /legion/v1/claims/approval`) when the session starts. It reads it again before the next
+request after an entry that is not the model's or a tool's enters the session: a daemon task, an
+Envoy card or a compaction summary. The first request after a new approval has the message as its
+last entry, so Oh My Pi sends it as a `system` message to a model that takes one
+([The model route](/legion/legion/running-legion/#the-model-route)). Each later request keeps the
+message at that place, with the same bytes. So the provider's prompt cache keeps the prefix, and
+the signed thinking of later replies stays bound to an unchanged prefix. After a compaction takes
+the message out, whether Oh My Pi compacts on the provider's server or in the session, the next
+request has it last again. A fresh session does the same. The session records each placed copy as
+the entry `legion-approval-sent`.
+
+A changes request ends the approval, and a later approval replaces it. The plugin then places no
+new copy of the old version, but a copy it already placed stays where it is, because removing it
+would change the prefix of every later reply. A child's architect and the phase workers get no
+message, and nor does any architect under a deployment that gates no `spec` step.
 
 ## Handoffs on the Dispatch issue
 

@@ -1,5 +1,6 @@
 import { DISPATCH_FIRST_MARKER } from "@legion/envoy-client/dispatch-first";
-import { leadingText, userTextMessage } from "./context-message";
+import { leadingText } from "@legion/pi-shared/approval-message";
+import { userTextMessage } from "./context-message";
 
 /**
  * The messages one provider request carries, with the dispatch-first skill as a user message

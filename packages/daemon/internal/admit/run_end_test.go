@@ -405,7 +405,7 @@ func zeroFact(t *testing.T, kind string) intake.Fact {
 		intake.SessionLost{}, intake.SessionStoreFault{}, intake.MemoryGuardKill{}, intake.VolumeNearFull{}, intake.RetryOrEscalate{},
 		intake.RestartPhase{}, intake.SignOff{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{},
 		intake.CheckReport{}, intake.CheckLookEnded{}, intake.CheckWakeDue{}, intake.CheckBound{},
-		intake.ListenerWake{}, intake.PodBackstopDue{}, intake.WorkerSilent{}, intake.WorkerBackgroundStalled{},
+		intake.ListenerWake{}, intake.PodBackstopDue{}, intake.WorkerSilent{}, intake.WorkerBackgroundStalled{}, intake.WorkHoldOpened{},
 		intake.ControllerTick{}, intake.ChildAdoption{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{},
 		intake.Handover{}, intake.CloseRoot{},
 	} {

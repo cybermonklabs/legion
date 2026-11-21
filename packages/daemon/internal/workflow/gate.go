@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // gatesStep says whether the deployment gates step, so a person must approve that step's document
@@ -166,6 +167,13 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	}
 	if err := e.putGateTold(ctx, tx, gate, gate.LatestVersion); err != nil {
 		return intake.Result{}, err
+	}
+	// The spec row is the root's again, so it answers for the approval from here on, and the record
+	// the root's re-admission left of the row it cleared goes (record.ClearedSpecApproval).
+	if step == record.DesignStepSpec {
+		if err := e.store.DeleteClearedSpecApproval(ctx, tx, fact.Issue); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	// The registration is the path that binds a step to a document, so it is the one that most
 	// often moves the issue's pairs; a re-registration of the document the step already names
@@ -617,7 +625,9 @@ func (e *Engine) gateRequestFound(ctx context.Context, tx pgx.Tx, fact intake.Ga
 // that owns it, by whose key Dispatch sends its events, takes every event (applyArtifact), and each
 // copy a hand-over carried to a child of its tree, now a root of its own (admit's readmit), takes
 // only an approval that opens it or keeps it open (copyTakes). register_gate refuses a document of
-// another issue, so no other gate names it.
+// another issue, so no other gate names it. A changes request also ends the spec approval that
+// the owner's re-admission recorded of that document (forgetClearedSpecApproval), which no gate
+// row holds once the re-admission has cleared the rows.
 //
 // A person's approval of a parked labelled root's primary document is that person's handover of
 // the root (personHandoverQueues), and the daemon queues the root's todo itself, as admission does
@@ -642,6 +652,14 @@ func (e *Engine) dispatchArtifact(ctx context.Context, tx pgx.Tx, fact intake.Di
 	gates, err := e.store.GatesForArtifact(ctx, tx, fact.ArtifactID)
 	if err != nil {
 		return intake.Result{}, err
+	}
+	// A re-admission cleared the root's gate rows, so no row takes a changes request on the
+	// document it cleared: the record the re-admission left of that row goes instead, since the
+	// person's changes request ends the approval it records (record.ClearedSpecApproval).
+	if fact.Kind == intake.DispatchArtifactChangesRequested {
+		if err := e.forgetClearedSpecApproval(ctx, tx, fact.Key, fact.ArtifactID); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	for _, gate := range gates {
 		carried := gate.Issue != fact.Key
@@ -670,6 +688,18 @@ func (e *Engine) dispatchArtifact(ctx context.Context, tx pgx.Tx, fact intake.Di
 	}
 	e.logOnCommit(ctx, "admission: queued a person's handover", "issue", fact.Key, "source", "approval")
 	return intake.Result{}, nil
+}
+
+// forgetClearedSpecApproval deletes the record key's re-admission left of its spec row
+// (record.ClearedSpecApproval) where that record is of document.
+func (e *Engine) forgetClearedSpecApproval(ctx context.Context, tx pgx.Tx, key, document string) error {
+	cleared, err := e.store.ClearedSpecApproval(ctx, tx, key)
+	if err != nil || cleared == nil || cleared.ArtifactID != document {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a changes request ends the spec approval a re-admission recorded", "issue", key,
+		"artifact", document, "approved_version", cleared.Version)
+	return e.store.DeleteClearedSpecApproval(ctx, tx, key)
 }
 
 // recordHandover records on a parked root's own gate the person's approval that queues the root as
@@ -956,6 +986,13 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // Linger holds a member of a closed tree where it stood (record.TreeLingers): every role of it is
 // suspended there, so a gate that moves then tells nobody, as a CI settlement tells nobody.
 //
+// What the move does beyond telling is the deployment's hold (Config.Hold, `gates.hold`). Under
+// `merge`, the default, it is what this comment says, word for word as it always was, with one
+// fix: the close message to a merger whose claim the idle release suspended is marked to wake it
+// (record.RoleMessage.Wake), so it can take its pull request out of GitHub's merge queue rather
+// than leave it to merge a head the gate holds. Under `work` the move is the work hold's close or
+// its opening, with recipients and texts of their own (workHoldClose, workHoldOpen).
+//
 // A holder whose message token cannot be built is logged and skipped, and the rest are told. The
 // gate's state is the record this transaction writes; a message is what the record is worth
 // telling, and secondary to it. Aborting here would roll the gate's own move back for a name the
@@ -969,6 +1006,12 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, root.Tree); err != nil || lingers {
 		return err
+	}
+	if e.holdIsWork() && open {
+		return e.workHoldOpen(ctx, tx, *root, step, document, version)
+	}
+	if e.holdIsWork() {
+		return e.workHoldClose(ctx, tx, *root, step, document, version)
 	}
 	members, err := e.store.TreeIssues(ctx, tx, root.Tree)
 	if err != nil {
@@ -991,27 +1034,53 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	if err != nil {
 		return err
 	}
-	// The step and its own document, never "spec version": under more than one gated step the
-	// version this event carries is that step's document's, and a message naming the spec would
-	// send a reader to the wrong one (INFRA-1272).
-	var body string
-	if open {
-		body = fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
-			"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
-			"A merge the closed gate held is released.", root.Tree, version, step, document)
-	} else {
-		body = fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
-			"so the design you are working to may change. Your phase goes on; the merge waits until every gated step "+
-			"stands open again.", root.Tree, version, step, document)
+	body := gateOpenedMessage(root.Tree, step, document, version)
+	var woken map[claim.Token]bool
+	if !open {
+		body = mergeCloseMessage(root.Tree, step, document, version)
+		if woken, err = e.releasedMergers(ctx, tx, told); err != nil {
+			return err
+		}
 	}
 	for _, to := range told {
-		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
+		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body, Wake: woken[to.token]}); err != nil {
 			return err
 		}
 	}
 	e.logOnCommit(ctx, "workflow: the design gate moved and every phase worker of the tree and the root's architect are told", "issue", key, "tree", root.Tree,
 		"step", string(step), "version", version, "open", open, "told", len(told))
+	if len(woken) > 0 {
+		e.logOnCommit(ctx, "workflow: the design gate closed and its message wakes each released merger of the tree", "tree", root.Tree,
+			"version", version, "woken", len(woken))
+	}
 	return nil
+}
+
+// releasedMergers is the claim token of each merger of told whose claim is released, the mergers
+// the close message wakes (record.RoleMessage.Wake). Only a merger is woken for it, and only from
+// its release: a live merger reads the message as it is, and one an operator or the daemon
+// suspended is not woken by any message.
+func (e *Engine) releasedMergers(ctx context.Context, tx pgx.Tx, told []addressedRole) (map[claim.Token]bool, error) {
+	var tokens []claim.Token
+	for _, to := range told {
+		if role, _ := to.token.Role(); role == claim.RoleMerger {
+			tokens = append(tokens, to.token)
+		}
+	}
+	if len(tokens) == 0 {
+		return nil, nil
+	}
+	claims, err := e.store.RoleClaims(ctx, tx, tokens)
+	if err != nil {
+		return nil, err
+	}
+	woken := make(map[claim.Token]bool, len(claims))
+	for token, held := range claims {
+		if held != nil && (supervise.Claim{State: held.State, SuspendedBy: held.SuspendedBy}).Released() {
+			woken[token] = true
+		}
+	}
+	return woken, nil
 }
 
 // putGateTold writes gate's row and, when that write moves the standing gate of its tree, tells
@@ -1056,7 +1125,7 @@ func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignG
 // standingGateOpen is whether the tree's work stands released under gates, the rows an issue
 // holds by step: no step the deployment gates is closed with a row of its own
 // (classify.StandingGate). It is the one predicate the message and the merger's start hold both
-// read — the hold asks it as the outbox's designGateClosed — so a member is never told the gate
+// read — the hold asks it as the outbox's treeGate — so a member is never told the gate
 // opened while the hold still holds its merger, nor left untold when the hold lets it go. A step
 // the deployment gates that nothing has registered holds the tree's work (FirstClosedStep) but
 // names no document, so nobody can be asked about it and nothing can be said of it: it is why the

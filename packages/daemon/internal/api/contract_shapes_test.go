@@ -388,7 +388,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	partWords := []record.LinePart{record.PartReturned, record.PartStarting}
 	kindWords := []record.LineKind{record.LineReturning, record.LineAnswered, record.LineQueuedRoot,
 		record.LineFirstPhase, record.LineWaitingOnIssue}
-	whyWords := []WhyState{WhyClaimStopped, WhyWaiting, WhyBlocked, WhyUnlisted}
+	whyWords := []WhyState{WhyClaimStopped, WhyWaiting, WhyBlocked, WhyUnlisted, WhyHeld}
 	groupWords := []string{config.MemoryVariantMemory, config.MemoryVariantNone}
 	modeWords := []config.ExperimentMode{config.ExperimentOff, config.ExperimentOn, config.ExperimentRandom}
 	heldWords := []record.HeldReason{record.HeldTreeClosed, record.HeldTreeParked, record.HeldLabelOff,
@@ -542,6 +542,11 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 	// The controller's pause, standing, and once the controller's resume ended it
 	// (controllerPause).
 	standing, ended := pauseViewOf(controllerPause(false)), pauseViewOf(controllerPause(true))
+	// The approval that stands, as the route builds its answer (TestApprovalRouteStandingAnswerGolden).
+	approved, err := approvalAnswer(&record.StandingApproval{Root: ownRoot, Spec: ownRoot, ArtifactID: ownDocument, Version: 24})
+	if err != nil {
+		t.Fatalf("the approval route's answer: %v", err)
+	}
 	return map[AnswerID]answerFixture{
 		// The whole-project body, the answer whose shape has moved most since the floor.
 		AnswerState: {roots: typesOf(State{}), bodies: bodies},
@@ -676,6 +681,10 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerProjectResume: {roots: typesOf(ProjectResumeResponse{}), bodies: []any{ProjectResumeResponse{
 			Pause: ended, Released: 3,
 		}}},
+		// The answer of a standing approval and the answer where none stands, whose `approval` is
+		// null and never absent: the values of the route's two goldens
+		// (TestApprovalRouteStandingAnswerGolden, TestApprovalRouteNoneAnswerGolden).
+		AnswerClaimApproval: {roots: typesOf(ClaimApprovalResponse{}), bodies: []any{approved, ClaimApprovalResponse{}}},
 	}
 }
 

@@ -1,0 +1,8 @@
+kind: Changed
+custom:
+  Issue: pr4661
+body: |-
+  The daemon API mirror (`src/legion-api.ts`) and its fixtures carry contract 210: the approval
+  route's request and answer (`LegionClaimApprovalRequest`, `LegionClaimApprovalResponse`, and the
+  fixtures `claim-approval.json` and `claim-approval-none.json`), `hold` among the suspension
+  sources (`legionSuspendedBy`), and `held` in an issue's `why.state` (`state-work-hold.json`).

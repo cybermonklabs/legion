@@ -377,6 +377,10 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 				generation: 1, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon,
 				taskGeneration: 1, confirmed: true, queuedStart: true,
 				why: "this row changes the queued rows alone, adding the start the workflow has already written for this very entry: the worker is started by that row when its slot comes, and a second start would give the phase two tasks (workflow.OwedEntry)"},
+			{name: "a claim the work hold stopped", root: "LEGION-590", key: "LEGION-591", stands: phase.Testing,
+				generation: 1, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByHold,
+				taskGeneration: 1, confirmed: true,
+				why: "this row changes suspended_by alone, to the work hold's stop: the hold's end starts the worker with its one task, so a start here would wait on the hold and give it a second"},
 		}
 		pool := migratedPool(t)
 		before := make(map[string][]midPhaseStart, len(rows))

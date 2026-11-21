@@ -54,6 +54,7 @@ var pluginRequests = map[string]reflect.Type{
 	"POST /legion/v1/claims/turn-outcome":     reflect.TypeFor[claim.TurnOutcomeRequest](),
 	"POST /legion/v1/claims/activity":         reflect.TypeFor[claim.ActivityRequest](),
 	"POST /legion/v1/claims/release-records":  reflect.TypeFor[ReleaseRecordsRequest](),
+	"POST /legion/v1/claims/approval":         reflect.TypeFor[ClaimApprovalRequest](),
 	"POST /legion/v1/grants":                  reflect.TypeFor[GrantRequest](),
 	"POST /legion/v1/handoff/complete":        reflect.TypeFor[HandoffCompleteRequest](),
 	"POST /legion/v1/issues/status":           reflect.TypeFor[IssueStatusRequest](),

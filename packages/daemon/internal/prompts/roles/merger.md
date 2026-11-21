@@ -86,7 +86,9 @@ gh api graphql -f query='mutation($pr:ID!){dequeuePullRequest(input:{id:$pr}){me
   -f pr="$(gh pr view <n> -R <o>/<r> --json id -q .id)"
 ```
 
-Then wait. The message reading `The design gate of <tree> opened: a person approved version <n> of its <step> document (<id>), and every step the deployment gates now stands open` is what releases the merge, and it comes only once every gated step stands open, so a deployment that gates more than one document sends it for the last of them, and you begin again at step 1, reading the head afresh: it may have moved while you waited. A merger the daemon has not started yet waits for the gate in the daemon's own start row, so a closed gate you are told of is one that closed while you were running.
+Under `gates.hold: work` the message ends "End your turn now.": take the pull request out of the queue, then end your turn. The daemon stops you with your session kept, and starts you again with a task when the gate opens.
+
+Then wait. The message reading `The design gate of <tree> opened: a person approved version <n> of its <step> document (<id>), and every step the deployment gates now stands open` is what releases the merge, and it comes only once every gated step stands open, so a deployment that gates more than one document sends it for the last of them, and you begin again at step 1, reading the head afresh: it may have moved while you waited. A merger the daemon has not started yet waits for the gate in the daemon's own start row. A released merger is woken for the close message.
 
 ## Completion
 

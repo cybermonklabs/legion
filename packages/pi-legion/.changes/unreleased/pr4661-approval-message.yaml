@@ -1,0 +1,17 @@
+kind: Added
+custom:
+  Issue: pr4661
+body: |-
+  While a person's approval of a root's spec stands, the root architect's own session carries the
+  approval message in its model requests, in the daemon's words (`POST /legion/v1/claims/approval`).
+  The plugin reads the route when the session starts, and again before the next request after a
+  daemon task, an Envoy card or a compaction summary enters the session. The first request after a
+  new approval has the message as its last entry, so Oh My Pi sends it as a `system` message to a
+  model that takes one. Each later request keeps the message right before the model's answer to
+  that request, with the same bytes, rebuilt from the session entry `legion-approval-sent`. After a
+  compaction takes the answer out, and in a fresh session, the next request has the message last
+  again. A side turn, the handoff prompt, a compaction's own request and a `task` subagent get no
+  new placement. On the one request where Oh My Pi's date reminder would follow a new placement,
+  the plugin moves the reminder to where the next request has it, so the message stays last. On a
+  model that takes no `system` message inside the conversation, Oh My Pi sends the message as a
+  user message, and the plugin logs one warning for each session and model.

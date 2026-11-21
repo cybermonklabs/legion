@@ -148,6 +148,18 @@ export interface SessionContext {
    * caller decides what it can do without. */
   readonly modelRegistry?: HostModelRegistry;
   /**
+   * The host's `ctx.model` (`Model | undefined`, `extensibility/extensions/types.ts:825` at the
+   * pinned tag), as far as this package reads it: in a `context` handler the session's current
+   * model, and in a `before_provider_request` handler the request's own model
+   * (`extensibility/extensions/runner.ts:2533`, `:2605`). `compat.supportsMidConversationSystem`
+   * says whether the model takes a `system` message inside the conversation: where it is not set,
+   * Oh My Pi's Anthropic conversion sends an extension's custom message as a user message
+   * (`ai/src/providers/anthropic.ts:6255`). Undefined where the session has no model.
+   */
+  readonly model?: HostModel & {
+    readonly compat?: { readonly supportsMidConversationSystem?: boolean };
+  };
+  /**
    * The host's `ctx.getAsyncJobSnapshot()`: this session's async-job manager as it stands now, or
    * null when no session owns the context (upstream `docs/extensions.md`, "Handler context"). Read
    * live from a context kept since `session_start`. Absent on a host that predates it.
@@ -453,9 +465,24 @@ export interface ResourcesDiscoverResult {
   readonly skillPaths?: readonly string[];
 }
 
-/** The messages one provider request is about to carry: a copy made for that request alone. */
+/** The messages one provider request is about to carry: a copy made for that request alone
+ *  (`structuredClone`, `extensibility/extensions/runner.ts:2536-2543` at the pinned tag), which a
+ *  handler may edit in place and return, so a later handler that keys on the array it was handed
+ *  still finds it. */
 export interface ContextEvent {
-  readonly messages: readonly unknown[];
+  readonly messages: unknown[];
+}
+
+/**
+ * A provider request about to be sent (`BeforeProviderRequestEvent`,
+ * `extensibility/extensions/types.ts:1205-1209` at the pinned tag): `payload` is the wire body the
+ * provider built, after Oh My Pi's own conversion, its date reminder and its `cache_control`
+ * marks. Handlers run in load order, each on the body the one before returned, and any result
+ * other than undefined replaces the body (`extensibility/extensions/runner.ts:2599-2632`). The
+ * host runs it again each time the provider rebuilds the body for a retry.
+ */
+export interface BeforeProviderRequestEvent {
+  readonly payload: unknown;
 }
 
 /** Replacement messages for that one request; Oh My Pi stores none of them in the session. */
@@ -534,6 +561,15 @@ export interface PiEventContract {
   readonly auto_retry_end: { readonly event: AutoRetryEndEvent; readonly result: undefined };
   /** Every provider request the session's agent loop sends, each turn and each tool round. */
   readonly context: { readonly event: ContextEvent; readonly result: ContextEventResult };
+  /** Every provider request's wire body, the main loop's, a side turn's, the handoff's and a
+   *  summary request's. A result is the body sent in its place. The host takes any value but
+   *  undefined (`BeforeProviderRequestEventResult` is `unknown`); a wire body is an object, and an
+   *  `unknown` result here widens what `on` infers for every other event's handler (pi-legion's
+   *  `session_stop` handler's `continue: true` reads as a `boolean` and is refused). */
+  readonly before_provider_request: {
+    readonly event: BeforeProviderRequestEvent;
+    readonly result: object;
+  };
   /** Every input before it runs: the host's typed-input ingress, `sendUserInput` included. */
   readonly input: { readonly event: InputEvent; readonly result: InputEventResult };
   readonly session_stop: {

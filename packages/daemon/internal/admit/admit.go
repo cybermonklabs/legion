@@ -1474,7 +1474,7 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 				return fmt.Errorf("publish the gates carried to re-admitted orphan %s: %w", stored.Key, err)
 			}
 		}
-		return a.store.PutHandedOverRoot(ctx, tx, record.HandedOverRoot{Issue: stored.Key, Generation: stored.Generation, GateCarried: len(gates) > 0})
+		return a.putHandedOverRoot(ctx, tx, stored, oldTree, len(gates) > 0)
 	}
 	// Only the old tree's own root coming back cancels its pending hand-overs; an orphan of that
 	// tree admitted by a person leaves its siblings' fences standing.
@@ -1483,17 +1483,87 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 			return err
 		}
 	}
-	if err := a.keepStaleApproval(ctx, tx, stored.Key); err != nil {
+	// The gate rows the clear below deletes, which the two records of the old generation's approval
+	// are read from.
+	if gates, err = a.store.GatesOf(ctx, tx, stored.Key); err != nil {
+		return fmt.Errorf("read the gate of re-admitted %s: %w", stored.Key, err)
+	}
+	if err := a.keepStaleApproval(ctx, tx, stored.Key, gates); err != nil {
 		return err
+	}
+	// The root coming back records the spec approval its cleared gate holds, which the approval
+	// route answers until its architect registers the step again (recordSpecApproval).
+	if claim.IsTreeRoot(stored.Key, oldTree) {
+		if err := a.recordSpecApproval(ctx, tx, stored.Key, gates, oldGeneration); err != nil {
+			return err
+		}
 	}
 	// A root set back to todo is a new generation of the whole tree, so the old generation's pull
 	// request, gate and handoffs go for every issue of it, not only the root's.
 	return a.store.ClearTreeGeneration(ctx, tx, stored.Tree, a.now())
 }
 
+// putHandedOverRoot records stored as the root a hand-over out of oldTree created at its new
+// generation, with whether the carry brought oldTree's gate (carried) and, where it did, the root
+// that holds that gate's document (record.HandedOverRoot.FromRoot): oldTree itself, unless
+// oldTree's own row is a carried copy at its generation, whose document is the root its own
+// hand-over row names, "" where that row names none. The carried copy keeps the old document's id
+// and takes the new root's key, and the promotion that opens the carried tree clears
+// record.Issue.HandedOverFrom, so this row is where the approval route finds the root whose spec
+// a carried tree's message names.
+func (a *Admission) putHandedOverRoot(ctx context.Context, tx pgx.Tx, stored record.Issue, oldTree string, carried bool) error {
+	handed := record.HandedOverRoot{Issue: stored.Key, Generation: stored.Generation, GateCarried: carried}
+	if carried {
+		handed.FromRoot = oldTree
+		old, err := a.store.Issue(ctx, tx, oldTree)
+		if err != nil {
+			return fmt.Errorf("read the tree %s re-admitted orphan %s left: %w", oldTree, stored.Key, err)
+		}
+		if old != nil {
+			oldHanded, err := a.store.HandedOverRoot(ctx, tx, oldTree)
+			if err != nil {
+				return fmt.Errorf("read the hand-over of the tree %s re-admitted orphan %s left: %w", oldTree, stored.Key, err)
+			}
+			if oldHanded.GateCarriedAt(old.Generation) {
+				handed.FromRoot = oldHanded.FromRoot
+			}
+		}
+	}
+	return a.store.PutHandedOverRoot(ctx, tx, handed)
+}
+
+// recordSpecApproval records on the re-admitted root key the spec row of gates, the rows of
+// generation that the generation's clear is about to delete, where a person's approval stands on
+// it: an approved version with the place Dispatch recorded it at, which a registration of an
+// ungated step never has. It records that row at any version, the latest or one the document has
+// moved past, since the approval route answers from it while the root holds no spec row, and
+// keepStaleApproval keeps only the older one, for the start task alone. A row with no such
+// approval deletes an earlier record, which it has outgrown, and so does a carried copy of another
+// root's gate (record.HandedOverRoot.GateCarriedAt), whose approval is that other root's spec's. A
+// root that holds no spec row keeps an earlier record: an earlier re-admission cleared the row and
+// nothing has registered since.
+func (a *Admission) recordSpecApproval(ctx context.Context, tx pgx.Tx, key string, gates map[record.DesignStep]record.DesignGate, generation uint64) error {
+	row := record.SpecGate(gates)
+	if row == nil {
+		return nil
+	}
+	if !row.PersonApproved() {
+		return a.store.DeleteClearedSpecApproval(ctx, tx, key)
+	}
+	handed, err := a.store.HandedOverRoot(ctx, tx, key)
+	if err != nil {
+		return fmt.Errorf("read the hand-over of re-admitted %s: %w", key, err)
+	}
+	if handed.GateCarriedAt(generation) {
+		return a.store.DeleteClearedSpecApproval(ctx, tx, key)
+	}
+	return a.store.PutClearedSpecApproval(ctx, tx, record.ClearedSpecApproval{Issue: key, ArtifactID: row.ArtifactID,
+		Version: *row.ApprovedVersion, Mark: row.ApprovedMark})
+}
+
 // keepStaleApproval keeps, for the architect start of the root key re-admission is clearing, the
-// person's approval a gate of its holds of a version its document has since moved past: the new
-// generation's architect registers each step again on a cleared gate, and its start task
+// person's approval a gate of its holds (gates) of a version its document has since moved past:
+// the new generation's architect registers each step again on a cleared gate, and its start task
 // (workflow.Engine.ParkedDecisionTask) tells it to request approval of the latest version. One
 // approval is kept, read from the first required step whose approved version sits below its
 // latest, because readmitted_approvals keeps one row for each root; it carries that step, so the
@@ -1505,14 +1575,10 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 // its gates have since outgrown; a root with a required step it holds no gate for (an earlier
 // re-admission cleared it and nothing has registered since) keeps the earlier pair, which no
 // start has delivered yet.
-func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string) error {
+func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string, gates map[record.DesignStep]record.DesignGate) error {
 	steps := a.engine.GatedSteps()
 	if len(steps) == 0 {
 		return a.store.DropReadmittedApproval(ctx, tx, key)
-	}
-	gates, err := a.store.GatesOf(ctx, tx, key)
-	if err != nil {
-		return fmt.Errorf("read the gate of re-admitted %s: %w", key, err)
 	}
 	unregistered := false
 	for _, step := range steps {
@@ -3064,9 +3130,12 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 		// A claim an operator suspended is passed over whatever entry it stands on: `legion
 		// claims suspend` suspended that worker, and an operator's suspension holds against every
 		// rule of the daemon's (supervise's RuleHolds, which no start the daemon queues gets
-		// past). A claim the daemon itself suspended is repaired, which is what the idle rule's
+		// past). So is a claim the work hold stopped (supervise.SuspendedByHold): the hold's end
+		// starts it with its one task, and a repair written now would wait on the hold and give it
+		// a second. A claim the daemon itself suspended is repaired, which is what the idle rule's
 		// release and the daemon's own suspend both leave behind.
-		if c := run.Claim; c != nil && c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByOperator {
+		if c := run.Claim; c != nil && c.State == supervise.StateSuspended &&
+			(c.SuspendedBy == supervise.SuspendedByOperator || c.SuspendedBy == supervise.SuspendedByHold) {
 			continue
 		}
 		// A retired claim was stopped, and two stops reach this repair: an operator's `legion

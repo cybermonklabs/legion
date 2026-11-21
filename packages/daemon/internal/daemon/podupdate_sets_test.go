@@ -40,9 +40,11 @@ type roundShape struct {
 // (waitingClaims), so a claim is in both sets or in neither (dispatch://INFRA-4109 R2). A claim
 // in the wait set and not in the ask set holds the pod until the round's bound for an answer
 // nobody asked for: that is how a claim the daemon suspended held BET-1182's, OSSV-300's and
-// OSSV-313's pods to their bounds. A claim the daemon suspended (daemon, exit, released, unknown)
-// is in neither set, because it runs no process and no turn in the pod (R1). An operator's
-// suspension is in both, as dispatch://INFRA-2981 R5 made it.
+// OSSV-313's pods to their bounds. A claim the daemon suspended (daemon, exit, released, hold,
+// unknown) is in neither set, because it runs no process and no turn in the pod (R1). An
+// operator's suspension is in both, as dispatch://INFRA-2981 R5 made it. A work hold's stop that
+// is still held for the agent's turn is in both too: the agent still runs in the pod and can
+// answer.
 //
 // A claim a project's pause stopped is suspended released, and it is the pause's, not R1's,
 // while the pause still owes its role a launch: the pause kept the pod for the work on its disk
@@ -129,6 +131,7 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 		{name: "suspended by exit", claim: suspendedBy(supervise.SuspendedByExit), want: inNeither},
 		{name: "suspended by released", claim: suspendedBy(supervise.SuspendedByReleased), want: inNeither},
 		{name: "suspended by unknown", claim: suspendedBy(supervise.SuspendedByUnknown), want: inNeither},
+		{name: "suspended by hold", claim: suspendedBy(supervise.SuspendedByHold), want: inNeither},
 		// The pause's stop takes a held wake of each role it stops (store.PodRecords.TakePodWake,
 		// pods.WakePause), so while its hold stands the stopped role has an open resume of that
 		// pause, whose clock is the moment of the stop.
@@ -150,11 +153,23 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 			}, owingTheClaim), want: inNeither},
 		{name: "suspended by daemon under a pause hold that stands", claim: suspendedBy(supervise.SuspendedByDaemon),
 			holds: pauseHold(owingTheClaim), want: inNeither},
+		// The work hold takes a pause's stop over (supervise's suspensionRank). The claim it holds
+		// is not released, so it is not the pause's, whatever the pause still owes its role.
+		{name: "suspended by hold under an ended pause hold that still owes its role a launch", claim: suspendedBy(supervise.SuspendedByHold),
+			holds: pauseHold(resumed, owingTheClaim), want: inNeither},
 		{name: "an operator suspension held over a running turn", claim: member(supervise.StateWorking, func(c *supervise.Claim) {
 			c.SuspensionHeld, c.SuspensionHeldBy = true, supervise.SuspendedByOperator
 		}), want: inBoth},
 		{name: "a daemon suspension held over a running turn", claim: member(supervise.StateWorking, func(c *supervise.Claim) {
 			c.SuspensionHeld, c.SuspensionHeldBy = true, supervise.SuspendedByDaemon
+		}), want: inBoth},
+		{name: "a work hold's stop held over a running turn", claim: member(supervise.StateWorking, func(c *supervise.Claim) {
+			c.SuspensionHeld, c.SuspensionHeldBy = true, supervise.SuspendedByHold
+		}), want: inBoth},
+		// The work hold's stop of a ready claim waits for the turn its close message starts
+		// (supervise.RequestSuspend.TurnAfter).
+		{name: "a work hold's stop held for the turn its message starts", claim: member(supervise.StateReady, func(c *supervise.Claim) {
+			c.SuspensionHeld, c.SuspensionHeldBy = true, supervise.SuspendedByHold
 		}), want: inBoth},
 		{name: "no session", claim: member(supervise.StateQueued, func(c *supervise.Claim) { c.Session = "" }), want: inNeither},
 		{name: "left the round's pod", claim: member(supervise.StateReady, func(c *supervise.Claim) { c.UpdateLeftRound = round }), want: inNeither},
@@ -316,6 +331,9 @@ func TestEveryClaimShapeOfARoleThePauseOwesALaunchIsReadByOneRule(t *testing.T) 
 		{state: supervise.StateSuspended, by: supervise.SuspendedByDaemon},
 		{state: supervise.StateSuspended, by: supervise.SuspendedByExit},
 		{state: supervise.StateSuspended, by: supervise.SuspendedByUnknown},
+		// The work hold takes a pause's stop over (supervise's suspensionRank): the claim it holds
+		// is not released, so the pause keeps nothing for it.
+		{state: supervise.StateSuspended, by: supervise.SuspendedByHold},
 		// An operator's suspension holds the pod for the operator, never for the pause.
 		{state: supervise.StateSuspended, by: supervise.SuspendedByOperator, sets: true, answeredAsked: true},
 		{state: supervise.StateFailed},

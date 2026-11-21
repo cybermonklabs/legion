@@ -1,0 +1,14 @@
+kind: Added
+custom:
+  Issue: pr4661
+body: |-
+  A new claim route, `POST /legion/v1/claims/approval`, tells a root architect's plugin whether a
+  person's approval of its spec stands. It answers the document, the approved version and the
+  approval message, in the words of `packages/daemon/internal/prompts/approval.md`, or
+  `approval: null`. A tree that carries a copy of another root's gate gets the carried form of the
+  message, which names that root's spec. A child's architect, the phase workers, the controller and
+  a deployment that gates no `spec` step get `approval: null`. A root's re-admission now records
+  the approved `spec` row that it deletes, and the carry of a gate records the root whose document
+  the gate holds, so the route answers for both. The daemon API contract is 210. A rollback below
+  it runs the way back in the header of `20261120210115_approval_route_records.up.sql`
+  (docs/kubernetes.md).

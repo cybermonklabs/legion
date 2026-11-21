@@ -56,7 +56,7 @@ func TestASuspensionNamingNoSourceIsRefused(t *testing.T) {
 		t.Run(string(by), func(t *testing.T) {
 			h := newHarness(t)
 			h.reach(StateIdle)
-			if err := h.handle(RequestSuspend{Claim: testToken, By: by}); err == nil || !strings.Contains(err.Error(), "not operator, daemon or released") {
+			if err := h.handle(RequestSuspend{Claim: testToken, By: by}); err == nil || !strings.Contains(err.Error(), "not operator, daemon, released or hold") {
 				t.Fatalf("suspend naming %q returned %v, want it refused", by, err)
 			}
 			h.wantState(StateIdle)

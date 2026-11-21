@@ -1,0 +1,9 @@
+kind: Fixed
+custom:
+  Issue: pr4661
+body: |-
+  A merger whose idle pod the daemon released is now woken for the design gate's close message,
+  under both `gates.hold` words, so that it can take its pull request out of GitHub's merge queue.
+  Before, the daemon dropped that message, and the merge queue could merge the pull request under
+  a version of the design that no person had approved. This wake is the one start of a merger that
+  a closed gate lets through.

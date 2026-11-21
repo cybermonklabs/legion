@@ -547,15 +547,19 @@ const legionWaitingLineView = z.object({
 });
 
 /** `api.WhyView` — the one rendered answer an issue that is not working now carries: `state`,
- * which of the four facts holds it — its claim has stopped (`claim_stopped`), it waits in the
- * admission line (`waiting`), something holds it where it stands (`blocked`), or it stands in
- * neither the line nor the work at all (`unlisted`) — and `reason`, the sentence a person reads.
- * The projection reads the four in one order over the facts the pass already holds and renders the
- * sentence of whichever holds the issue, so an issue carries one answer and never two. `state` is a
- * `z.enum` for the reason `part` and `kind` above are, and it arrives with the line's own
- * `partPlace` and the rest of its fields at contract 85. */
+ * which of the five facts holds it — its claim has stopped (`claim_stopped`), the work hold holds
+ * its tree's work (`held`, `gates.hold: work`, contract 210), it waits in the admission line
+ * (`waiting`), something holds it where it stands (`blocked`), or it stands in neither the line
+ * nor the work at all (`unlisted`) — and `reason`, the sentence a person reads; a `held` issue's
+ * names the version that closed its tree's design gate. The projection reads the five in one
+ * order over the facts the pass already holds and renders the sentence of whichever holds the
+ * issue, so an issue carries one answer and never two. `state` is a `z.enum` for the reason `part`
+ * and `kind` above are, and it arrives with the line's own `partPlace` and the rest of its fields
+ * at contract 85. `held` is the one word that arrived later, at 210: a caller below 210 is served
+ * a `held` issue with no `why` at all (the daemon's `withoutUnadmittedWhy`), since its enum
+ * refuses the word. */
 const legionWhyView = z.object({
-  state: z.enum(["claim_stopped", "waiting", "blocked", "unlisted"]).optional(),
+  state: z.enum(["claim_stopped", "held", "waiting", "blocked", "unlisted"]).optional(),
   reason: nonEmptyString.optional(),
 });
 
@@ -1589,6 +1593,40 @@ export const LegionReleaseRecordsResponse = z.object({
 
 export type LegionReleaseRecords = z.output<typeof LegionReleaseRecordsResponse>;
 
+/** `api.ClaimApprovalRequest`, the body of `POST /legion/v1/claims/approval` (contract 210): the
+ * claim a root architect's session holds, that session, and the claim's secret, as
+ * `claims/activity` sends them. The route answers for the claim's own issue alone. */
+export const LegionClaimApprovalRequest = z.strictObject({
+  claimToken: nonEmptyString,
+  sessionId: nonEmptyString,
+  secret: nonEmptyString,
+});
+
+export type LegionClaimApprovalRequestBody = z.output<typeof LegionClaimApprovalRequest>;
+
+/** `api.ClaimApprovalResponse`, the body `POST /legion/v1/claims/approval` answers: the person's
+ * approval of a spec that stands for the claim, or `null` where none does. `document` is
+ * `dispatch://<KEY>/spec`, or the document's id where a carried copy's hand-over names no root;
+ * `version` is the version approved; `message` is the approval message with both filled in, in
+ * the daemon's words (`packages/daemon/internal/prompts/approval.md`), which pi-legion places as
+ * it is. A child's architect, a phase worker, and a deployment that gates no spec step read
+ * `null`, never a refusal. The daemon writes `approval` on every answer, `null` where none
+ * stands, and every field of the approval it names. pi-legion reads all three
+ * (`packages/pi-legion/src/approval-message.ts`, `LEGION_ANSWER_READS`): it places `message` as it
+ * is, decides a new placement by `version`, and logs `document` with each one, so an answer that
+ * names no approval, or an approval without one of them, is refused. */
+export const LegionClaimApprovalResponse = z.object({
+  approval: z
+    .object({
+      document: nonEmptyString,
+      version: z.number().int().positive(),
+      message: nonEmptyString,
+    })
+    .nullable(),
+});
+
+export type LegionClaimApproval = z.output<typeof LegionClaimApprovalResponse>;
+
 /** `api.ControllerRegisterResponse`, for a session that registered as the project's controller
  * (the `bootToken` of `POST /legion/v1/claims/register` is the secret `legion controller start`
  * fetched, or a daemon-launched controller's own boot token): the project's controller role token,
@@ -1679,9 +1717,11 @@ const legionDeliveryView = z.object({
 
 /** Who a suspension is held for (`supervise.SuspendedBy`). `unknown` is a suspension recorded
  * before migration 0038; `released` is one whose idle issue pod the daemon released, which keeps
- * the claim's phase and its pending task until the next wake for its role; only an `operator`
- * one holds against the daemon's rules. */
-const legionSuspendedBy = z.enum(["unknown", "operator", "daemon", "exit", "released"]);
+ * the claim's phase and its pending task until the next wake for its role; `hold` is the work
+ * hold's stop (`gates.hold: work`), which keeps them until the tree's standing design gate opens
+ * again. Only an `operator` one and a `hold` one hold against the daemon's rules: the operator's
+ * until an operator resumes the claim, the hold's until the gate opens or an operator acts. */
+const legionSuspendedBy = z.enum(["unknown", "operator", "daemon", "exit", "released", "hold"]);
 
 /** `api.OperatorClaim`, the body of the operator routes that act on one claim (`POST
  * /legion/v1/operator/claims`, `…/{token}/deliver|suspend|resume|stop|retry|forget-session|close`):
@@ -2304,4 +2344,12 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
   // `pi-legion/src/turn-outcome.ts` logs the run of refused turns and whether this report
   // failed the claim on every turn it reports.
   LegionTurnOutcomeResponse: ["refusedRun", "failed"],
+  // `pi-legion/src/approval-message.ts` places the approval's message as it is, compares its
+  // version with the placed copies, and logs its document with each new placement.
+  LegionClaimApprovalResponse: [
+    "approval",
+    "approval.document",
+    "approval.version",
+    "approval.message",
+  ],
 };

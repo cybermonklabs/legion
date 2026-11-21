@@ -86,10 +86,11 @@ const (
 	// IdleHoldNoPod, whose name says there is no pod.
 	IdleHoldNoLiveClaim
 
-	// The nine holds below are the second rule's, the release of a pod no claim owns
-	// (UnownedPodRelease). Every one of their names carries the unowned_ prefix because a hold
-	// record holds the hold's name and nothing else, and a reader of one must be able to tell
-	// which of the two rules kept the pod.
+	// The ten holds below are the second rule's, the release of a pod no claim owns
+	// (UnownedPodRelease), from IdleHoldUnownedClaimLive to IdleHoldUnownedNotIdle, the work hold's
+	// IdleHoldUnownedWorkHeld among them. Every one of their names carries the unowned_ prefix
+	// because a hold record holds the hold's name and nothing else, and a reader of one must be
+	// able to tell which of the two rules kept the pod.
 
 	// IdleHoldUnownedClaimLive: a claim of the pod is still live, so the pod is a role's to use
 	// and the idle rule's to decide. This rule takes only a pod every claim of which has
@@ -111,6 +112,11 @@ const (
 	// (pods.IdleClaim.OperatorSuspended), the one suspension no daemon rule undoes, and the
 	// operator's resume brings that role back into this pod.
 	IdleHoldUnownedOperatorSuspended
+	// IdleHoldUnownedWorkHeld: the work hold stopped a claim of the pod (pods.IdleClaim.WorkHeld,
+	// `gates.hold: work`), which keeps its session, its phase and its pending task until the hold's
+	// opening starts it again in this pod. A release would take the disk with no bundle, and the
+	// worker's unpushed work with it.
+	IdleHoldUnownedWorkHeld
 	// IdleHoldUnownedDelivery: a task, notice, message or start waits for delivery to a role of
 	// the pod, and the delivery is what brings a role back into it.
 	IdleHoldUnownedDelivery
@@ -129,7 +135,7 @@ const (
 	// IdleHoldPaused is both rules' (IdleRelease, UnownedPodRelease), and the daemon records it
 	// too for a release a pause cancelled at its save (releaseHold in internal/daemon);
 	// IdleHoldPauseHeld is the idle rule's; and IdleHoldUnownedPauseHeld is the second rule's,
-	// whose name carries the unowned_ prefix as the nine above do.
+	// whose name carries the unowned_ prefix as the ten above do.
 
 	// IdleHoldPaused: the daemon's project is paused (pods.IdleView.Paused), and a pause starts
 	// no release.
@@ -169,6 +175,7 @@ var idleHoldNames = map[IdleHold]string{
 	IdleHoldUnownedSandboxGone:       "unowned_sandbox_gone",
 	IdleHoldUnownedClaimProcess:      "unowned_claim_process",
 	IdleHoldUnownedOperatorSuspended: "unowned_operator_suspended",
+	IdleHoldUnownedWorkHeld:          "unowned_work_held",
 	IdleHoldUnownedDelivery:          "unowned_delivery_waiting",
 	IdleHoldUnownedTreeNotLive:       "unowned_tree_not_live",
 	IdleHoldUnownedReleasing:         "unowned_releasing",
@@ -398,6 +405,11 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //     which starts the role in the pod that is still there, or by stopping it, which retires the
 //     claim and leaves the issue to this rule (IdleHoldUnownedOperatorSuspended);
 //
+//   - no claim is stopped by the work hold (pods.IdleClaim.WorkHeld, `gates.hold: work`). The hold
+//     keeps the claim's session, its phase and its pending task, and its opening starts the role
+//     again in this pod; a release would take the disk with no bundle, and the worker's unpushed
+//     work with it (IdleHoldUnownedWorkHeld);
+//
 //   - nothing waits for delivery to a role of the issue. A start queued for a stopped claim is
 //     the one delivery such an issue carries, and it is what brings a role back into this pod; a
 //     release taken under it would leave that start to find its pod gone and to provision the
@@ -449,6 +461,11 @@ func UnownedPodRelease(view pods.IdleView, now time.Time, idle time.Duration, sa
 	for _, c := range view.Claims {
 		if c.OperatorSuspended() {
 			return IdleDecision{Hold: IdleHoldUnownedOperatorSuspended}
+		}
+	}
+	for _, c := range view.Claims {
+		if c.WorkHeld() {
+			return IdleDecision{Hold: IdleHoldUnownedWorkHeld}
 		}
 	}
 	if view.Waiting {

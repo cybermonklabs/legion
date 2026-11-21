@@ -1,0 +1,25 @@
+kind: Added
+custom:
+  Issue: pr4661
+body: |-
+  `gates.hold` in `legion.yaml` says what a new version of an approved document of a gated step
+  holds until a person approves that version. `merge`, the default, is the hold the gate had
+  before: the merger's start and the first phase of each issue that has not started wait, and
+  every running phase goes on. `work` also holds the tree's running work. No phase of the tree
+  starts, and each phase worker of the tree is told to end its turn and is stopped, with its session
+  kept, when its turn ends or 2 minutes after the message reached it. The architects go on. The stop
+  is a suspension source of its own, `hold`: no rule starts the claim, the daemon keeps its pod, and
+  `legion claims list` shows it as `suspended:hold`. A pod update round passes over such a claim as
+  it passes over a role the daemon suspended: it does not ask it or wait for it, and where a role
+  process runs in the pod, it reads the issue workspace through that process before it replaces
+  the pod. An issue at a phase worker's phase of a held tree reads `why.state` `held`, with the
+  version that closed the gate, and a caller below contract 210 is served such an issue with no
+  `why`. When the gate opens again, the daemon starts each
+  claim it stopped with one task, which names the version that closed the gate and tells the worker
+  to check what its turn already did. An operator's own resume or retry of such a claim starts it
+  too. The hold survives a daemon restart. Any other value of `gates.hold` is refused at load,
+  `legion config check` prints the word as `design-gate-hold=`, and `legion state --json` shows it
+  at `settings.gates.hold`. A daemon before this release refuses the key, so take it out of
+  `legion.yaml` before a rollback, and run the ways back in the headers of
+  `20261121000254_work_holds.up.sql` and then `20261120224328_claim_suspended_by_hold.up.sql`
+  (docs/kubernetes.md).

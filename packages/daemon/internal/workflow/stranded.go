@@ -147,6 +147,10 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // takes it again. A released claim nothing has woken is not stranded: it waits for a delivery, as
 // a released pod is meant to.
 //
+// A claim the work hold stopped (supervise.Claim.WorkHeld, `gates.hold: work`) is left out of both
+// cases: the hold says why it waits, and the hold's opening starts it. An operator's suspension or
+// the daemon's own takes such a claim over, and is then read as that source is.
+//
 // Candidates' queued starts and their claims are read through RoleRuns in bounded batches: a
 // fleet of hundreds of suspended claims makes a few snapshot queries, never one pair per claim.
 // steps are the design-gate steps the deployment gates, which say whether a root's tree runs.
@@ -199,6 +203,11 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		// wake for it has run out of StrandedReleaseWake with no turn, and then whatever its role,
 		// since the pod the wake was taken for never came back.
 		if c.Released() && !woken[releasedRole{issue: c.Issue, role: string(c.Role)}] {
+			continue
+		}
+		// A claim the work hold stopped waits for its tree's standing design gate to open, which
+		// the hold says of it and whose opening starts it: it is nothing the daemon has lost.
+		if c.WorkHeld() {
 			continue
 		}
 		// current is the phase the start that would wake the claim names; the architect's names

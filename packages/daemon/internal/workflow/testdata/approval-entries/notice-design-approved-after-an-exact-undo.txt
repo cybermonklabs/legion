@@ -1,0 +1,2 @@
+design-approved on ACME-2694
+{"kind":"design-approved","version":46,"actor":"user:person@example.com","ref":"dispatch://ACME-2694/spec"}

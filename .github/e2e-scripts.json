@@ -155,6 +155,10 @@
   ],
   "elsewhere": [
     {
+      "script": "approval-message.sh",
+      "needs": "a Legion pod's own model route, its models.yml and its operator overlay, whose turns go to a real model through the pod's model gateway (a GitHub-hosted runner has neither), bun with this repository's node_modules, go, curl, tar, jq and flock, git for APPROVAL_MESSAGE_PLUGINS_REF, and some tens of minutes of wall clock for its real model calls"
+    },
+    {
       "script": "burstable-kind.sh",
       "needs": "a throwaway kind cluster with gVisor on an amd64 Linux host, with docker, go, kubectl, curl, zstd, a tar that supports --zstd and kind, and a worker image by digest (LEGION_E2E_IMAGE)"
     },

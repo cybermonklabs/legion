@@ -245,8 +245,8 @@ gates:
                                        # them: decisions (the root issue's decisions document),
                                        # criteria (its Verification document), spec (its primary
                                        # document). The daemon keeps one gate record per step,
-                                       # and the tree's phases, each released child and the
-                                       # merger's READY wait until a person has approved the
+                                       # and no phase of the tree, no released child and no
+                                       # merger starts until a person has approved the
                                        # document of every step listed here.
                                        # [spec] is the default, and the word root-issues means
                                        # it. [] gates nothing, and the word off means that: each
@@ -256,6 +256,21 @@ gates:
                                        # refused at load. legion config check prints the resolved
                                        # list, design-gate-steps=decisions,criteria, or
                                        # design-gate-steps=none when the list is empty.
+  hold: merge                          # what a new version of an approved document of a gated
+                                       # step holds until a person approves that version, or
+                                       # until an exact undo. merge, the default, holds the
+                                       # merger's start and the first phase of each issue that
+                                       # has not started. Every running phase goes on. work also
+                                       # holds the running work of the tree: no phase starts,
+                                       # and the daemon stops each phase worker of the tree when
+                                       # its turn ends or 2 minutes after the close message, and
+                                       # keeps its session. The architects go on. Under both
+                                       # words the daemon wakes a released merger for the close
+                                       # message, so it can take its pull request out of the
+                                       # merge queue. Any other value is refused at load. A
+                                       # daemon release before this key refuses it as an
+                                       # unknown key of gates. legion config check prints the
+                                       # word, design-gate-hold=merge.
 github_apps:
   implement:
     app_id: "100001"

@@ -266,8 +266,8 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readHooks, func(f *fileConfig, v *[]Hook) { f.Hooks = v }),
 		},
 		{
-			Name: "gates", Default: "`design: [spec]`, the root issue's primary document", RequiredBy: "no",
-			Description: "The design gate: the documents of a tree's root a person approves before any phase of the tree starts, any released child starts or a merger of the tree starts.",
+			Name: "gates", Default: "`design: [spec]`, the root issue's primary document, and `hold: merge`", RequiredBy: "no",
+			Description: "The design gate: the documents of a tree's root a person approves before any phase of the tree starts, any released child starts or a merger of the tree starts, and what a new version of an approved document holds until a person approves it.",
 			Read:        reads(readGates, func(f *fileConfig, v *Gates) { f.Gates = v }),
 		},
 		{
@@ -467,6 +467,8 @@ var nestedKeys = []memberGroup{
 	{Path: "gates", Members: []member{
 		{Name: "design", Default: "`[spec]`, the root issue's primary document, which the word `root-issues` also means", RequiredBy: "no",
 			Description: "The design gate's steps, in the order a person approves them: `decisions` (the root issue's decisions document), `criteria` (its Verification document) and `spec` (its primary document); the empty list skips the approval, which the word `off` also means, and any other word, or a step named twice, is refused."},
+		{Name: "hold", Default: "`merge`", RequiredBy: "no",
+			Description: "What a new version of an approved document of a gated step holds until a person approves that version: `merge` holds the merger's start and the first phase of each issue that has not started, and every running phase goes on; `work` also holds the tree's running work: no phase starts, and the daemon stops each phase worker of the tree with its session kept, while the architects go on. Any other value is refused."},
 	}},
 	{Path: repositoryRenamesKey + "[]", Members: []member{
 		{Name: "from", Default: "none: a pair that names no `from` is refused", RequiredBy: "yes",

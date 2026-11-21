@@ -334,9 +334,11 @@ type valueStripCase struct {
 	stays func(t *testing.T, whole, mixed []byte)
 	// beforeField is a contract below the arrival of the row's field, and withField the values a
 	// served body carries that arrived with that field, each under the issue that carries it. A
-	// case gives both where its row's field arrived above the floor. Where the field is older
-	// than the floor it gives neither: no contract this daemon serves is below such a field's
-	// arrival, so no pod records one beside a contract that reads the field.
+	// case gives both where its row's field arrived above the floor, unless the value the row
+	// takes arrived from shapedAnswersContract on, where no claim recording it is in a pod's
+	// reckoning (droppedWhy's case says what that leaves). Where the field is older than the
+	// floor it gives neither: no contract this daemon serves is below such a field's arrival, so
+	// no pod records one beside a contract that reads the field.
 	beforeField int
 	withField   func(t *testing.T, body []byte) map[string]string
 	// undeclaredState and undeclaredIssue carry undeclaredValue in the field the row strips: the
@@ -493,6 +495,62 @@ func valueStripCases() map[string]valueStripCase {
 			undeclaredIssue: Issue{Key: "LEGION-213", WaitingLine: &WaitingLineView{
 				Place: 1, Length: 1, Part: "returned", Kind: undeclaredValue, PartPlace: 1, PartLength: 1,
 			}},
+		},
+		// A pod recording whyAndLineFieldsContract is served the state without the `why` of the
+		// issue the work hold holds: `held` arrived at workHoldContract, and the pod's process
+		// parses `why.state` with an enumeration of the four words before it, and refuses the
+		// whole body for a fifth. The issue stays, and so does every other issue's `why`.
+		//
+		// The pod's claim at workHoldContract is in no pod's reckoning, since a build from
+		// shapedAnswersContract on states its own contract (podContracts): the pod alone at it is
+		// served this daemon's own body, the value with it, and the mixed pod is read at its
+		// lowest contract alone. So the case gives no beforeField, though the field arrived above
+		// the floor: a pod spanning a contract below 85 and one at 210 is a pod below 85 alone,
+		// which the band of 85 serves no `why` at all. That the strip takes no word that arrived
+		// with the field is read here instead: the mixed pod is served every other issue's
+		// `why` as written.
+		droppedWhy: {
+			state: narrowingState, low: whyAndLineFieldsContract, high: workHoldContract,
+			carries: func(t *testing.T, body []byte) bool {
+				for _, issue := range issueViews(t, body) {
+					if why, carried := issue["why"].(map[string]any); carried && why["state"] == string(WhyHeld) {
+						return true
+					}
+				}
+				return false
+			},
+			stays: func(t *testing.T, whole, mixed []byte) {
+				served := issueViews(t, mixed)
+				others := 0
+				for key, issue := range issueViews(t, whole) {
+					got, carried := served[key]
+					if !carried {
+						t.Fatalf("the {%d, %d} pod is served no %s: the strip takes an answer and never an issue; %s",
+							whyAndLineFieldsContract, workHoldContract, key, mixed)
+					}
+					why, answers := issue["why"].(map[string]any)
+					switch {
+					case !answers:
+						continue
+					case why["state"] == string(WhyHeld):
+						if got["why"] != nil {
+							t.Errorf("the {%d, %d} pod is served %s's why %v, want none: the pod's %d process refuses the whole body for it",
+								whyAndLineFieldsContract, workHoldContract, key, got["why"], whyAndLineFieldsContract)
+						}
+					default:
+						others++
+						if !reflect.DeepEqual(got["why"], issue["why"]) {
+							t.Errorf("the {%d, %d} pod is served %s's why %v, want %v: the strip takes the word the pod's %d process refuses and nothing else",
+								whyAndLineFieldsContract, workHoldContract, key, got["why"], issue["why"], whyAndLineFieldsContract)
+						}
+					}
+				}
+				if others == 0 {
+					t.Fatalf("no issue of the fixture's state carries a why of a word that arrived with the field; this proves nothing: %s", whole)
+				}
+			},
+			// An issue whose answer is a word no row declares.
+			undeclaredIssue: Issue{Key: "LEGION-214", Why: &WhyView{State: undeclaredValue, Reason: "The body carries this state."}},
 		},
 	}
 }

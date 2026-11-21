@@ -185,6 +185,7 @@ var settingsEmitted = map[string]string{
 	"Variant.ConfigFiles":                            "projects.<KEY>.experiments.<name>.variants[].config_files",
 	"Variant.InstructionsPath":                       "projects.<KEY>.experiments.<name>.variants[].instructions",
 	"Gates.Design":                                   "gates.design",
+	"Gates.Hold":                                     "gates.hold",
 	"GitHubApps.Implement":                           "github_apps.implement",
 	"GitHubApps.Review":                              "github_apps.review",
 	"GitHubApp.AppID":                                "github_apps.<app>.app_id",
@@ -610,7 +611,7 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 		t.Errorf("github_apps = %+v, want none", settings.GitHubApps)
 	}
 	top := keysOf(t, encoded)
-	for key, want := range map[string]string{"provider_keys": "[]", "omp_launch_prefix": "[]", "nats_urls": "[]", "repository_renames": "[]", "projects": "{}", "capabilities": `{"decided":{}}`} {
+	for key, want := range map[string]string{"provider_keys": "[]", "omp_launch_prefix": "[]", "nats_urls": "[]", "repository_renames": "[]", "projects": "{}", "capabilities": `{"decided":{}}`, "gates": `{"design":["spec"],"hold":"merge"}`} {
 		if got := string(top[key]); got != want {
 			t.Errorf("%s = %s, want %s", key, got, want)
 		}
@@ -632,9 +633,12 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 		t.Errorf("settings carry the DSN: %s", encoded)
 	}
 
-	set := SettingsOf(loadSettingsFile(t, minimalSettingsFile+"review_round_cap: 5\n"))
+	set := SettingsOf(loadSettingsFile(t, minimalSettingsFile+"review_round_cap: 5\ngates: {hold: work}\n"))
 	if set.ReviewRoundCap != 5 {
 		t.Errorf("review_round_cap = %d, want the file's 5", set.ReviewRoundCap)
+	}
+	if set.Gates.Hold != config.HoldWork {
+		t.Errorf("gates.hold = %q, want the file's work", set.Gates.Hold)
 	}
 }
 

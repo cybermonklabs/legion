@@ -1,0 +1,1 @@
+The design gate of ACME-2694 opened: a person approved version 3 of its spec document (aec8fb48-fd46-458a-99a3-a1b199a46b38), and every step the deployment gates now stands open, so the design you are working to is the approved one. A merge the closed gate held is released.

@@ -848,7 +848,7 @@ func TestTheOperatorsRefusedFreshSessionRetryHasAlreadyForgottenTheSession(t *te
 
 // R2: an operator's retry of an architect builds no phase restart and relaunches the claim
 // through its machine, on the session it recorded. restartWorkedPhase answers a role that is no
-// phase worker before it reads the issue (isPhaseWorker), so the architect never reaches
+// phase worker before it reads the issue (claim.IsPhaseWorker), so the architect never reaches
 // Options.RoleFor, whatever phase its issue stands in — admitted here, which phase.RoleFor
 // answers the architect for.
 func TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine(t *testing.T) {

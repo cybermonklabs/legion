@@ -69,6 +69,10 @@ func IsRole(role Role) bool {
 	return false
 }
 
+// IsPhaseWorker reports whether role works a phase of its issue: planner, implementer, tester,
+// reviewer or merger. An architect is none, nor is the controller.
+func IsPhaseWorker(role Role) bool { return role != RoleArchitect && IsRole(role) }
+
 // NewToken is the token of the claim on issue's role: `legion-<project>-<issue project,
 // lowercased>-<number>-<role>`, byte for byte the shipped roleToken
 // (packages/contracts/src/legion-roles.ts:48-55). The token is the Envoy role the agent claims, so

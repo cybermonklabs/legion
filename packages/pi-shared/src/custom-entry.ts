@@ -1,9 +1,11 @@
 /**
- * The newest custom transcript entry of one type that this build can read. Each plugin state a
- * worker keeps across a `--resume` relaunch rides a `pi.appendEntry` custom entry of its own type
- * (`./phase-stall`'s `legion-phase-stall`, `./fallback-cooldown`'s `legion-model-fallback`), and
- * each of them is restored the same way: newest first, and a record this build cannot read is
- * passed over rather than read in part.
+ * Readers of the custom entries a plugin writes to its session with `pi.appendEntry`, each a
+ * `custom` entry that holds its `data`: every entry of one type (`customEntries`), or the newest
+ * one this build can read (`lastCustomEntry`). Each plugin state a worker keeps across a
+ * `--resume` relaunch rides a custom entry of its own type (`./phase-stall`'s
+ * `legion-phase-stall`, `./fallback-cooldown`'s `legion-model-fallback`), and each of them is
+ * restored the same way: newest first, and a record this build cannot read is passed over rather
+ * than read in part.
  */
 
 /**
@@ -39,4 +41,19 @@ export function lastCustomEntry<T>(
     }
   }
   return undefined;
+}
+
+/** The data of every `customType` entry among a session's entries (`sessionManager.getBranch` or
+ *  `getEntries`: a `pi.appendEntry` write is a `custom` entry holding its `data`), in the order
+ *  written. An entry with no `data` is passed over. Each reader checks the data's shape itself. */
+export function customEntries(entries: readonly unknown[], customType: string): unknown[] {
+  const found: unknown[] = [];
+  for (const entry of entries) {
+    if (typeof entry !== "object" || entry === null) continue;
+    if (!("type" in entry) || entry.type !== "custom") continue;
+    if (!("customType" in entry) || entry.customType !== customType) continue;
+    if (!("data" in entry)) continue;
+    found.push(entry.data);
+  }
+  return found;
 }

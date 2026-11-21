@@ -48,6 +48,20 @@ func (gate DesignGate) Steps() []record.DesignStep {
 	return []record.DesignStep{record.DesignStepSpec}
 }
 
+// Hold is `gates.hold`: what a new version of an approved document of a gated step holds until a
+// person approves that version, or an exact undo carries the approval back. The loader takes no
+// other word, so a loaded Config holds one of the two.
+type Hold string
+
+const (
+	// HoldMerge is the default and the hold the gate had before the key: the merger's start and
+	// the first phase of each issue that has not started wait, and every running phase goes on.
+	HoldMerge Hold = "merge"
+	// HoldWork also holds the tree's running work: no phase starts, and the daemon stops each
+	// phase worker of the tree with its session kept, while the architects go on.
+	HoldWork Hold = "work"
+)
+
 // Gates contains the workflow gates the daemon enforces.
 type Gates struct {
 	// Design is the design-gate steps the deployment gates, in the order `gates.design` names
@@ -55,6 +69,10 @@ type Gates struct {
 	// and resolves to the single step spec, as the gate held before a deployment could name a
 	// list; a non-nil empty list is `off` and gates no step.
 	Design []record.DesignStep
+	// Hold is the word `gates.hold` names, HoldMerge for a file that names none. The empty word
+	// is the unset field of a Config built without its Gates field; read the hold through Holds,
+	// which takes it as HoldMerge.
+	Hold Hold
 }
 
 // Steps is the design-gate steps the deployment gates, in the order it named them. The daemon
@@ -67,6 +85,16 @@ func (g Gates) Steps() []record.DesignStep {
 		return DesignGateRootIssues.Steps()
 	}
 	return g.Design
+}
+
+// Holds is what a closed standing gate holds of its tree: the word the deployment named, and
+// HoldMerge for the unset field, so a Config built without its Gates field holds what the gate
+// held before a deployment could name a hold.
+func (g Gates) Holds() Hold {
+	if g.Hold == "" {
+		return HoldMerge
+	}
+	return g.Hold
 }
 
 // Project is a Dispatch project prefix's configuration: the Slack channels whose @-mentions reach
@@ -323,7 +351,7 @@ func readGates(value *yaml.Node, key string) (*Gates, error) {
 	if err != nil {
 		return nil, err
 	}
-	gates := Gates{Design: DesignGateRootIssues.Steps()}
+	gates := Gates{Design: DesignGateRootIssues.Steps(), Hold: HoldMerge}
 	if design := fields["design"]; design != nil {
 		steps, err := readDesignSteps(design, key+".design")
 		if err != nil {
@@ -331,7 +359,49 @@ func readGates(value *yaml.Node, key string) (*Gates, error) {
 		}
 		gates.Design = steps
 	}
+	if hold := fields["hold"]; hold != nil {
+		word, err := readHold(hold, key+".hold")
+		if err != nil {
+			return nil, err
+		}
+		gates.Hold = word
+	}
 	return &gates, nil
+}
+
+// readHold is `gates.hold`: `merge` or `work`. Any other value is refused, and the refusal quotes
+// it as the file wrote it: a scalar's own text, which is what the loader's other refusals quote of
+// a word or a number (readString), and a list or a mapping in YAML's flow style (flowText). An
+// absent key, and a key that names nothing, are `merge`, which readGates applies.
+func readHold(value *yaml.Node, key string) (Hold, error) {
+	if value.Kind == yaml.ScalarNode && value.Tag == "!!str" {
+		if word := Hold(value.Value); word == HoldMerge || word == HoldWork {
+			return word, nil
+		}
+	}
+	return "", fmt.Errorf("%s must be %s or %s (got %q)", key, HoldMerge, HoldWork, flowText(value))
+}
+
+// flowText is value as YAML's flow style writes it, which is how a refusal quotes a value that may
+// be no scalar: a scalar is its own text, a list `[a, b]`, a mapping `{k: v}` and an alias `*name`.
+func flowText(value *yaml.Node) string {
+	switch value.Kind {
+	case yaml.SequenceNode:
+		entries := make([]string, len(value.Content))
+		for i, entry := range value.Content {
+			entries[i] = flowText(entry)
+		}
+		return "[" + strings.Join(entries, ", ") + "]"
+	case yaml.MappingNode:
+		pairs := make([]string, 0, len(value.Content)/2)
+		for i := 0; i+1 < len(value.Content); i += 2 {
+			pairs = append(pairs, flowText(value.Content[i])+": "+flowText(value.Content[i+1]))
+		}
+		return "{" + strings.Join(pairs, ", ") + "}"
+	case yaml.AliasNode:
+		return "*" + value.Value
+	}
+	return value.Value
 }
 
 // readDesignSteps is `gates.design`: the steps the deployment gates, in the order it names them.

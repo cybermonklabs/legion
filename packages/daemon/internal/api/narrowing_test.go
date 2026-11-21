@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
-	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -83,18 +82,16 @@ func contractServed(t *testing.T, body []byte) (mark map[string]any, carried boo
 	return mark, true
 }
 
-// narrowingState is the state golden with one more member of the waiting line, LEGION-213, a
-// started issue that gave its slot back to wait on another issue (waitingOnIssueContract): the
-// golden itself stands no member of that kind, so without it the strip of the waiting line's
-// `kind` would find nothing to take and write no line, and the rows below could not say that
-// every strip writes its own.
+// narrowingState is the state golden with two more issues: LEGION-213, a started member of the
+// waiting line that gave its slot back to wait on another issue (waitingOnIssueContract), and
+// LEGION-214, an issue the work hold holds (workHoldContract). The golden itself stands neither,
+// so without them the strip of the waiting line's `kind` and the strip of a held issue's `why`
+// would find nothing to take and write no line, and the rows below could not say that every
+// strip writes its own.
 func narrowingState(t *testing.T) State {
 	t.Helper()
-	state := populatedState(t)
-	issues := make(map[string]Issue, len(state.Issues)+1)
-	maps.Copy(issues, state.Issues)
-	issues["LEGION-213"] = waitingOnIssueMember()
-	state.Issues = issues
+	state := workHeldState(t)
+	state.Issues["LEGION-213"] = waitingOnIssueMember()
 	return state
 }
 
@@ -109,11 +106,12 @@ func narrowingState(t *testing.T) State {
 // restore, so the strips are read from what the shaping itself reports it took off state
 // (tookOff), the one place their conditions are written, in the order of their table. The
 // fixture carries a retired stranded entry and no wait answered by a value younger than the
-// floor, and narrowingState adds a member of the kind `waiting_on_issue`. So a caller below 56 is
-// expected the stranded entries' line, a caller from whyAndLineFieldsContract up to below
-// waitingOnIssueContract the line of the waiting line's `kind`, and no caller both: below
-// whyAndLineFieldsContract the band of that contract takes `kind` first, and the strip finds
-// nothing left to take.
+// floor, and narrowingState adds a member of the kind `waiting_on_issue` and an issue whose `why`
+// is `held`. So a caller below 56 is expected the stranded entries' line, a caller from
+// whyAndLineFieldsContract up to below waitingOnIssueContract the line of the waiting line's
+// `kind`, a caller from whyAndLineFieldsContract up to below workHoldContract the line of the held
+// issue's `why`, and no caller below whyAndLineFieldsContract either of the last two: the band of
+// that contract takes `kind` and `why` first, and the strips find nothing left to take.
 func narrowingsExpected(state State, contract int) []string {
 	restore, strip := restoreContract(contract), stripContract(contract)
 	var dropped []string
@@ -390,9 +388,10 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// Every narrowing says what it dropped, not only the mark's own: a caller below every row of
 	// stateNarrowings is served one line per row, each naming its own keys, and one more for the
 	// value strip that took the retired entries out of its body; and a caller at
-	// quietTimeContract is served the line of every row above it and the line of the value strip
-	// that took LEGION-213's `kind`, the `waiting_on_issue` the first caller's body no longer
-	// carries, since a band below it has taken `kind` already. One line for all of them, or a line
+	// quietTimeContract is served the line of every row above it and the lines of the value
+	// strips that took LEGION-213's `kind`, the `waiting_on_issue`, and LEGION-214's `why`, the
+	// `held`, which the first caller's body no longer carries, since a band below it has taken
+	// `kind` and `why` already. One line for all of them, or a line
 	// that named the contract and nothing else, would leave a reader of the log to find out
 	// elsewhere what left the body. Three checks share the work. The table check guards the table:
 	// no two rows of stateNarrowings name the same keys, whichever callers would see them, so a
@@ -455,7 +454,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 				t.Errorf("no caller was told the row of contract %d dropped %q", narrowing.contract, narrowing.dropped)
 			}
 		}
-		for _, value := range []string{droppedStrandedState, droppedLineKind} {
+		for _, value := range []string{droppedStrandedState, droppedLineKind, droppedWhy} {
 			if !told[value] {
 				t.Errorf("no caller was told the value strip dropped %q", value)
 			}

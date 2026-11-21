@@ -878,7 +878,7 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		// claim the park suspended (none is seeded here), and the planner's, of the new generation
 		// and the new run's first phase, carrying that phase's own task at the entry the transition
 		// raised on the planner's phases row, which is no resume of anything (workflow.StartOrOwe).
-		queued := startRequestsOf(t, rig.pool, child.Key)
+		queued := startRequestsOf(t, rig.pool, child.Key, "start")
 		if len(queued) != 2 {
 			t.Fatalf("the re-entry queued %d starts, want the child's architect's and the one of the planner's first phase: %+v", len(queued), queued)
 		}
@@ -1048,7 +1048,7 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		resume := workflow.ResumePhaseTask(*carried)
 		taskless := map[claim.Role]bool{}
 		var owed *record.SuperviseRequest
-		for _, row := range startRequestsOf(t, pool, member.Key) {
+		for _, row := range startRequestsOf(t, pool, member.Key, "start") {
 			if row.Generation != carried.Generation || row.Phase != carried.Phase || row.Tree != root.Tree {
 				t.Fatalf("the re-admission queued %+v for the member, want every start to serve its own run and the phase it stands in", row)
 			}
@@ -1105,32 +1105,33 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 	})
 }
 
-// startRequestsOf is every start the outbox holds for issue, oldest first, decoded as the pass
-// that queued it wrote it. The rows a drain has run are gone, so a reader must take them before
-// it drains. The name is this file's own: internal/daemon's stopped_worker_test.go has a
-// startRowsOf of its own, which answers the same rows as rendered strings.
-func startRequestsOf(t *testing.T, pool *store.Pool, issue string) []record.SuperviseRequest {
+// startRequestsOf is every supervise request of op the outbox holds for issue ("start" for its
+// starts), oldest first, decoded as the pass that queued it wrote it. The rows a drain has run are
+// gone, so a reader must take them before it drains. The name is this file's own: internal/daemon's
+// stopped_worker_test.go has a startRowsOf of its own, which answers the same rows as rendered
+// strings.
+func startRequestsOf(t *testing.T, pool *store.Pool, issue, op string) []record.SuperviseRequest {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select payload from outbox where issue = $1 and kind = 'supervise'
-		and payload->>'op' = 'start' order by id`, issue)
+		and payload->>'op' = $2 order by id`, issue, op)
 	if err != nil {
-		t.Fatalf("read the start rows of %s: %v", issue, err)
+		t.Fatalf("read the %s rows of %s: %v", op, issue, err)
 	}
 	defer rows.Close()
 	var starts []record.SuperviseRequest
 	for rows.Next() {
 		var payload json.RawMessage
 		if err := rows.Scan(&payload); err != nil {
-			t.Fatalf("read a start row of %s: %v", issue, err)
+			t.Fatalf("read a %s row of %s: %v", op, issue, err)
 		}
 		var request record.SuperviseRequest
 		if err := json.Unmarshal(payload, &request); err != nil {
-			t.Fatalf("decode a start row of %s: %v", issue, err)
+			t.Fatalf("decode a %s row of %s: %v", op, issue, err)
 		}
 		starts = append(starts, request)
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("read the start rows of %s: %v", issue, err)
+		t.Fatalf("read the %s rows of %s: %v", op, issue, err)
 	}
 	return starts
 }

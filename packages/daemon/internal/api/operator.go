@@ -97,11 +97,12 @@ type OperatorClaim struct {
 	// Pending is the task the claim holds, until the turn it started ends.
 	Pending *DeliveryView `json:"pending,omitempty"`
 	// SuspendedBy is who suspended the claim while it is suspended: operator, daemon, exit,
-	// released (its idle pod was released), or unknown (a suspension recorded before migration
-	// 0038); absent otherwise. These routes are the one surface that serves it: a session parses
-	// every body it reads with the schema of its own contract, so a key an older contract does not
-	// know refuses the whole body at a plugin whose answer side predates INFRA-1048, and is dropped
-	// at every plugin after it (api.StrandedClaim).
+	// released (its idle pod was released), hold (the work hold stopped it), or unknown (a
+	// suspension recorded before migration 0038); absent otherwise. These routes are the one
+	// surface that serves it: a session parses every body it reads with the schema of its own
+	// contract, so a key an older contract does not know refuses the whole body at a plugin whose
+	// answer side predates the reader that drops an unknown key, and is dropped at every plugin
+	// after it (api.StrandedClaim).
 	SuspendedBy string `json:"suspendedBy,omitempty"`
 	// SuspensionHeld is a suspension the machine holds for the agent's turn (supervise's
 	// holdSuspension); absent when none is.
@@ -739,7 +740,7 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 // nothing (a lingering tree's members stay where they stood), so it is refused naming the issue
 // rather than reported as a restart.
 func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c supervise.Claim, fresh bool) (status int, refusal string, restarted bool) {
-	if !isPhaseWorker(c.Role) || s.pool == nil || s.roleFor == nil {
+	if !claim.IsPhaseWorker(c.Role) || s.pool == nil || s.roleFor == nil {
 		return 0, "", false
 	}
 	if stopping := s.stopRefusal("retry"); stopping != "" {

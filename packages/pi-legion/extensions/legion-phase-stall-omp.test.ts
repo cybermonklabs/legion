@@ -281,8 +281,8 @@ async function stallPane(
           }),
         });
       },
-      answer: (url, body) => {
-        const own = options.answer?.(url, body);
+      answer: (url, body, headers) => {
+        const own = options.answer?.(url, body, headers);
         if (own !== undefined) return own;
         // The reminder's check and `handoff_complete` read one issue's record
         // (dispatch://INFRA-2694); nothing of this pane asks for the whole project body.

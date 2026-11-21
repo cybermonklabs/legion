@@ -1,0 +1,7 @@
+kind: Changed
+custom:
+  Issue: pr4661
+body: |-
+  The people's-answers message now goes before a trailing approval message that pi-legion places,
+  and never takes such a message as its anchor, so the approval message stays the request's last
+  message whichever plugin's `context` handler runs first.

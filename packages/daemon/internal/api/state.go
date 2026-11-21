@@ -593,7 +593,7 @@ type Admission struct {
 	// point (record.KeepsSlot, blockers.waitsOf). So one tree with three started children holds
 	// three of these, and an issue at work, one held and one waiting on a person are each here,
 	// while one past its review — a merger at work in merging, one in merging whose start a
-	// closed design gate holds (the outbox's mergerWaitsForTheDesignGate) and a merged root
+	// closed design gate holds (the outbox's startWaitsForTheHold) and a merged root
 	// standing in merging while the rest of its tree runs — and one whose phase has left the
 	// workflow, done or a status Dispatch took it out of the workflow with, are in neither list.
 	// An issue the daemon has started that waits on another issue before its review is missing
@@ -1457,8 +1457,8 @@ type WaitingLineView struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-// WhyView is one rendered answer for an issue that is not working now: State, one of the four
-// words below, and Reason, the sentence that says why. The projection reads the four states in
+// WhyView is one rendered answer for an issue that is not working now: State, one of the five
+// words below, and Reason, the sentence that says why. The projection reads the five states in
 // one order over the facts the pass already holds and renders the sentence of whichever holds
 // the issue (projection's whyStates), so an issue carries one answer and never two.
 type WhyView struct {
@@ -1469,14 +1469,18 @@ type WhyView struct {
 // WhyState is the word WhyView.State carries, a closed set a reader branches on, so it is a type
 // of its own as GatedStepStatus is: a word no daemon writes cannot be put in the field by
 // mistake. A word added to it is a change of the wire that the daemon's own contract number
-// covers (version.go), since a reader before it parses the four with a strict enum.
+// covers (version.go), since a reader before it parses the words it knows with a strict enum.
 type WhyState string
 
-// The four states WhyView.State carries: the issue's claim has stopped (WhyClaimStopped), it
-// waits in the admission line (WhyWaiting), something holds it where it stands (WhyBlocked), or
-// it stands in neither the line nor the work at all (WhyUnlisted).
+// The five states WhyView.State carries: the issue's claim has stopped (WhyClaimStopped), the work
+// hold holds its tree's work (WhyHeld), it waits in the admission line (WhyWaiting), something
+// holds it where it stands (WhyBlocked), or it stands in neither the line nor the work at all
+// (WhyUnlisted). WhyHeld is an issue whose work is a phase worker's in a running tree the work
+// hold holds (`gates.hold: work`, record.WorkHold); its sentence names the version that closed
+// the tree's design gate.
 const (
 	WhyClaimStopped WhyState = "claim_stopped"
+	WhyHeld         WhyState = "held"
 	WhyWaiting      WhyState = "waiting"
 	WhyBlocked      WhyState = "blocked"
 	WhyUnlisted     WhyState = "unlisted"

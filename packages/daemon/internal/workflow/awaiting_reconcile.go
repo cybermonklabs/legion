@@ -163,8 +163,14 @@ func (e *Engine) answerOpenGates(ctx context.Context, tx pgx.Tx, issues []record
 			return answered, err
 		}
 		if waitGateOpen(e.cfg.Steps, gates, root.Awaiting.Artifact) {
+			// A wait on a question names no document, so its answer names the version of the gate
+			// the resume speaks of (gateInQuestion), never the wait's own GateVersion, which is 0.
 			version := root.Awaiting.GateVersion
-			if gate := gateOfDocument(gates, root.Awaiting.Artifact); gate != nil {
+			gate := gateOfDocument(gates, root.Awaiting.Artifact)
+			if gate == nil {
+				_, gate = gateInQuestion(e.cfg.Steps, gates)
+			}
+			if gate != nil {
 				version = gate.LatestVersion
 			}
 			e.logOnCommit(ctx, "workflow: the design gate of a root waiting on a person is open, which answers its wait", "issue", root.Key,

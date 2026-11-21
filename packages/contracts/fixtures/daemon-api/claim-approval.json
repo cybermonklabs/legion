@@ -1,0 +1,7 @@
+{
+  "approval": {
+    "document": "dispatch://ACME-2694/spec",
+    "version": 24,
+    "message": "A person has approved version 24 of the spec of ACME-2694 (dispatch://ACME-2694/spec@v24). Your top responsibility is now to deliver it and no other, at the highest standard. The team will bring reasons to change it. Be prepared to refuse them, and to help find a way to keep the goal and the spec whole. A change to what the spec delivers goes to the person as one decision before any work on it, and a requirement the work missed goes back to the work."
+  }
+}

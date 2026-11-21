@@ -482,9 +482,9 @@ func TestPodUpdatePublishUpdateAskWaitsForNoLock(t *testing.T) {
 // Such a claim runs no process and no turn in the pod, so the ask would reach no session. A
 // publish to a role with no holder is not free either: the Envoy listener raises a role wake for
 // it, and that wake would bring back a pod the daemon released. Every source but the operator's
-// is such a suspension: the daemon's, a root's exit, an idle release, and one older than its
-// source. A root's exit and a source-less suspension reach no claim through RequestSuspend, so
-// the store holds them and a restart restores them, as a boot does.
+// is such a suspension: the daemon's, a root's exit, an idle release, the work hold's stop, and
+// one older than its source. A root's exit and a source-less suspension reach no claim through
+// RequestSuspend, so the store holds them and a restart restores them, as a boot does.
 //
 // The control is the operator's suspension, which the round still asks (dispatch://INFRA-2981
 // R5): its ask is published as before, and the claim is marked asked.
@@ -492,7 +492,7 @@ func TestPublishUpdateAskPublishesNothingToAClaimTheDaemonSuspended(t *testing.T
 	suspend := func(h *harness, by SuspendSource) {
 		h.t.Helper()
 		switch by {
-		case SuspendedByOperator, SuspendedByDaemon, SuspendedByReleased:
+		case SuspendedByOperator, SuspendedByDaemon, SuspendedByReleased, SuspendedByHold:
 			h.must(RequestSuspend{Claim: h.token, By: by})
 		default:
 			h.must(RequestSuspend{Claim: h.token, By: SuspendedByDaemon})
@@ -507,7 +507,7 @@ func TestPublishUpdateAskPublishesNothingToAClaimTheDaemonSuspended(t *testing.T
 			h.t.Fatalf("the claim is %s, suspended by %q, want it suspended by %q", c.State, c.SuspendedBy, by)
 		}
 	}
-	for _, by := range []SuspendSource{SuspendedByDaemon, SuspendedByExit, SuspendedByReleased, SuspendedByUnknown} {
+	for _, by := range []SuspendSource{SuspendedByDaemon, SuspendedByExit, SuspendedByReleased, SuspendedByHold, SuspendedByUnknown} {
 		t.Run(string(by), func(t *testing.T) {
 			h := updateHarness(t, PodUpdateContract)
 			h.reach(StateIdle)

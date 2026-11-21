@@ -1542,14 +1542,10 @@ func FirstClosedStep(configured []record.DesignStep, gates map[record.DesignStep
 // Everything a root's wait is built from reads this one rule: the document its approval requests
 // are counted on (workflow's gateRequestArtifact), the wait it records (waitSubject) and the step
 // its resume speaks of (gateInQuestion).
+//
+// It is record.TreeGate.Standing over the same steps and rows, where the rule lives because the
+// record package needs it too (TreeGate.HoldsWork, the work hold's predicate) and may not read
+// this one, and it keeps its name here because every decision in this file is named this way.
 func StandingGate(configured []record.DesignStep, gates map[record.DesignStep]record.DesignGate) (record.DesignGate, bool) {
-	if len(configured) == 0 {
-		return record.DesignGate{}, false
-	}
-	for _, step := range RequiredSteps(configured) {
-		if gate, ok := gates[step]; ok && !DesignGateOpen(gate) {
-			return gate, true
-		}
-	}
-	return record.DesignGate{}, false
+	return record.TreeGate{Steps: configured, Rows: gates}.Standing()
 }

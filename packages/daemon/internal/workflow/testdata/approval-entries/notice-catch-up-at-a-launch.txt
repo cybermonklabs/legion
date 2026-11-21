@@ -1,0 +1,2 @@
+catch-up on ACME-2694
+{"kind":"catch-up","role":"architect","reason":"the tree of ACME-2694 at generation 1 as the daemon records it now; start or resume it as your role says","catch_up":{"generation":1,"launch":1,"gates":[{"step":"spec","gated":true,"artifact":"aec8fb48-fd46-458a-99a3-a1b199a46b38","version":3,"approved":3,"open":true}],"issues":[{"key":"ACME-2694","title":"ACME-2694","phase":"planning","status":"in_progress"}]}}

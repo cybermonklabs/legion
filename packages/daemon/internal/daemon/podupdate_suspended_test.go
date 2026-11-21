@@ -2,14 +2,15 @@ package daemon
 
 // A claim the daemon suspended holds no pod update round (dispatch://INFRA-4109 R1, R3,
 // verification's c-suspended-asked). Such a claim, suspended by the daemon's own rule, by a
-// root's exit, by an idle release or by an unknown source (supervise's Claim.PassedOverByRound),
-// runs no process and no turn in the pod. So the round does not ask it, wait for it, wake it or
-// resume it. What it left unpushed goes with the pod, unless the pod's disk is a kept volume that
-// the issue's next pod mounts (roundKeptVolume). Once every claim the round asks has answered
-// and no turn runs, the replacement reads the issue's workspace through a role whose process runs
-// in the pod, names on its line each claim it did not wait for and what the read found, and,
-// where the read found work or failed, writes one message on the issue. An operator's suspension
-// still holds the round past its bound (dispatch://INFRA-2981 R5).
+// root's exit, by an idle release, by the work hold or by an unknown source (supervise's
+// Claim.PassedOverByRound), runs no process and no turn in the pod. So the round does not ask
+// it, wait for it, wake it or resume it. What it left unpushed goes with the pod, unless the
+// pod's disk is a kept volume that the issue's next pod mounts (roundKeptVolume). Once every
+// claim the round asks has answered and no turn runs, the replacement reads the issue's
+// workspace through a role whose process runs in the pod, names on its line each claim it did
+// not wait for and what the read found, and, where the read found work or failed, writes one
+// message on the issue. An operator's suspension still holds the round past its bound
+// (dispatch://INFRA-2981 R5).
 //
 // These cases drive the pod-update rig of podupdate_test.go. The suspended claims are seeded in
 // the store and restored as a boot restores them (newPodUpdateRig's sup.restore).
@@ -183,6 +184,110 @@ func TestAnUpdateRoundDoesNotWaitForAClaimTheDaemonSuspended(t *testing.T) {
 
 	if line["workspaceRead"] != "found no work" || line["workspaceHead"] != passedOverHead || line["workspaceCommitCount"] != float64(0) {
 		t.Errorf("the replacement's line names the read %+v, want one that found no work at the working copy %s", line, passedOverHead)
+	}
+	if messages := rig.messages(); len(messages) != 0 {
+		t.Fatalf("the issue was written %q, want nothing: the read found no work", messages)
+	}
+}
+
+// The work hold's stop holds no pod update round either (dispatch://INFRA-4109 R1). A claim the
+// hold stopped (supervise.SuspendedByHold) runs no process and no turn in the pod, and only the
+// hold's end or an operator starts it (supervise's Machine.EndHold). So the round passes it over
+// as it passes over a claim the daemon suspended (supervise's Claim.PassedOverByRound): it does
+// not ask it, wait for it, wake it or resume it. Once the claims the round asks have answered and
+// no turn runs, the pod is replaced long before the bound. The replacement first reads the
+// issue's workspace through a worker whose process runs in the pod, and its line names the held
+// claim as the one it did not wait for. Once the round is over, the claim is still the hold's.
+//
+// The control is a worker whose work hold stop still waits for the turn that its close message
+// starts (supervise.RequestSuspend.TurnAfter). Its agent runs in the pod and can answer, so the
+// round asks it and does not replace the pod before it answers.
+func TestWorkHoldAnUpdateRoundPassesOverAClaimTheHoldStopped(t *testing.T) {
+	const held, stopping = claim.RolePlanner, claim.RoleTester
+	workers := []claim.Role{claim.RoleImplementer, stopping}
+	rig := newPodUpdateRig(t,
+		readyWorker(claim.RoleImplementer), readyWorker(stopping),
+		suspendedRole(held, supervise.SuspendedByHold),
+	)
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead})
+	if c := rig.claimOf(held); c.State != supervise.StateSuspended || !c.WorkHeld() {
+		t.Fatalf("the restored %s is %s, suspended by %q; want it held by the work hold", held, c.State, c.SuspendedBy)
+	}
+	// The tester's stop as the outbox posts it: the close message reached the tester now, and the
+	// stop waits for the turn that message starts, up to its deadline 2 minutes later.
+	messageAt := rig.clock.Now()
+	m, _ := rig.sup.Machine(rig.tokens[stopping])
+	stop := supervise.RequestSuspend{Claim: rig.tokens[stopping], By: supervise.SuspendedByHold,
+		Reason: "the design gate of LEGION-208 closed", TurnAfter: messageAt, Deadline: messageAt.Add(2 * time.Minute)}
+	if err := m.Handle(rig.ctx, stop); !errors.Is(err, supervise.ErrSuspendHeld) {
+		t.Fatalf("the work hold's stop of the ready %s answered %v, want it held for the turn its message starts", stopping, err)
+	}
+	if c := rig.claimOf(stopping); c.State != supervise.StateReady || !c.WorkHeld() || c.PassedOverByRound() {
+		t.Fatalf("the %s is %s, WorkHeld %v, PassedOverByRound %v; want it ready, its hold stop held for its turn and not passed over",
+			stopping, c.State, c.WorkHeld(), c.PassedOverByRound())
+	}
+	clocks := rig.replacementClocks()
+	rig.drifts(podUpdateDrift)
+
+	rig.tick()
+	for _, role := range workers {
+		rig.awaitAsked(role, podUpdateRound)
+	}
+	rig.awaitRound(held, podUpdateRound)
+	rig.signal(claim.RoleImplementer, "a1b2c3d")
+	rig.sweepSettled()
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times before the %s, whose hold stop waits for its turn, answered", len(calls), stopping)
+	}
+	rig.signal(stopping, "a1b2c3d")
+	rig.settleAll()
+	replaced := rig.awaitReplacement(1, "once both workers answered")
+
+	for _, when := range clocks() {
+		if !when.Equal(podUpdateStart) {
+			t.Fatalf("the replacement was asked at %s, want %s, when the round opened: the bound %s holds nothing", when, podUpdateStart, podUpdateBound)
+		}
+	}
+	var order []string
+	for _, call := range rig.rt.Calls() {
+		switch call.Method {
+		case "WorkspaceWork", "ReplacePod", "ReplacePodNotDue", "ReplacePodNoPod":
+			order = append(order, call.Method)
+		}
+	}
+	if !slices.Equal(order, []string{"WorkspaceWork", "ReplacePod"}) {
+		t.Fatalf("the runtime was asked %v, want one read of the workspace and then the replacement it stood in front of", order)
+	}
+	through, _ := replaced[0].Pod.Claim.Role()
+	if reads := rig.rt.CallsOf("WorkspaceWork"); reads[0].Role != through || !slices.Contains(workers, through) {
+		t.Fatalf("the workspace was read as %+v, want it read through the %s, whose process the pod is replaced through", reads[0], through)
+	}
+
+	c := rig.awaitClaim(held, "its round to end with the replacement", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	if c.State != supervise.StateSuspended || c.SuspendedBy != supervise.SuspendedByHold {
+		t.Errorf("the %s is %s, suspended by %q, after the round; want it still held by the work hold", held, c.State, c.SuspendedBy)
+	}
+	if n := rig.askedOf(held); n != 0 {
+		t.Errorf("the round wrote %d update-ask rows for the %s, want none: the work hold stopped it", n, held)
+	}
+	if n := rig.deliveredTo(held); n != 0 {
+		t.Errorf("the %s's topic was published %d asks, want none: a publish to a role no session holds wakes it", held, n)
+	}
+	if resumes := rig.rt.CallsOf("Resume"); len(resumes) != 0 {
+		t.Errorf("the round resumed %d processes, want none", len(resumes))
+	}
+
+	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
+	if len(lines) != 1 {
+		t.Fatalf("the replacement was logged %d times, want once: %+v", len(lines), lines)
+	}
+	line := lines[0]
+	if line["atTheBound"] != false {
+		t.Errorf("the replacement's line says atTheBound=%v, want false: both workers answered long before the bound", line["atTheBound"])
+	}
+	wantField(t, line, "notWaitedFor", held)
+	if line["workspaceReadBy"] != string(through) || line["workspaceRead"] != "found no work" {
+		t.Errorf("the replacement's line names the read %+v, want one by the %s that found no work", line, through)
 	}
 	if messages := rig.messages(); len(messages) != 0 {
 		t.Fatalf("the issue was written %q, want nothing: the read found no work", messages)

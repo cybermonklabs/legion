@@ -242,10 +242,13 @@ func openCallWord(step *api.StepView) string {
 }
 
 // claimStateWord is the claim's state as the line prints it: `suspended:released` for a claim the
-// idle release suspended, and the state itself for every other claim, whose suspendedBy the
-// operator reads with --json.
+// idle release suspended, `suspended:hold` for one the work hold stopped, and the state itself for
+// every other claim, whose suspendedBy the operator reads with --json. Each of the two names a
+// suspension no person must lift: a wake brings the released one back, and the hold's end the
+// held one.
 func claimStateWord(c api.OperatorClaim) string {
-	if c.State == string(supervise.StateSuspended) && c.SuspendedBy == string(supervise.SuspendedByReleased) {
+	if c.State == string(supervise.StateSuspended) &&
+		(c.SuspendedBy == string(supervise.SuspendedByReleased) || c.SuspendedBy == string(supervise.SuspendedByHold)) {
 		return c.State + ":" + c.SuspendedBy
 	}
 	return c.State

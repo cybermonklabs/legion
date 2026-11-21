@@ -43,6 +43,12 @@ type projectionStore struct {
 	// assignments is every experiment answer the store holds, by the key of the unit it covers,
 	// in experiment order, as record.Store.Assignments answers them.
 	assignments map[string][]record.Assignment
+	// workHolds is every tree the work hold holds, as record.Store.WorkHolds answers them.
+	workHolds []record.WorkHold
+}
+
+func (s projectionStore) WorkHolds(context.Context, pgx.Tx, string) ([]record.WorkHold, error) {
+	return s.workHolds, nil
 }
 
 func (s projectionStore) Assignments(context.Context, pgx.Tx, string) (map[string][]record.Assignment, error) {

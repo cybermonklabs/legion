@@ -296,11 +296,19 @@ func (s *supervisor) add(token claim.Token, m *supervise.Machine) {
 
 // decisionFailed logs err, a decision on token's claim failing (what names it: the event its
 // machine handled, or the release of an uncertain launch), as failed says: at Error, unless the
-// daemon's stop ended it, which is no fault, since the next boot takes the claim up. It reports
-// whether the failure is a fault.
+// daemon's stop ended it, which is no fault, since the next boot takes the claim up. A request the
+// work hold holds (supervise.ErrHeldByWorkHold) is no fault either: a claim the hold stopped answers
+// every request that could start a turn with that wait — a pause's resume posted to every machine,
+// the resume of a launch the pause owed — and the hold's end starts the claim itself, so the wait
+// is logged at Info as the wait it is. It reports whether the failure is a fault.
 func (s *supervisor) decisionFailed(token claim.Token, what string, err error, failed string) bool {
 	if s.ctx.Err() != nil {
 		s.log.Info("supervise: the daemon's stop ended a decision; the next boot takes the claim up",
+			"claim", token, "event", what, "error", err)
+		return false
+	}
+	if errors.Is(err, supervise.ErrHeldByWorkHold) {
+		s.log.Info("supervise: the work hold holds the claim; the event waits for the hold's end",
 			"claim", token, "event", what, "error", err)
 		return false
 	}

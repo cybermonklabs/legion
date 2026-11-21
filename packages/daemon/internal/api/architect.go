@@ -166,20 +166,11 @@ func (s *server) phaseWorkerGrant(w http.ResponseWriter, r *http.Request, id str
 	if !ok {
 		return credential.Grant{}, false
 	}
-	if grant.Controller || !isPhaseWorker(grant.Role) {
+	if grant.Controller || !claim.IsPhaseWorker(grant.Role) {
 		s.writeFailure(w, r, http.StatusForbidden, "PHASE_WORKER_REQUIRED", "phase worker grant required")
 		return credential.Grant{}, false
 	}
 	return grant, true
-}
-
-func isPhaseWorker(role claim.Role) bool {
-	switch role {
-	case claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger:
-		return true
-	default:
-		return false
-	}
 }
 
 // recordedIssue reads the issue record, whose tree root is the single source of tree membership

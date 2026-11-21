@@ -79,7 +79,8 @@ func (s *Postgres) CancelTreeHandovers(ctx context.Context, tx pgx.Tx, tree stri
 func (s *Postgres) HandedOverRoot(ctx context.Context, tx pgx.Tx, issue string) (*HandedOverRoot, error) {
 	root := HandedOverRoot{Issue: issue}
 	var generation int64
-	err := tx.QueryRow(ctx, `select generation, gate_carried from handed_over_roots where issue = $1`, issue).Scan(&generation, &root.GateCarried)
+	err := tx.QueryRow(ctx, `select generation, gate_carried, from_root from handed_over_roots where issue = $1`, issue).Scan(
+		&generation, &root.GateCarried, &root.FromRoot)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -94,9 +95,9 @@ func (s *Postgres) PutHandedOverRoot(ctx context.Context, tx pgx.Tx, root Handed
 	if root.Generation == 0 || root.Generation > maxInt64 {
 		return fmt.Errorf("put handed-over root %s: generation %d is out of range", root.Issue, root.Generation)
 	}
-	if _, err := tx.Exec(ctx, `insert into handed_over_roots (issue, generation, gate_carried) values ($1, $2, $3)
-		on conflict (issue) do update set generation = excluded.generation, gate_carried = excluded.gate_carried`,
-		root.Issue, int64(root.Generation), root.GateCarried); err != nil {
+	if _, err := tx.Exec(ctx, `insert into handed_over_roots (issue, generation, gate_carried, from_root) values ($1, $2, $3, $4)
+		on conflict (issue) do update set generation = excluded.generation, gate_carried = excluded.gate_carried, from_root = excluded.from_root`,
+		root.Issue, int64(root.Generation), root.GateCarried, root.FromRoot); err != nil {
 		return fmt.Errorf("put handed-over root %s: %w", root.Issue, err)
 	}
 	return nil

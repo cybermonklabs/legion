@@ -296,12 +296,14 @@ The daemon answers this itself for every issue that is not working now, in `why`
 legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {why, waitingLine}'
 ```
 
-`why.state` is `claim_stopped` for a claim nothing will wake (the stranded claims below),
+`why.state` is `claim_stopped` for a claim nothing will wake (the stranded claims below), `held`
+for an issue whose phase worker the work hold holds
+([A tree's work stopped after its spec changed](#a-trees-work-stopped-after-its-spec-changed)),
 `waiting` for an issue of the admission line, `blocked` for one a Dispatch link or an open
 child below it holds, and `unlisted` for one the record holds in the workflow that stands in
 none of the three admission lists; `why.reason` is the sentence. An issue holding an admission
-slot carries no `why` unless it also stands in `admission.waiting` or `admission.blocked`, or a
-stranded claim names it: an answered root reads `waiting`, and an issue at work whose worker runs, one `held` and a root
+slot carries no `why` unless it also stands in `admission.waiting` or `admission.blocked`, a
+stranded claim names it or the work hold holds it: an answered root reads `waiting`, and an issue at work whose worker runs, one whose phase is `held` and a root
 whose ask a person has not answered yet, which `waitingOn` answers for, read nothing. Neither
 does an issue the record does not hold in the workflow (`done`, `backlog`, `icebox`,
 `triage`). The daemon serves
@@ -445,11 +447,46 @@ A root waiting on its gate at a daemon's deploy
 is recorded as waiting at that daemon's first boot, keeping its slot. The gate stays closed until a person approves the
 spec at its current version; `designGate.approvedVersion` is `null`, or lower than `currentVersion`,
 until someone approves the latest version from the document's header or the Inbox. An approval of an
-earlier version does not count: the spec changed since. The gate holds the tree's start, not its merge.
+earlier version does not count: the spec changed since. Before the tree starts, the gate holds its
+start. After the start, a new version of an approved document closes the gate again: it then holds
+the merge and the first phase of each issue that has not started, and under `gates.hold: work` every
+phase worker of the tree as well
+([A tree's work stopped after its spec changed](#a-trees-work-stopped-after-its-spec-changed)).
 Where `gates.design` lists more than one step, `gatedSteps` carries one entry per step, each with
 its own `artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregistered`, `waiting`,
 `approved` or `changes_requested`): the tree waits until every entry reads `approved`, and
 `designGate` beside it is the `spec` step's record alone.
+
+## A tree's work stopped after its spec changed
+
+Under `gates.hold: work`, a new version of an approved document of a gated step stops the tree's
+phase workers until a person approves that version. Each live phase worker got the close message,
+which ends `End your turn now.`, and the daemon stopped it when its turn ended, or 2 minutes after
+the message reached it. A released merger was woken for the message first, so that it could take
+its pull request out of GitHub's merge queue. A released worker that is not a merger got no message:
+the hold took it over at once. The architects go on, and their close message ends
+`Your own work goes on.`
+
+- `legion state --json` shows `why.state` `held` on each issue at a phase worker's phase, and
+  `why.reason` names the version that closed the gate: `Its phase is <phase>, and the work hold
+  holds the work of its tree <root> until every gated step stands open again: version <n> of its
+  <step> document (<id>) closed the design gate.`
+- `legion claims list` shows each stopped claim as `suspended:hold`. The claim keeps its session, its
+  phase and its task, and the daemon keeps its pod.
+- The stranded claims never name a claim the work hold stopped, because the gate's opening starts it.
+- The daemon logs each stop and each start of the hold with the issue, the role and the version.
+
+The work starts again when a person approves that version, or when Dispatch carries the approval
+after an exact undo. The daemon then starts each claim it stopped with one task. The task names the
+version that closed the gate, carries the open message, and tells the worker to check what its turn
+already did, since a tool call may not have finished. An exact undo opens the gate only when the
+undo is written, so the edit stops the work until then.
+
+An operator's own `legion claims resume` or `legion claims retry` of a stopped claim starts it,
+because an operator's act on a claim overrides the hold. `legion claims deliver` does not: the
+daemon refuses it with 409 while the hold stands. To end every hold of the project, set
+`gates.hold: merge` and restart the daemon: the boot ends the hold of each tree, tells its holders
+so, and starts each claim the hold stopped.
 
 ## A parked tree did not come back after a decision
 
@@ -991,8 +1028,9 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
 The list names only claims of trees that run — the trees `admission.trees` names, whether or not
 an issue of them holds a slot — and leaves out claims that
 something will still start: a worker whose phase is not its own is started again when its phase
-comes, a parked tree's claims wait for its re-admission, and an issue whose start waits for a free
-slot has that start queued already. A root in
+comes, a parked tree's claims wait for its re-admission, an issue whose start waits for a free
+slot has that start queued already, and a claim the work hold stopped waits for its tree's design
+gate to open ([A tree's work stopped after its spec changed](#a-trees-work-stopped-after-its-spec-changed)). A root in
 `awaiting_person` is different: its architect stays live while it waits for the person's answer,
 and the answer's task is delivered on the pass that reads the answer, which takes no slot for it. Never resume or retry by hand a
 claim of a lingering tree or of an issue parked out of the workflow; re-admission or the issue's

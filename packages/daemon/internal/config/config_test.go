@@ -228,7 +228,7 @@ func defaultsFor(port int) Config {
 		DispatchURL:                             "http://127.0.0.1:8080",
 		DispatchTokenFile:                       "/var/run/legion/DISPATCH_TOKEN",
 		Projects:                                map[string]Project{"DEMO": {ProductionCheck: claim.RoleTester}},
-		Gates:                                   Gates{Design: DesignGateRootIssues.Steps()},
+		Gates:                                   Gates{Design: DesignGateRootIssues.Steps(), Hold: HoldMerge},
 		GitHubApps: GitHubApps{
 			Implement: GitHubApp{AppID: "1", PrivateKey: "implement-test-key", Installations: map[string]string{}},
 			Review:    GitHubApp{AppID: "2", PrivateKey: "review-test-key", Installations: map[string]string{}},
@@ -469,10 +469,10 @@ func TestLoadReadsTheDesignGateSteps(t *testing.T) {
 	}
 }
 
-// A Config nobody gave a Gates field gates the spec. The zero value is what every rig that
-// builds a Config literal holds, and a gate that waves a root's spec through because a field
-// was left out is a gate nobody notices is gone; the value a deployment writes for `off` is a
-// list that is empty rather than absent, so the two are told apart by the field being nil.
+// A Config nobody gave a Gates field gates the spec and holds the merge. The zero value is what
+// every rig that builds a Config literal holds, and a gate that waves a root's spec through because
+// a field was left out is a gate nobody notices is gone; the value a deployment writes for `off` is
+// a list that is empty rather than absent, so the two are told apart by the field being nil.
 // This asserts the zero value itself, so a field added to Gates later breaks a test here rather
 // than the gate of a deployment.
 func TestTheZeroValueOfGatesGatesTheSpec(t *testing.T) {
@@ -484,6 +484,62 @@ func TestTheZeroValueOfGatesGatesTheSpec(t *testing.T) {
 	off := Config{Gates: Gates{Design: DesignGateOff.Steps()}}
 	if steps := off.Gates.Steps(); len(steps) != 0 || steps == nil {
 		t.Fatalf("Gates.Steps() under 'off' = %#v, want the non-nil empty list: 'off' gates no step and is not the unset field", steps)
+	}
+	if got := cfg.Gates.Holds(); got != HoldMerge {
+		t.Fatalf("the zero Config's Gates.Holds() = %q, want %q: an unset field holds what the gate held before a deployment could name a hold", got, HoldMerge)
+	}
+}
+
+// gatesHoldFile is minimalFile with `gates.hold` written as value, beside `gates.design`.
+func gatesHoldFile(value string) string {
+	return strings.Replace(minimalFile, "  design: root-issues\n", "  design: root-issues\n  hold: "+value+"\n", 1)
+}
+
+// `gates.hold` is the word the file names, `merge` or `work`. A file that names no hold holds the
+// merge, whether its `gates` names no `hold`, the key names nothing, or the file has no `gates`
+// at all. The loader writes the word into the field, so a loaded Config never holds the empty
+// word.
+func TestGatesHoldLoadsItsWord(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want Hold
+	}{
+		{name: "no hold key", body: minimalFile, want: HoldMerge},
+		{name: "a key that names nothing", body: gatesHoldFile(""), want: HoldMerge},
+		{name: "no gates key", body: gatesAbsentFile, want: HoldMerge},
+		{name: "the word merge", body: gatesHoldFile("merge"), want: HoldMerge},
+		{name: "the word work", body: gatesHoldFile("work"), want: HoldWork},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Load(writeConfigFile(t, tc.body), noEnv)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.Gates.Hold != tc.want || cfg.Gates.Holds() != tc.want {
+				t.Fatalf("Gates.Hold = %q, Gates.Holds() = %q, want %q for both", cfg.Gates.Hold, cfg.Gates.Holds(), tc.want)
+			}
+		})
+	}
+}
+
+// Any value of `gates.hold` but the two words is refused at load, with the value as the file
+// wrote it: a word, the empty word, a number, a list and a mapping alike.
+func TestGatesHoldRefusesAnotherValue(t *testing.T) {
+	for _, tc := range []struct{ name, value, refusal string }{
+		{name: "another word", value: "drain", refusal: `gates.hold must be merge or work (got "drain")`},
+		{name: "a word in capitals", value: "Work", refusal: `gates.hold must be merge or work (got "Work")`},
+		{name: "the empty word", value: `""`, refusal: `gates.hold must be merge or work (got "")`},
+		{name: "a number", value: "2", refusal: `gates.hold must be merge or work (got "2")`},
+		{name: "a list", value: "[work]", refusal: `gates.hold must be merge or work (got "[work]")`},
+		{name: "a mapping", value: "{mode: work}", refusal: `gates.hold must be merge or work (got "{mode: work}")`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(writeConfigFile(t, gatesHoldFile(tc.value)), noEnv)
+			if err == nil || err.Error() != tc.refusal {
+				t.Fatalf("Load = %v, want the refusal %q", err, tc.refusal)
+			}
+		})
 	}
 }
 

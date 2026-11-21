@@ -25,6 +25,14 @@
       "types": "./src/startup-turn.ts",
       "bun": "./src/startup-turn.ts"
     },
+    "./approval-message": {
+      "types": "./src/approval-message.ts",
+      "bun": "./src/approval-message.ts"
+    },
+    "./custom-entry": {
+      "types": "./src/custom-entry.ts",
+      "bun": "./src/custom-entry.ts"
+    },
     "./subagent-session": {
       "types": "./src/subagent-session.ts",
       "bun": "./src/subagent-session.ts"

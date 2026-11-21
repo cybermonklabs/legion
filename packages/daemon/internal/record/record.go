@@ -540,6 +540,11 @@ func (m EventMark) Merged(other EventMark) EventMark {
 	return m
 }
 
+// IsZero says whether m places nothing: it carries neither a sequence nor a time.
+func (m EventMark) IsZero() bool {
+	return m.Seq == 0 && m.At.IsZero()
+}
+
 // ID is the mark as one number for a fact's event id: the sequence, else the time in Unix
 // nanoseconds, else 0.
 func (m EventMark) ID() int64 {
@@ -1511,6 +1516,16 @@ type DesignGate struct {
 	EverOpened bool
 }
 
+// PersonApproved is whether a person's approval stands on the row: an approved version with the
+// place Dispatch recorded that approval at (ApprovedMark). A registration of an ungated step
+// approves its row with no mark, so the mark is what says a person's approval set the version.
+// Re-admission's record of the spec row it clears (admit's recordSpecApproval) and the approval
+// route (StandingSpecApproval) both read it, so the route answers from what admission recorded by
+// the same rule.
+func (g DesignGate) PersonApproved() bool {
+	return g.ApprovedVersion != nil && !g.ApprovedMark.IsZero()
+}
+
 // SpecGate is the DesignStepSpec row of gates, nil when the issue holds none. Every reader that
 // still asks one question of one gate takes this entry: a deployment resolves `root-issues` to the
 // single step spec, so that row is the gate those readers mean.
@@ -1680,11 +1695,55 @@ type ReleaseRetry struct {
 
 // HandedOverRoot is a root a hand-over created: the generation at which the child became a root of
 // its own, carrying its phase, phase rows and pull request, and whether its old root's gate came
-// with them.
+// with them. FromRoot is the root that holds the document of that gate: the tree the child left,
+// or the root that tree's own row names where that tree was itself a carried root at its
+// generation. It is "" where no gate came, and on a row a release before it wrote.
 type HandedOverRoot struct {
 	Issue       string
 	Generation  uint64
 	GateCarried bool
+	FromRoot    string
+}
+
+// GateCarriedAt says whether root is a hand-over's record of a carried gate at generation: the
+// issue's spec row at that generation is a copy of FromRoot's gate, not its own. A row of an
+// earlier generation belongs to a run that has ended (workflow.ArchitectCarried), and nil is no
+// hand-over at all.
+func (root *HandedOverRoot) GateCarriedAt(generation uint64) bool {
+	return root != nil && root.GateCarried && root.Generation == generation
+}
+
+// ClearedSpecApproval is the spec row a root's re-admission deleted (Store.ClearTreeGeneration)
+// while a person's approval stood on it: the document, the version the person approved and where
+// Dispatch recorded that approval (Mark, never zero). The approval route answers from it while
+// the root holds no spec row (StandingSpecApproval). The spec step's next registration, and a
+// changes request on that document, delete it (workflow's gateRegistered and dispatchArtifact).
+// It is apart from KeptApproval, which is kept only while the approved version is older than the
+// latest and is forgotten once the root's start task is told.
+type ClearedSpecApproval struct {
+	Issue      string
+	ArtifactID string
+	Version    int
+	Mark       EventMark
+}
+
+// WorkHold is the record of the work hold of one tree (`gates.hold: work`): its project (the
+// Dispatch project key, as Issue.Project holds it), its root (Tree), the root's generation the
+// hold was applied at, and the gate row that closed it, by its step, its document and the version
+// that closed it, with the moment of the close (ClosedAt). The close writes it
+// (workflow's workHoldClose), and the opening deletes it, as does a new generation of the tree
+// (Store.ClearTreeGeneration). It is how the daemon's record holds the hold across a restart: the
+// boot tells a tree whose close has not been applied, which holds no record, from
+// one whose drain is under way, which does (workflow's workHoldBooted), and the opening's task and
+// the state's `why: held` name the version that closed the gate from it.
+type WorkHold struct {
+	Project        string
+	Tree           string
+	RootGeneration uint64
+	Step           DesignStep
+	ArtifactID     string
+	Version        int
+	ClosedAt       time.Time
 }
 
 // DispatchIssueRow is one row of the daemon's copy of Dispatch's issues: what the readings of
@@ -2001,6 +2060,25 @@ type Store interface {
 	DropReadmittedApproval(ctx context.Context, tx pgx.Tx, root string) error
 	// ReadmittedApproval is the pair root keeps, in any state, zeros when it keeps none.
 	ReadmittedApproval(ctx context.Context, tx pgx.Tx, root string) (approved, latest int, err error)
+	// PutClearedSpecApproval records on a root the spec row its re-admission is about to delete,
+	// where a person's approval stands on it; a later record replaces it. ClearedSpecApproval is
+	// the record root holds, nil for none; DeleteClearedSpecApproval deletes it, if any.
+	PutClearedSpecApproval(ctx context.Context, tx pgx.Tx, approval ClearedSpecApproval) error
+	ClearedSpecApproval(ctx context.Context, tx pgx.Tx, root string) (*ClearedSpecApproval, error)
+	DeleteClearedSpecApproval(ctx context.Context, tx pgx.Tx, root string) error
+	// PutWorkHold records the work hold of a tree, in place of any it held; WorkHold is the hold
+	// tree holds, nil for none; WorkHolds is every hold of project's trees, by tree; and
+	// DeleteWorkHold deletes tree's, if any.
+	PutWorkHold(ctx context.Context, tx pgx.Tx, hold WorkHold) error
+	WorkHold(ctx context.Context, tx pgx.Tx, tree string) (*WorkHold, error)
+	WorkHolds(ctx context.Context, tx pgx.Tx, project string) ([]WorkHold, error)
+	DeleteWorkHold(ctx context.Context, tx pgx.Tx, tree string) error
+	// WorkHeldTrees is every tree of project, by the tree its issue stands in, that holds a claim
+	// stored suspended by the work hold (supervise.SuspendedByHold), in one read whatever the number
+	// of trees: the trees whose claims the boot's reconcile of the hold may start (workflow's
+	// workHoldBooted), which reads nothing more of a tree outside it. project is the Dispatch
+	// project key the issue records carry.
+	WorkHeldTrees(ctx context.Context, tx pgx.Tx, project string) (map[string]struct{}, error)
 	// TellChildrenFirst marks that the architect that owns issue has been told, for the run
 	// generation of tree, that the issue's own first phase waits for the Dispatch children under
 	// it, and reports whether this call is the telling. That architect is the root's own for a
