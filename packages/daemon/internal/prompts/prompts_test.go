@@ -589,15 +589,7 @@ func TestTheControllerPartNamesTheGatedSteps(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ControllerPromptPaths(headless %t): %v", headless, err)
 		}
-		var text strings.Builder
-		for _, path := range paths {
-			body, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("read %s: %v", path, err)
-			}
-			text.Write(body)
-		}
-		folded := foldWhitespace(text.String())
+		folded := foldWhitespace(readJoined(t, paths...))
 		if !strings.Contains(folded, "`Design gate steps:`") {
 			t.Errorf("the composed controller prompt (headless %t) never names the `Design gate steps:` line it reads its steps off", headless)
 		}

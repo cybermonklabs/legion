@@ -22,4 +22,4 @@ Read this in a Legion pane before you touch a role claim, or when a Legion role 
   The woken session gets it as an Envoy card with `kept_at`, which can come before the daemon's task.
 - A role send the listener refuses `404` also raises an exception on `notifications.envoy.exceptions.notifications.role.<role>`, naming `unclaimed` or `holder_lapsed`.
   The listener refuses only a publish it keeps nothing for: one sent with `keep: false`, as the daemon's own notices are, or one whose keep failed.
-  No consumer acts on it, and the daemon's own refused message retries by itself until the role is held or its architect cannot hold it again: never re-send a refused message by hand because of one.
+  No consumer acts on it. The daemon holds a refused notice until the role is held or its architect cannot hold it again; a refused role message of the daemon's ends undelivered, by design. Never re-send a refused message by hand because of one.

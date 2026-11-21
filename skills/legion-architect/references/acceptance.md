@@ -7,10 +7,10 @@ sign-off (the merger's reports, the close, a root's linger), read
 
 ## Retro's result
 
-Retro output is one `dispatch comment` on the issue with what the work taught, the pull request
-body content the repository's instructions derive from the pull request's changed paths at that
-head, and one `dispatch message` on the issue. Retro commits nothing and pushes nothing, writes no
-handoff and never rewrites the reviewer-approved head.
+Retro output is at most one `dispatch comment` on the issue with what the work taught, one
+`dispatch message` on the issue, and, where the repository's instructions derive pull request body
+content from the pull request's changed paths, that content at the approved head. Retro commits
+nothing and pushes nothing, writes no handoff and never rewrites the reviewer-approved head.
 
 When the implementer reports that it cannot compute that body content or do the work a line of it
 affirms, that its read of the body failed or came back empty, or that GitHub refused the body, it

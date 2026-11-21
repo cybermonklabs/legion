@@ -2248,6 +2248,41 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
   expect(summary).toContain("\nINFRA-146 done done\nINFRA-147 done done\n");
 });
 
+// The controller reads the live trees and the held issues off the summary: one `trees` line
+// naming the root of every live tree, `(none)` when no tree runs and no line for a body the daemon
+// stripped of `trees`, and one `held` line per held issue with its reason and the issues that hold
+// it. The first state is the daemon's golden, read through the client.
+test("read_state's summary names the live trees and each held issue with its reason", async () => {
+  const admissionLines = (lines: readonly string[]) =>
+    lines.filter((line) => /^(active|waiting|trees|blocked|held) /.test(line));
+
+  const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
+  expect(admissionLines(golden)).toEqual([
+    "active LEGION-208 LEGION-210 LEGION-212 LEGION-218 LEGION-219",
+    "waiting LEGION-212 LEGION-211",
+    "trees LEGION-208 LEGION-210 LEGION-211 LEGION-212 LEGION-218 LEGION-219",
+    "blocked LEGION-209 on LEGION-210 LEGION-213",
+    "blocked LEGION-211 on LEGION-210",
+    "held LEGION-209 dispatch_blocker by LEGION-210 LEGION-213",
+    "held LEGION-214 label_off",
+  ]);
+
+  const idle = legionState({
+    admission: { cap: 8, active: [], waiting: [], trees: [], blocked: [], held: [], free: 8 },
+  });
+  expect(admissionLines(await summaryLinesOf(recordingDaemon({ state: idle }).daemon))).toEqual([
+    "active (none)",
+    "waiting (none)",
+    "trees (none)",
+  ]);
+
+  const stripped = legionState();
+  expect(stripped.admission?.trees).toBeUndefined();
+  expect(admissionLines(await summaryLinesOf(recordingDaemon({ state: stripped }).daemon))).toEqual(
+    ["active (none)", "waiting (none)"]
+  );
+});
+
 // What the controller reads of the pause in `read_state` with no field (dispatch://INFRA-3759,
 // R6): one line while the project is paused, naming the pause, since when, by whom and why, the
 // roles whose stop it still waits on and how many rows it holds; one line while the project

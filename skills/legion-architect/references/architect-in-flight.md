@@ -41,6 +41,6 @@ Read this before you set a child's `--blocked-by` links or park or rerun a child
   exist yet.
 - While the work is built, the tester runs the application from a build of the issue's branch and
   uses it as its user would: a passing check does not show that a person can do their job with it.
-  Read the tester's handoff for that use.
+  Read what it ran in the results it records (`dispatch results --issue <issue>`).
 - Where the work is a page or a tool a person uses, offer that person a running build before the
   review; the deployment instructions say how a pod runs one.

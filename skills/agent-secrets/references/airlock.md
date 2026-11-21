@@ -11,14 +11,15 @@ The proxy swaps the placeholder for the real value in the headers the secret's r
 
 A refusal comes from the proxy, not from the service:
 
-- An HTTP error naming the rule that refused it: a TLS name or `Host` that is not the host the command asked for, a method or a path outside the entry's `allow`, a path with a `.` or `..` segment, an `X-HTTP-Method-Override`, `X-HTTP-Method` or `X-Method-Override` header where the entry lists methods, a `CONNECT` or an `h2c` upgrade inside the proxied connection, plain `http://` to a host an entry binds, or a private address.
+- An HTTP error naming why the proxy refused the call: a TLS name or `Host` that is not the host the command asked for, a method or a path outside the entry's `allow`, a path with a `.` or `..` segment, an `X-HTTP-Method-Override`, `X-HTTP-Method` or `X-Method-Override` header where the entry lists methods, a `CONNECT` or an `h2c` upgrade inside the proxied connection, plain `http://` to a host an entry binds, or a private address.
   gRPC clients work through the proxy.
 - `407` once the grant ends, on every call to any host. A call still running at that moment (a WebSocket, a gRPC stream, a long poll) is ended with the grant. A tunnel to a host no entry binds carries no value, so it runs to its idle limit instead.
 - `503` when the broker could not read the grant at all. The grant has not ended and the call can be made again.
 
 A retry fixes neither of the first two, and neither does another name.
 A `407` needs a new grant: ask again.
-A rule's refusal needs a change to the rules file in the deployment's own repository, which a person reviews.
-Report the refusal as you report a service out of reach: the command you ran and the output you saw.
+A method or a path outside the entry's `allow` needs a change to the rules file in the deployment's own repository, which a person reviews.
+A mismatched TLS name or `Host`, a dot segment, a method-override header, a `CONNECT` or `h2c` upgrade, and plain `http://` each need a change to the command: https, a TLS name and `Host` that match the host it connects to, and none of the others.
+Report a refusal the command cannot fix as you report a service out of reach: the command you ran and the output you saw.
 
 Two calls are not refused by the proxy. A call to a host no entry binds goes out unread, and a placeholder in a header the entry does not name goes out as it is, so the service refuses the placeholder and its own error is what you see.

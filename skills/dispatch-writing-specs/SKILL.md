@@ -61,7 +61,7 @@ For each spec, ask, comment and message:
 
 ## Decisions
 
-A choice earns an entry in the spec's `## Decisions` part only if a disagreeing reader would act differently; keep others to one spec line each. Write it there, never in a separate document: the choice first, then the reason and the options weighed, as a `:::decision` block. A person's answered ask is their decision: it stays in the spec where it was asked.
+A choice earns an entry in the spec's `## Decisions` part only if a disagreeing reader would act differently; keep others to one spec line each. Write it there, never in a separate document: the choice first, then the reason and the options weighed. A person's answered ask is their decision: it stays in the spec where it was asked.
 
 ## Old specs
 

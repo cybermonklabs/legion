@@ -8,7 +8,7 @@ Run the every-turn steps and the parked-root walk (`skill://legion-controller/re
 
 A `silent` entry is a phase worker nothing will prompt: the daemon sends its task again and tells its architect. For every entry, read the issue's record in `read_state` rather than taking its architect as told, since an entry is no proof that its architect heard: `issues.<KEY>` gives its phase and each role's claim, and says whether the worker has moved since the tick was queued. The architect that owns the issue is the issue's own while its claim holds its role, else the nearest one above it whose claim holds its role, else the root's; a failed claim holds no role. Then check that this architect can take the notice:
 
-- When the tree's root claim reads `failed` (`issues.<ROOT>.architect.state`, `<ROOT>` the entry's `tree`), act as [`worker-died`](#worker-died-architect) says, with `<ROOT>` as its `<KEY>`.
+- When the tree's root claim reads `failed` (`issues.<ROOT>.architect.state`, `<ROOT>` being `issues.<KEY>.tree` and `<KEY>` the entry's `issue`), act as [`worker-died`](#worker-died-architect) says, with `<ROOT>` as its `<KEY>`.
 - When the owning architect's claim does not read `failed` and the Envoy registry shows its session `gone`, `fresh_session` that architect.
 - Otherwise the notice reaches it: take nothing more.
 

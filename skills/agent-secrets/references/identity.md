@@ -7,7 +7,7 @@ The client takes its broker identity from the first of four sources that has one
 When the command exits 1 naming no broker identity, each source says why it had nothing:
 
 - **`helper: this process is in no session the helper … registered`.** The process inherited the helper's socket but is not in a session the helper registered. That alone stops nothing: the client goes on to the machine.
-- **`machine: the broker at … names no exchange audience`.** The broker accepts no machine identity yet. The person signs in (`agent-secrets login`), or restarts the agent as a session: `agent-secrets register --wait 10 --exec -- <the agent's command>`.
+- **`machine: the broker at … names no exchange audience`.** The broker accepts no machine identity yet. Restart the agent as a session: `agent-secrets register --wait 10 --exec -- <the agent's command>`. `agent-secrets login` refuses on this machine until the person sets `AGENT_SECRETS_MACHINE_IDENTITY` (`metadata` or `pool`).
 - **`this machine's agent-secrets-helper holds no credential at the secrets broker`.** The part after `the helper:` names the cure.
   `run: agent-secrets machine login`: the person logs the machine in, as https://cybermonklabs.github.io/legion/broker/guides/log-a-machine-in/ shows.
   `the helper's trade loop is trading …`: the helper gets one itself; report it, and retry later.

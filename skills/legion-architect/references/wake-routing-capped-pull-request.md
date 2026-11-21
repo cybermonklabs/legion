@@ -4,14 +4,10 @@ Read this when a `pr-blocked` notice reaches you: the review round cap is reache
 in this turn.
 
 A `pr-blocked` reason reads `<n> rounds counted, <m> conflict rounds not counted`: judge the cap by
-`<n>`. Tester fails and requests for changes are what it counts. Tell the rounds apart by what
-announced each: a tester's fail by its `phase-finished` with `verdict: "fail"`; a request for
-changes by the reviewer's `phase-finished` over a `CHANGES_REQUESTED` review; a worker's
-`request_backward_move` by a `phase-finished` from the role that asked, whose reason reaches only
-the task of the worker the move started, so ask that worker; your own send-back from `accepting` by
-the reason you gave. Judge a worker's backward move by the reason that worker gives: a move that
-sends back code found wrong counts with the tester fails. Read what every counted round found,
-choose one, act on it, and post the rounds you read and the choice as a `dispatch comment`:
+`<n>`. `<n>` counts the reviews that requested changes, less the conflict rounds; a tester's fail
+and a backward move count in neither number. A worker's backward move names its reason in its
+`phase-finished` notice. Read what every counted round found, choose one, act on it, and post the
+rounds you read and the choice as a `dispatch comment`:
 
 - **Narrow**: the change is sound but each round finds more around it. Tell the implementer and the
   reviewer which checks the next round answers, dropping no requirement. A correctness finding is

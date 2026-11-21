@@ -55,7 +55,8 @@ holds nothing up.
 - The round writes no spec version of its own: the agreed pictures go into the version you first
   submit for approval.
 - A tree whose gate is open starts no round for the work in flight and writes no spec version for
-  a picture: a new version closes the gate and stops the phase under it.
+  a picture: a new version closes the gate, which holds every merge of the tree until a person
+  approves again; the running phases go on.
 - A picture that must change after approval is a new version only when what is built changes, and
   then you request approval again ("After approval" in
   `skill://legion-architect/references/design-gate.md`).

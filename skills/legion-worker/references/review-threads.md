@@ -3,7 +3,7 @@
 Read it when you reply on, list or resolve a review thread, or judge a bot's finding: the implementer after every push that answers a review, and the reviewer on every re-review.
 
 - Reply on each thread you answer, one disposition reply per thread: the implementer's `Fixed in <commit>: <one line>` or `Declined: <reason>`, the reviewer's reason in its own words. No reply resolves anything.
-- Only the pull request's author can resolve its threads, and the implementer opens every Legion pull request. So the implementer, after every push that answers a review and before its `handoff_complete`, resolves each thread it answered. It resolves each bot thread the reviewer accepted and named to it by node id as soon as the message reaches it, or as part of answering that review. One call per thread, never in bulk, never a thread it has not read, and never one the reviewer did not name:
+- Only the pull request's author can resolve its threads, and the implementer opens every Legion pull request. So the implementer, after every push that answers a review and before its `handoff_complete`, resolves each thread it answered. It resolves each bot thread the reviewer accepted and named to it by node id as soon as the message reaches it, or as part of answering that review, and never a bot thread the reviewer did not name. One call per thread, never in bulk and never a thread it has not read:
 
   ```bash
   gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -F id=<thread node id>
