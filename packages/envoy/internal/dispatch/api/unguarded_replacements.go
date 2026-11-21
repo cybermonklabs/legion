@@ -37,14 +37,15 @@ func registerUnguardedReplacements(registry *metrics.Registry) *metrics.Counter 
 }
 
 // noteUnguardedReplacement counts a committed upload that replaced artifact naming no token and
-// logs it with what names its client: the caller, and the request's User-Agent as the access log
-// records it. A deployed `dispatch` command sends no version of its own, so its User-Agent (the
-// runtime's fetch default) and the session that ran it are what say which client it was. A repair
-// of a document outside the Proof schema names no token by design and is counted too; it is rare,
-// and its line names its document.
+// logs it with what names its client: the caller and the request's User-Agent, each cut as the
+// access log cuts it (accesslog.Clip), since a caller whose credential proves no session names its
+// session id in the body. A deployed `dispatch` command sends no version of its own, so its
+// User-Agent (the runtime's fetch default) and the session that ran it are what say which client
+// it was. A repair of a document outside the Proof schema names no token by design and is counted
+// too; it is rare, and its line names its document.
 func (s *server) noteUnguardedReplacement(r *http.Request, artifact model.Artifact, actor model.Actor) {
 	s.unguardedReplacements.Inc()
 	slog.Info(unguardedReplacementMessage,
 		"artifact", artifact.ID, "document", artifact.RefKey,
-		"caller_kind", actor.Kind, "caller", actor.ID, "user_agent", accesslog.UserAgent(r))
+		"caller_kind", actor.Kind, "caller", accesslog.Clip(actor.ID), "user_agent", accesslog.UserAgent(r))
 }
