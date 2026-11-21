@@ -2524,6 +2524,12 @@ test("a reader at the previous contract parses the state body this daemon serves
 // installed on, under the name each is served under, every `default` false; `refused` is each
 // other entry with why; `withoutWebhookApp` is this contract's own list.
 test("a reader at contract 152 parses the repositories block served below 202", () => {
+  // The caller states the contract before 202, the one whose entry made the block live
+  // (`repositoriesLiveContract` in `internal/api/shaping.go`), and the `contract` mark below names
+  // the highest contract the records hold below 202 (`recordedContractAtOrBelow`). The bound is
+  // 202 and not `daemonApiVersion`: the records hold an entry at 202 itself, so a bound at the
+  // daemon's own contract would name 202 as soon as a later contract lands.
+  const repositoriesLiveContract = 202;
   const served = fixtureBody("state-narrowed-repositories.json");
   const written = served.repositories;
   expect(isJsonObject(written) ? Object.keys(written).sort() : written).toEqual([
@@ -2574,16 +2580,12 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   expect(block.data?.caches).toEqual(live.caches);
 
   // Every other key is the state golden's own, the `contract` mark and `lowestPluginContract`
-  // aside: the caller states the contract before 202, the one whose entry made the block live
-  // (`repositoriesLiveContract` in `internal/api/shaping.go`), and the mark names the contract it is
-  // served at, the highest contract the records hold below 202 (`recordedContractAtOrBelow`). The
-  // bound is 202 and not `daemonApiVersion`: the records hold an entry at 202 itself, so a bound at
-  // the daemon's own contract would name 202 as soon as a later contract lands. The lowest plugin
-  // contract reports the claims of the snapshot the route projected the body from, a pod at the
-  // contract the caller states, which `state.json`'s own fixture does not hold. No band stands
-  // between 193 and 202 but the repositories block's, and the caller is served at or above 193, so
-  // the narrowing changes this one block and nothing beside it.
-  const repositoriesLiveContract = 202;
+  // aside: the mark names the contract the caller is served at, 199, the recorded contract below
+  // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
+  // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
+  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. No band stands
+  // between 199 and 202 but the repositories block's, so the narrowing changes this one block and
+  // nothing beside it.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
