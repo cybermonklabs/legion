@@ -83,9 +83,8 @@ export interface ReferenceTarget {
   /** The reading Go made of `description`, which a card draws (`MarkdownPreview`); absent for a
    *  description Dispatch does not store, a GitHub body among them. */
   readonly descriptionTree: DisplayTree | undefined;
-  /** Whether the read of a document's text failed with no answer to draw - a refetch after a
-   *  pending insert's delete dropped the answer the page held (`dropUnmarkedText`), among others:
-   *  a card says so in place of `description`. False for every other target. */
+  /** Whether the read of a document's text failed with no answer to draw: a card says so in place
+   *  of `description`. False for every other target. */
   readonly textFailed: boolean;
   /** The bytes route of the picture a reference to an image artifact names - the version it pins,
    *  else the latest - for a thumbnail beside the title; undefined for anything else. */

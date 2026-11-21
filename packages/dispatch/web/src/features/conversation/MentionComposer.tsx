@@ -67,7 +67,6 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus } from "../artifacts/ArtifactUpload";
-import { UNDRAWN_QUOTE_WORDS, useQuoteInDocument } from "../doc/quote-in-document";
 import { ASK_URGENCIES_ASCENDING, URGENCY_LABELS } from "../inbox/ask-urgency";
 import { useComposerRegistry } from "../margin/margin-context";
 import { AgentName, type AgentText, useAgentText } from "../refs/AgentName";
@@ -371,36 +370,6 @@ function askOptionRows(ask: SentRequest["ask"] | undefined): AskOptionDraft[] {
       }));
 }
 
-/** The words of the document a margin compose is about, above its field: the quote, while the
- *  page's text of the document still holds it, and otherwise a line saying it no longer does
- *  (`useQuoteInDocument`, which weighs only a read from after `anchoredAt`), since words a delete
- *  took out are a deleted post's; and until the page holds a read that can tell, a line saying
- *  the words are loading, or once each such read failed that they cannot be checked now. The
- *  draft and its controls stay as they are. */
-function ComposerQuote({
-  anchor,
-  anchoredAt,
-  owner,
-}: {
-  anchor: ComposerAnchor;
-  anchoredAt: number | undefined;
-  owner: ComposerOwner;
-}): ReactNode {
-  const inDocument = useQuoteInDocument(anchor, anchoredAt, owner);
-  if (inDocument !== "held") {
-    return (
-      <p className={`text-sm ${textMutedOnSurfaceMuted}`}>
-        {`The words this draft was for ${UNDRAWN_QUOTE_WORDS[inDocument]}.`}
-      </p>
-    );
-  }
-  return (
-    <blockquote className={`border-l-2 pl-2 text-sm ${quoteAccentBorder} ${quoteBodyText}`}>
-      {anchor.quote}
-    </blockquote>
-  );
-}
-
 interface MentionComposerProps {
   readonly agents?: readonly Agent[];
   readonly anchor?: ComposerAnchor;
@@ -465,13 +434,6 @@ interface MentionComposerProps {
   readonly onCancelReply?: (draft: SentDraft) => void;
   readonly onClose: () => void;
   readonly onSent: () => void;
-  /** When the compose this composer writes in took the words it is about, where the compose
-   *  outlives its composer: the margin's compose on a document, which stays open while the reader
-   *  is away from the document (`DocumentCompose.open`), and whose composer mounts again as they
-   *  come back. The composer takes it as the time it took its words where its field takes no
-   *  draft that keeps an earlier one (`MountDraft.anchoredAt`), so a composer that mounts again
-   *  with an empty field keeps the compose's time rather than its mount's. */
-  readonly openedAt?: number;
   readonly owner: ComposerOwner;
   /** How many times the reader has moved this composer's address with a control its host draws
    *  for it - an Agents row's issue picker - counted by the host in the press that makes the
@@ -534,7 +496,6 @@ export function MentionComposer({
   onClose,
   onKindChange,
   onSent,
-  openedAt,
   owner,
   ownMoves = 0,
   replyParent,
@@ -568,19 +529,6 @@ export function MentionComposer({
       standing,
       unsent,
     })
-  );
-  // When this composer took the words of the document it is about, for a margin compose: a read
-  // of the document's text from before then can lack words the reader had just typed, so only a
-  // later one says they left (`useQuoteInDocument`), and a draft it keeps for them keeps this time
-  // (`AwayDraft.anchoredAt`). The margin mounts a composer of its own for each compose, with its
-  // words (`MarginSheet`), and a kind switch moves it to another mark over the same words, so the
-  // compose took them when it opened (`openedAt`), and a composer with no such compose took them
-  // at its mount - unless the field took a draft written for those words, a held send's or one
-  // kept for them, whose compose took them before: a composer that mounts again at its words, as
-  // one does when the reader comes back to the document, goes on with that compose's words, and
-  // keeps its time (`MountDraft.anchoredAt`).
-  const [anchoredAt] = useState(() =>
-    anchor === undefined ? undefined : (initial.anchoredAt ?? openedAt ?? Date.now())
   );
   const textarea = useRef<HTMLTextAreaElement>(null);
   const replacementTextarea = useRef<HTMLTextAreaElement>(null);
@@ -885,7 +833,6 @@ export function MentionComposer({
     takeOffered,
   } = useKeptDrafts({
     anchor,
-    anchoredAt,
     composerName,
     discard: discardNow,
     edit,
@@ -1208,11 +1155,10 @@ export function MentionComposer({
   const footId = useId();
   const canSubmit = canSubmitComposer(submitReason, sending, upload.pending);
   /** Sends the draft as it stands, its whole request frozen here (`sentRequest`), so nothing done
-   *  after this call can change where it goes, and with it the time this composer took its words
-   *  (`anchoredAt`), which a draft kept from the send keeps. Until the server answers, one
-   *  fieldset holds every control that could change or discard the draft; the held send covers
-   *  that hold in this task before React can disable the fieldset. From here on the held send
-   *  keeps the draft, so the unsent copy under the send name goes. */
+   *  after this call can change where it goes. Until the server answers, one fieldset holds every
+   *  control that could change or discard the draft; the held send covers that hold in this task
+   *  before React can disable the fieldset. From here on the held send keeps the draft, so the
+   *  unsent copy under the send name goes. */
   const send = () =>
     outgoing.send((refused) => {
       setConfirmingDiscard(false);
@@ -1220,7 +1166,7 @@ export function MentionComposer({
       setReferencePickerOpen(false);
       forgetUnsent();
       return sentRequest(refused);
-    }, anchoredAt);
+    });
   /** The hold on the draft from Send's own task on, before React can disable the fieldset: the
    *  fieldset's capture stops every key, click, input and change bound for a control in it - so
    *  Escape raises no Discard prompt and Ctrl+K opens no picker over a draft that is out. */
@@ -1346,7 +1292,9 @@ export function MentionComposer({
         </div>
       )}
       {compact || anchor === undefined ? null : (
-        <ComposerQuote anchor={anchor} anchoredAt={anchoredAt} owner={owner} />
+        <blockquote className={`border-l-2 pl-2 text-sm ${quoteAccentBorder} ${quoteBodyText}`}>
+          {anchor.quote}
+        </blockquote>
       )}
       {onKindChange !== undefined && edit === undefined && owner.kind !== "session" && !closed ? (
         <>

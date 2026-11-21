@@ -3,9 +3,8 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import manifest from "../../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
-import { insertDeleted } from "../../__tests__/correction-feed";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
-import { realClock, settle } from "../../__tests__/fake-clock";
+import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
 import {
@@ -19,7 +18,6 @@ import {
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import { markCorrectedPost } from "../../api/corrected-post";
 import type { ArtifactText } from "../../api/types";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { deletePendingEdits, openPendingEdits } from "./pending-edits";
@@ -230,71 +228,6 @@ test.each([
     expect(within(view.container).queryByRole("alert")).not.toBeInTheDocument();
     expect(within(view.container).getByRole("article").hidden).toBe(false);
     expect(toolbar.current?.connection).not.toBe("failed");
-  } finally {
-    view.unmount();
-  }
-});
-
-// Census row V.40 of dispatch://INFRA-1523: a pending insert's delete drops the document's text
-// read, and gives up a read of it still out (`dropUnmarkedText`), which can be the admission's
-// own. The admission reads again rather than taking that for a failure, and the editor connects
-// with no failure shown. Once it is connected, another such delete, whose read fails again, leaves
-// the editor, its socket and what it holds alone.
-test("ProofDocument admits the editor though a pending insert's delete gives up the admission's text read, and keeps it through the next", async () => {
-  const queryClient = createQueryClient();
-  const out = Promise.withResolvers<ArtifactText>();
-  const fresh: ArtifactText = { markdown: "fresh document", token: "sha256:fresh", version: null };
-  const getArtifactText = spyOn(api, "getArtifactText")
-    .mockResolvedValue(fresh)
-    .mockImplementationOnce(() => out.promise);
-  const { connections, editors, sync, toolbarChanges, view } = renderProofDocument({
-    queryClient,
-  });
-  try {
-    await waitFor(() => expect(getArtifactText).toHaveBeenCalledTimes(1));
-    await act(async () => {
-      markCorrectedPost(queryClient, insertDeleted(artifact.id, "block-1", 1));
-      await settle();
-    });
-    // The read given up lands nowhere.
-    await act(async () => {
-      out.resolve({ markdown: "before the delete", token: "sha256:before", version: null });
-      await settle();
-    });
-    await sync();
-    await waitFor(() => expect(editors).toHaveLength(1));
-    const admitted = {
-      alert: within(view.container).queryByRole("alert"),
-      failed: toolbarChanges.some((change) => change?.connection === "failed"),
-      text: queryClient.getQueryData(["artifact", artifact.id, "text"]),
-    };
-
-    getArtifactText.mockRejectedValue(
-      new ApiError(503, {
-        code: "DOC_SERVICE_UNAVAILABLE",
-        error: "document service is unavailable",
-      })
-    );
-    await act(async () => {
-      markCorrectedPost(queryClient, insertDeleted(artifact.id, "block-1", 1));
-      await settle();
-    });
-    await waitFor(() =>
-      expect(queryClient.getQueryState(["artifact", artifact.id, "text"])?.status).toBe("error")
-    );
-    expect({
-      admitted,
-      connections: connections.map((connection) => connection.destroyed),
-      editors: editors.map((editor) => editor.destroyed),
-      failed: toolbarChanges.some((change) => change?.connection === "failed"),
-      shown: within(view.container).getByRole("article").hidden,
-    }).toEqual({
-      admitted: { alert: null, failed: false, text: fresh },
-      connections: [false],
-      editors: [false],
-      failed: false,
-      shown: false,
-    });
   } finally {
     view.unmount();
   }

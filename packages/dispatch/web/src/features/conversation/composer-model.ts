@@ -31,16 +31,6 @@ export type ComposerKind = "ask" | "comment" | "suggestion";
 export type ComposerAnchor =
   | {
       readonly artifact: string;
-      /** The ids of the pending insert suggestions whose marks lie on any of `quote`'s words, as
-       *  the editor held them when the selection bar named the words (`insertMarksIn`). An
-       *  insert's words are its comment's own, and the comment's delete takes them out of the
-       *  document: once the page holds that comment deleted, they are a deleted post's words, which
-       *  no surface draws (`useQuoteInDocument`). Empty where the words lie in no insert. Absent
-       *  where nothing named them: a draft or held send an older build kept, or a selection the
-       *  editor held no document for. Absent is not empty, and nothing reads it as empty: words
-       *  that name no list may lie in an insert whose comment is deleted, which no comment list
-       *  can show, so only a read of the document's text checks them. */
-      readonly insertMarks?: readonly string[];
       readonly mark_id: string;
       readonly occurrence?: never;
       /** The words the editor read on each side of `quote`, in the block it wrote the mark in, and
@@ -55,9 +45,6 @@ export type ComposerAnchor =
     }
   | {
       readonly artifact: string;
-      /** As a mark's anchor keeps them, empty and absent each saying what they say there: the
-       *  pending inserts the words lie in. */
-      readonly insertMarks?: readonly string[];
       readonly mark_id?: never;
       readonly occurrence: number;
       /** The server anchors a quote-anchored comment itself, so there is no mark to write again. */

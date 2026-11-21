@@ -49,28 +49,6 @@ export function correction(
   } as unknown as DispatchEvent;
 }
 
-/** The delete of the comment `comment-insert`, whose pending insert stood in block `block` of
- *  `document` at `version`, as the feed carries it: its anchor with the quote emptied, since the
- *  insert's words were the comment's, and `payload` beside it. */
-export function insertDeleted(
-  document: string,
-  block: string,
-  version: number,
-  payload: Record<string, unknown> = {}
-): DispatchEvent {
-  return correction("comment", "comment-insert", false, {
-    anchor: {
-      artifact_id: document,
-      block_id: block,
-      mark_id: "mark-insert",
-      orphaned: false,
-      quote: "",
-      version,
-    },
-    ...payload,
-  });
-}
-
 /** The page's event feed on a fake live socket, as `correctionFeed` drives it. */
 export interface CorrectionFeed {
   /** Opens the socket the feed asked for and starts its events subscription with nothing to

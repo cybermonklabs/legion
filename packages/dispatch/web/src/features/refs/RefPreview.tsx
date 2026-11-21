@@ -406,8 +406,7 @@ function Body({
 
 /** The issue's full read, not the summary its links share: the card shows priority, labels, open
  *  asks and the spec, and holds that read only while it is shown. A spec whose text read failed
- *  with no answer - a refetch after a pending insert's delete dropped the one the page held, among
- *  others - is said to be unreadable in place of its text. */
+ *  with no answer is said to be unreadable in place of its text. */
 function IssuePreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
   const key = "key" in route ? route.key : undefined;
   const { data: issue } = useQuery({ ...issueQuery(key), enabled: key !== undefined });

@@ -39,12 +39,6 @@ export interface AwayDraft {
    *  them: the draft comes back in the field only at those words, and beside a compose at other
    *  words it waits until the reader takes it or drops it (`useKeptDrafts`'s `offered`). */
   readonly anchor?: ComposerAnchor;
-  /** When the compose took those words (`anchor`), in milliseconds since the epoch, which a held
-   *  send's draft takes from the send (`awayDraftOf`): a read of the document's text from before
-   *  then can lack words the reader had just typed, so only a later read that lacks them says they
-   *  left the document (`useQuoteInDocument`). A draft an older release kept has none, and counts
-   *  as taken before every read. */
-  readonly anchoredAt?: number;
   /** An ask's settings and options, which a compose of the ask kind keeps with its question. */
   readonly ask?: SentRequest["ask"];
   /** For an edit, the comment's body it was written over, as the editor last saw it: the edit is
@@ -71,20 +65,11 @@ export interface AwayAddress {
 
 /** What a held send's draft is kept as once the send is gone (`AwayDraft`): its text, its
  *  accepted mentions and a suggestion's replacement, and an ask's fields, for the address it went
- *  to - its owner, the reply it answered and a margin compose's words, with the time its composer
- *  took them (`HeldSend.anchoredAt`) - in the kind it went out as. A send an older release kept
- *  holds no such time, and is timed by its last press (`pressedAt`), which came after. */
+ *  to - its owner, the reply it answered and a margin compose's words - in the kind it went out
+ *  as. */
 export function awayDraftOf(held: HeldSend): AwayDraft {
   const { anchor, kind, owner, replyTo } = held.request;
-  return {
-    anchor,
-    anchoredAt: held.anchoredAt ?? held.pressedAt,
-    ask: held.draft.ask,
-    draft: held.draft.draft,
-    kind,
-    owner,
-    replyTo,
-  };
+  return { anchor, ask: held.draft.ask, draft: held.draft.draft, kind, owner, replyTo };
 }
 
 /** Whether two drafts answer the same reply, or both answer none. */
@@ -161,7 +146,6 @@ export interface UnsentDrafts {
 /** A draft kept by address, as the tab keeps it for a reload (`AwayDraft`). */
 const keptAway = shape.record({
   anchor: shape.optional(keptAnchor),
-  anchoredAt: shape.optional(shape.number),
   ask: shape.optional(keptAsk),
   base: shape.optional(shape.string),
   draft: keptDraft,

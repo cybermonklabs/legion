@@ -6,12 +6,10 @@ import { type ReactNode, useEffect, useRef } from "react";
 import { Link, MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { insertDeleted } from "../../__tests__/correction-feed";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
-import { markCorrectedPost } from "../../api/corrected-post";
 import type {
   Artifact,
   AskRead,
@@ -890,19 +888,13 @@ test("a document's card shows its owner, name, latest version and text from its 
   }
 });
 
-/** The words a pending insert put in a document, which its comment's delete takes out. */
-const INSERTED = "cleared by the security review";
-
 const unavailable = () =>
   new ApiError(503, { code: "DOC_SERVICE_UNAVAILABLE", error: "document service is unavailable" });
 
-// Census row V.40 of dispatch://INFRA-1523: the card of a reference to a document that pins no
-// version draws the document's live text, from the page's read of it. A pending insert's comment
-// is deleted, which takes the insert's words out of the document; the read the page holds gives
-// them with no mark to tell them by, and here the read the card asks again fails. The delete's
-// correction drops the read: the card draws none of the words straight away, and says the text
-// could not load while the read fails.
-test("after a pending insert's delete whose text read fails again, a document's card draws none of its words and says its text could not load", async () => {
+// The card of a reference to a document that pins no version draws the document's live text, from
+// the page's read of it. While that read has failed with no answer to draw, the card says the text
+// could not load in place of it.
+test("a document's card whose text read fails says its text could not load", async () => {
   const getProjectDocumentSummary = spyOn(api, "getProjectDocumentSummary").mockResolvedValue({
     id: "doc-9",
     kind: "doc",
@@ -911,11 +903,7 @@ test("after a pending insert's delete whose text read fails again, a document's 
     project: "CORE",
     slug: "runbook-md",
   });
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: `Restart the pod first, ${INSERTED}.`,
-    token: "sha256:runbook",
-    version: null,
-  });
+  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(unavailable());
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <Harness client={client}>
@@ -932,20 +920,11 @@ test("after a pending insert's delete whose text read fails again, a document's 
       screen.getByRole("link", { name: "the runbook" }).focus();
     });
     const card = screen.getByRole("tooltip");
-    // The control: while the insert stands, its words are the document's, and the card draws them.
-    await waitFor(() => expect(card).toHaveTextContent(INSERTED));
-
-    getArtifactText.mockRejectedValue(unavailable());
-    act(() => markCorrectedPost(client, insertDeleted("doc-9", "p1", 4)));
-    const straightAfter = card.textContent;
-
     await waitFor(() => expect(card).toHaveTextContent("Could not load this document's text."));
     expect({
-      drawn: card.textContent?.includes(INSERTED),
-      drawnStraightAfter: straightAfter?.includes(INSERTED),
       name: card.textContent?.includes("CORE · Runbook.md"),
       read: client.getQueryState(["artifact", "doc-9", "text"])?.status,
-    }).toEqual({ drawn: false, drawnStraightAfter: false, name: true, read: "error" });
+    }).toEqual({ name: true, read: "error" });
   } finally {
     view.unmount();
     client.clear();
@@ -955,7 +934,7 @@ test("after a pending insert's delete whose text read fails again, a document's 
 });
 
 // The same for an issue's card, which draws its spec's live text from the same read.
-test("after a pending insert's delete whose text read fails again, an issue's card draws none of its spec's words and says the spec could not load", async () => {
+test("an issue's card whose spec's text read fails says the spec could not load", async () => {
   const spec: Artifact = {
     created_at: "2026-09-09T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
@@ -974,11 +953,7 @@ test("after a pending insert's delete whose text read fails again, an issue's ca
     ...(issues["CORE-1"] as IssueDetails),
     artifacts: [spec],
   });
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: `Ship it in two steps, ${INSERTED}.`,
-    token: "sha256:spec",
-    version: null,
-  });
+  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(unavailable());
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(<Harness client={client} />);
   try {
@@ -986,20 +961,11 @@ test("after a pending insert's delete whose text read fails again, an issue's ca
       screen.getByRole("link", { name: "first" }).focus();
     });
     const card = screen.getByRole("tooltip");
-    // The control: while the insert stands, its words are the spec's, and the card draws them.
-    await waitFor(() => expect(card).toHaveTextContent(INSERTED));
-
-    getArtifactText.mockRejectedValue(unavailable());
-    act(() => markCorrectedPost(client, insertDeleted("spec", "p1", 4)));
-    const straightAfter = card.textContent;
-
     await waitFor(() => expect(card).toHaveTextContent("Could not load this issue's spec."));
     expect({
-      drawn: card.textContent?.includes(INSERTED),
-      drawnStraightAfter: straightAfter?.includes(INSERTED),
       read: client.getQueryState(["artifact", "spec", "text"])?.status,
       title: card.textContent?.includes("Design decision"),
-    }).toEqual({ drawn: false, drawnStraightAfter: false, read: "error", title: true });
+    }).toEqual({ read: "error", title: true });
   } finally {
     view.unmount();
     client.clear();

@@ -60,14 +60,6 @@ function blockText(text: string): string {
   return `${(lastSpace === -1 ? cut : cut.slice(0, lastSpace)).trimEnd()}…`;
 }
 
-/** The block the writing cursor is in as the bar opens: the writing surface that holds it, and
- *  the block's id, by which the chip finds the block again each time it names it
- *  (`scopeOfBlock`). */
-export interface CursorBlock {
-  readonly id: string;
-  readonly surface: HTMLElement;
-}
-
 /**
  * The block the writing cursor is in, as the DOM has it right now. The bar reads this on the
  * render that opens it, while focus is still where the reader left it: a moment later the dialog
@@ -77,7 +69,7 @@ export interface CursorBlock {
  * the id the editor stamps on it (`BLOCK_ID_ATTRIBUTE`). The cursor has to be inside the writing
  * surface: a reader scrolling an issue page has a selection somewhere too, and that is no cursor.
  */
-export function blockAtCursor(): CursorBlock | undefined {
+export function scopeAtCursor(): string | undefined {
   const focused = document.activeElement;
   if (!(focused instanceof HTMLElement) || !focused.isContentEditable) {
     return undefined;
@@ -85,23 +77,8 @@ export function blockAtCursor(): CursorBlock | undefined {
   const anchor = window.getSelection()?.anchorNode ?? null;
   const from = anchor instanceof Element ? anchor : (anchor?.parentElement ?? focused);
   const inside = focused.contains(from) ? from : focused;
-  const id = inside.closest(`[${BLOCK_ID_ATTRIBUTE}]`)?.getAttribute(BLOCK_ID_ATTRIBUTE);
-  return id === null || id === undefined ? undefined : { id, surface: focused };
-}
-
-/**
- * The chip's words for `block`: its text as the writing surface holds it now, not as it held it
- * when the bar opened. A pending insert's delete takes the insert's words out of the block while
- * the bar is open, and the editor may draw the block anew, so the block is found again by its id.
- * Undefined where the surface no longer holds the block, or is no longer on the page, and for a
- * block with no text.
- */
-export function scopeOfBlock(block: CursorBlock | undefined): string | undefined {
-  if (block === undefined || !block.surface.isConnected) {
-    return undefined;
-  }
-  const element = block.surface.querySelector(`[${BLOCK_ID_ATTRIBUTE}="${CSS.escape(block.id)}"]`);
-  const text = element === null ? "" : blockText(element.textContent ?? "");
+  const block = inside.closest<HTMLElement>(`[${BLOCK_ID_ATTRIBUTE}]`);
+  const text = block === null ? "" : blockText(block.textContent ?? "");
   return text === "" ? undefined : `the block “${text}”`;
 }
 

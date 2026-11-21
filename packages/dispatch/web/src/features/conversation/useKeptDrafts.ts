@@ -156,14 +156,6 @@ function changedUnder(draft: SentDraft, base: string | undefined, body: string):
 
 /** What the composer's field opens with (`mountDraft`). */
 export interface MountDraft {
-  /** When the words this composer is about were taken, where the field took a draft written for
-   *  them: the time the compose that wrote it took them, which a held send at these words keeps
-   *  (`HeldSend.anchoredAt`, read as `awayDraftOf` reads it) and a draft kept for them keeps
-   *  (`AwayDraft.anchoredAt`; 0, before every read, for one an older release kept with no time, as
-   *  the lines that lead a kept draft count it). The composer goes on with that compose's words,
-   *  so it takes this time as its own (`MentionComposer`). Undefined where the field took no such
-   *  draft. */
-  readonly anchoredAt: number | undefined;
   readonly ask: SentRequest["ask"] | undefined;
   /** The field took the draft kept for this address, which is kept there no longer. */
   readonly away: boolean;
@@ -205,12 +197,7 @@ export function mountDraft({
   const { awayName, unsentName } = keptNames(names);
   const unsentHere = unsentName === undefined ? undefined : unsent.read(unsentName);
   const kept:
-    | {
-        readonly anchoredAt?: number;
-        readonly ask?: SentRequest["ask"];
-        readonly base?: string;
-        readonly draft: SentDraft;
-      }
+    | { readonly ask?: SentRequest["ask"]; readonly base?: string; readonly draft: SentDraft }
     | undefined =
     unsentHere === undefined
       ? awayName === undefined
@@ -221,7 +208,6 @@ export function mountDraft({
     held?.status === "refused" && !sameAddress(held.request, { anchor, edit, owner, replyTo });
   const seeded = seededDraft(seedMentions, undefined, owner);
   const fresh = {
-    anchoredAt: undefined,
     ask: undefined,
     away: false,
     body: edit?.body ?? seeded.body,
@@ -239,10 +225,6 @@ export function mountDraft({
       return { ...fresh, changed: held.draft.draft };
     }
     return {
-      anchoredAt:
-        anchor !== undefined && sameAnchor(held.request.anchor, anchor)
-          ? awayDraftOf(held).anchoredAt
-          : undefined,
       ask: held.draft.ask,
       away: false,
       body: held.draft.draft.body,
@@ -257,8 +239,6 @@ export function mountDraft({
       return { ...fresh, changed: kept.draft };
     }
     return {
-      anchoredAt:
-        unsentHere === undefined && anchor !== undefined ? (kept.anchoredAt ?? 0) : undefined,
       ask: kept.ask,
       away: unsentHere === undefined,
       body: kept.draft.body,
@@ -289,11 +269,10 @@ export interface OfferedDraft extends AwayDraft {
    *  and taken here it goes as a new message (`movedSendNote`). */
   readonly note: string | undefined;
   /** Use my draft, once the field holds the draft: a draft kept by address is kept there no
-   *  longer, and a stopped send is carried into the compose at `at`, its words and its kind, with
-   *  the time that compose took them (`anchoredAt`), as the reader's own move carries one
-   *  (`HeldSends.carryInto`), so it says it may have been delivered until that compose sends it or
-   *  the reader discards it (`SendMovedError`). */
-  readonly take: (at: Pick<SentRequest, "anchor" | "kind">, anchoredAt: number | undefined) => void;
+   *  longer, and a stopped send is carried into the compose at `at`, its words and its kind, as
+   *  the reader's own move carries one (`HeldSends.carryInto`), so it says it may have been
+   *  delivered until that compose sends it or the reader discards it (`SendMovedError`). */
+  readonly take: (at: Pick<SentRequest, "anchor" | "kind">) => void;
 }
 
 /** What a margin compose offers of the send the reader stopped on its document, once that send
@@ -443,7 +422,6 @@ const KEEP_DRAFT_MS = 300;
  */
 export function useKeptDrafts({
   anchor,
-  anchoredAt,
   composerName,
   discard,
   edit,
@@ -467,9 +445,6 @@ export function useKeptDrafts({
   unsent,
 }: ShownAddress &
   KeptUnder & {
-    /** When the composer took `anchor` (`MentionComposer`), which a draft it keeps for that anchor
-     *  keeps with it (`AwayDraft.anchoredAt`); undefined for a composer with none. */
-    readonly anchoredAt: number | undefined;
     readonly field: {
       readonly askOptions: readonly AskOptionDraft[];
       readonly body: string;
@@ -647,7 +622,6 @@ export function useKeptDrafts({
     if (kept) {
       unsent.keepAway(awayName, {
         anchor,
-        anchoredAt,
         ask: { multiple, options: submittedAskOptions(askOptions), urgency },
         base: edit?.body,
         draft: { body, mentions, replacement },
@@ -714,7 +688,6 @@ export function useKeptDrafts({
       else if (awayName !== undefined) {
         unsent.keepAway(awayName, {
           anchor,
-          anchoredAt,
           base: writtenOver,
           draft: written,
           owner,
@@ -818,7 +791,6 @@ export function useKeptDrafts({
       if (wroteOver(before.fresh)) {
         unsent.keepAway(awayName, {
           anchor: before.address.anchor,
-          anchoredAt,
           ask,
           draft: leaving,
           kind,
@@ -886,7 +858,7 @@ export function useKeptDrafts({
       if (offered === undefined || anchor === undefined) return;
       replaceDraft(offered.draft);
       if (offered.ask !== undefined) replaceAsk(offered.ask);
-      offered.take({ anchor, kind }, anchoredAt);
+      offered.take({ anchor, kind });
     },
   };
 }

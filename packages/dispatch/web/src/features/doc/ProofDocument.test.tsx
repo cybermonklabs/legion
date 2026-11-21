@@ -3,7 +3,7 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
-import { insertDeleted } from "../../__tests__/correction-feed";
+
 import { type FakeDocumentRuntime, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { settle } from "../../__tests__/fake-clock";
 import { answerRequests } from "../../__tests__/network";
@@ -15,7 +15,6 @@ import {
   renderProofDocument,
 } from "../../__tests__/proof-document";
 import { ApiError, api } from "../../api/client";
-import { markCorrectedPost } from "../../api/corrected-post";
 import type { Artifact, Ask, IssueDetails, IssueReferenceSummary, Version } from "../../api/types";
 import { heldSends } from "../conversation/held-sends";
 import { marginComposeSendKey } from "../margin/margin-context";
@@ -580,15 +579,10 @@ test("ProofDocument compares a selected version with the current settled text wh
   }
 });
 
-// Census row V.40 of dispatch://INFRA-1523: a pending insert put words in the spec, and Diff vs
-// current draws them on its current side from the page's read of the document's live text. The
-// insert's comment is deleted, which takes the words out of the document; the read the page holds
-// gives them with no mark to tell them by, and here the read the page asks again fails. The
-// delete's correction drops the read, with the version's, which the page reads again as the
-// server masks it: the diff draws none of the words straight away, and says it could not load the
-// current version while the read fails.
-test("after a pending insert's delete whose text read fails again, Diff vs current draws none of its words and says it could not load the current version", async () => {
-  const inserted = "cleared by the security review";
+// Diff vs current draws its current side from the page's read of the document's live text. While
+// that read has failed with no answer to draw, the diff says it could not load the current version
+// rather than comparing the version with no text at all.
+test("Diff vs current says it could not load the current version while the live text read fails", async () => {
   const versionOne = {
     authors: [{ id: "alice", kind: "user" as const }],
     created_at: "2026-09-09T00:00:00Z",
@@ -610,50 +604,25 @@ test("after a pending insert's delete whose text read fails again, Diff vs curre
     ],
   };
   const queryClient = createQueryClient();
-  queryClient.setQueryData(["artifact", artifact.id, "text"], {
-    markdown: `Use Postgres, ${inserted}`,
-    version: 2,
-  });
   queryClient.setQueryData(["artifact", artifact.id, "version", 1], versionOne);
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
-  const getArtifactVersion = spyOn(api, "getArtifactVersion").mockResolvedValue(versionOne);
-  const { sync, view } = renderProofDocument({ document, queryClient, showDiff: true, version: 1 });
+  spyOn(api, "getArtifactText").mockRejectedValue(
+    new ApiError(503, {
+      code: "DOC_SERVICE_UNAVAILABLE",
+      error: "document service is unavailable",
+    })
+  );
+  const { view } = renderProofDocument({ document, queryClient, showDiff: true, version: 1 });
 
   try {
-    await sync();
-    // The control: while the insert stands, its words are the document's, and the diff adds them.
-    await waitFor(() =>
-      expect(within(view.container).getByTestId("change-view").textContent).toContain(inserted)
-    );
-
-    const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
-      new ApiError(503, {
-        code: "DOC_SERVICE_UNAVAILABLE",
-        error: "document service is unavailable",
-      })
-    );
-    const asked = getArtifactText.mock.calls.length;
-    act(() => markCorrectedPost(queryClient, insertDeleted(artifact.id, "block-1", 1)));
-    const straightAfter = view.container.textContent;
-
     await within(view.container).findByText("Could not load the current version to compare.");
     await act(settle);
     expect({
-      asked: getArtifactText.mock.calls.length > asked,
       diff: within(view.container).queryByTestId("change-view"),
-      drawn: view.container.textContent?.includes(inserted),
-      drawnStraightAfter: straightAfter?.includes(inserted),
       read: queryClient.getQueryState(["artifact", artifact.id, "text"])?.status,
-    }).toEqual({
-      asked: true,
-      diff: null,
-      drawn: false,
-      drawnStraightAfter: false,
-      read: "error",
-    });
+    }).toEqual({ diff: null, read: "error" });
   } finally {
     view.unmount();
-    getArtifactVersion.mockRestore();
   }
 });
 

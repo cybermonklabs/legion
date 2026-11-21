@@ -1,14 +1,12 @@
 import { expect, spyOn, test } from "bun:test";
 import { DISPATCH_BLOCK_UNITS } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import type { Window as HappyDOMWindow } from "happy-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { insertDeleted } from "../../__tests__/correction-feed";
 import { displayTree } from "../../__tests__/display-trees";
 import { ApiError, api } from "../../api/client";
-import { markCorrectedPost } from "../../api/corrected-post";
 import type {
   AskRead,
   CommentRead,
@@ -143,20 +141,17 @@ test("Unfurl reads the immutable document version named by a reference", async (
   }
 });
 
-// Census row V.40 of dispatch://INFRA-1523: the card of a reference to a document that pins no
-// version draws the document's live text, from the page's read of it. A pending insert's comment
-// is deleted, which takes the insert's words out of the document; the read the page holds gives
-// them with no mark to tell them by, and here the read the card asks again fails. The delete's
-// correction drops the read: the card draws none of the words straight away, and says the text
-// could not load while the read fails.
-test("Unfurl draws none of a deleted insert's words in a document's card whose text read fails again, and says its text could not load", async () => {
-  const inserted = "cleared by the security review";
+// The card of a reference to a document that pins no version draws the document's live text, from
+// the page's read of it. While that read has failed with no answer to draw, the card says the text
+// could not load under its title.
+test("Unfurl says a document's text could not load in its card while the text read fails", async () => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(coreSummary);
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: `Ship it in two steps, ${inserted}.`,
-    token: "sha256:design",
-    version: null,
-  });
+  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
+    new ApiError(503, {
+      code: "DOC_SERVICE_UNAVAILABLE",
+      error: "document service is unavailable",
+    })
+  );
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={queryClient}>
@@ -165,30 +160,11 @@ test("Unfurl draws none of a deleted insert's words in a document's card whose t
   );
   try {
     const card = await within(view.container).findByRole("link", { name: /design\.md/ });
-    // The control: while the insert stands, its words are the document's, and the card draws them.
-    await waitFor(() => expect(card.textContent).toContain(inserted));
-
-    getArtifactText.mockRejectedValue(
-      new ApiError(503, {
-        code: "DOC_SERVICE_UNAVAILABLE",
-        error: "document service is unavailable",
-      })
-    );
-    act(() =>
-      markCorrectedPost(
-        queryClient,
-        insertDeleted("artifact-1", "p1", 3, { artifact_slug: "design" })
-      )
-    );
-    const straightAfter = card.textContent;
-
     await waitFor(() => expect(card.textContent).toContain("Could not load this document's text."));
     expect({
-      drawn: card.textContent?.includes(inserted),
-      drawnStraightAfter: straightAfter?.includes(inserted),
       read: queryClient.getQueryState(["artifact", "artifact-1", "text"])?.status,
       title: card.textContent?.includes("design.md"),
-    }).toEqual({ drawn: false, drawnStraightAfter: false, read: "error", title: true });
+    }).toEqual({ read: "error", title: true });
   } finally {
     view.unmount();
     queryClient.clear();

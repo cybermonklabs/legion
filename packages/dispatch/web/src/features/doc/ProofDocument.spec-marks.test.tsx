@@ -1,7 +1,5 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { act, cleanup, waitFor, within } from "@testing-library/react";
-import { cachedKeysHolding } from "../../__tests__/cached-keys-holding";
-import { insertDeleted } from "../../__tests__/correction-feed";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import {
@@ -12,7 +10,6 @@ import {
 } from "../../__tests__/proof-document";
 import { answerRoute } from "../../__tests__/send-answers";
 import { api, type WriteBounds } from "../../api/client";
-import { markCorrectedPost } from "../../api/corrected-post";
 import type {
   Artifact,
   ArtifactBlock,
@@ -141,7 +138,6 @@ function stubReads(readVersion: number | null) {
   >("PUT", "/api/v1/me/documents/*/read");
   putRead.mockImplementation(async (_id, body) => readOf(body.version));
   return {
-    getArtifactBlocks,
     getDocumentRead,
     getIssueDecisions,
     getReferences,
@@ -298,61 +294,6 @@ test("a read of the read mark asked before the mark landed does not bring back t
     expect(
       within(next.view.container).queryByText(/Changed since you last read/)
     ).not.toBeInTheDocument();
-  } finally {
-    cleanup();
-    reads.restore();
-  }
-});
-
-// Census row V.32 of dispatch://INFRA-1523, and the architect's ruling (c) of 2026-11-20 22:18Z:
-// the Spec tab's line of what changed since the reader's last read names no word a deleted
-// pending insert put in the spec, even while every read the page asks again fails. A pending
-// insert put words in the spec's Rollout heading, and the line names that section by its
-// heading's excerpt in the spec's `part_of` read. The insert's comment is deleted, which takes the
-// words out of the document; the read the page holds still gives them, with no mark to tell them
-// by, and here every read the page asks again fails. The delete's correction drops the read and
-// the spec's blocks, so the page draws no line rather than the words.
-test("after a pending insert's delete whose reads fail again, the Spec tab's line names none of its words", async () => {
-  const inserted = "cleared by the security review";
-  const reads = stubReads(2);
-  reads.getReferences.mockResolvedValue({
-    ...parts,
-    edges: [
-      part("h-plan", 1, "## Plan"),
-      part("p-plan", 2, "Ship it in two steps."),
-      part("h-rollout", 1, `## Rollout, ${inserted}`),
-      part("p-rollout", 4, "Behind a flag."),
-    ],
-  });
-  const queryClient = createQueryClient();
-  const { editors, sync, view } = renderProofDocument({ document: spec, queryClient });
-  const screen = within(view.container);
-
-  try {
-    await sync();
-    await waitFor(() => expect(editors).toHaveLength(1));
-    await screen.findByText(`Changed since you last read version 2: Rollout, ${inserted}`);
-
-    const unreachable = new Error("Dispatch did not answer");
-    reads.getReferences.mockRejectedValue(unreachable);
-    reads.getArtifactBlocks.mockRejectedValue(unreachable);
-    const asked = reads.getReferences.mock.calls.length;
-    await act(async () => {
-      markCorrectedPost(queryClient, insertDeleted(spec.id, "h-rollout", 4));
-      await settle();
-    });
-
-    // The page draws none of the words; its read of the parts was asked again, and failed.
-    expect(view.container.textContent).not.toContain(inserted);
-    await waitFor(() =>
-      expect(
-        queryClient.getQueryState(["references", "to", "dispatch://CORE-1/spec", "part_of"])?.status
-      ).toBe("error")
-    );
-    expect(reads.getReferences.mock.calls.length).toBeGreaterThan(asked);
-    expect(screen.queryByText(/Changed since you last read/)).not.toBeInTheDocument();
-    expect(view.container.textContent).not.toContain(inserted);
-    expect(cachedKeysHolding(queryClient, inserted)).toEqual([]);
   } finally {
     cleanup();
     reads.restore();

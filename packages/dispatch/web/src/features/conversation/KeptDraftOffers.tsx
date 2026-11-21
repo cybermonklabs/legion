@@ -10,7 +10,6 @@ import {
   quoteBodyText,
   textMutedOnSurfaceMuted,
 } from "../../theme/classes";
-import { UNDRAWN_QUOTE_WORDS, useQuoteInDocument } from "../doc/quote-in-document";
 import { SendStoppedError } from "../writes/keyed-write";
 import type { ComposerKind, ReplyTarget } from "./composer-model";
 import { useHeldSend, useHeldSends } from "./held-sends";
@@ -101,26 +100,6 @@ export function DraftOffer({
       </div>
     </div>
   );
-}
-
-/** The line an offered draft is led by: the kind it was written as, where the compose is of
- *  another, and the words it was written for, while the page's text of the document still holds
- *  them (`useQuoteInDocument`, as of a read from after the draft's compose took them); otherwise
- *  it says they are no longer in the document, still loading, or cannot be checked now, and draws
- *  none of them, since words a delete took out are a deleted post's. */
-function OfferedDraftLead({
-  kind,
-  offered,
-}: {
-  readonly kind: ComposerKind;
-  readonly offered: OfferedDraft;
-}): ReactNode {
-  const inDocument = useQuoteInDocument(offered.anchor, offered.anchoredAt, offered.owner);
-  const asKind =
-    offered.kind === undefined || offered.kind === kind ? "" : ` as ${KIND_WORDS[offered.kind]},`;
-  return inDocument === "held"
-    ? `You wrote this draft${asKind} for other words: “${offered.anchor.quote}”. It is kept here:`
-    : `You wrote this draft${asKind} for other words, which ${UNDRAWN_QUOTE_WORDS[inDocument]}. It is kept here:`;
 }
 
 /**
@@ -239,7 +218,7 @@ export function KeptDraftOffers({
         <DraftOffer
           body={offered.draft.body}
           drop={{ label: "Discard my draft", press: onDropOffered }}
-          lead={<OfferedDraftLead kind={kind} offered={offered} />}
+          lead={`You wrote this draft${offered.kind === undefined || offered.kind === kind ? "" : ` as ${KIND_WORDS[offered.kind]},`} for other words: “${offered.anchor.quote}”. It is kept here:`}
           note={offered.note}
           replacement={offered.draft.replacement}
           take={

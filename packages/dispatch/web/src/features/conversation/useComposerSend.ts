@@ -11,12 +11,8 @@ export interface ComposerSend {
   /** Builds the request and sends it, unless a send under the composer's name is out, or the
    *  refusal it holds lives at another address than the request's (`HeldSends.send`); `build`
    *  runs only when no send is out, handed the refused send it replaces, if any - its request and
-   *  what refused it. The send keeps `anchoredAt`, when a margin compose's composer took the words
-   *  it is about. */
-  readonly send: (
-    build: (refused: HeldSend | undefined) => SentRequest,
-    anchoredAt: number | undefined
-  ) => void;
+   *  what refused it. */
+  readonly send: (build: (refused: HeldSend | undefined) => SentRequest) => void;
   /** Whether a send is out, past its deadline included, as of the last render. */
   readonly sending: boolean;
   /** What the server refused, for the reader: a deadline is not a refusal, and the answer that
@@ -74,10 +70,10 @@ export function useComposerSend(
     held,
     keep: (draft) => store.keep(key, draft),
     refusal: held?.status === "refused" ? held.refusal : undefined,
-    send: (build, anchoredAt) => {
+    send: (build) => {
       if (store.sendingNow(key)) return;
       // No send is out, so what the store holds under the name, if anything, is a refusal.
-      store.send(key, build(store.get(key)), anchoredAt);
+      store.send(key, build(store.get(key)));
     },
     sending: held !== undefined && held.status !== "refused",
     sendingNow: () => store.sendingNow(key),
