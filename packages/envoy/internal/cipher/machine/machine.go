@@ -258,7 +258,8 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 	if err != nil {
 		return "", "", err
 	}
-	login, err = body.ApproverLogin(record.KindLauncherCredential, obj.Service(), login)
+	// A machine login's approver is never a group, so no group reader is asked.
+	login, err = body.ApproverLogin(record.KindLauncherCredential, obj.Service(), login, nil)
 	if err != nil {
 		return "", "", err
 	}

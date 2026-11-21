@@ -722,7 +722,7 @@ export class BrokerTokenClient {
    * What a failed trade came to, as a class the loop retries ({@link Retried}), or null for a
    * refusal no trade cures ({@link isFinalRefusal}). Each class's text names the identity traded
    * and the session and nothing the broker wrote: a refusal prints as it prints
-   * (`BrokerRefusedError.said`), a trade that got no answer as broker-client words it
+   * (`BrokerRefusedError.said`), a trade that got no answer as cipher-client words it
    * (`BrokerTradeFailedError`), a trade whose time ran out while its source waited for a lock
    * (`LockHeldError`) as a trade never sent, and a trade its identity's source could not make in
    * that source's own words, scrubbed: the words a caller of `token` was always handed.
