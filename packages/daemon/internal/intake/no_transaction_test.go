@@ -66,7 +66,7 @@ func TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction(t *testing.T
 			return
 		}
 		t.Logf("the consumer's log:\n%s", logs.String())
-		for _, name := range []string{dispatchConsumerName(spec.Project), githubConsumerName(spec.Project), wakeConsumerName(spec.Project)} {
+		for _, name := range []string{dispatchConsumerName(spec.Project), githubConsumerName(spec.Project), wakeConsumerName(spec.Project), readyConsumerName(spec.Project)} {
 			consumer, err := stream.Consumer(context.Background(), name)
 			if err != nil {
 				t.Logf("look up consumer %s: %v", name, err)

@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  The listener reports a role wake on the wake subject of the project the role's own name gives:
+  `notifications.legion.<token>.wake` for a Legion role `legion-<token>-…`. It reports no wake for a
+  role of any other shape. It reports an agent wake on the wake subject of each project that the
+  target session's known-session record lists (`session.KnownSession.Projects`), and never on a
+  project the message names. A session whose record lists no project gets no wake report, and the
+  listener logs that once per session. Only `listener_ready` stays on the shared
+  `notifications.legion.wake`. The publish route refuses every wake subject. Each Legion daemon hears
+  its project's wake subject from the daemon build that widened its wake consumer to both subjects.
+time: 2026-11-21T04:51:21.279421451Z
+custom:
+    Issue: listener-project-wakes

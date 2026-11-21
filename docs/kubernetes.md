@@ -894,7 +894,7 @@ Never build it on a workstation — no `docker build`, `docker buildx`, or `dock
 an unrelated buildx job took the devbox host to load 646 on 2026-09-12 and the Legion daemon with it (the CI runner is not a workstation).
 Iterate by pushing the PR branch (trigger 2;
 a draft builds only once it is marked ready, and a push cancels the previous head's build) or, once merged, dispatching (trigger 3);
-check the Dockerfile and workflow statically (`hadolint`, `actionlint` where installed) and run `bun test` for the TypeScript.
+check the Dockerfile and workflow statically (`hadolint`, and actionlint with the command in `.github/ci-notes/README.md`, which runs the actionlint, the shellcheck and the severity that CI runs) and run `bun test` for the TypeScript.
 Pulling and running the published image locally is fine.
 A failed build is retried with `gh run rerun <run-id> --failed` or by pushing the branch again.
 In a `release.yaml` run, `--failed` keeps the build jobs' recorded outputs, and a failed `publish` reruns whole, each step safe to repeat:
@@ -1762,10 +1762,17 @@ Its old tree's cleanup does not wait on a claim of it that runs nothing;
 each of its claims is re-pointed to its new tree before its first start there, and binds that tree's epoch;
 and its root launch takes over the Sandbox its old tree left, if the cleanup has not reached it yet:
 the Sandbox is relabelled for the new tree (`ensureSandbox`, `internal/runtime/sandbox/relaunch.go`), and whether it is that Sandbox or one made afresh, the launch brings a new pod, with a disk of its own or on the kept volume of a relabelled Sandbox, and the roles resume from the session table.
-A role still in a turn when the old tree closed holds that close's suspension until the turn ends, and the carry's new generation finishes the close's own suspend row without acting.
-So no start of the new tree launches anything while a claim of the issue still runs a process in another tree:
-the start suspends that claim itself, as the daemon and keeping its session, and waits on its backoff, charging nothing, until the claim has stopped (`stopElsewhere`, `internal/daemon/outbox.go`).
-No close of the old tree reaches that claim, so its stop is bounded where that close would have ended the turn, at the old root's linger expiry (`linger_hours`):
+A role still in a turn when the old tree closed holds that close's suspension until the turn ends, and the carry's new generation can reach the issue before the close's suspend row of a role has run at all, after a stop of the old tree finished without acting (a production check's look start supersedes the linger's suspend), or before that look's start, already past its fences, brings its claim up in the old tree.
+So the move itself, a hand-over, an orphan carry or an adoption, queues a suspend of the old tree for every role of the issue (`Engine.StopLeftTree`, `internal/workflow/adopt.go`).
+Every row of the old tree serves an earlier generation, but such a suspend or tree close still stops a claim that stands in the old tree, waiting while its claim's machine is still to come (a rolling restart).
+The cleanup waits on every claim still running in its tree, so a claim that no stop reached would hold it, and the old root's next run with it, until the new tree started the issue, which a carried child held on a blocker or behind the admission cap does not do.
+When the stop completes as the row runs, it makes the old tree's close rows due at once (`stopInLeftTree`, `internal/daemon/outbox.go`); a suspension held for a turn is instead picked up at the close row's next retry, at most 64 seconds on.
+Such a row releases nothing of the old tree itself: the deletes of the old tree's Sandboxes run on the close rows of the issues still in that tree, so the carried issue's lane, and its new tree's start on it, do not wait behind them.
+Nor does a start of the new tree launch anything while a claim of the issue still runs a process in another tree:
+the start suspends that claim itself, as the daemon and keeping its session, and waits on its backoff, charging nothing, until the claim has stopped (`stopElsewhere`).
+When that call stops a claim and no other claim of the issue still runs, it makes the close rows of the tree it stood in due at once.
+If another claim still runs, `stopElsewhere` returns its wait before that wake; when it later finds the first claim already stopped, that tree's close rows retry at most 64 seconds on.
+Either stop is bounded where the old tree's close would have ended the turn, at the old root's linger expiry (`linger_hours`):
 a turn that ends within the linger ends on its own, and one still running at the expiry is stopped there.
 Once the old root no longer lingers (it was reopened, say), there is no close left to wait for, and the stop falls back to the stop timeout (`worker_stop_timeout_seconds`) from then (`carriedStopDeadline`):
 a role still in a turn is stopped that long after, losing only the tool call in flight.
@@ -8970,6 +8977,7 @@ it projects the broker's token, has a key directory of its own, and its shim tak
 It runs as the operator's ServiceAccount (`runtime.kubernetes.pod`), the same account as every issue pod, and it is the `legion-daemon` service's own pod because `BROKER_SERVICES` maps that account to `legion-daemon`.
 A service may name several accounts, so a controller given an account of its own keeps that service's secrets only when `BROKER_SERVICES` also names that account for `legion-daemon`.
 Its `slack_post` replies with `LEGION_SLACK_BOT_TOKEN`, the Slack app's bot token, which the operator stores as a shared agent secret (owner `shared`, tier `agent`), so the broker grants it with no person asked to every session enrolled with it, the controller's and every issue pod's among them, whatever service or person the session belongs to.
+Once that token carries the tag `project-channels=slack`, a session whose credential names a private Dispatch project gets it only behind the broker's airlock, which spends it on `POST /api/chat.postMessage` to a channel that project's owner named and on nothing else, so a private project's controller posts only to its project's channels and cannot read a Slack thread with it.
 Legion sets no affinity on it, so under Karpenter it lands wherever the pool has room for it (on GKE Autopilot it usually gets a node of its own, [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), and it is annotated `karpenter.sh/do-not-disrupt:
 "true"` and `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`:
 Karpenter never consolidates or replaces for drift the node it runs on, though issue pods can still be scheduled onto that node;

@@ -1,6 +1,7 @@
 package prompts
 
 import (
+	"embed"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -843,38 +844,78 @@ func TestEveryComposedPromptCarriesThePodMemoryRule(t *testing.T) {
 	}
 }
 
+// bannedCheckLimits are limits of the last look that the production check's rule no longer has:
+// each keeps the last look's pending, or its close as not run, for a merge that production does
+// not carry. Each is joined from halves, as retiredCheckSentences are, so a search of the
+// repository for one of them finds the texts that state it and never this test.
+// internal/workflow and internal/textcheck keep their own copies, since a test package cannot
+// import another package's test helpers.
+var bannedCheckLimits = []string{
+	"not carrying" + " the merge alone",
+	"did not carry the merge" + " within the bound",
+	"never carried" + " the merge",
+}
+
+// whetherOrNotCarried are the words that keep a fail clause's mention of production from limiting
+// the fail.
+const whetherOrNotCarried = "whether or not production carries the merge"
+
+// isCheckFailClause reports whether clause, one of clauses, makes a requirement still unobserved
+// at the last look a fail.
+func isCheckFailClause(clause string) bool {
+	return strings.Contains(clause, "unobserved") && strings.Contains(clause, "last") && strings.Contains(clause, "fail")
+}
+
+// checkRuleFaults are the ways clause breaks the production check's rule, one message each: it
+// states a limit the rule no longer has (bannedCheckLimits), or it is a fail clause
+// (isCheckFailClause) that still holds "production carries the merge" when every
+// whetherOrNotCarried is taken out of it.
+func checkRuleFaults(clause string) []string {
+	var faults []string
+	for _, phrase := range bannedCheckLimits {
+		if strings.Contains(clause, phrase) {
+			faults = append(faults, fmt.Sprintf("says %q, a limit the production check's rule no longer has: a requirement still unobserved at the last look is a fail %s, and that look's pending is only for an issue with no requirement that only the deploy can show: %q", phrase, whetherOrNotCarried, clause))
+		}
+	}
+	if isCheckFailClause(clause) && strings.Contains(strings.ReplaceAll(clause, whetherOrNotCarried, ""), "production carries the merge") {
+		faults = append(faults, fmt.Sprintf("limits the fail of a requirement still unobserved at the last look by whether production carries the merge, but that requirement is a fail %s: %q", whetherOrNotCarried, clause))
+	}
+	return faults
+}
+
 // A production check opens at the issue's close, which comes at the merge or, for a merge that
 // waits on the issues beneath it, later (workflow.closeMerged), and its bound is counted from that
-// close (workflow.checkBound). Its last look fails a requirement only the deploy can show and still
-// unobserved only where production carries the merge: a merge production never carried leaves
-// every such requirement unobserved, and that look's verdict is its `pending`, which closes the
-// check as not run (workflow.checkTask). So every clause that makes such a requirement a fail at
-// the last look says, in that clause, that production carries the merge. The unit is the clause,
-// split at `; ` as well as at full stops as workflow's check task test splits its task, never the
-// sentence: matched sentence by sentence, this test passed with the concepts page's limit taken
-// out, since that page's one sentence of the three verdicts reads whether production carries the
-// merge in its opening clause and limits nothing of its `fail` clause by it. A test that passes on
-// the revert it exists to catch measures the wrong unit, so a check widened from here keeps the
-// clause. That is read over the composed prompt of each role a look reaches, the tester's and the
-// implementer's. The two pages that state the rule outside a prompt - the e2e proof's account
-// of the bound's look and the concepts page - are read by
-// internal/textcheck's TestThePagesFailAnUnobservedRequirementOnlyWhereProductionCarriesTheMerge,
-// with the same clause rule, so an edit to one of them alone starts the text checks rather than
-// this package's whole lane. Each prompt must hold one such clause at least, so a matcher that
-// stopped finding the rule fails here rather than passing on nothing. Besides: a
-// clause naming `production_check_hours` counts it from the close, never from the merge; a clause
-// saying the session is handed the check task names the close before it; and no clause says the
-// merge closes the issue, since in these two prompts the close is the moment the check task is
-// handed and the role's work ends, and a merge that waits on the issues beneath it comes before
-// that moment. The architect's, the merger's and the reviewer's "the merge closes" name only what
-// causes the close, which is true, and no prompt this test reads holds them. This shows the text
-// is loaded, never that a role follows it.
-func TestTheProductionCheckFailsAnUnobservedRequirementOnlyWhereProductionCarriesTheMerge(t *testing.T) {
+// close (workflow.checkBound). A requirement that only the deploy can show is a fail when a look
+// observes it as not met. It is also a fail when it is still unobserved at the last look, whether
+// or not production carries the merge, and that look's pending is only for an issue with no such
+// requirement (workflow.checkTask). So the composed prompt of each role a look reaches, the
+// tester's and the implementer's, holds that rule clause by clause. No clause states a limit the
+// rule no longer has, and no fail clause, one that holds "unobserved", "last" and "fail", holds
+// "production carries the merge" outside the words "whether or not production carries the merge"
+// (checkRuleFaults). Each prompt holds one fail clause with those words at least, and one fail
+// clause for a requirement observed as not met, so a matcher that stopped finding the rule fails
+// here rather than passing on nothing. The unit is the clause, cut at `; ` as well as at full stops
+// as workflow's check task test cuts its task, never the sentence: matched sentence by sentence, a
+// test of this rule passed with the concepts page's limit taken out, since that page's one
+// sentence of the three verdicts reads whether production carries the merge in its opening
+// clause. A test that passes on the revert it exists to catch measures the wrong unit, so a check
+// widened from here keeps the clause. TestTheProductionCheckRuleHoldsInEveryPromptPart holds
+// every part of both trees to the same limits and names the part that breaks them. The pages and
+// the proof scripts that state the rule outside a prompt are read by internal/textcheck's
+// TestThePagesFailAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge, with the same
+// clause rule, so an edit to one of them alone starts the text checks rather than this package's
+// whole lane. Besides: a clause naming `production_check_hours` counts it from the close, never
+// from the merge; a clause saying the session is handed the check task names the close before it;
+// and no clause says the merge closes the issue, since in these two prompts the close is the
+// moment the check task is handed and the role's work ends, and a merge that waits on the issues
+// beneath it comes before that moment. The architect's, the merger's and the reviewer's "the merge
+// closes" name only what causes the close, which is true, and no prompt this test reads holds
+// them. This shows the text is loaded, never that a role follows it.
+func TestTheProductionCheckFailsAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	const limit = "production carries the merge"
 	theClose := regexp.MustCompile(`\bclose\b`)
 	boundFromTheMerge := regexp.MustCompile("production_check_hours`? (after|from|since) the merge")
 	type text struct{ name, body string }
@@ -884,13 +925,16 @@ func TestTheProductionCheckFailsAnUnobservedRequirementOnlyWhereProductionCarrie
 	}
 	for _, tc := range texts {
 		t.Run(tc.name, func(t *testing.T) {
-			fails := 0
+			statements, observedNotMet := 0, 0
 			for _, clause := range clauses(tc.body) {
-				if strings.Contains(clause, "unobserved") && strings.Contains(clause, "last") && strings.Contains(clause, "fail") {
-					fails++
-					if !strings.Contains(clause, limit) {
-						t.Errorf("%s makes a requirement still unobserved at the last look a fail without saying %q, so it fails a merge production never carried: %q", tc.name, limit, clause)
-					}
+				for _, fault := range checkRuleFaults(clause) {
+					t.Errorf("%s %s", tc.name, fault)
+				}
+				if isCheckFailClause(clause) && strings.Contains(clause, whetherOrNotCarried) {
+					statements++
+				}
+				if isCheckFailClause(clause) && strings.Contains(clause, "observed as not met") {
+					observedNotMet++
 				}
 				if strings.Contains(clause, "`production_check_hours`") && (!theClose.MatchString(clause) || boundFromTheMerge.MatchString(clause)) {
 					t.Errorf("%s counts the check's bound from something other than the issue's close: %q", tc.name, clause)
@@ -902,9 +946,37 @@ func TestTheProductionCheckFailsAnUnobservedRequirementOnlyWhereProductionCarrie
 					t.Errorf("%s says the merge closes the issue, which puts the check's hand-off and the end of this role's work at the merge, before the close for a merge that waits on the issues beneath it: %q", tc.name, clause)
 				}
 			}
-			if fails == 0 {
-				t.Errorf("%s holds no clause making a requirement still unobserved at the last look a fail", tc.name)
+			if statements == 0 {
+				t.Errorf("%s holds no clause that makes a requirement still unobserved at the last look a fail %s", tc.name, whetherOrNotCarried)
+			}
+			if observedNotMet == 0 {
+				t.Errorf("%s holds no fail clause for a requirement observed as not met", tc.name)
 			}
 		})
+	}
+}
+
+// Every part of both trees holds the production check's rule clause by clause, not only the parts
+// Compose joins for the tester and the implementer. A sentence left in a part that neither role
+// composes still reaches whichever role does compose it, and a part Compose joins for nobody today
+// is joined by the next role that needs it. So no clause of a part states a limit the rule no
+// longer has, and no fail clause of a part limits the fail by whether production carries the merge
+// (checkRuleFaults). Each failure names the part's file, so a revert of one sentence names the
+// file it is in. A part need not state the rule, since most parts are about other work: the
+// composed prompts hold the statement
+// (TestTheProductionCheckFailsAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge).
+func TestTheProductionCheckRuleHoldsInEveryPromptPart(t *testing.T) {
+	for dir, parts := range map[string]embed.FS{"roles": roleParts, "go": goParts} {
+		err := eachPart(parts, dir, func(name string, body []byte) error {
+			for _, clause := range clauses(string(body)) {
+				for _, fault := range checkRuleFaults(clause) {
+					t.Errorf("%s/%s %s", dir, name, fault)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("read the %s parts: %v", dir, err)
+		}
 	}
 }

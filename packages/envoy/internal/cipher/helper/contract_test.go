@@ -199,7 +199,7 @@ func TestContractLoginApprovalEnrollSignAndExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	boxEnrollmentID, _, err := b.EnrollSessionKey(context.Background(), "box-"+t.Name(), boxThumbprint, nil)
+	boxEnrollmentID, _, err := b.EnrollSessionKey(context.Background(), "box-"+t.Name(), boxThumbprint, nil, nil)
 	if err != nil {
 		t.Fatalf("EnrollSessionKey: %v", err)
 	}

@@ -2,6 +2,7 @@ package intake
 
 import (
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -85,18 +86,49 @@ func TestDecodeTheListenerWakeReport(t *testing.T) {
 	}
 }
 
-// The wake subject is a new leaf under notifications.legion.>, which the stream already carries,
-// and the fourth durable's name is the project's own, beside the other three.
+// The shared wake subject is a leaf under notifications.legion.>, which the stream already
+// carries, and so is each project's own, notifications.legion.<token>.wake, the token spelt as the
+// project's claim tokens spell it, so its controller lane and its wake lane share it. The wake and
+// ready durables' names are the project's own, beside the other two, and no two are one.
 func TestTheWakeConsumerNamesItsProjectOnItsOwnSubject(t *testing.T) {
 	if legionWakeSubject != "notifications.legion.wake" {
 		t.Fatalf("the wake subject is %q, want notifications.legion.wake", legionWakeSubject)
 	}
+	for project, want := range map[string]string{"CAPTURE": "notifications.legion.capture.wake", "INFRA": "notifications.legion.infra.wake"} {
+		if got, err := wakeSubject(project); err != nil || got != want {
+			t.Errorf("wakeSubject(%q) = %q, %v; want %s", project, got, err, want)
+		}
+	}
 	if got := wakeConsumerName("CAPTURE"); got != "legion-go-CAPTURE-wake" {
 		t.Fatalf("the wake durable is %q, want legion-go-CAPTURE-wake", got)
 	}
-	for _, other := range []string{dispatchConsumerName("CAPTURE"), githubConsumerName("CAPTURE")} {
-		if other == wakeConsumerName("CAPTURE") {
-			t.Fatalf("the wake durable shares the name %q with another consumer", other)
+	if got := readyConsumerName("CAPTURE"); got != "legion-go-CAPTURE-ready" {
+		t.Fatalf("the ready durable is %q, want legion-go-CAPTURE-ready", got)
+	}
+	names := []string{dispatchConsumerName("CAPTURE"), githubConsumerName("CAPTURE"), wakeConsumerName("CAPTURE"), readyConsumerName("CAPTURE")}
+	if sorted := slices.Compact(slices.Sorted(slices.Values(names))); len(sorted) != len(names) {
+		t.Fatalf("the durables %q share a name", names)
+	}
+}
+
+// A wake report on the project's own wake subject is decoded as one on the shared subject is,
+// and one on another project's wake subject is no subject of this daemon's.
+func TestAWakeReportOnTheProjectsOwnSubjectIsDecoded(t *testing.T) {
+	payload := `{"kind":"role_message","role":"legion-capture-capture-7-architect","at":1790000000000}`
+	for subject, wantErr := range map[string]bool{
+		"notifications.legion.wake":         false,
+		"notifications.legion.capture.wake": false,
+		"notifications.legion.other.wake":   true,
+	} {
+		decoded, err := decodeMessage(subject, "CAPTURE", nil, envelopeJSON(t, "wake-"+subject, "envoy", payload))
+		if (err != nil) != wantErr {
+			t.Errorf("decode on %s: %v, want an error %v", subject, err, wantErr)
+			continue
+		}
+		if !wantErr {
+			if wake, ok := decoded.Fact.(ListenerWake); !ok || wake.Role != "legion-capture-capture-7-architect" {
+				t.Errorf("decode on %s = %#v, want the role wake", subject, decoded.Fact)
+			}
 		}
 	}
 }
